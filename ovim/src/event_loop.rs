@@ -723,7 +723,17 @@ fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
     };
 
     let gutter_width = blame_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
-    (content_width as usize).saturating_sub(gutter_width)
+
+    // Apply textwidth narrowing (OV-00019: must match renderer's BufferLayout
+    // which narrows buffer_area to textwidth before computing text_width).
+    let effective_width = if let Some(textwidth) = editor.options.textwidth {
+        let max = textwidth as u16;
+        if content_width > max { max } else { content_width }
+    } else {
+        content_width
+    };
+
+    (effective_width as usize).saturating_sub(gutter_width)
 }
 
 /// TUI event loop (optionally with API).
