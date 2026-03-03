@@ -49,6 +49,7 @@ mod tabpage;
 mod theme;
 mod theme_state;
 mod toast;
+mod test_runner;
 mod ui_features;
 mod ui_panels;
 mod undo;
@@ -172,6 +173,8 @@ pub struct EditorOptions {
     pub margin_color: MarginColor,
     /// Extra columns of normal background between text edge and shaded margin area (default: 0)
     pub margin_padding: usize,
+    /// Program to run for :make (default: "cargo build")
+    pub makeprg: String,
 }
 
 impl Default for EditorOptions {
@@ -201,6 +204,7 @@ impl Default for EditorOptions {
             markdown_conceal: true,
             margin_color: MarginColor::None,
             margin_padding: 0,
+            makeprg: "cargo build".to_string(),
         }
     }
 }
@@ -317,6 +321,22 @@ pub struct Editor {
     pub active_session: Option<String>,
     /// Git branch name for the current file (if in a git repo)
     git_branch: Option<String>,
+    /// Pending `:make` result from background thread
+    pending_make: Option<PendingMake>,
+    /// Last test command run via `<Space>t` keybindings (for `<Space>tl` repeat)
+    pub last_test_command: Option<String>,
+}
+
+/// A background `:make` job waiting for results.
+pub struct PendingMake {
+    pub receiver: std::sync::mpsc::Receiver<MakeResult>,
+    pub command: String,
+}
+
+/// Result from a `:make` background job.
+pub struct MakeResult {
+    pub output: String,
+    pub success: bool,
 }
 
 /// Cached picker layout rects for mouse hit-testing
@@ -420,6 +440,8 @@ impl Editor {
             api_port: None,
             active_session: None,
             git_branch: None,
+            pending_make: None,
+            last_test_command: None,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -467,6 +489,8 @@ impl Editor {
             api_port: None,
             active_session: None,
             git_branch: None,
+            pending_make: None,
+            last_test_command: None,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor

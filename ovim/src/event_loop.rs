@@ -408,6 +408,10 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
 
+    if editor.poll_pending_make() {
+        editor.mark_dirty();
+    }
+
     if editor.poll_pending_ai_chat_job() {
         editor.mark_dirty();
     }
