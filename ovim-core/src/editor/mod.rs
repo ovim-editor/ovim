@@ -325,6 +325,8 @@ pub struct Editor {
     pending_make: Option<PendingMake>,
     /// Last test command run via `<Space>t` keybindings (for `<Space>tl` repeat)
     pub last_test_command: Option<String>,
+    /// Raw output from last `:make` / test run
+    pub last_make_output: Option<String>,
 }
 
 /// A background `:make` job waiting for results.
@@ -442,6 +444,7 @@ impl Editor {
             git_branch: None,
             pending_make: None,
             last_test_command: None,
+            last_make_output: None,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -491,6 +494,7 @@ impl Editor {
             git_branch: None,
             pending_make: None,
             last_test_command: None,
+            last_make_output: None,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor

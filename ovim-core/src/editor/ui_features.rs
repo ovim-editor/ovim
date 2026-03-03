@@ -243,6 +243,9 @@ impl Editor {
 
         match pending.receiver.try_recv() {
             Ok(result) => {
+                // Store raw output for :TestOutput / :MakeOutput
+                self.last_make_output = Some(result.output.clone());
+
                 let entries = crate::commands::parse_compiler_output(&result.output);
                 let entry_count = entries.len();
                 let title = format!(":make {}", pending.command);
