@@ -345,12 +345,11 @@ fn test_visual_replace() {
     test.press('v')
         .keys("llll") // Select "hello"
         .press('r')
-        .press('X'); // Replace all with 'X'
+        .press('X'); // Replace each char with 'X'
 
-    // Visual selection of "hello" (5 chars) replaced with single 'X'
-    assert_eq!(test.buffer_content(), "X world\n");
-    test.assert_cursor(0, 1); // Cursor at position 1 after replacement
-    assert_eq!(test.mode(), Mode::Insert); // Ends in insert mode
+    // Each character in visual selection replaced with 'X'
+    assert_eq!(test.buffer_content(), "XXXXX world\n");
+    assert_eq!(test.mode(), Mode::Normal);
 }
 
 #[test]
@@ -360,13 +359,11 @@ fn test_visual_line_replace() {
     test.press('V')
         .press('j') // Select 2 lines
         .press('r')
-        .press('='); // Replace all chars with '='
+        .press('='); // Replace each char with '='
 
-    // Visual line selection of 2 lines, replaced with '=' (single char replaces all)
-    // Actual behavior: lines are collapsed to single "="
-    assert_eq!(test.buffer_content(), "=line 3\n");
-    test.assert_cursor(0, 1); // Cursor at position 1 after replacement
-    assert_eq!(test.mode(), Mode::Insert); // Ends in insert mode
+    // Each character replaced with '=', newlines preserved
+    assert_eq!(test.buffer_content(), "======\n======\nline 3\n");
+    assert_eq!(test.mode(), Mode::Normal);
 }
 
 // ============================================================================
