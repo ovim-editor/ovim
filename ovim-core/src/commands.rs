@@ -1956,6 +1956,15 @@ pub fn parse_compiler_output(output: &str) -> Vec<QuickfixEntry> {
             continue;
         }
 
+        // Rust panic style: "thread 'name' panicked at 'msg', file.rs:42:5"
+        // Also: "thread 'name' panicked at file.rs:42:5:" (Rust 2024+ format)
+        if trimmed.starts_with("thread '") && trimmed.contains("panicked at") {
+            if let Some(entry) = parse_panic_line(trimmed) {
+                entries.push(entry);
+                continue;
+            }
+        }
+
         // gcc/clang/generic style: "file:line:col: error/warning: message"
         // Also matches: "file:line: error: message" (no col)
         if let Some(entry) = parse_gcc_style_line(trimmed) {
@@ -2054,6 +2063,56 @@ fn parse_gcc_style_line(line: &str) -> Option<QuickfixEntry> {
         entry_type,
         rest.to_string(),
     ))
+}
+
+/// Parse Rust panic lines from test output.
+///
+/// Formats:
+/// - `thread 'test_name' panicked at 'assertion message', src/file.rs:42:5`
+/// - `thread 'test_name' panicked at src/file.rs:42:5:` (Rust 2024+)
+fn parse_panic_line(line: &str) -> Option<QuickfixEntry> {
+    // Extract the panic message and location
+    let after_panicked = line.split("panicked at").nth(1)?.trim();
+
+    // Try old format: 'message', file:line:col
+    if after_panicked.starts_with('\'') {
+        // Find closing quote + comma
+        if let Some(comma_pos) = after_panicked.rfind("', ") {
+            let message = &after_panicked[1..comma_pos];
+            let location = &after_panicked[comma_pos + 3..];
+            return parse_file_line_col(location, message);
+        }
+    }
+
+    // Try new format: file:line:col:
+    // or: file:line:col:\nmessage
+    let location = after_panicked.trim_end_matches(':');
+    parse_file_line_col(location, "panicked")
+}
+
+/// Parse a `file:line:col` string into a QuickfixEntry.
+fn parse_file_line_col(location: &str, message: &str) -> Option<QuickfixEntry> {
+    use crate::editor::{QuickfixEntry, QuickfixEntryType};
+
+    let parts: Vec<&str> = location.rsplitn(3, ':').collect();
+    if parts.len() >= 2 {
+        let col: usize = parts[0].trim().parse().ok().unwrap_or(0);
+        let lnum: usize = parts[1].trim().parse().ok()?;
+        let file = if parts.len() == 3 { parts[2] } else { return None };
+
+        if !file.contains('.') && !file.contains('/') {
+            return None;
+        }
+
+        return Some(QuickfixEntry::new(
+            Some(std::path::PathBuf::from(file)),
+            lnum,
+            col,
+            QuickfixEntryType::Error,
+            format!("PANIC: {}", message),
+        ));
+    }
+    None
 }
 
 /// Execute a shell command with % and # expansion, and return the output
