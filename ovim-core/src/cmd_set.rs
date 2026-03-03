@@ -326,6 +326,16 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
             }
             Err(_) => err(format!("Invalid number: {}", value)),
         },
+        "makeprg" | "mp" => {
+            if value.is_empty() {
+                err("makeprg cannot be empty")
+            } else {
+                // Unescape backslash-space (vim convention: `set makeprg=cargo\ test`)
+                let unescaped = value.replace("\\ ", " ");
+                editor.options.makeprg = unescaped.clone();
+                ok(Some(format!("  makeprg={}", unescaped)))
+            }
+        }
         _ => return None,
     };
     Some(result)

@@ -493,6 +493,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 })
             }
         }
+        cmd if cmd == "make" || cmd.starts_with("make ") => {
+            // :make [args] — run makeprg (default: cargo build) and populate quickfix
+            let args = if cmd == "make" {
+                ""
+            } else {
+                cmd.strip_prefix("make ").unwrap_or("")
+            };
+            execute_make_command(editor, args)
+        }
         "copen" => {
             // Open/show quickfix list
             let qf_list = editor.quickfix_list();
@@ -1861,6 +1870,190 @@ fn handle_mapclear_command(editor: &mut Editor, command: &str) -> CommandResult 
         message: None,
         line_count: None,
     })
+}
+
+/// Execute :make command — runs makeprg and populates the quickfix list
+fn execute_make_command(editor: &mut Editor, args: &str) -> CommandResult {
+    use crate::editor::{MakeResult, PendingMake};
+    use std::process::Command;
+
+    // Build the command: makeprg + args (default: "cargo build")
+    let makeprg = editor.options.makeprg.clone();
+    let cmd = if args.is_empty() {
+        makeprg
+    } else {
+        format!("{} {}", makeprg, args)
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let cmd_clone = cmd.clone();
+
+    std::thread::spawn(move || {
+        #[cfg(target_os = "windows")]
+        let (shell, shell_arg) = ("cmd", "/C");
+        #[cfg(not(target_os = "windows"))]
+        let (shell, shell_arg) = ("sh", "-c");
+
+        let result = match Command::new(shell).arg(shell_arg).arg(&cmd_clone).output() {
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                MakeResult {
+                    output: format!("{}{}", stdout, stderr),
+                    success: output.status.success(),
+                }
+            }
+            Err(e) => MakeResult {
+                output: format!("Failed to run '{}': {}", cmd_clone, e),
+                success: false,
+            },
+        };
+        let _ = tx.send(result);
+    });
+
+    editor.set_pending_make(PendingMake {
+        receiver: rx,
+        command: cmd.clone(),
+    });
+
+    CommandResult::Success(SuccessResponse {
+        success: true,
+        message: Some(format!("Running: {}", cmd)),
+        line_count: None,
+    })
+}
+
+/// Parse compiler output for file:line:col: error/warning patterns
+pub fn parse_compiler_output(output: &str) -> Vec<QuickfixEntry> {
+    use crate::editor::{QuickfixEntry, QuickfixEntryType};
+    use std::path::PathBuf;
+
+    let mut entries = Vec::new();
+
+    // Regex-free parsing for common patterns:
+    // - rustc/cargo:  "  --> file.rs:line:col"
+    // - gcc/clang:    "file.rs:line:col: error: message"
+    // - typescript:    "file.ts(line,col): error TS1234: message"
+    for line in output.lines() {
+        let trimmed = line.trim();
+
+        // Rust/cargo style: "  --> file.rs:42:10"
+        if let Some(rest) = trimmed.strip_prefix("--> ") {
+            // Split from the right: col, then line, rest is file path
+            let parts: Vec<&str> = rest.rsplitn(3, ':').collect();
+            if parts.len() == 3 {
+                if let (Ok(col), Ok(lnum)) = (parts[0].parse::<usize>(), parts[1].parse::<usize>())
+                {
+                    entries.push(QuickfixEntry::new(
+                        Some(PathBuf::from(parts[2])),
+                        lnum,
+                        col,
+                        QuickfixEntryType::Error,
+                        String::new(), // Will be filled from context
+                    ));
+                }
+            }
+            continue;
+        }
+
+        // gcc/clang/generic style: "file:line:col: error/warning: message"
+        // Also matches: "file:line: error: message" (no col)
+        if let Some(entry) = parse_gcc_style_line(trimmed) {
+            entries.push(entry);
+        }
+    }
+
+    // Second pass: fill in error messages from cargo/rustc output
+    // Cargo errors look like:
+    //   error[E0425]: cannot find value `foo` in this scope
+    //     --> file.rs:42:10
+    // So we look for "error" or "warning" lines preceding "-->" lines
+    let lines: Vec<&str> = output.lines().collect();
+    let mut entry_idx = 0;
+    for (i, line) in lines.iter().enumerate() {
+        let trimmed = line.trim();
+        if trimmed.starts_with("--> ") && entry_idx < entries.len() {
+            // Look backward for the error/warning message
+            if i > 0 {
+                let prev = lines[i - 1].trim();
+                if prev.starts_with("error") || prev.starts_with("warning") {
+                    entries[entry_idx].text = prev.to_string();
+                    if prev.starts_with("warning") {
+                        entries[entry_idx].entry_type = QuickfixEntryType::Warning;
+                    }
+                }
+            }
+            entry_idx += 1;
+        }
+    }
+
+    entries
+}
+
+/// Parse a gcc/clang-style error line: "file:line:col: error: message"
+fn parse_gcc_style_line(line: &str) -> Option<QuickfixEntry> {
+    use crate::editor::{QuickfixEntry, QuickfixEntryType};
+    use std::path::PathBuf;
+
+    // Skip lines that don't look like file:line patterns
+    // Must contain at least one ':' and not start with whitespace
+    if line.is_empty() || line.starts_with(' ') || !line.contains(':') {
+        return None;
+    }
+
+    // Try to match file:line:col: type: message
+    let parts: Vec<&str> = line.splitn(4, ':').collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let file = parts[0];
+    let lnum: usize = parts[1].trim().parse().ok()?;
+
+    // Check if parts[2] is a column number or the error type
+    let (col, rest) = if let Ok(c) = parts[2].trim().parse::<usize>() {
+        let rest = if parts.len() > 3 { parts[3] } else { "" };
+        (c, rest)
+    } else {
+        // No column — parts[2] is the type/message
+        let rest = if parts.len() > 3 {
+            &line[parts[0].len() + 1 + parts[1].len() + 1..]
+        } else {
+            parts[2]
+        };
+        (0, rest)
+    };
+
+    let rest = rest.trim();
+    let entry_type = if rest.starts_with("error") {
+        QuickfixEntryType::Error
+    } else if rest.starts_with("warning") {
+        QuickfixEntryType::Warning
+    } else if rest.starts_with("note") {
+        QuickfixEntryType::Note
+    } else if rest.starts_with("info") {
+        QuickfixEntryType::Info
+    } else {
+        // Not a recognizable error pattern — could be just a file path with colons
+        // Only include if it looks like an error (has some message text)
+        if rest.is_empty() {
+            return None;
+        }
+        QuickfixEntryType::Error
+    };
+
+    // Don't include entries for paths that don't look like files
+    if !file.contains('.') && !file.contains('/') {
+        return None;
+    }
+
+    Some(QuickfixEntry::new(
+        Some(PathBuf::from(file)),
+        lnum,
+        col,
+        entry_type,
+        rest.to_string(),
+    ))
 }
 
 /// Execute a shell command with % and # expansion, and return the output

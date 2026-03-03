@@ -221,6 +221,26 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             editor.request_type_hierarchy();
             editor.reset_input_state();
         }
+        (&['t'], 'f') => {
+            // <Space>tf - Test file (run tests for current file)
+            editor.run_test_file();
+            editor.reset_input_state();
+        }
+        (&['t'], 'n') => {
+            // <Space>tn - Test nearest (run test function at/above cursor)
+            editor.run_test_nearest();
+            editor.reset_input_state();
+        }
+        (&['t'], 'a') => {
+            // <Space>ta - Test all (run full test suite)
+            editor.run_test_all();
+            editor.reset_input_state();
+        }
+        (&['t'], 'l') => {
+            // <Space>tl - Test last (re-run last test command)
+            editor.run_test_last();
+            editor.reset_input_state();
+        }
 
         // <Space>c... sequences
         (&['c'], 'a') => {

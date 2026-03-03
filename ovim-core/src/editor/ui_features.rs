@@ -229,6 +229,50 @@ impl Editor {
         }
     }
 
+    /// Sets a pending `:make` background job.
+    pub fn set_pending_make(&mut self, pending: super::PendingMake) {
+        self.pending_make = Some(pending);
+    }
+
+    /// Polls for a completed `:make` job. Returns true if results were applied.
+    pub fn poll_pending_make(&mut self) -> bool {
+        let pending = match self.pending_make.take() {
+            Some(p) => p,
+            None => return false,
+        };
+
+        match pending.receiver.try_recv() {
+            Ok(result) => {
+                let entries = crate::commands::parse_compiler_output(&result.output);
+                let entry_count = entries.len();
+                let title = format!(":make {}", pending.command);
+                self.set_quickfix_list(entries, title);
+
+                if entry_count > 0 {
+                    self.ui_panels.quickfix_list.first();
+                    self.jump_to_quickfix_entry();
+                    self.open_quickfix_window();
+                    self.set_lsp_status(format!("{} error(s)/warning(s)", entry_count));
+                } else if result.success {
+                    self.close_quickfix_window();
+                    self.set_lsp_status("Build succeeded — no errors".to_string());
+                } else {
+                    self.set_lsp_status("Build failed (no parseable errors)".to_string());
+                }
+                true
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => {
+                // Still running — put it back
+                self.pending_make = Some(pending);
+                false
+            }
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.set_lsp_status("Make job failed (thread panicked)".to_string());
+                true
+            }
+        }
+    }
+
     /// Gets the location list
     pub fn location_list(&self) -> &LocationList {
         &self.ui_panels.location_list
