@@ -630,7 +630,10 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                     continue;
                 }
                 let mouse = convert_mouse_event(mouse_event);
-                handle_mouse_event(editor, mouse)?;
+                if let Some(url) = handle_mouse_event(editor, mouse)? {
+                    let _ = open::that_in_background(&url);
+                    continue;
+                }
                 had_edit = true;
             }
             _ => {}

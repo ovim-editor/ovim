@@ -1,3 +1,4 @@
+use crate::markdown_conceal::{apply_conceal, extract_concealed_links, scan_markdown_conceal};
 use crate::{MouseButton, MouseEvent, MouseEventKind};
 use anyhow::Result;
 
@@ -7,22 +8,30 @@ use crate::mode::Mode;
 use crate::unicode::{char_to_grapheme_col, grapheme_count};
 
 /// Top-level mouse event dispatcher.
-pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<()> {
+/// Returns `Ok(Some(url))` when a concealed markdown link was clicked and should be opened.
+pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Option<String>> {
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
-            handle_left_click(editor, event.column, event.row)
+            return handle_left_click(editor, event.column, event.row);
         }
         MouseEventKind::Drag(MouseButton::Left) => {
-            handle_left_drag(editor, event.column, event.row)
+            handle_left_drag(editor, event.column, event.row)?;
         }
-        MouseEventKind::Up(MouseButton::Left) => handle_left_release(editor),
-        MouseEventKind::ScrollUp => handle_scroll(editor, true, event.row),
-        MouseEventKind::ScrollDown => handle_scroll(editor, false, event.row),
+        MouseEventKind::Up(MouseButton::Left) => {
+            handle_left_release(editor)?;
+        }
+        MouseEventKind::ScrollUp => {
+            handle_scroll(editor, true, event.row)?;
+        }
+        MouseEventKind::ScrollDown => {
+            handle_scroll(editor, false, event.row)?;
+        }
         MouseEventKind::Down(MouseButton::Middle) => {
-            handle_middle_click(editor, event.column, event.row)
+            handle_middle_click(editor, event.column, event.row)?;
         }
-        _ => Ok(()), // Right click, mouse move, horizontal scroll: ignored
+        _ => {} // Right click, mouse move, horizontal scroll: ignored
     }
+    Ok(None)
 }
 
 /// Converts screen coordinates to buffer (line, col).
@@ -98,6 +107,100 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     let clamped_col = grapheme_col.min(max_col);
 
     Some((buffer_line, clamped_col))
+}
+
+/// Checks if a click at the given screen coordinates lands on a concealed markdown link.
+/// Returns the URL if it does.
+fn check_concealed_link_click(
+    editor: &Editor,
+    screen_col: u16,
+    screen_row: u16,
+) -> Option<String> {
+    // Only active for markdown files with concealment on
+    if !editor.options.markdown_conceal {
+        return None;
+    }
+    let is_md = editor
+        .buffer()
+        .file_path()
+        .map(|p| p.ends_with(".md"))
+        .unwrap_or(false);
+    if !is_md {
+        return None;
+    }
+
+    let area = editor.render_cache.last_buffer_area?;
+    let gutter_width = editor.render_cache.last_gutter_width;
+
+    if screen_col < area.x
+        || screen_row < area.y
+        || screen_col >= area.x + area.width
+        || screen_row >= area.y + area.height
+    {
+        return None;
+    }
+
+    let rel_col = (screen_col - area.x) as usize;
+    let rel_row = (screen_row - area.y) as usize;
+
+    if rel_col < gutter_width {
+        return None;
+    }
+
+    let display_col_in_row = rel_col - gutter_width;
+
+    // Determine buffer line (same logic as screen_to_buffer)
+    let buffer_line = if editor.options.wrap {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+            let absolute_visual_row = rel_row + viewport_visual_row;
+            let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
+            logical_line.min(editor.buffer().line_count().saturating_sub(1))
+        } else {
+            (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+        }
+    } else {
+        (rel_row + editor.scroll_offset()).min(editor.buffer().line_count().saturating_sub(1))
+    };
+
+    // Don't check cursor line (concealment is disabled there)
+    if buffer_line == editor.buffer().cursor().line() {
+        return None;
+    }
+
+    let display_col = if editor.options.wrap {
+        // In wrap mode, display_col_in_row is the column within the sub-line
+        // For simplicity, only handle the first sub-line (sub_line == 0)
+        display_col_in_row
+    } else {
+        display_col_in_row + editor.horizontal_offset()
+    };
+
+    // Get the line text and scan for concealed links
+    let line_text = editor
+        .buffer()
+        .line(buffer_line)
+        .map(|l| l.trim_end_matches('\n').to_string())
+        .unwrap_or_default();
+
+    let spans = scan_markdown_conceal(&line_text);
+    if spans.is_empty() {
+        return None;
+    }
+
+    let transform = apply_conceal(&line_text, &spans);
+    let links = extract_concealed_links(&spans, &transform);
+
+    // The display_col is in display space (after tab expansion).
+    // The link view_start/view_end are in concealed char space (no tab expansion).
+    // For simplicity, treat them as equivalent (links in markdown rarely coexist with tabs).
+    for link in &links {
+        if display_col >= link.view_start && display_col < link.view_end {
+            return Some(link.url.clone());
+        }
+    }
+
+    None
 }
 
 /// Returns the buffer line if the click lands in the blame column area.
@@ -239,17 +342,18 @@ fn should_ignore_click(mode: Mode) -> bool {
     )
 }
 
-fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
+fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<String>> {
     let mode = editor.mode();
 
     // Handle AI prompt panel clicks (model picker + prompt cursor placement).
     if mode == Mode::AiPrompt && handle_ai_prompt_click(editor, col, row)? {
-        return Ok(());
+        return Ok(None);
     }
 
     // Handle picker mode clicks
     if mode == Mode::Picker {
-        return handle_picker_click(editor, col, row);
+        handle_picker_click(editor, col, row)?;
+        return Ok(None);
     }
 
     // Dismiss transient overlays on click
@@ -260,7 +364,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
         editor.set_mode(Mode::Normal);
         // Fall through to also move cursor
     } else if should_ignore_click(mode) {
-        return Ok(());
+        return Ok(None);
     }
 
     // Exit visual mode if active
@@ -268,18 +372,23 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
         editor.set_mode(Mode::Normal);
     }
 
+    // Check concealed markdown link click → open URL
+    if let Some(url) = check_concealed_link_click(editor, col, row) {
+        return Ok(Some(url));
+    }
+
     // Check blame column click → show blame popup
     if let Some(line) = is_blame_click(editor, col, row) {
         editor.buffer_mut().cursor_mut().set_position(line, 0);
         editor.show_blame_info();
-        return Ok(());
+        return Ok(None);
     }
 
     // Check sign column click → toggle breakpoint
     if let Some(line) = is_sign_column_click(editor, col, row) {
         editor.buffer_mut().cursor_mut().set_position(line, 0);
         editor.toggle_breakpoint();
-        return Ok(());
+        return Ok(None);
     }
 
     // Check gutter click → select line (Visual Line mode)
@@ -289,7 +398,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
         editor.set_mode(Mode::VisualLine);
         editor.render_cache.mouse_state.is_dragging = true;
         editor.render_cache.mouse_state.drag_origin = Some((line, 0));
-        return Ok(());
+        return Ok(None);
     }
 
     // Buffer click → move cursor
@@ -302,7 +411,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
         editor.render_cache.mouse_state.drag_origin = Some((line, char_col));
     }
 
-    Ok(())
+    Ok(None)
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
