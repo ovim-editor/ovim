@@ -525,6 +525,24 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 line_count: None,
             })
         }
+        "TestOutput" | "MakeOutput" => {
+            // Show raw output from last :make / test run in a scratch buffer
+            if let Some(output) = editor.last_make_output.clone() {
+                let buf = crate::buffer::Buffer::new_from_str(&output);
+                editor.buffers.push(buf);
+                let idx = editor.buffers.len() - 1;
+                editor.switch_to_buffer(idx);
+                CommandResult::Success(SuccessResponse {
+                    success: true,
+                    message: Some("Make/test output".to_string()),
+                    line_count: None,
+                })
+            } else {
+                CommandResult::Error(ErrorResponse {
+                    error: "No make/test output available".to_string(),
+                })
+            }
+        }
         cmd if cmd == "make" || cmd.starts_with("make ") => {
             // :make [args] — run makeprg (default: cargo build) and populate quickfix
             let args = if cmd == "make" {
