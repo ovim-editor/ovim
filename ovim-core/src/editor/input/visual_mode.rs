@@ -718,20 +718,13 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
             }
         }
-        // Replace in visual block mode
+        // Replace in visual mode (all visual variants)
         KeyCode::Char('r') => {
-            if editor.mode() == Mode::VisualBlock {
-                // r{char} in visual block - wait for replacement character via input state.
-                editor.set_input_state(InputState::AwaitingChar {
-                    motion: CharMotion::Replace,
-                    operator: None,
-                });
-            } else {
-                // Regular visual mode - not supported in standard vim, just delete and enter insert
-                helpers::delete_visual_selection(editor)?;
-                editor.clear_visual_start();
-                editor.set_mode(Mode::Insert);
-            }
+            // r{char} in any visual mode - wait for replacement character via input state.
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::Replace,
+                operator: None,
+            });
         }
         // Case operations in visual mode
         KeyCode::Char('~') => {

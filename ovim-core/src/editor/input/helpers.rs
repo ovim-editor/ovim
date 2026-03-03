@@ -1283,10 +1283,14 @@ pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
     transform_visual_selection(editor, |s| s.to_lowercase())
 }
 
-/// Replace all characters in visual selection with a given character
+/// Replace all characters in visual selection with a given character.
+/// Preserves newlines (matches Vim behavior).
 pub fn replace_visual_selection(editor: &mut Editor, ch: char) -> Result<()> {
-    let replacement = ch.to_string();
-    transform_visual_selection(editor, |s| replacement.repeat(s.chars().count()))
+    transform_visual_selection(editor, |s| {
+        s.chars()
+            .map(|c| if c == '\n' { '\n' } else { ch })
+            .collect()
+    })
 }
 
 /// Toggle case of visual selection (~)
