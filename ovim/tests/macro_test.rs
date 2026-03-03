@@ -552,3 +552,111 @@ fn test_macro_with_o_command() {
     );
     test.assert_cursor(3, 7);
 }
+
+// ============================================================================
+// Macro abort on failed motion (Vim parity)
+// ============================================================================
+
+#[test]
+fn test_macro_aborts_on_failed_j_at_eof() {
+    // qq0i><Esc>jq then 1000@q on a 5-line file
+    // Should insert '>' on each line and stop at the last line
+    let mut test = EditorTest::new("aaa\nbbb\nccc\nddd\neee");
+
+    // Record macro: go to col 0, insert '>', escape, move down
+    test.press('q')
+        .press('q')
+        .press('0')
+        .press('i')
+        .type_text(">")
+        .press_esc()
+        .press('j')
+        .press('q');
+
+    // First line already got '>' during recording, cursor is on line 1
+    assert_eq!(test.buffer_content(), ">aaa\nbbb\nccc\nddd\neee\n");
+
+    // Play 1000 times — should stop after 4 more iterations (lines 1-4)
+    test.keys("1000@q");
+
+    assert_eq!(
+        test.buffer_content(),
+        ">aaa\n>bbb\n>ccc\n>ddd\n>eee\n"
+    );
+    // Cursor should be on the last line
+    assert_eq!(test.editor.buffer().cursor().line(), 4);
+}
+
+#[test]
+fn test_macro_aborts_counted_at_eof() {
+    // 10@q near the end — should not repeat on last line
+    let mut test = EditorTest::new("aa\nbb\ncc");
+
+    // Record macro: insert '>' at start, move down
+    test.press('q')
+        .press('a')
+        .press('0')
+        .press('i')
+        .type_text(">")
+        .press_esc()
+        .press('j')
+        .press('q');
+
+    // Line 0 got '>', cursor on line 1
+    assert_eq!(test.buffer_content(), ">aa\nbb\ncc\n");
+
+    // Play 10 times — only 2 lines left (1 and 2)
+    test.keys("10@a");
+
+    assert_eq!(test.buffer_content(), ">aa\n>bb\n>cc\n");
+    // Last line should have exactly one '>'
+}
+
+#[test]
+fn test_macro_abort_repeat_at_at() {
+    // @@ should also respect abort
+    let mut test = EditorTest::new("x\ny\nz\nw");
+
+    test.press('q')
+        .press('a')
+        .press('x')
+        .press('j')
+        .press('q');
+
+    // Recording deleted 'x' on line 0 and moved to line 1
+    assert_eq!(test.buffer_content(), "\ny\nz\nw\n");
+
+    // Play @a once: deletes 'y', moves to line 2
+    test.keys("@a");
+    assert_eq!(test.buffer_content(), "\n\nz\nw\n");
+
+    // Now 100@@ — should play twice more (lines 2,3) then abort at EOF
+    test.keys("100@@");
+    assert_eq!(test.buffer_content(), "\n\n\n\n");
+}
+
+#[test]
+fn test_macro_k_abort_at_first_line() {
+    // Macro with k (move up) should abort at first line
+    let mut test = EditorTest::new("aaa\nbbb\nccc");
+
+    // Start at last line
+    test.keys("G");
+
+    // Record macro: insert '>' at start, move up
+    test.press('q')
+        .press('a')
+        .press('0')
+        .press('i')
+        .type_text(">")
+        .press_esc()
+        .press('k')
+        .press('q');
+
+    assert_eq!(test.buffer_content(), "aaa\nbbb\n>ccc\n");
+
+    // Play 100 times — should process lines 1 and 0 then stop
+    test.keys("100@a");
+
+    assert_eq!(test.buffer_content(), ">aaa\n>bbb\n>ccc\n");
+}

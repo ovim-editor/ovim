@@ -327,6 +327,8 @@ pub struct Editor {
     pub last_test_command: Option<String>,
     /// Raw output from last `:make` / test run
     pub last_make_output: Option<String>,
+    /// Set by motions that fail to move during macro playback
+    macro_aborted: bool,
 }
 
 /// A background `:make` job waiting for results.
@@ -445,6 +447,7 @@ impl Editor {
             pending_make: None,
             last_test_command: None,
             last_make_output: None,
+            macro_aborted: false,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -495,6 +498,7 @@ impl Editor {
             pending_make: None,
             last_test_command: None,
             last_make_output: None,
+            macro_aborted: false,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -1771,6 +1775,21 @@ impl Editor {
     /// Gets the git branch name for the current file
     pub fn git_branch(&self) -> Option<&str> {
         self.git_branch.as_deref()
+    }
+
+    /// Returns whether macro playback should abort (a motion failed to move).
+    pub fn macro_aborted(&self) -> bool {
+        self.macro_aborted
+    }
+
+    /// Signal that a motion failed (cursor didn't move), aborting macro playback.
+    pub fn signal_macro_abort(&mut self) {
+        self.macro_aborted = true;
+    }
+
+    /// Clear the macro abort flag.
+    pub fn clear_macro_abort(&mut self) {
+        self.macro_aborted = false;
     }
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
