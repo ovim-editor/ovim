@@ -64,7 +64,7 @@ pub fn handle_char_motion(
 }
 
 fn handle_replace_char(editor: &mut Editor, target: char, count: usize) -> Result<()> {
-    if editor.mode() == Mode::VisualBlock {
+    if editor.mode().is_visual() {
         crate::editor::input::helpers::replace_visual_selection(editor, target)?;
         crate::editor::input::helpers::exit_visual_mode_to_normal(editor);
         return Ok(());
