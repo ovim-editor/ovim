@@ -493,6 +493,38 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 })
             }
         }
+        "TestFile" | "TF" => {
+            editor.run_test_file();
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Running tests for current file...".to_string()),
+                line_count: None,
+            })
+        }
+        "TestNearest" | "TN" => {
+            editor.run_test_nearest();
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Running nearest test...".to_string()),
+                line_count: None,
+            })
+        }
+        "TestAll" | "TA" => {
+            editor.run_test_all();
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Running all tests...".to_string()),
+                line_count: None,
+            })
+        }
+        "TestLast" | "TL" => {
+            editor.run_test_last();
+            CommandResult::Success(SuccessResponse {
+                success: true,
+                message: Some("Re-running last test...".to_string()),
+                line_count: None,
+            })
+        }
         cmd if cmd == "make" || cmd.starts_with("make ") => {
             // :make [args] — run makeprg (default: cargo build) and populate quickfix
             let args = if cmd == "make" {
