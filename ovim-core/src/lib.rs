@@ -20,6 +20,7 @@ pub mod log;
 pub mod lsp;
 #[cfg(feature = "lua")]
 pub mod lua;
+pub mod markdown_conceal;
 pub mod metrics;
 pub mod mode;
 pub mod modeline;
