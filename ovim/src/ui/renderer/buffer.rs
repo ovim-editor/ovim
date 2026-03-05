@@ -708,6 +708,118 @@ fn append_diagnostic_virtual_text(
     }
 }
 
+/// Inserts inlay hint spans inline at the correct character positions within a rendered line.
+///
+/// For PARAMETER hints (e.g., `name:`), the hint is inserted BEFORE the argument.
+/// For TYPE hints (e.g., `: String`), the hint is inserted AFTER the variable.
+///
+/// The hint label is rendered in a muted style to distinguish it from real code.
+fn insert_inlay_hints(
+    line: &mut Line<'static>,
+    hints: &[&lsp_types::InlayHint],
+    original_text: &str,
+    char_mapping: &[usize],
+    h_offset: usize,
+    wrap: bool,
+) {
+    // Sort hints by position (right-to-left) so insertions don't shift subsequent positions
+    let mut sorted_hints: Vec<&&lsp_types::InlayHint> = hints.iter().collect();
+    sorted_hints.sort_by(|a, b| b.position.character.cmp(&a.position.character));
+
+    let hint_style = Style::default()
+        .fg(Color::Rgb(120, 120, 140))
+        .add_modifier(Modifier::ITALIC);
+
+    for hint in sorted_hints {
+        // Convert UTF-16 position to char index in original text
+        let char_idx = utf16_offset_to_char_idx(original_text, hint.position.character as usize);
+
+        // Map through char_mapping (handles tab expansion)
+        let expanded_col = if char_idx < char_mapping.len() {
+            char_mapping[char_idx]
+        } else if !char_mapping.is_empty() {
+            *char_mapping.last().unwrap() + 1
+        } else {
+            char_idx
+        };
+
+        // Adjust for horizontal scroll in nowrap mode
+        let insert_col = if !wrap {
+            if expanded_col < h_offset {
+                continue; // Hint is scrolled out of view
+            }
+            expanded_col - h_offset
+        } else {
+            expanded_col
+        };
+
+        // Extract label text
+        let label = match &hint.label {
+            lsp_types::InlayHintLabel::String(s) => s.clone(),
+            lsp_types::InlayHintLabel::LabelParts(parts) => {
+                parts.iter().map(|p| &*p.value).collect::<String>()
+            }
+        };
+
+        // Add padding based on hint kind
+        let display_label = if hint.padding_right.unwrap_or(false) {
+            format!("{} ", label)
+        } else {
+            label
+        };
+
+        // Walk spans to find insertion point, then split and insert
+        let mut char_count = 0;
+        let mut span_idx = 0;
+        let mut found = false;
+
+        while span_idx < line.spans.len() {
+            let span_chars: usize = line.spans[span_idx].content.chars().count();
+            if char_count + span_chars > insert_col {
+                // Split this span at the insertion point
+                let offset_in_span = insert_col - char_count;
+                let content = line.spans[span_idx].content.to_string();
+                let style = line.spans[span_idx].style;
+
+                let before: String = content.chars().take(offset_in_span).collect();
+                let after: String = content.chars().skip(offset_in_span).collect();
+
+                // Replace current span with [before, hint, after]
+                line.spans.remove(span_idx);
+                let mut insert_at = span_idx;
+                if !before.is_empty() {
+                    line.spans.insert(insert_at, Span::styled(before, style));
+                    insert_at += 1;
+                }
+                line.spans
+                    .insert(insert_at, Span::styled(display_label.clone(), hint_style));
+                insert_at += 1;
+                if !after.is_empty() {
+                    line.spans.insert(insert_at, Span::styled(after, style));
+                }
+                found = true;
+                break;
+            } else if char_count + span_chars == insert_col {
+                // Insert after this span
+                line.spans.insert(
+                    span_idx + 1,
+                    Span::styled(display_label.clone(), hint_style),
+                );
+                found = true;
+                break;
+            }
+            char_count += span_chars;
+            span_idx += 1;
+        }
+
+        if !found {
+            // Append at the end
+            line.spans
+                .push(Span::styled(display_label, hint_style));
+        }
+    }
+}
+
 fn lock_ranges_for_line(
     buffer: &crate::buffer::Buffer,
     line_idx: usize,
@@ -1587,6 +1699,19 @@ pub fn render_buffer(
                     line.clone(),
                     is_stable,
                 );
+
+                // Insert inlay hints (after cache, since hints are viewport-dependent)
+                let line_hints = editor.inlay_hints_for_line(line_idx);
+                if !line_hints.is_empty() {
+                    insert_inlay_hints(
+                        &mut line,
+                        &line_hints,
+                        line_text_original,
+                        &char_mapping,
+                        h_offset,
+                        wrap,
+                    );
+                }
 
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
