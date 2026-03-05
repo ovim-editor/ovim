@@ -13,6 +13,7 @@ mod completion;
 mod diagnostics;
 mod goto;
 mod hover;
+mod inlay_hints;
 pub(in crate::editor) mod navigation;
 mod references;
 pub(in crate::editor) mod workspace_edits;
