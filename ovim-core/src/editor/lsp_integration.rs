@@ -599,15 +599,22 @@ impl Editor {
                     return false;
                 }
 
+                if result.buffer_version != self.buffer().version() {
+                    return false;
+                }
+
                 let matches_current_viewport = self
                     .buffer()
                     .file_path()
                     .is_some_and(|path| path == result.request_key.file_path)
-                    && self.buffer().version() == result.request_key.buffer_version
                     && self.scroll_offset() == result.request_key.start_line
                     && self.scroll_offset() + self.viewport_height() + 10
                         == result.request_key.end_line;
                 if !matches_current_viewport {
+                    return false;
+                }
+
+                if result.request_key.lsp_version < self.lsp_state.current_file_lsp_sent_version {
                     return false;
                 }
 
@@ -616,6 +623,7 @@ impl Editor {
                 }
 
                 self.lsp_state.current_file_lsp_version = result.request_key.lsp_version;
+                self.lsp_state.current_file_lsp_sent_version = result.request_key.lsp_version;
                 self.lsp_state.inlay_hints = result.hints;
                 self.lsp_state.applied_inlay_hint_request = Some(result.request_key);
                 self.mark_dirty();
@@ -751,6 +759,7 @@ impl Editor {
         // Reset LSP version tracking (new file has its own version space)
         self.lsp_state.diagnostics_lsp_version = 0;
         self.lsp_state.current_file_lsp_version = 0;
+        self.lsp_state.current_file_lsp_sent_version = 0;
         self.lsp_state.diagnostics_file_path = None;
         // OV-00157: Abort pending completion request on buffer switch
         if let Some(pending) = self.lsp_state.pending_completion.take() {
@@ -913,6 +922,29 @@ impl Editor {
                 state.last_synced_content = Some(content.to_string());
             }
         }
+    }
+
+    pub async fn refresh_current_lsp_sync_versions(&mut self) {
+        let Some(lsp) = self.lsp_state.lsp_manager.clone() else {
+            self.lsp_state.current_file_lsp_version = 0;
+            self.lsp_state.current_file_lsp_sent_version = 0;
+            return;
+        };
+
+        let Some(file_path) = self.buffer().file_path() else {
+            self.lsp_state.current_file_lsp_version = 0;
+            self.lsp_state.current_file_lsp_sent_version = 0;
+            return;
+        };
+
+        let Some(uri) = crate::lsp::uri_from_file_path(file_path) else {
+            self.lsp_state.current_file_lsp_version = 0;
+            self.lsp_state.current_file_lsp_sent_version = 0;
+            return;
+        };
+
+        self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
+        self.lsp_state.current_file_lsp_sent_version = lsp.get_last_sent_version(&uri).await;
     }
 
     /// Mark buffer as modified (for LSP didChange tracking)
@@ -1512,7 +1544,6 @@ mod tests {
             file_path: file_path.clone(),
             start_line: 0,
             end_line: 30,
-            buffer_version: editor.buffer().version(),
             lsp_version: 4,
         };
         let hint = InlayHint {
@@ -1529,6 +1560,7 @@ mod tests {
         let (tx, receiver) = oneshot::channel::<anyhow::Result<InlayHintTaskResult>>();
         tx.send(Ok(InlayHintTaskResult {
             request_key: request_key.clone(),
+            buffer_version: editor.buffer().version(),
             synced_content: Some("class Test {}\n".to_string()),
             hints: vec![hint],
         }))
@@ -1538,10 +1570,12 @@ mod tests {
         editor.lsp_state.pending_inlay_hints = Some(PendingInlayHintRequest {
             seq: 1,
             request_key: request_key.clone(),
+            buffer_version: editor.buffer().version(),
             request: PendingLspRequest {
                 task: tokio::spawn(async move {
                     Ok(InlayHintTaskResult {
                         request_key: request_key_for_task,
+                        buffer_version: 0,
                         synced_content: None,
                         hints: Vec::new(),
                     })
@@ -1553,6 +1587,7 @@ mod tests {
 
         assert!(editor.poll_pending_inlay_hint_response());
         assert_eq!(editor.lsp_state.current_file_lsp_version, 4);
+        assert_eq!(editor.lsp_state.current_file_lsp_sent_version, 4);
         assert_eq!(editor.lsp_state.inlay_hints.len(), 1);
         assert_eq!(
             editor.lsp_state.applied_inlay_hint_request.as_ref(),
@@ -1583,13 +1618,13 @@ mod tests {
             file_path: file_path.clone(),
             start_line: 0,
             end_line: 30,
-            buffer_version: editor.buffer().version() + 1,
             lsp_version: 4,
         };
 
         let (tx, receiver) = oneshot::channel::<anyhow::Result<InlayHintTaskResult>>();
         tx.send(Ok(InlayHintTaskResult {
             request_key: request_key.clone(),
+            buffer_version: editor.buffer().version() + 1,
             synced_content: None,
             hints: Vec::new(),
         }))
@@ -1599,10 +1634,61 @@ mod tests {
         editor.lsp_state.pending_inlay_hints = Some(PendingInlayHintRequest {
             seq: 1,
             request_key,
+            buffer_version: editor.buffer().version() + 1,
             request: PendingLspRequest {
                 task: tokio::spawn(async move {
                     Ok(InlayHintTaskResult {
                         request_key: request_key_for_task,
+                        buffer_version: 0,
+                        synced_content: None,
+                        hints: Vec::new(),
+                    })
+                }),
+                receiver,
+                started: std::time::Instant::now(),
+            },
+        });
+
+        assert!(!editor.poll_pending_inlay_hint_response());
+        assert!(editor.lsp_state.inlay_hints.is_empty());
+        assert!(editor.lsp_state.applied_inlay_hint_request.is_none());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_pending_inlay_hint_response_drops_result_behind_current_sent_version() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        let file_path = "/tmp/Test.java".to_string();
+        editor.set_file_path(file_path.clone());
+        editor.set_viewport_height(20);
+        editor.lsp_state.inlay_hint_request_seq = 1;
+        editor.lsp_state.current_file_lsp_sent_version = 5;
+
+        let request_key = InlayHintRequestKey {
+            file_path,
+            start_line: 0,
+            end_line: 30,
+            lsp_version: 4,
+        };
+
+        let (tx, receiver) = oneshot::channel::<anyhow::Result<InlayHintTaskResult>>();
+        tx.send(Ok(InlayHintTaskResult {
+            request_key: request_key.clone(),
+            buffer_version: editor.buffer().version(),
+            synced_content: None,
+            hints: Vec::new(),
+        }))
+        .unwrap();
+
+        let request_key_for_task = request_key.clone();
+        editor.lsp_state.pending_inlay_hints = Some(PendingInlayHintRequest {
+            seq: 1,
+            request_key,
+            buffer_version: editor.buffer().version(),
+            request: PendingLspRequest {
+                task: tokio::spawn(async move {
+                    Ok(InlayHintTaskResult {
+                        request_key: request_key_for_task,
+                        buffer_version: 0,
                         synced_content: None,
                         hints: Vec::new(),
                     })

@@ -60,7 +60,6 @@ pub struct InlayHintRequestKey {
     pub file_path: String,
     pub start_line: usize,
     pub end_line: usize,
-    pub buffer_version: usize,
     pub lsp_version: i32,
 }
 
@@ -185,12 +184,14 @@ pub struct CompletionTaskResult {
 pub struct PendingInlayHintRequest {
     pub seq: u64,
     pub request_key: InlayHintRequestKey,
+    pub buffer_version: usize,
     pub request: PendingLspRequest<InlayHintTaskResult>,
 }
 
 #[derive(Debug, Clone)]
 pub struct InlayHintTaskResult {
     pub request_key: InlayHintRequestKey,
+    pub buffer_version: usize,
     /// If we successfully flushed content to LSP, record the new synced content.
     pub synced_content: Option<String>,
     pub hints: Vec<lsp_types::InlayHint>,
@@ -282,11 +283,11 @@ pub struct LspState {
     pub available_type_hierarchy: Vec<(String, lsp_types::Location)>,
     /// Inlay hints for the visible region
     pub inlay_hints: Vec<lsp_types::InlayHint>,
-    /// Last viewport/content fingerprint used for an inlay hint request
+    /// Last viewport/LSP-sync fingerprint used for an inlay hint request
     pub last_inlay_hint_request: Option<InlayHintRequestKey>,
     /// Timestamp of the most recent inlay hint request attempt
     pub last_inlay_hint_request_at: Option<Instant>,
-    /// Viewport/content fingerprint of the inlay hints currently rendered
+    /// Viewport/LSP-sync fingerprint of the inlay hints currently rendered
     pub applied_inlay_hint_request: Option<InlayHintRequestKey>,
     /// Currently active LSP result type (for picker navigation)
     pub active_lsp_result_type: Option<LspResultType>,
@@ -306,6 +307,9 @@ pub struct LspState {
     /// Updated in `send_lsp_changes_if_modified` and `update_diagnostic_cache`.
     /// Compared against `diagnostics_lsp_version` in rendering guards.
     pub current_file_lsp_version: i32,
+    /// Last LSP document version definitely seen by the server for the active
+    /// file (didOpen/didChange flushed, not merely queued locally).
+    pub current_file_lsp_sent_version: i32,
     /// Cached hover result to avoid redundant LSP requests
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP responses (each request type has its own slot)
@@ -359,6 +363,7 @@ impl LspState {
             diagnostics_file_path: None,
             diagnostics_lsp_version: 0,
             current_file_lsp_version: 0,
+            current_file_lsp_sent_version: 0,
             hover_cache: None,
             pending_lsp_responses: PendingLspResponses::default(),
             pending_completion: None,

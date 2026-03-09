@@ -83,7 +83,11 @@ impl LspManager {
 
         // Initialize version tracking
         let mut versions = self.document_versions.lock().await;
-        versions.insert(uri, version);
+        versions.insert(uri.clone(), version);
+        drop(versions);
+
+        let mut sent = self.last_sent_versions.lock().await;
+        sent.insert(uri, version);
 
         Ok(())
     }
@@ -338,6 +342,7 @@ impl LspManager {
         let mut versions = self.document_versions.lock().await;
         versions.remove(&uri);
         drop(versions);
+        self.last_sent_versions.lock().await.remove(&uri);
 
         // Remove debouncer for this document
         self.change_debouncers.remove(&uri);
@@ -399,7 +404,11 @@ impl LspManager {
 
         // Initialize version tracking (once, shared)
         let mut versions = self.document_versions.lock().await;
-        versions.insert(uri, version);
+        versions.insert(uri.clone(), version);
+        drop(versions);
+
+        let mut sent = self.last_sent_versions.lock().await;
+        sent.insert(uri, version);
 
         Ok(())
     }
@@ -534,6 +543,7 @@ impl LspManager {
         let mut versions = self.document_versions.lock().await;
         versions.remove(&uri);
         drop(versions);
+        self.last_sent_versions.lock().await.remove(&uri);
         self.change_debouncers.remove(&uri);
         self.last_local_edit.lock().await.remove(&uri);
 

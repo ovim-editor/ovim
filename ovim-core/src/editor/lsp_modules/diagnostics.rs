@@ -26,6 +26,7 @@ impl Editor {
                     let doc_version = lsp.get_document_version(&uri).await;
                     let last_sent = lsp.get_last_sent_version(&uri).await;
                     self.lsp_state.current_file_lsp_version = doc_version;
+                    self.lsp_state.current_file_lsp_sent_version = last_sent;
                     if last_sent < doc_version {
                         self.lsp_state.diagnostics_refresh_requested = true;
                         return;
@@ -89,6 +90,7 @@ impl Editor {
                     // diagnostics with the current buffer version.
                     let doc_version = lsp.get_document_version(&uri).await;
                     let last_sent = lsp.get_last_sent_version(&uri).await;
+                    self.lsp_state.current_file_lsp_sent_version = last_sent;
                     if last_sent < doc_version {
                         crate::log_debug!(
                             "diagnostics",
