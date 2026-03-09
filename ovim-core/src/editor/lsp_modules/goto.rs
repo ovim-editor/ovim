@@ -45,17 +45,17 @@ impl Editor {
         };
 
         // Get current file URI - must be absolute path
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(|p| p.to_string()) else {
             self.set_lsp_status("Save file first to use goto-definition".to_string());
             return Ok(false);
         };
 
         // Convert to absolute path if needed
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
+        let abs_path = if std::path::Path::new(&file_path).is_absolute() {
+            file_path.clone()
         } else {
             match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
                     self.set_lsp_status("Failed to resolve file path".to_string());
                     return Ok(false);
@@ -71,7 +71,7 @@ impl Editor {
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
         // Detect language from file extension
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -106,8 +106,8 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
-        // Resolve all server_ids for this language (primary + companions)
-        let server_ids = lsp.servers_for_language(language_id);
+        // Resolve the server group responsible for this document.
+        let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
 
         // Spawn definition request in background (non-blocking)
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -157,16 +157,16 @@ impl Editor {
             }
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(|p| p.to_string()) else {
             self.set_lsp_status("Save file first to use goto-implementation".to_string());
             return Ok(false);
         };
 
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
+        let abs_path = if std::path::Path::new(&file_path).is_absolute() {
+            file_path.clone()
         } else {
             match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
                     self.set_lsp_status("Failed to resolve file path".to_string());
                     return Ok(false);
@@ -180,7 +180,7 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());
@@ -244,16 +244,16 @@ impl Editor {
             }
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(|p| p.to_string()) else {
             self.set_lsp_status("Save file first to use goto-type".to_string());
             return Ok(false);
         };
 
-        let abs_path = if std::path::Path::new(file_path).is_absolute() {
-            file_path.to_string()
+        let abs_path = if std::path::Path::new(&file_path).is_absolute() {
+            file_path.clone()
         } else {
             match std::env::current_dir() {
-                Ok(cwd) => cwd.join(file_path).to_string_lossy().to_string(),
+                Ok(cwd) => cwd.join(&file_path).to_string_lossy().to_string(),
                 Err(_) => {
                     self.set_lsp_status("Failed to resolve file path".to_string());
                     return Ok(false);
@@ -267,7 +267,7 @@ impl Editor {
         let line = cursor.line() as u32;
         let character = self.col_to_utf16(cursor.line(), cursor.col());
 
-        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(file_path) {
+        let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
             None => {
                 self.set_lsp_status("Language not supported for LSP".to_string());

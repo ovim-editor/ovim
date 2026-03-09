@@ -1,6 +1,7 @@
 use crate::lsp::LspManager;
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 /// Content type for hover window - distinguishes LSP hover from diagnostic popups
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -51,6 +52,16 @@ impl DocumentSyncState {
     pub fn mark_save_sent(&mut self) {
         self.buffer_saved = false;
     }
+}
+
+/// Fingerprint of the most recent viewport-scoped inlay hint request.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InlayHintRequestKey {
+    pub file_path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub buffer_version: usize,
+    pub lsp_version: i32,
 }
 
 /// Cache for LSP hover results to avoid redundant requests
@@ -169,6 +180,22 @@ pub struct CompletionTaskResult {
     pub synced_content: Option<String>,
 }
 
+/// Pending inlay hint request (tracked separately so cosmetic hint refreshes do
+/// not block other LSP actions).
+pub struct PendingInlayHintRequest {
+    pub seq: u64,
+    pub request_key: InlayHintRequestKey,
+    pub request: PendingLspRequest<InlayHintTaskResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct InlayHintTaskResult {
+    pub request_key: InlayHintRequestKey,
+    /// If we successfully flushed content to LSP, record the new synced content.
+    pub synced_content: Option<String>,
+    pub hints: Vec<lsp_types::InlayHint>,
+}
+
 #[derive(Debug, Clone)]
 pub struct AvailableCodeAction {
     /// LSP server ID that produced this action (language ID for primary server).
@@ -255,6 +282,12 @@ pub struct LspState {
     pub available_type_hierarchy: Vec<(String, lsp_types::Location)>,
     /// Inlay hints for the visible region
     pub inlay_hints: Vec<lsp_types::InlayHint>,
+    /// Last viewport/content fingerprint used for an inlay hint request
+    pub last_inlay_hint_request: Option<InlayHintRequestKey>,
+    /// Timestamp of the most recent inlay hint request attempt
+    pub last_inlay_hint_request_at: Option<Instant>,
+    /// Viewport/content fingerprint of the inlay hints currently rendered
+    pub applied_inlay_hint_request: Option<InlayHintRequestKey>,
     /// Currently active LSP result type (for picker navigation)
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
@@ -281,6 +314,10 @@ pub struct LspState {
     pub pending_completion: Option<PendingCompletionRequest>,
     /// Monotonic completion request sequence to ignore stale responses
     pub completion_request_seq: u64,
+    /// Pending inlay hint request (non-blocking, viewport-scoped)
+    pub pending_inlay_hints: Option<PendingInlayHintRequest>,
+    /// Monotonic inlay hint request sequence to ignore stale responses
+    pub inlay_hint_request_seq: u64,
     /// Request a diagnostic cache refresh on next tick (safety net for cases where
     /// the `diagnostics_changed` flag is missed).
     pub diagnostics_refresh_requested: bool,
@@ -313,6 +350,9 @@ impl LspState {
             available_call_hierarchy: Vec::new(),
             available_type_hierarchy: Vec::new(),
             inlay_hints: Vec::new(),
+            last_inlay_hint_request: None,
+            last_inlay_hint_request_at: None,
+            applied_inlay_hint_request: None,
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             diagnostics_buffer_version: 0,
@@ -323,6 +363,8 @@ impl LspState {
             pending_lsp_responses: PendingLspResponses::default(),
             pending_completion: None,
             completion_request_seq: 0,
+            pending_inlay_hints: None,
+            inlay_hint_request_seq: 0,
             diagnostics_refresh_requested: false,
             hover_content_type: HoverContentType::default(),
         }

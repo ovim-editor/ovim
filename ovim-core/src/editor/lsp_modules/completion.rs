@@ -146,40 +146,24 @@ impl Editor {
 
         // Snapshot sync state so we can flush document changes in the background without blocking UI.
         let state_key = file_path.clone();
-        let content = self.buffer().rope().to_string();
-        let (needs_did_open, needs_flush, old_content) =
+        let rope = self.buffer().rope().clone();
+        let (needs_did_open, buffer_modified, old_content) =
             match self.lsp_state.document_sync.get(&state_key) {
                 None => (true, true, None),
-                Some(state) => {
-                    let did_open_missing = !state.did_open_sent;
-                    let old = state.last_synced_content.clone();
-                    // In insert mode we may not mark `buffer_modified` until leaving insert mode.
-                    // For completions, always treat the document as needing a flush if the content
-                    // differs from what we last synced.
-                    let content_changed = old.as_deref().is_none_or(|old| old != content);
-                    let needs_flush = state.is_modified() || content_changed;
-                    (did_open_missing, needs_flush, old)
-                }
+                Some(state) => (
+                    !state.did_open_sent,
+                    state.is_modified(),
+                    state.last_synced_content.clone(),
+                ),
             };
 
-        // Resolve all server_ids for this language (primary + companions)
-        let server_ids = lsp.servers_for_language(language_id);
+        // Resolve the server group responsible for this document.
+        let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
 
         // No LSP servers for this language — nothing to complete.
         if server_ids.is_empty() {
             return Ok(false);
         }
-
-        let mut supported_triggers: HashSet<char> = lsp
-            .completion_trigger_characters_for_servers(&server_ids)
-            .await
-            .into_iter()
-            .collect();
-        for ch in crate::lsp::fallback_completion_trigger_characters(&language_id) {
-            supported_triggers.insert(*ch);
-        }
-
-        let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
 
         self.lsp_state.completion_request_seq =
             self.lsp_state.completion_request_seq.wrapping_add(1);
@@ -189,6 +173,22 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let language_id = language_id.to_string();
         let task = tokio::spawn(async move {
+            let content = rope.to_string();
+            let content_changed = old_content
+                .as_deref()
+                .is_none_or(|old| old != content.as_str());
+            let needs_flush = buffer_modified || content_changed;
+
+            let mut supported_triggers: HashSet<char> = lsp
+                .completion_trigger_characters_for_servers(&server_ids)
+                .await
+                .into_iter()
+                .collect();
+            for ch in crate::lsp::fallback_completion_trigger_characters(&language_id) {
+                supported_triggers.insert(*ch);
+            }
+            let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
+
             let mut synced_content: Option<String> = None;
             if needs_did_open {
                 let ok = lsp
