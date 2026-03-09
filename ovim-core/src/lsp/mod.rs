@@ -41,7 +41,7 @@ use anyhow::Result;
 use dashmap::{DashMap, DashSet};
 use lsp_types::{Diagnostic, Uri};
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -481,6 +481,62 @@ impl LspManager {
         self.language_server_index
             .get(language_id)
             .map(|v| v.clone())
+            .unwrap_or_default()
+    }
+
+    /// Returns the server_ids that should handle a specific document.
+    ///
+    /// When multiple roots exist for the same language, choose the deepest
+    /// matching root and include all servers (primary + companions) registered
+    /// for that exact root.
+    pub fn servers_for_document(&self, language_id: &str, file_path: &Path) -> Vec<String> {
+        let server_ids = self.servers_for_language(language_id);
+        if server_ids.is_empty() {
+            return Vec::new();
+        }
+
+        let mut best_root: Option<(usize, PathBuf)> = None;
+        let mut rootless_ids = Vec::new();
+
+        for sid in &server_ids {
+            match self.server_roots.get(sid.as_str()) {
+                Some(root) if file_path.starts_with(root.value()) => {
+                    let depth = root.value().components().count();
+                    let root_path = root.value().clone();
+                    if best_root
+                        .as_ref()
+                        .is_none_or(|(best_depth, _)| depth > *best_depth)
+                    {
+                        best_root = Some((depth, root_path));
+                    }
+                }
+                Some(_) => {}
+                None => rootless_ids.push(sid.clone()),
+            }
+        }
+
+        if let Some((_, selected_root)) = best_root {
+            return server_ids
+                .into_iter()
+                .filter(|sid| {
+                    self.server_roots
+                        .get(sid.as_str())
+                        .is_some_and(|root| root.value() == &selected_root)
+                })
+                .collect();
+        }
+
+        if !rootless_ids.is_empty() {
+            return rootless_ids;
+        }
+
+        Vec::new()
+    }
+
+    /// Convenience wrapper for URI-based document routing.
+    pub fn servers_for_document_uri(&self, language_id: &str, uri: &Uri) -> Vec<String> {
+        uri_to_file_path(uri)
+            .map(|path| self.servers_for_document(language_id, &path))
             .unwrap_or_default()
     }
 
@@ -1023,5 +1079,48 @@ mod tests {
 
         assert!(manager.last_local_edit.lock().await.get(&uri).is_none());
         assert!(manager.get_diagnostics(&uri).await.is_empty());
+    }
+
+    #[test]
+    fn test_servers_for_document_prefers_deepest_matching_root_and_keeps_companions() {
+        let manager = LspManager::new();
+        let repo_root = PathBuf::from("/workspace");
+        let nested_root = repo_root.join("nested");
+        let repo_id = root_server_id("java", &repo_root);
+        let nested_id = root_server_id("java", &nested_root);
+        let nested_companion = companion_server_id("java", "formatter");
+
+        manager.language_server_index.insert(
+            "java".to_string(),
+            vec![repo_id.clone(), nested_id.clone(), nested_companion.clone()],
+        );
+        manager.server_roots.insert(repo_id, repo_root);
+        manager
+            .server_roots
+            .insert(nested_id.clone(), nested_root.clone());
+        manager
+            .server_roots
+            .insert(nested_companion.clone(), nested_root);
+
+        let routed =
+            manager.servers_for_document("java", Path::new("/workspace/nested/src/Test.java"));
+
+        assert_eq!(routed, vec![nested_id, nested_companion]);
+    }
+
+    #[test]
+    fn test_servers_for_document_returns_empty_when_no_root_matches() {
+        let manager = LspManager::new();
+        let root = PathBuf::from("/workspace/project");
+        let server_id = root_server_id("java", &root);
+
+        manager
+            .language_server_index
+            .insert("java".to_string(), vec![server_id.clone()]);
+        manager.server_roots.insert(server_id, root);
+
+        assert!(manager
+            .servers_for_document("java", Path::new("/other/project/Test.java"))
+            .is_empty());
     }
 }

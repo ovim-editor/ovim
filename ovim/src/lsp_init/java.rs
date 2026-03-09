@@ -69,12 +69,11 @@ fn find_hyperion_binary() -> Option<PathBuf> {
 
 /// Handle Java LSP initialization (for TUI mode - spawns background task)
 pub async fn handle_java_lsp(editor: &mut Editor, abs_path: PathBuf) {
-    let abs_path_clone = abs_path.clone();
     let lsp_manager = editor.lsp_manager();
 
     // Spawn Hyperion LSP initialization in background
     tokio::spawn(async move {
-        initialize_hyperion_lsp_background(lsp_manager, abs_path_clone).await;
+        initialize_hyperion_lsp_background(lsp_manager, abs_path).await;
     });
 }
 

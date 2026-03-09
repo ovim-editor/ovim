@@ -174,8 +174,8 @@ impl Editor {
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
-        // Resolve all server_ids for this language (primary + companions)
-        let server_ids = lsp.servers_for_language(language_id);
+        // Resolve the server group responsible for this document.
+        let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
 
         // Spawn hover request in background (non-blocking)
         // Uses multi-server fan-out to query all servers concurrently

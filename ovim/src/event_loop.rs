@@ -22,6 +22,14 @@ use ovim::session::SessionInfo;
 use ovim::syntax::{Language, LanguageRegistry, SyntaxHighlighter};
 use ovim::ui::UI;
 
+fn apply_java_status(editor: &mut Editor, status: String) {
+    let ready = status.trim() == "Java: Ready";
+    editor.set_lsp_status(status);
+    if ready {
+        editor.request_diagnostics_refresh();
+    }
+}
+
 /// Shared editor tick for both loops.
 /// Handles LSP, diagnostics, syntax, Lua, and background file tasks.
 async fn process_editor_tick(
@@ -33,7 +41,7 @@ async fn process_editor_tick(
     syntax_rx: &mut tokio::sync::mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
 ) {
     while let Ok(status) = java_status_rx.try_recv() {
-        editor.set_lsp_status(status);
+        apply_java_status(editor, status);
     }
 
     if let Some(lsp_manager) = editor.lsp_manager() {
@@ -72,10 +80,15 @@ async fn process_editor_tick(
     }
 
     if let Some(lsp_manager) = editor.lsp_manager() {
-        if editor.take_diagnostics_refresh_request() || lsp_manager.diagnostics_changed() {
+        let diagnostics_refresh =
+            editor.take_diagnostics_refresh_request() || lsp_manager.diagnostics_changed();
+        let viewport_hint_refresh = editor.inlay_hints_refresh_needed_for_viewport();
+        if diagnostics_refresh {
             editor.update_diagnostic_cache().await;
-            editor.refresh_inlay_hints().await;
-            editor.mark_dirty(); // Redraw when diagnostics/hints change
+            editor.mark_dirty();
+        }
+        if viewport_hint_refresh {
+            editor.request_inlay_hints_refresh();
         }
     }
 
@@ -95,7 +108,11 @@ async fn process_editor_tick(
     if let Some(action) = editor.dap_manager_mut().pending_action.take() {
         use ovim::dap::PendingDebugAction;
         match action {
-            PendingDebugAction::Start { command, args, run_config } => {
+            PendingDebugAction::Start {
+                command,
+                args,
+                run_config,
+            } => {
                 // Store the run config on DapManager before spawning.
                 editor.dap_manager_mut().run_config = run_config;
                 if let Err(e) = editor.start_debug_session(&command, &args).await {
@@ -141,9 +158,14 @@ async fn process_editor_tick(
                         .to_string_lossy()
                         .to_string();
                     match run_cfg.kind {
-                        DebugRunKind::Gradle { task, args, project_root } => {
+                        DebugRunKind::Gradle {
+                            task,
+                            args,
+                            project_root,
+                        } => {
                             let root = project_root.unwrap_or_else(|| default_root.clone());
-                            editor.set_lsp_status(format!("Running gradle {} --debug-jvm...", task));
+                            editor
+                                .set_lsp_status(format!("Running gradle {} --debug-jvm...", task));
                             editor.mark_dirty();
                             match spawn_gradle_and_wait(&task, &args, &root).await {
                                 Ok(child) => {
@@ -158,7 +180,11 @@ async fn process_editor_tick(
                                 Err(e) => Err(e),
                             }
                         }
-                        DebugRunKind::Attach { host, port, project_root } => {
+                        DebugRunKind::Attach {
+                            host,
+                            port,
+                            project_root,
+                        } => {
                             let root = project_root.unwrap_or(default_root);
                             let attach_cfg = serde_json::json!({
                                 "host": host,
@@ -167,7 +193,14 @@ async fn process_editor_tick(
                             });
                             editor.dap_manager_mut().attach(attach_cfg).await
                         }
-                        DebugRunKind::Launch { main_class, classpath, args, jvm_args, cwd, project_root } => {
+                        DebugRunKind::Launch {
+                            main_class,
+                            classpath,
+                            args,
+                            jvm_args,
+                            cwd,
+                            project_root,
+                        } => {
                             let root = project_root.unwrap_or(default_root);
                             let mut launch_cfg = serde_json::json!({
                                 "mainClass": main_class,
@@ -206,12 +239,8 @@ async fn process_editor_tick(
             }
             PendingDebugAction::SyncBreakpoints => {
                 // Send all existing breakpoints to the debug adapter, then configurationDone.
-                let paths: Vec<std::path::PathBuf> = editor
-                    .debug_state()
-                    .breakpoints
-                    .keys()
-                    .cloned()
-                    .collect();
+                let paths: Vec<std::path::PathBuf> =
+                    editor.debug_state().breakpoints.keys().cloned().collect();
                 for path in &paths {
                     let _ = editor.debug_sync_breakpoints(path).await;
                 }
@@ -235,12 +264,8 @@ async fn process_editor_tick(
                     let _ = editor.debug_fetch_variables(var_ref).await;
                 }
                 // Also fetch expanded object refs
-                let expanded: Vec<u64> = editor
-                    .debug_state()
-                    .expanded_refs
-                    .iter()
-                    .copied()
-                    .collect();
+                let expanded: Vec<u64> =
+                    editor.debug_state().expanded_refs.iter().copied().collect();
                 for var_ref in expanded {
                     let _ = editor.debug_fetch_variables(var_ref).await;
                 }
@@ -263,7 +288,11 @@ async fn process_editor_tick(
             }
             PendingDebugAction::Evaluate { expression } => {
                 let frame_id = editor.selected_frame_id();
-                match editor.dap_manager().evaluate(&expression, frame_id, Some("hover")).await {
+                match editor
+                    .dap_manager()
+                    .evaluate(&expression, frame_id, Some("hover"))
+                    .await
+                {
                     Ok((result, _type, _var_ref)) => {
                         editor.set_lsp_status(format!("{expression} = {result}"));
                     }
@@ -278,8 +307,8 @@ async fn process_editor_tick(
                 editor.mark_dirty();
             }
             PendingDebugAction::FetchRunConfigs => {
-                let project_root = std::env::current_dir()
-                    .unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let project_root =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
                 // 1. Load TOML configs (fast, sync)
                 let mut configs = ovim::debug_config::load_debug_configs(&project_root);
@@ -307,8 +336,11 @@ async fn process_editor_tick(
                                 .map(|cmd| (cmd, config.args.clone()))
                         });
                     if let Some((command, args)) = dap_start {
-                        editor.dap_manager_mut().pending_action =
-                            Some(PendingDebugAction::Start { command, args, run_config: None });
+                        editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
+                            command,
+                            args,
+                            run_config: None,
+                        });
                     } else {
                         editor.set_lsp_status(
                             "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter."
@@ -331,21 +363,18 @@ async fn process_editor_tick(
                                 .map(|cmd| (cmd, dap_config.args.clone()))
                         });
                     if let Some((command, args)) = dap_start {
-                        editor.dap_manager_mut().pending_action =
-                            Some(PendingDebugAction::Start {
-                                command,
-                                args,
-                                run_config: Some(config),
-                            });
+                        editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
+                            command,
+                            args,
+                            run_config: Some(config),
+                        });
                     }
                 } else {
                     // Multiple configs — open picker
                     let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
                     editor.dap_manager_mut().available_debug_configs = configs;
-                    let picker = ovim::editor::picker::Picker::new_debug_config(
-                        project_root,
-                        names,
-                    );
+                    let picker =
+                        ovim::editor::picker::Picker::new_debug_config(project_root, names);
                     editor.set_picker(picker);
                     editor.set_mode(ovim::mode::Mode::Picker);
                     editor.mark_picker_selection_changed();
@@ -402,6 +431,10 @@ async fn process_editor_tick(
     }
 
     if editor.poll_pending_completion_response() {
+        editor.mark_dirty();
+    }
+
+    if editor.poll_pending_inlay_hint_response() {
         editor.mark_dirty();
     }
 
@@ -729,7 +762,11 @@ fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
     // which narrows buffer_area to textwidth before computing text_width).
     let effective_width = if let Some(textwidth) = editor.options.textwidth {
         let max = textwidth as u16;
-        if content_width > max { max } else { content_width }
+        if content_width > max {
+            max
+        } else {
+            content_width
+        }
     } else {
         content_width
     };
@@ -1006,28 +1043,26 @@ async fn handle_api_request(
             height,
             plain,
             tx,
-        } => {
-            match ovim::ui::render_editor_to_ansi(editor, width, height) {
-                Ok(ansi) => {
-                    let output = if plain {
-                        ovim::ui::strip_ansi(&ansi)
-                    } else {
-                        ansi
-                    };
-                    let render_info = RenderInfo {
-                        width,
-                        height,
-                        ansi: output,
-                    };
-                    let _ = tx.send(ApiResponse::Render(render_info));
-                }
-                Err(e) => {
-                    let _ = tx.send(ApiResponse::Error(ErrorResponse {
-                        error: format!("Failed to render: {}", e),
-                    }));
-                }
+        } => match ovim::ui::render_editor_to_ansi(editor, width, height) {
+            Ok(ansi) => {
+                let output = if plain {
+                    ovim::ui::strip_ansi(&ansi)
+                } else {
+                    ansi
+                };
+                let render_info = RenderInfo {
+                    width,
+                    height,
+                    ansi: output,
+                };
+                let _ = tx.send(ApiResponse::Render(render_info));
             }
-        }
+            Err(e) => {
+                let _ = tx.send(ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to render: {}", e),
+                }));
+            }
+        },
         ApiRequest::GetLspStatus(tx) => {
             // Get LSP status from the editor's LSP manager
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
@@ -1248,6 +1283,7 @@ async fn handle_api_request(
 
 #[cfg(test)]
 mod tests {
+    use super::apply_java_status;
     use super::compute_text_width;
     use super::handle_terminal_resize;
     use ovim::editor::Editor;
@@ -1288,6 +1324,26 @@ mod tests {
         // Wrap map should match the new text width (buffer width minus gutter).
         let wrap_width = editor.wrap_map().map(|m| m.wrap_width()).unwrap_or(0);
         assert_eq!(wrap_width, compute_text_width(&editor, 80).max(1));
+    }
+
+    #[test]
+    fn java_ready_status_requests_diagnostics_refresh() {
+        let mut editor = Editor::with_content("class Test {}\n");
+
+        apply_java_status(&mut editor, "Java: Ready".to_string());
+
+        assert_eq!(editor.lsp_status(), "Java: Ready");
+        assert!(editor.take_diagnostics_refresh_request());
+    }
+
+    #[test]
+    fn java_non_ready_status_does_not_request_diagnostics_refresh() {
+        let mut editor = Editor::with_content("class Test {}\n");
+
+        apply_java_status(&mut editor, "Java: Starting Hyperion LSP...".to_string());
+
+        assert_eq!(editor.lsp_status(), "Java: Starting Hyperion LSP...");
+        assert!(!editor.take_diagnostics_refresh_request());
     }
 }
 
@@ -1839,7 +1895,11 @@ async fn spawn_gradle_and_wait(
     use tokio::io::{AsyncBufReadExt, BufReader};
     use tokio::process::Command;
 
-    let gradle_cmd = if cfg!(windows) { "gradlew.bat" } else { "./gradlew" };
+    let gradle_cmd = if cfg!(windows) {
+        "gradlew.bat"
+    } else {
+        "./gradlew"
+    };
     // Fall back to system gradle if wrapper doesn't exist.
     let cmd = if std::path::Path::new(cwd).join(gradle_cmd).exists() {
         gradle_cmd

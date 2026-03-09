@@ -352,7 +352,7 @@ impl LspManager {
     // Broadcast methods: send to ALL servers for a language (primary + companions)
     // =========================================================================
 
-    /// Sends didOpen to all servers serving a language (primary + companions)
+    /// Sends didOpen to the server group responsible for this document.
     pub async fn did_open_broadcast(
         &self,
         uri: Uri,
@@ -360,9 +360,13 @@ impl LspManager {
         version: i32,
         text: String,
     ) -> Result<()> {
-        let server_ids = self.servers_for_language(language_id);
+        let server_ids = self.servers_for_document_uri(language_id, &uri);
         if server_ids.is_empty() {
-            return Err(anyhow!("No servers for language: {}", language_id));
+            return Err(anyhow!(
+                "No servers for language '{}' matched document {}",
+                language_id,
+                uri.as_str()
+            ));
         }
 
         // Check document size once
@@ -438,8 +442,8 @@ impl LspManager {
             let version = debouncer.pending_version;
             drop(debouncer);
 
-            // Send to all servers for this language with the same version
-            let server_ids = self.servers_for_language(language_id);
+            // Send to the server group responsible for this document with the same version
+            let server_ids = self.servers_for_document_uri(language_id, &uri);
             let mut any_sent = false;
             for sid in &server_ids {
                 match tokio::time::timeout(
@@ -477,7 +481,7 @@ impl LspManager {
         Ok(())
     }
 
-    /// Sends didSave to all servers serving a language
+    /// Sends didSave to the server group responsible for this document.
     pub async fn did_save_broadcast(
         &self,
         uri: Uri,
@@ -488,7 +492,7 @@ impl LspManager {
         self.flush_pending_changes_broadcast(&uri, language_id)
             .await?;
 
-        let server_ids = self.servers_for_language(language_id);
+        let server_ids = self.servers_for_document_uri(language_id, &uri);
         for sid in &server_ids {
             if let Some(server) = self.servers.get(sid.as_str()) {
                 let params = DidSaveTextDocumentParams {
@@ -506,12 +510,12 @@ impl LspManager {
         Ok(())
     }
 
-    /// Sends didClose to all servers serving a language
+    /// Sends didClose to the server group responsible for this document.
     pub async fn did_close_broadcast(&self, uri: Uri, language_id: &str) -> Result<()> {
         self.flush_pending_changes_broadcast(&uri, language_id)
             .await?;
 
-        let server_ids = self.servers_for_language(language_id);
+        let server_ids = self.servers_for_document_uri(language_id, &uri);
         for sid in &server_ids {
             if let Some(server) = self.servers.get(sid.as_str()) {
                 let params = DidCloseTextDocumentParams {
