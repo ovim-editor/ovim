@@ -281,8 +281,7 @@ impl Editor {
         let requires = match mode {
             ToolApprovalMode::Auto => false,
             ToolApprovalMode::SensitivePrompt => {
-                is_project_scan
-                    || is_sensitive
+                is_sensitive
                     || is_external
                     || (is_mutation && !is_current_target)
             }
