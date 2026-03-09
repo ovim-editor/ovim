@@ -84,9 +84,11 @@ async fn process_editor_tick(
         let diagnostics_refresh =
             editor.take_diagnostics_refresh_request() || lsp_manager.diagnostics_changed();
         let viewport_hint_refresh = editor.inlay_hints_refresh_needed_for_viewport();
-        if diagnostics_refresh {
-            editor.update_diagnostic_cache().await;
+        if editor.poll_pending_diagnostic_refresh_response() {
             editor.mark_dirty();
+        }
+        if diagnostics_refresh {
+            editor.spawn_diagnostic_cache_refresh();
         }
         if viewport_hint_refresh {
             editor.request_inlay_hints_refresh();

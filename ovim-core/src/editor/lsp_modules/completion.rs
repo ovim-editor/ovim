@@ -146,16 +146,8 @@ impl Editor {
 
         // Snapshot sync state so we can flush document changes in the background without blocking UI.
         let state_key = file_path.clone();
-        let rope = self.buffer().rope().clone();
-        let (needs_did_open, buffer_modified, old_content) =
-            match self.lsp_state.document_sync.get(&state_key) {
-                None => (true, true, None),
-                Some(state) => (
-                    !state.did_open_sent,
-                    state.is_modified(),
-                    state.last_synced_content.clone(),
-                ),
-            };
+        let initial_content = self.buffer().rope().to_string();
+        let sync_plan = self.document_sync_request_plan(&state_key, &initial_content);
 
         // Resolve the server group responsible for this document.
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
@@ -173,11 +165,7 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let language_id = language_id.to_string();
         let task = tokio::spawn(async move {
-            let content = rope.to_string();
-            let content_changed = old_content
-                .as_deref()
-                .is_none_or(|old| old != content.as_str());
-            let needs_flush = buffer_modified || content_changed;
+            let content = initial_content;
 
             let mut supported_triggers: HashSet<char> = lsp
                 .completion_trigger_characters_for_servers(&server_ids)
@@ -190,19 +178,41 @@ impl Editor {
             let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
 
             let mut synced_content: Option<String> = None;
-            if needs_did_open {
-                let ok = lsp
-                    .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
-                    .await;
-                if ok.is_ok() {
-                    synced_content = Some(content.clone());
+            let mut synced_lsp_version: Option<i32> = None;
+            match sync_plan.action {
+                super::super::DocumentSyncRequestAction::Noop => {}
+                super::super::DocumentSyncRequestAction::DidOpen => {
+                    let ok = lsp
+                        .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
+                        .await;
+                    if ok.is_ok() {
+                        synced_content = Some(content.clone());
+                        synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                    }
                 }
-            } else if needs_flush {
-                let ok = lsp
-                    .did_change_broadcast(uri.clone(), &language_id, content.clone(), old_content)
-                    .await;
-                if ok.is_ok() {
+                super::super::DocumentSyncRequestAction::FlushQueued => {
+                    let _ = lsp
+                        .flush_pending_changes_broadcast(&uri, &language_id)
+                        .await;
                     synced_content = Some(content.clone());
+                    synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                }
+                super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
+                    let ok = lsp
+                        .did_change_broadcast(
+                            uri.clone(),
+                            &language_id,
+                            content.clone(),
+                            sync_plan.old_content,
+                        )
+                        .await;
+                    if ok.is_ok() {
+                        let _ = lsp
+                            .flush_pending_changes_broadcast(&uri, &language_id)
+                            .await;
+                        synced_content = Some(content.clone());
+                        synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                    }
                 }
             }
 
@@ -217,6 +227,7 @@ impl Editor {
                 items,
                 file_path: state_key,
                 synced_content,
+                synced_lsp_version,
             });
 
             let _ = tx.send(task_result);
@@ -225,6 +236,7 @@ impl Editor {
                 items: Vec::new(),
                 file_path: String::new(),
                 synced_content: None,
+                synced_lsp_version: None,
             })
         });
 

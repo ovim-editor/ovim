@@ -22,7 +22,9 @@ pub enum HoverContentType {
 pub struct DocumentSyncState {
     pub buffer_modified: bool,
     pub buffer_saved: bool,
-    pub last_synced_content: Option<String>,
+    pub last_flushed_content: Option<String>,
+    pub last_queued_content: Option<String>,
+    pub target_lsp_version: Option<i32>,
     /// Track whether we've sent didOpen for this document
     pub did_open_sent: bool,
 }
@@ -44,9 +46,41 @@ impl DocumentSyncState {
         self.buffer_saved
     }
 
-    pub fn mark_change_sent(&mut self, synced_content: String) {
-        self.buffer_modified = false;
-        self.last_synced_content = Some(synced_content);
+    pub fn flushed_content(&self) -> Option<&str> {
+        self.last_flushed_content.as_deref()
+    }
+
+    pub fn queued_content(&self) -> Option<&str> {
+        self.last_queued_content.as_deref()
+    }
+
+    pub fn mark_change_queued(&mut self, queued_content: String, target_lsp_version: i32) {
+        self.buffer_modified = true;
+        self.last_queued_content = Some(queued_content);
+        self.target_lsp_version = Some(target_lsp_version);
+    }
+
+    pub fn mark_change_flushed(
+        &mut self,
+        flushed_content: String,
+        flushed_version: i32,
+        current_content: Option<&str>,
+    ) {
+        self.last_flushed_content = Some(flushed_content.clone());
+
+        if self
+            .target_lsp_version
+            .is_some_and(|target| target <= flushed_version)
+        {
+            self.target_lsp_version = None;
+            if self.last_queued_content.as_deref() == Some(flushed_content.as_str()) {
+                self.last_queued_content = None;
+            }
+        }
+
+        self.buffer_modified = current_content.is_some_and(|current| {
+            current != flushed_content.as_str() || self.target_lsp_version.is_some()
+        });
     }
 
     pub fn mark_save_sent(&mut self) {
@@ -177,6 +211,7 @@ pub struct CompletionTaskResult {
     pub file_path: String,
     /// If we successfully flushed content to LSP, record the new synced content.
     pub synced_content: Option<String>,
+    pub synced_lsp_version: Option<i32>,
 }
 
 /// Pending inlay hint request (tracked separately so cosmetic hint refreshes do
@@ -194,7 +229,28 @@ pub struct InlayHintTaskResult {
     pub buffer_version: usize,
     /// If we successfully flushed content to LSP, record the new synced content.
     pub synced_content: Option<String>,
+    pub synced_lsp_version: Option<i32>,
     pub hints: Vec<lsp_types::InlayHint>,
+}
+
+/// Pending diagnostics refresh (kept separate so diagnostics can be polled
+/// without blocking the editor tick).
+pub struct PendingDiagnosticRefresh {
+    pub seq: u64,
+    pub file_path: String,
+    pub buffer_version: usize,
+    pub request: PendingLspRequest<DiagnosticRefreshTaskResult>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DiagnosticRefreshTaskResult {
+    pub file_path: String,
+    pub buffer_version: usize,
+    pub lsp_version: i32,
+    pub lsp_sent_version: i32,
+    pub diagnostics: Vec<lsp_types::Diagnostic>,
+    pub count: (usize, usize, usize, usize),
+    pub deferred: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -322,6 +378,10 @@ pub struct LspState {
     pub pending_inlay_hints: Option<PendingInlayHintRequest>,
     /// Monotonic inlay hint request sequence to ignore stale responses
     pub inlay_hint_request_seq: u64,
+    /// Pending diagnostics refresh (non-blocking)
+    pub pending_diagnostic_refresh: Option<PendingDiagnosticRefresh>,
+    /// Monotonic diagnostics refresh sequence to ignore stale responses
+    pub diagnostic_refresh_seq: u64,
     /// Request a diagnostic cache refresh on next tick (safety net for cases where
     /// the `diagnostics_changed` flag is missed).
     pub diagnostics_refresh_requested: bool,
@@ -370,6 +430,8 @@ impl LspState {
             completion_request_seq: 0,
             pending_inlay_hints: None,
             inlay_hint_request_seq: 0,
+            pending_diagnostic_refresh: None,
+            diagnostic_refresh_seq: 0,
             diagnostics_refresh_requested: false,
             hover_content_type: HoverContentType::default(),
         }

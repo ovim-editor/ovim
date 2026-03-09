@@ -4,7 +4,29 @@
 //! It provides diagnostic querying, caching, and display functionality.
 
 use super::super::Editor;
+use crate::editor::lsp_state::{
+    DiagnosticRefreshTaskResult, PendingDiagnosticRefresh, PendingLspRequest,
+};
 use crate::lsp::uri_from_file_path;
+use tokio::sync::oneshot::error::TryRecvError;
+
+fn diagnostic_counts(diagnostics: &[lsp_types::Diagnostic]) -> (usize, usize, usize, usize) {
+    let mut errors = 0;
+    let mut warnings = 0;
+    let mut info = 0;
+    let mut hints = 0;
+    for diagnostic in diagnostics {
+        match diagnostic.severity {
+            Some(lsp_types::DiagnosticSeverity::ERROR) => errors += 1,
+            Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
+            Some(lsp_types::DiagnosticSeverity::INFORMATION) => info += 1,
+            Some(lsp_types::DiagnosticSeverity::HINT) => hints += 1,
+            None => warnings += 1,
+            _ => {}
+        }
+    }
+    (errors, warnings, info, hints)
+}
 
 impl Editor {
     /// Get current file diagnostics from LSP
@@ -71,6 +93,135 @@ impl Editor {
         self.lsp_state.diagnostic_count
     }
 
+    /// Spawn a background diagnostics refresh for the current file.
+    pub fn spawn_diagnostic_cache_refresh(&mut self) {
+        let Some(lsp) = self.lsp_state.lsp_manager.clone() else {
+            self.lsp_state.current_file_diagnostics.clear();
+            self.lsp_state.diagnostic_count = (0, 0, 0, 0);
+            self.lsp_state.diagnostics_file_path = None;
+            return;
+        };
+
+        let Some(file_path) = self.buffer().file_path().map(str::to_string) else {
+            self.lsp_state.current_file_diagnostics.clear();
+            self.lsp_state.diagnostic_count = (0, 0, 0, 0);
+            self.lsp_state.diagnostics_file_path = None;
+            return;
+        };
+
+        let Some(uri) = uri_from_file_path(&file_path) else {
+            self.lsp_state.current_file_diagnostics.clear();
+            self.lsp_state.diagnostic_count = (0, 0, 0, 0);
+            self.lsp_state.diagnostics_file_path = None;
+            return;
+        };
+
+        let buffer_version = self.buffer().version();
+        if self
+            .lsp_state
+            .pending_diagnostic_refresh
+            .as_ref()
+            .is_some_and(|pending| {
+                pending.file_path == file_path && pending.buffer_version == buffer_version
+            })
+        {
+            return;
+        }
+
+        if let Some(pending) = self.lsp_state.pending_diagnostic_refresh.take() {
+            pending.request.task.abort();
+        }
+
+        self.lsp_state.diagnostic_refresh_seq =
+            self.lsp_state.diagnostic_refresh_seq.wrapping_add(1);
+        let seq = self.lsp_state.diagnostic_refresh_seq;
+        let file_path_for_task = file_path.clone();
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let doc_version = lsp.get_document_version(&uri).await;
+            let last_sent = lsp.get_last_sent_version(&uri).await;
+            let diagnostics = if last_sent < doc_version {
+                Vec::new()
+            } else {
+                lsp.get_diagnostics(&uri).await
+            };
+            let task_result = DiagnosticRefreshTaskResult {
+                file_path: file_path_for_task,
+                buffer_version,
+                lsp_version: doc_version,
+                lsp_sent_version: last_sent,
+                count: diagnostic_counts(&diagnostics),
+                diagnostics,
+                deferred: last_sent < doc_version,
+            };
+
+            let _ = tx.send(Ok(task_result.clone()));
+            Ok(task_result)
+        });
+
+        self.lsp_state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
+            seq,
+            file_path,
+            buffer_version,
+            request: PendingLspRequest {
+                task,
+                receiver: rx,
+                started: std::time::Instant::now(),
+            },
+        });
+    }
+
+    /// Poll background diagnostics refresh responses without blocking the UI tick.
+    pub fn poll_pending_diagnostic_refresh_response(&mut self) -> bool {
+        let Some(mut pending) = self.lsp_state.pending_diagnostic_refresh.take() else {
+            return false;
+        };
+
+        match pending.request.receiver.try_recv() {
+            Ok(Ok(result)) => {
+                if pending.seq != self.lsp_state.diagnostic_refresh_seq {
+                    return false;
+                }
+
+                self.lsp_state.current_file_lsp_version = result.lsp_version;
+                self.lsp_state.current_file_lsp_sent_version = result.lsp_sent_version;
+
+                if result.deferred {
+                    self.lsp_state.diagnostics_refresh_requested = true;
+                    return false;
+                }
+
+                if self.buffer().file_path() != Some(result.file_path.as_str())
+                    || self.buffer().version() != result.buffer_version
+                {
+                    self.lsp_state.diagnostics_refresh_requested = true;
+                    return false;
+                }
+
+                self.lsp_state.diagnostic_count = result.count;
+                self.on_diagnostic_counts_changed(result.count.0, result.count.1);
+                self.lsp_state.current_file_diagnostics = result.diagnostics;
+                self.lsp_state.diagnostics_buffer_version = result.buffer_version;
+                self.lsp_state.diagnostics_file_path = Some(result.file_path);
+                self.lsp_state.diagnostics_lsp_version = result.lsp_version;
+                self.record_diagnostic_query_duration(
+                    pending.request.started.elapsed().as_micros() as u64,
+                );
+                true
+            }
+            Ok(Err(e)) => {
+                crate::lsp_warn!("LSP", "Diagnostics refresh failed: {}", e);
+                self.lsp_state.diagnostics_refresh_requested = true;
+                false
+            }
+            Err(TryRecvError::Empty) => {
+                self.lsp_state.pending_diagnostic_refresh = Some(pending);
+                false
+            }
+            Err(TryRecvError::Closed) => false,
+        }
+    }
+
     /// Updates the cached diagnostic count (should be called when diagnostics change)
     pub async fn update_diagnostic_cache(&mut self) {
         let start = std::time::Instant::now();
@@ -81,8 +232,8 @@ impl Editor {
 
         // Query diagnostic count from LSP manager
         let count = if let Some(lsp) = &self.lsp_state.lsp_manager {
-            if let Some(file_path) = self.buffer().file_path() {
-                if let Some(uri) = crate::lsp::uri_from_file_path(file_path) {
+            if let Some(file_path) = self.buffer().file_path().map(str::to_string) {
+                if let Some(uri) = crate::lsp::uri_from_file_path(&file_path) {
                     // OV-00161: Check for unsent edits.  If the document version
                     // has been bumped (in did_change) but the flush hasn't happened
                     // yet, the diagnostics in the DashMap are from an older content
@@ -106,7 +257,8 @@ impl Editor {
                         return;
                     }
 
-                    let c = lsp.count_diagnostics(&uri).await;
+                    let diagnostics = lsp.get_diagnostics(&uri).await;
+                    let c = diagnostic_counts(&diagnostics);
                     crate::log_debug!(
                         "diagnostics",
                         "update_diagnostic_cache: uri={} count={:?} doc_version={}",
@@ -116,6 +268,10 @@ impl Editor {
                     );
                     // Store LSP version provenance alongside count
                     self.lsp_state.current_file_lsp_version = doc_version;
+                    self.lsp_state.current_file_diagnostics = diagnostics;
+                    self.lsp_state.diagnostics_buffer_version = version_before;
+                    self.lsp_state.diagnostics_file_path = Some(file_path.clone());
+                    self.lsp_state.diagnostics_lsp_version = doc_version;
                     c
                 } else {
                     crate::log_debug!(
@@ -138,29 +294,10 @@ impl Editor {
         // Reset badge dismissal if counts changed
         self.on_diagnostic_counts_changed(count.0, count.1);
 
-        if let Some(diagnostics) = self.get_current_file_diagnostics().await {
+        if self.lsp_state.current_file_diagnostics.is_empty() {
             crate::log_debug!(
                 "diagnostics",
-                "update_diagnostic_cache: got {} diagnostics for current file (count was {:?})",
-                diagnostics.len(),
-                count
-            );
-            if !diagnostics.is_empty() {
-                crate::log_debug!(
-                    "diagnostics",
-                    "first diag: line={} msg={:.50}",
-                    diagnostics[0].range.start.line,
-                    diagnostics[0].message
-                );
-            }
-            self.lsp_state.current_file_diagnostics = diagnostics;
-            self.lsp_state.diagnostics_buffer_version = version_before;
-            self.lsp_state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
-            self.lsp_state.diagnostics_lsp_version = self.lsp_state.current_file_lsp_version;
-        } else {
-            crate::log_debug!(
-                "diagnostics",
-                "update_diagnostic_cache: get_current_file_diagnostics returned None (count was {:?})",
+                "update_diagnostic_cache: no diagnostics cached for current file (count was {:?})",
                 count
             );
             self.lsp_state.current_file_diagnostics.clear();
@@ -334,5 +471,116 @@ impl Editor {
         self.lsp_state.hover_position = Some((line, col));
         self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::Diagnostic;
         self.set_mode(Mode::HoverPreview);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::editor::lsp_state::{
+        DiagnosticRefreshTaskResult, PendingDiagnosticRefresh, PendingLspRequest,
+    };
+    use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
+    use tokio::sync::oneshot;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_pending_diagnostic_refresh_response_applies_latest_result() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        let file_path = "/tmp/Test.java".to_string();
+        editor.set_file_path(file_path.clone());
+        editor.lsp_state.diagnostic_refresh_seq = 1;
+
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 5)),
+            severity: Some(DiagnosticSeverity::WARNING),
+            message: "Example warning".to_string(),
+            ..Diagnostic::default()
+        };
+
+        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
+        tx.send(Ok(DiagnosticRefreshTaskResult {
+            file_path: file_path.clone(),
+            buffer_version: editor.buffer().version(),
+            lsp_version: 4,
+            lsp_sent_version: 4,
+            diagnostics: vec![diagnostic],
+            count: (0, 1, 0, 0),
+            deferred: false,
+        }))
+        .unwrap();
+
+        editor.lsp_state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
+            seq: 1,
+            file_path: file_path.clone(),
+            buffer_version: editor.buffer().version(),
+            request: PendingLspRequest {
+                task: tokio::spawn(async move {
+                    Ok(DiagnosticRefreshTaskResult {
+                        file_path,
+                        buffer_version: 0,
+                        lsp_version: 0,
+                        lsp_sent_version: 0,
+                        diagnostics: Vec::new(),
+                        count: (0, 0, 0, 0),
+                        deferred: false,
+                    })
+                }),
+                receiver,
+                started: std::time::Instant::now(),
+            },
+        });
+
+        assert!(editor.poll_pending_diagnostic_refresh_response());
+        assert_eq!(editor.lsp_state.diagnostic_count, (0, 1, 0, 0));
+        assert_eq!(editor.lsp_state.current_file_diagnostics.len(), 1);
+        assert_eq!(editor.lsp_state.current_file_lsp_version, 4);
+        assert_eq!(editor.lsp_state.current_file_lsp_sent_version, 4);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_pending_diagnostic_refresh_response_requeues_deferred_result() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        let file_path = "/tmp/Test.java".to_string();
+        editor.set_file_path(file_path.clone());
+        editor.lsp_state.diagnostic_refresh_seq = 1;
+
+        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
+        tx.send(Ok(DiagnosticRefreshTaskResult {
+            file_path: file_path.clone(),
+            buffer_version: editor.buffer().version(),
+            lsp_version: 5,
+            lsp_sent_version: 4,
+            diagnostics: Vec::new(),
+            count: (0, 0, 0, 0),
+            deferred: true,
+        }))
+        .unwrap();
+
+        editor.lsp_state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
+            seq: 1,
+            file_path,
+            buffer_version: editor.buffer().version(),
+            request: PendingLspRequest {
+                task: tokio::spawn(async {
+                    Ok(DiagnosticRefreshTaskResult {
+                        file_path: String::new(),
+                        buffer_version: 0,
+                        lsp_version: 0,
+                        lsp_sent_version: 0,
+                        diagnostics: Vec::new(),
+                        count: (0, 0, 0, 0),
+                        deferred: false,
+                    })
+                }),
+                receiver,
+                started: std::time::Instant::now(),
+            },
+        });
+
+        assert!(!editor.poll_pending_diagnostic_refresh_response());
+        assert!(editor.lsp_state.diagnostics_refresh_requested);
+        assert!(editor.lsp_state.current_file_diagnostics.is_empty());
+        assert_eq!(editor.lsp_state.current_file_lsp_version, 5);
+        assert_eq!(editor.lsp_state.current_file_lsp_sent_version, 4);
     }
 }

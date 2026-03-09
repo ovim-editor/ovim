@@ -83,6 +83,20 @@ pub(in crate::editor) struct LspRequestContext {
     pub server_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum DocumentSyncRequestAction {
+    Noop,
+    DidOpen,
+    QueueChangeAndFlush,
+    FlushQueued,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DocumentSyncRequestPlan {
+    action: DocumentSyncRequestAction,
+    old_content: Option<String>,
+}
+
 impl Editor {
     /// Enables LSP support
     pub fn enable_lsp(&mut self) {
@@ -156,13 +170,7 @@ impl Editor {
 
     /// Marks a document as opened and synced (didOpen sent with this exact content).
     pub fn mark_document_opened_with_content(&mut self, file_path: &str, content: String) {
-        let state = self
-            .lsp_state
-            .document_sync
-            .entry(file_path.to_string())
-            .or_default();
-        state.did_open_sent = true;
-        state.mark_change_sent(content);
+        self.mark_document_flushed(file_path, content, 1);
     }
 
     /// Request LSP initialization for the current file
@@ -187,6 +195,62 @@ impl Editor {
     /// Get current LSP status
     pub fn lsp_status(&self) -> &str {
         &self.lsp_state.lsp_status
+    }
+
+    fn document_sync_request_plan(
+        &self,
+        file_path: &str,
+        current_content: &str,
+    ) -> DocumentSyncRequestPlan {
+        let Some(state) = self.lsp_state.document_sync.get(file_path) else {
+            return DocumentSyncRequestPlan {
+                action: DocumentSyncRequestAction::DidOpen,
+                old_content: None,
+            };
+        };
+
+        if !state.did_open_sent {
+            return DocumentSyncRequestPlan {
+                action: DocumentSyncRequestAction::DidOpen,
+                old_content: None,
+            };
+        }
+
+        let queued_current = state.queued_content() == Some(current_content);
+        if state.is_modified() && queued_current {
+            return DocumentSyncRequestPlan {
+                action: DocumentSyncRequestAction::FlushQueued,
+                old_content: None,
+            };
+        }
+
+        let flushed_current = state.flushed_content() == Some(current_content);
+        if state.is_modified() || !flushed_current {
+            return DocumentSyncRequestPlan {
+                action: DocumentSyncRequestAction::QueueChangeAndFlush,
+                old_content: state.last_flushed_content.clone(),
+            };
+        }
+
+        DocumentSyncRequestPlan {
+            action: DocumentSyncRequestAction::Noop,
+            old_content: None,
+        }
+    }
+
+    fn mark_document_flushed(&mut self, file_path: &str, content: String, flushed_version: i32) {
+        let current_content = self
+            .buffer()
+            .file_path()
+            .filter(|path| *path == file_path)
+            .map(|_| self.buffer().rope().to_string());
+        let state = self
+            .lsp_state
+            .document_sync
+            .entry(file_path.to_string())
+            .or_default();
+        state.did_open_sent = true;
+        state.mark_change_flushed(content, flushed_version, current_content.as_deref());
     }
 
     /// Get the currently queued LSP action, if any.
@@ -529,14 +593,10 @@ impl Editor {
                     return false;
                 }
 
-                if let Some(synced) = result.synced_content {
-                    let state = self
-                        .lsp_state
-                        .document_sync
-                        .entry(result.file_path.clone())
-                        .or_default();
-                    state.did_open_sent = true;
-                    state.mark_change_sent(synced);
+                if let (Some(synced), Some(flushed_version)) =
+                    (result.synced_content, result.synced_lsp_version)
+                {
+                    self.mark_document_flushed(&result.file_path, synced, flushed_version);
                 }
 
                 let (trigger_col, trigger_prefix) = self.completion_trigger_context();
@@ -618,8 +678,14 @@ impl Editor {
                     return false;
                 }
 
-                if let Some(synced) = result.synced_content {
-                    self.mark_document_opened_with_content(&result.request_key.file_path, synced);
+                if let (Some(synced), Some(flushed_version)) =
+                    (result.synced_content, result.synced_lsp_version)
+                {
+                    self.mark_document_flushed(
+                        &result.request_key.file_path,
+                        synced,
+                        flushed_version,
+                    );
                 }
 
                 self.lsp_state.current_file_lsp_version = result.request_key.lsp_version;
@@ -900,12 +966,14 @@ impl Editor {
         file_path: &str,
         current_content: Option<&str>,
         manager_version: i32,
+        sent_version: i32,
     ) {
         if manager_version <= 0 {
             return;
         }
 
         self.lsp_state.current_file_lsp_version = manager_version;
+        self.lsp_state.current_file_lsp_sent_version = sent_version;
 
         let state = self
             .lsp_state
@@ -913,13 +981,30 @@ impl Editor {
             .entry(file_path.to_string())
             .or_default();
 
-        if !state.did_open_sent {
+        if sent_version > 0 && !state.did_open_sent {
             state.did_open_sent = true;
         }
 
-        if !state.buffer_modified && state.last_synced_content.is_none() {
-            if let Some(content) = current_content {
-                state.last_synced_content = Some(content.to_string());
+        if sent_version > 0 && state.last_flushed_content.is_none() {
+            let seeded_content = state
+                .last_queued_content
+                .clone()
+                .or_else(|| current_content.map(|content| content.to_string()));
+            if let Some(content) = seeded_content {
+                state.mark_change_flushed(content, sent_version, current_content);
+            }
+        }
+
+        if state
+            .target_lsp_version
+            .is_some_and(|target_version| sent_version >= target_version)
+        {
+            let flushed_content = state
+                .last_queued_content
+                .clone()
+                .or_else(|| current_content.map(|content| content.to_string()));
+            if let Some(content) = flushed_content {
+                state.mark_change_flushed(content, sent_version, current_content);
             }
         }
     }
@@ -931,20 +1016,37 @@ impl Editor {
             return;
         };
 
-        let Some(file_path) = self.buffer().file_path() else {
+        let Some(file_path) = self.buffer().file_path().map(str::to_string) else {
             self.lsp_state.current_file_lsp_version = 0;
             self.lsp_state.current_file_lsp_sent_version = 0;
             return;
         };
 
-        let Some(uri) = crate::lsp::uri_from_file_path(file_path) else {
+        let Some(uri) = crate::lsp::uri_from_file_path(&file_path) else {
             self.lsp_state.current_file_lsp_version = 0;
             self.lsp_state.current_file_lsp_sent_version = 0;
             return;
         };
 
-        self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
-        self.lsp_state.current_file_lsp_sent_version = lsp.get_last_sent_version(&uri).await;
+        let manager_version = lsp.get_document_version(&uri).await;
+        let sent_version = lsp.get_last_sent_version(&uri).await;
+        let needs_content = self
+            .lsp_state
+            .document_sync
+            .get(&file_path)
+            .is_some_and(|state| {
+                (sent_version > 0 && state.last_flushed_content.is_none())
+                    || state
+                        .target_lsp_version
+                        .is_some_and(|target_version| sent_version >= target_version)
+            });
+        let current_content = needs_content.then(|| self.buffer().rope().to_string());
+        self.reconcile_document_sync_with_manager(
+            &file_path,
+            current_content.as_deref(),
+            manager_version,
+            sent_version,
+        );
     }
 
     /// Mark buffer as modified (for LSP didChange tracking)
@@ -1052,18 +1154,31 @@ impl Editor {
 
         let state_key = file_path.clone();
         let manager_version = lsp.get_document_version(&uri).await;
+        let sent_version = lsp.get_last_sent_version(&uri).await;
         let needs_reconcile = manager_version > 0
             && self
                 .lsp_state
                 .document_sync
                 .get(&state_key)
-                .is_none_or(|state| !state.did_open_sent || state.last_synced_content.is_none());
+                .is_some_and(|state| {
+                    (sent_version > 0 && state.last_flushed_content.is_none())
+                        || state
+                            .target_lsp_version
+                            .is_some_and(|target_version| sent_version >= target_version)
+                });
 
+        let mut content = None;
         if needs_reconcile {
-            let content = self.buffer().rope().to_string();
-            self.reconcile_document_sync_with_manager(&state_key, Some(&content), manager_version);
+            content = Some(self.buffer().rope().to_string());
+            self.reconcile_document_sync_with_manager(
+                &state_key,
+                content.as_deref(),
+                manager_version,
+                sent_version,
+            );
         } else if manager_version > 0 {
             self.lsp_state.current_file_lsp_version = manager_version;
+            self.lsp_state.current_file_lsp_sent_version = sent_version;
         }
 
         // Check if we need to send — only guard is didOpen + modified
@@ -1074,8 +1189,27 @@ impl Editor {
             .is_some_and(|state| state.did_open_sent && state.is_modified());
 
         if should_send {
-            // Get buffer content BEFORE we update the state
-            let content = self.buffer().rope().to_string();
+            // Snapshot current content once for queue/no-op checks and potential send.
+            let content = content.unwrap_or_else(|| self.buffer().rope().to_string());
+
+            {
+                let state = self
+                    .lsp_state
+                    .document_sync
+                    .entry(state_key.clone())
+                    .or_default();
+                if state.target_lsp_version.is_none()
+                    && state.flushed_content() == Some(content.as_str())
+                {
+                    state.buffer_modified = false;
+                    state.last_queued_content = None;
+                    return;
+                }
+
+                if state.queued_content() == Some(content.as_str()) {
+                    return;
+                }
+            }
 
             // Get language_id from file extension
             let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
@@ -1089,19 +1223,26 @@ impl Editor {
                 .lsp_state
                 .document_sync
                 .get(&state_key)
-                .and_then(|state| state.last_synced_content.clone());
+                .and_then(|state| state.last_flushed_content.clone());
 
             // Send the didChange notification to all servers for this language
-            let _ = lsp
+            if lsp
                 .did_change_broadcast(uri.clone(), language_id, content.clone(), old_content)
-                .await;
+                .await
+                .is_err()
+            {
+                return;
+            }
 
-            // Track the current LSP document version (bumped immediately in did_change)
-            self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
+            // Track the queued LSP document version (bumped immediately in did_change).
+            let queued_version = lsp.get_document_version(&uri).await;
+            self.lsp_state.current_file_lsp_version = queued_version;
+            self.lsp_state.current_file_lsp_sent_version = lsp.get_last_sent_version(&uri).await;
 
-            // Mark as sent AFTER sending and store the synced content
+            // Record the newest queued snapshot; manager reconciliation will only
+            // promote it to flushed once last_sent catches up.
             let state = self.lsp_state.document_sync.entry(state_key).or_default();
-            state.mark_change_sent(content);
+            state.mark_change_queued(content, queued_version);
         }
     }
 
@@ -1192,75 +1333,80 @@ impl Editor {
         // Get buffer content
         let content = self.buffer().rope().to_string();
         let manager_version = lsp.get_document_version(&uri).await;
-        self.reconcile_document_sync_with_manager(&state_key, Some(&content), manager_version);
+        let sent_version = lsp.get_last_sent_version(&uri).await;
+        self.reconcile_document_sync_with_manager(
+            &state_key,
+            Some(&content),
+            manager_version,
+            sent_version,
+        );
 
-        // Check if we need to send didOpen first (CRITICAL for LSP protocol)
-        let needs_did_open = self
-            .lsp_state
-            .document_sync
-            .get(&state_key)
-            .is_none_or(|state| !state.did_open_sent);
+        let plan = self.document_sync_request_plan(&state_key, &content);
+        match plan.action {
+            DocumentSyncRequestAction::Noop => false,
+            DocumentSyncRequestAction::DidOpen => {
+                match lsp
+                    .did_open_broadcast(uri.clone(), language_id, 1, content.clone())
+                    .await
+                {
+                    Ok(_) => {
+                        let flushed_version = lsp.get_last_sent_version(&uri).await;
+                        self.lsp_state.current_file_lsp_version =
+                            lsp.get_document_version(&uri).await;
+                        self.lsp_state.current_file_lsp_sent_version = flushed_version;
+                        self.mark_document_flushed(&state_key, content, flushed_version);
+                    }
+                    Err(e) => {
+                        crate::lsp_warn!(
+                            "LSP",
+                            "didOpen failed for {}: {} (will retry)",
+                            state_key,
+                            e
+                        );
+                    }
+                }
+                true
+            }
+            DocumentSyncRequestAction::FlushQueued => {
+                let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
+                let flushed_version = lsp.get_last_sent_version(&uri).await;
+                self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
+                self.lsp_state.current_file_lsp_sent_version = flushed_version;
+                self.mark_document_flushed(&state_key, content, flushed_version);
+                true
+            }
+            DocumentSyncRequestAction::QueueChangeAndFlush => {
+                if lsp
+                    .did_change_broadcast(
+                        uri.clone(),
+                        language_id,
+                        content.clone(),
+                        plan.old_content,
+                    )
+                    .await
+                    .is_err()
+                {
+                    return true;
+                }
 
-        if needs_did_open {
-            // Send didOpen notification to all servers for this language
-            match lsp
-                .did_open_broadcast(uri.clone(), language_id, 1, content.clone())
-                .await
-            {
-                Ok(_) => {
-                    // Mark didOpen as sent only on success
+                let queued_version = lsp.get_document_version(&uri).await;
+                {
                     let state = self
                         .lsp_state
                         .document_sync
                         .entry(state_key.clone())
                         .or_default();
-                    state.did_open_sent = true;
-                    state.mark_change_sent(content.clone());
+                    state.mark_change_queued(content.clone(), queued_version);
                 }
-                Err(e) => {
-                    crate::lsp_warn!(
-                        "LSP",
-                        "didOpen failed for {}: {} (will retry)",
-                        state_key,
-                        e
-                    );
-                }
+
+                let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
+                let flushed_version = lsp.get_last_sent_version(&uri).await;
+                self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
+                self.lsp_state.current_file_lsp_sent_version = flushed_version;
+                self.mark_document_flushed(&state_key, content, flushed_version);
+                true
             }
-            return true; // We attempted didOpen (caller should proceed regardless)
         }
-
-        // Check if we have pending changes
-        let needs_flush = self
-            .lsp_state
-            .document_sync
-            .get(&state_key)
-            .is_some_and(|state| state.is_modified());
-
-        if needs_flush {
-            // Get old content for incremental sync
-            let old_content = self
-                .lsp_state
-                .document_sync
-                .get(&state_key)
-                .and_then(|state| state.last_synced_content.clone());
-
-            // Queue the change (bumps document version immediately) then flush
-            // the debouncer so the server receives it without waiting 150ms.
-            let _ = lsp
-                .did_change_broadcast(uri.clone(), language_id, content.clone(), old_content)
-                .await;
-            let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
-
-            // Track the LSP document version after flush
-            self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
-
-            // Mark as sent and store synced content
-            let state = self.lsp_state.document_sync.entry(state_key).or_default();
-            state.mark_change_sent(content);
-            return true; // We flushed changes
-        }
-
-        false // No flush needed
     }
 
     /// Sends didClose notification to LSP for the pending file
@@ -1532,6 +1678,92 @@ mod tests {
         assert_eq!(editor.registers().get(Some('%')), target_path);
     }
 
+    #[test]
+    fn document_sync_request_plan_flushes_already_queued_content() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        let file_path = "/tmp/Test.java".to_string();
+        editor.set_file_path(file_path.clone());
+
+        let state = editor
+            .lsp_state
+            .document_sync
+            .entry(file_path.clone())
+            .or_default();
+        state.did_open_sent = true;
+        state.buffer_modified = true;
+        state.last_flushed_content = Some("class Test {\n".to_string());
+        state.last_queued_content = Some("class Test {}\n".to_string());
+        state.target_lsp_version = Some(4);
+
+        let plan = editor.document_sync_request_plan(&file_path, "class Test {}\n");
+        assert_eq!(plan.action, DocumentSyncRequestAction::FlushQueued);
+        assert!(plan.old_content.is_none());
+    }
+
+    #[test]
+    fn reconcile_document_sync_with_manager_promotes_flushed_queue() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        let file_path = "/tmp/Test.java".to_string();
+        editor.set_file_path(file_path.clone());
+
+        let state = editor
+            .lsp_state
+            .document_sync
+            .entry(file_path.clone())
+            .or_default();
+        state.did_open_sent = true;
+        state.mark_change_queued("class Test {}\n".to_string(), 4);
+
+        editor.reconcile_document_sync_with_manager(&file_path, Some("class Test {}\n"), 4, 4);
+
+        let state = editor
+            .lsp_state
+            .document_sync
+            .get(&file_path)
+            .expect("document sync state");
+        assert!(!state.buffer_modified);
+        assert!(state.target_lsp_version.is_none());
+        assert!(state.last_queued_content.is_none());
+        assert_eq!(
+            state.last_flushed_content.as_deref(),
+            Some("class Test {}\n")
+        );
+    }
+
+    #[test]
+    fn reconcile_document_sync_with_manager_keeps_dirty_flag_for_newer_buffer_content() {
+        let mut editor = Editor::with_content("class Test { int value; }\n");
+        let file_path = "/tmp/Test.java".to_string();
+        editor.set_file_path(file_path.clone());
+
+        let state = editor
+            .lsp_state
+            .document_sync
+            .entry(file_path.clone())
+            .or_default();
+        state.did_open_sent = true;
+        state.mark_change_queued("class Test {}\n".to_string(), 4);
+
+        editor.reconcile_document_sync_with_manager(
+            &file_path,
+            Some("class Test { int value; }\n"),
+            4,
+            4,
+        );
+
+        let state = editor
+            .lsp_state
+            .document_sync
+            .get(&file_path)
+            .expect("document sync state");
+        assert!(state.buffer_modified);
+        assert!(state.target_lsp_version.is_none());
+        assert_eq!(
+            state.last_flushed_content.as_deref(),
+            Some("class Test {}\n")
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn poll_pending_inlay_hint_response_applies_latest_result() {
         let mut editor = Editor::with_content("class Test {}\n");
@@ -1562,6 +1794,7 @@ mod tests {
             request_key: request_key.clone(),
             buffer_version: editor.buffer().version(),
             synced_content: Some("class Test {}\n".to_string()),
+            synced_lsp_version: Some(4),
             hints: vec![hint],
         }))
         .unwrap();
@@ -1577,6 +1810,7 @@ mod tests {
                         request_key: request_key_for_task,
                         buffer_version: 0,
                         synced_content: None,
+                        synced_lsp_version: None,
                         hints: Vec::new(),
                     })
                 }),
@@ -1601,7 +1835,7 @@ mod tests {
             .expect("document sync state");
         assert!(sync_state.did_open_sent);
         assert_eq!(
-            sync_state.last_synced_content.as_deref(),
+            sync_state.last_flushed_content.as_deref(),
             Some("class Test {}\n")
         );
     }
@@ -1626,6 +1860,7 @@ mod tests {
             request_key: request_key.clone(),
             buffer_version: editor.buffer().version() + 1,
             synced_content: None,
+            synced_lsp_version: None,
             hints: Vec::new(),
         }))
         .unwrap();
@@ -1641,6 +1876,7 @@ mod tests {
                         request_key: request_key_for_task,
                         buffer_version: 0,
                         synced_content: None,
+                        synced_lsp_version: None,
                         hints: Vec::new(),
                     })
                 }),
@@ -1675,6 +1911,7 @@ mod tests {
             request_key: request_key.clone(),
             buffer_version: editor.buffer().version(),
             synced_content: None,
+            synced_lsp_version: None,
             hints: Vec::new(),
         }))
         .unwrap();
@@ -1690,6 +1927,7 @@ mod tests {
                         request_key: request_key_for_task,
                         buffer_version: 0,
                         synced_content: None,
+                        synced_lsp_version: None,
                         hints: Vec::new(),
                     })
                 }),
