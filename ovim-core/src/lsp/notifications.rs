@@ -1000,15 +1000,29 @@ impl LspManager {
 
     /// Processes pending notifications from language servers
     /// Should be called regularly from the main event loop
-    pub async fn process_notifications(&self) -> usize {
+    pub async fn process_notifications(self: &Arc<Self>) -> usize {
         let mut rx = self.notification_rx.lock().await;
-        let mut count = 0;
+        let mut notifications = Vec::new();
 
         // Process all pending notifications (non-blocking)
         while let Ok(notification) = rx.try_recv() {
-            self.handle_notification(&notification.server_id, notification.message)
-                .await;
-            count += 1;
+            notifications.push(notification);
+        }
+        drop(rx);
+
+        let count = notifications.len();
+        for notification in notifications {
+            if notification.message.is_request() {
+                let manager = Arc::clone(self);
+                tokio::spawn(async move {
+                    manager
+                        .handle_server_request(&notification.server_id, notification.message)
+                        .await;
+                });
+            } else {
+                self.handle_notification(&notification.server_id, notification.message)
+                    .await;
+            }
         }
 
         count
@@ -1017,52 +1031,63 @@ impl LspManager {
     /// Processes pending flush requests from debounce timers
     /// Should be called regularly from the main event loop
     /// Returns the number of flush requests processed
-    pub async fn process_flush_requests(&self) -> usize {
+    pub async fn process_flush_requests(self: &Arc<Self>) -> usize {
         let mut rx_opt = self.flush_rx.lock().await;
-        let mut count = 0;
+        let mut uris = Vec::new();
         if let Some(rx) = rx_opt.as_mut() {
             // Process all pending flush requests (non-blocking)
             while let Ok(uri) = rx.try_recv() {
-                // Clone the Arc out of the DashMap so we release the shard read-lock
-                // before awaiting the debouncer mutex. This avoids the old try_lock()
-                // fallback that silently degraded to single-server flush (OV-00149).
-                let debouncer_arc = self
-                    .change_debouncers
-                    .get(&uri)
-                    .map(|entry| entry.value().clone());
-
-                if let Some(debouncer_arc) = debouncer_arc {
-                    // DashMap shard released — safe to await
-                    let language_id = {
-                        let debouncer = debouncer_arc.lock().await;
-                        debouncer.language_id.clone()
-                    };
-                    if let Err(e) = self
-                        .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await
-                    {
-                        lsp_error!(
-                            "Debounce",
-                            "Error flushing changes for {}: {}",
-                            uri.as_str(),
-                            e
-                        );
-                    }
-                } else {
-                    // Debouncer already removed (e.g., did_close raced) — single flush
-                    if let Err(e) = self.flush_pending_changes(&uri).await {
-                        lsp_error!(
-                            "Debounce",
-                            "Error flushing changes for {}: {}",
-                            uri.as_str(),
-                            e
-                        );
-                    }
-                }
-                count += 1;
+                uris.push(uri);
             }
         }
+        drop(rx_opt);
+
+        let count = uris.len();
+        for uri in uris {
+            let manager = Arc::clone(self);
+            tokio::spawn(async move {
+                manager.process_flush_request(uri).await;
+            });
+        }
+
         count
+    }
+
+    async fn process_flush_request(self: Arc<Self>, uri: Uri) {
+        // Clone the Arc out of the DashMap so we release the shard read-lock
+        // before awaiting the debouncer mutex. This avoids the old try_lock()
+        // fallback that silently degraded to single-server flush (OV-00149).
+        let debouncer_arc = self
+            .change_debouncers
+            .get(&uri)
+            .map(|entry| entry.value().clone());
+
+        if let Some(debouncer_arc) = debouncer_arc {
+            // DashMap shard released — safe to await.
+            let language_id = {
+                let debouncer = debouncer_arc.lock().await;
+                debouncer.language_id.clone()
+            };
+            if let Err(e) = self
+                .flush_pending_changes_broadcast(&uri, &language_id)
+                .await
+            {
+                lsp_error!(
+                    "Debounce",
+                    "Error flushing changes for {}: {}",
+                    uri.as_str(),
+                    e
+                );
+            }
+        } else if let Err(e) = self.flush_pending_changes(&uri).await {
+            // Debouncer already removed (e.g., did_close raced) — single flush.
+            lsp_error!(
+                "Debounce",
+                "Error flushing changes for {}: {}",
+                uri.as_str(),
+                e
+            );
+        }
     }
 
     /// Polls for pending workspace edits that need to be applied by the Editor
@@ -1144,5 +1169,83 @@ impl LspManager {
             // Store the handle so we can abort it on server stop
             self.listener_handles.insert(server_id, handle);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::lsp::protocol::RequestId;
+    use std::str::FromStr;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_notifications_does_not_block_on_server_requests() {
+        let manager = Arc::new(LspManager::new());
+
+        for _ in 0..100 {
+            manager
+                .workspace_edit_tx
+                .try_send(lsp_types::WorkspaceEdit::default())
+                .expect("fill workspace edit queue");
+        }
+
+        let request = JsonRpcMessage::request(
+            RequestId::Number(1),
+            "workspace/applyEdit".to_string(),
+            serde_json::to_value(lsp_types::ApplyWorkspaceEditParams {
+                label: None,
+                edit: lsp_types::WorkspaceEdit::default(),
+            })
+            .unwrap(),
+        );
+
+        manager
+            .notification_tx
+            .send(LspNotification {
+                server_id: "java".to_string(),
+                message: request,
+            })
+            .await
+            .expect("queue server request");
+
+        let processed =
+            tokio::time::timeout(Duration::from_millis(100), manager.process_notifications())
+                .await
+                .expect("notification pump should stay non-blocking");
+
+        assert_eq!(processed, 1);
+
+        let mut workspace_rx = manager.workspace_edit_rx.lock().await;
+        let _ = workspace_rx.try_recv();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn process_flush_requests_does_not_wait_for_debouncer_lock() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-flush.rs").expect("uri");
+        let debouncer = Arc::new(Mutex::new(ChangeDebouncer::new(
+            uri.clone(),
+            "rust".to_string(),
+            1,
+        )));
+        manager
+            .change_debouncers
+            .insert(uri.clone(), debouncer.clone());
+
+        let debouncer_guard = debouncer.lock().await;
+        manager
+            .flush_tx
+            .send(uri)
+            .await
+            .expect("queue flush request");
+
+        let processed =
+            tokio::time::timeout(Duration::from_millis(100), manager.process_flush_requests())
+                .await
+                .expect("flush pump should stay non-blocking");
+
+        assert_eq!(processed, 1);
+
+        drop(debouncer_guard);
     }
 }
