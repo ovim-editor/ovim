@@ -134,17 +134,9 @@ impl Editor {
         };
         let buffer_version = self.buffer().version();
 
-        let rope = self.buffer().rope().clone();
         let state_key = request_key.file_path.clone();
-        let (needs_did_open, buffer_modified, old_content) =
-            match self.lsp_state.document_sync.get(&state_key) {
-                None => (true, true, None),
-                Some(state) => (
-                    !state.did_open_sent,
-                    state.is_modified(),
-                    state.last_synced_content.clone(),
-                ),
-            };
+        let initial_content = self.buffer().rope().to_string();
+        let sync_plan = self.document_sync_request_plan(&state_key, &initial_content);
 
         self.lsp_state.last_inlay_hint_request = Some(request_key.clone());
         self.lsp_state.last_inlay_hint_request_at = Some(now);
@@ -157,35 +149,47 @@ impl Editor {
         let language_id = language_id.to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let content = rope.to_string();
-            let content_changed = old_content
-                .as_deref()
-                .is_none_or(|old| old != content.as_str());
-            let needs_flush = buffer_modified || content_changed;
-
             let mut synced_content = None;
+            let content = initial_content;
             let mut lsp_version = lsp.get_last_sent_version(&uri).await;
 
-            if needs_did_open {
-                if lsp
-                    .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
-                    .await
-                    .is_ok()
-                {
+            match sync_plan.action {
+                super::super::DocumentSyncRequestAction::Noop => {}
+                super::super::DocumentSyncRequestAction::DidOpen => {
+                    if lsp
+                        .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
+                        .await
+                        .is_ok()
+                    {
+                        synced_content = Some(content.clone());
+                        lsp_version = lsp.get_last_sent_version(&uri).await;
+                    }
+                }
+                super::super::DocumentSyncRequestAction::FlushQueued => {
+                    let _ = lsp
+                        .flush_pending_changes_broadcast(&uri, &language_id)
+                        .await;
                     synced_content = Some(content.clone());
                     lsp_version = lsp.get_last_sent_version(&uri).await;
                 }
-            } else if needs_flush
-                && lsp
-                    .did_change_broadcast(uri.clone(), &language_id, content.clone(), old_content)
-                    .await
-                    .is_ok()
-            {
-                let _ = lsp
-                    .flush_pending_changes_broadcast(&uri, &language_id)
-                    .await;
-                synced_content = Some(content.clone());
-                lsp_version = lsp.get_last_sent_version(&uri).await;
+                super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
+                    if lsp
+                        .did_change_broadcast(
+                            uri.clone(),
+                            &language_id,
+                            content.clone(),
+                            sync_plan.old_content,
+                        )
+                        .await
+                        .is_ok()
+                    {
+                        let _ = lsp
+                            .flush_pending_changes_broadcast(&uri, &language_id)
+                            .await;
+                        synced_content = Some(content.clone());
+                        lsp_version = lsp.get_last_sent_version(&uri).await;
+                    }
+                }
             }
 
             if lsp_version <= 0 {
@@ -206,6 +210,7 @@ impl Editor {
                 },
             };
 
+            let synced_lsp_version = synced_content.as_ref().map(|_| lsp_version);
             let result = lsp
                 .inlay_hints(&uri, range, &language_id)
                 .await
@@ -216,6 +221,7 @@ impl Editor {
                     },
                     buffer_version,
                     synced_content,
+                    synced_lsp_version,
                     hints,
                 });
 
@@ -225,6 +231,7 @@ impl Editor {
                 request_key: request_key_for_task,
                 buffer_version,
                 synced_content: None,
+                synced_lsp_version: None,
                 hints: Vec::new(),
             })
         });
@@ -358,6 +365,7 @@ mod tests {
                             },
                             buffer_version: 0,
                             synced_content: None,
+                            synced_lsp_version: None,
                             hints: Vec::new(),
                         })
                     }),
@@ -402,6 +410,7 @@ mod tests {
                             },
                             buffer_version: 0,
                             synced_content: None,
+                            synced_lsp_version: None,
                             hints: Vec::new(),
                         })
                     }),
