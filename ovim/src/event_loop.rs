@@ -80,6 +80,7 @@ async fn process_editor_tick(
     }
 
     if let Some(lsp_manager) = editor.lsp_manager() {
+        editor.refresh_current_lsp_sync_versions().await;
         let diagnostics_refresh =
             editor.take_diagnostics_refresh_request() || lsp_manager.diagnostics_changed();
         let viewport_hint_refresh = editor.inlay_hints_refresh_needed_for_viewport();
