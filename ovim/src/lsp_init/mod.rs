@@ -29,9 +29,8 @@ pub use java::init_java_status_sender;
 /// - Easier to test (mock configs vs mock modules)
 ///
 /// Special Cases Preserved:
-/// - Java: Complex auto-download logic remains in java.rs module
-///   This is intentional - when special cases provide real value, keep them.
-///   We preserve backward compatibility while improving the common case.
+/// - Hyperion LSP (Java/Kotlin/Groovy/Scala): Spawns in a background task
+///   to avoid blocking the UI while the JVM-based server initializes.
 pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
     let path = Path::new(file_path);
 
@@ -41,11 +40,12 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         return; // Error already set in normalize_path
     }
 
-    // Special case: Java has complex auto-download logic
-    // Keep using the dedicated module for now (will be generalized in Phase 3+)
-    let extension = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
-    if extension == "java" {
-        java::handle_java_lsp(editor, abs_path).await;
+    // Special case: All languages using hyperion-lsp (Java, Kotlin, Groovy, Scala)
+    // must initialize in a background task because hyperion-lsp is JVM-based and
+    // can take a long time to start. Blocking the UI thread would freeze the editor.
+    if is_hyperion_language(&abs_path) {
+        let language_id = hyperion_language_id(&abs_path);
+        java::handle_hyperion_lsp(editor, abs_path, &language_id).await;
         return;
     }
 
@@ -577,6 +577,29 @@ fn find_companion_command(companion: &CompanionLspConfig) -> Option<String> {
     }
 
     None
+}
+
+/// Check if a file should use the Hyperion LSP (JVM-based language server).
+/// These languages need background initialization to avoid blocking the UI.
+fn is_hyperion_language(abs_path: &Path) -> bool {
+    let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    matches!(
+        ext,
+        "java" | "kt" | "kts" | "groovy" | "gradle" | "scala" | "sc" | "sbt"
+    )
+}
+
+/// Map file extension to the LSP language ID for Hyperion languages.
+fn hyperion_language_id(abs_path: &Path) -> String {
+    let ext = abs_path.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match ext {
+        "java" => "java",
+        "kt" | "kts" => "kotlin",
+        "groovy" | "gradle" => "groovy",
+        "scala" | "sc" | "sbt" => "scala",
+        _ => "java",
+    }
+    .to_string()
 }
 
 /// Determine language ID for LSP initialization

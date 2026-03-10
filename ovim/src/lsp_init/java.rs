@@ -4,19 +4,25 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 
-// Global channel for Java LSP status updates
-static JAVA_STATUS_SENDER: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
+// Global channel for Hyperion LSP status updates (used by all JVM languages)
+static HYPERION_STATUS_SENDER: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
 
-/// Helper to send Java status updates
-pub fn send_java_status(msg: String) {
-    if let Some(tx) = JAVA_STATUS_SENDER.get() {
-        let _ = tx.send(format!("Java: {}", msg));
+/// Helper to send Hyperion LSP status updates, prefixed with the language name
+fn send_hyperion_status(language_label: &str, msg: String) {
+    if let Some(tx) = HYPERION_STATUS_SENDER.get() {
+        let _ = tx.send(format!("{}: {}", language_label, msg));
     }
 }
 
-/// Initialize the Java status sender (called from main)
+/// Helper for Java-specific status (backward compat, used by headless init)
+#[allow(dead_code)]
+fn send_java_status(msg: String) {
+    send_hyperion_status("Java", msg);
+}
+
+/// Initialize the Hyperion status sender (called from main)
 pub fn init_java_status_sender(sender: mpsc::UnboundedSender<String>) {
-    JAVA_STATUS_SENDER.set(sender).ok();
+    HYPERION_STATUS_SENDER.set(sender).ok();
 }
 
 /// Find the root of a JVM project (Maven or Gradle)
@@ -67,13 +73,14 @@ fn find_hyperion_binary() -> Option<PathBuf> {
         .find(|candidate| candidate.exists())
 }
 
-/// Handle Java LSP initialization (for TUI mode - spawns background task)
-pub async fn handle_java_lsp(editor: &mut Editor, abs_path: PathBuf) {
+/// Handle Hyperion LSP initialization for any JVM language (spawns background task)
+pub async fn handle_hyperion_lsp(editor: &mut Editor, abs_path: PathBuf, language_id: &str) {
     let lsp_manager = editor.lsp_manager();
+    let lang_id = language_id.to_string();
 
     // Spawn Hyperion LSP initialization in background
     tokio::spawn(async move {
-        initialize_hyperion_lsp_background(lsp_manager, abs_path).await;
+        initialize_hyperion_lsp_background(lsp_manager, abs_path, &lang_id).await;
     });
 }
 
@@ -81,50 +88,57 @@ pub async fn handle_java_lsp(editor: &mut Editor, abs_path: PathBuf) {
 pub async fn initialize_hyperion_lsp_background(
     lsp_manager: Option<Arc<ovim::lsp::LspManager>>,
     file_path: PathBuf,
+    language_id: &str,
 ) {
-    ovim_core::lsp_debug!("Java", "Starting Hyperion LSP for {:?}", file_path);
+    let language_label = capitalize_first(language_id);
+    ovim_core::lsp_debug!(
+        &language_label,
+        "Starting Hyperion LSP for {:?}",
+        file_path
+    );
 
     let Some(lsp_manager) = lsp_manager else {
-        send_java_status("No LSP manager available".to_string());
+        send_hyperion_status(&language_label, "No LSP manager available".to_string());
         return;
     };
 
     // Find project root
     let project_root = find_jvm_project_root(&file_path);
-    ovim_core::lsp_debug!("Java", "Project root: {:?}", project_root);
+    ovim_core::lsp_debug!(&language_label, "Project root: {:?}", project_root);
 
-    send_java_status("Finding Hyperion LSP...".to_string());
+    send_hyperion_status(&language_label, "Finding Hyperion LSP...".to_string());
 
     // Find the hyperion-lsp binary
     let hyperion_bin = match find_hyperion_binary() {
         Some(bin) => {
-            ovim_core::lsp_debug!("Java", "Found Hyperion at {:?}", bin);
+            ovim_core::lsp_debug!(&language_label, "Found Hyperion at {:?}", bin);
             bin
         }
         None => {
-            send_java_status(
+            send_hyperion_status(
+                &language_label,
                 "Hyperion LSP not found. Install it or build from source.".to_string(),
             );
             return;
         }
     };
 
-    send_java_status("Starting Hyperion LSP...".to_string());
+    send_hyperion_status(&language_label, "Starting Hyperion LSP...".to_string());
 
     // Start the LSP server (no args needed - runs in stdio mode)
     let server_command = hyperion_bin.to_string_lossy().to_string();
     let server_args: Vec<String> = vec![];
 
     let server_id = match lsp_manager
-        .start_server("java", &server_command, server_args, project_root)
+        .start_server(language_id, &server_command, server_args, project_root)
         .await
     {
         Ok(sid) => {
-            send_java_status("Server started".to_string());
+            send_hyperion_status(&language_label, "Server started".to_string());
             sid
         }
         Err(e) => {
-            send_java_status(format!("Failed to start: {}", e));
+            send_hyperion_status(&language_label, format!("Failed to start: {}", e));
             return;
         }
     };
@@ -132,7 +146,15 @@ pub async fn initialize_hyperion_lsp_background(
     // Start notification listener (use returned server_id for multi-root support)
     lsp_manager.start_notification_listener(server_id).await;
 
-    send_java_status("Ready".to_string());
+    send_hyperion_status(&language_label, "Ready".to_string());
+}
+
+fn capitalize_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        None => String::new(),
+        Some(c) => c.to_uppercase().to_string() + chars.as_str(),
+    }
 }
 
 /// Synchronous version for headless mode

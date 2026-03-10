@@ -23,7 +23,7 @@ use ovim::syntax::{Language, LanguageRegistry, SyntaxHighlighter};
 use ovim::ui::UI;
 
 fn apply_java_status(editor: &mut Editor, status: String) {
-    let ready = status.trim() == "Java: Ready";
+    let ready = status.trim().ends_with(": Ready");
     editor.set_lsp_status(status);
     if ready {
         editor.request_diagnostics_refresh();
@@ -1336,6 +1336,16 @@ mod tests {
         apply_java_status(&mut editor, "Java: Ready".to_string());
 
         assert_eq!(editor.lsp_status(), "Java: Ready");
+        assert!(editor.take_diagnostics_refresh_request());
+    }
+
+    #[test]
+    fn kotlin_ready_status_requests_diagnostics_refresh() {
+        let mut editor = Editor::with_content("fun main() {}\n");
+
+        apply_java_status(&mut editor, "Kotlin: Ready".to_string());
+
+        assert_eq!(editor.lsp_status(), "Kotlin: Ready");
         assert!(editor.take_diagnostics_refresh_request());
     }
 
