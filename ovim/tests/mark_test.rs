@@ -276,7 +276,6 @@ line 2
 // ============================================================================
 
 #[test]
-#[ignore = "TODO: Implement d`a (delete to mark) operator"]
 fn test_delete_to_mark() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
