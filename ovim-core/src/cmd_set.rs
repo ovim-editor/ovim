@@ -105,7 +105,7 @@ const BOOL_OPTIONS: &[BoolOption] = &[
 fn ok(message: Option<String>) -> CommandResult {
     CommandResult::Success(SuccessResponse {
         success: true,
-        message,
+        message: message.map(std::borrow::Cow::Owned),
         line_count: None,
     })
 }

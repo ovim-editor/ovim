@@ -388,10 +388,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         }
         "TestOutput" | "MakeOutput" => {
             // Show raw output from last :make / test run in a scratch buffer
-            if let Some(output) = editor.last_make_output.clone() {
+            if let Some(output) = editor.last_make_output().map(|s| s.to_string()) {
                 let buf = crate::buffer::Buffer::new_from_str(&output);
-                editor.buffers.push(buf);
-                let idx = editor.buffers.len() - 1;
+                let idx = editor.push_buffer(buf);
                 editor.switch_to_buffer(idx);
                 ok("Make/test output")
             } else {
@@ -1751,10 +1750,10 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Show active sessions
             match SessionInfo::list_all() {
                 Ok(sessions) if sessions.is_empty() => {
-                    let msg = if editor.active_session.is_some() {
+                    let msg = if let Some(name) = editor.active_session() {
                         format!(
                             "Active session: {}",
-                            editor.active_session.as_ref().unwrap()
+                            name
                         )
                     } else {
                         "No registered sessions. Use :session start NAME to register.".to_string()
@@ -1764,7 +1763,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                 Ok(sessions) => {
                     let mut msg = format!("{} active session(s):", sessions.len());
                     for s in &sessions {
-                        let marker = if editor.active_session.as_deref() == Some(&s.session_name) {
+                        let marker = if editor.active_session() == Some(&s.session_name) {
                             " (this)"
                         } else {
                             ""
@@ -1794,7 +1793,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
 
             // Check if already registered
-            if let Some(ref existing) = editor.active_session {
+            if let Some(existing) = editor.active_session() {
                 return err(format!(
                         "Already registered as session '{}'. Use :session stop first.",
                         existing
@@ -1802,7 +1801,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
 
             // Need API port to register
-            let port = match editor.api_port {
+            let port = match editor.api_port() {
                 Some(p) => p,
                 None => {
                     return err("API server not running");
@@ -1814,17 +1813,17 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             let session_info = SessionInfo::new(port, file, name.to_string());
             match session_info.write() {
                 Ok(()) => {
-                    editor.active_session = Some(name.to_string());
+                    editor.set_active_session(name.to_string());
                     ok(format!("Session '{}' registered", name))
                 }
                 Err(e) => err(format!("Failed to register session: {}", e)),
             }
         }
         "stop" => {
-            match editor.active_session.take() {
+            match editor.take_active_session() {
                 Some(name) => {
                     // Delete the session file
-                    let port = editor.api_port.unwrap_or(0);
+                    let port = editor.api_port().unwrap_or(0);
                     let session_info = SessionInfo::new(port, None, name.clone());
                     let _ = session_info.delete();
                     ok(format!("Session '{}' unregistered", name))

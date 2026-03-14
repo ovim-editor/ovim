@@ -58,6 +58,17 @@ impl Editor {
         self.registers.set_current_file(path);
     }
 
+    /// Gets a reference to a buffer by index.
+    pub fn buffer_at(&self, index: usize) -> Option<&Buffer> {
+        self.buffers.get(index)
+    }
+
+    /// Adds a new buffer and returns its index.
+    pub fn push_buffer(&mut self, buf: Buffer) -> usize {
+        self.buffers.push(buf);
+        self.buffers.len() - 1
+    }
+
     /// Gets the number of open buffers
     pub fn buffer_count(&self) -> usize {
         self.buffers.len()

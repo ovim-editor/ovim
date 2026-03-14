@@ -1150,8 +1150,7 @@ pub fn render_buffer(
             let is_cursor_line_for_conceal =
                 line_idx == cursor_line_idx && editor.options.markdown_conceal && is_md_file;
             let has_yank_flash = editor
-                .yank_flash
-                .as_ref()
+                .yank_flash()
                 .map_or(false, |f| f.contains_line(line_idx));
             let line_diagnostics_early = editor.diagnostics_for_line(line_idx);
             let has_bracket = bracket_positions
@@ -1580,7 +1579,7 @@ pub fn render_buffer(
             };
 
             // Check if this line is in a yank flash region
-            let yank_flash = editor.yank_flash.as_ref().and_then(|flash| {
+            let yank_flash = editor.yank_flash().and_then(|flash| {
                 if flash.contains_line(line_idx) {
                     Some(flash.col_range_for_line(line_idx))
                 } else {

@@ -1117,6 +1117,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             // Command executed successfully
             if let Some(msg) = success_resp.message {
                 // Multi-line messages go to hover popup, single-line to status bar
+                let msg = msg.into_owned();
                 if msg.contains('\n') {
                     editor.set_hover_info(msg);
                 } else {

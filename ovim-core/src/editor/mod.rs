@@ -268,7 +268,7 @@ pub type PreviewHighlights =
 /// The main editor state
 pub struct Editor {
     /// List of open buffers
-    pub buffers: Vec<Buffer>,
+    pub(crate) buffers: Vec<Buffer>,
     /// Index of the currently active buffer
     current_buffer_index: usize,
     /// Window manager for split windows
@@ -326,7 +326,7 @@ pub struct Editor {
     /// Cached rendering state (mouse, layout geometry)
     pub render_cache: RenderCache,
     /// Transient yank flash highlight
-    pub yank_flash: Option<yank_flash::YankFlash>,
+    yank_flash: Option<yank_flash::YankFlash>,
     /// UI panels (file tree, quickfix, path completion, dashboard, diagnostic badge)
     pub ui_panels: UiPanels,
     /// LSP UI panel state (manager panel and install progress)
@@ -336,23 +336,23 @@ pub struct Editor {
     /// AI prompt, pending jobs, and in-buffer agent logs
     pub ai_state: ai_state::AiState,
     /// API server port (set during startup, used by :session start/stop)
-    pub api_port: Option<u16>,
+    api_port: Option<u16>,
     /// Active session name (set by :session start, cleared by :session stop)
-    pub active_session: Option<String>,
+    active_session: Option<String>,
     /// Git branch name for the current file (if in a git repo)
     git_branch: Option<String>,
     /// Pending `:make` result from background thread
     pending_make: Option<PendingMake>,
     /// Last test command run via `<Space>t` keybindings (for `<Space>tl` repeat)
-    pub last_test_command: Option<String>,
+    last_test_command: Option<String>,
     /// Raw output from last `:make` / test run
-    pub last_make_output: Option<String>,
+    last_make_output: Option<String>,
     /// Set by motions that fail to move during macro playback
     macro_aborted: bool,
     /// Pending LSP auto-install awaiting user consent
-    pub pending_lsp_install: Option<PendingLspInstall>,
+    pending_lsp_install: Option<PendingLspInstall>,
     /// Approved LSP install ready to be picked up by the event loop
-    pub approved_lsp_install: Option<PendingLspInstall>,
+    approved_lsp_install: Option<PendingLspInstall>,
 }
 
 /// Pending LSP server installation awaiting user consent
@@ -696,6 +696,51 @@ impl Editor {
         self.yank_flash = Some(yank_flash::YankFlash::range(
             start_line, start_col, end_line, end_col,
         ));
+    }
+
+    /// Get a reference to the current yank flash (if any).
+    pub fn yank_flash(&self) -> Option<&yank_flash::YankFlash> {
+        self.yank_flash.as_ref()
+    }
+
+    /// Get the last make/test output (if any).
+    pub fn last_make_output(&self) -> Option<&str> {
+        self.last_make_output.as_deref()
+    }
+
+    /// Get the API server port.
+    pub fn api_port(&self) -> Option<u16> {
+        self.api_port
+    }
+
+    /// Set the API server port.
+    pub fn set_api_port(&mut self, port: u16) {
+        self.api_port = Some(port);
+    }
+
+    /// Get the active session name.
+    pub fn active_session(&self) -> Option<&str> {
+        self.active_session.as_deref()
+    }
+
+    /// Set the active session name.
+    pub fn set_active_session(&mut self, name: String) {
+        self.active_session = Some(name);
+    }
+
+    /// Take the active session name, leaving None.
+    pub fn take_active_session(&mut self) -> Option<String> {
+        self.active_session.take()
+    }
+
+    /// Set a pending LSP install awaiting user consent.
+    pub fn set_pending_lsp_install(&mut self, install: PendingLspInstall) {
+        self.pending_lsp_install = Some(install);
+    }
+
+    /// Check if there's an approved LSP install ready for the event loop.
+    pub fn has_approved_lsp_install(&self) -> bool {
+        self.approved_lsp_install.is_some()
     }
 
     /// Tick the yank flash. Returns true if it just expired (needs redraw to clear).
