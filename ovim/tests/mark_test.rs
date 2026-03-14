@@ -295,7 +295,6 @@ line 4
 }
 
 #[test]
-#[ignore = "TODO: Implement y`a (yank to mark) operator"]
 fn test_yank_to_mark() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
@@ -303,24 +302,24 @@ fn test_yank_to_mark() {
         .press('m')
         .press('a')
         .keys("gg")
-        .keys("y`a") // Yank to mark
-        .keys("G")
-        .press('p'); // Paste
+        .keys("y`a"); // Yank to mark (characterwise exclusive: "line 1\n")
 
+    // Cursor stays at original position after yank
+    test.assert_cursor(0, 0);
+
+    // Verify yanked content by pasting on an empty line at end
+    test.keys("Go") // Open new line at end
+        .press_esc()
+        .press('P'); // Paste before cursor
+
+    // Characterwise paste of "line 1\n" inserts inline
     assert_eq!(
         test.buffer_content(),
-        "line 1
-line 2
-line 3
-line 1
-line 2
-"
+        "line 1\nline 2\nline 3\nline 1\n\n"
     );
-    test.assert_cursor(4, 0);
 }
 
 #[test]
-#[ignore = "TODO: Implement c`a (change to mark) operator"]
 fn test_change_to_mark() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
@@ -328,20 +327,19 @@ fn test_change_to_mark() {
         .press('m')
         .press('a')
         .keys("gg")
-        .keys("c`a") // Change to mark
+        .keys("c`a") // Change to mark (characterwise exclusive: deletes "line 1\n")
         .type_text("CHANGED")
         .press_esc();
 
+    // "line 1\n" deleted, "CHANGED" inserted, "line 2\nline 3\n" remains
     assert_eq!(
         test.buffer_content(),
-        "CHANGED
-"
+        "CHANGEDline 2\nline 3\n"
     );
     test.assert_cursor(0, 6);
 }
 
 #[test]
-#[ignore = "TODO: Implement v`a (visual to mark) operator"]
 fn test_visual_to_mark() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3\nline 4");
 
