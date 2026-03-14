@@ -28,3 +28,30 @@ pub struct SuccessResponse {
 pub struct ErrorResponse {
     pub error: String,
 }
+
+// ---- Convenience constructors ----
+
+/// Shorthand for a successful command result with an optional message.
+pub fn ok(message: impl Into<String>) -> CommandResult {
+    CommandResult::Success(SuccessResponse {
+        success: true,
+        message: Some(message.into()),
+        line_count: None,
+    })
+}
+
+/// Shorthand for a successful command result with no message.
+pub fn ok_silent() -> CommandResult {
+    CommandResult::Success(SuccessResponse {
+        success: true,
+        message: None,
+        line_count: None,
+    })
+}
+
+/// Shorthand for an error command result.
+pub fn err(message: impl Into<String>) -> CommandResult {
+    CommandResult::Error(ErrorResponse {
+        error: message.into(),
+    })
+}

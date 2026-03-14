@@ -1,6 +1,6 @@
 //! Buffer management commands (:bn, :bp, :bd, :ls, etc.)
 
-use crate::command_result::{CommandResult, ErrorResponse, SuccessResponse};
+use crate::command_result::{err, ok, CommandResult};
 use crate::editor::Editor;
 
 /// Try to handle a buffer management command.
@@ -16,7 +16,7 @@ pub fn try_handle(editor: &mut Editor, command: &str) -> Option<CommandResult> {
     }
 }
 
-fn buffer_display_name(editor: &Editor) -> String {
+fn buffer_name(editor: &Editor) -> String {
     editor
         .buffer()
         .file_path()
@@ -36,73 +36,34 @@ fn list_buffers(editor: &Editor) -> CommandResult {
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let marker = if i == editor.current_buffer_index() {
-                "%"
-            } else {
-                " "
-            };
+            let marker = if i == editor.current_buffer_index() { "%" } else { " " };
             let modified = if i < editor.buffer_count()
                 && !editor.buffers[i].change_manager().is_at_save_point()
-            {
-                "+"
-            } else {
-                " "
-            };
+            { "+" } else { " " };
             format!("{} {}  {}", marker, modified, name)
         })
         .collect();
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: Some(buf_list.join("\n")),
-        line_count: None,
-    })
+    ok(buf_list.join("\n"))
 }
 
 fn next_buffer(editor: &mut Editor) -> CommandResult {
     editor.next_buffer();
-    let name = buffer_display_name(editor);
-    let idx = editor.current_buffer_index() + 1;
-    let total = editor.buffer_count();
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: Some(format!("Buffer {} of {}: {}", idx, total, name)),
-        line_count: None,
-    })
+    ok(format!("Buffer {} of {}: {}", editor.current_buffer_index() + 1, editor.buffer_count(), buffer_name(editor)))
 }
 
 fn prev_buffer(editor: &mut Editor) -> CommandResult {
     editor.prev_buffer();
-    let name = buffer_display_name(editor);
-    let idx = editor.current_buffer_index() + 1;
-    let total = editor.buffer_count();
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: Some(format!("Buffer {} of {}: {}", idx, total, name)),
-        line_count: None,
-    })
+    ok(format!("Buffer {} of {}: {}", editor.current_buffer_index() + 1, editor.buffer_count(), buffer_name(editor)))
 }
 
 fn delete_buffer(editor: &mut Editor, force: bool) -> CommandResult {
     if !force && editor.is_modified() {
-        return CommandResult::Error(ErrorResponse {
-            error: "No write since last change (add ! to override)".to_string(),
-        });
+        return err("No write since last change (add ! to override)");
     }
-
-    let should_quit = editor.delete_current_buffer();
-    if should_quit {
+    if editor.delete_current_buffer() {
         editor.quit();
-        CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some("Last buffer deleted, quitting".to_string()),
-            line_count: None,
-        })
+        ok("Last buffer deleted, quitting")
     } else {
-        let name = buffer_display_name(editor);
-        CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some(format!("Buffer deleted. Now showing: {}", name)),
-            line_count: None,
-        })
+        ok(format!("Buffer deleted. Now showing: {}", buffer_name(editor)))
     }
 }

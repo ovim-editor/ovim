@@ -1,6 +1,6 @@
 //! Command execution for ex commands (:w, :q, etc.)
 
-use crate::command_result::{CommandResult, ErrorResponse, SuccessResponse};
+use crate::command_result::{err, ok, CommandResult, ErrorResponse, SuccessResponse};
 use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
 
@@ -31,9 +31,7 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Com
         // Load the file if needed
         let path_str = path.to_string_lossy().to_string();
         if let Err(e) = editor.load_file(&path_str) {
-            return CommandResult::Error(ErrorResponse {
-                error: format!("Failed to load file: {}", e),
-            });
+            return err(format!("Failed to load file: {}", e));
         }
 
         // Jump to line/column (convert from 1-indexed to 0-indexed)
@@ -42,17 +40,9 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Com
         editor.buffer_mut().cursor_mut().set_position(line, col);
         editor.buffer_mut().validate_cursor_position();
 
-        CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some(entry.display_text()),
-            line_count: None,
-        })
+        ok(entry.display_text())
     } else {
-        CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some(entry.text.clone()),
-            line_count: None,
-        })
+        ok(entry.text.clone())
     }
 }
 
@@ -63,19 +53,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         match command {
             "w" | "write" | "wq" | "x" => {
                 let _ = editor.finish_chat_scratch(true);
-                return CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Scratch content transferred to chat input".to_string()),
-                    line_count: None,
-                });
+                return ok("Scratch content transferred to chat input");
             }
             "q!" | "quit!" | "bd!" | "bdelete!" | "q" | "quit" => {
                 let _ = editor.finish_chat_scratch(false);
-                return CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Scratch buffer discarded".to_string()),
-                    line_count: None,
-                });
+                return ok("Scratch buffer discarded");
             }
             _ => {}
         }
@@ -83,59 +65,28 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
 
     match command {
         "q" | "quit" => {
-            // If there are multiple tabs, close current tab. Otherwise quit.
-            if editor.tab_page_manager().is_single_tab() {
-                // Single tab - check modifications and quit
-                if editor.is_modified() {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No write since last change (add ! to override)".to_string(),
-                    })
-                } else {
-                    editor.quit();
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("Quitting".to_string()),
-                        line_count: None,
-                    })
-                }
-            } else {
-                // Multiple tabs - close current tab
+            if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
-                let tab_index = editor.current_tab_index() + 1;
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Tab closed. Now on tab {}", tab_index)),
-                    line_count: None,
-                })
+                ok(format!("Tab closed. Now on tab {}", editor.current_tab_index() + 1))
+            } else if editor.is_modified() {
+                err("No write since last change (add ! to override)")
+            } else {
+                editor.quit();
+                ok("Quitting")
             }
         }
         "q!" | "quit!" => {
-            // Force quit or close tab
-            if editor.tab_page_manager().is_single_tab() {
-                editor.quit();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Quitting (forced)".to_string()),
-                    line_count: None,
-                })
-            } else {
+            if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
-                let tab_index = editor.current_tab_index() + 1;
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Tab closed. Now on tab {}", tab_index)),
-                    line_count: None,
-                })
+                ok(format!("Tab closed. Now on tab {}", editor.current_tab_index() + 1))
+            } else {
+                editor.quit();
+                ok("Quitting (forced)")
             }
         }
         "cq" | "cquit" => {
-            // Quit with non-zero exit code (like vim's :cq)
             editor.quit_with_code(1);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Quitting with error code 1".to_string()),
-                line_count: None,
-            })
+            ok("Quitting with error code 1")
         }
         cmd if cmd.starts_with("cq ") || cmd.starts_with("cquit ") => {
             // :cq N - quit with specific exit code
@@ -143,47 +94,27 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             match code_str.parse::<i32>() {
                 Ok(code) => {
                     editor.quit_with_code(code);
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("Quitting with error code {}", code)),
-                        line_count: None,
-                    })
+                    ok(format!("Quitting with error code {}", code))
                 }
-                Err(_) => CommandResult::Error(ErrorResponse {
-                    error: format!("Invalid exit code: {}", code_str),
-                }),
+                Err(_) => err(format!("Invalid exit code: {}", code_str)),
             }
         }
         "qa" | "qall" => {
-            // Quit all - same as quit for single buffer
             if editor.is_modified() {
-                CommandResult::Error(ErrorResponse {
-                    error: "No write since last change (add ! to override)".to_string(),
-                })
+                err("No write since last change (add ! to override)")
             } else {
                 editor.quit();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Quitting all".to_string()),
-                    line_count: None,
-                })
+                ok("Quitting all")
             }
         }
         "qa!" | "qall!" => {
-            // Force quit all without saving
             editor.quit();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Quitting all (forced)".to_string()),
-                line_count: None,
-            })
+            ok("Quitting all (forced)")
         }
         "w" | "write" => {
             // Check if buffer is read-only
             if editor.buffer().is_read_only() {
-                return CommandResult::Error(ErrorResponse {
-                    error: "E45: 'readonly' option is set (add ! to override)".to_string(),
-                });
+                return err("E45: 'readonly' option is set (add ! to override)");
             }
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
                 let old_path = Some(path.clone());
@@ -198,23 +129,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         editor.mark_buffer_saved(); // Mark for LSP didSave notification
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!(
+                        ok(format!(
                                 "\"{}\" {}L, {}C written",
                                 path, line_count, char_count
-                            )),
-                            line_count: None,
-                        })
+                            ))
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to save: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to save: {}", e)),
                 }
             } else {
-                CommandResult::Error(ErrorResponse {
-                    error: "No file name".to_string(),
-                })
+                err("No file name")
             }
         }
         "w!" | "write!" => {
@@ -234,31 +157,21 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         editor.mark_buffer_saved();
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!(
+                        ok(format!(
                                 "\"{}\" {}L, {}C written",
                                 path, line_count, char_count
-                            )),
-                            line_count: None,
-                        })
+                            ))
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to save: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to save: {}", e)),
                 }
             } else {
-                CommandResult::Error(ErrorResponse {
-                    error: "No file name".to_string(),
-                })
+                err("No file name")
             }
         }
         "wq" => {
             // Check if buffer is read-only
             if editor.buffer().is_read_only() {
-                return CommandResult::Error(ErrorResponse {
-                    error: "E45: 'readonly' option is set (add ! to override)".to_string(),
-                });
+                return err("E45: 'readonly' option is set (add ! to override)");
             }
             if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
                 let old_path = Some(path.clone());
@@ -269,20 +182,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         editor.mark_saved();
                         editor.mark_buffer_saved(); // Mark for LSP didSave notification
                         editor.quit();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some("Saved and quitting".to_string()),
-                            line_count: None,
-                        })
+                        ok("Saved and quitting")
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to save: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to save: {}", e)),
                 }
             } else {
-                CommandResult::Error(ErrorResponse {
-                    error: "No file name".to_string(),
-                })
+                err("No file name")
             }
         }
         "wq!" => {
@@ -297,20 +202,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         editor.mark_saved();
                         editor.mark_buffer_saved();
                         editor.quit();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some("Saved and quitting".to_string()),
-                            line_count: None,
-                        })
+                        ok("Saved and quitting")
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to save: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to save: {}", e)),
                 }
             } else {
-                CommandResult::Error(ErrorResponse {
-                    error: "No file name".to_string(),
-                })
+                err("No file name")
             }
         }
         "LspInfo" => {
@@ -360,11 +257,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
 
             editor.open_scratch_buffer("LspInfo", &info);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: None,
-                line_count: None,
-            })
+            crate::command_result::ok_silent()
         }
         "LspStatus" => {
             // Show detailed diagnostics list for current file
@@ -450,11 +343,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
 
             editor.open_scratch_buffer("LspStatus", &output);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: None,
-                line_count: None,
-            })
+            crate::command_result::ok_silent()
         }
         "LspLog" => {
             // Open the actual LSP log file in a new tab so % resolves correctly
@@ -466,64 +355,36 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     // Jump to end of log
                     let line_count = editor.buffer().rope().len_lines().saturating_sub(1);
                     editor.buffer_mut().cursor_mut().set_line(line_count);
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: None,
-                        line_count: None,
-                    })
+                    crate::command_result::ok_silent()
                 }
-                Err(e) => CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to open LSP log at {}: {}", log_path_str, e),
-                }),
+                Err(e) => err(format!("Failed to open LSP log at {}: {}", log_path_str, e)),
             }
         }
         cmd if cmd.starts_with("LspRename ") => {
             // LSP rename symbol: :LspRename new_name
             let new_name = cmd["LspRename ".len()..].trim();
             if new_name.is_empty() {
-                CommandResult::Error(ErrorResponse {
-                    error: "Usage: LspRename <new_name>".to_string(),
-                })
+                err("Usage: LspRename <new_name>")
             } else {
                 editor.request_rename(new_name.to_string());
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Renaming to '{}'...", new_name)),
-                    line_count: None,
-                })
+                ok(format!("Renaming to '{}'...", new_name))
             }
         }
         "TestFile" | "TF" => {
             editor.run_test_file();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Running tests for current file...".to_string()),
-                line_count: None,
-            })
+            ok("Running tests for current file...")
         }
         "TestNearest" | "TN" => {
             editor.run_test_nearest();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Running nearest test...".to_string()),
-                line_count: None,
-            })
+            ok("Running nearest test...")
         }
         "TestAll" | "TA" => {
             editor.run_test_all();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Running all tests...".to_string()),
-                line_count: None,
-            })
+            ok("Running all tests...")
         }
         "TestLast" | "TL" => {
             editor.run_test_last();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Re-running last test...".to_string()),
-                line_count: None,
-            })
+            ok("Re-running last test...")
         }
         "TestOutput" | "MakeOutput" => {
             // Show raw output from last :make / test run in a scratch buffer
@@ -532,15 +393,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 editor.buffers.push(buf);
                 let idx = editor.buffers.len() - 1;
                 editor.switch_to_buffer(idx);
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Make/test output".to_string()),
-                    line_count: None,
-                })
+                ok("Make/test output")
             } else {
-                CommandResult::Error(ErrorResponse {
-                    error: "No make/test output available".to_string(),
-                })
+                err("No make/test output available")
             }
         }
         cmd if cmd == "make" || cmd.starts_with("make ") => {
@@ -556,11 +411,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Open/show quickfix list
             let qf_list = editor.quickfix_list();
             if qf_list.is_empty() {
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Quickfix list is empty".to_string()),
-                    line_count: None,
-                })
+                ok("Quickfix list is empty")
             } else {
                 let title = if qf_list.title().is_empty() {
                     "Quickfix List"
@@ -586,87 +437,63 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     qf_list.len(),
                     entries.join("\n")
                 );
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(message),
-                    line_count: None,
-                })
+                ok(message)
             }
         }
         "cclose" | "ccl" => {
             // Close/clear quickfix list
             editor.quickfix_list_mut().clear();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Quickfix list cleared".to_string()),
-                line_count: None,
-            })
+            ok("Quickfix list cleared")
         }
         "cnext" | "cn" => {
             // Jump to next quickfix entry
             if editor.quickfix_list().is_empty() {
-                CommandResult::Error(ErrorResponse {
-                    error: "Quickfix list is empty".to_string(),
-                })
+                err("Quickfix list is empty")
             } else {
                 editor.quickfix_list_mut().next();
                 if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
                     crate::commands::jump_to_quickfix_entry(editor, &entry)
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No current entry".to_string(),
-                    })
+                    err("No current entry")
                 }
             }
         }
         "cprev" | "cp" | "cprevious" => {
             // Jump to previous quickfix entry
             if editor.quickfix_list().is_empty() {
-                CommandResult::Error(ErrorResponse {
-                    error: "Quickfix list is empty".to_string(),
-                })
+                err("Quickfix list is empty")
             } else {
                 editor.quickfix_list_mut().previous();
                 if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
                     crate::commands::jump_to_quickfix_entry(editor, &entry)
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No current entry".to_string(),
-                    })
+                    err("No current entry")
                 }
             }
         }
         "cfirst" | "cfir" => {
             // Jump to first quickfix entry
             if editor.quickfix_list().is_empty() {
-                CommandResult::Error(ErrorResponse {
-                    error: "Quickfix list is empty".to_string(),
-                })
+                err("Quickfix list is empty")
             } else {
                 editor.quickfix_list_mut().first();
                 if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
                     crate::commands::jump_to_quickfix_entry(editor, &entry)
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No current entry".to_string(),
-                    })
+                    err("No current entry")
                 }
             }
         }
         "clast" | "cla" => {
             // Jump to last quickfix entry
             if editor.quickfix_list().is_empty() {
-                CommandResult::Error(ErrorResponse {
-                    error: "Quickfix list is empty".to_string(),
-                })
+                err("Quickfix list is empty")
             } else {
                 editor.quickfix_list_mut().last();
                 if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
                     crate::commands::jump_to_quickfix_entry(editor, &entry)
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No current entry".to_string(),
-                    })
+                    err("No current entry")
                 }
             }
         }
@@ -674,65 +501,39 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Create new tab with default name
             editor.new_tab(None);
             let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Created tab {}", tab_index)),
-                line_count: None,
-            })
+            ok(format!("Created tab {}", tab_index))
         }
         "tabnext" | "tabn" => {
             // Switch to next tab
             editor.next_tab();
             let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Tab {}", tab_index)),
-                line_count: None,
-            })
+            ok(format!("Tab {}", tab_index))
         }
         "tabprev" | "tabp" | "tabprevious" => {
             // Switch to previous tab
             editor.previous_tab();
             let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Tab {}", tab_index)),
-                line_count: None,
-            })
+            ok(format!("Tab {}", tab_index))
         }
         "tabfirst" | "tabfir" => {
             // Switch to first tab
             editor.first_tab();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Tab 1".to_string()),
-                line_count: None,
-            })
+            ok("Tab 1")
         }
         "tablast" | "tabl" => {
             // Switch to last tab
             editor.last_tab();
             let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Tab {}", tab_index)),
-                line_count: None,
-            })
+            ok(format!("Tab {}", tab_index))
         }
         "tabclose" | "tabc" => {
             // Close current tab
             if editor.tab_page_manager().is_single_tab() {
-                CommandResult::Error(ErrorResponse {
-                    error: "Cannot close last tab".to_string(),
-                })
+                err("Cannot close last tab")
             } else {
                 editor.close_current_tab();
                 let tab_index = editor.current_tab_index() + 1; // 1-indexed for display
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Tab closed. Now on tab {}", tab_index)),
-                    line_count: None,
-                })
+                ok(format!("Tab closed. Now on tab {}", tab_index))
             }
         }
         // Buffer commands (ls, bn, bp, bd) — dispatched to cmd_buffer module
@@ -743,19 +544,11 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         "tabonly" | "tabo" => {
             // Close all tabs except the current one
             if editor.tab_page_manager().is_single_tab() {
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Already only one tab".to_string()),
-                    line_count: None,
-                })
+                ok("Already only one tab")
             } else {
                 let closed_count = editor.tab_count() - 1;
                 editor.close_other_tabs();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Closed {} tabs", closed_count)),
-                    line_count: None,
-                })
+                ok(format!("Closed {} tabs", closed_count))
             }
         }
         "blame" => {
@@ -763,82 +556,46 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.options.blame = new_val;
             if new_val {
                 editor.buffer_mut().load_git_blame();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("blame on".to_string()),
-                    line_count: None,
-                })
+                ok("blame on")
             } else {
                 editor.buffer_mut().clear_git_blame();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("blame off".to_string()),
-                    line_count: None,
-                })
+                ok("blame off")
             }
         }
         "noh" | "nohlsearch" => {
             // Clear search highlighting
             editor.clear_search_highlight();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Search highlighting cleared".to_string()),
-                line_count: None,
-            })
+            ok("Search highlighting cleared")
         }
         "reg" | "registers" => {
             // Display all registers
             let registers = editor.registers().list_registers();
             if registers.is_empty() {
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("No registers in use".to_string()),
-                    line_count: None,
-                })
+                ok("No registers in use")
             } else {
                 let display: Vec<String> = registers
                     .iter()
                     .map(|(name, content)| format!("{}: {}", name, content))
                     .collect();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(display.join("\n")),
-                    line_count: None,
-                })
+                ok(display.join("\n"))
             }
         }
         "j" | "join" => {
             // Join current line with the next line
             if let Err(e) = editor.buffer_mut().join_lines(1) {
-                return CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to join lines: {}", e),
-                });
+                return err(format!("Failed to join lines: {}", e));
             }
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: None,
-                line_count: None,
-            })
+            crate::command_result::ok_silent()
         }
         "recover" | "rec" => {
             // Recover buffer content from swap file
             if !editor.buffer().has_swap_file() {
-                return CommandResult::Error(ErrorResponse {
-                    error: "No swap file exists for this buffer".to_string(),
-                });
+                return err("No swap file exists for this buffer");
             }
             match editor.buffer_mut().recover_from_swap_file() {
-                Ok(true) => CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Buffer recovered from swap file".to_string()),
-                    line_count: None,
-                }),
-                Ok(false) => CommandResult::Error(ErrorResponse {
-                    error: "Failed to recover: swap file is empty or missing".to_string(),
-                }),
-                Err(e) => CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to recover: {}", e),
-                }),
+                Ok(true) => ok("Buffer recovered from swap file"),
+                Ok(false) => err("Failed to recover: swap file is empty or missing"),
+                Err(e) => err(format!("Failed to recover: {}", e)),
             }
         }
         "checktime" => {
@@ -847,31 +604,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
                     Ok(true) => {
                         editor.mark_buffer_modified_force_send();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(
+                        ok(
                                 "File reloaded from disk (external changes detected)".to_string(),
-                            ),
-                            line_count: None,
-                        })
+                            )
                     }
-                    Ok(false) => CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("No external changes detected".to_string()),
-                        line_count: None,
-                    }),
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to reload: {}", e),
-                    }),
+                    Ok(false) => ok("No external changes detected"),
+                    Err(e) => err(format!("Failed to reload: {}", e)),
                 },
-                Ok(false) => CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("No external changes detected".to_string()),
-                    line_count: None,
-                }),
-                Err(e) => CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to check file: {}", e),
-                }),
+                Ok(false) => ok("No external changes detected"),
+                Err(e) => err(format!("Failed to check file: {}", e)),
             }
         }
         "marks" => {
@@ -900,18 +641,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
 
             if lines.is_empty() {
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("No marks set".to_string()),
-                    line_count: None,
-                })
+                ok("No marks set")
             } else {
                 lines.insert(0, "mark  line   col  file".to_string());
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(lines.join("\n")),
-                    line_count: None,
-                })
+                ok(lines.join("\n"))
             }
         }
         "tabs" => {
@@ -926,21 +659,13 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     format!("{} {} {}", marker, i + 1, tab.title())
                 })
                 .collect();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(tab_list.join("\n")),
-                line_count: None,
-            })
+            ok(tab_list.join("\n"))
         }
         "clearaedits" => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.agent_edits.clear();
             }
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Agent edit markers cleared.".to_string()),
-                line_count: None,
-            })
+            ok("Agent edit markers cleared.")
         }
         _ => {
             // Handle :tabnew <filename>, :tabe <filename>, :tabedit <filename>
@@ -953,9 +678,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 let filename = match expand_tilde(raw_filename) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
-                        return CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
-                        });
+                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
                     }
                 };
 
@@ -966,11 +689,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 match editor.load_file(&filename) {
                     Ok(_) => {
                         let tab_index = editor.current_tab_index() + 1;
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Opened {} in tab {}", filename, tab_index)),
-                            line_count: None,
-                        })
+                        ok(format!("Opened {} in tab {}", filename, tab_index))
                     }
                     Err(e) => {
                         // Check if error is because file doesn't exist
@@ -995,18 +714,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             editor.sync_current_tab_buffer_index();
 
                             let tab_index = editor.current_tab_index() + 1;
-                            CommandResult::Success(SuccessResponse {
-                                success: true,
-                                message: Some(format!(
+                            ok(format!(
                                     "Created new file {} in tab {}",
                                     filename, tab_index
-                                )),
-                                line_count: None,
-                            })
+                                ))
                         } else {
-                            CommandResult::Error(ErrorResponse {
-                                error: format!("Failed to load file: {}", e),
-                            })
+                            err(format!("Failed to load file: {}", e))
                         }
                     }
                 }
@@ -1019,9 +732,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 let filename = match expand_tilde(raw_filename) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
-                        return CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
-                        });
+                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
                     }
                 };
                 match editor.buffer_mut().save_as(&filename) {
@@ -1040,90 +751,56 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             .unwrap_or(filename);
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!(
+                        ok(format!(
                                 "\"{}\" {}L, {}C written",
                                 saved_path, line_count, char_count
-                            )),
-                            line_count: None,
-                        })
+                            ))
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to save: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to save: {}", e)),
                 }
             // Handle :lua <code>
             } else if let Some(_code) = command.strip_prefix("lua ") {
                 #[cfg(feature = "lua")]
                 {
                     match editor.execute_lua(_code) {
-                        Ok(result) => CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(result),
-                            line_count: None,
-                        }),
-                        Err(e) => CommandResult::Error(ErrorResponse {
-                            error: format!("Lua error: {}", e),
-                        }),
+                        Ok(result) => ok(result),
+                        Err(e) => err(format!("Lua error: {}", e)),
                     }
                 }
                 #[cfg(not(feature = "lua"))]
-                CommandResult::Error(ErrorResponse {
-                    error: "Lua support not compiled in".to_string(),
-                })
+                err("Lua support not compiled in")
             // Handle :luafile <path>
             } else if let Some(raw_path) = command.strip_prefix("luafile ") {
                 let _expanded_path = match expand_tilde(raw_path.trim()) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
-                        return CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to expand path '{}': {}", raw_path, e),
-                        });
+                        return err(format!("Failed to expand path '{}': {}", raw_path, e));
                     }
                 };
                 #[cfg(feature = "lua")]
                 {
                     match editor.execute_lua_file(&_expanded_path) {
-                        Ok(_) => CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Executed {}", _expanded_path)),
-                            line_count: None,
-                        }),
-                        Err(e) => CommandResult::Error(ErrorResponse {
-                            error: format!("Lua error: {}", e),
-                        }),
+                        Ok(_) => ok(format!("Executed {}", _expanded_path)),
+                        Err(e) => err(format!("Lua error: {}", e)),
                     }
                 }
                 #[cfg(not(feature = "lua"))]
-                CommandResult::Error(ErrorResponse {
-                    error: "Lua support not compiled in".to_string(),
-                })
+                err("Lua support not compiled in")
             // Handle :colorscheme <name> or :colorscheme (to show current)
             // Also support :colo abbreviation
             } else if command == "colorscheme" || command == "colo" {
                 let current = editor.current_color_scheme_name();
                 let schemes = editor.list_color_schemes().join(", ");
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Current: {}\nAvailable: {}", current, schemes)),
-                    line_count: None,
-                })
+                ok(format!("Current: {}\nAvailable: {}", current, schemes))
             } else if let Some(scheme_name) = command
                 .strip_prefix("colorscheme ")
                 .or_else(|| command.strip_prefix("colo "))
             {
                 match editor.set_color_scheme(scheme_name.trim()) {
-                    Ok(_) => CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("Color scheme set to '{}'", scheme_name.trim())),
-                        line_count: None,
-                    }),
+                    Ok(_) => ok(format!("Color scheme set to '{}'", scheme_name.trim())),
                     Err(e) => {
                         let available = editor.list_color_schemes().join(", ");
-                        CommandResult::Error(ErrorResponse {
-                            error: format!("{}. Available schemes: {}", e, available),
-                        })
+                        err(format!("{}. Available schemes: {}", e, available))
                     }
                 }
             // Handle :set commands
@@ -1135,59 +812,35 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Handle split commands
             } else if command == "sp" || command == "split" {
                 editor.split_window_horizontal();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!(
+                ok(format!(
                         "Split horizontally ({} windows)",
                         editor.window_count()
-                    )),
-                    line_count: None,
-                })
+                    ))
             } else if command == "vsp" || command == "vsplit" {
                 editor.split_window_vertical();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!(
+                ok(format!(
                         "Split vertically ({} windows)",
                         editor.window_count()
-                    )),
-                    line_count: None,
-                })
+                    ))
             } else if command == "only" || command == "on" {
                 // :only - close all other windows
                 if editor.window_count() == 1 {
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("Already only one window".to_string()),
-                        line_count: None,
-                    })
+                    ok("Already only one window")
                 } else {
                     editor.close_other_windows();
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("All other windows closed".to_string()),
-                        line_count: None,
-                    })
+                    ok("All other windows closed")
                 }
             // Handle config reload
             } else if command == "ConfigReload" || command == "reload" {
                 #[cfg(feature = "lua")]
                 {
                     match editor.reload_lua_config() {
-                        Ok(msg) => CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(msg),
-                            line_count: None,
-                        }),
-                        Err(e) => CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to reload config: {}", e),
-                        }),
+                        Ok(msg) => ok(msg),
+                        Err(e) => err(format!("Failed to reload config: {}", e)),
                     }
                 }
                 #[cfg(not(feature = "lua"))]
-                CommandResult::Error(ErrorResponse {
-                    error: "Lua support not compiled in".to_string(),
-                })
+                err("Lua support not compiled in")
             // Handle :source - load and execute a Lua file
             } else if let Some(file) = command
                 .strip_prefix("source ")
@@ -1197,9 +850,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 let _expanded = match expand_tilde(file) {
                     Ok(path) => path,
                     Err(e) => {
-                        return CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to expand path '{}': {}", file, e),
-                        });
+                        return err(format!("Failed to expand path '{}': {}", file, e));
                     }
                 };
                 #[cfg(feature = "lua")]
@@ -1215,37 +866,23 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                                         editor, &cmd,
                                     );
                                 }
-                                CommandResult::Success(SuccessResponse {
-                                    success: true,
-                                    message: Some(format!("Sourced: {}", path.display())),
-                                    line_count: None,
-                                })
+                                ok(format!("Sourced: {}", path.display()))
                             }
-                            Err(e) => CommandResult::Error(ErrorResponse {
-                                error: format!("Failed to source {}: {}", file, e),
-                            }),
+                            Err(e) => err(format!("Failed to source {}: {}", file, e)),
                         }
                     } else {
-                        CommandResult::Error(ErrorResponse {
-                            error: "Lua not enabled".to_string(),
-                        })
+                        err("Lua not enabled")
                     }
                 }
                 #[cfg(not(feature = "lua"))]
-                CommandResult::Error(ErrorResponse {
-                    error: "Lua support not compiled in".to_string(),
-                })
+                err("Lua support not compiled in")
             // Handle :e and :edit (bare) - reload current file if unmodified
             } else if command == "e" || command == "edit" {
                 if editor.buffer().file_path().is_none() {
-                    return CommandResult::Error(ErrorResponse {
-                        error: "No file name".to_string(),
-                    });
+                    return err("No file name");
                 }
                 if editor.is_modified() {
-                    return CommandResult::Error(ErrorResponse {
-                        error: "No write since last change (add ! to override)".to_string(),
-                    });
+                    return err("No write since last change (add ! to override)");
                 }
                 let path = editor.buffer().file_path().unwrap().to_string();
                 match editor.buffer_mut().reload_from_disk() {
@@ -1253,15 +890,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         editor.mark_saved();
                         editor.mark_buffer_modified_force_send();
                         let line_count = editor.buffer().rope().len_lines();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("\"{}\" {}L reloaded", path, line_count)),
-                            line_count: None,
-                        })
+                        ok(format!("\"{}\" {}L reloaded", path, line_count))
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to reload: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to reload: {}", e)),
                 }
             // Handle :e! and :edit! - reload current file discarding changes
             } else if command == "e!" || command == "edit!" {
@@ -1271,20 +902,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             editor.mark_saved();
                             editor.mark_buffer_modified_force_send();
                             let line_count = editor.buffer().rope().len_lines();
-                            CommandResult::Success(SuccessResponse {
-                                success: true,
-                                message: Some(format!("\"{}\" {}L reloaded", path, line_count)),
-                                line_count: None,
-                            })
+                            ok(format!("\"{}\" {}L reloaded", path, line_count))
                         }
-                        Err(e) => CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to reload: {}", e),
-                        }),
+                        Err(e) => err(format!("Failed to reload: {}", e)),
                     }
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No file to reload".to_string(),
-                    })
+                    err("No file to reload")
                 }
             // :e! <filename> - force-edit file (discard unsaved changes)
             // Must be checked before :e <filename> since "e " prefix matches "e! "
@@ -1295,9 +918,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 let filename = match expand_tilde(raw_filename) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
-                        return CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
-                        });
+                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
                     }
                 };
                 match editor.load_file(&filename) {
@@ -1307,15 +928,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             .file_path()
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "[No Name]".to_string());
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Editing: {}", buf_name)),
-                            line_count: None,
-                        })
+                        ok(format!("Editing: {}", buf_name))
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to load file: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to load file: {}", e)),
                 }
             } else if let Some(raw_filename) = command
                 .strip_prefix("e ")
@@ -1323,16 +938,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             {
                 // :e <filename> - edit file (check for unsaved changes first)
                 if editor.is_modified() {
-                    return CommandResult::Error(ErrorResponse {
-                        error: "No write since last change (add ! to override)".to_string(),
-                    });
+                    return err("No write since last change (add ! to override)");
                 }
                 let filename = match expand_tilde(raw_filename) {
                     Ok(path) => path.to_string_lossy().to_string(),
                     Err(e) => {
-                        return CommandResult::Error(ErrorResponse {
-                            error: format!("Failed to expand path '{}': {}", raw_filename, e),
-                        });
+                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
                     }
                 };
                 match editor.load_file(&filename) {
@@ -1342,15 +953,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             .file_path()
                             .map(|s| s.to_string())
                             .unwrap_or_else(|| "[No Name]".to_string());
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Editing: {}", buf_name)),
-                            line_count: None,
-                        })
+                        ok(format!("Editing: {}", buf_name))
                     }
-                    Err(e) => CommandResult::Error(ErrorResponse {
-                        error: format!("Failed to load file: {}", e),
-                    }),
+                    Err(e) => err(format!("Failed to load file: {}", e)),
                 }
             // Handle :registers or :reg (list registers)
             } else if command == "registers"
@@ -1360,31 +965,19 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             {
                 let registers = editor.registers().list_registers();
                 if registers.is_empty() {
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("No registers set".to_string()),
-                        line_count: None,
-                    })
+                    ok("No registers set")
                 } else {
                     let lines: Vec<String> = registers
                         .into_iter()
                         .map(|(name, content)| format!("{:<4} {}", name, content))
                         .collect();
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("--- Registers ---\n{}", lines.join("\n"))),
-                        line_count: None,
-                    })
+                    ok(format!("--- Registers ---\n{}", lines.join("\n")))
                 }
             // Handle :marks (list marks)
             } else if command == "marks" || command.starts_with("marks ") {
                 let marks = editor.marks().list_marks();
                 if marks.is_empty() {
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("No marks set".to_string()),
-                        line_count: None,
-                    })
+                    ok("No marks set")
                 } else {
                     let lines: Vec<String> = marks
                         .into_iter()
@@ -1396,24 +989,16 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             }
                         })
                         .collect();
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!(
+                    ok(format!(
                             "--- Marks ---\nmark  line  col  file\n{}",
                             lines.join("\n")
-                        )),
-                        line_count: None,
-                    })
+                        ))
                 }
             // Handle :help keybindings
             } else if command == "help keybindings" || command == "help keys" {
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(
+                ok(
                         "Keybinding compatibility guide: architecture/knowledge/keybinding-compat.md".to_string(),
-                    ),
-                    line_count: None,
-                })
+                    )
             // Handle :map, :noremap and variants
             } else if is_map_command(command) {
                 handle_map_command(editor, command)
@@ -1437,34 +1022,22 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 if editor.is_debug_stopped() {
                     let expression = expr.trim().to_string();
                     if expression.is_empty() {
-                        CommandResult::Error(ErrorResponse {
-                            error: "Usage: :eval <expression>".to_string(),
-                        })
+                        err("Usage: :eval <expression>")
                     } else {
                         editor.dap_manager_mut().pending_action =
                             Some(crate::dap::PendingDebugAction::Evaluate { expression });
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some("Evaluating...".to_string()),
-                            line_count: None,
-                        })
+                        ok("Evaluating...")
                     }
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: "Not stopped at a breakpoint".to_string(),
-                    })
+                    err("Not stopped at a breakpoint")
                 }
             } else if let Some(name) = command.strip_prefix("DebugExpand ") {
                 // :DebugExpand <name> — toggle expansion of a variable in the debug panel
                 let name = name.trim();
                 if name.is_empty() {
-                    CommandResult::Error(ErrorResponse {
-                        error: "Usage: :DebugExpand <variable_name>".to_string(),
-                    })
+                    err("Usage: :DebugExpand <variable_name>")
                 } else if !editor.is_debug_stopped() {
-                    CommandResult::Error(ErrorResponse {
-                        error: "Not stopped at a breakpoint".to_string(),
-                    })
+                    err("Not stopped at a breakpoint")
                 } else {
                     // Find the variable by name in all loaded variable scopes
                     let mut found_ref: Option<u64> = None;
@@ -1489,15 +1062,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                                 Some(crate::dap::PendingDebugAction::FetchVariables { var_ref });
                         }
                         editor.mark_dirty();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Toggled expansion of '{}'", name)),
-                            line_count: None,
-                        })
+                        ok(format!("Toggled expansion of '{}'", name))
                     } else {
-                        CommandResult::Error(ErrorResponse {
-                            error: format!("Variable '{}' not found or not expandable", name),
-                        })
+                        err(format!("Variable '{}' not found or not expandable", name))
                     }
                 }
             } else if let Some(condition) = command.strip_prefix("DebugCondition ") {
@@ -1523,43 +1090,27 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                             Some(crate::dap::PendingDebugAction::SyncBreakpoints);
                     }
                 }
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some("Conditional breakpoint set".to_string()),
-                    line_count: None,
-                })
+                ok("Conditional breakpoint set")
             // Handle :! shell command execution
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 if shell_cmd.trim().is_empty() {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No shell command specified".to_string(),
-                    })
+                    err("No shell command specified")
                 } else {
                     execute_shell_command_with_expansion(editor, shell_cmd.trim())
                 }
             // Handle :LspInstall / :LspManager - open LSP manager panel
             } else if command == "LspInstall" || command == "LspManager" {
                 editor.open_lsp_manager();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: None,
-                    line_count: None,
-                })
+                crate::command_result::ok_silent()
             // Handle line number command (e.g., :48 to go to line 48)
             } else if let Ok(line_num) = command.parse::<usize>() {
                 let target_line = line_num.saturating_sub(1); // 1-indexed to 0-indexed
                 let max_line = editor.buffer().line_count().saturating_sub(1);
                 let final_line = target_line.min(max_line);
                 editor.buffer_mut().cursor_mut().set_position(final_line, 0);
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Line {}", line_num)),
-                    line_count: None,
-                })
+                ok(format!("Line {}", line_num))
             } else {
-                CommandResult::Error(ErrorResponse {
-                    error: format!("Not an editor command: {}", command),
-                })
+                err(format!("Not an editor command: {}", command))
             }
         }
     }
@@ -1641,11 +1192,7 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
     if parts.len() == 1 {
         let mappings = editor.keymaps().list_mappings(Some(mode));
         if mappings.is_empty() {
-            return CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("No mappings".to_string()),
-                line_count: None,
-            });
+            return ok("No mappings");
         }
         let lines: Vec<String> = mappings
             .into_iter()
@@ -1660,33 +1207,21 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
                 )
             })
             .collect();
-        return CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some(format!("--- Mappings ---\n{}", lines.join("\n"))),
-            line_count: None,
-        });
+        return ok(format!("--- Mappings ---\n{}", lines.join("\n")));
     }
 
     // If only lhs provided, show mapping for that key
     if parts.len() == 2 {
         let lhs = parse_map_keys(editor, parts[1]);
         if let Some(mapping) = editor.keymaps().get_mapping(mode, &lhs) {
-            return CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!(
+            return ok(format!(
                     "{}  {}  {}",
                     mode.display_char(),
                     mapping.lhs,
                     mapping.rhs
-                )),
-                line_count: None,
-            });
+                ));
         } else {
-            return CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("No mapping found".to_string()),
-                line_count: None,
-            });
+            return ok("No mapping found");
         }
     }
 
@@ -1698,11 +1233,7 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
         .keymaps_mut()
         .add_mapping(mode, lhs.clone(), rhs, noremap);
 
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: None,
-        line_count: None,
-    })
+    crate::command_result::ok_silent()
 }
 
 /// Handle unmap commands
@@ -1722,22 +1253,14 @@ fn handle_unmap_command(editor: &mut Editor, command: &str) -> CommandResult {
     };
 
     if parts.len() < 2 {
-        return CommandResult::Error(ErrorResponse {
-            error: "E474: Invalid argument".to_string(),
-        });
+        return err("E474: Invalid argument");
     }
 
     let lhs = parse_map_keys(editor, parts[1]);
     if editor.keymaps_mut().remove_mapping(mode, &lhs) {
-        CommandResult::Success(SuccessResponse {
-            success: true,
-            message: None,
-            line_count: None,
-        })
+        crate::command_result::ok_silent()
     } else {
-        CommandResult::Error(ErrorResponse {
-            error: "E31: No such mapping".to_string(),
-        })
+        err("E31: No such mapping")
     }
 }
 
@@ -1758,11 +1281,7 @@ fn handle_mapclear_command(editor: &mut Editor, command: &str) -> CommandResult 
 
     editor.keymaps_mut().clear_mappings(mode);
 
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: None,
-        line_count: None,
-    })
+    crate::command_result::ok_silent()
 }
 
 /// Execute :make command — runs makeprg and populates the quickfix list
@@ -1809,11 +1328,7 @@ fn execute_make_command(editor: &mut Editor, args: &str) -> CommandResult {
         command: cmd.clone(),
     });
 
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: Some(format!("Running: {}", cmd)),
-        line_count: None,
-    })
+    ok(format!("Running: {}", cmd))
 }
 
 /// Parse compiler output for file:line:col: error/warning patterns
@@ -2054,17 +1569,9 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
 
             if output.status.success() {
                 if result.is_empty() {
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("Command executed successfully".to_string()),
-                        line_count: None,
-                    })
+                    ok("Command executed successfully")
                 } else {
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(result),
-                        line_count: None,
-                    })
+                    ok(result)
                 }
             } else {
                 let exit_code = output
@@ -2073,19 +1580,13 @@ fn execute_shell_command(cmd: &str) -> CommandResult {
                     .map(|c| format!(" (exit code {})", c))
                     .unwrap_or_default();
                 if result.is_empty() {
-                    CommandResult::Error(ErrorResponse {
-                        error: format!("Command failed{}", exit_code),
-                    })
+                    err(format!("Command failed{}", exit_code))
                 } else {
-                    CommandResult::Error(ErrorResponse {
-                        error: format!("{}\n\nCommand failed{}", result, exit_code),
-                    })
+                    err(format!("{}\n\nCommand failed{}", result, exit_code))
                 }
             }
         }
-        Err(e) => CommandResult::Error(ErrorResponse {
-            error: format!("Failed to execute command: {}", e),
-        }),
+        Err(e) => err(format!("Failed to execute command: {}", e)),
     }
 }
 
@@ -2188,11 +1689,7 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
 
     let message = lines.join("\n");
     editor.set_hover_info(message);
-    CommandResult::Success(SuccessResponse {
-        success: true,
-        message: None,
-        line_count: None,
-    })
+    crate::command_result::ok_silent()
 }
 
 fn handle_workflow_command(editor: &mut Editor, command: &str) -> CommandResult {
@@ -2200,10 +1697,8 @@ fn handle_workflow_command(editor: &mut Editor, command: &str) -> CommandResult 
 
     match subcmd {
         "" | "list" => {
-            if let Err(err) = editor.ensure_workflows_loaded() {
-                return CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to load workflows: {}", err),
-                });
+            if let Err(e) = editor.ensure_workflows_loaded() {
+                return err(format!("Failed to load workflows: {}", e));
             }
             let names = editor.workflow_names_sorted();
             let message = if names.is_empty() {
@@ -2211,41 +1706,23 @@ fn handle_workflow_command(editor: &mut Editor, command: &str) -> CommandResult 
             } else {
                 format!("{} workflow(s):\n{}", names.len(), names.join("\n"))
             };
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(message),
-                line_count: None,
-            })
+            ok(message)
         }
         "reload" => match editor.reload_workflows() {
-            Ok(count) => CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Loaded {} workflow(s)", count)),
-                line_count: None,
-            }),
-            Err(err) => CommandResult::Error(ErrorResponse {
-                error: format!("Failed to reload workflows: {}", err),
-            }),
+            Ok(count) => ok(format!("Loaded {} workflow(s)", count)),
+            Err(e) => err(format!("Failed to reload workflows: {}", e)),
         },
-        "status" => CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some(editor.workflow_status_report()),
-            line_count: None,
-        }),
+        "status" => ok(editor.workflow_status_report()),
         s if s.starts_with("run ") => {
             let mut parts = s["run ".len()..].split_whitespace();
             let Some(name) = parts.next() else {
-                return CommandResult::Error(ErrorResponse {
-                    error: "Usage: :workflow run <name> [k=v ...]".to_string(),
-                });
+                return err("Usage: :workflow run <name> [k=v ...]");
             };
 
             let mut inputs = std::collections::BTreeMap::new();
             for pair in parts {
                 let Some((key, raw_value)) = pair.split_once('=') else {
-                    return CommandResult::Error(ErrorResponse {
-                        error: format!("Invalid input '{}': expected k=v", pair),
-                    });
+                    return err(format!("Invalid input '{}': expected k=v", pair));
                 };
                 let value = serde_json::from_str::<serde_json::Value>(raw_value)
                     .unwrap_or_else(|_| serde_json::Value::String(raw_value.to_string()));
@@ -2253,22 +1730,14 @@ fn handle_workflow_command(editor: &mut Editor, command: &str) -> CommandResult 
             }
 
             match editor.run_workflow(name, inputs) {
-                Ok(run_id) => CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!("Workflow '{}' started (run #{})", name, run_id)),
-                    line_count: None,
-                }),
-                Err(err) => CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to run workflow '{}': {}", name, err),
-                }),
+                Ok(run_id) => ok(format!("Workflow '{}' started (run #{})", name, run_id)),
+                Err(e) => err(format!("Failed to run workflow '{}': {}", name, e)),
             }
         }
-        _ => CommandResult::Error(ErrorResponse {
-            error: format!(
+        _ => err(format!(
                 "Unknown workflow subcommand '{}'. Usage: :workflow [list|reload|run <name> [k=v ...]|status]",
                 subcmd
-            ),
-        }),
+            )),
     }
 }
 
@@ -2290,11 +1759,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                     } else {
                         "No registered sessions. Use :session start NAME to register.".to_string()
                     };
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(msg),
-                        line_count: None,
-                    })
+                    ok(msg)
                 }
                 Ok(sessions) => {
                     let mut msg = format!("{} active session(s):", sessions.len());
@@ -2309,23 +1774,15 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                             s.session_name, s.pid, s.port, marker
                         ));
                     }
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(msg),
-                        line_count: None,
-                    })
+                    ok(msg)
                 }
-                Err(e) => CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to list sessions: {}", e),
-                }),
+                Err(e) => err(format!("Failed to list sessions: {}", e)),
             }
         }
         s if s.starts_with("start ") => {
             let name = s["start ".len()..].trim();
             if name.is_empty() {
-                return CommandResult::Error(ErrorResponse {
-                    error: "Usage: :session start NAME".to_string(),
-                });
+                return err("Usage: :session start NAME");
             }
 
             // Validate session name (alphanumeric, underscore, hyphen only)
@@ -2333,28 +1790,22 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                 .chars()
                 .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
             {
-                return CommandResult::Error(ErrorResponse {
-                    error: "Session name must contain only alphanumeric characters, underscores, and hyphens".to_string(),
-                });
+                return err("Session name must contain only alphanumeric characters, underscores, and hyphens");
             }
 
             // Check if already registered
             if let Some(ref existing) = editor.active_session {
-                return CommandResult::Error(ErrorResponse {
-                    error: format!(
+                return err(format!(
                         "Already registered as session '{}'. Use :session stop first.",
                         existing
-                    ),
-                });
+                    ));
             }
 
             // Need API port to register
             let port = match editor.api_port {
                 Some(p) => p,
                 None => {
-                    return CommandResult::Error(ErrorResponse {
-                        error: "API server not running".to_string(),
-                    });
+                    return err("API server not running");
                 }
             };
 
@@ -2364,15 +1815,9 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             match session_info.write() {
                 Ok(()) => {
                     editor.active_session = Some(name.to_string());
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("Session '{}' registered", name)),
-                        line_count: None,
-                    })
+                    ok(format!("Session '{}' registered", name))
                 }
-                Err(e) => CommandResult::Error(ErrorResponse {
-                    error: format!("Failed to register session: {}", e),
-                }),
+                Err(e) => err(format!("Failed to register session: {}", e)),
             }
         }
         "stop" => {
@@ -2382,23 +1827,15 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                     let port = editor.api_port.unwrap_or(0);
                     let session_info = SessionInfo::new(port, None, name.clone());
                     let _ = session_info.delete();
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("Session '{}' unregistered", name)),
-                        line_count: None,
-                    })
+                    ok(format!("Session '{}' unregistered", name))
                 }
-                None => CommandResult::Error(ErrorResponse {
-                    error: "No active session to stop".to_string(),
-                }),
+                None => err("No active session to stop"),
             }
         }
-        _ => CommandResult::Error(ErrorResponse {
-            error: format!(
+        _ => err(format!(
                 "Unknown session subcommand: '{}'. Usage: :session [start NAME|stop|list]",
                 subcmd
-            ),
-        }),
+            )),
     }
 }
 
@@ -2410,59 +1847,31 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
     match subcmd {
         "breakpoint" | "bp" => {
             editor.toggle_breakpoint();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Breakpoint toggled".to_string()),
-                line_count: None,
-            })
+            ok("Breakpoint toggled")
         }
         "panels" => {
             editor.toggle_debug_panels();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: None,
-                line_count: None,
-            })
+            crate::command_result::ok_silent()
         }
         "continue" | "c" => {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Continue);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Continue".to_string()),
-                line_count: None,
-            })
+            ok("Continue")
         }
         "next" | "n" | "step" => {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::StepOver);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Step over".to_string()),
-                line_count: None,
-            })
+            ok("Step over")
         }
         "stepin" | "si" => {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::StepIn);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Step in".to_string()),
-                line_count: None,
-            })
+            ok("Step in")
         }
         "stepout" | "so" => {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::StepOut);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Step out".to_string()),
-                line_count: None,
-            })
+            ok("Step out")
         }
         "stop" => {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Stop);
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some("Stopping debug session".to_string()),
-                line_count: None,
-            })
+            ok("Stopping debug session")
         }
         "start" => {
             // Auto-detect DAP adapter from the current file's language config
@@ -2476,15 +1885,11 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
                 .and_then(|lang| lang.dap.as_ref());
 
             let Some(config) = dap_config else {
-                return CommandResult::Error(ErrorResponse {
-                    error: "No DAP adapter configured for this language. Use :debug start <command> [args...]".to_string(),
-                });
+                return err("No DAP adapter configured for this language. Use :debug start <command> [args...]");
             };
             let Some(cmd) = crate::language_config::find_dap_command(config) else {
                 let hint = config.install_hint.as_deref().unwrap_or("Install the debug adapter and ensure it's in PATH");
-                return CommandResult::Error(ErrorResponse {
-                    error: format!("DAP adapter '{}' not found. {}", config.command, hint),
-                });
+                return err(format!("DAP adapter '{}' not found. {}", config.command, hint));
             };
             let args = config.args.clone();
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
@@ -2492,19 +1897,13 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
                 args: args.clone(),
                 run_config: None,
             });
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Starting debug adapter: {} {}", cmd, args.join(" "))),
-                line_count: None,
-            })
+            ok(format!("Starting debug adapter: {} {}", cmd, args.join(" ")))
         }
         s if s.starts_with("start ") => {
             let rest = s["start ".len()..].trim();
             let mut parts = rest.split_whitespace();
             let Some(cmd) = parts.next() else {
-                return CommandResult::Error(ErrorResponse {
-                    error: "Usage: :debug start [command] [args...]".to_string(),
-                });
+                return err("Usage: :debug start [command] [args...]");
             };
             let args: Vec<String> = parts.map(String::from).collect();
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
@@ -2512,26 +1911,16 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
                 args,
                 run_config: None,
             });
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Starting debug adapter: {}", cmd)),
-                line_count: None,
-            })
+            ok(format!("Starting debug adapter: {}", cmd))
         }
-        "" => CommandResult::Success(SuccessResponse {
-            success: true,
-            message: Some(
+        "" => ok(
                 "Usage: :debug [start <cmd>|stop|continue|next|stepin|stepout|breakpoint|panels]"
                     .to_string(),
             ),
-            line_count: None,
-        }),
-        _ => CommandResult::Error(ErrorResponse {
-            error: format!(
+        _ => err(format!(
                 "Unknown debug subcommand: '{}'. Usage: :debug [start|stop|continue|next|stepin|stepout|breakpoint|panels]",
                 subcmd
-            ),
-        }),
+            )),
     }
 }
 
