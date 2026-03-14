@@ -284,4 +284,131 @@ fn foo() {
         // Add file: search is empty (just newline), replace has content
         assert!(edits[0].hunks[0].replace.contains("new_fn"));
     }
+
+    #[test]
+    fn delete_file() {
+        let input = r#"*** Begin Patch
+*** Delete File: old.rs
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].path.as_deref(), Some("old.rs"));
+        // Delete file has no hunks
+        assert!(edits[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn hunk_with_only_additions() {
+        let input = r#"*** Begin Patch
+*** Update File: lib.rs
+@@ @@
+ fn existing() {
++    // new comment
++    new_call();
+ }
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        let hunk = &edits[0].hunks[0];
+        // Context lines in both
+        assert!(hunk.search.contains("fn existing()"));
+        assert!(hunk.replace.contains("fn existing()"));
+        // Additions only in replace
+        assert!(!hunk.search.contains("new_call"));
+        assert!(hunk.replace.contains("new_call"));
+        assert!(hunk.replace.contains("new comment"));
+    }
+
+    #[test]
+    fn hunk_with_only_deletions() {
+        let input = r#"*** Begin Patch
+*** Update File: lib.rs
+@@ @@
+ fn cleanup() {
+-    old_code();
+-    deprecated();
+ }
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        let hunk = &edits[0].hunks[0];
+        // Deletions only in search
+        assert!(hunk.search.contains("old_code"));
+        assert!(hunk.search.contains("deprecated"));
+        assert!(!hunk.replace.contains("old_code"));
+        assert!(!hunk.replace.contains("deprecated"));
+        // Context in both
+        assert!(hunk.replace.contains("fn cleanup()"));
+    }
+
+    #[test]
+    fn empty_hunk_section_is_error() {
+        // @@ marker with no content lines produces no hunks, which means no file edits
+        let input = r#"*** Begin Patch
+*** Update File: lib.rs
+@@ @@
+*** End Patch
+"#;
+        // No hunks → no file edits → error
+        assert!(parse_apply_patch(input).is_err());
+    }
+
+    #[test]
+    fn file_path_with_spaces() {
+        let input = r#"*** Begin Patch
+*** Update File: src/my file.rs
+@@ @@
+-old
++new
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        assert_eq!(edits[0].path.as_deref(), Some("src/my file.rs"));
+    }
+
+    #[test]
+    fn three_hunks_same_file() {
+        let input = r#"*** Begin Patch
+*** Update File: big.rs
+@@ first @@
+-aaa
++bbb
+@@ second @@
+-ccc
++ddd
+@@ third @@
+-eee
++fff
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        assert_eq!(edits[0].hunks.len(), 3);
+        assert!(edits[0].hunks[0].search.contains("aaa"));
+        assert!(edits[0].hunks[1].search.contains("ccc"));
+        assert!(edits[0].hunks[2].search.contains("eee"));
+        assert!(edits[0].hunks[0].replace.contains("bbb"));
+        assert!(edits[0].hunks[1].replace.contains("ddd"));
+        assert!(edits[0].hunks[2].replace.contains("fff"));
+    }
+
+    #[test]
+    fn missing_end_patch_is_error() {
+        let input = r#"*** Begin Patch
+*** Update File: a.rs
+@@ @@
+-old
++new
+"#;
+        // No *** End Patch — parser requires the envelope
+        assert!(parse_apply_patch(input).is_err());
+    }
+
+    #[test]
+    fn build_hunk_trailing_newlines() {
+        // Verify build_hunk always adds trailing newlines
+        let hunk = build_hunk(&["-old_line", "+new_line"]);
+        assert!(hunk.search.ends_with('\n'));
+        assert!(hunk.replace.ends_with('\n'));
+    }
 }

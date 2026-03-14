@@ -160,4 +160,85 @@ fn old() {}
         let edits = parse_str_replace(input).expect("should parse with trailing ws");
         assert_eq!(edits[0].hunks.len(), 1);
     }
+
+    #[test]
+    fn nested_markers_in_search_text() {
+        // Search text itself contains marker-like strings
+        let input = r#"<<<<<<< SEARCH
+let marker = "<<<<<<< SEARCH";
+=======
+let marker = "fixed";
+>>>>>>> REPLACE
+"#;
+        let edits = parse_str_replace(input).expect("should parse");
+        assert_eq!(edits[0].hunks.len(), 1);
+        assert!(edits[0].hunks[0].search.contains("<<<<<<< SEARCH"));
+    }
+
+    #[test]
+    fn multiline_search_and_replace() {
+        let input = r#"<<<<<<< SEARCH
+fn foo() {
+    let x = 1;
+    let y = 2;
+    x + y
+}
+=======
+fn foo() {
+    let x = 10;
+    let y = 20;
+    x * y
+}
+>>>>>>> REPLACE
+"#;
+        let edits = parse_str_replace(input).expect("should parse");
+        let hunk = &edits[0].hunks[0];
+        assert!(hunk.search.contains("let x = 1;"));
+        assert!(hunk.search.contains("let y = 2;"));
+        assert!(hunk.replace.contains("let x = 10;"));
+        assert!(hunk.replace.contains("x * y"));
+    }
+
+    #[test]
+    fn no_blocks_found_is_error() {
+        let input = "Here is some prose with no search/replace blocks.";
+        assert!(parse_str_replace(input).is_err());
+    }
+
+    #[test]
+    fn whitespace_only_search_parses() {
+        let input = "<<<<<<< SEARCH\n   \n=======\nfn new() {}\n>>>>>>> REPLACE\n";
+        // Whitespace-only search is allowed (not treated as empty)
+        let edits = parse_str_replace(input).expect("should parse");
+        assert_eq!(edits[0].hunks.len(), 1);
+    }
+
+    #[test]
+    fn insertion_block_with_empty_replace() {
+        let input = r#"<<<<<<< SEARCH
+fn old() {
+    // remove everything
+}
+=======
+>>>>>>> REPLACE
+"#;
+        let edits = parse_str_replace(input).expect("should parse");
+        assert!(edits[0].hunks[0].replace.is_empty());
+        assert!(edits[0].hunks[0].search.contains("remove everything"));
+    }
+
+    #[test]
+    fn separator_in_search_text() {
+        // The ======= separator could appear in code (e.g., merge conflict markers)
+        // The parser should use the first ======= as the separator
+        let input = r#"<<<<<<< SEARCH
+let divider = "=======";
+=======
+let divider = "---";
+>>>>>>> REPLACE
+"#;
+        let edits = parse_str_replace(input).expect("should parse");
+        assert!(edits[0].hunks[0].search.contains("======="));
+        assert!(edits[0].hunks[0].replace.contains("---"));
+    }
 }
