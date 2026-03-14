@@ -36,7 +36,7 @@ impl Editor {
     /// Implementation of goto-definition (optionally in a new tab)
     async fn goto_definition_common(&mut self, new_tab: bool) -> Result<bool> {
         // Check if LSP is enabled and clone the Arc to avoid borrow issues
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -90,7 +90,7 @@ impl Editor {
         );
 
         // Cancel any existing pending definition request by aborting the task
-        if let Some((_, old)) = self.lsp_state.pending_lsp_responses.definition.take() {
+        if let Some((_, old)) = self.lsp.state.pending_lsp_responses.definition.take() {
             crate::lsp_debug!(
                 "LSP-DEFINITION",
                 "Aborting previous pending definition request"
@@ -129,7 +129,7 @@ impl Editor {
             receiver: rx,
             started: std::time::Instant::now(),
         };
-        self.lsp_state.pending_lsp_responses.definition = Some((new_tab, pending));
+        self.lsp.state.pending_lsp_responses.definition = Some((new_tab, pending));
 
         // Show loading status
         self.set_lsp_status("Jumping to definition...".to_string());
@@ -149,7 +149,7 @@ impl Editor {
 
     /// Implementation of goto-implementation (optionally in a new tab)
     async fn goto_implementation_common(&mut self, new_tab: bool) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -189,7 +189,7 @@ impl Editor {
         };
 
         // Cancel any existing pending implementation request by aborting the task
-        if let Some((_, old)) = self.lsp_state.pending_lsp_responses.implementation.take() {
+        if let Some((_, old)) = self.lsp.state.pending_lsp_responses.implementation.take() {
             crate::lsp_debug!(
                 "LSP-IMPLEMENTATION",
                 "Aborting previous pending implementation request"
@@ -216,7 +216,7 @@ impl Editor {
             receiver: rx,
             started: std::time::Instant::now(),
         };
-        self.lsp_state.pending_lsp_responses.implementation = Some((new_tab, pending));
+        self.lsp.state.pending_lsp_responses.implementation = Some((new_tab, pending));
 
         // Show loading status
         self.set_lsp_status("Jumping to implementation...".to_string());
@@ -236,7 +236,7 @@ impl Editor {
 
     /// Implementation of goto-type-definition
     pub(in crate::editor) async fn goto_type_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -276,7 +276,7 @@ impl Editor {
         };
 
         // Cancel any existing pending type definition request by aborting the task
-        if let Some(old) = self.lsp_state.pending_lsp_responses.type_definition.take() {
+        if let Some(old) = self.lsp.state.pending_lsp_responses.type_definition.take() {
             crate::lsp_debug!(
                 "LSP-TYPE",
                 "Aborting previous pending type definition request"
@@ -300,7 +300,7 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_responses.type_definition =
+        self.lsp.state.pending_lsp_responses.type_definition =
             Some(crate::editor::lsp_state::PendingLspRequest {
                 task,
                 receiver: rx,

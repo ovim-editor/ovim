@@ -17,7 +17,7 @@ impl Editor {
             Some(f) => format!("cargo test {}", f),
             None => "cargo test".to_string(),
         };
-        self.last_test_command = Some(cmd.clone());
+        self.build.last_test_command = Some(cmd.clone());
         self.run_make_with_command(&cmd);
     }
 
@@ -31,20 +31,20 @@ impl Editor {
                 return;
             }
         };
-        self.last_test_command = Some(cmd.clone());
+        self.build.last_test_command = Some(cmd.clone());
         self.run_make_with_command(&cmd);
     }
 
     /// `<Space>ta` - Run all tests.
     pub fn run_test_all(&mut self) {
         let cmd = "cargo test".to_string();
-        self.last_test_command = Some(cmd.clone());
+        self.build.last_test_command = Some(cmd.clone());
         self.run_make_with_command(&cmd);
     }
 
     /// `<Space>tl` - Re-run the last test command.
     pub fn run_test_last(&mut self) {
-        if let Some(cmd) = self.last_test_command.clone() {
+        if let Some(cmd) = self.build.last_test_command.clone() {
             self.run_make_with_command(&cmd);
         } else {
             self.set_lsp_status("No previous test command".to_string());

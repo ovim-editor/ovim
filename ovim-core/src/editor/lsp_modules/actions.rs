@@ -232,7 +232,7 @@ impl Editor {
                     .map(|a| code_action_title(&a.action))
                     .collect();
 
-                self.lsp_state.available_code_actions = available;
+                self.lsp.state.available_code_actions = available;
 
                 let base_dir =
                     std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
@@ -259,7 +259,7 @@ impl Editor {
         source_server_id: &str,
         command: lsp_types::Command,
     ) -> bool {
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -291,12 +291,12 @@ impl Editor {
 
     /// Apply a code action by index from available code actions
     pub fn apply_code_action(&mut self, action_index: usize) {
-        if action_index >= self.lsp_state.available_code_actions.len() {
+        if action_index >= self.lsp.state.available_code_actions.len() {
             self.set_lsp_status("Invalid code action index".to_string());
             return;
         }
 
-        let available = self.lsp_state.available_code_actions[action_index].clone();
+        let available = self.lsp.state.available_code_actions[action_index].clone();
 
         match available.action {
             lsp_types::CodeActionOrCommand::CodeAction(code_action) => {
@@ -341,7 +341,7 @@ impl Editor {
             }
         }
 
-        self.lsp_state.available_code_actions.clear();
+        self.lsp.state.available_code_actions.clear();
     }
 
     pub(in crate::editor) async fn organize_imports_impl(&mut self) -> Result<bool> {
@@ -379,7 +379,7 @@ impl Editor {
                     .find(|action| is_organize_imports_action(&action.action));
 
                 if let Some(action) = organize_action {
-                    self.lsp_state.available_code_actions = vec![action];
+                    self.lsp.state.available_code_actions = vec![action];
                     self.apply_code_action(0);
                     self.set_lsp_status("Imports organized".to_string());
                     Ok(true)
@@ -552,20 +552,20 @@ mod tests {
     #[test]
     fn apply_code_action_command_only_uses_command_path() {
         let mut editor = Editor::new();
-        editor.lsp_state.available_code_actions = vec![available(code_action_with_command(
+        editor.lsp.state.available_code_actions = vec![available(code_action_with_command(
             "rust-analyzer.applySourceChange",
         ))];
 
         editor.apply_code_action(0);
 
         assert_eq!(editor.lsp_status(), "LSP not available");
-        assert!(editor.lsp_state.available_code_actions.is_empty());
+        assert!(editor.lsp.state.available_code_actions.is_empty());
     }
 
     #[test]
     fn apply_code_action_without_edit_or_command_reports_specific_status() {
         let mut editor = Editor::new();
-        editor.lsp_state.available_code_actions =
+        editor.lsp.state.available_code_actions =
             vec![available(CodeActionOrCommand::CodeAction(CodeAction {
                 title: "Noop".to_string(),
                 kind: None,
@@ -580,6 +580,6 @@ mod tests {
         editor.apply_code_action(0);
 
         assert_eq!(editor.lsp_status(), "Code action has no edit or command");
-        assert!(editor.lsp_state.available_code_actions.is_empty());
+        assert!(editor.lsp.state.available_code_actions.is_empty());
     }
 }

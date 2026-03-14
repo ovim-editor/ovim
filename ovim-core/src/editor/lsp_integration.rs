@@ -101,24 +101,24 @@ impl Editor {
     /// Enables LSP support
     pub fn enable_lsp(&mut self) {
         let (tx, rx) = mpsc::unbounded_channel();
-        self.lsp_state.lsp_manager = Some(Arc::new(LspManager::new()));
-        self.lsp_command_tx = Some(tx);
-        self.lsp_command_rx = Some(rx);
+        self.lsp.state.lsp_manager = Some(Arc::new(LspManager::new()));
+        self.lsp.command_tx = Some(tx);
+        self.lsp.command_rx = Some(rx);
     }
 
     /// Gets a reference to the LSP manager
     pub fn lsp_manager(&self) -> Option<Arc<LspManager>> {
-        self.lsp_state.lsp_manager.clone()
+        self.lsp.state.lsp_manager.clone()
     }
 
     /// Gets a reference to the LSP command sender for background tasks
     pub fn lsp_command_sender(&self) -> Option<mpsc::UnboundedSender<LspCommand>> {
-        self.lsp_command_tx.clone()
+        self.lsp.command_tx.clone()
     }
 
     /// Close the LSP for the current file
     pub async fn close_current_file_lsp(&mut self) {
-        let Some(ref lsp) = self.lsp_state.lsp_manager else {
+        let Some(ref lsp) = self.lsp.state.lsp_manager else {
             return;
         };
 
@@ -140,12 +140,12 @@ impl Editor {
         // Send LSP close notification
         let file_path_string = file_path.to_string();
         let _ = lsp.did_close_broadcast(uri, language_id).await;
-        self.lsp_state.document_sync.remove(&file_path_string);
+        self.lsp.state.document_sync.remove(&file_path_string);
     }
 
     /// Check if LSP initialization is needed for the current file
     pub fn needs_lsp_init(&self) -> Option<String> {
-        if self.lsp_state.needs_lsp_init {
+        if self.lsp.state.needs_lsp_init {
             self.buffer().file_path().map(|s| s.to_string())
         } else {
             None
@@ -154,14 +154,14 @@ impl Editor {
 
     /// Clear the LSP initialization flag after init is complete
     pub fn clear_lsp_init_flag(&mut self) {
-        self.lsp_state.needs_lsp_init = false;
+        self.lsp.state.needs_lsp_init = false;
     }
 
     /// Marks a document as having sent didOpen notification
     /// Used by LSP pre-warming to prevent duplicate didOpen
     pub fn mark_document_opened(&mut self, file_path: &str) {
         let state = self
-            .lsp_state
+            .lsp.state
             .document_sync
             .entry(file_path.to_string())
             .or_default();
@@ -175,12 +175,12 @@ impl Editor {
 
     /// Request LSP initialization for the current file
     pub fn request_lsp_init(&mut self) {
-        self.lsp_state.needs_lsp_init = true;
+        self.lsp.state.needs_lsp_init = true;
     }
 
     /// Set LSP status message
     pub fn set_lsp_status(&mut self, status: String) {
-        self.lsp_state.lsp_status = status.clone();
+        self.lsp.state.lsp_status = status.clone();
 
         if let Some((level, ttl, sticky, dedupe_key)) = classify_status_toast(&status) {
             let request = ToastRequest::new(ToastSource::Lsp, level, status)
@@ -194,12 +194,12 @@ impl Editor {
 
     /// Check if there's a pending LSP install awaiting user consent
     pub fn has_pending_lsp_install(&self) -> bool {
-        self.pending_lsp_install.is_some()
+        self.lsp.pending_install.is_some()
     }
 
     /// Get a summary of the pending LSP install for display
     pub fn pending_lsp_install_summary(&self) -> Option<(String, String, String)> {
-        self.pending_lsp_install.as_ref().map(|p| {
+        self.lsp.pending_install.as_ref().map(|p| {
             (
                 p.language_name.clone(),
                 p.server_command.clone(),
@@ -210,7 +210,7 @@ impl Editor {
 
     /// Resolve the pending LSP install consent dialog
     pub fn resolve_pending_lsp_install(&mut self, consent: super::LspInstallConsent) {
-        let pending = self.pending_lsp_install.take();
+        let pending = self.lsp.pending_install.take();
         match consent {
             super::LspInstallConsent::Yes => {
                 if let Some(p) = &pending {
@@ -218,14 +218,14 @@ impl Editor {
                 }
                 // The actual install is triggered by the event loop checking
                 // lsp_install_approved. Store the approved info.
-                self.approved_lsp_install = pending;
+                self.lsp.approved_install = pending;
             }
             super::LspInstallConsent::Always => {
                 self.options.lsp_auto_install = super::AutoInstallMode::Auto;
                 if let Some(p) = &pending {
                     self.set_lsp_status(format!("LSP: Installing {}...", p.server_command));
                 }
-                self.approved_lsp_install = pending;
+                self.lsp.approved_install = pending;
             }
             super::LspInstallConsent::No => {
                 if let Some(p) = &pending {
@@ -240,12 +240,12 @@ impl Editor {
 
     /// Take the approved LSP install info (consumed by the event loop)
     pub fn take_approved_lsp_install(&mut self) -> Option<super::PendingLspInstall> {
-        self.approved_lsp_install.take()
+        self.lsp.approved_install.take()
     }
 
     /// Get current LSP status
     pub fn lsp_status(&self) -> &str {
-        &self.lsp_state.lsp_status
+        &self.lsp.state.lsp_status
     }
 
     fn document_sync_request_plan(
@@ -253,7 +253,7 @@ impl Editor {
         file_path: &str,
         current_content: &str,
     ) -> DocumentSyncRequestPlan {
-        let Some(state) = self.lsp_state.document_sync.get(file_path) else {
+        let Some(state) = self.lsp.state.document_sync.get(file_path) else {
             return DocumentSyncRequestPlan {
                 action: DocumentSyncRequestAction::DidOpen,
                 old_content: None,
@@ -296,7 +296,7 @@ impl Editor {
             .filter(|path| *path == file_path)
             .map(|_| self.buffer().rope().to_string());
         let state = self
-            .lsp_state
+            .lsp.state
             .document_sync
             .entry(file_path.to_string())
             .or_default();
@@ -306,27 +306,27 @@ impl Editor {
 
     /// Get the currently queued LSP action, if any.
     pub fn pending_lsp_action(&self) -> Option<&LspAction> {
-        self.lsp_state.pending_lsp_action.as_ref()
+        self.lsp.state.pending_lsp_action.as_ref()
     }
 
     /// Invalidate hover cache when buffer is modified
     pub fn invalidate_hover_cache(&mut self) {
-        if self.lsp_state.hover_cache.is_some() {
-            self.lsp_state.hover_cache = None;
+        if self.lsp.state.hover_cache.is_some() {
+            self.lsp.state.hover_cache = None;
         }
     }
 
     /// Returns true if there's a pending LSP response being waited for
     pub fn has_pending_lsp_response(&self) -> bool {
-        self.lsp_state.pending_lsp_responses.any_pending()
+        self.lsp.state.pending_lsp_responses.any_pending()
     }
 
     pub fn has_pending_completion_response(&self) -> bool {
-        self.lsp_state.pending_completion.is_some()
+        self.lsp.state.pending_completion.is_some()
     }
 
     pub fn has_pending_inlay_hint_response(&self) -> bool {
-        self.lsp_state.pending_inlay_hints.is_some()
+        self.lsp.state.pending_inlay_hints.is_some()
     }
 
     /// Polls pending LSP responses (non-blocking)
@@ -334,7 +334,7 @@ impl Editor {
     ///
     /// Returns true if a hover response is pending (spawned but not yet received).
     pub fn has_pending_hover(&self) -> bool {
-        self.lsp_state.pending_lsp_responses.hover.is_some()
+        self.lsp.state.pending_lsp_responses.hover.is_some()
     }
 
     /// Each response type is polled independently so that e.g. a hover request
@@ -343,18 +343,18 @@ impl Editor {
         let mut changed = false;
 
         // --- Poll hover ---
-        if self.lsp_state.pending_lsp_responses.hover.is_some() {
+        if self.lsp.state.pending_lsp_responses.hover.is_some() {
             changed |= self.poll_hover_slot();
         }
 
         // --- Poll definition ---
-        if self.lsp_state.pending_lsp_responses.definition.is_some() {
+        if self.lsp.state.pending_lsp_responses.definition.is_some() {
             changed |= self.poll_definition_slot();
         }
 
         // --- Poll implementation ---
         if self
-            .lsp_state
+            .lsp.state
             .pending_lsp_responses
             .implementation
             .is_some()
@@ -364,7 +364,7 @@ impl Editor {
 
         // --- Poll type_definition ---
         if self
-            .lsp_state
+            .lsp.state
             .pending_lsp_responses
             .type_definition
             .is_some()
@@ -379,14 +379,14 @@ impl Editor {
     fn poll_hover_slot(&mut self) -> bool {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        let Some(ref mut pending) = self.lsp_state.pending_lsp_responses.hover else {
+        let Some(ref mut pending) = self.lsp.state.pending_lsp_responses.hover else {
             return false;
         };
 
         match pending.receiver.try_recv() {
             Ok(Ok(Some(hover_text))) => {
                 // Take ownership now that we know we have a result
-                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                let _pending = self.lsp.state.pending_lsp_responses.hover.take().unwrap();
 
                 crate::lsp_debug!("LSP-HOVER", "Received hover response");
 
@@ -396,7 +396,7 @@ impl Editor {
                 let cursor_col = cursor.col();
                 let file_path = self.buffer().file_path().unwrap_or("").to_string();
 
-                self.lsp_state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
+                self.lsp.state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
                     file_path,
                     cursor_line,
                     cursor_col,
@@ -404,11 +404,11 @@ impl Editor {
                     hover_text.clone(),
                 ));
 
-                self.lsp_state.hover_info = Some(hover_text);
-                self.lsp_state.hover_scroll = 0;
-                self.lsp_state.hover_h_scroll = 0;
-                self.lsp_state.hover_position = Some((cursor_line, cursor_col));
-                self.lsp_state.hover_content_type =
+                self.lsp.state.hover_info = Some(hover_text);
+                self.lsp.state.hover_scroll = 0;
+                self.lsp.state.hover_h_scroll = 0;
+                self.lsp.state.hover_position = Some((cursor_line, cursor_col));
+                self.lsp.state.hover_content_type =
                     crate::editor::lsp_state::HoverContentType::LspHover;
                 self.mode = crate::mode::Mode::HoverPreview;
                 self.mark_dirty();
@@ -416,13 +416,13 @@ impl Editor {
                 true
             }
             Ok(Ok(None)) => {
-                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                let _pending = self.lsp.state.pending_lsp_responses.hover.take().unwrap();
                 crate::lsp_debug!("LSP-HOVER", "No hover info available");
                 self.set_lsp_status("No hover info available".to_string());
                 false
             }
             Ok(Err(e)) => {
-                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                let _pending = self.lsp.state.pending_lsp_responses.hover.take().unwrap();
                 crate::lsp_debug!("LSP-HOVER", "Hover request failed: {:?}", e);
                 self.set_lsp_status(format!("Hover failed: {}", e));
                 false
@@ -430,13 +430,13 @@ impl Editor {
             Err(TryRecvError::Empty) => {
                 // Check for timeout (re-borrow since we still hold the slot)
                 let timed_out = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .hover
                     .as_ref()
                     .is_some_and(|p| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
-                    let pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                    let pending = self.lsp.state.pending_lsp_responses.hover.take().unwrap();
                     crate::lsp_debug!("LSP-HOVER", "Hover request timed out, aborting task");
                     pending.task.abort();
                     self.set_lsp_status("Hover request timed out".to_string());
@@ -445,7 +445,7 @@ impl Editor {
                 false
             }
             Err(TryRecvError::Closed) => {
-                let _pending = self.lsp_state.pending_lsp_responses.hover.take().unwrap();
+                let _pending = self.lsp.state.pending_lsp_responses.hover.take().unwrap();
                 crate::lsp_debug!("LSP-HOVER", "Hover request cancelled (sender dropped)");
                 self.set_lsp_status("Hover request cancelled".to_string());
                 false
@@ -457,14 +457,14 @@ impl Editor {
     fn poll_definition_slot(&mut self) -> bool {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        let Some((_, ref mut req)) = self.lsp_state.pending_lsp_responses.definition else {
+        let Some((_, ref mut req)) = self.lsp.state.pending_lsp_responses.definition else {
             return false;
         };
 
         match req.receiver.try_recv() {
             Ok(result) => {
                 let (new_tab, pending) = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .definition
                     .take()
@@ -479,14 +479,14 @@ impl Editor {
             }
             Err(TryRecvError::Empty) => {
                 let timed_out = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .definition
                     .as_ref()
                     .is_some_and(|(_, p)| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
                     let (_, pending) = self
-                        .lsp_state
+                        .lsp.state
                         .pending_lsp_responses
                         .definition
                         .take()
@@ -501,7 +501,7 @@ impl Editor {
                 false
             }
             Err(TryRecvError::Closed) => {
-                let _pending = self.lsp_state.pending_lsp_responses.definition.take();
+                let _pending = self.lsp.state.pending_lsp_responses.definition.take();
                 crate::lsp_debug!(
                     "LSP-DEFINITION",
                     "Definition request cancelled (sender dropped)"
@@ -516,14 +516,14 @@ impl Editor {
     fn poll_implementation_slot(&mut self) -> bool {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        let Some((_, ref mut req)) = self.lsp_state.pending_lsp_responses.implementation else {
+        let Some((_, ref mut req)) = self.lsp.state.pending_lsp_responses.implementation else {
             return false;
         };
 
         match req.receiver.try_recv() {
             Ok(result) => {
                 let (new_tab, pending) = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .implementation
                     .take()
@@ -538,14 +538,14 @@ impl Editor {
             }
             Err(TryRecvError::Empty) => {
                 let timed_out = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .implementation
                     .as_ref()
                     .is_some_and(|(_, p)| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
                     let (_, pending) = self
-                        .lsp_state
+                        .lsp.state
                         .pending_lsp_responses
                         .implementation
                         .take()
@@ -560,7 +560,7 @@ impl Editor {
                 false
             }
             Err(TryRecvError::Closed) => {
-                let _pending = self.lsp_state.pending_lsp_responses.implementation.take();
+                let _pending = self.lsp.state.pending_lsp_responses.implementation.take();
                 crate::lsp_debug!(
                     "LSP-IMPLEMENTATION",
                     "Implementation request cancelled (sender dropped)"
@@ -575,14 +575,14 @@ impl Editor {
     fn poll_type_definition_slot(&mut self) -> bool {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        let Some(ref mut req) = self.lsp_state.pending_lsp_responses.type_definition else {
+        let Some(ref mut req) = self.lsp.state.pending_lsp_responses.type_definition else {
             return false;
         };
 
         match req.receiver.try_recv() {
             Ok(result) => {
                 let pending = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .type_definition
                     .take()
@@ -591,14 +591,14 @@ impl Editor {
             }
             Err(TryRecvError::Empty) => {
                 let timed_out = self
-                    .lsp_state
+                    .lsp.state
                     .pending_lsp_responses
                     .type_definition
                     .as_ref()
                     .is_some_and(|p| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
                     let pending = self
-                        .lsp_state
+                        .lsp.state
                         .pending_lsp_responses
                         .type_definition
                         .take()
@@ -613,7 +613,7 @@ impl Editor {
                 false
             }
             Err(TryRecvError::Closed) => {
-                let _pending = self.lsp_state.pending_lsp_responses.type_definition.take();
+                let _pending = self.lsp.state.pending_lsp_responses.type_definition.take();
                 crate::lsp_debug!(
                     "LSP-TYPE",
                     "Type definition request cancelled (sender dropped)"
@@ -629,13 +629,13 @@ impl Editor {
     pub fn poll_pending_completion_response(&mut self) -> bool {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        let Some(mut pending) = self.lsp_state.pending_completion.take() else {
+        let Some(mut pending) = self.lsp.state.pending_completion.take() else {
             return false;
         };
 
         match pending.request.receiver.try_recv() {
             Ok(Ok(result)) => {
-                if pending.seq != self.lsp_state.completion_request_seq {
+                if pending.seq != self.lsp.state.completion_request_seq {
                     return false; // Stale response
                 }
 
@@ -653,12 +653,12 @@ impl Editor {
                 let (trigger_col, trigger_prefix) = self.completion_trigger_context();
                 self.completion_menu_mut()
                     .show(result.items.clone(), trigger_col, trigger_prefix);
-                self.lsp_state.available_completions = result.items;
+                self.lsp.state.available_completions = result.items;
                 self.mark_dirty();
                 true
             }
             Ok(Err(e)) => {
-                if pending.seq == self.lsp_state.completion_request_seq {
+                if pending.seq == self.lsp.state.completion_request_seq {
                     self.hide_completion_menu();
                     self.set_lsp_status(format!("Completion failed: {}", e));
                     self.mark_dirty();
@@ -670,7 +670,7 @@ impl Editor {
             Err(TryRecvError::Empty) => {
                 if pending.request.started.elapsed() > std::time::Duration::from_secs(3) {
                     pending.request.task.abort();
-                    if pending.seq == self.lsp_state.completion_request_seq {
+                    if pending.seq == self.lsp.state.completion_request_seq {
                         self.hide_completion_menu();
                         self.set_lsp_status("Completion request timed out".to_string());
                         self.mark_dirty();
@@ -679,11 +679,11 @@ impl Editor {
                     return false;
                 }
 
-                self.lsp_state.pending_completion = Some(pending);
+                self.lsp.state.pending_completion = Some(pending);
                 false
             }
             Err(TryRecvError::Closed) => {
-                if pending.seq == self.lsp_state.completion_request_seq {
+                if pending.seq == self.lsp.state.completion_request_seq {
                     self.hide_completion_menu();
                     self.set_lsp_status("Completion request cancelled".to_string());
                     self.mark_dirty();
@@ -700,13 +700,13 @@ impl Editor {
     pub fn poll_pending_inlay_hint_response(&mut self) -> bool {
         use tokio::sync::oneshot::error::TryRecvError;
 
-        let Some(mut pending) = self.lsp_state.pending_inlay_hints.take() else {
+        let Some(mut pending) = self.lsp.state.pending_inlay_hints.take() else {
             return false;
         };
 
         match pending.request.receiver.try_recv() {
             Ok(Ok(result)) => {
-                if pending.seq != self.lsp_state.inlay_hint_request_seq {
+                if pending.seq != self.lsp.state.inlay_hint_request_seq {
                     return false;
                 }
 
@@ -725,7 +725,7 @@ impl Editor {
                     return false;
                 }
 
-                if result.request_key.lsp_version < self.lsp_state.current_file_lsp_sent_version {
+                if result.request_key.lsp_version < self.lsp.state.current_file_lsp_sent_version {
                     return false;
                 }
 
@@ -739,10 +739,10 @@ impl Editor {
                     );
                 }
 
-                self.lsp_state.current_file_lsp_version = result.request_key.lsp_version;
-                self.lsp_state.current_file_lsp_sent_version = result.request_key.lsp_version;
-                self.lsp_state.inlay_hints = result.hints;
-                self.lsp_state.applied_inlay_hint_request = Some(result.request_key);
+                self.lsp.state.current_file_lsp_version = result.request_key.lsp_version;
+                self.lsp.state.current_file_lsp_sent_version = result.request_key.lsp_version;
+                self.lsp.state.inlay_hints = result.hints;
+                self.lsp.state.applied_inlay_hint_request = Some(result.request_key);
                 self.mark_dirty();
                 true
             }
@@ -753,7 +753,7 @@ impl Editor {
                     return false;
                 }
 
-                self.lsp_state.pending_inlay_hints = Some(pending);
+                self.lsp.state.pending_inlay_hints = Some(pending);
                 false
             }
             Err(TryRecvError::Closed) => false,
@@ -844,57 +844,57 @@ impl Editor {
 
     /// Register a new LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
-        self.lsp_state.lsp_status = format!("LSP: {} ready", server_name);
-        self.lsp_state
+        self.lsp.state.lsp_status = format!("LSP: {} ready", server_name);
+        self.lsp.state
             .active_lsp_servers
             .insert(language_id, server_name);
     }
 
     /// Unregister an LSP server
     pub fn unregister_lsp_server(&mut self, language_id: &str) {
-        self.lsp_state.active_lsp_servers.remove(language_id);
-        if self.lsp_state.active_lsp_servers.is_empty() {
-            self.lsp_state.lsp_status.clear();
+        self.lsp.state.active_lsp_servers.remove(language_id);
+        if self.lsp.state.active_lsp_servers.is_empty() {
+            self.lsp.state.lsp_status.clear();
         }
     }
 
     /// Clear all LSP state (hover, code actions, completions, pending action, pending responses)
     pub(crate) fn clear_lsp_state(&mut self) {
-        self.lsp_state.hover_info = None;
-        self.lsp_state.hover_scroll = 0;
-        self.lsp_state.hover_h_scroll = 0;
-        self.lsp_state.available_code_actions.clear();
-        self.lsp_state.available_completions.clear();
-        self.lsp_state.inlay_hints.clear();
-        self.lsp_state.last_inlay_hint_request = None;
-        self.lsp_state.last_inlay_hint_request_at = None;
-        self.lsp_state.applied_inlay_hint_request = None;
-        self.lsp_state.pending_lsp_action = None;
+        self.lsp.state.hover_info = None;
+        self.lsp.state.hover_scroll = 0;
+        self.lsp.state.hover_h_scroll = 0;
+        self.lsp.state.available_code_actions.clear();
+        self.lsp.state.available_completions.clear();
+        self.lsp.state.inlay_hints.clear();
+        self.lsp.state.last_inlay_hint_request = None;
+        self.lsp.state.last_inlay_hint_request_at = None;
+        self.lsp.state.applied_inlay_hint_request = None;
+        self.lsp.state.pending_lsp_action = None;
         // Abort all pending LSP responses
-        self.lsp_state.pending_lsp_responses.abort_all();
-        self.lsp_state.hover_cache = None;
+        self.lsp.state.pending_lsp_responses.abort_all();
+        self.lsp.state.hover_cache = None;
         // Reset LSP version tracking (new file has its own version space)
-        self.lsp_state.diagnostics_lsp_version = 0;
-        self.lsp_state.current_file_lsp_version = 0;
-        self.lsp_state.current_file_lsp_sent_version = 0;
-        self.lsp_state.diagnostics_file_path = None;
+        self.lsp.state.diagnostics_lsp_version = 0;
+        self.lsp.state.current_file_lsp_version = 0;
+        self.lsp.state.current_file_lsp_sent_version = 0;
+        self.lsp.state.diagnostics_file_path = None;
         // OV-00157: Abort pending completion request on buffer switch
-        if let Some(pending) = self.lsp_state.pending_completion.take() {
+        if let Some(pending) = self.lsp.state.pending_completion.take() {
             pending.request.task.abort();
         }
-        if let Some(pending) = self.lsp_state.pending_inlay_hints.take() {
+        if let Some(pending) = self.lsp.state.pending_inlay_hints.take() {
             pending.request.task.abort();
         }
     }
 
     /// Get active LSP servers map
     pub fn active_lsp_servers(&self) -> &HashMap<String, String> {
-        &self.lsp_state.active_lsp_servers
+        &self.lsp.state.active_lsp_servers
     }
 
     /// Get LSP progress message (e.g., "indexing...")
     pub fn lsp_progress_message(&self) -> Option<String> {
-        if let Some(lsp_manager) = &self.lsp_state.lsp_manager {
+        if let Some(lsp_manager) = &self.lsp.state.lsp_manager {
             lsp_manager.get_progress_message()
         } else {
             None
@@ -906,18 +906,18 @@ impl Editor {
         let mut info = String::new();
 
         // LSP Manager status
-        if self.lsp_state.lsp_manager.is_some() {
+        if self.lsp.state.lsp_manager.is_some() {
             info.push_str("LSP: enabled\n");
         } else {
             info.push_str("LSP: disabled\n");
         }
 
         // Active servers
-        if self.lsp_state.active_lsp_servers.is_empty() {
+        if self.lsp.state.active_lsp_servers.is_empty() {
             info.push_str("Servers: none\n");
         } else {
             info.push_str("Servers:\n");
-            for (lang_id, server_name) in &self.lsp_state.active_lsp_servers {
+            for (lang_id, server_name) in &self.lsp.state.active_lsp_servers {
                 info.push_str(&format!("  - {} ({})\n", server_name, lang_id));
             }
         }
@@ -928,15 +928,15 @@ impl Editor {
         }
 
         // Diagnostic counts
-        let (errors, warnings, infos, hints) = self.lsp_state.diagnostic_count;
+        let (errors, warnings, infos, hints) = self.lsp.state.diagnostic_count;
         info.push_str(&format!(
             "Diagnostics: E:{} W:{} I:{} H:{}\n",
             errors, warnings, infos, hints
         ));
 
         // Current status
-        if !self.lsp_state.lsp_status.is_empty() {
-            info.push_str(&format!("\nStatus: {}\n", self.lsp_state.lsp_status));
+        if !self.lsp.state.lsp_status.is_empty() {
+            info.push_str(&format!("\nStatus: {}\n", self.lsp.state.lsp_status));
         }
 
         info
@@ -948,8 +948,8 @@ impl Editor {
 
     /// Queue an LSP action and reset the retry count
     fn queue_lsp_action(&mut self, action: LspAction) {
-        self.lsp_state.pending_lsp_action = Some(action);
-        self.lsp_state.lsp_action_retry_count = 0;
+        self.lsp.state.pending_lsp_action = Some(action);
+        self.lsp.state.lsp_action_retry_count = 0;
     }
 
     /// Request document format
@@ -1009,7 +1009,7 @@ impl Editor {
 
     fn document_sync_state_mut(&mut self) -> Option<&mut lsp_state::DocumentSyncState> {
         let file_path = self.buffer().file_path()?.to_string();
-        Some(self.lsp_state.document_sync.entry(file_path).or_default())
+        Some(self.lsp.state.document_sync.entry(file_path).or_default())
     }
 
     fn reconcile_document_sync_with_manager(
@@ -1023,11 +1023,11 @@ impl Editor {
             return;
         }
 
-        self.lsp_state.current_file_lsp_version = manager_version;
-        self.lsp_state.current_file_lsp_sent_version = sent_version;
+        self.lsp.state.current_file_lsp_version = manager_version;
+        self.lsp.state.current_file_lsp_sent_version = sent_version;
 
         let state = self
-            .lsp_state
+            .lsp.state
             .document_sync
             .entry(file_path.to_string())
             .or_default();
@@ -1061,28 +1061,28 @@ impl Editor {
     }
 
     pub async fn refresh_current_lsp_sync_versions(&mut self) {
-        let Some(lsp) = self.lsp_state.lsp_manager.clone() else {
-            self.lsp_state.current_file_lsp_version = 0;
-            self.lsp_state.current_file_lsp_sent_version = 0;
+        let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
+            self.lsp.state.current_file_lsp_version = 0;
+            self.lsp.state.current_file_lsp_sent_version = 0;
             return;
         };
 
         let Some(file_path) = self.buffer().file_path().map(str::to_string) else {
-            self.lsp_state.current_file_lsp_version = 0;
-            self.lsp_state.current_file_lsp_sent_version = 0;
+            self.lsp.state.current_file_lsp_version = 0;
+            self.lsp.state.current_file_lsp_sent_version = 0;
             return;
         };
 
         let Some(uri) = crate::lsp::uri_from_file_path(&file_path) else {
-            self.lsp_state.current_file_lsp_version = 0;
-            self.lsp_state.current_file_lsp_sent_version = 0;
+            self.lsp.state.current_file_lsp_version = 0;
+            self.lsp.state.current_file_lsp_sent_version = 0;
             return;
         };
 
         let manager_version = lsp.get_document_version(&uri).await;
         let sent_version = lsp.get_last_sent_version(&uri).await;
         let needs_content = self
-            .lsp_state
+            .lsp.state
             .document_sync
             .get(&file_path)
             .is_some_and(|state| {
@@ -1109,10 +1109,10 @@ impl Editor {
         }
         // Clear stale diagnostics so wrong-line markers aren't rendered
         // between the edit and the server's publishDiagnostics response.
-        if !self.lsp_state.current_file_diagnostics.is_empty() {
-            self.lsp_state.current_file_diagnostics.clear();
-            self.lsp_state.diagnostic_count = (0, 0, 0, 0);
-            self.lsp_state.diagnostics_file_path = None;
+        if !self.lsp.state.current_file_diagnostics.is_empty() {
+            self.lsp.state.current_file_diagnostics.clear();
+            self.lsp.state.diagnostic_count = (0, 0, 0, 0);
+            self.lsp.state.diagnostics_file_path = None;
         }
     }
 
@@ -1123,15 +1123,15 @@ impl Editor {
     }
 
     pub fn request_diagnostics_refresh(&mut self) {
-        self.lsp_state.diagnostics_refresh_requested = true;
+        self.lsp.state.diagnostics_refresh_requested = true;
     }
 
     /// Clear cached diagnostics and request a fresh pull from the LSP server.
     pub fn clear_and_refresh_diagnostics(&mut self) {
-        self.lsp_state.current_file_diagnostics.clear();
-        self.lsp_state.diagnostic_count = (0, 0, 0, 0);
-        self.lsp_state.diagnostics_file_path = None;
-        self.lsp_state.diagnostics_refresh_requested = true;
+        self.lsp.state.current_file_diagnostics.clear();
+        self.lsp.state.diagnostic_count = (0, 0, 0, 0);
+        self.lsp.state.diagnostics_file_path = None;
+        self.lsp.state.diagnostics_refresh_requested = true;
     }
 
     /// Handle LSP/diagnostics state when current buffer path changes (e.g. :w newfile).
@@ -1145,31 +1145,31 @@ impl Editor {
         }
 
         if let Some(old) = old_path {
-            self.lsp_state.document_sync.remove(&old);
-            self.lsp_state.pending_did_close_file = Some(old);
+            self.lsp.state.document_sync.remove(&old);
+            self.lsp.state.pending_did_close_file = Some(old);
         }
         if let Some(newp) = &new_path {
-            self.lsp_state.document_sync.remove(newp);
+            self.lsp.state.document_sync.remove(newp);
         }
 
-        self.lsp_state.needs_lsp_init = true;
+        self.lsp.state.needs_lsp_init = true;
         self.clear_and_refresh_diagnostics();
     }
 
     pub fn take_diagnostics_refresh_request(&mut self) -> bool {
-        std::mem::take(&mut self.lsp_state.diagnostics_refresh_requested)
+        std::mem::take(&mut self.lsp.state.diagnostics_refresh_requested)
     }
 
     pub fn lsp_document_sync_exists(&self) -> bool {
         let Some(file_path) = self.buffer().file_path() else {
             return false;
         };
-        self.lsp_state.document_sync.contains_key(file_path)
+        self.lsp.state.document_sync.contains_key(file_path)
     }
 
     pub fn lsp_document_is_modified(&self) -> Option<bool> {
         let file_path = self.buffer().file_path()?;
-        self.lsp_state
+        self.lsp.state
             .document_sync
             .get(file_path)
             .map(|s| s.is_modified())
@@ -1190,7 +1190,7 @@ impl Editor {
     /// adds its own 150 ms gate — that was causing a redundant double-debounce
     /// (OV-00165).
     pub async fn send_lsp_changes_if_modified(&mut self) {
-        let Some(lsp) = self.lsp_state.lsp_manager.clone() else {
+        let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
             return;
         };
 
@@ -1208,7 +1208,7 @@ impl Editor {
         let sent_version = lsp.get_last_sent_version(&uri).await;
         let needs_reconcile = manager_version > 0
             && self
-                .lsp_state
+                .lsp.state
                 .document_sync
                 .get(&state_key)
                 .is_some_and(|state| {
@@ -1228,13 +1228,13 @@ impl Editor {
                 sent_version,
             );
         } else if manager_version > 0 {
-            self.lsp_state.current_file_lsp_version = manager_version;
-            self.lsp_state.current_file_lsp_sent_version = sent_version;
+            self.lsp.state.current_file_lsp_version = manager_version;
+            self.lsp.state.current_file_lsp_sent_version = sent_version;
         }
 
         // Check if we need to send — only guard is didOpen + modified
         let should_send = self
-            .lsp_state
+            .lsp.state
             .document_sync
             .get(&state_key)
             .is_some_and(|state| state.did_open_sent && state.is_modified());
@@ -1245,7 +1245,7 @@ impl Editor {
 
             {
                 let state = self
-                    .lsp_state
+                    .lsp.state
                     .document_sync
                     .entry(state_key.clone())
                     .or_default();
@@ -1271,7 +1271,7 @@ impl Editor {
 
             // Get old content for incremental sync
             let old_content = self
-                .lsp_state
+                .lsp.state
                 .document_sync
                 .get(&state_key)
                 .and_then(|state| state.last_flushed_content.clone());
@@ -1287,12 +1287,12 @@ impl Editor {
 
             // Track the queued LSP document version (bumped immediately in did_change).
             let queued_version = lsp.get_document_version(&uri).await;
-            self.lsp_state.current_file_lsp_version = queued_version;
-            self.lsp_state.current_file_lsp_sent_version = lsp.get_last_sent_version(&uri).await;
+            self.lsp.state.current_file_lsp_version = queued_version;
+            self.lsp.state.current_file_lsp_sent_version = lsp.get_last_sent_version(&uri).await;
 
             // Record the newest queued snapshot; manager reconciliation will only
             // promote it to flushed once last_sent catches up.
-            let state = self.lsp_state.document_sync.entry(state_key).or_default();
+            let state = self.lsp.state.document_sync.entry(state_key).or_default();
             state.mark_change_queued(content, queued_version);
         }
     }
@@ -1312,7 +1312,7 @@ impl Editor {
         let mut should_send = false;
 
         // Check if we should send save notification
-        if let Some(state) = self.lsp_state.document_sync.get(&state_key) {
+        if let Some(state) = self.lsp.state.document_sync.get(&state_key) {
             if state.should_send_save() {
                 should_send = true;
             }
@@ -1332,7 +1332,7 @@ impl Editor {
                 None => return,
             };
 
-            let Some(ref lsp) = self.lsp_state.lsp_manager else {
+            let Some(ref lsp) = self.lsp.state.lsp_manager else {
                 return;
             };
 
@@ -1343,7 +1343,7 @@ impl Editor {
             {
                 Ok(()) => {
                     // Mark as sent AFTER successful send
-                    let state = self.lsp_state.document_sync.entry(state_key).or_default();
+                    let state = self.lsp.state.document_sync.entry(state_key).or_default();
                     state.mark_save_sent();
                 }
                 Err(e) => {
@@ -1360,7 +1360,7 @@ impl Editor {
     /// LSP to return stale results. We flush pending changes here to ensure LSP
     /// has the latest content.
     async fn ensure_lsp_document_synced(&mut self) -> bool {
-        let Some(lsp) = self.lsp_state.lsp_manager.clone() else {
+        let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
             return false;
         };
 
@@ -1402,9 +1402,9 @@ impl Editor {
                 {
                     Ok(_) => {
                         let flushed_version = lsp.get_last_sent_version(&uri).await;
-                        self.lsp_state.current_file_lsp_version =
+                        self.lsp.state.current_file_lsp_version =
                             lsp.get_document_version(&uri).await;
-                        self.lsp_state.current_file_lsp_sent_version = flushed_version;
+                        self.lsp.state.current_file_lsp_sent_version = flushed_version;
                         self.mark_document_flushed(&state_key, content, flushed_version);
                     }
                     Err(e) => {
@@ -1421,8 +1421,8 @@ impl Editor {
             DocumentSyncRequestAction::FlushQueued => {
                 let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
                 let flushed_version = lsp.get_last_sent_version(&uri).await;
-                self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
-                self.lsp_state.current_file_lsp_sent_version = flushed_version;
+                self.lsp.state.current_file_lsp_version = lsp.get_document_version(&uri).await;
+                self.lsp.state.current_file_lsp_sent_version = flushed_version;
                 self.mark_document_flushed(&state_key, content, flushed_version);
                 true
             }
@@ -1443,7 +1443,7 @@ impl Editor {
                 let queued_version = lsp.get_document_version(&uri).await;
                 {
                     let state = self
-                        .lsp_state
+                        .lsp.state
                         .document_sync
                         .entry(state_key.clone())
                         .or_default();
@@ -1452,8 +1452,8 @@ impl Editor {
 
                 let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
                 let flushed_version = lsp.get_last_sent_version(&uri).await;
-                self.lsp_state.current_file_lsp_version = lsp.get_document_version(&uri).await;
-                self.lsp_state.current_file_lsp_sent_version = flushed_version;
+                self.lsp.state.current_file_lsp_version = lsp.get_document_version(&uri).await;
+                self.lsp.state.current_file_lsp_sent_version = flushed_version;
                 self.mark_document_flushed(&state_key, content, flushed_version);
                 true
             }
@@ -1462,11 +1462,11 @@ impl Editor {
 
     /// Sends didClose notification to LSP for the pending file
     pub async fn send_lsp_close_if_needed(&mut self) {
-        let Some(file_path) = self.lsp_state.pending_did_close_file.take() else {
+        let Some(file_path) = self.lsp.state.pending_did_close_file.take() else {
             return;
         };
 
-        let Some(ref lsp) = self.lsp_state.lsp_manager else {
+        let Some(ref lsp) = self.lsp.state.lsp_manager else {
             return;
         };
 
@@ -1483,7 +1483,7 @@ impl Editor {
 
         let file_path_string = file_path.to_string();
         let _ = lsp.did_close_broadcast(uri, language_id).await;
-        self.lsp_state.document_sync.remove(&file_path_string);
+        self.lsp.state.document_sync.remove(&file_path_string);
     }
 
     // -------------------------------------------------------------------------
@@ -1493,7 +1493,7 @@ impl Editor {
     /// Process pending LSP actions
     /// Called from the event loop to handle LSP requests asynchronously
     pub async fn process_pending_lsp_actions(&mut self) {
-        if let Some(action) = self.lsp_state.pending_lsp_action.take() {
+        if let Some(action) = self.lsp.state.pending_lsp_action.take() {
             crate::lsp_debug!(
                 "LSP-ACTION",
                 "process_pending_lsp_actions() - processing action: {:?}",
@@ -1540,10 +1540,10 @@ impl Editor {
                     // LSP request failed - retry ONCE by re-queueing the action
                     // This handles race conditions where LSP server isn't ready yet
                     // Only retry if we haven't already retried (prevents infinite loop)
-                    if self.lsp_state.lsp_action_retry_count < 1 {
-                        self.lsp_state.lsp_action_retry_count += 1;
-                        if self.lsp_state.pending_lsp_action.is_none() {
-                            self.lsp_state.pending_lsp_action = Some(action);
+                    if self.lsp.state.lsp_action_retry_count < 1 {
+                        self.lsp.state.lsp_action_retry_count += 1;
+                        if self.lsp.state.pending_lsp_action.is_none() {
+                            self.lsp.state.pending_lsp_action = Some(action);
                         }
                     }
                     // If retry_count >= 1, we've already retried once, so give up silently
@@ -1617,7 +1617,7 @@ impl Editor {
         feature_name: &str,
     ) -> Result<LspRequestContext> {
         let lsp = self
-            .lsp_state
+            .lsp.state
             .lsp_manager
             .clone()
             .ok_or_else(|| anyhow!("LSP not available"))?;
@@ -1736,7 +1736,7 @@ mod tests {
         editor.set_file_path(file_path.clone());
 
         let state = editor
-            .lsp_state
+            .lsp.state
             .document_sync
             .entry(file_path.clone())
             .or_default();
@@ -1758,7 +1758,7 @@ mod tests {
         editor.set_file_path(file_path.clone());
 
         let state = editor
-            .lsp_state
+            .lsp.state
             .document_sync
             .entry(file_path.clone())
             .or_default();
@@ -1768,7 +1768,7 @@ mod tests {
         editor.reconcile_document_sync_with_manager(&file_path, Some("class Test {}\n"), 4, 4);
 
         let state = editor
-            .lsp_state
+            .lsp.state
             .document_sync
             .get(&file_path)
             .expect("document sync state");
@@ -1788,7 +1788,7 @@ mod tests {
         editor.set_file_path(file_path.clone());
 
         let state = editor
-            .lsp_state
+            .lsp.state
             .document_sync
             .entry(file_path.clone())
             .or_default();
@@ -1803,7 +1803,7 @@ mod tests {
         );
 
         let state = editor
-            .lsp_state
+            .lsp.state
             .document_sync
             .get(&file_path)
             .expect("document sync state");
@@ -1821,7 +1821,7 @@ mod tests {
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
         editor.set_viewport_height(20);
-        editor.lsp_state.inlay_hint_request_seq = 1;
+        editor.lsp.state.inlay_hint_request_seq = 1;
 
         let request_key = InlayHintRequestKey {
             file_path: file_path.clone(),
@@ -1851,7 +1851,7 @@ mod tests {
         .unwrap();
 
         let request_key_for_task = request_key.clone();
-        editor.lsp_state.pending_inlay_hints = Some(PendingInlayHintRequest {
+        editor.lsp.state.pending_inlay_hints = Some(PendingInlayHintRequest {
             seq: 1,
             request_key: request_key.clone(),
             buffer_version: editor.buffer().version(),
@@ -1871,16 +1871,16 @@ mod tests {
         });
 
         assert!(editor.poll_pending_inlay_hint_response());
-        assert_eq!(editor.lsp_state.current_file_lsp_version, 4);
-        assert_eq!(editor.lsp_state.current_file_lsp_sent_version, 4);
-        assert_eq!(editor.lsp_state.inlay_hints.len(), 1);
+        assert_eq!(editor.lsp.state.current_file_lsp_version, 4);
+        assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 4);
+        assert_eq!(editor.lsp.state.inlay_hints.len(), 1);
         assert_eq!(
-            editor.lsp_state.applied_inlay_hint_request.as_ref(),
+            editor.lsp.state.applied_inlay_hint_request.as_ref(),
             Some(&request_key)
         );
 
         let sync_state = editor
-            .lsp_state
+            .lsp.state
             .document_sync
             .get(&file_path)
             .expect("document sync state");
@@ -1897,7 +1897,7 @@ mod tests {
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
         editor.set_viewport_height(20);
-        editor.lsp_state.inlay_hint_request_seq = 1;
+        editor.lsp.state.inlay_hint_request_seq = 1;
 
         let request_key = InlayHintRequestKey {
             file_path: file_path.clone(),
@@ -1917,7 +1917,7 @@ mod tests {
         .unwrap();
 
         let request_key_for_task = request_key.clone();
-        editor.lsp_state.pending_inlay_hints = Some(PendingInlayHintRequest {
+        editor.lsp.state.pending_inlay_hints = Some(PendingInlayHintRequest {
             seq: 1,
             request_key,
             buffer_version: editor.buffer().version() + 1,
@@ -1937,8 +1937,8 @@ mod tests {
         });
 
         assert!(!editor.poll_pending_inlay_hint_response());
-        assert!(editor.lsp_state.inlay_hints.is_empty());
-        assert!(editor.lsp_state.applied_inlay_hint_request.is_none());
+        assert!(editor.lsp.state.inlay_hints.is_empty());
+        assert!(editor.lsp.state.applied_inlay_hint_request.is_none());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1947,8 +1947,8 @@ mod tests {
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
         editor.set_viewport_height(20);
-        editor.lsp_state.inlay_hint_request_seq = 1;
-        editor.lsp_state.current_file_lsp_sent_version = 5;
+        editor.lsp.state.inlay_hint_request_seq = 1;
+        editor.lsp.state.current_file_lsp_sent_version = 5;
 
         let request_key = InlayHintRequestKey {
             file_path,
@@ -1968,7 +1968,7 @@ mod tests {
         .unwrap();
 
         let request_key_for_task = request_key.clone();
-        editor.lsp_state.pending_inlay_hints = Some(PendingInlayHintRequest {
+        editor.lsp.state.pending_inlay_hints = Some(PendingInlayHintRequest {
             seq: 1,
             request_key,
             buffer_version: editor.buffer().version(),
@@ -1988,7 +1988,7 @@ mod tests {
         });
 
         assert!(!editor.poll_pending_inlay_hint_response());
-        assert!(editor.lsp_state.inlay_hints.is_empty());
-        assert!(editor.lsp_state.applied_inlay_hint_request.is_none());
+        assert!(editor.lsp.state.inlay_hints.is_empty());
+        assert!(editor.lsp.state.applied_inlay_hint_request.is_none());
     }
 }

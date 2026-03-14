@@ -12,6 +12,8 @@ pub struct MacroManager {
     current_recording: Vec<KeyEvent>,
     /// Last played macro register (for @@)
     last_played: Option<char>,
+    /// Set by motions that fail to move during macro playback
+    aborted: bool,
 }
 
 impl Default for MacroManager {
@@ -28,6 +30,7 @@ impl MacroManager {
             recording: None,
             current_recording: Vec::new(),
             last_played: None,
+            aborted: false,
         }
     }
 
@@ -91,5 +94,21 @@ impl MacroManager {
         self.recording = None;
         self.current_recording.clear();
         self.last_played = None;
+        self.aborted = false;
+    }
+
+    /// Returns whether macro playback should abort (a motion failed to move).
+    pub fn aborted(&self) -> bool {
+        self.aborted
+    }
+
+    /// Signal that a motion failed (cursor didn't move), aborting macro playback.
+    pub fn signal_abort(&mut self) {
+        self.aborted = true;
+    }
+
+    /// Clear the macro abort flag.
+    pub fn clear_abort(&mut self) {
+        self.aborted = false;
     }
 }

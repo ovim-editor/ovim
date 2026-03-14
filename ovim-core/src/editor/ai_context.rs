@@ -47,7 +47,7 @@ impl Editor {
         }];
 
         let diagnostics = self
-            .lsp_state
+            .lsp.state
             .current_file_diagnostics
             .iter()
             .filter(|diag| {
@@ -70,7 +70,7 @@ impl Editor {
             .collect();
 
         let mut symbol_facts = Vec::new();
-        for symbol in &self.lsp_state.available_document_symbols {
+        for symbol in &self.lsp.state.available_document_symbols {
             let line = symbol.range.start.line as usize;
             if line < start_line || line > end_line {
                 continue;

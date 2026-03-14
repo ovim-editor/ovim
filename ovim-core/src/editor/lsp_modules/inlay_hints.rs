@@ -27,7 +27,7 @@ fn current_inlay_hint_request_key(
         file_path,
         start_line,
         end_line,
-        lsp_version: editor.lsp_state.current_file_lsp_sent_version,
+        lsp_version: editor.lsp.state.current_file_lsp_sent_version,
     })
 }
 
@@ -61,7 +61,7 @@ impl Editor {
     /// Returns true when the viewport/LSP-sync fingerprint differs from the last
     /// applied or pending inlay hint request.
     pub fn inlay_hints_refresh_needed_for_viewport(&self) -> bool {
-        if self.lsp_state.lsp_manager.is_none() {
+        if self.lsp.state.lsp_manager.is_none() {
             return false;
         }
 
@@ -70,7 +70,7 @@ impl Editor {
         };
 
         if self
-            .lsp_state
+            .lsp.state
             .pending_inlay_hints
             .as_ref()
             .is_some_and(|pending| pending_request_matches_viewport(self, pending))
@@ -78,13 +78,13 @@ impl Editor {
             return false;
         }
 
-        if self.lsp_state.applied_inlay_hint_request.as_ref() == Some(&next_key) {
+        if self.lsp.state.applied_inlay_hint_request.as_ref() == Some(&next_key) {
             return false;
         }
 
         !should_skip_inlay_hint_refresh(
-            self.lsp_state.last_inlay_hint_request.as_ref(),
-            self.lsp_state.last_inlay_hint_request_at,
+            self.lsp.state.last_inlay_hint_request.as_ref(),
+            self.lsp.state.last_inlay_hint_request_at,
             &next_key,
             Instant::now(),
         )
@@ -92,7 +92,7 @@ impl Editor {
 
     /// Spawn a background inlay hint refresh for the current viewport.
     pub fn request_inlay_hints_refresh(&mut self) {
-        let Some(lsp) = self.lsp_state.lsp_manager.clone() else {
+        let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
             return;
         };
 
@@ -102,8 +102,8 @@ impl Editor {
 
         let now = Instant::now();
         if should_skip_inlay_hint_refresh(
-            self.lsp_state.last_inlay_hint_request.as_ref(),
-            self.lsp_state.last_inlay_hint_request_at,
+            self.lsp.state.last_inlay_hint_request.as_ref(),
+            self.lsp.state.last_inlay_hint_request_at,
             &request_key,
             now,
         ) {
@@ -111,7 +111,7 @@ impl Editor {
         }
 
         if self
-            .lsp_state
+            .lsp.state
             .pending_inlay_hints
             .as_ref()
             .is_some_and(|pending| pending.request_key == request_key)
@@ -119,7 +119,7 @@ impl Editor {
             return;
         }
 
-        if let Some(pending) = self.lsp_state.pending_inlay_hints.take() {
+        if let Some(pending) = self.lsp.state.pending_inlay_hints.take() {
             pending.request.task.abort();
         }
 
@@ -138,12 +138,12 @@ impl Editor {
         let initial_content = self.buffer().rope().to_string();
         let sync_plan = self.document_sync_request_plan(&state_key, &initial_content);
 
-        self.lsp_state.last_inlay_hint_request = Some(request_key.clone());
-        self.lsp_state.last_inlay_hint_request_at = Some(now);
+        self.lsp.state.last_inlay_hint_request = Some(request_key.clone());
+        self.lsp.state.last_inlay_hint_request_at = Some(now);
 
-        self.lsp_state.inlay_hint_request_seq =
-            self.lsp_state.inlay_hint_request_seq.wrapping_add(1);
-        let seq = self.lsp_state.inlay_hint_request_seq;
+        self.lsp.state.inlay_hint_request_seq =
+            self.lsp.state.inlay_hint_request_seq.wrapping_add(1);
+        let seq = self.lsp.state.inlay_hint_request_seq;
 
         let request_key_for_task = request_key.clone();
         let language_id = language_id.to_string();
@@ -236,7 +236,7 @@ impl Editor {
             })
         });
 
-        self.lsp_state.pending_inlay_hints =
+        self.lsp.state.pending_inlay_hints =
             Some(crate::editor::lsp_state::PendingInlayHintRequest {
                 seq,
                 request_key,
@@ -251,7 +251,7 @@ impl Editor {
 
     /// Get inlay hints for a specific line (0-indexed).
     pub fn inlay_hints_for_line(&self, line: usize) -> Vec<&lsp_types::InlayHint> {
-        self.lsp_state
+        self.lsp.state
             .inlay_hints
             .iter()
             .filter(|h| h.position.line as usize == line)
@@ -317,12 +317,12 @@ mod tests {
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
-        editor.lsp_state.current_file_lsp_sent_version = 1;
+        editor.lsp.state.current_file_lsp_sent_version = 1;
 
         assert!(editor.inlay_hints_refresh_needed_for_viewport());
 
         let key = current_inlay_hint_request_key(&editor).expect("request key");
-        editor.lsp_state.applied_inlay_hint_request = Some(key);
+        editor.lsp.state.applied_inlay_hint_request = Some(key);
         assert!(!editor.inlay_hints_refresh_needed_for_viewport());
 
         editor.viewport.scroll_offset = 5;
@@ -350,7 +350,7 @@ mod tests {
         let (_, receiver) = tokio::sync::oneshot::channel::<
             anyhow::Result<crate::editor::lsp_state::InlayHintTaskResult>,
         >();
-        editor.lsp_state.pending_inlay_hints =
+        editor.lsp.state.pending_inlay_hints =
             Some(crate::editor::lsp_state::PendingInlayHintRequest {
                 seq: 1,
                 request_key: key,
@@ -384,7 +384,7 @@ mod tests {
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
-        editor.lsp_state.current_file_lsp_sent_version = 1;
+        editor.lsp.state.current_file_lsp_sent_version = 1;
 
         let pending_key = crate::editor::lsp_state::InlayHintRequestKey {
             file_path: "/tmp/Test.java".to_string(),
@@ -395,7 +395,7 @@ mod tests {
         let (_, receiver) = tokio::sync::oneshot::channel::<
             anyhow::Result<crate::editor::lsp_state::InlayHintTaskResult>,
         >();
-        editor.lsp_state.pending_inlay_hints =
+        editor.lsp.state.pending_inlay_hints =
             Some(crate::editor::lsp_state::PendingInlayHintRequest {
                 seq: 1,
                 request_key: pending_key,
@@ -429,15 +429,15 @@ mod tests {
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
-        editor.lsp_state.current_file_lsp_sent_version = 3;
+        editor.lsp.state.current_file_lsp_sent_version = 3;
 
         let key = current_inlay_hint_request_key(&editor).expect("request key");
-        editor.lsp_state.applied_inlay_hint_request = Some(key);
+        editor.lsp.state.applied_inlay_hint_request = Some(key);
 
         editor.buffer_mut().insert_text_at(0, 0, "x");
         assert!(!editor.inlay_hints_refresh_needed_for_viewport());
 
-        editor.lsp_state.current_file_lsp_sent_version = 4;
+        editor.lsp.state.current_file_lsp_sent_version = 4;
         assert!(editor.inlay_hints_refresh_needed_for_viewport());
     }
 

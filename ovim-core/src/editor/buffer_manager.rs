@@ -124,7 +124,7 @@ impl Editor {
             }
 
             self.current_buffer_index = index;
-            self.lsp_state.needs_lsp_init = true;
+            self.lsp.state.needs_lsp_init = true;
 
             // Clear buffer-local marks (a-z) when switching files
             self.nav.marks.clear();
@@ -158,7 +158,7 @@ impl Editor {
             }
 
             self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
-            self.lsp_state.needs_lsp_init = true;
+            self.lsp.state.needs_lsp_init = true;
 
             // Clear buffer-local marks (a-z) when switching files
             self.nav.marks.clear();
@@ -178,7 +178,7 @@ impl Editor {
 
             // Mark that we need to send didClose for the old file
             if old_file_path.is_some() {
-                self.lsp_state.pending_did_close_file = old_file_path;
+                self.lsp.state.pending_did_close_file = old_file_path;
             }
         }
     }
@@ -201,7 +201,7 @@ impl Editor {
             } else {
                 self.current_buffer_index - 1
             };
-            self.lsp_state.needs_lsp_init = true;
+            self.lsp.state.needs_lsp_init = true;
 
             // Clear buffer-local marks (a-z) when switching files
             self.nav.marks.clear();
@@ -221,7 +221,7 @@ impl Editor {
 
             // Mark that we need to send didClose for the old file
             if old_file_path.is_some() {
-                self.lsp_state.pending_did_close_file = old_file_path;
+                self.lsp.state.pending_did_close_file = old_file_path;
             }
         }
     }
@@ -236,7 +236,7 @@ impl Editor {
 
         // Remove current buffer (track sync state)
         if let Some(path) = self.buffer().file_path().map(|s| s.to_string()) {
-            self.lsp_state.document_sync.remove(&path);
+            self.lsp.state.document_sync.remove(&path);
         }
 
         // Remove current buffer
@@ -247,7 +247,7 @@ impl Editor {
             self.current_buffer_index = self.buffers.len() - 1;
         }
 
-        self.lsp_state.needs_lsp_init = true;
+        self.lsp.state.needs_lsp_init = true;
         false
     }
 
@@ -255,7 +255,7 @@ impl Editor {
     pub fn add_buffer(&mut self, buffer: Buffer) {
         self.buffers.push(buffer);
         self.current_buffer_index = self.buffers.len() - 1;
-        self.lsp_state.needs_lsp_init = true;
+        self.lsp.state.needs_lsp_init = true;
     }
 
     /// Opens a scratch buffer with the given content and title
@@ -268,7 +268,7 @@ impl Editor {
         buffer.set_file_path(format!("[{}]", title));
         self.add_buffer(buffer);
         // Don't need LSP for scratch buffers
-        self.lsp_state.needs_lsp_init = false;
+        self.lsp.state.needs_lsp_init = false;
         self.mark_dirty();
     }
 
@@ -382,7 +382,7 @@ impl Editor {
 
         // Ensure the edited document is re-synced to LSP.
         if let Some(file_path) = file_path {
-            let state = self.lsp_state.document_sync.entry(file_path).or_default();
+            let state = self.lsp.state.document_sync.entry(file_path).or_default();
             state.did_open_sent = true;
             state.mark_modified();
         }

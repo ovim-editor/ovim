@@ -92,11 +92,11 @@ impl Editor {
 
     /// Shows a blame hover popup with the given text.
     fn show_blame_popup(&mut self, text: &str, line: usize, col: usize) {
-        self.lsp_state.hover_info = Some(text.to_string());
-        self.lsp_state.hover_scroll = 0;
-        self.lsp_state.hover_h_scroll = 0;
-        self.lsp_state.hover_position = Some((line, col));
-        self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::BlameInfo;
+        self.lsp.state.hover_info = Some(text.to_string());
+        self.lsp.state.hover_scroll = 0;
+        self.lsp.state.hover_h_scroll = 0;
+        self.lsp.state.hover_position = Some((line, col));
+        self.lsp.state.hover_content_type = crate::editor::lsp_state::HoverContentType::BlameInfo;
         self.mode = crate::mode::Mode::HoverPreview;
         self.mark_dirty();
     }

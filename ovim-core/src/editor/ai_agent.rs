@@ -108,7 +108,7 @@ impl Editor {
 
         let mut added = 0;
         let max_line = self.buffer().line_count().saturating_sub(1);
-        for symbol in &self.lsp_state.available_document_symbols {
+        for symbol in &self.lsp.state.available_document_symbols {
             if added >= max_to_add {
                 break;
             }
