@@ -735,54 +735,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 })
             }
         }
-        "ls" | "buffers" | "files" => {
-            // List all buffers
-            let buffer_list = editor.list_buffers();
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(buffer_list),
-                line_count: None,
-            })
-        }
-        "bnext" | "bn" => {
-            // Switch to next buffer
-            editor.next_buffer();
-            let buffer_index = editor.current_buffer_index() + 1; // 1-indexed for display
-            let buffer_name = editor
-                .buffer()
-                .file_path()
-                .map(|p| {
-                    std::path::Path::new(p)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("[No Name]")
-                })
-                .unwrap_or("[No Name]");
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Buffer {} - {}", buffer_index, buffer_name)),
-                line_count: None,
-            })
-        }
-        "bprev" | "bp" | "bprevious" => {
-            // Switch to previous buffer
-            editor.prev_buffer();
-            let buffer_index = editor.current_buffer_index() + 1; // 1-indexed for display
-            let buffer_name = editor
-                .buffer()
-                .file_path()
-                .map(|p| {
-                    std::path::Path::new(p)
-                        .file_name()
-                        .and_then(|n| n.to_str())
-                        .unwrap_or("[No Name]")
-                })
-                .unwrap_or("[No Name]");
-            CommandResult::Success(SuccessResponse {
-                success: true,
-                message: Some(format!("Buffer {} - {}", buffer_index, buffer_name)),
-                line_count: None,
-            })
+        // Buffer commands (ls, bn, bp, bd) — dispatched to cmd_buffer module
+        "ls" | "buffers" | "files" | "bnext" | "bn" | "bprev" | "bp" | "bprevious"
+        | "bd" | "bdelete" | "bd!" | "bdelete!" => {
+            return crate::cmd_buffer::try_handle(editor, command).unwrap();
         }
         "tabonly" | "tabo" => {
             // Close all tabs except the current one
@@ -1278,119 +1234,6 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 #[cfg(not(feature = "lua"))]
                 CommandResult::Error(ErrorResponse {
                     error: "Lua support not compiled in".to_string(),
-                })
-            // Handle :bn (next buffer)
-            } else if command == "bn" || command == "bnext" {
-                editor.next_buffer();
-                let buf_name = editor
-                    .buffer()
-                    .file_path()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "[No Name]".to_string());
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!(
-                        "Buffer {} of {}: {}",
-                        editor.current_buffer_index() + 1,
-                        editor.buffer_count(),
-                        buf_name
-                    )),
-                    line_count: None,
-                })
-            // Handle :bp (previous buffer)
-            } else if command == "bp" || command == "bprev" || command == "bprevious" {
-                editor.prev_buffer();
-                let buf_name = editor
-                    .buffer()
-                    .file_path()
-                    .map(|s| s.to_string())
-                    .unwrap_or_else(|| "[No Name]".to_string());
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(format!(
-                        "Buffer {} of {}: {}",
-                        editor.current_buffer_index() + 1,
-                        editor.buffer_count(),
-                        buf_name
-                    )),
-                    line_count: None,
-                })
-            // Handle :bd (delete buffer)
-            } else if command == "bd" || command == "bdelete" {
-                if editor.is_modified() {
-                    CommandResult::Error(ErrorResponse {
-                        error: "No write since last change (add ! to override)".to_string(),
-                    })
-                } else {
-                    let should_quit = editor.delete_current_buffer();
-                    if should_quit {
-                        editor.quit();
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some("Last buffer deleted, quitting".to_string()),
-                            line_count: None,
-                        })
-                    } else {
-                        let buf_name = editor
-                            .buffer()
-                            .file_path()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "[No Name]".to_string());
-                        CommandResult::Success(SuccessResponse {
-                            success: true,
-                            message: Some(format!("Buffer deleted. Now showing: {}", buf_name)),
-                            line_count: None,
-                        })
-                    }
-                }
-            // Handle :bd! (force delete buffer)
-            } else if command == "bd!" || command == "bdelete!" {
-                let should_quit = editor.delete_current_buffer();
-                if should_quit {
-                    editor.quit();
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some("Last buffer deleted, quitting".to_string()),
-                        line_count: None,
-                    })
-                } else {
-                    let buf_name = editor
-                        .buffer()
-                        .file_path()
-                        .map(|s| s.to_string())
-                        .unwrap_or_else(|| "[No Name]".to_string());
-                    CommandResult::Success(SuccessResponse {
-                        success: true,
-                        message: Some(format!("Buffer deleted. Now showing: {}", buf_name)),
-                        line_count: None,
-                    })
-                }
-            // Handle :ls or :buffers (list buffers)
-            } else if command == "ls" || command == "buffers" {
-                let buf_list: Vec<String> = editor
-                    .buffer_names()
-                    .iter()
-                    .enumerate()
-                    .map(|(i, name)| {
-                        let marker = if i == editor.current_buffer_index() {
-                            "%"
-                        } else {
-                            " "
-                        };
-                        let modified = if i < editor.buffer_count()
-                            && !editor.buffers[i].change_manager().is_at_save_point()
-                        {
-                            "+"
-                        } else {
-                            " "
-                        };
-                        format!("{} {}  {}", marker, modified, name)
-                    })
-                    .collect();
-                CommandResult::Success(SuccessResponse {
-                    success: true,
-                    message: Some(buf_list.join("\n")),
-                    line_count: None,
                 })
             // Handle :e and :edit (bare) - reload current file if unmodified
             } else if command == "e" || command == "edit" {

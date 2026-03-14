@@ -1,6 +1,7 @@
 pub mod ai;
 pub mod buffer;
 pub mod change;
+pub mod cmd_buffer;
 pub mod cmd_set;
 pub mod dap;
 pub mod debug_config;
