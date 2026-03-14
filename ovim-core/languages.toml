@@ -149,6 +149,9 @@ fallback_commands = [
 root_markers = ["pyproject.toml", "setup.py", "requirements.txt", ".git"]
 install_hint = "Install with: pip install pyright (or: pip install python-lsp-server)"
 
+[language.lsp.auto_install]
+method = { type = "npm", package = "pyright", bin = "pyright-langserver", global = true }
+
 # ============================================================================
 # Java
 # ============================================================================
@@ -446,6 +449,9 @@ args = ["stdio"]
 root_markers = ["Gemfile", ".ruby-version", ".git"]
 install_hint = "Install with: gem install solargraph"
 
+[language.lsp.auto_install]
+method = { type = "shell", command = "gem install solargraph" }
+
 # ============================================================================
 # Bash
 # ============================================================================
@@ -486,7 +492,7 @@ root_markers = [".git"]
 install_hint = "Install with: cargo install taplo-cli --features lsp"
 
 [language.lsp.auto_install]
-method = { type = "cargo", package = "taplo-cli" }
+method = { type = "cargo", package = "taplo-cli", bin = "taplo", features = ["lsp"] }
 
 # ============================================================================
 # Zig
@@ -502,6 +508,9 @@ command = "zls"
 root_markers = ["build.zig", "build.zig.zon"]
 install_hint = "Download from: https://github.com/zigtools/zls/releases"
 
+[language.lsp.auto_install]
+method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}-{os}*", install_path = "~/.local/bin/zls", binary_name = "zls" }
+
 # ============================================================================
 # Lua
 # ============================================================================
@@ -515,6 +524,9 @@ extensions = ["lua"]
 command = "lua-language-server"
 root_markers = [".luarc.json", ".luarc.jsonc", ".git"]
 install_hint = "Download from: https://github.com/LuaLS/lua-language-server/releases"
+
+[language.lsp.auto_install]
+method = { type = "github", repo = "LuaLS/lua-language-server", asset_pattern = "lua-language-server-*-{os}-{arch}.tar.gz", install_path = "~/.local/share/ovim/lsp/lua-language-server", binary_name = "bin/lua-language-server" }
 
 # ============================================================================
 # Elixir
@@ -531,6 +543,9 @@ command = "elixir-ls"
 fallback_commands = ["language_server.sh"]
 root_markers = ["mix.exs", ".git"]
 install_hint = "Download from: https://github.com/elixir-lsp/elixir-ls/releases"
+
+[language.lsp.auto_install]
+method = { type = "github", repo = "elixir-lsp/elixir-ls", asset_pattern = "elixir-ls-*.zip", install_path = "~/.local/share/ovim/lsp/elixir-ls", binary_name = "language_server.sh" }
 
 # ============================================================================
 # Ghostty
@@ -616,6 +631,9 @@ command = "terraform-ls"
 args = ["serve"]
 root_markers = [".terraform", "main.tf", "terraform.tf", ".git"]
 install_hint = "Download from: https://releases.hashicorp.com/terraform-ls/ or brew install hashicorp/tap/terraform-ls"
+
+[language.lsp.auto_install]
+method = { type = "github", repo = "hashicorp/terraform-ls", asset_pattern = "terraform-ls_*_{os}_{arch}.zip", install_path = "~/.local/bin/terraform-ls", binary_name = "terraform-ls" }
 
 # ============================================================================
 # HCL (HashiCorp Configuration Language)

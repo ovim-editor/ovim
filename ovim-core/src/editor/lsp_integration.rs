@@ -192,6 +192,57 @@ impl Editor {
         }
     }
 
+    /// Check if there's a pending LSP install awaiting user consent
+    pub fn has_pending_lsp_install(&self) -> bool {
+        self.pending_lsp_install.is_some()
+    }
+
+    /// Get a summary of the pending LSP install for display
+    pub fn pending_lsp_install_summary(&self) -> Option<(String, String, String)> {
+        self.pending_lsp_install.as_ref().map(|p| {
+            (
+                p.language_name.clone(),
+                p.server_command.clone(),
+                p.method_description.clone(),
+            )
+        })
+    }
+
+    /// Resolve the pending LSP install consent dialog
+    pub fn resolve_pending_lsp_install(&mut self, consent: super::LspInstallConsent) {
+        let pending = self.pending_lsp_install.take();
+        match consent {
+            super::LspInstallConsent::Yes => {
+                if let Some(p) = &pending {
+                    self.set_lsp_status(format!("LSP: Installing {}...", p.server_command));
+                }
+                // The actual install is triggered by the event loop checking
+                // lsp_install_approved. Store the approved info.
+                self.approved_lsp_install = pending;
+            }
+            super::LspInstallConsent::Always => {
+                self.options.lsp_auto_install = super::AutoInstallMode::Auto;
+                if let Some(p) = &pending {
+                    self.set_lsp_status(format!("LSP: Installing {}...", p.server_command));
+                }
+                self.approved_lsp_install = pending;
+            }
+            super::LspInstallConsent::No => {
+                if let Some(p) = &pending {
+                    self.set_lsp_status(format!(
+                        "LSP: {} skipped. Use :set autoinstall=prompt to re-enable.",
+                        p.server_command
+                    ));
+                }
+            }
+        }
+    }
+
+    /// Take the approved LSP install info (consumed by the event loop)
+    pub fn take_approved_lsp_install(&mut self) -> Option<super::PendingLspInstall> {
+        self.approved_lsp_install.take()
+    }
+
     /// Get current LSP status
     pub fn lsp_status(&self) -> &str {
         &self.lsp_state.lsp_status

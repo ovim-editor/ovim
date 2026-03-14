@@ -211,8 +211,13 @@ pub enum InstallMethod {
     /// Download from GitHub release
     Github {
         repo: String,
+        /// Asset name pattern with optional `{os}` and `{arch}` placeholders
         asset_pattern: String,
         install_path: String,
+        /// Path to the binary within an archive (e.g. "bin/lua-language-server").
+        /// For non-archive assets, this is ignored.
+        #[serde(default)]
+        binary_name: Option<String>,
     },
 
     /// Install via npm
@@ -231,7 +236,15 @@ pub enum InstallMethod {
     },
 
     /// Install via cargo
-    Cargo { package: String },
+    Cargo {
+        package: String,
+        /// Binary name to verify after install (defaults to package name).
+        #[serde(default)]
+        bin: Option<String>,
+        /// Cargo features to enable (passed as --features).
+        #[serde(default)]
+        features: Vec<String>,
+    },
 
     /// Custom shell command
     Shell { command: String },
@@ -577,6 +590,61 @@ pub fn find_lsp_command(config: &LspConfig) -> Option<String> {
         }
     }
 
+    // Try well-known install locations that may not be in PATH.
+    // This makes ovim work out of the box even when the user's shell
+    // config doesn't include these directories in PATH.
+    if let Some(path) = find_in_well_known_locations(&config.command) {
+        return Some(path);
+    }
+
+    None
+}
+
+/// Check well-known package manager install directories for a binary.
+///
+/// Users often have tools installed via cargo, npm, pip, etc. but the
+/// install directories aren't always in PATH (e.g., Arch Linux with
+/// pacman-installed cargo puts `cargo` in /usr/bin but `cargo install`
+/// targets go to ~/.cargo/bin which isn't in PATH by default).
+fn find_in_well_known_locations(binary: &str) -> Option<String> {
+    let home = dirs::home_dir()?;
+    let candidates = [
+        // cargo install location ($CARGO_HOME/bin or ~/.cargo/bin)
+        std::env::var("CARGO_HOME")
+            .ok()
+            .map(|h| std::path::PathBuf::from(h).join("bin").join(binary)),
+        Some(home.join(".cargo/bin").join(binary)),
+        // npm global install locations
+        Some(home.join(".npm-global/bin").join(binary)),
+        Some(home.join(".nvm/current/bin").join(binary)),
+        // pip / pipx
+        Some(home.join(".local/bin").join(binary)),
+        // ovim-managed LSP installs
+        Some(home.join(".local/share/ovim/lsp").join(binary).join("bin").join(binary)),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() {
+            return Some(candidate.to_string_lossy().to_string());
+        }
+    }
+
+    // gem install locations — version dirs need scanning
+    // ~/.local/share/gem/ruby/*/bin (Arch), ~/.gem/ruby/*/bin (other distros)
+    for gem_base in [
+        home.join(".local/share/gem/ruby"),
+        home.join(".gem/ruby"),
+    ] {
+        if let Ok(entries) = std::fs::read_dir(&gem_base) {
+            for entry in entries.flatten() {
+                let candidate = entry.path().join("bin").join(binary);
+                if candidate.exists() {
+                    return Some(candidate.to_string_lossy().to_string());
+                }
+            }
+        }
+    }
+
     None
 }
 
@@ -596,6 +664,10 @@ pub fn find_dap_command(config: &DapConfig) -> Option<String> {
         if which::which(&expanded).is_ok() {
             return Some(expanded);
         }
+    }
+
+    if let Some(path) = find_in_well_known_locations(&config.command) {
+        return Some(path);
     }
 
     None

@@ -60,12 +60,26 @@ pub async fn attempt_auto_install(
             let bin = config.method.npm_bin();
             install_via_npm(language_name, &packages, bin.as_deref(), *global).await
         }
-        InstallMethod::Cargo { package } => install_via_cargo(language_name, package).await,
+        InstallMethod::Cargo {
+            package,
+            bin,
+            features,
+        } => install_via_cargo(language_name, package, bin.as_deref(), features).await,
         InstallMethod::Github {
             repo,
             asset_pattern,
             install_path,
-        } => install_via_github(language_name, repo, asset_pattern, install_path).await,
+            binary_name,
+        } => {
+            install_via_github(
+                language_name,
+                repo,
+                asset_pattern,
+                install_path,
+                binary_name.as_deref(),
+            )
+            .await
+        }
         InstallMethod::Shell { command } => install_via_shell(language_name, command).await,
     }
 }
@@ -244,8 +258,47 @@ async fn verify_npm_installation(binary: &str, global: bool) -> Option<PathBuf> 
     None
 }
 
+/// Verify cargo package installation by finding the binary
+///
+/// `cargo install` places binaries in `$CARGO_HOME/bin/` (default `~/.cargo/bin/`).
+/// On some systems (e.g., Arch Linux with pacman-installed Rust), `cargo` itself
+/// is at `/usr/bin/cargo` but `~/.cargo/bin` is not in PATH.
+fn verify_cargo_installation(binary: &str) -> Option<PathBuf> {
+    // Try `which <binary>` first (checks PATH)
+    if let Ok(output) = Command::new("which").arg(binary).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+
+    // Fallback: Check common cargo install locations
+    // $CARGO_HOME/bin takes priority, then ~/.cargo/bin
+    let candidates: Vec<Option<PathBuf>> = vec![
+        std::env::var("CARGO_HOME")
+            .ok()
+            .map(|h| PathBuf::from(h).join("bin").join(binary)),
+        dirs::home_dir().map(|h| h.join(".cargo/bin").join(binary)),
+    ];
+
+    for candidate in candidates.into_iter().flatten() {
+        if candidate.exists() {
+            return Some(candidate);
+        }
+    }
+
+    None
+}
+
 /// Install via cargo (Rust's package manager)
-async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult {
+async fn install_via_cargo(
+    _language_name: &str,
+    package: &str,
+    bin: Option<&str>,
+    features: &[String],
+) -> InstallResult {
     // Check if cargo is available
     let cargo_check = Command::new("cargo").arg("--version").output();
 
@@ -257,9 +310,16 @@ async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult
 
     ovim_core::lsp_info!("AutoInstall", "Installing {} via cargo install", package);
 
+    // Build cargo install args
+    let mut args = vec!["install".to_string(), package.to_string()];
+    if !features.is_empty() {
+        args.push("--features".to_string());
+        args.push(features.join(","));
+    }
+
     // Run cargo install
     let child = match TokioCommand::new("cargo")
-        .args(["install", package])
+        .args(&args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
@@ -285,26 +345,26 @@ async fn install_via_cargo(_language_name: &str, package: &str) -> InstallResult
         ));
     }
 
-    // Verify installation
-    if let Ok(output) = Command::new("which").arg(package).output() {
-        if output.status.success() {
-            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
-            return InstallResult::Success(PathBuf::from(path));
-        }
+    // Verify installation - use explicit bin name if provided, otherwise package name
+    let verify_bin = bin.unwrap_or(package);
+    if let Some(path) = verify_cargo_installation(verify_bin) {
+        return InstallResult::Success(path);
     }
 
     InstallResult::Failed(format!(
-        "Installation appeared to succeed, but {} was not found in PATH",
-        package
+        "Installation appeared to succeed, but {} was not found in PATH. \
+         You may need to add ~/.cargo/bin to your PATH.",
+        verify_bin
     ))
 }
 
-/// Install via GitHub release (download binary)
+/// Install via GitHub release (download binary or archive)
 async fn install_via_github(
     language_name: &str,
     repo: &str,
     asset_pattern: &str,
     install_path: &str,
+    binary_name: Option<&str>,
 ) -> InstallResult {
     #[derive(Debug, Deserialize)]
     struct GitHubRelease {
@@ -362,22 +422,25 @@ async fn install_via_github(
         }
     };
 
-    let Some(asset) = release
-        .assets
+    // Expand {os} and {arch} placeholders in the asset pattern
+    let expanded_patterns = expand_platform_patterns(asset_pattern);
+
+    let asset = expanded_patterns
         .iter()
-        .find(|asset| asset_matches_pattern(&asset.name, asset_pattern))
-    else {
+        .find_map(|pattern| {
+            release
+                .assets
+                .iter()
+                .find(|asset| asset_matches_pattern(&asset.name, pattern))
+        });
+
+    let Some(asset) = asset else {
         return InstallResult::Failed(format!(
-            "No release asset matched pattern '{asset_pattern}' in {repo}"
+            "No release asset matched pattern '{asset_pattern}' (expanded for {}/{}) in {repo}",
+            std::env::consts::OS,
+            std::env::consts::ARCH,
         ));
     };
-
-    if is_archive_asset(&asset.name) {
-        return InstallResult::Failed(format!(
-            "Asset '{}' is an archive. Auto-extraction is not yet supported; install manually.",
-            asset.name
-        ));
-    }
 
     ovim_core::lsp_info!(
         "AutoInstall",
@@ -421,41 +484,177 @@ async fn install_via_github(
     };
 
     let target_path = expand_install_path(install_path);
-    let parent = target_path.parent().map(PathBuf::from).unwrap_or_default();
-    if !parent.as_os_str().is_empty() {
-        if let Err(e) = tokio::fs::create_dir_all(&parent).await {
+
+    if is_archive_asset(&asset.name) {
+        // Extract archive to target directory
+        if let Err(e) = tokio::fs::create_dir_all(&target_path).await {
             return InstallResult::Failed(format!(
                 "Failed to create install directory '{}': {e}",
-                parent.display()
-            ));
-        }
-    }
-
-    if let Err(e) = tokio::fs::write(&target_path, bytes).await {
-        return InstallResult::Failed(format!(
-            "Failed to write binary to '{}': {e}",
-            target_path.display()
-        ));
-    }
-
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o755);
-        if let Err(e) = tokio::fs::set_permissions(&target_path, perms).await {
-            return InstallResult::Failed(format!(
-                "Installed file but failed to set executable permissions on '{}': {e}",
                 target_path.display()
             ));
         }
-    }
 
-    InstallResult::Success(target_path)
+        let extract_result = extract_archive(&bytes, &asset.name, &target_path);
+        if let Err(e) = extract_result {
+            return InstallResult::Failed(format!(
+                "Failed to extract archive '{}': {e}",
+                asset.name
+            ));
+        }
+
+        // Find the binary within the extracted archive
+        let bin = binary_name.unwrap_or(language_name);
+        let binary_path = target_path.join(bin);
+        if !binary_path.exists() {
+            return InstallResult::Failed(format!(
+                "Archive extracted but binary '{}' not found at '{}'",
+                bin,
+                binary_path.display()
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            let _ = std::fs::set_permissions(&binary_path, perms);
+        }
+
+        InstallResult::Success(binary_path)
+    } else {
+        // Direct binary download (non-archive)
+        let parent = target_path.parent().map(PathBuf::from).unwrap_or_default();
+        if !parent.as_os_str().is_empty() {
+            if let Err(e) = tokio::fs::create_dir_all(&parent).await {
+                return InstallResult::Failed(format!(
+                    "Failed to create install directory '{}': {e}",
+                    parent.display()
+                ));
+            }
+        }
+
+        if let Err(e) = tokio::fs::write(&target_path, bytes).await {
+            return InstallResult::Failed(format!(
+                "Failed to write binary to '{}': {e}",
+                target_path.display()
+            ));
+        }
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o755);
+            if let Err(e) = tokio::fs::set_permissions(&target_path, perms).await {
+                return InstallResult::Failed(format!(
+                    "Installed file but failed to set executable permissions on '{}': {e}",
+                    target_path.display()
+                ));
+            }
+        }
+
+        InstallResult::Success(target_path)
+    }
 }
 
 fn expand_install_path(raw: &str) -> PathBuf {
     let expanded = shellexpand::tilde(raw).into_owned();
     PathBuf::from(expanded)
+}
+
+/// Expand `{os}` and `{arch}` placeholders in asset patterns.
+/// Returns multiple candidates to handle naming inconsistencies across projects.
+fn expand_platform_patterns(pattern: &str) -> Vec<String> {
+    if !pattern.contains("{os}") && !pattern.contains("{arch}") {
+        return vec![pattern.to_string()];
+    }
+
+    let os_variants: &[&str] = match std::env::consts::OS {
+        "macos" => &["darwin", "macos"],
+        "linux" => &["linux"],
+        "windows" => &["windows", "win64"],
+        other => return vec![pattern.replace("{os}", other).replace("{arch}", std::env::consts::ARCH)],
+    };
+
+    let arch_variants: &[&str] = match std::env::consts::ARCH {
+        "x86_64" => &["x86_64", "amd64", "x64"],
+        "aarch64" => &["aarch64", "arm64"],
+        other => &[other],
+    };
+
+    let mut patterns = Vec::new();
+    for os in os_variants {
+        for arch in arch_variants {
+            patterns.push(pattern.replace("{os}", os).replace("{arch}", arch));
+        }
+    }
+    patterns
+}
+
+/// Extract an archive (.tar.gz, .tgz, .zip) to a target directory.
+fn extract_archive(bytes: &[u8], asset_name: &str, target_dir: &std::path::Path) -> Result<(), String> {
+    let lower = asset_name.to_ascii_lowercase();
+
+    if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
+        extract_tar_gz(bytes, target_dir)
+    } else if lower.ends_with(".tar.xz") || lower.ends_with(".txz") {
+        // tar.xz: shell out to tar since xz decompression crates are heavy
+        extract_via_shell_tar(bytes, asset_name, target_dir)
+    } else if lower.ends_with(".zip") {
+        extract_zip(bytes, target_dir)
+    } else {
+        Err(format!("Unsupported archive format: {asset_name}"))
+    }
+}
+
+fn extract_tar_gz(bytes: &[u8], target_dir: &std::path::Path) -> Result<(), String> {
+    use flate2::read::GzDecoder;
+    use std::io::Cursor;
+
+    let cursor = Cursor::new(bytes);
+    let decoder = GzDecoder::new(cursor);
+    let mut archive = tar::Archive::new(decoder);
+
+    archive
+        .unpack(target_dir)
+        .map_err(|e| format!("tar.gz extraction failed: {e}"))
+}
+
+fn extract_zip(bytes: &[u8], target_dir: &std::path::Path) -> Result<(), String> {
+    use std::io::Cursor;
+
+    let cursor = Cursor::new(bytes);
+    let mut archive =
+        zip::ZipArchive::new(cursor).map_err(|e| format!("Failed to read zip archive: {e}"))?;
+
+    archive
+        .extract(target_dir)
+        .map_err(|e| format!("zip extraction failed: {e}"))
+}
+
+fn extract_via_shell_tar(
+    bytes: &[u8],
+    asset_name: &str,
+    target_dir: &std::path::Path,
+) -> Result<(), String> {
+    // Write to temp file and extract with system tar
+    let temp_file = target_dir.join(asset_name);
+    std::fs::write(&temp_file, bytes)
+        .map_err(|e| format!("Failed to write temp archive: {e}"))?;
+
+    let output = Command::new("tar")
+        .args(["xf", &temp_file.to_string_lossy(), "-C", &target_dir.to_string_lossy()])
+        .output()
+        .map_err(|e| format!("Failed to run tar: {e}"))?;
+
+    // Clean up temp file
+    let _ = std::fs::remove_file(&temp_file);
+
+    if output.status.success() {
+        Ok(())
+    } else {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        Err(format!("tar extraction failed: {stderr}"))
+    }
 }
 
 fn is_archive_asset(name: &str) -> bool {
@@ -466,7 +665,6 @@ fn is_archive_asset(name: &str) -> bool {
         || lower.ends_with(".tgz")
         || lower.ends_with(".tar.xz")
         || lower.ends_with(".txz")
-        || lower.ends_with(".gz")
 }
 
 fn asset_matches_pattern(asset_name: &str, pattern: &str) -> bool {
