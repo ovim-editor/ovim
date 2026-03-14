@@ -21,7 +21,7 @@ use super::layout::{BufferLayout, OverlayContext};
 use super::line_cache::LineRenderCache;
 use super::overlays::{
     render_ai_chat_permission_dialog, render_ai_review_shortcuts, render_completion_menu,
-    render_hover_window,
+    render_hover_window, render_lsp_install_dialog,
 };
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
@@ -462,9 +462,10 @@ fn render_overlays(
 }
 
 fn has_blocking_modal(editor: &Editor) -> bool {
-    editor.mode() == crate::mode::Mode::AiChat
-        && (editor.ai_chat_has_pending_tool_approval()
-            || editor.ai_chat_has_pending_no_repo_folder_approval())
+    editor.has_pending_lsp_install()
+        || (editor.mode() == crate::mode::Mode::AiChat
+            && (editor.ai_chat_has_pending_tool_approval()
+                || editor.ai_chat_has_pending_no_repo_folder_approval()))
 }
 
 /// Render centered, blocking overlays after all other popup classes.
@@ -472,7 +473,9 @@ fn has_blocking_modal(editor: &Editor) -> bool {
 /// This tier is reserved for workflows that block agent/user progress until
 /// explicitly resolved. Keep these dialogs highly visible and singular.
 fn render_blocking_modals(frame: &mut Frame, editor: &Editor, theme: &Theme) {
-    if has_blocking_modal(editor) {
+    if editor.has_pending_lsp_install() {
+        render_lsp_install_dialog(frame, editor, theme);
+    } else if has_blocking_modal(editor) {
         render_ai_chat_permission_dialog(frame, editor, theme);
     }
 }

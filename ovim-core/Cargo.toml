@@ -72,7 +72,7 @@ jsonschema = "0.28"
 mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional = true }
 # editor/
 ignore = "0.4"
-arboard = "3.4"
+arboard = { version = "3.4", features = ["wayland-data-control"] }
 nucleo = "0.5"
 grep-matcher = "0.1"
 grep-regex = "0.1"

@@ -449,6 +449,12 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
 
+    // Check if user approved an LSP auto-install
+    if editor.approved_lsp_install.is_some() {
+        crate::lsp_init::handle_approved_lsp_install(editor).await;
+        editor.mark_dirty();
+    }
+
     if editor.poll_pending_ai_chat_job() {
         editor.mark_dirty();
     }

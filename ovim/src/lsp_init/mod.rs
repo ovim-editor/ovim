@@ -5,7 +5,7 @@ use auto_install::{attempt_auto_install, InstallResult};
 use ovim::editor::Editor;
 use ovim::language_config::{
     find_lsp_command, find_project_root, AutoInstallConfig, AutoInstallPolicy, CompanionLspConfig,
-    LanguageRegistry,
+    InstallMethod, LanguageRegistry,
 };
 use ovim::lsp::companion_server_id;
 use ovim::lsp::uri_from_file_path;
@@ -67,6 +67,21 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
         None => {
             // LSP server not found - try auto-install if configured
             if let Some(auto_install_config) = &lsp_config.auto_install {
+                // Check user's global autoinstall preference
+                if editor.options.lsp_auto_install == ovim::editor::AutoInstallMode::Off {
+                    let hint = lsp_config
+                        .install_hint
+                        .as_deref()
+                        .unwrap_or("LSP server not found in PATH");
+                    editor.set_lsp_status(format!("LSP: {}", hint));
+                    ovim_core::lsp_info!(
+                        "LSP",
+                        "Skipping auto-install for {} because autoinstall=off",
+                        lang_config.name
+                    );
+                    return;
+                }
+
                 if !auto_install_on_missing_enabled(auto_install_config) {
                     let hint = lsp_config
                         .install_hint
@@ -93,6 +108,25 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                     ovim_core::lsp_info!(
                         "LSP",
                         "Skipping auto-install for {} in headless mode (allow_headless=false)",
+                        lang_config.name
+                    );
+                    return;
+                }
+
+                // If autoinstall=prompt, show consent dialog and return early.
+                // The event loop will pick up the approved install and re-trigger.
+                if editor.options.lsp_auto_install == ovim::editor::AutoInstallMode::Prompt {
+                    let method_desc = describe_install_method(&auto_install_config.method);
+                    editor.pending_lsp_install =
+                        Some(ovim::editor::PendingLspInstall {
+                            language_name: lang_config.name.clone(),
+                            server_command: lsp_config.command.clone(),
+                            method_description: method_desc,
+                            file_path: file_path.to_string(),
+                        });
+                    ovim_core::lsp_info!(
+                        "LSP",
+                        "Prompting user for auto-install consent for {}",
                         lang_config.name
                     );
                     return;
@@ -628,4 +662,87 @@ fn determine_language_id(config_id: &str, abs_path: &Path) -> String {
 
     // Default: use config ID as language ID
     config_id.to_string()
+}
+
+/// Generate a human-readable description of an install method for the consent dialog.
+fn describe_install_method(method: &InstallMethod) -> String {
+    match method {
+        InstallMethod::Npm {
+            package, packages, global, ..
+        } => {
+            let pkgs: Vec<&str> = packages
+                .iter()
+                .map(String::as_str)
+                .chain(package.as_deref())
+                .collect();
+            let flag = if *global { " -g" } else { "" };
+            format!("npm install{} {}", flag, pkgs.join(" "))
+        }
+        InstallMethod::Cargo {
+            package, features, ..
+        } => {
+            let feat = if features.is_empty() {
+                String::new()
+            } else {
+                format!(" --features {}", features.join(","))
+            };
+            format!("cargo install {}{}", package, feat)
+        }
+        InstallMethod::Github { repo, .. } => {
+            format!("download from github.com/{}", repo)
+        }
+        InstallMethod::Shell { command } => command.clone(),
+    }
+}
+
+/// Handle an approved LSP install (called from the event loop after user consent).
+pub async fn handle_approved_lsp_install(editor: &mut Editor) {
+    let Some(approved) = editor.take_approved_lsp_install() else {
+        return;
+    };
+
+    // Re-detect language config for the file
+    let abs_path = Path::new(&approved.file_path);
+    let Some(lang_config) = LanguageRegistry::get().detect(abs_path) else {
+        return;
+    };
+    let Some(lsp_config) = &lang_config.lsp else {
+        return;
+    };
+    let Some(auto_install_config) = &lsp_config.auto_install else {
+        return;
+    };
+
+    // Run the actual install
+    let install_result = attempt_auto_install(
+        &lang_config.name,
+        &lsp_config.command,
+        auto_install_config,
+    )
+    .await;
+
+    match install_result {
+        InstallResult::Success(path) => {
+            editor.set_lsp_status(format!(
+                "LSP: {} installed successfully!",
+                lsp_config.command
+            ));
+            ovim_core::lsp_info!(
+                "LSP",
+                "Auto-installed {} to {}",
+                lsp_config.command,
+                path.display()
+            );
+            // Re-run the full LSP init now that the server is installed.
+            // This time find_lsp_command will succeed and skip auto-install.
+            initialize_lsp_for_file(editor, &approved.file_path).await;
+        }
+        InstallResult::Failed(error) => {
+            editor.set_lsp_status(format!("LSP: Auto-install failed: {}", error));
+        }
+        InstallResult::PrerequisitesMissing(msg) => {
+            editor.set_lsp_status(format!("LSP: {}", msg));
+        }
+        InstallResult::Declined => {}
+    }
 }

@@ -6,7 +6,7 @@
 //! in `handle_value_option`.
 
 use crate::command_result::{CommandResult, ErrorResponse, SuccessResponse};
-use crate::editor::{Editor, MarginColor};
+use crate::editor::{AutoInstallMode, Editor, MarginColor};
 
 // ---------------------------------------------------------------------------
 // Boolean option table
@@ -167,6 +167,14 @@ fn query_option(name: &str, editor: &Editor) -> Option<CommandResult> {
             }
         ),
         "marginpadding" => format!("  marginpadding={}", opts.margin_padding),
+        "autoinstall" => format!(
+            "  autoinstall={}",
+            match opts.lsp_auto_install {
+                AutoInstallMode::Prompt => "prompt",
+                AutoInstallMode::Auto => "auto",
+                AutoInstallMode::Off => "off",
+            }
+        ),
         _ => return None,
     };
     Some(ok(Some(msg)))
@@ -336,6 +344,24 @@ fn handle_value_option(name: &str, value: &str, editor: &mut Editor) -> Option<C
                 ok(Some(format!("  makeprg={}", unescaped)))
             }
         }
+        "autoinstall" => match value {
+            "prompt" => {
+                editor.options.lsp_auto_install = AutoInstallMode::Prompt;
+                ok(Some("  autoinstall=prompt".to_string()))
+            }
+            "auto" => {
+                editor.options.lsp_auto_install = AutoInstallMode::Auto;
+                ok(Some("  autoinstall=auto".to_string()))
+            }
+            "off" => {
+                editor.options.lsp_auto_install = AutoInstallMode::Off;
+                ok(Some("  autoinstall=off".to_string()))
+            }
+            _ => err(format!(
+                "Invalid autoinstall value: {} (use 'prompt', 'auto', or 'off')",
+                value
+            )),
+        },
         _ => return None,
     };
     Some(result)

@@ -535,7 +535,7 @@ impl Editor {
                     let flag = if *global { " -g" } else { "" };
                     format!("Run: npm uninstall{flag} {}", packages.join(" "))
                 }
-                crate::language_config::InstallMethod::Cargo { package } => {
+                crate::language_config::InstallMethod::Cargo { package, .. } => {
                     format!("Run: cargo uninstall {package}")
                 }
                 crate::language_config::InstallMethod::Shell { command } => {

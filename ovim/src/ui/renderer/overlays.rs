@@ -466,6 +466,68 @@ fn centered_area(full: Rect, width: u16, height: u16) -> Rect {
     Rect::new(x, y, width, height)
 }
 
+/// Centered consent dialog for LSP auto-install requests.
+pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, theme: &Theme) {
+    let Some((language, server, method)) = editor.pending_lsp_install_summary() else {
+        return;
+    };
+
+    let full = frame.area();
+    if full.width < 40 || full.height < 7 {
+        return;
+    }
+    let width = ((full.width * 70) / 100)
+        .max(48)
+        .min(100)
+        .min(full.width.saturating_sub(2));
+    let height = 9u16.min(full.height.saturating_sub(2)).max(7);
+    let area = centered_area(full, width, height);
+
+    let border_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Info));
+    let title_color =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::TabActiveFg));
+    let text_color =
+        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::StatusLineForeground));
+    let hint_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Border));
+
+    let content = vec![
+        Line::from(Span::styled(
+            format!("Install {} for {} support?", server, language),
+            Style::default().fg(text_color).bg(Color::Reset),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            format!("Method: {}", method),
+            Style::default().fg(hint_color).bg(Color::Reset),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Enter: install   A: always auto-install   Esc: skip",
+            Style::default()
+                .fg(title_color)
+                .bg(Color::Reset)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+
+    let dialog = Paragraph::new(content).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(border_color).bg(Color::Reset))
+            .title(" Install Language Server ")
+            .title_style(
+                Style::default()
+                    .fg(title_color)
+                    .bg(Color::Reset)
+                    .add_modifier(Modifier::BOLD),
+            ),
+    );
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(dialog, area);
+}
+
 /// Centered permission dialog for AI chat approval requests.
 ///
 /// This is used for high-attention, blocking prompts (tool approval and

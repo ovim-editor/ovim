@@ -118,6 +118,23 @@ pub enum MarginColor {
     Solid(u8, u8, u8),
 }
 
+/// Controls LSP auto-install behavior
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AutoInstallMode {
+    /// Show a consent dialog before installing (default)
+    Prompt,
+    /// Install automatically without asking
+    Auto,
+    /// Never auto-install, only show install hints
+    Off,
+}
+
+impl Default for AutoInstallMode {
+    fn default() -> Self {
+        Self::Prompt
+    }
+}
+
 /// Editor options and settings
 #[derive(Debug, Clone)]
 pub struct EditorOptions {
@@ -175,6 +192,8 @@ pub struct EditorOptions {
     pub margin_padding: usize,
     /// Program to run for :make (default: "cargo build")
     pub makeprg: String,
+    /// LSP auto-install behavior: Prompt (default), Auto, or Off
+    pub lsp_auto_install: AutoInstallMode,
 }
 
 impl Default for EditorOptions {
@@ -205,6 +224,7 @@ impl Default for EditorOptions {
             margin_color: MarginColor::None,
             margin_padding: 0,
             makeprg: "cargo build".to_string(),
+            lsp_auto_install: AutoInstallMode::default(),
         }
     }
 }
@@ -329,6 +349,34 @@ pub struct Editor {
     pub last_make_output: Option<String>,
     /// Set by motions that fail to move during macro playback
     macro_aborted: bool,
+    /// Pending LSP auto-install awaiting user consent
+    pub pending_lsp_install: Option<PendingLspInstall>,
+    /// Approved LSP install ready to be picked up by the event loop
+    pub approved_lsp_install: Option<PendingLspInstall>,
+}
+
+/// Pending LSP server installation awaiting user consent
+#[derive(Debug, Clone)]
+pub struct PendingLspInstall {
+    /// Human-readable language name (e.g. "Python")
+    pub language_name: String,
+    /// LSP server command (e.g. "pyright-langserver")
+    pub server_command: String,
+    /// How it will be installed (e.g. "npm install -g pyright")
+    pub method_description: String,
+    /// File path that triggered the install
+    pub file_path: String,
+}
+
+/// User's response to the LSP install consent dialog
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LspInstallConsent {
+    /// Install this one time
+    Yes,
+    /// Set autoinstall=auto for all future installs
+    Always,
+    /// Skip this install
+    No,
 }
 
 /// A background `:make` job waiting for results.
@@ -448,6 +496,8 @@ impl Editor {
             last_test_command: None,
             last_make_output: None,
             macro_aborted: false,
+            pending_lsp_install: None,
+            approved_lsp_install: None,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -499,6 +549,8 @@ impl Editor {
             last_test_command: None,
             last_make_output: None,
             macro_aborted: false,
+            pending_lsp_install: None,
+            approved_lsp_install: None,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor

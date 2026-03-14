@@ -106,6 +106,32 @@ impl InputHandler {
             editor.record_macro_event(key_event);
         }
 
+        // Intercept input when LSP install consent dialog is showing
+        if editor.has_pending_lsp_install() {
+            match key_event.code {
+                KeyCode::Enter => {
+                    // Approve install (once)
+                    editor.resolve_pending_lsp_install(
+                        crate::editor::LspInstallConsent::Yes,
+                    );
+                }
+                KeyCode::Char('a') | KeyCode::Char('A') => {
+                    // Always auto-install (sets autoinstall=auto)
+                    editor.resolve_pending_lsp_install(
+                        crate::editor::LspInstallConsent::Always,
+                    );
+                }
+                KeyCode::Esc => {
+                    // Skip install
+                    editor.resolve_pending_lsp_install(
+                        crate::editor::LspInstallConsent::No,
+                    );
+                }
+                _ => {} // Ignore other keys while dialog is showing
+            }
+            return Ok(());
+        }
+
         // Global keybindings (work in any mode)
         // Cmd+1 - toggle file tree
         if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(Modifiers::SUPER) {
