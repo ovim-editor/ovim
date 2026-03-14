@@ -423,6 +423,22 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 operator: None,
             });
         }
+        // Jump to mark exact position (`)
+        KeyCode::Char('`') => {
+            use crate::editor::input_state::{CharMotion, InputState};
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::JumpMarkExact,
+                operator: None,
+            });
+        }
+        // Jump to mark line (')
+        KeyCode::Char('\'') => {
+            use crate::editor::input_state::{CharMotion, InputState};
+            editor.set_input_state(InputState::AwaitingChar {
+                motion: CharMotion::JumpMarkLine,
+                operator: None,
+            });
+        }
         // Repeat the last find motion in visual modes (`;`/`,`).
         KeyCode::Char(';') => {
             editor.repeat_last_find(false);
