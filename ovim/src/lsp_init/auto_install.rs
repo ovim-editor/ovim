@@ -283,13 +283,10 @@ fn verify_cargo_installation(binary: &str) -> Option<PathBuf> {
         dirs::home_dir().map(|h| h.join(".cargo/bin").join(binary)),
     ];
 
-    for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            return Some(candidate);
-        }
-    }
-
-    None
+    candidates
+        .into_iter()
+        .flatten()
+        .find(|candidate| candidate.exists())
 }
 
 /// Install via cargo (Rust's package manager)
