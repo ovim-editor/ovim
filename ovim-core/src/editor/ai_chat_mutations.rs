@@ -2,30 +2,80 @@ use crate::ai::formats::apply_patch::parse_apply_patch;
 use crate::ai::formats::matching::{find_match, MatchResult};
 use crate::ai::formats::Hunk;
 use crate::ai::tools::ToolResult;
+use serde::Deserialize;
 
 use super::ai_integration::remap_abs_char_through_edits;
 use super::Editor;
 
 // -----------------------------------------------------------------
-// Arg extraction helpers
+// Typed arg structs for AI tool handlers
 // -----------------------------------------------------------------
 
-/// Extract a required u64 arg as usize, with minimum value check.
-fn required_u64(args: &serde_json::Value, name: &str, min: u64) -> Result<usize, ToolResult> {
-    match args.get(name).and_then(|v| v.as_u64()) {
-        Some(n) if n >= min => Ok(n as usize),
-        _ => Err(ToolResult::Error(format!(
-            "'{name}' is required (>= {min})"
-        ))),
-    }
+#[derive(Debug, Deserialize)]
+struct EditRangeArgs {
+    start_line: usize,
+    end_line: usize,
+    new_text: String,
 }
 
-/// Extract a required string arg.
-fn required_str(args: &serde_json::Value, name: &str) -> Result<String, ToolResult> {
-    match args.get(name).and_then(|v| v.as_str()) {
-        Some(s) => Ok(s.to_string()),
-        None => Err(ToolResult::Error(format!("'{name}' is required"))),
-    }
+#[derive(Debug, Deserialize)]
+struct InsertLinesArgs {
+    after_line: usize,
+    text: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct DeleteLinesArgs {
+    start_line: usize,
+    end_line: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct PathArgs {
+    path: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct WriteFileArgs {
+    path: String,
+    #[serde(default)]
+    content: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApplyPatchArgs {
+    path: String,
+    diff: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct RestoreFileArgs {
+    path: String,
+    snapshot_id: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct OpenFileArgs {
+    path: String,
+    #[serde(default)]
+    line: usize,
+    #[serde(default)]
+    column: usize,
+}
+
+#[derive(Debug, Deserialize)]
+struct SelectTextArgs {
+    start_line: usize,
+    end_line: usize,
+    #[serde(default)]
+    start_column: usize,
+    #[serde(default)]
+    end_column: Option<usize>,
+}
+
+fn parse_args<T: serde::de::DeserializeOwned>(args: &serde_json::Value) -> Result<T, ToolResult> {
+    serde_json::from_value::<T>(args.clone())
+        .map_err(|e| ToolResult::Error(format!("Invalid arguments: {}", e)))
 }
 
 /// Extract a context snippet around a line range from a rope, with line numbers.
@@ -193,8 +243,14 @@ impl Editor {
         }
 
         match name {
-            "open_file" => self.handle_open_file(args),
-            "select_text" => self.handle_select_text(args),
+            "open_file" => match parse_args(args) {
+                Ok(a) => self.handle_open_file(a),
+                Err(e) => e,
+            },
+            "select_text" => match parse_args(args) {
+                Ok(a) => self.handle_select_text(a),
+                Err(e) => e,
+            },
             _ => ToolResult::Error(format!("unknown navigation tool: {name}")),
         }
     }
@@ -203,11 +259,8 @@ impl Editor {
     // Navigation handlers
     // -----------------------------------------------------------------
 
-    fn handle_open_file(&mut self, args: &serde_json::Value) -> ToolResult {
-        let rel_path = match required_str(args, "path") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
+    fn handle_open_file(&mut self, args: OpenFileArgs) -> ToolResult {
+        let rel_path = args.path;
 
         if rel_path.contains("..") {
             return ToolResult::Error("path traversal (..) not allowed".to_string());
@@ -243,16 +296,8 @@ impl Editor {
         }
 
         // Navigate to requested position (1-indexed -> 0-indexed)
-        let line = args
-            .get("line")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.saturating_sub(1) as usize)
-            .unwrap_or(0);
-        let col = args
-            .get("column")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.saturating_sub(1) as usize)
-            .unwrap_or(0);
+        let line = args.line.saturating_sub(1);
+        let col = args.column.saturating_sub(1);
 
         // Clamp to buffer bounds
         let max_line = self.buffer().rope().len_lines().saturating_sub(1);
@@ -281,15 +326,16 @@ impl Editor {
         ))
     }
 
-    fn handle_select_text(&mut self, args: &serde_json::Value) -> ToolResult {
-        let start_line = match required_u64(args, "start_line", 1) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let end_line = match required_u64(args, "end_line", 1) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
+    fn handle_select_text(&mut self, args: SelectTextArgs) -> ToolResult {
+        let start_line = args.start_line;
+        let end_line = args.end_line;
+
+        if start_line < 1 {
+            return ToolResult::Error("'start_line' is required (>= 1)".to_string());
+        }
+        if end_line < 1 {
+            return ToolResult::Error("'end_line' is required (>= 1)".to_string());
+        }
 
         if start_line > end_line {
             return ToolResult::Error(format!(
@@ -309,23 +355,18 @@ impl Editor {
         let start_line_0 = start_line - 1;
         let end_line_0 = end_line - 1;
 
-        let start_col = args
-            .get("start_column")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.saturating_sub(1) as usize)
-            .unwrap_or(0);
+        let start_col = args.start_column.saturating_sub(1);
 
-        let end_col = args
-            .get("end_column")
-            .and_then(|v| v.as_u64())
-            .map(|n| n.saturating_sub(1) as usize)
-            .unwrap_or_else(|| {
+        let end_col = match args.end_column {
+            Some(n) => n.saturating_sub(1),
+            None => {
                 // Default to end of the end_line
                 let rope = self.buffer().rope();
                 let line_str = rope.line(end_line_0).to_string();
                 let trimmed = line_str.trim_end_matches('\n');
                 crate::unicode::grapheme_count(trimmed)
-            });
+            }
+        };
 
         // Compute char offsets for the selection snapshot
         let rope = self.buffer().rope();
@@ -426,14 +467,38 @@ impl Editor {
         self.current_buffer_index = target;
 
         let result = match name {
-            "edit_range" => self.handle_edit_range(args),
-            "insert_lines" => self.handle_insert_lines(args),
-            "delete_lines" => self.handle_delete_lines(args),
-            "write_file_at_path" => self.handle_write_file_at_path(args, false),
-            "create_file" => self.handle_write_file_at_path(args, true),
-            "apply_patch_at_path" => self.handle_apply_patch_at_path(args),
-            "snapshot_file" => self.handle_snapshot_file(args),
-            "restore_file" => self.handle_restore_file(args),
+            "edit_range" => match parse_args(args) {
+                Ok(a) => self.handle_edit_range(a),
+                Err(e) => e,
+            },
+            "insert_lines" => match parse_args(args) {
+                Ok(a) => self.handle_insert_lines(a),
+                Err(e) => e,
+            },
+            "delete_lines" => match parse_args(args) {
+                Ok(a) => self.handle_delete_lines(a),
+                Err(e) => e,
+            },
+            "write_file_at_path" => match parse_args(args) {
+                Ok(a) => self.handle_write_file_at_path(a, false),
+                Err(e) => e,
+            },
+            "create_file" => match parse_args(args) {
+                Ok(a) => self.handle_write_file_at_path(a, true),
+                Err(e) => e,
+            },
+            "apply_patch_at_path" => match parse_args(args) {
+                Ok(a) => self.handle_apply_patch_at_path(a),
+                Err(e) => e,
+            },
+            "snapshot_file" => match parse_args(args) {
+                Ok(a) => self.handle_snapshot_file(a),
+                Err(e) => e,
+            },
+            "restore_file" => match parse_args(args) {
+                Ok(a) => self.handle_restore_file(a),
+                Err(e) => e,
+            },
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
         };
 
@@ -515,18 +580,11 @@ impl Editor {
 
     fn handle_write_file_at_path(
         &mut self,
-        args: &serde_json::Value,
+        args: WriteFileArgs,
         create_only: bool,
     ) -> ToolResult {
-        let path = match required_str(args, "path") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
-        let mut content = args
-            .get("content")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string();
+        let path = args.path;
+        let mut content = args.content;
         if !content.is_empty() && !content.ends_with('\n') {
             content.push('\n');
         }
@@ -590,15 +648,9 @@ impl Editor {
         ))
     }
 
-    fn handle_apply_patch_at_path(&mut self, args: &serde_json::Value) -> ToolResult {
-        let path = match required_str(args, "path") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
-        let diff = match required_str(args, "diff") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
+    fn handle_apply_patch_at_path(&mut self, args: ApplyPatchArgs) -> ToolResult {
+        let path = args.path;
+        let diff = args.diff;
 
         let file_edits = match parse_apply_patch(&diff) {
             Ok(edits) => edits,
@@ -637,11 +689,12 @@ impl Editor {
             Err(e) => return e,
         };
 
-        let mut write_args = serde_json::Map::new();
-        write_args.insert("path".to_string(), serde_json::Value::String(path.clone()));
-        write_args.insert("content".to_string(), serde_json::Value::String(patched));
+        let write_args = WriteFileArgs {
+            path: path.clone(),
+            content: patched,
+        };
 
-        match self.handle_write_file_at_path(&serde_json::Value::Object(write_args), false) {
+        match self.handle_write_file_at_path(write_args, false) {
             ToolResult::Success(msg) => ToolResult::Success(format!(
                 "Applied {} patch hunk(s) to {}.\n{}",
                 file_edit.hunks.len(),
@@ -652,11 +705,8 @@ impl Editor {
         }
     }
 
-    fn handle_snapshot_file(&mut self, args: &serde_json::Value) -> ToolResult {
-        let path = match required_str(args, "path") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
+    fn handle_snapshot_file(&mut self, args: PathArgs) -> ToolResult {
+        let path = args.path;
         let snapshot_path = self
             .buffer()
             .file_path()
@@ -684,15 +734,9 @@ impl Editor {
         ))
     }
 
-    fn handle_restore_file(&mut self, args: &serde_json::Value) -> ToolResult {
-        let path = match required_str(args, "path") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
-        let snapshot_id = match required_str(args, "snapshot_id") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
+    fn handle_restore_file(&mut self, args: RestoreFileArgs) -> ToolResult {
+        let path = args.path;
+        let snapshot_id = args.snapshot_id;
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return ToolResult::Error("no active chat session".to_string());
         };
@@ -721,31 +765,24 @@ impl Editor {
             ));
         }
 
-        let mut restore_args = serde_json::Map::new();
-        restore_args.insert(
-            "path".to_string(),
-            serde_json::Value::String(path.to_string()),
-        );
-        restore_args.insert(
-            "content".to_string(),
-            serde_json::Value::String(snapshot.content),
-        );
-        self.handle_write_file_at_path(&serde_json::Value::Object(restore_args), false)
+        let restore_args = WriteFileArgs {
+            path: path.to_string(),
+            content: snapshot.content,
+        };
+        self.handle_write_file_at_path(restore_args, false)
     }
 
-    fn handle_edit_range(&mut self, args: &serde_json::Value) -> ToolResult {
-        let start_line = match required_u64(args, "start_line", 1) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let end_line = match required_u64(args, "end_line", 1) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let new_text = match required_str(args, "new_text") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
+    fn handle_edit_range(&mut self, args: EditRangeArgs) -> ToolResult {
+        let start_line = args.start_line;
+        let end_line = args.end_line;
+        let new_text = args.new_text;
+
+        if start_line < 1 {
+            return ToolResult::Error("'start_line' is required (>= 1)".to_string());
+        }
+        if end_line < 1 {
+            return ToolResult::Error("'end_line' is required (>= 1)".to_string());
+        }
 
         if start_line > end_line {
             return ToolResult::Error(format!(
@@ -817,15 +854,9 @@ impl Editor {
         ))
     }
 
-    fn handle_insert_lines(&mut self, args: &serde_json::Value) -> ToolResult {
-        let after_line = match required_u64(args, "after_line", 0) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let text = match required_str(args, "text") {
-            Ok(s) => s,
-            Err(e) => return e,
-        };
+    fn handle_insert_lines(&mut self, args: InsertLinesArgs) -> ToolResult {
+        let after_line = args.after_line;
+        let text = args.text;
 
         let line_count = self.buffer().rope().len_lines();
         if after_line > line_count {
@@ -900,15 +931,16 @@ impl Editor {
         ))
     }
 
-    fn handle_delete_lines(&mut self, args: &serde_json::Value) -> ToolResult {
-        let start_line = match required_u64(args, "start_line", 1) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
-        let end_line = match required_u64(args, "end_line", 1) {
-            Ok(n) => n,
-            Err(e) => return e,
-        };
+    fn handle_delete_lines(&mut self, args: DeleteLinesArgs) -> ToolResult {
+        let start_line = args.start_line;
+        let end_line = args.end_line;
+
+        if start_line < 1 {
+            return ToolResult::Error("'start_line' is required (>= 1)".to_string());
+        }
+        if end_line < 1 {
+            return ToolResult::Error("'end_line' is required (>= 1)".to_string());
+        }
 
         if start_line > end_line {
             return ToolResult::Error(format!(
@@ -985,16 +1017,30 @@ mod tests {
         }
     }
 
-    fn args(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
-        let mut map = serde_json::Map::new();
-        for (k, v) in pairs {
-            map.insert(k.to_string(), v.clone());
-        }
-        serde_json::Value::Object(map)
-    }
-
     fn buf_content(editor: &Editor) -> String {
         editor.buffer().rope().to_string()
+    }
+
+    // ====================================================================
+    // parse_args tests
+    // ====================================================================
+
+    #[test]
+    fn parse_args_malformed_returns_clean_error() {
+        let bad_json = serde_json::json!({"start_line": "not a number"});
+        let result = parse_args::<EditRangeArgs>(&bad_json);
+        assert!(result.is_err());
+        match result.unwrap_err() {
+            ToolResult::Error(msg) => assert!(msg.starts_with("Invalid arguments:")),
+            _ => panic!("expected ToolResult::Error"),
+        }
+    }
+
+    #[test]
+    fn parse_args_missing_required_field() {
+        let bad_json = serde_json::json!({"start_line": 1});
+        let result = parse_args::<EditRangeArgs>(&bad_json);
+        assert!(result.is_err());
     }
 
     // ====================================================================
@@ -1004,11 +1050,11 @@ mod tests {
     #[test]
     fn edit_range_replaces_single_line() {
         let mut editor = Editor::with_content("line 1\nline 2\nline 3\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 2.into()),
-            ("new_text", "replaced\n".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 2,
+            end_line: 2,
+            new_text: "replaced\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "line 1\nreplaced\nline 3\n");
     }
@@ -1016,11 +1062,11 @@ mod tests {
     #[test]
     fn edit_range_replaces_multiple_lines() {
         let mut editor = Editor::with_content("aaa\nbbb\nccc\nddd\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 3.into()),
-            ("new_text", "XXX\n".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 2,
+            end_line: 3,
+            new_text: "XXX\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "aaa\nXXX\nddd\n");
     }
@@ -1028,11 +1074,11 @@ mod tests {
     #[test]
     fn edit_range_adds_trailing_newline() {
         let mut editor = Editor::with_content("line 1\nline 2\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 1.into()),
-            ("end_line", 1.into()),
-            ("new_text", "no newline".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 1,
+            end_line: 1,
+            new_text: "no newline".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         // Should auto-add trailing newline
         assert!(buf_content(&editor).starts_with("no newline\n"));
@@ -1041,22 +1087,22 @@ mod tests {
     #[test]
     fn edit_range_start_exceeds_buffer() {
         let mut editor = Editor::with_content("only line\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 99.into()),
-            ("end_line", 99.into()),
-            ("new_text", "nope".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 99,
+            end_line: 99,
+            new_text: "nope".into(),
+        });
         assert!(matches!(result, ToolResult::Error(_)));
     }
 
     #[test]
     fn edit_range_end_clamped_to_buffer() {
         let mut editor = Editor::with_content("aaa\nbbb\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 1.into()),
-            ("end_line", 999.into()),
-            ("new_text", "replaced all\n".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 1,
+            end_line: 999,
+            new_text: "replaced all\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "replaced all\n");
     }
@@ -1064,22 +1110,22 @@ mod tests {
     #[test]
     fn edit_range_start_greater_than_end() {
         let mut editor = Editor::with_content("line 1\nline 2\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 3.into()),
-            ("end_line", 1.into()),
-            ("new_text", "bad".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 3,
+            end_line: 1,
+            new_text: "bad".into(),
+        });
         assert!(matches!(result, ToolResult::Error(_)));
     }
 
     #[test]
     fn edit_range_with_empty_new_text() {
         let mut editor = Editor::with_content("keep\ndelete me\nalso keep\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 2.into()),
-            ("new_text", "".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 2,
+            end_line: 2,
+            new_text: "".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "keep\nalso keep\n");
     }
@@ -1087,11 +1133,11 @@ mod tests {
     #[test]
     fn edit_range_replace_last_line() {
         let mut editor = Editor::with_content("first\nlast\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 2.into()),
-            ("new_text", "new last\n".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 2,
+            end_line: 2,
+            new_text: "new last\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "first\nnew last\n");
     }
@@ -1099,11 +1145,11 @@ mod tests {
     #[test]
     fn edit_range_expand_single_to_multiple() {
         let mut editor = Editor::with_content("before\ntarget\nafter\n");
-        let result = editor.handle_edit_range(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 2.into()),
-            ("new_text", "line a\nline b\nline c\n".into()),
-        ]));
+        let result = editor.handle_edit_range(EditRangeArgs {
+            start_line: 2,
+            end_line: 2,
+            new_text: "line a\nline b\nline c\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(
             buf_content(&editor),
@@ -1118,10 +1164,10 @@ mod tests {
     #[test]
     fn insert_lines_at_beginning() {
         let mut editor = Editor::with_content("existing\n");
-        let result = editor.handle_insert_lines(&args(&[
-            ("after_line", 0.into()),
-            ("text", "prepended\n".into()),
-        ]));
+        let result = editor.handle_insert_lines(InsertLinesArgs {
+            after_line: 0,
+            text: "prepended\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "prepended\nexisting\n");
     }
@@ -1129,10 +1175,10 @@ mod tests {
     #[test]
     fn insert_lines_at_end() {
         let mut editor = Editor::with_content("existing\n");
-        let result = editor.handle_insert_lines(&args(&[
-            ("after_line", 1.into()),
-            ("text", "appended\n".into()),
-        ]));
+        let result = editor.handle_insert_lines(InsertLinesArgs {
+            after_line: 1,
+            text: "appended\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "existing\nappended\n");
     }
@@ -1140,10 +1186,10 @@ mod tests {
     #[test]
     fn insert_lines_in_middle() {
         let mut editor = Editor::with_content("aaa\nccc\n");
-        let result = editor.handle_insert_lines(&args(&[
-            ("after_line", 1.into()),
-            ("text", "bbb\n".into()),
-        ]));
+        let result = editor.handle_insert_lines(InsertLinesArgs {
+            after_line: 1,
+            text: "bbb\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "aaa\nbbb\nccc\n");
     }
@@ -1151,20 +1197,20 @@ mod tests {
     #[test]
     fn insert_lines_beyond_buffer_is_error() {
         let mut editor = Editor::with_content("one line\n");
-        let result = editor.handle_insert_lines(&args(&[
-            ("after_line", 99.into()),
-            ("text", "nope\n".into()),
-        ]));
+        let result = editor.handle_insert_lines(InsertLinesArgs {
+            after_line: 99,
+            text: "nope\n".into(),
+        });
         assert!(matches!(result, ToolResult::Error(_)));
     }
 
     #[test]
     fn insert_lines_adds_trailing_newline() {
         let mut editor = Editor::with_content("existing\n");
-        let result = editor.handle_insert_lines(&args(&[
-            ("after_line", 0.into()),
-            ("text", "no newline".into()),
-        ]));
+        let result = editor.handle_insert_lines(InsertLinesArgs {
+            after_line: 0,
+            text: "no newline".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert!(buf_content(&editor).contains("no newline\n"));
     }
@@ -1172,10 +1218,10 @@ mod tests {
     #[test]
     fn insert_lines_multiple_lines() {
         let mut editor = Editor::with_content("start\nend\n");
-        let result = editor.handle_insert_lines(&args(&[
-            ("after_line", 1.into()),
-            ("text", "mid 1\nmid 2\nmid 3\n".into()),
-        ]));
+        let result = editor.handle_insert_lines(InsertLinesArgs {
+            after_line: 1,
+            text: "mid 1\nmid 2\nmid 3\n".into(),
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(
             buf_content(&editor),
@@ -1190,10 +1236,10 @@ mod tests {
     #[test]
     fn delete_lines_single_line() {
         let mut editor = Editor::with_content("keep\ndelete\nalso keep\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 2.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 2,
+            end_line: 2,
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "keep\nalso keep\n");
     }
@@ -1201,10 +1247,10 @@ mod tests {
     #[test]
     fn delete_lines_multiple() {
         let mut editor = Editor::with_content("a\nb\nc\nd\ne\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 4.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 2,
+            end_line: 4,
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "a\ne\n");
     }
@@ -1212,10 +1258,10 @@ mod tests {
     #[test]
     fn delete_lines_all() {
         let mut editor = Editor::with_content("a\nb\nc\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 1.into()),
-            ("end_line", 3.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 1,
+            end_line: 3,
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         // Buffer should be empty or have a single empty line
         assert!(buf_content(&editor).is_empty() || buf_content(&editor) == "\n");
@@ -1224,30 +1270,30 @@ mod tests {
     #[test]
     fn delete_lines_start_greater_than_end() {
         let mut editor = Editor::with_content("a\nb\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 3.into()),
-            ("end_line", 1.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 3,
+            end_line: 1,
+        });
         assert!(matches!(result, ToolResult::Error(_)));
     }
 
     #[test]
     fn delete_lines_start_beyond_buffer() {
         let mut editor = Editor::with_content("a\nb\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 99.into()),
-            ("end_line", 99.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 99,
+            end_line: 99,
+        });
         assert!(matches!(result, ToolResult::Error(_)));
     }
 
     #[test]
     fn delete_lines_end_clamped() {
         let mut editor = Editor::with_content("a\nb\nc\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 999.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 2,
+            end_line: 999,
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "a\n");
     }
@@ -1255,10 +1301,10 @@ mod tests {
     #[test]
     fn delete_lines_last_line() {
         let mut editor = Editor::with_content("first\nlast\n");
-        let result = editor.handle_delete_lines(&args(&[
-            ("start_line", 2.into()),
-            ("end_line", 2.into()),
-        ]));
+        let result = editor.handle_delete_lines(DeleteLinesArgs {
+            start_line: 2,
+            end_line: 2,
+        });
         assert!(matches!(result, ToolResult::Success(_)));
         assert_eq!(buf_content(&editor), "first\n");
     }

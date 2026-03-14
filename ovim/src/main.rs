@@ -153,7 +153,7 @@ async fn main() -> Result<()> {
     };
 
     // Store API port in editor for :session start/stop commands
-    editor.api_port = Some(port);
+    editor.set_api_port(port);
 
     // Handle headless mode
     // Headless mode uses stderr for user feedback (no TUI), so eprintln! is safe

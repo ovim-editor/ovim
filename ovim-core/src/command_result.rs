@@ -4,6 +4,7 @@
 //! to return success/error information.
 
 use serde::Serialize;
+use std::borrow::Cow;
 
 /// Result of executing an ex command.
 #[derive(Debug, Clone, Serialize)]
@@ -18,7 +19,7 @@ pub enum CommandResult {
 pub struct SuccessResponse {
     pub success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
+    pub message: Option<Cow<'static, str>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub line_count: Option<usize>,
 }
@@ -32,7 +33,7 @@ pub struct ErrorResponse {
 // ---- Convenience constructors ----
 
 /// Shorthand for a successful command result with an optional message.
-pub fn ok(message: impl Into<String>) -> CommandResult {
+pub fn ok(message: impl Into<Cow<'static, str>>) -> CommandResult {
     CommandResult::Success(SuccessResponse {
         success: true,
         message: Some(message.into()),

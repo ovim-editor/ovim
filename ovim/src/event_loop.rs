@@ -450,7 +450,7 @@ async fn process_editor_tick(
     }
 
     // Check if user approved an LSP auto-install
-    if editor.approved_lsp_install.is_some() {
+    if editor.has_approved_lsp_install() {
         crate::lsp_init::handle_approved_lsp_install(editor).await;
         editor.mark_dirty();
     }
@@ -1000,6 +1000,7 @@ async fn handle_api_request(
                 message: None,
                 line_count: Some(line_count),
             });
+
             let _ = tx.send(response);
         }
         ApiRequest::GetCursor(tx) => {
@@ -1039,7 +1040,7 @@ async fn handle_api_request(
             editor.set_mode(new_mode);
             let _ = tx.send(ApiResponse::Success(SuccessResponse {
                 success: true,
-                message: Some(format!("Mode set to {}", mode_str.to_uppercase())),
+                message: Some(format!("Mode set to {}", mode_str.to_uppercase()).into()),
                 line_count: None,
             }));
         }
@@ -1457,7 +1458,7 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
 
     ApiResponse::Success(SuccessResponse {
         success: true,
-        message: Some(format!("Replaced on line {}", match_line + 1)),
+        message: Some(format!("Replaced on line {}", match_line + 1).into()),
         line_count: Some(editor.buffer().rope().len_lines()),
     })
 }
@@ -1512,7 +1513,7 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
 
     ApiResponse::Success(SuccessResponse {
         success: true,
-        message: Some(format!("Inserted at line {}", line + 1)),
+        message: Some(format!("Inserted at line {}", line + 1).into()),
         line_count: Some(editor.buffer().rope().len_lines()),
     })
 }
@@ -1579,7 +1580,7 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
 
     ApiResponse::Success(SuccessResponse {
         success: true,
-        message: Some(format!("Deleted lines {}-{}", from + 1, to + 1)),
+        message: Some(format!("Deleted lines {}-{}", from + 1, to + 1).into()),
         line_count: Some(new_total),
     })
 }

@@ -117,13 +117,12 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                 // The event loop will pick up the approved install and re-trigger.
                 if editor.options.lsp_auto_install == ovim::editor::AutoInstallMode::Prompt {
                     let method_desc = describe_install_method(&auto_install_config.method);
-                    editor.pending_lsp_install =
-                        Some(ovim::editor::PendingLspInstall {
-                            language_name: lang_config.name.clone(),
-                            server_command: lsp_config.command.clone(),
-                            method_description: method_desc,
-                            file_path: file_path.to_string(),
-                        });
+                    editor.set_pending_lsp_install(ovim::editor::PendingLspInstall {
+                        language_name: lang_config.name.clone(),
+                        server_command: lsp_config.command.clone(),
+                        method_description: method_desc,
+                        file_path: file_path.to_string(),
+                    });
                     ovim_core::lsp_info!(
                         "LSP",
                         "Prompting user for auto-install consent for {}",

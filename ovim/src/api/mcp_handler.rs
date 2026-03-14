@@ -179,7 +179,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                     if let super::state::ApiResponse::Success(success) = response {
                         let msg = success
                             .message
-                            .unwrap_or_else(|| "Command executed successfully".to_string());
+                            .unwrap_or_else(|| "Command executed successfully".into());
                         Ok(mcp::tool_result(vec![mcp::text_content(&msg)]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))
@@ -364,7 +364,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                     if let super::state::ApiResponse::Success(success) = response {
                         let msg = success
                             .message
-                            .unwrap_or_else(|| format!("Mode set to {}", mode_str));
+                            .unwrap_or_else(|| format!("Mode set to {}", mode_str).into());
                         Ok(mcp::tool_result(vec![mcp::text_content(&msg)]))
                     } else if let super::state::ApiResponse::Error(err) = response {
                         Ok(mcp::tool_result(vec![mcp::error_content(&err.error)]))

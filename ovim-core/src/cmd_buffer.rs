@@ -37,8 +37,8 @@ fn list_buffers(editor: &Editor) -> CommandResult {
         .enumerate()
         .map(|(i, name)| {
             let marker = if i == editor.current_buffer_index() { "%" } else { " " };
-            let modified = if i < editor.buffer_count()
-                && !editor.buffers[i].change_manager().is_at_save_point()
+            let modified = if editor.buffer_at(i)
+                .is_some_and(|b| !b.change_manager().is_at_save_point())
             { "+" } else { " " };
             format!("{} {}  {}", marker, modified, name)
         })
