@@ -1372,7 +1372,7 @@ impl Editor {
             // Push directly (not add_buffer) to avoid changing current_buffer_index
             // or % register — AI chat tracks its active buffer via active_buffer_id.
             self.buffers.push(buffer);
-            self.lsp_state.needs_lsp_init = true;
+            self.lsp.state.needs_lsp_init = true;
             let idx = self.buffers.len().saturating_sub(1);
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.active_buffer_id = self.buffers[idx].id();
@@ -1405,7 +1405,7 @@ impl Editor {
         buffer.set_file_path(absolute_path.to_string_lossy().to_string());
         // Push directly (not add_buffer) — see comment above.
         self.buffers.push(buffer);
-        self.lsp_state.needs_lsp_init = true;
+        self.lsp.state.needs_lsp_init = true;
         let idx = self.buffers.len().saturating_sub(1);
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.active_buffer_id = self.buffers[idx].id();
@@ -1714,7 +1714,7 @@ impl Editor {
 
         // --- Enclosing scope (if LSP symbols available) ---
         if let Some(sym) = find_enclosing_symbol(
-            &self.lsp_state.available_document_symbols,
+            &self.lsp.state.available_document_symbols,
             cursor.line() as u32,
         ) {
             let kind = symbol_kind_label(sym.kind);
@@ -2011,13 +2011,13 @@ impl Editor {
             return ToolResult::Error(format!("Cannot create URI for path: {}", file_path));
         };
 
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => Arc::clone(lsp),
             None => {
                 // Fall back to cached data for document_symbols
                 if name == "document_symbols" {
                     return format_document_symbols_cached(
-                        &self.lsp_state.available_document_symbols,
+                        &self.lsp.state.available_document_symbols,
                     );
                 }
                 return ToolResult::Error(
@@ -2028,7 +2028,7 @@ impl Editor {
         };
 
         // Clone cached symbols for fallback
-        let cached_symbols = self.lsp_state.available_document_symbols.clone();
+        let cached_symbols = self.lsp.state.available_document_symbols.clone();
 
         match name {
             "document_symbols" => {
@@ -2320,7 +2320,7 @@ impl Editor {
         else {
             return Vec::new();
         };
-        let Some(lsp) = self.lsp_state.lsp_manager.as_ref() else {
+        let Some(lsp) = self.lsp.state.lsp_manager.as_ref() else {
             return Vec::new();
         };
         let Some(uri) = crate::lsp::uri_from_file_path(&path) else {
@@ -2346,7 +2346,7 @@ impl Editor {
     }
 
     fn get_project_diagnostics_for_chat(&self) -> Vec<ProjectDiagnosticFile> {
-        let Some(lsp) = self.lsp_state.lsp_manager.as_ref() else {
+        let Some(lsp) = self.lsp.state.lsp_manager.as_ref() else {
             return Vec::new();
         };
         let Some(handle) = tokio::runtime::Handle::try_current().ok() else {

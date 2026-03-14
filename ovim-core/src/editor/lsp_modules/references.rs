@@ -29,8 +29,8 @@ impl Editor {
 
         match result {
             Ok(locations) if !locations.is_empty() => {
-                self.lsp_state.available_references = locations.clone();
-                self.lsp_state.active_lsp_result_type =
+                self.lsp.state.available_references = locations.clone();
+                self.lsp.state.active_lsp_result_type =
                     Some(crate::editor::LspResultType::References);
 
                 let items = self.locations_to_picker_items(&locations);
@@ -58,8 +58,8 @@ impl Editor {
 
         match result {
             Ok(symbols) if !symbols.is_empty() => {
-                self.lsp_state.available_document_symbols = symbols.clone();
-                self.lsp_state.active_lsp_result_type =
+                self.lsp.state.available_document_symbols = symbols.clone();
+                self.lsp.state.active_lsp_result_type =
                     Some(crate::editor::LspResultType::DocumentSymbols);
 
                 let file_path = ctx.file_path.clone();
@@ -105,8 +105,8 @@ impl Editor {
 
         match result {
             Ok(symbols) if !symbols.is_empty() => {
-                self.lsp_state.available_workspace_symbols = symbols.clone();
-                self.lsp_state.active_lsp_result_type =
+                self.lsp.state.available_workspace_symbols = symbols.clone();
+                self.lsp.state.active_lsp_result_type =
                     Some(crate::editor::LspResultType::WorkspaceSymbols);
 
                 let items: Vec<PickerResult> = symbols
@@ -303,8 +303,8 @@ impl Editor {
         }
 
         if !all_types.is_empty() {
-            self.lsp_state.available_type_hierarchy = all_types_data;
-            self.lsp_state.active_lsp_result_type =
+            self.lsp.state.available_type_hierarchy = all_types_data;
+            self.lsp.state.active_lsp_result_type =
                 Some(crate::editor::LspResultType::TypeHierarchy);
 
             let picker_items = self.locations_to_picker_items(&all_types);
@@ -319,7 +319,7 @@ impl Editor {
 
     /// Navigate to an LSP location by index (from references, symbols, call hierarchy, etc.)
     pub fn navigate_to_lsp_location(&mut self, index: usize) {
-        let result_type = match &self.lsp_state.active_lsp_result_type {
+        let result_type = match &self.lsp.state.active_lsp_result_type {
             Some(t) => t,
             None => {
                 self.set_lsp_status("No LSP results available".to_string());
@@ -329,18 +329,18 @@ impl Editor {
 
         let location = match result_type {
             crate::editor::LspResultType::References => {
-                if index >= self.lsp_state.available_references.len() {
+                if index >= self.lsp.state.available_references.len() {
                     self.set_lsp_status("Invalid reference index".to_string());
                     return;
                 }
-                self.lsp_state.available_references[index].clone()
+                self.lsp.state.available_references[index].clone()
             }
             crate::editor::LspResultType::DocumentSymbols => {
-                if index >= self.lsp_state.available_document_symbols.len() {
+                if index >= self.lsp.state.available_document_symbols.len() {
                     self.set_lsp_status("Invalid symbol index".to_string());
                     return;
                 }
-                let symbol = &self.lsp_state.available_document_symbols[index];
+                let symbol = &self.lsp.state.available_document_symbols[index];
                 let Some(file_path) = self.buffer().file_path() else {
                     self.set_lsp_status("Document symbols require a saved file".to_string());
                     return;
@@ -355,11 +355,11 @@ impl Editor {
                 }
             }
             crate::editor::LspResultType::WorkspaceSymbols => {
-                if index >= self.lsp_state.available_workspace_symbols.len() {
+                if index >= self.lsp.state.available_workspace_symbols.len() {
                     self.set_lsp_status("Invalid symbol index".to_string());
                     return;
                 }
-                self.lsp_state.available_workspace_symbols[index]
+                self.lsp.state.available_workspace_symbols[index]
                     .location
                     .clone()
             }
@@ -367,9 +367,9 @@ impl Editor {
             | crate::editor::LspResultType::TypeHierarchy => {
                 let hierarchy_items =
                     if matches!(result_type, crate::editor::LspResultType::CallHierarchy) {
-                        &self.lsp_state.available_call_hierarchy
+                        &self.lsp.state.available_call_hierarchy
                     } else {
-                        &self.lsp_state.available_type_hierarchy
+                        &self.lsp.state.available_type_hierarchy
                     };
 
                 if index >= hierarchy_items.len() {
@@ -452,7 +452,7 @@ impl Editor {
 
     /// Store call hierarchy locations for navigation.
     fn store_call_hierarchy(&mut self, locations: &[Location]) {
-        self.lsp_state.available_call_hierarchy = locations
+        self.lsp.state.available_call_hierarchy = locations
             .iter()
             .map(|loc| {
                 let path = uri_to_file_path(&loc.uri)
@@ -466,6 +466,6 @@ impl Editor {
                 (path, loc.clone())
             })
             .collect();
-        self.lsp_state.active_lsp_result_type = Some(crate::editor::LspResultType::CallHierarchy);
+        self.lsp.state.active_lsp_result_type = Some(crate::editor::LspResultType::CallHierarchy);
     }
 }

@@ -8,6 +8,7 @@ pub(crate) mod ai_integration;
 mod ai_state;
 mod ai_workflow;
 mod blame_commands;
+mod build_state;
 mod buffer_manager;
 mod change_tracking;
 mod command_context;
@@ -25,6 +26,7 @@ mod debug_integration;
 mod lsp_integration;
 pub mod lsp_manager_panel;
 mod lsp_state;
+mod lsp_subsystem;
 mod lsp_ui;
 mod lua_integration;
 mod macros;
@@ -236,7 +238,7 @@ use crate::mode::Mode;
 use crate::unicode::grapheme_to_char_col;
 use anyhow::Result;
 use std::collections::HashMap;
-use tokio::sync::mpsc;
+
 
 /// Commands sent from background tasks to the LSP manager via channel
 #[derive(Debug)]
@@ -297,12 +299,8 @@ pub struct Editor {
     macro_manager: MacroManager,
     /// Picker state (picker, preview cache, layout, file list cache, etc.)
     pub picker_state: PickerState,
-    /// LSP-related state
-    lsp_state: LspState,
-    /// Channel sender for LSP commands from background tasks
-    lsp_command_tx: Option<mpsc::UnboundedSender<LspCommand>>,
-    /// Channel receiver for LSP commands from background tasks
-    lsp_command_rx: Option<mpsc::UnboundedReceiver<LspCommand>>,
+    /// LSP subsystem (state, commands, UI, install)
+    pub(crate) lsp: lsp_subsystem::LspSubsystem,
     /// Lua context for configuration and plugins (optional)
     #[cfg(feature = "lua")]
     lua_context: Option<LuaContext>,
@@ -329,8 +327,6 @@ pub struct Editor {
     yank_flash: Option<yank_flash::YankFlash>,
     /// UI panels (file tree, quickfix, path completion, dashboard, diagnostic badge)
     pub ui_panels: UiPanels,
-    /// LSP UI panel state (manager panel and install progress)
-    pub lsp_ui: LspUi,
     /// DAP (Debug Adapter Protocol) manager for debug sessions
     dap_manager: crate::dap::DapManager,
     /// AI prompt, pending jobs, and in-buffer agent logs
@@ -341,18 +337,8 @@ pub struct Editor {
     active_session: Option<String>,
     /// Git branch name for the current file (if in a git repo)
     git_branch: Option<String>,
-    /// Pending `:make` result from background thread
-    pending_make: Option<PendingMake>,
-    /// Last test command run via `<Space>t` keybindings (for `<Space>tl` repeat)
-    last_test_command: Option<String>,
-    /// Raw output from last `:make` / test run
-    last_make_output: Option<String>,
-    /// Set by motions that fail to move during macro playback
-    macro_aborted: bool,
-    /// Pending LSP auto-install awaiting user consent
-    pending_lsp_install: Option<PendingLspInstall>,
-    /// Approved LSP install ready to be picked up by the event loop
-    approved_lsp_install: Option<PendingLspInstall>,
+    /// Build/test subsystem state
+    pub(crate) build: build_state::BuildState,
 }
 
 /// Pending LSP server installation awaiting user consent
@@ -469,9 +455,7 @@ impl Editor {
             keymaps: KeyMapManager::new(),
             macro_manager: MacroManager::new(),
             picker_state: PickerState::new(),
-            lsp_state: LspState::new(),
-            lsp_command_tx: None,
-            lsp_command_rx: None,
+            lsp: lsp_subsystem::LspSubsystem::default(),
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
@@ -486,18 +470,12 @@ impl Editor {
             render_cache: RenderCache::default(),
             yank_flash: None,
             ui_panels: UiPanels::default(),
-            lsp_ui: LspUi::default(),
             dap_manager: crate::dap::DapManager::new(),
             ai_state: ai_state::AiState::default(),
             api_port: None,
             active_session: None,
             git_branch: None,
-            pending_make: None,
-            last_test_command: None,
-            last_make_output: None,
-            macro_aborted: false,
-            pending_lsp_install: None,
-            approved_lsp_install: None,
+            build: build_state::BuildState::default(),
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -522,9 +500,7 @@ impl Editor {
             keymaps: KeyMapManager::new(),
             macro_manager: MacroManager::new(),
             picker_state: PickerState::new(),
-            lsp_state: LspState::new(),
-            lsp_command_tx: None,
-            lsp_command_rx: None,
+            lsp: lsp_subsystem::LspSubsystem::default(),
             #[cfg(feature = "lua")]
             lua_context: None,
             #[cfg(feature = "lua")]
@@ -539,18 +515,12 @@ impl Editor {
             render_cache: RenderCache::default(),
             yank_flash: None,
             ui_panels: UiPanels::default(),
-            lsp_ui: LspUi::default(),
             dap_manager: crate::dap::DapManager::new(),
             ai_state: ai_state::AiState::default(),
             api_port: None,
             active_session: None,
             git_branch: None,
-            pending_make: None,
-            last_test_command: None,
-            last_make_output: None,
-            macro_aborted: false,
-            pending_lsp_install: None,
-            approved_lsp_install: None,
+            build: build_state::BuildState::default(),
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -705,7 +675,7 @@ impl Editor {
 
     /// Get the last make/test output (if any).
     pub fn last_make_output(&self) -> Option<&str> {
-        self.last_make_output.as_deref()
+        self.build.last_make_output.as_deref()
     }
 
     /// Get the API server port.
@@ -735,12 +705,12 @@ impl Editor {
 
     /// Set a pending LSP install awaiting user consent.
     pub fn set_pending_lsp_install(&mut self, install: PendingLspInstall) {
-        self.pending_lsp_install = Some(install);
+        self.lsp.pending_install = Some(install);
     }
 
     /// Check if there's an approved LSP install ready for the event loop.
     pub fn has_approved_lsp_install(&self) -> bool {
-        self.approved_lsp_install.is_some()
+        self.lsp.approved_install.is_some()
     }
 
     /// Tick the yank flash. Returns true if it just expired (needs redraw to clear).
@@ -1490,7 +1460,7 @@ impl Editor {
                 // Sync tab's buffer index to match the existing buffer
                 self.sync_current_tab_buffer_index();
                 // Still need to initialize LSP for this file if it hasn't been yet
-                self.lsp_state.needs_lsp_init = true;
+                self.lsp.state.needs_lsp_init = true;
                 return Ok(());
             }
         }
@@ -1530,7 +1500,7 @@ impl Editor {
 
         // Mark that we need to send didClose for the old file
         if old_file_path.is_some() {
-            self.lsp_state.pending_did_close_file = old_file_path;
+            self.lsp.state.pending_did_close_file = old_file_path;
         }
 
         Ok(())
@@ -1876,17 +1846,17 @@ impl Editor {
 
     /// Returns whether macro playback should abort (a motion failed to move).
     pub fn macro_aborted(&self) -> bool {
-        self.macro_aborted
+        self.macro_manager.aborted()
     }
 
     /// Signal that a motion failed (cursor didn't move), aborting macro playback.
     pub fn signal_macro_abort(&mut self) {
-        self.macro_aborted = true;
+        self.macro_manager.signal_abort();
     }
 
     /// Clear the macro abort flag.
     pub fn clear_macro_abort(&mut self) {
-        self.macro_aborted = false;
+        self.macro_manager.clear_abort();
     }
 
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
@@ -1894,7 +1864,7 @@ impl Editor {
         if self.diagnostics_cache_stale() {
             return (0, 0, 0, 0);
         }
-        self.lsp_state.diagnostic_count
+        self.lsp.state.diagnostic_count
     }
 
     /// Whether the diagnostic badge has been dismissed by double-Escape
@@ -1990,7 +1960,7 @@ impl Editor {
         let current_line = self.buffer().cursor().line();
         let current_col = self.buffer().cursor().col();
         let current_col_utf16 = self.col_to_utf16(current_line, current_col);
-        let diagnostics = &self.lsp_state.current_file_diagnostics;
+        let diagnostics = &self.lsp.state.current_file_diagnostics;
 
         // Find first diagnostic after current position (compare line, then column)
         let next = diagnostics
@@ -2017,7 +1987,7 @@ impl Editor {
         let current_line = self.buffer().cursor().line();
         let current_col = self.buffer().cursor().col();
         let current_col_utf16 = self.col_to_utf16(current_line, current_col);
-        let diagnostics = &self.lsp_state.current_file_diagnostics;
+        let diagnostics = &self.lsp.state.current_file_diagnostics;
 
         // Find last diagnostic before current position (compare line, then column)
         let prev = diagnostics
@@ -2049,8 +2019,8 @@ impl Default for Editor {
 impl Editor {
     /// Inject diagnostics for testing diagnostic navigation
     pub fn set_test_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
-        self.lsp_state.current_file_diagnostics = diagnostics;
-        self.lsp_state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
+        self.lsp.state.current_file_diagnostics = diagnostics;
+        self.lsp.state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
     }
 }
 

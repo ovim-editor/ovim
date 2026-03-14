@@ -17,75 +17,75 @@ impl Editor {
 
     /// Get current hover info text
     pub fn hover_info(&self) -> Option<&str> {
-        self.lsp_state.hover_info.as_deref()
+        self.lsp.state.hover_info.as_deref()
     }
 
     /// Get current hover content type (LSP hover or diagnostic)
     pub fn hover_content_type(&self) -> crate::editor::lsp_state::HoverContentType {
-        self.lsp_state.hover_content_type
+        self.lsp.state.hover_content_type
     }
 
     /// Clear hover info
     pub fn clear_hover(&mut self) {
-        self.lsp_state.hover_info = None;
-        self.lsp_state.hover_scroll = 0;
-        self.lsp_state.hover_h_scroll = 0;
+        self.lsp.state.hover_info = None;
+        self.lsp.state.hover_scroll = 0;
+        self.lsp.state.hover_h_scroll = 0;
     }
 
     /// Set hover info directly (used for command output display)
     /// Also switches to HoverPreview mode so the popup is visible
     pub fn set_hover_info(&mut self, info: String) {
-        self.lsp_state.hover_info = Some(info);
-        self.lsp_state.hover_scroll = 0;
-        self.lsp_state.hover_h_scroll = 0;
-        self.lsp_state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
+        self.lsp.state.hover_info = Some(info);
+        self.lsp.state.hover_scroll = 0;
+        self.lsp.state.hover_h_scroll = 0;
+        self.lsp.state.hover_content_type = crate::editor::lsp_state::HoverContentType::LspHover;
         self.mode = crate::mode::Mode::HoverPreview;
         self.mark_dirty();
     }
 
     /// Get hover scroll position
     pub fn hover_scroll(&self) -> usize {
-        self.lsp_state.hover_scroll
+        self.lsp.state.hover_scroll
     }
 
     /// Get the cursor position where hover was triggered
     pub fn hover_position(&self) -> Option<(usize, usize)> {
-        self.lsp_state.hover_position
+        self.lsp.state.hover_position
     }
 
     /// Scroll hover window down
     pub fn scroll_hover_down(&mut self, lines: usize) {
-        if self.lsp_state.hover_info.is_some() {
-            self.lsp_state.hover_scroll = self.lsp_state.hover_scroll.saturating_add(lines);
+        if self.lsp.state.hover_info.is_some() {
+            self.lsp.state.hover_scroll = self.lsp.state.hover_scroll.saturating_add(lines);
         }
     }
 
     /// Scroll hover window up
     pub fn scroll_hover_up(&mut self, lines: usize) {
-        self.lsp_state.hover_scroll = self.lsp_state.hover_scroll.saturating_sub(lines);
+        self.lsp.state.hover_scroll = self.lsp.state.hover_scroll.saturating_sub(lines);
     }
 
     /// Get hover horizontal scroll position
     pub fn hover_h_scroll(&self) -> usize {
-        self.lsp_state.hover_h_scroll
+        self.lsp.state.hover_h_scroll
     }
 
     /// Scroll hover window right
     pub fn scroll_hover_right(&mut self, cols: usize) {
-        if self.lsp_state.hover_info.is_some() {
-            self.lsp_state.hover_h_scroll = self.lsp_state.hover_h_scroll.saturating_add(cols);
+        if self.lsp.state.hover_info.is_some() {
+            self.lsp.state.hover_h_scroll = self.lsp.state.hover_h_scroll.saturating_add(cols);
         }
     }
 
     /// Scroll hover window left
     pub fn scroll_hover_left(&mut self, cols: usize) {
-        self.lsp_state.hover_h_scroll = self.lsp_state.hover_h_scroll.saturating_sub(cols);
+        self.lsp.state.hover_h_scroll = self.lsp.state.hover_h_scroll.saturating_sub(cols);
     }
 
     /// Implementation of hover request
     pub(in crate::editor) async fn hover_impl(&mut self) -> Result<bool> {
         crate::lsp_debug!("LSP-HOVER", "hover_impl() called");
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => {
                 crate::lsp_debug!("LSP-HOVER", "LSP manager found, cloning Arc");
                 lsp.clone()
@@ -109,14 +109,14 @@ impl Editor {
         let cursor_line = cursor.line();
         let cursor_col = cursor.col();
 
-        if let Some(ref cache) = self.lsp_state.hover_cache {
+        if let Some(ref cache) = self.lsp.state.hover_cache {
             if cache.is_valid(&file_path, cursor_line, cursor_col, buffer_version) {
                 crate::lsp_info!("LSP-HOVER", "Cache HIT");
-                self.lsp_state.hover_info = Some(cache.hover_text.clone());
-                self.lsp_state.hover_scroll = 0;
-                self.lsp_state.hover_h_scroll = 0;
-                self.lsp_state.hover_position = Some((cursor_line, cursor_col));
-                self.lsp_state.hover_content_type =
+                self.lsp.state.hover_info = Some(cache.hover_text.clone());
+                self.lsp.state.hover_scroll = 0;
+                self.lsp.state.hover_h_scroll = 0;
+                self.lsp.state.hover_position = Some((cursor_line, cursor_col));
+                self.lsp.state.hover_content_type =
                     crate::editor::lsp_state::HoverContentType::LspHover;
                 self.mode = crate::mode::Mode::HoverPreview;
                 self.mark_dirty();
@@ -126,7 +126,7 @@ impl Editor {
         }
 
         // Cancel any existing pending hover request by aborting the task
-        if let Some(old) = self.lsp_state.pending_lsp_responses.hover.take() {
+        if let Some(old) = self.lsp.state.pending_lsp_responses.hover.take() {
             crate::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
             old.task.abort();
         }
@@ -191,7 +191,7 @@ impl Editor {
         });
 
         // Store task handle and receiver for polling
-        self.lsp_state.pending_lsp_responses.hover =
+        self.lsp.state.pending_lsp_responses.hover =
             Some(crate::editor::lsp_state::PendingLspRequest {
                 task,
                 receiver: rx,

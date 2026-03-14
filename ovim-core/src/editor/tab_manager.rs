@@ -38,7 +38,7 @@ impl Editor {
 
         // Switch editor to the new buffer
         self.current_buffer_index = new_buffer_index;
-        self.lsp_state.needs_lsp_init = true;
+        self.lsp.state.needs_lsp_init = true;
     }
 
     /// Opens a scratch buffer with the given content in a new tab
@@ -68,7 +68,7 @@ impl Editor {
         // Switch editor to the new buffer
         self.current_buffer_index = new_buffer_index;
         // Don't need LSP for scratch buffers
-        self.lsp_state.needs_lsp_init = false;
+        self.lsp.state.needs_lsp_init = false;
         self.mark_dirty();
     }
 

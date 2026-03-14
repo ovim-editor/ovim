@@ -83,7 +83,7 @@ impl Editor {
 
     /// Gets the inlay hints for the current file
     pub fn inlay_hints(&self) -> &[lsp_types::InlayHint] {
-        &self.lsp_state.inlay_hints
+        &self.lsp.state.inlay_hints
     }
 
     /// Gets the file tree
@@ -231,12 +231,12 @@ impl Editor {
 
     /// Sets a pending `:make` background job.
     pub fn set_pending_make(&mut self, pending: super::PendingMake) {
-        self.pending_make = Some(pending);
+        self.build.pending_make = Some(pending);
     }
 
     /// Polls for a completed `:make` job. Returns true if results were applied.
     pub fn poll_pending_make(&mut self) -> bool {
-        let pending = match self.pending_make.take() {
+        let pending = match self.build.pending_make.take() {
             Some(p) => p,
             None => return false,
         };
@@ -244,7 +244,7 @@ impl Editor {
         match pending.receiver.try_recv() {
             Ok(result) => {
                 // Store raw output for :TestOutput / :MakeOutput
-                self.last_make_output = Some(result.output.clone());
+                self.build.last_make_output = Some(result.output.clone());
 
                 let entries = crate::commands::parse_compiler_output(&result.output);
                 let entry_count = entries.len();
@@ -266,7 +266,7 @@ impl Editor {
             }
             Err(std::sync::mpsc::TryRecvError::Empty) => {
                 // Still running — put it back
-                self.pending_make = Some(pending);
+                self.build.pending_make = Some(pending);
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
@@ -438,27 +438,27 @@ impl Editor {
     // ==================== LSP Manager Panel ====================
 
     pub fn lsp_manager_panel(&self) -> Option<&super::LspManagerPanel> {
-        self.lsp_ui.lsp_manager_panel.as_ref()
+        self.lsp.ui.lsp_manager_panel.as_ref()
     }
 
     pub fn lsp_manager_panel_mut(&mut self) -> Option<&mut super::LspManagerPanel> {
-        self.lsp_ui.lsp_manager_panel.as_mut()
+        self.lsp.ui.lsp_manager_panel.as_mut()
     }
 
     pub fn open_lsp_manager(&mut self) {
         let running = self.get_running_lsp_servers();
-        self.lsp_ui.lsp_manager_panel = Some(super::LspManagerPanel::new(running));
+        self.lsp.ui.lsp_manager_panel = Some(super::LspManagerPanel::new(running));
         self.mode = Mode::LspManager;
         // Ensure install channel exists
-        if self.lsp_ui.install_progress_tx.is_none() {
+        if self.lsp.ui.install_progress_tx.is_none() {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            self.lsp_ui.install_progress_tx = Some(tx);
-            self.lsp_ui.install_progress_rx = Some(rx);
+            self.lsp.ui.install_progress_tx = Some(tx);
+            self.lsp.ui.install_progress_rx = Some(rx);
         }
     }
 
     pub fn close_lsp_manager(&mut self) {
-        self.lsp_ui.lsp_manager_panel = None;
+        self.lsp.ui.lsp_manager_panel = None;
         self.mode = Mode::Normal;
     }
 
@@ -493,7 +493,7 @@ impl Editor {
         };
 
         // Set installing status in panel
-        if let Some(panel) = &mut self.lsp_ui.lsp_manager_panel {
+        if let Some(panel) = &mut self.lsp.ui.lsp_manager_panel {
             panel.active_installs.insert(
                 language_id.to_string(),
                 InstallStatus::Installing("Starting...".to_string()),
@@ -501,7 +501,7 @@ impl Editor {
         }
 
         // Queue the request for the event loop to spawn
-        self.lsp_ui.pending_installs.push(PendingInstallRequest {
+        self.lsp.ui.pending_installs.push(PendingInstallRequest {
             language_id: language_id.to_string(),
             language_name: lang.name.clone(),
             auto_install_config: auto_install.clone(),
@@ -558,20 +558,20 @@ impl Editor {
     pub fn poll_install_progress(&mut self) -> bool {
         use super::lsp_manager_panel::InstallStatus;
 
-        let Some(rx) = &mut self.lsp_ui.install_progress_rx else {
+        let Some(rx) = &mut self.lsp.ui.install_progress_rx else {
             return false;
         };
 
         let mut updated = false;
         while let Ok(progress) = rx.try_recv() {
-            if let Some(panel) = &mut self.lsp_ui.lsp_manager_panel {
+            if let Some(panel) = &mut self.lsp.ui.lsp_manager_panel {
                 panel
                     .active_installs
                     .insert(progress.language_id.clone(), progress.status.clone());
 
                 // On success, rebuild entries to reflect new state
                 if matches!(progress.status, InstallStatus::Success) {
-                    let running = self.lsp_state.running_server_languages();
+                    let running = self.lsp.state.running_server_languages();
                     panel.update_running_servers(running);
                 }
             }
@@ -584,7 +584,7 @@ impl Editor {
     pub fn take_pending_installs(
         &mut self,
     ) -> Vec<super::lsp_manager_panel::PendingInstallRequest> {
-        std::mem::take(&mut self.lsp_ui.pending_installs)
+        std::mem::take(&mut self.lsp.ui.pending_installs)
     }
 
     /// Get the install progress sender (for spawning background tasks)
@@ -592,11 +592,11 @@ impl Editor {
         &self,
     ) -> Option<&tokio::sync::mpsc::UnboundedSender<super::lsp_manager_panel::InstallProgress>>
     {
-        self.lsp_ui.install_progress_tx.as_ref()
+        self.lsp.ui.install_progress_tx.as_ref()
     }
 
     /// Get language IDs of currently running LSP servers
     fn get_running_lsp_servers(&self) -> Vec<String> {
-        self.lsp_state.running_server_languages()
+        self.lsp.state.running_server_languages()
     }
 }

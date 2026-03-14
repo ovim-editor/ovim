@@ -34,12 +34,12 @@ impl Editor {
 
     /// Apply a completion by index from available completions
     pub fn apply_completion(&mut self, completion_index: usize) {
-        if completion_index >= self.lsp_state.available_completions.len() {
+        if completion_index >= self.lsp.state.available_completions.len() {
             self.set_lsp_status("Invalid completion index".to_string());
             return;
         }
 
-        let completion = self.lsp_state.available_completions[completion_index].clone();
+        let completion = self.lsp.state.available_completions[completion_index].clone();
 
         // Extract the text to insert
         let insert_text = if let Some(text_edit) = completion.text_edit {
@@ -63,13 +63,13 @@ impl Editor {
         self.buffer_mut().insert_text_at(line, col, &insert_text);
 
         // Clear completions after applying
-        self.lsp_state.available_completions.clear();
+        self.lsp.state.available_completions.clear();
         self.set_lsp_status("Completion applied".to_string());
     }
 
     /// Implementation of completion request
     pub(in crate::editor) async fn completion_impl(&mut self) -> Result<bool> {
-        let lsp = match &self.lsp_state.lsp_manager {
+        let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
                 self.set_lsp_status("LSP not available".to_string());
@@ -140,7 +140,7 @@ impl Editor {
         };
 
         // Cancel any pending completion request we already spawned.
-        if let Some(pending) = self.lsp_state.pending_completion.take() {
+        if let Some(pending) = self.lsp.state.pending_completion.take() {
             pending.request.task.abort();
         }
 
@@ -157,9 +157,9 @@ impl Editor {
             return Ok(false);
         }
 
-        self.lsp_state.completion_request_seq =
-            self.lsp_state.completion_request_seq.wrapping_add(1);
-        let seq = self.lsp_state.completion_request_seq;
+        self.lsp.state.completion_request_seq =
+            self.lsp.state.completion_request_seq.wrapping_add(1);
+        let seq = self.lsp.state.completion_request_seq;
 
         // Spawn completion request in background (non-blocking)
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -240,7 +240,7 @@ impl Editor {
             })
         });
 
-        self.lsp_state.pending_completion =
+        self.lsp.state.pending_completion =
             Some(crate::editor::lsp_state::PendingCompletionRequest {
                 seq,
                 request: crate::editor::lsp_state::PendingLspRequest {
