@@ -262,6 +262,23 @@ impl Editor {
         is_project_scan: bool,
         approved_once_root: Option<&PathBuf>,
     ) -> Option<ToolApprovalRequest> {
+        self.maybe_require_tool_policy_approval_with_original_target(
+            tc,
+            requested_path,
+            is_project_scan,
+            approved_once_root,
+            None,
+        )
+    }
+
+    fn maybe_require_tool_policy_approval_with_original_target(
+        &self,
+        tc: &ToolCallInfo,
+        requested_path: Option<PathBuf>,
+        is_project_scan: bool,
+        approved_once_root: Option<&PathBuf>,
+        original_active_target: Option<&Path>,
+    ) -> Option<ToolApprovalRequest> {
         let mode = self.active_chat_tool_approval_mode();
         if mode == ToolApprovalMode::Auto {
             return None;
@@ -274,9 +291,13 @@ impl Editor {
             .as_ref()
             .and_then(|p| sensitive_path_reason(p))
             .is_some();
-        let is_current_target = requested_path
-            .as_ref()
-            .is_some_and(|p| self.is_active_chat_target_path(p));
+        let is_current_target = requested_path.as_ref().is_some_and(|p| {
+            if let Some(orig) = original_active_target {
+                normalize_path(p) == normalize_path(orig)
+            } else {
+                self.is_active_chat_target_path(p)
+            }
+        });
 
         let requires = match mode {
             ToolApprovalMode::Auto => false,
@@ -1261,7 +1282,8 @@ impl Editor {
             .and_then(|v| v.as_str())
             .map(str::trim)
             .filter(|s| !s.is_empty());
-        let mut mutation_target_for_policy = self.active_chat_target_absolute_path();
+        let original_active_target = self.active_chat_target_absolute_path();
+        let mut mutation_target_for_policy = original_active_target.clone();
 
         if requires_path && raw_path.is_none() {
             return ToolDispatchOutcome::Completed(ToolResult::Error(
@@ -1306,11 +1328,12 @@ impl Editor {
             }
         }
 
-        if let Some(req) = self.maybe_require_tool_policy_approval(
+        if let Some(req) = self.maybe_require_tool_policy_approval_with_original_target(
             tc,
             mutation_target_for_policy,
             false,
             approved_once_root,
+            original_active_target.as_deref(),
         ) {
             return ToolDispatchOutcome::ApprovalRequired(req);
         }

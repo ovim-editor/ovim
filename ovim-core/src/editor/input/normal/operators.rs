@@ -681,6 +681,22 @@ fn try_handle_char_motion_with_operator(
         {
             CharMotion::TillBack
         }
+        KeyCode::Char('`')
+            if matches!(
+                operator,
+                Operator::Delete | Operator::Change | Operator::Yank
+            ) =>
+        {
+            CharMotion::JumpMarkExact
+        }
+        KeyCode::Char('\'')
+            if matches!(
+                operator,
+                Operator::Delete | Operator::Change | Operator::Yank
+            ) =>
+        {
+            CharMotion::JumpMarkLine
+        }
         _ => return Ok(None),
     };
 
