@@ -976,12 +976,291 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::ai::formats::Hunk;
+    use crate::ai::tools::ToolResult;
 
     fn hunk(search: &str, replace: &str) -> Hunk {
         Hunk {
             search: search.to_string(),
             replace: replace.to_string(),
         }
+    }
+
+    fn args(pairs: &[(&str, serde_json::Value)]) -> serde_json::Value {
+        let mut map = serde_json::Map::new();
+        for (k, v) in pairs {
+            map.insert(k.to_string(), v.clone());
+        }
+        serde_json::Value::Object(map)
+    }
+
+    fn buf_content(editor: &Editor) -> String {
+        editor.buffer().rope().to_string()
+    }
+
+    // ====================================================================
+    // edit_range tests
+    // ====================================================================
+
+    #[test]
+    fn edit_range_replaces_single_line() {
+        let mut editor = Editor::with_content("line 1\nline 2\nline 3\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 2.into()),
+            ("new_text", "replaced\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "line 1\nreplaced\nline 3\n");
+    }
+
+    #[test]
+    fn edit_range_replaces_multiple_lines() {
+        let mut editor = Editor::with_content("aaa\nbbb\nccc\nddd\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 3.into()),
+            ("new_text", "XXX\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "aaa\nXXX\nddd\n");
+    }
+
+    #[test]
+    fn edit_range_adds_trailing_newline() {
+        let mut editor = Editor::with_content("line 1\nline 2\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 1.into()),
+            ("end_line", 1.into()),
+            ("new_text", "no newline".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        // Should auto-add trailing newline
+        assert!(buf_content(&editor).starts_with("no newline\n"));
+    }
+
+    #[test]
+    fn edit_range_start_exceeds_buffer() {
+        let mut editor = Editor::with_content("only line\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 99.into()),
+            ("end_line", 99.into()),
+            ("new_text", "nope".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Error(_)));
+    }
+
+    #[test]
+    fn edit_range_end_clamped_to_buffer() {
+        let mut editor = Editor::with_content("aaa\nbbb\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 1.into()),
+            ("end_line", 999.into()),
+            ("new_text", "replaced all\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "replaced all\n");
+    }
+
+    #[test]
+    fn edit_range_start_greater_than_end() {
+        let mut editor = Editor::with_content("line 1\nline 2\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 3.into()),
+            ("end_line", 1.into()),
+            ("new_text", "bad".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Error(_)));
+    }
+
+    #[test]
+    fn edit_range_with_empty_new_text() {
+        let mut editor = Editor::with_content("keep\ndelete me\nalso keep\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 2.into()),
+            ("new_text", "".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "keep\nalso keep\n");
+    }
+
+    #[test]
+    fn edit_range_replace_last_line() {
+        let mut editor = Editor::with_content("first\nlast\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 2.into()),
+            ("new_text", "new last\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "first\nnew last\n");
+    }
+
+    #[test]
+    fn edit_range_expand_single_to_multiple() {
+        let mut editor = Editor::with_content("before\ntarget\nafter\n");
+        let result = editor.handle_edit_range(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 2.into()),
+            ("new_text", "line a\nline b\nline c\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(
+            buf_content(&editor),
+            "before\nline a\nline b\nline c\nafter\n"
+        );
+    }
+
+    // ====================================================================
+    // insert_lines tests
+    // ====================================================================
+
+    #[test]
+    fn insert_lines_at_beginning() {
+        let mut editor = Editor::with_content("existing\n");
+        let result = editor.handle_insert_lines(&args(&[
+            ("after_line", 0.into()),
+            ("text", "prepended\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "prepended\nexisting\n");
+    }
+
+    #[test]
+    fn insert_lines_at_end() {
+        let mut editor = Editor::with_content("existing\n");
+        let result = editor.handle_insert_lines(&args(&[
+            ("after_line", 1.into()),
+            ("text", "appended\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "existing\nappended\n");
+    }
+
+    #[test]
+    fn insert_lines_in_middle() {
+        let mut editor = Editor::with_content("aaa\nccc\n");
+        let result = editor.handle_insert_lines(&args(&[
+            ("after_line", 1.into()),
+            ("text", "bbb\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "aaa\nbbb\nccc\n");
+    }
+
+    #[test]
+    fn insert_lines_beyond_buffer_is_error() {
+        let mut editor = Editor::with_content("one line\n");
+        let result = editor.handle_insert_lines(&args(&[
+            ("after_line", 99.into()),
+            ("text", "nope\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Error(_)));
+    }
+
+    #[test]
+    fn insert_lines_adds_trailing_newline() {
+        let mut editor = Editor::with_content("existing\n");
+        let result = editor.handle_insert_lines(&args(&[
+            ("after_line", 0.into()),
+            ("text", "no newline".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert!(buf_content(&editor).contains("no newline\n"));
+    }
+
+    #[test]
+    fn insert_lines_multiple_lines() {
+        let mut editor = Editor::with_content("start\nend\n");
+        let result = editor.handle_insert_lines(&args(&[
+            ("after_line", 1.into()),
+            ("text", "mid 1\nmid 2\nmid 3\n".into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(
+            buf_content(&editor),
+            "start\nmid 1\nmid 2\nmid 3\nend\n"
+        );
+    }
+
+    // ====================================================================
+    // delete_lines tests
+    // ====================================================================
+
+    #[test]
+    fn delete_lines_single_line() {
+        let mut editor = Editor::with_content("keep\ndelete\nalso keep\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 2.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "keep\nalso keep\n");
+    }
+
+    #[test]
+    fn delete_lines_multiple() {
+        let mut editor = Editor::with_content("a\nb\nc\nd\ne\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 4.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "a\ne\n");
+    }
+
+    #[test]
+    fn delete_lines_all() {
+        let mut editor = Editor::with_content("a\nb\nc\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 1.into()),
+            ("end_line", 3.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        // Buffer should be empty or have a single empty line
+        assert!(buf_content(&editor).is_empty() || buf_content(&editor) == "\n");
+    }
+
+    #[test]
+    fn delete_lines_start_greater_than_end() {
+        let mut editor = Editor::with_content("a\nb\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 3.into()),
+            ("end_line", 1.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Error(_)));
+    }
+
+    #[test]
+    fn delete_lines_start_beyond_buffer() {
+        let mut editor = Editor::with_content("a\nb\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 99.into()),
+            ("end_line", 99.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Error(_)));
+    }
+
+    #[test]
+    fn delete_lines_end_clamped() {
+        let mut editor = Editor::with_content("a\nb\nc\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 999.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "a\n");
+    }
+
+    #[test]
+    fn delete_lines_last_line() {
+        let mut editor = Editor::with_content("first\nlast\n");
+        let result = editor.handle_delete_lines(&args(&[
+            ("start_line", 2.into()),
+            ("end_line", 2.into()),
+        ]));
+        assert!(matches!(result, ToolResult::Success(_)));
+        assert_eq!(buf_content(&editor), "first\n");
     }
 
     #[test]
