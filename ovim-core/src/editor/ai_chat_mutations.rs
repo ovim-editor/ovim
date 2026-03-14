@@ -971,3 +971,106 @@ impl Editor {
         ))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::formats::Hunk;
+
+    fn hunk(search: &str, replace: &str) -> Hunk {
+        Hunk {
+            search: search.to_string(),
+            replace: replace.to_string(),
+        }
+    }
+
+    #[test]
+    fn apply_single_hunk_exact_match() {
+        let content = "fn main() {\n    println!(\"hello\");\n}\n".to_string();
+        let hunks = vec![hunk(
+            "    println!(\"hello\");\n",
+            "    println!(\"world\");\n",
+        )];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert!(result.contains("world"));
+        assert!(!result.contains("hello"));
+    }
+
+    #[test]
+    fn apply_multiple_hunks_sequentially() {
+        let content = "aaa\nbbb\nccc\n".to_string();
+        let hunks = vec![
+            hunk("aaa\n", "AAA\n"),
+            hunk("ccc\n", "CCC\n"),
+        ];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert_eq!(result, "AAA\nbbb\nCCC\n");
+    }
+
+    #[test]
+    fn apply_hunk_not_found_returns_error() {
+        let content = "fn foo() {}\n".to_string();
+        let hunks = vec![hunk("fn bar() {}\n", "fn baz() {}\n")];
+        let result = apply_patch_hunks_to_text(content, &hunks);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn apply_empty_search_appends() {
+        let content = "existing\n".to_string();
+        let hunks = vec![hunk("", "appended\n")];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert_eq!(result, "existing\nappended\n");
+    }
+
+    #[test]
+    fn apply_deletion_hunk() {
+        let content = "keep\nremove_me\nalso_keep\n".to_string();
+        let hunks = vec![hunk("remove_me\n", "")];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert_eq!(result, "keep\nalso_keep\n");
+    }
+
+    #[test]
+    fn apply_hunk_replaces_first_occurrence() {
+        // When there are duplicate matches, only the first should be replaced
+        let content = "dup\ndup\n".to_string();
+        let hunks = vec![hunk("dup\n", "REPLACED\n")];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        // First "dup\n" replaced, second remains
+        assert_eq!(result, "REPLACED\ndup\n");
+    }
+
+    #[test]
+    fn apply_cumulative_hunks() {
+        // Second hunk should match against the result of the first hunk
+        let content = "old_value\n".to_string();
+        let hunks = vec![
+            hunk("old_value\n", "mid_value\n"),
+            hunk("mid_value\n", "new_value\n"),
+        ];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert_eq!(result, "new_value\n");
+    }
+
+    #[test]
+    fn apply_multiline_hunk() {
+        let content = "fn foo() {\n    let x = 1;\n    let y = 2;\n}\n".to_string();
+        let hunks = vec![hunk(
+            "    let x = 1;\n    let y = 2;\n",
+            "    let x = 10;\n    let y = 20;\n    let z = 30;\n",
+        )];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert!(result.contains("let x = 10;"));
+        assert!(result.contains("let z = 30;"));
+        assert!(!result.contains("let x = 1;"));
+    }
+
+    #[test]
+    fn apply_hunk_preserves_surrounding_content() {
+        let content = "before\ntarget\nafter\n".to_string();
+        let hunks = vec![hunk("target\n", "replaced\n")];
+        let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
+        assert_eq!(result, "before\nreplaced\nafter\n");
+    }
+}
