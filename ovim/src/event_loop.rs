@@ -634,6 +634,83 @@ pub async fn run_headless_loop(
     Ok(())
 }
 
+/// Execute a shell command with full terminal access.
+///
+/// Leaves the alternate screen so the command's output is visible on the
+/// normal terminal, runs the command with inherited stdio, then waits for
+/// the user to press Enter before restoring the editor UI.
+fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
+    use std::io::Write;
+    use std::process::Command;
+
+    let shell = if cfg!(windows) { "cmd" } else { "sh" };
+    let shell_arg = if cfg!(windows) { "/C" } else { "-c" };
+
+    // Leave the TUI so the command gets a normal terminal
+    if let Err(e) = ui.terminal_mut().suspend() {
+        editor.set_lsp_status(format!("Failed to suspend terminal: {e}"));
+        return;
+    }
+
+    // Show which command we're running (like Vim does)
+    let _ = writeln!(std::io::stdout(), "\x1b[1m:!{command}\x1b[0m");
+    let _ = std::io::stdout().flush();
+
+    // Run the command
+    let status = Command::new(shell)
+        .arg(shell_arg)
+        .arg(command)
+        .stdout(std::process::Stdio::inherit())
+        .stderr(std::process::Stdio::inherit())
+        .stdin(std::process::Stdio::inherit())
+        .status();
+
+    // Show result and wait for Enter
+    let _ = std::io::stdout().flush();
+    match &status {
+        Ok(s) if !s.success() => {
+            let _ = writeln!(
+                std::io::stdout(),
+                "\n\x1b[33mshell returned {}\x1b[0m",
+                s
+            );
+        }
+        Err(e) => {
+            let _ = writeln!(
+                std::io::stdout(),
+                "\n\x1b[31mFailed to run command: {e}\x1b[0m"
+            );
+        }
+        _ => {}
+    }
+    let _ = write!(std::io::stdout(), "\n\x1b[7mPress ENTER to continue\x1b[0m");
+    let _ = std::io::stdout().flush();
+
+    // Wait for Enter (read raw bytes since we're not in raw mode)
+    let _ = std::io::stdin().read_line(&mut String::new());
+
+    // Restore the TUI
+    if let Err(e) = ui.terminal_mut().resume() {
+        // If resume fails, the Drop impl will try to clean up
+        eprintln!("Failed to resume terminal: {e}");
+    }
+
+    // Force full redraw
+    editor.mark_dirty();
+
+    match status {
+        Ok(s) if s.success() => {
+            editor.set_lsp_status(format!(":!{command}"));
+        }
+        Ok(s) => {
+            editor.set_lsp_status(format!("shell returned {s}"));
+        }
+        Err(e) => {
+            editor.set_lsp_status(format!("Failed to run command: {e}"));
+        }
+    }
+}
+
 /// Process a batch of terminal input events.
 /// Returns true if any events were edit-related (for debounce tracking).
 fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool> {
@@ -876,6 +953,11 @@ pub async fn run_event_loop(
                     editor.mark_dirty();
                 }
             }
+        }
+
+        // Execute pending shell command with full terminal access
+        if let Some(pending) = editor.take_pending_shell_command() {
+            execute_shell_command(ui, editor, &pending.command);
         }
 
         // Render after any select branch (if dirty)

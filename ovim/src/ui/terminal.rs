@@ -53,6 +53,42 @@ impl Terminal {
         })
     }
 
+    /// Leave alternate screen and disable raw mode so a child process
+    /// can use the terminal normally. Call `resume()` afterward.
+    pub fn suspend(&mut self) -> Result<()> {
+        let _ = disable_raw_mode();
+        if self.keyboard_enhancement_enabled {
+            let _ = execute!(io::stdout(), PopKeyboardEnhancementFlags);
+        }
+        execute!(
+            io::stdout(),
+            DisableMouseCapture,
+            DisableFocusChange,
+            DisableBracketedPaste,
+            LeaveAlternateScreen,
+        )?;
+        Ok(())
+    }
+
+    /// Re-enter alternate screen and raw mode after `suspend()`.
+    pub fn resume(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(
+            io::stdout(),
+            EnterAlternateScreen,
+            EnableBracketedPaste,
+            EnableFocusChange,
+            EnableMouseCapture,
+        )?;
+        if self.keyboard_enhancement_enabled {
+            let _ = execute!(
+                io::stdout(),
+                PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            );
+        }
+        Ok(())
+    }
+
     /// Gets the terminal size (width, height)
     /// If override_size was set, returns that instead of actual terminal size
     pub fn size(&self) -> Result<(u16, u16)> {

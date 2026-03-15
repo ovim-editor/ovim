@@ -75,6 +75,7 @@ pub use crate::change::{
     Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType,
 };
 pub use ai_state::{AiEditRegion, AiRegionStatus};
+pub use build_state::PendingShellCommand;
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use editing_state::{EditingState, PendingChangeRepeat};
@@ -679,6 +680,11 @@ impl Editor {
     /// Get the last make/test output (if any).
     pub fn last_make_output(&self) -> Option<&str> {
         self.build.last_make_output.as_deref()
+    }
+
+    /// Take a pending shell command (if any) for the event loop to execute.
+    pub fn take_pending_shell_command(&mut self) -> Option<build_state::PendingShellCommand> {
+        self.build.pending_shell_command.take()
     }
 
     /// Get the API server port.
