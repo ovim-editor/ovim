@@ -225,6 +225,50 @@ impl CharMotion {
     pub fn is_backward(&self) -> bool {
         matches!(self, Self::FindBack | Self::TillBack)
     }
+
+    /// Returns true for forward motions (f/t).
+    pub fn is_forward(&self) -> bool {
+        matches!(self, Self::Find | Self::Till)
+    }
+
+    /// Returns true for till motions (t/T).
+    pub fn is_till(&self) -> bool {
+        matches!(self, Self::Till | Self::TillBack)
+    }
+
+    /// Returns the corresponding `FindType`.
+    pub fn find_type(&self) -> crate::editor::FindType {
+        if self.is_till() {
+            crate::editor::FindType::Till
+        } else {
+            crate::editor::FindType::Find
+        }
+    }
+
+    /// Returns the corresponding `FindDirection`.
+    pub fn direction(&self) -> crate::editor::FindDirection {
+        if self.is_backward() {
+            crate::editor::FindDirection::Backward
+        } else {
+            crate::editor::FindDirection::Forward
+        }
+    }
+
+    /// Executes this motion on the buffer. Returns true if the cursor moved.
+    pub fn execute(
+        &self,
+        buffer: &mut crate::buffer::Buffer,
+        target: char,
+        count: usize,
+    ) -> bool {
+        match self {
+            Self::Find => crate::editor::Motions::find_char_forward(buffer, target, count),
+            Self::Till => crate::editor::Motions::till_char_forward(buffer, target, count),
+            Self::FindBack => crate::editor::Motions::find_char_backward(buffer, target, count),
+            Self::TillBack => crate::editor::Motions::till_char_backward(buffer, target, count),
+            _ => false,
+        }
+    }
 }
 
 /// Text object prefix type.

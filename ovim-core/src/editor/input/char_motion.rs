@@ -9,10 +9,9 @@ use anyhow::Result;
 
 use crate::editor::editing_state::PendingChangeRepeat;
 use crate::editor::input_state::CharMotion;
-use crate::editor::motions::Motions;
 use crate::editor::operators::Operator;
 use crate::editor::RegisterType;
-use crate::editor::{Editor, FindDirection, FindType};
+use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 
@@ -45,10 +44,9 @@ pub fn handle_char_motion(
     let count = editor.effective_count();
 
     match motion {
-        CharMotion::Find => handle_find_forward(editor, target, count, operator),
-        CharMotion::Till => handle_till_forward(editor, target, count, operator),
-        CharMotion::FindBack => handle_find_backward(editor, target, count, operator),
-        CharMotion::TillBack => handle_till_backward(editor, target, count, operator),
+        CharMotion::Find | CharMotion::Till | CharMotion::FindBack | CharMotion::TillBack => {
+            handle_char_find(editor, motion, target, count, operator);
+        }
         CharMotion::Replace => handle_replace_char(editor, target, count)?,
         CharMotion::Mark => handle_set_mark(editor, target),
         CharMotion::JumpMarkLine => {
@@ -110,11 +108,7 @@ fn handle_mark_operator(
 
     // Get mark position without jumping
     let mark_pos = if target.is_ascii_lowercase() {
-        editor
-            .nav
-            .marks
-            .get_mark(target)
-            .map(|m| (m.line, m.col))
+        editor.nav.marks.get_mark(target).map(|m| (m.line, m.col))
     } else {
         // Only local marks supported with operators for now.
         // Global marks (A-Z) involve file switching.
@@ -137,14 +131,8 @@ fn handle_mark_operator(
         match op {
             Operator::Delete => {
                 // Move cursor to start_line so delete_lines operates on the right range
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(start_line, 0);
-                let deleted = editor.record_operation(
-                    |buf| buf.delete_lines(line_count),
-                    None,
-                );
+                editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                let deleted = editor.record_operation(|buf| buf.delete_lines(line_count), None);
                 if !deleted.is_empty() {
                     editor.delete_to_register_with_type(deleted, RegisterType::Line);
                 }
@@ -161,10 +149,7 @@ fn handle_mark_operator(
             }
             Operator::Change => {
                 // Move cursor to start_line, then delete lines and enter insert
-                editor
-                    .buffer_mut()
-                    .cursor_mut()
-                    .set_position(start_line, 0);
+                editor.buffer_mut().cursor_mut().set_position(start_line, 0);
 
                 let indent = editor
                     .buffer()
@@ -307,182 +292,74 @@ fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
     let _ = editor.jump_to_mark(target);
 }
 
-/// Handles `f{char}` - find character forward
-fn handle_find_forward(
+// ---------------------------------------------------------------------------
+// Unified f/t/F/T handler
+// ---------------------------------------------------------------------------
+
+/// Handles all four character find motions (f/t/F/T) and their operator
+/// combinations (df/dt/cf/ct/yf/yt etc.).
+fn handle_char_find(
     editor: &mut Editor,
+    motion: CharMotion,
     target: char,
     count: usize,
     operator: Option<Operator>,
 ) {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
-    let cursor_before = (start_line, start_col);
+    let start = editor.cursor_position();
 
-    let moved = Motions::find_char_forward(editor.buffer_mut(), target, count);
-
-    if moved {
-        // Store for ; and , repeat
-        editor.set_last_find(target, FindType::Find, FindDirection::Forward);
-
-        // Apply operator if pending
-        if let Some(op) = operator {
-            let end_line = editor.buffer().cursor().line();
-            let end_col = editor.buffer().cursor().col();
-            apply_operator_to_range(
-                editor,
-                op,
-                cursor_before,
-                target,
-                true,
-                false,
-                count,
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-                true,
-            );
-        }
+    let moved = motion.execute(editor.buffer_mut(), target, count);
+    if !moved {
+        return;
     }
+
+    // Store for ; and , repeat
+    editor.set_last_find(target, motion.find_type(), motion.direction());
+
+    let Some(op) = operator else {
+        return;
+    };
+
+    let end = editor.cursor_position();
+
+    // For backward motions the cursor moved before start, so swap the range
+    let range = if motion.is_backward() {
+        OperatorRange { start: end, end: start }
+    } else {
+        OperatorRange { start, end }
+    };
+
+    let repeat = RepeatAction::DeleteCharMotion {
+        target,
+        forward: motion.is_forward(),
+        till: motion.is_till(),
+        count,
+    };
+
+    apply_operator(editor, op, start, range, repeat);
 }
 
-/// Handles `t{char}` - till character forward
-fn handle_till_forward(
-    editor: &mut Editor,
-    target: char,
-    count: usize,
-    operator: Option<Operator>,
-) {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
-    let cursor_before = (start_line, start_col);
-
-    let moved = Motions::till_char_forward(editor.buffer_mut(), target, count);
-
-    if moved {
-        // Store for ; and , repeat
-        editor.set_last_find(target, FindType::Till, FindDirection::Forward);
-
-        // Apply operator if pending
-        if let Some(op) = operator {
-            let end_line = editor.buffer().cursor().line();
-            let end_col = editor.buffer().cursor().col();
-            apply_operator_to_range(
-                editor,
-                op,
-                cursor_before,
-                target,
-                true,
-                true,
-                count,
-                start_line,
-                start_col,
-                end_line,
-                end_col,
-                true,
-            );
-        }
-    }
-}
-
-/// Handles `F{char}` - find character backward
-fn handle_find_backward(
-    editor: &mut Editor,
-    target: char,
-    count: usize,
-    operator: Option<Operator>,
-) {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
-    let cursor_before = (start_line, start_col);
-
-    let moved = Motions::find_char_backward(editor.buffer_mut(), target, count);
-
-    if moved {
-        editor.set_last_find(target, FindType::Find, FindDirection::Backward);
-
-        if let Some(op) = operator {
-            let end_line = editor.buffer().cursor().line();
-            let end_col = editor.buffer().cursor().col();
-            // For backward motions, the end position is before start
-            apply_operator_to_range(
-                editor,
-                op,
-                cursor_before,
-                target,
-                false,
-                false,
-                count,
-                end_line,
-                end_col,
-                start_line,
-                start_col,
-                true,
-            );
-        }
-    }
-}
-
-/// Handles `T{char}` - till character backward
-fn handle_till_backward(
-    editor: &mut Editor,
-    target: char,
-    count: usize,
-    operator: Option<Operator>,
-) {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
-    let cursor_before = (start_line, start_col);
-
-    let moved = Motions::till_char_backward(editor.buffer_mut(), target, count);
-
-    if moved {
-        editor.set_last_find(target, FindType::Till, FindDirection::Backward);
-
-        if let Some(op) = operator {
-            let end_line = editor.buffer().cursor().line();
-            let end_col = editor.buffer().cursor().col();
-            apply_operator_to_range(
-                editor,
-                op,
-                cursor_before,
-                target,
-                false,
-                true,
-                count,
-                end_line,
-                end_col,
-                start_line,
-                start_col,
-                true,
-            );
-        }
-    }
+/// A character-wise text range for operator application.
+struct OperatorRange {
+    start: (usize, usize),
+    end: (usize, usize),
 }
 
 /// Applies an operator to a character range.
 ///
-/// This handles df, dt, cf, ct, yf, yt, etc.
-fn apply_operator_to_range(
+/// This handles df, dt, cf, ct, yf, yt, etc. The range end is always
+/// inclusive (the target character is included) and gets clamped to line length.
+fn apply_operator(
     editor: &mut Editor,
     operator: Operator,
     cursor_before: (usize, usize),
-    target: char,
-    forward: bool,
-    till: bool,
-    count: usize,
-    start_line: usize,
-    start_col: usize,
-    end_line: usize,
-    end_col: usize,
-    inclusive: bool,
+    range: OperatorRange,
+    repeat: RepeatAction,
 ) {
-    // For inclusive motions (f), include the target character by making the end column exclusive.
-    let mut end_col = if inclusive {
-        end_col.saturating_add(1)
-    } else {
-        end_col
-    };
+    let (start_line, start_col) = range.start;
+    let (end_line, end_col_raw) = range.end;
+
+    // Include the target character by making the end column exclusive.
+    let mut end_col = end_col_raw.saturating_add(1);
 
     // Clamp end_col to the line length to avoid overflow/past-EOL issues.
     if let Some(line) = editor.buffer().line(end_line) {
@@ -505,12 +382,7 @@ fn apply_operator_to_range(
                 }
                 // push_recorded_undo() calls mark_buffer_modified() internally
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::DeleteCharMotion {
-                    target,
-                    forward,
-                    till,
-                    count,
-                });
+                editor.set_repeat_action(repeat);
             }
         }
         Operator::Change => {
@@ -532,12 +404,7 @@ fn apply_operator_to_range(
             };
 
             editor.set_pending_change_repeat(PendingChangeRepeat {
-                delete_action: RepeatAction::DeleteCharMotion {
-                    target,
-                    forward,
-                    till,
-                    count,
-                },
+                delete_action: repeat,
                 linewise: false,
                 delete_token,
             });
