@@ -1096,6 +1096,34 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Update the : register with the command
     editor.registers_mut().set_last_command(command.to_string());
 
+    // Intercept plain :!cmd in TUI mode — queue for the event loop so it
+    // runs with full terminal access (outside alternate screen).
+    // Filter commands (:range!cmd) and :r/:w !cmd are NOT intercepted here;
+    // they're handled below by the standard command flow.
+    if let Some(shell_cmd) = command.strip_prefix('!') {
+        use super::shell_expansion::expand_shell_command;
+        let shell_cmd = shell_cmd.trim();
+        let cmd = if shell_cmd.is_empty() {
+            // Bare :! — repeat last
+            match editor.build.last_shell_command.clone() {
+                Some(last) => last,
+                None => {
+                    editor.set_lsp_status("No previous shell command".to_string());
+                    return Ok(());
+                }
+            }
+        } else {
+            let current_file = editor.buffer().file_path().unwrap_or("").to_string();
+            let alternate_file = editor.registers().get(Some('#'));
+            expand_shell_command(shell_cmd, &current_file, &alternate_file)
+        };
+        editor.build.last_shell_command = Some(cmd.clone());
+        editor.build.pending_shell_command = Some(crate::editor::PendingShellCommand {
+            command: cmd,
+        });
+        return Ok(());
+    }
+
     // First, try to delegate to the top-level commands module which has all the standard commands
     let response = crate::commands::execute_command(editor, command);
     match response {
@@ -1584,21 +1612,13 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         return Ok(());
     }
 
-    // Handle shell command (:! or :.! or :%!)
+    // Handle range-prefixed shell commands (:.!cmd, :%!cmd, :1,5!cmd)
+    // Plain :!cmd is intercepted at the top of execute_command_single.
     if let Some(shell_cmd) = cmd_part.strip_prefix('!') {
         let shell_cmd = shell_cmd.trim();
         if !shell_cmd.is_empty() {
             handle_shell_command(editor, range_str, shell_cmd)?;
             return Ok(());
-        } else if range_str.is_empty() {
-            // Bare `:!` — repeat last shell command
-            if let Some(last) = editor.build.last_shell_command.clone() {
-                handle_shell_command(editor, range_str, &last)?;
-                return Ok(());
-            } else {
-                editor.set_lsp_status("No previous shell command".to_string());
-                return Ok(());
-            }
         }
     }
 
