@@ -1090,35 +1090,22 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     }
                 }
                 ok("Conditional breakpoint set")
-            // Handle :! shell command execution — queue for the event loop
-            // so it runs with full terminal access (outside alternate screen).
+            // Handle :! shell command execution
+            //
+            // This path runs the command inline and returns output — used by the
+            // headless API. The TUI input handler intercepts :! before reaching
+            // here and queues it for terminal-aware execution instead.
             } else if let Some(shell_cmd) = command.strip_prefix('!') {
                 let shell_cmd = shell_cmd.trim();
                 if shell_cmd.is_empty() {
-                    // Bare `:!` — repeat last shell command
                     if let Some(last) = editor.build.last_shell_command.clone() {
-                        editor.build.last_shell_command = Some(last.clone());
-                        editor.build.pending_shell_command =
-                            Some(crate::editor::PendingShellCommand {
-                                command: last,
-                            });
-                        crate::command_result::ok_silent()
+                        execute_shell_command_with_expansion(editor, &last)
                     } else {
                         err("No previous shell command")
                     }
                 } else {
-                    let expanded = {
-                        use crate::editor::shell_expansion::expand_shell_command;
-                        let current_file = editor.buffer().file_path().unwrap_or("").to_string();
-                        let alternate_file = editor.registers().get(Some('#'));
-                        expand_shell_command(shell_cmd, &current_file, &alternate_file)
-                    };
-                    editor.build.last_shell_command = Some(expanded.clone());
-                    editor.build.pending_shell_command =
-                        Some(crate::editor::PendingShellCommand {
-                            command: expanded,
-                        });
-                    crate::command_result::ok_silent()
+                    editor.build.last_shell_command = Some(shell_cmd.to_string());
+                    execute_shell_command_with_expansion(editor, shell_cmd)
                 }
             // Handle :LspInstall / :LspManager - open LSP manager panel
             } else if command == "LspInstall" || command == "LspManager" {
