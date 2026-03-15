@@ -821,28 +821,14 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
             }
         }
     } else {
-        // Simple command execution - let shell handle I/O so pipelines work
-        // (e.g., `:!echo % | pbcopy` needs echo's output to go to pbcopy, not us)
-        let status = Command::new(shell)
-            .arg(shell_arg)
-            .arg(shell_cmd)
-            .stdout(Stdio::inherit())
-            .stderr(Stdio::inherit())
-            .stdin(Stdio::inherit())
-            .status();
-
-        match status {
-            Ok(status) => {
-                if status.success() {
-                    editor.set_lsp_status("Command completed".to_string());
-                } else {
-                    editor.set_lsp_status(format!("Command exited with {}", status));
-                }
-            }
-            Err(e) => {
-                editor.set_lsp_status(format!("Failed to run command: {}", e));
-            }
-        }
+        // Queue for the event loop to execute with full terminal access.
+        // The TUI will leave alternate screen, run the command with inherited I/O,
+        // show a "Press ENTER" prompt, then restore the editor.
+        editor.build.last_shell_command = Some(shell_cmd.to_string());
+        editor.build.pending_shell_command =
+            Some(crate::editor::PendingShellCommand {
+                command: shell_cmd.to_string(),
+            });
     }
 
     Ok(())
@@ -1604,6 +1590,15 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
         if !shell_cmd.is_empty() {
             handle_shell_command(editor, range_str, shell_cmd)?;
             return Ok(());
+        } else if range_str.is_empty() {
+            // Bare `:!` — repeat last shell command
+            if let Some(last) = editor.build.last_shell_command.clone() {
+                handle_shell_command(editor, range_str, &last)?;
+                return Ok(());
+            } else {
+                editor.set_lsp_status("No previous shell command".to_string());
+                return Ok(());
+            }
         }
     }
 

@@ -17,16 +17,38 @@ use ovim::editor::InputHandler;
 fn test_shell_command_echo() {
     let mut test = EditorTest::new("hello world\n");
 
-    // Execute :!echo test
+    // Execute :!echo test — should queue a pending shell command
+    // (actual execution happens in the TUI event loop with terminal access)
     InputHandler::execute_command_string(&mut test.editor, "!echo test").unwrap();
 
-    // Status should contain "test"
-    let status = test.editor.lsp_status();
-    assert!(
-        status.contains("test"),
-        "Status should contain 'test', got: {}",
-        status
-    );
+    let pending = test.editor.take_pending_shell_command();
+    assert!(pending.is_some(), "should have a pending shell command");
+    assert_eq!(pending.unwrap().command, "echo test");
+}
+
+#[test]
+fn test_shell_command_repeat_last() {
+    let mut test = EditorTest::new("hello world\n");
+
+    // First command sets last_shell_command
+    InputHandler::execute_command_string(&mut test.editor, "!echo first").unwrap();
+    let _ = test.editor.take_pending_shell_command();
+
+    // Bare :! should repeat it
+    InputHandler::execute_command_string(&mut test.editor, "!").unwrap();
+    let pending = test.editor.take_pending_shell_command();
+    assert!(pending.is_some(), "bare :! should repeat last command");
+    assert_eq!(pending.unwrap().command, "echo first");
+}
+
+#[test]
+fn test_shell_command_repeat_empty() {
+    let mut test = EditorTest::new("hello world\n");
+
+    // Bare :! with no previous command should not queue
+    InputHandler::execute_command_string(&mut test.editor, "!").unwrap();
+    let pending = test.editor.take_pending_shell_command();
+    assert!(pending.is_none(), "bare :! with no history should not queue");
 }
 
 #[test]
@@ -116,122 +138,104 @@ fn test_write_to_shell_command() {
 fn test_percent_expansion_in_shell() {
     let mut test = EditorTest::new("content\n");
 
-    // Set file path
     test.editor
         .buffer_mut()
         .set_file_path("test_file.rs".to_string());
 
-    // Execute :!echo % (should expand to filename)
+    // :!echo % should expand % to the current filename in the queued command
     InputHandler::execute_command_string(&mut test.editor, "!echo %").unwrap();
 
-    // Status should contain the filename
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("test_file.rs"),
-        "Status should contain filename, got: {}",
-        status
+        pending.command.contains("test_file.rs"),
+        "Expanded command should contain filename, got: {}",
+        pending.command
     );
 }
 
 #[test]
 fn test_percent_tail_modifier() {
     let mut test = EditorTest::new("content\n");
-
-    // Set file path with directory
     test.editor
         .buffer_mut()
         .set_file_path("src/main.rs".to_string());
 
-    // Test :t (tail/basename)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:t").unwrap();
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("main.rs"),
+        pending.command.contains("main.rs"),
         "Tail should be main.rs, got: {}",
-        status
+        pending.command
     );
 }
 
 #[test]
 fn test_percent_head_modifier() {
     let mut test = EditorTest::new("content\n");
-
-    // Set file path with directory
     test.editor
         .buffer_mut()
         .set_file_path("src/main.rs".to_string());
 
-    // Test :h (head/directory)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:h").unwrap();
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("src"),
+        pending.command.contains("src"),
         "Head should be src, got: {}",
-        status
+        pending.command
     );
 }
 
 #[test]
 fn test_percent_root_modifier() {
     let mut test = EditorTest::new("content\n");
-
-    // Set file path with directory
     test.editor
         .buffer_mut()
         .set_file_path("src/main.rs".to_string());
 
-    // Test :r (root/no extension)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:r").unwrap();
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("src/main"),
+        pending.command.contains("src/main"),
         "Root should be src/main, got: {}",
-        status
+        pending.command
     );
 }
 
 #[test]
 fn test_percent_extension_modifier() {
     let mut test = EditorTest::new("content\n");
-
-    // Set file path with directory
     test.editor
         .buffer_mut()
         .set_file_path("src/main.rs".to_string());
 
-    // Test :e (extension)
     InputHandler::execute_command_string(&mut test.editor, "!echo %:e").unwrap();
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("rs"),
+        pending.command.contains("rs"),
         "Extension should be rs, got: {}",
-        status
+        pending.command
     );
 }
 
 #[test]
 fn test_escaped_percent() {
     let mut test = EditorTest::new("content\n");
-
-    // Set file path
     test.editor
         .buffer_mut()
         .set_file_path("test.rs".to_string());
 
-    // Execute :!echo \% (should show literal %)
+    // :!echo \% — escaped percent should be literal, not expanded
     InputHandler::execute_command_string(&mut test.editor, r"!echo \%").unwrap();
-
-    // Status should contain literal %
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("%"),
-        "Status should contain literal %, got: {}",
-        status
+        pending.command.contains('%'),
+        "Should contain literal %, got: {}",
+        pending.command
     );
     assert!(
-        !status.contains("test.rs"),
-        "Status should NOT contain filename, got: {}",
-        status
+        !pending.command.contains("test.rs"),
+        "Should NOT contain filename, got: {}",
+        pending.command
     );
 }
 
@@ -246,16 +250,16 @@ fn test_chained_modifiers() {
 
     // Test :t:r (tail then root = "main")
     InputHandler::execute_command_string(&mut test.editor, "!echo %:t:r").unwrap();
-    let status = test.editor.lsp_status();
+    let pending = test.editor.take_pending_shell_command().expect("pending");
     assert!(
-        status.contains("main"),
+        pending.command.contains("main"),
         "Tail+root should be main, got: {}",
-        status
+        pending.command
     );
     assert!(
-        !status.contains(".rs"),
+        !pending.command.contains(".rs"),
         "Should not contain .rs, got: {}",
-        status
+        pending.command
     );
 }
 
