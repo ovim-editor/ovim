@@ -93,6 +93,17 @@ fn handle_set_mark(editor: &mut Editor, target: char) {
     }
 }
 
+/// Resolves a mark character to a `(line, col)` position, if set.
+fn resolve_mark(editor: &Editor, target: char) -> Option<(usize, usize)> {
+    if target.is_ascii_lowercase() {
+        editor.nav.marks.get_mark(target).map(|m| (m.line, m.col))
+    } else {
+        // Only local marks supported with operators for now.
+        // Global marks (A-Z) involve file switching.
+        None
+    }
+}
+
 /// Handle mark motions with a pending operator (d'a, d`a, y'a, y`a, c'a, c`a).
 ///
 /// `line_wise` = true for `'` (line-wise), false for `` ` `` (character-wise).
@@ -105,158 +116,30 @@ fn handle_mark_operator(
     let Some(op) = operator else {
         return;
     };
-
-    // Get mark position without jumping
-    let mark_pos = if target.is_ascii_lowercase() {
-        editor.nav.marks.get_mark(target).map(|m| (m.line, m.col))
-    } else {
-        // Only local marks supported with operators for now.
-        // Global marks (A-Z) involve file switching.
-        None
-    };
-
-    let Some((mark_line, mark_col)) = mark_pos else {
-        return; // Mark not set
+    let Some((mark_line, mark_col)) = resolve_mark(editor, target) else {
+        return;
     };
 
     let cursor_line = editor.buffer().cursor().line();
     let cursor_col = editor.buffer().cursor().col();
+    let cursor_before = (cursor_line, cursor_col);
 
     if line_wise {
-        // Line-wise operation (d'a, y'a, c'a)
         let start_line = cursor_line.min(mark_line);
         let end_line = cursor_line.max(mark_line);
-        let line_count = end_line - start_line + 1;
-
-        match op {
-            Operator::Delete => {
-                // Move cursor to start_line so delete_lines operates on the right range
-                editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-                let deleted = editor.record_operation(|buf| buf.delete_lines(line_count), None);
-                if !deleted.is_empty() {
-                    editor.delete_to_register_with_type(deleted, RegisterType::Line);
-                }
-            }
-            Operator::Yank => {
-                let mut yanked = String::new();
-                for line_idx in start_line..=end_line {
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        yanked.push_str(&line);
-                    }
-                }
-                editor.yank_to_register_with_type(yanked, RegisterType::Line);
-                editor.set_yank_flash_lines(start_line, end_line);
-            }
-            Operator::Change => {
-                // Move cursor to start_line, then delete lines and enter insert
-                editor.buffer_mut().cursor_mut().set_position(start_line, 0);
-
-                let indent = editor
-                    .buffer()
-                    .line(start_line)
-                    .map(|l| {
-                        l.chars()
-                            .take_while(|c| c.is_whitespace() && *c != '\n')
-                            .collect::<String>()
-                    })
-                    .unwrap_or_default();
-
-                let deleted = editor.record_operation(
-                    |buf| {
-                        let d = buf.delete_lines(line_count);
-                        buf.insert_text_at(start_line, 0, &format!("{}\n", indent));
-                        buf.cursor_mut().set_position(start_line, indent.len());
-                        d
-                    },
-                    None,
-                );
-                if !deleted.is_empty() {
-                    editor.delete_to_register_with_type(deleted, RegisterType::Line);
-                }
-                editor.start_change_building(editor.cursor_position());
-                editor.set_mode(Mode::Insert);
-            }
-            _ => {}
-        }
+        apply_linewise_operator(editor, op, start_line, end_line);
     } else {
-        // Character-wise operation (d`a, y`a, c`a)
-        let (start_line, start_col, end_line, end_col) =
+        // Order start/end so start <= end
+        let (start, end) =
             if cursor_line < mark_line || (cursor_line == mark_line && cursor_col <= mark_col) {
-                (cursor_line, cursor_col, mark_line, mark_col)
+                ((cursor_line, cursor_col), (mark_line, mark_col))
             } else {
-                (mark_line, mark_col, cursor_line, cursor_col)
+                ((mark_line, mark_col), (cursor_line, cursor_col))
             };
 
-        // Vim treats backtick mark motions as exclusive for operators
-        let end_col_exclusive = end_col;
-
-        let cursor_before = (cursor_line, cursor_col);
-
-        match op {
-            Operator::Delete => {
-                let (deleted, edits) = editor.buffer_mut().record(|buf| {
-                    let d = buf.delete_range(start_line, start_col, end_line, end_col_exclusive);
-                    buf.cursor_mut().set_position(start_line, start_col);
-                    d
-                });
-                if !edits.is_empty() {
-                    let cursor_after = editor.cursor_position();
-                    editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                    if !deleted.is_empty() {
-                        editor.delete_to_register_with_type(deleted, RegisterType::Character);
-                    }
-                }
-            }
-            Operator::Yank => {
-                let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
-                let end_char = editor.buffer().rope().line_to_char(end_line) + end_col_exclusive;
-                if end_char > start_char {
-                    let yanked = editor
-                        .buffer()
-                        .rope()
-                        .slice(start_char..end_char)
-                        .to_string();
-                    editor.yank_to_register_with_type(yanked, RegisterType::Character);
-                    editor.set_yank_flash_range(
-                        start_line,
-                        start_col,
-                        end_line,
-                        end_col_exclusive.saturating_sub(1),
-                    );
-                }
-            }
-            Operator::Change => {
-                let (deleted, edits) = editor.buffer_mut().record(|buf| {
-                    let d = buf.delete_range(start_line, start_col, end_line, end_col_exclusive);
-                    buf.cursor_mut().set_position(start_line, start_col);
-                    d
-                });
-                if !edits.is_empty() {
-                    let cursor_after = editor.cursor_position();
-                    let token = editor.push_recorded_undo_returning_token(
-                        edits,
-                        cursor_before,
-                        cursor_after,
-                    );
-                    if !deleted.is_empty() {
-                        editor.delete_to_register_with_type(deleted, RegisterType::Character);
-                    }
-                    editor.set_pending_change_repeat(PendingChangeRepeat {
-                        delete_action: RepeatAction::DeleteCharMotion {
-                            target: '\0',
-                            forward: true,
-                            till: false,
-                            count: 1,
-                        },
-                        linewise: false,
-                        delete_token: Some(token),
-                    });
-                    editor.start_change_building(editor.cursor_position());
-                    editor.set_mode(Mode::Insert);
-                }
-            }
-            _ => {}
-        }
+        // Vim treats backtick mark motions as exclusive
+        let range = OperatorRange::exclusive(start, end);
+        apply_charwise_operator(editor, op, cursor_before, range, None);
     }
 }
 
@@ -323,9 +206,9 @@ fn handle_char_find(
 
     // For backward motions the cursor moved before start, so swap the range
     let range = if motion.is_backward() {
-        OperatorRange { start: end, end: start }
+        OperatorRange::inclusive(end, start)
     } else {
-        OperatorRange { start, end }
+        OperatorRange::inclusive(start, end)
     };
 
     let repeat = RepeatAction::DeleteCharMotion {
@@ -335,37 +218,62 @@ fn handle_char_find(
         count,
     };
 
-    apply_operator(editor, op, start, range, repeat);
+    apply_charwise_operator(editor, op, start, range, Some(repeat));
 }
+
+// ---------------------------------------------------------------------------
+// Operator application
+// ---------------------------------------------------------------------------
 
 /// A character-wise text range for operator application.
 struct OperatorRange {
     start: (usize, usize),
-    end: (usize, usize),
+    /// The end column, always stored as exclusive (one past last char to affect).
+    end_col_exclusive: (usize, usize),
 }
 
-/// Applies an operator to a character range.
+impl OperatorRange {
+    /// Inclusive range — the end position is the last character to include.
+    /// Used by f/t motions where the cursor lands *on* the target.
+    fn inclusive(start: (usize, usize), end: (usize, usize)) -> Self {
+        Self {
+            start,
+            end_col_exclusive: (end.0, end.1.saturating_add(1)),
+        }
+    }
+
+    /// Exclusive range — the end position is already one past the last character.
+    /// Used by backtick mark motions.
+    fn exclusive(start: (usize, usize), end: (usize, usize)) -> Self {
+        Self {
+            start,
+            end_col_exclusive: end,
+        }
+    }
+}
+
+/// Applies a character-wise operator (delete/change/yank) to a range.
 ///
-/// This handles df, dt, cf, ct, yf, yt, etc. The range end is always
-/// inclusive (the target character is included) and gets clamped to line length.
-fn apply_operator(
+/// `repeat` controls the `.` repeat action: `Some(action)` sets it on
+/// delete, or wraps it in `PendingChangeRepeat` on change. `None` skips
+/// repeat registration (used by mark operators).
+fn apply_charwise_operator(
     editor: &mut Editor,
     operator: Operator,
     cursor_before: (usize, usize),
     range: OperatorRange,
-    repeat: RepeatAction,
+    repeat: Option<RepeatAction>,
 ) {
     let (start_line, start_col) = range.start;
-    let (end_line, end_col_raw) = range.end;
-
-    // Include the target character by making the end column exclusive.
-    let mut end_col = end_col_raw.saturating_add(1);
+    let (end_line, end_col_raw) = range.end_col_exclusive;
 
     // Clamp end_col to the line length to avoid overflow/past-EOL issues.
-    if let Some(line) = editor.buffer().line(end_line) {
+    let end_col = if let Some(line) = editor.buffer().line(end_line) {
         let line_len = line.trim_end_matches('\n').chars().count();
-        end_col = end_col.min(line_len);
-    }
+        end_col_raw.min(line_len)
+    } else {
+        end_col_raw
+    };
 
     match operator {
         Operator::Delete => {
@@ -380,9 +288,10 @@ fn apply_operator(
                 if !deleted.is_empty() {
                     editor.delete_to_register_with_type(deleted, RegisterType::Character);
                 }
-                // push_recorded_undo() calls mark_buffer_modified() internally
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(repeat);
+                if let Some(action) = repeat {
+                    editor.set_repeat_action(action);
+                }
             }
         }
         Operator::Change => {
@@ -403,8 +312,14 @@ fn apply_operator(
                 None
             };
 
+            let delete_action = repeat.unwrap_or(RepeatAction::DeleteCharMotion {
+                target: '\0',
+                forward: true,
+                till: false,
+                count: 1,
+            });
             editor.set_pending_change_repeat(PendingChangeRepeat {
-                delete_action: repeat,
+                delete_action,
                 linewise: false,
                 delete_token,
             });
@@ -433,7 +348,65 @@ fn apply_operator(
                 .cursor_mut()
                 .set_position(start_line, start_col);
         }
-        // Other operators (indent, etc.) typically don't apply to char motions
+        _ => {}
+    }
+}
+
+/// Applies a line-wise operator (delete/change/yank) to a range of lines.
+fn apply_linewise_operator(
+    editor: &mut Editor,
+    operator: Operator,
+    start_line: usize,
+    end_line: usize,
+) {
+    let line_count = end_line - start_line + 1;
+
+    match operator {
+        Operator::Delete => {
+            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+            let deleted = editor.record_operation(|buf| buf.delete_lines(line_count), None);
+            if !deleted.is_empty() {
+                editor.delete_to_register_with_type(deleted, RegisterType::Line);
+            }
+        }
+        Operator::Yank => {
+            let mut yanked = String::new();
+            for line_idx in start_line..=end_line {
+                if let Some(line) = editor.buffer().line(line_idx) {
+                    yanked.push_str(&line);
+                }
+            }
+            editor.yank_to_register_with_type(yanked, RegisterType::Line);
+            editor.set_yank_flash_lines(start_line, end_line);
+        }
+        Operator::Change => {
+            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+
+            let indent = editor
+                .buffer()
+                .line(start_line)
+                .map(|l| {
+                    l.chars()
+                        .take_while(|c| c.is_whitespace() && *c != '\n')
+                        .collect::<String>()
+                })
+                .unwrap_or_default();
+
+            let deleted = editor.record_operation(
+                |buf| {
+                    let d = buf.delete_lines(line_count);
+                    buf.insert_text_at(start_line, 0, &format!("{}\n", indent));
+                    buf.cursor_mut().set_position(start_line, indent.len());
+                    d
+                },
+                None,
+            );
+            if !deleted.is_empty() {
+                editor.delete_to_register_with_type(deleted, RegisterType::Line);
+            }
+            editor.start_change_building(editor.cursor_position());
+            editor.set_mode(Mode::Insert);
+        }
         _ => {}
     }
 }
