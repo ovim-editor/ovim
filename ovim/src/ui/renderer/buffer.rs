@@ -342,7 +342,9 @@ fn apply_fg_modifier_to_column_range(
         } else {
             let chars: Vec<char> = span.content.chars().collect();
             let range_start = start_col.saturating_sub(current_col);
-            let range_end = end_col_exclusive.saturating_sub(current_col).min(chars.len());
+            let range_end = end_col_exclusive
+                .saturating_sub(current_col)
+                .min(chars.len());
 
             if range_start > 0 {
                 let before: String = chars[..range_start].iter().collect();
@@ -518,18 +520,31 @@ fn compute_blame_brackets(
 /// Builds a gutter line for a logical line (line number + git sign / diagnostic sign).
 /// If `is_continuation` is true, produces a blank gutter row.
 /// Diagnostic signs take priority over git signs when both are present.
-fn build_gutter_line(
-    editor: &Editor,
-    buffer: &crate::buffer::Buffer,
-    theme: &Theme,
-    line_idx: usize,
+/// Invariant context for gutter rendering within a single render pass.
+/// Constructed once before the line loop and passed to all `build_gutter_line` calls.
+struct GutterContext<'a> {
+    editor: &'a Editor,
+    buffer: &'a crate::buffer::Buffer,
+    theme: &'a Theme,
     line_num_width: usize,
     cursor_line: usize,
+    blame_width: usize,
+}
+
+fn build_gutter_line(
+    ctx: &GutterContext,
+    line_idx: usize,
     is_continuation: bool,
     line_diagnostics: &[&lsp_types::Diagnostic],
     blame_info: Option<&(BlameBracket, String, String, Color)>,
-    blame_width: usize,
 ) -> Line<'static> {
+    let editor = ctx.editor;
+    let buffer = ctx.buffer;
+    let theme = ctx.theme;
+    let line_num_width = ctx.line_num_width;
+    let cursor_line = ctx.cursor_line;
+    let blame_width = ctx.blame_width;
+
     if is_continuation {
         // Blank gutter for wrap continuation rows
         let width = blame_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
@@ -814,27 +829,31 @@ fn insert_inlay_hints(
 
         if !found {
             // Append at the end
-            line.spans
-                .push(Span::styled(display_label, hint_style));
+            line.spans.push(Span::styled(display_label, hint_style));
         }
     }
 }
 
-fn lock_ranges_for_line(
-    buffer: &crate::buffer::Buffer,
+/// Per-line viewport context shared between `lock_ranges_for_line` and `ai_region_ranges_for_line`.
+struct ViewportSlice<'a> {
     line_idx: usize,
     line_content_chars: usize,
-    char_mapping: &[usize],
-    expanded_text: &str,
-    line_text: &str,
+    char_mapping: &'a [usize],
+    expanded_text: &'a str,
+    line_text: &'a str,
     wrap: bool,
     h_offset: usize,
     text_width: usize,
     precedes: bool,
+}
+
+fn lock_ranges_for_line(
+    buffer: &crate::buffer::Buffer,
+    slice: &ViewportSlice,
 ) -> Vec<(usize, usize)> {
-    let line_start_char = buffer.rope().line_to_char(line_idx);
-    let line_end_char = line_start_char.saturating_add(line_content_chars);
-    let viewport_end = h_offset.saturating_add(text_width);
+    let line_start_char = buffer.rope().line_to_char(slice.line_idx);
+    let line_end_char = line_start_char.saturating_add(slice.line_content_chars);
+    let viewport_end = slice.h_offset.saturating_add(slice.text_width);
     let mut ranges = Vec::new();
 
     for lock in buffer.ai_locks().iter().filter(|lock| lock.blocks_edits) {
@@ -844,23 +863,26 @@ fn lock_ranges_for_line(
             continue;
         }
 
-        let mut start_col = remap_char_col(start_abs - line_start_char, char_mapping);
-        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, char_mapping);
+        let mut start_col = remap_char_col(start_abs - line_start_char, slice.char_mapping);
+        let mut end_col_exclusive =
+            remap_char_col(end_abs - line_start_char, slice.char_mapping);
 
-        if !wrap {
-            let start_display = expanded_char_to_display_col(expanded_text, start_col);
-            let end_display = expanded_char_to_display_col(expanded_text, end_col_exclusive);
-            if end_display <= h_offset || start_display >= viewport_end {
+        if !slice.wrap {
+            let start_display =
+                expanded_char_to_display_col(slice.expanded_text, start_col);
+            let end_display =
+                expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
+            if end_display <= slice.h_offset || start_display >= viewport_end {
                 continue;
             }
-            let offset_adjustment = if precedes { 1 } else { 0 };
+            let offset_adjustment = if slice.precedes { 1 } else { 0 };
             start_col = display_col_to_char_idx(
-                line_text,
-                start_display.saturating_sub(h_offset) + offset_adjustment,
+                slice.line_text,
+                start_display.saturating_sub(slice.h_offset) + offset_adjustment,
             );
             end_col_exclusive = display_col_to_char_idx(
-                line_text,
-                end_display.saturating_sub(h_offset) + offset_adjustment,
+                slice.line_text,
+                end_display.saturating_sub(slice.h_offset) + offset_adjustment,
             );
         }
 
@@ -872,21 +894,14 @@ fn lock_ranges_for_line(
     ranges
 }
 
+#[allow(clippy::type_complexity)]
 fn ai_region_ranges_for_line(
     editor: &Editor,
-    line_idx: usize,
-    line_content_chars: usize,
-    char_mapping: &[usize],
-    expanded_text: &str,
-    line_text: &str,
-    wrap: bool,
-    h_offset: usize,
-    text_width: usize,
-    precedes: bool,
+    slice: &ViewportSlice,
 ) -> (Vec<(usize, usize)>, Vec<(usize, usize)>) {
-    let line_start_char = editor.buffer().rope().line_to_char(line_idx);
-    let line_end_char = line_start_char.saturating_add(line_content_chars);
-    let viewport_end = h_offset.saturating_add(text_width);
+    let line_start_char = editor.buffer().rope().line_to_char(slice.line_idx);
+    let line_end_char = line_start_char.saturating_add(slice.line_content_chars);
+    let viewport_end = slice.h_offset.saturating_add(slice.text_width);
     let selected_region_id = editor.ai_selected_region_id();
     let mut generated_ranges = Vec::new();
     let mut selected_ranges = Vec::new();
@@ -908,23 +923,26 @@ fn ai_region_ranges_for_line(
             continue;
         }
 
-        let mut start_col = remap_char_col(start_abs - line_start_char, char_mapping);
-        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, char_mapping);
+        let mut start_col = remap_char_col(start_abs - line_start_char, slice.char_mapping);
+        let mut end_col_exclusive =
+            remap_char_col(end_abs - line_start_char, slice.char_mapping);
 
-        if !wrap {
-            let start_display = expanded_char_to_display_col(expanded_text, start_col);
-            let end_display = expanded_char_to_display_col(expanded_text, end_col_exclusive);
-            if end_display <= h_offset || start_display >= viewport_end {
+        if !slice.wrap {
+            let start_display =
+                expanded_char_to_display_col(slice.expanded_text, start_col);
+            let end_display =
+                expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
+            if end_display <= slice.h_offset || start_display >= viewport_end {
                 continue;
             }
-            let offset_adjustment = if precedes { 1 } else { 0 };
+            let offset_adjustment = if slice.precedes { 1 } else { 0 };
             start_col = display_col_to_char_idx(
-                line_text,
-                start_display.saturating_sub(h_offset) + offset_adjustment,
+                slice.line_text,
+                start_display.saturating_sub(slice.h_offset) + offset_adjustment,
             );
             end_col_exclusive = display_col_to_char_idx(
-                line_text,
-                end_display.saturating_sub(h_offset) + offset_adjustment,
+                slice.line_text,
+                end_display.saturating_sub(slice.h_offset) + offset_adjustment,
             );
         }
 
@@ -1133,6 +1151,15 @@ pub fn render_buffer(
         None
     };
 
+    let gutter_ctx = GutterContext {
+        editor,
+        buffer,
+        theme,
+        line_num_width,
+        cursor_line: cursor_line_idx,
+        blame_width,
+    };
+
     let is_md_file = buffer
         .file_path()
         .map(|p| p.ends_with(".md"))
@@ -1151,10 +1178,10 @@ pub fn render_buffer(
                 line_idx == cursor_line_idx && editor.options.markdown_conceal && is_md_file;
             let has_yank_flash = editor
                 .yank_flash()
-                .map_or(false, |f| f.contains_line(line_idx));
+                .is_some_and(|f| f.contains_line(line_idx));
             let line_diagnostics_early = editor.diagnostics_for_line(line_idx);
             let has_bracket = bracket_positions
-                .map_or(false, |((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
+                .is_some_and(|((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
             let has_search = current_search.is_some();
             let has_ai_prompt_selection_on_line = ai_prompt_selection
                 .map(|selection| line_idx >= selection.start_line && line_idx <= selection.end_line)
@@ -1189,17 +1216,19 @@ pub fn render_buffer(
                 && !has_ai_lock_on_line
                 && !has_ai_generated_on_line;
 
+            let line_cache_key = super::line_cache::LineCacheKey {
+                buffer_id,
+                line_idx,
+                buffer_version,
+                h_offset,
+                text_width,
+                wrap,
+                tab_width,
+                markdown_conceal: editor.options.markdown_conceal,
+            };
+
             if is_stable {
-                if let Some(cached_line) = line_cache.get(
-                    buffer_id,
-                    line_idx,
-                    buffer_version,
-                    h_offset,
-                    text_width,
-                    wrap,
-                    tab_width,
-                    editor.options.markdown_conceal,
-                ) {
+                if let Some(cached_line) = line_cache.get(&line_cache_key) {
                     let cached_line = cached_line.clone();
                     // Use cached line — skip all expensive computation
                     if has_wrap {
@@ -1210,18 +1239,13 @@ pub fn render_buffer(
                             }
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
-                                    editor,
-                                    buffer,
-                                    theme,
+                                    &gutter_ctx,
                                     line_idx,
-                                    line_num_width,
-                                    cursor_line_idx,
                                     row_idx > 0,
                                     &line_diagnostics_early,
                                     blame_brackets
                                         .as_ref()
                                         .and_then(|b| b.get(line_idx - start_line)),
-                                    blame_width,
                                 ));
                             }
                             lines.push(row);
@@ -1241,18 +1265,13 @@ pub fn render_buffer(
                         }
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
-                                editor,
-                                buffer,
-                                theme,
+                                &gutter_ctx,
                                 line_idx,
-                                line_num_width,
-                                cursor_line_idx,
                                 false,
                                 &line_diagnostics_early,
                                 blame_brackets
                                     .as_ref()
                                     .and_then(|b| b.get(line_idx - start_line)),
-                                blame_width,
                             ));
                         }
                         lines.push(padded);
@@ -1268,28 +1287,31 @@ pub fn render_buffer(
             let line_text_original = line_text_raw.trim_end_matches('\n');
 
             // Optional markdown conceal (skip on cursor line so editing isn't blind)
-            let (line_text, conceal_byte_map, control_ranges, char_mapping, concealed_links) =
+            let (exp, concealed_links) =
                 if is_md_file && editor.options.markdown_conceal && !is_cursor_line_for_conceal {
                     let spans = scan_markdown_conceal(line_text_original);
                     if spans.is_empty() {
-                        let (t, m, cr, cm) = expand_tabs_with_mapping(line_text_original, tab_width);
-                        (t, m, cr, cm, Vec::new())
+                        (expand_tabs_with_mapping(line_text_original, tab_width), Vec::new())
                     } else {
                         let transform = crate::ui::renderer::markdown_conceal::apply_conceal(
                             line_text_original,
                             &spans,
                         );
                         let links = crate::ui::renderer::markdown_conceal::extract_concealed_links(
-                            &spans,
-                            &transform,
+                            &spans, &transform,
                         );
-                        let (t, m, cr, cm) = compose_conceal_and_tabs(line_text_original, &transform, tab_width);
-                        (t, m, cr, cm, links)
+                        (
+                            compose_conceal_and_tabs(line_text_original, &transform, tab_width),
+                            links,
+                        )
                     }
                 } else {
-                    let (t, m, cr, cm) = expand_tabs_with_mapping(line_text_original, tab_width);
-                    (t, m, cr, cm, Vec::new())
+                    (expand_tabs_with_mapping(line_text_original, tab_width), Vec::new())
                 };
+            let line_text = exp.text;
+            let conceal_byte_map = exp.byte_mapping;
+            let control_ranges = exp.control_ranges;
+            let char_mapping = exp.char_mapping;
 
             // Keep a reference to expanded text before slicing (for highlight remapping)
             let expanded_text = line_text.clone();
@@ -1422,11 +1444,8 @@ pub fn render_buffer(
                     let end_char = if d.range.end.line as usize > line_idx {
                         line_char_count_for_diag
                     } else {
-                        utf16_offset_to_char_idx(
-                            line_text_original,
-                            d.range.end.character as usize,
-                        )
-                        .min(line_char_count_for_diag)
+                        utf16_offset_to_char_idx(line_text_original, d.range.end.character as usize)
+                            .min(line_char_count_for_diag)
                     };
                     let color = match d.severity {
                         Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
@@ -1486,30 +1505,20 @@ pub fn render_buffer(
                 })
                 .collect();
             let line_char_count = line_text_original.chars().count();
-            let ai_lock_ranges = lock_ranges_for_line(
-                buffer,
+            let viewport_slice = ViewportSlice {
                 line_idx,
-                line_char_count,
-                &char_mapping,
-                &expanded_text,
-                &line_text,
+                line_content_chars: line_char_count,
+                char_mapping: &char_mapping,
+                expanded_text: &expanded_text,
+                line_text: &line_text,
                 wrap,
                 h_offset,
                 text_width,
                 precedes,
-            );
-            let (ai_generated_ranges, ai_selected_ranges) = ai_region_ranges_for_line(
-                editor,
-                line_idx,
-                line_char_count,
-                &char_mapping,
-                &expanded_text,
-                &line_text,
-                wrap,
-                h_offset,
-                text_width,
-                precedes,
-            );
+            };
+            let ai_lock_ranges = lock_ranges_for_line(buffer, &viewport_slice);
+            let (ai_generated_ranges, ai_selected_ranges) =
+                ai_region_ranges_for_line(editor, &viewport_slice);
             let ai_prompt_ranges = if let Some(selection) = ai_prompt_selection {
                 if line_idx < selection.start_line || line_idx > selection.end_line {
                     Vec::new()
@@ -1686,18 +1695,7 @@ pub fn render_buffer(
                 }
 
                 // Store in cache (stable lines will be served from cache next frame)
-                line_cache.put(
-                    buffer_id,
-                    line_idx,
-                    buffer_version,
-                    h_offset,
-                    text_width,
-                    wrap,
-                    tab_width,
-                    editor.options.markdown_conceal,
-                    line.clone(),
-                    is_stable,
-                );
+                line_cache.put(line_cache_key.clone(), line.clone(), is_stable);
 
                 // Insert inlay hints (after cache, since hints are viewport-dependent)
                 let line_hints = editor.inlay_hints_for_line(line_idx);
@@ -1731,18 +1729,13 @@ pub fn render_buffer(
                         }
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
-                                editor,
-                                buffer,
-                                theme,
+                                &gutter_ctx,
                                 line_idx,
-                                line_num_width,
-                                cursor_line_idx,
                                 row_idx > 0,
                                 &line_diagnostics,
                                 blame_brackets
                                     .as_ref()
                                     .and_then(|b| b.get(line_idx - start_line)),
-                                blame_width,
                             ));
                         }
                         lines.push(row);
@@ -1761,18 +1754,13 @@ pub fn render_buffer(
                     }
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
-                            editor,
-                            buffer,
-                            theme,
+                            &gutter_ctx,
                             line_idx,
-                            line_num_width,
-                            cursor_line_idx,
                             false,
                             &line_diagnostics,
                             blame_brackets
                                 .as_ref()
                                 .and_then(|b| b.get(line_idx - start_line)),
-                            blame_width,
                         ));
                     }
                     lines.push(line);
@@ -1781,36 +1769,20 @@ pub fn render_buffer(
             } else {
                 // Simple rendering path (no highlighting) — always stable
                 let simple_line = Line::from(line_text.to_string());
-                line_cache.put(
-                    buffer_id,
-                    line_idx,
-                    buffer_version,
-                    h_offset,
-                    text_width,
-                    wrap,
-                    tab_width,
-                    editor.options.markdown_conceal,
-                    simple_line,
-                    true,
-                );
+                line_cache.put(line_cache_key, simple_line, true);
 
                 if has_wrap {
                     let chars: Vec<char> = line_text.chars().collect();
                     if chars.is_empty() {
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
-                                editor,
-                                buffer,
-                                theme,
+                                &gutter_ctx,
                                 line_idx,
-                                line_num_width,
-                                cursor_line_idx,
                                 false,
                                 &[],
                                 blame_brackets
                                     .as_ref()
                                     .and_then(|b| b.get(line_idx - start_line)),
-                                blame_width,
                             ));
                         }
                         lines.push(Line::from(" ".repeat(text_width)));
@@ -1822,18 +1794,13 @@ pub fn render_buffer(
                             }
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
-                                    editor,
-                                    buffer,
-                                    theme,
+                                    &gutter_ctx,
                                     line_idx,
-                                    line_num_width,
-                                    cursor_line_idx,
                                     chunk_idx > 0,
                                     &[],
                                     blame_brackets
                                         .as_ref()
                                         .and_then(|b| b.get(line_idx - start_line)),
-                                    blame_width,
                                 ));
                             }
                             let text: String = chunk.iter().collect();
@@ -1851,18 +1818,13 @@ pub fn render_buffer(
                     // No wrap: pad simple lines too
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
-                            editor,
-                            buffer,
-                            theme,
+                            &gutter_ctx,
                             line_idx,
-                            line_num_width,
-                            cursor_line_idx,
                             false,
                             &[],
                             blame_brackets
                                 .as_ref()
                                 .and_then(|b| b.get(line_idx - start_line)),
-                            blame_width,
                         ));
                     }
                     let line_len = line_text.chars().count();
@@ -1947,8 +1909,7 @@ pub fn render_diagnostic_virtual_text_overlay(
             String::new()
         };
         let line_text_original = line_text_raw.trim_end_matches('\n');
-        let (expanded, _byte_mapping, _control_ranges, _char_mapping) =
-            expand_tabs_with_mapping(line_text_original, tab_width);
+        let expanded = expand_tabs_with_mapping(line_text_original, tab_width).text;
 
         let display_source = if !wrap {
             slice_horizontal_viewport(&expanded, h_offset, wrap_width).0
@@ -2097,10 +2058,10 @@ pub fn render_line_with_highlights(
             let range_size = range.end - range.start;
             let s = range.start.min(byte_len);
             let e = range.end.min(byte_len);
-            for byte_pos in s..e {
-                match best_group[byte_pos] {
-                    Some((_, prev_size)) if prev_size <= range_size => {} // keep tighter
-                    _ => best_group[byte_pos] = Some((*group, range_size)),
+            for slot in best_group[s..e].iter_mut() {
+                match slot {
+                    Some((_, prev_size)) if *prev_size <= range_size => {} // keep tighter
+                    _ => *slot = Some((*group, range_size)),
                 }
             }
         }
@@ -2432,21 +2393,22 @@ mod tests {
         buffer.add_ai_lock(1, 6, 11);
 
         let line_text = "hello world";
-        let (expanded, _byte_mapping, _control_ranges, char_mapping) =
-            expand_tabs_with_mapping(line_text, 4);
+        let exp = expand_tabs_with_mapping(line_text, 4);
+        let expanded = exp.text;
+        let char_mapping = exp.char_mapping;
 
-        let ranges = lock_ranges_for_line(
-            &buffer,
-            0,
-            line_text.chars().count(),
-            &char_mapping,
-            &expanded,
-            &expanded,
-            true,
-            0,
-            80,
-            false,
-        );
+        let slice = ViewportSlice {
+            line_idx: 0,
+            line_content_chars: line_text.chars().count(),
+            char_mapping: &char_mapping,
+            expanded_text: &expanded,
+            line_text: &expanded,
+            wrap: true,
+            h_offset: 0,
+            text_width: 80,
+            precedes: false,
+        };
+        let ranges = lock_ranges_for_line(&buffer, &slice);
         assert_eq!(ranges, vec![(6, 10)]);
     }
 

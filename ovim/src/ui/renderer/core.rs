@@ -103,7 +103,7 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
 
     // Debug side panel (right) — split from content area
     let (content_area, debug_side_area) = if debug_panels_visible {
-        let width = (content_area.width / 3).min(50).max(25);
+        let width = (content_area.width / 3).clamp(25, 50);
         let chunks = Layout::default()
             .direction(Direction::Horizontal)
             .constraints([Constraint::Min(1), Constraint::Length(width)])
@@ -114,18 +114,17 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
     };
 
     // Debug output panel (bottom) — split from content area
-    let (content_area, debug_output_area) = if debug_panels_visible
-        && !editor.debug_state().output_lines.is_empty()
-    {
-        let height = 6u16.min(content_area.height / 4);
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(height)])
-            .split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
-    };
+    let (content_area, debug_output_area) =
+        if debug_panels_visible && !editor.debug_state().output_lines.is_empty() {
+            let height = 6u16.min(content_area.height / 4);
+            let chunks = Layout::default()
+                .direction(Direction::Vertical)
+                .constraints([Constraint::Min(1), Constraint::Length(height)])
+                .split(content_area);
+            (chunks[0], Some(chunks[1]))
+        } else {
+            (content_area, None)
+        };
 
     // Buffer + optional progress line + status line + command/prompt area
     let has_progress = editor.lsp_progress_message().is_some();
@@ -136,8 +135,6 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
             .saturating_sub(if has_progress { 2 } else { 1 })
             .max(1);
         ai_prompt_panel_height(editor, content_area.width, max_height)
-    } else if is_ai_chat {
-        1 // model selector bar
     } else {
         1
     };
@@ -238,16 +235,20 @@ fn render_buffer_area(
         // Render split windows recursively
         if let Some(wm) = editor.window_manager() {
             let focused_index = wm.focused_window_index();
+            let root = wm.root().clone();
             let mut current_index = 0;
-            if let Some((vs, ly)) = render_window_tree(
+            let mut tree_ctx = RenderTreeContext {
                 frame,
                 editor,
                 theme,
-                wm.root(),
-                areas.buffer_chunk,
                 focused_index,
-                &mut current_index,
+                current_index: &mut current_index,
                 line_cache,
+            };
+            if let Some((vs, ly)) = render_window_tree(
+                &mut tree_ctx,
+                &root,
+                areas.buffer_chunk,
             ) {
                 (vs, ly)
             } else {
@@ -644,24 +645,29 @@ fn set_cursor_position(
 // Split window rendering (unchanged)
 // ---------------------------------------------------------------------------
 
+/// Invariant context for recursive window tree rendering.
+struct RenderTreeContext<'a, 'b> {
+    frame: &'a mut Frame<'b>,
+    editor: &'a Editor,
+    theme: &'a Theme,
+    focused_index: usize,
+    current_index: &'a mut usize,
+    line_cache: &'a mut LineRenderCache,
+}
+
 /// Recursively renders windows in a split layout
 /// Returns (viewport_start, layout) for the focused window (for cursor positioning)
 fn render_window_tree(
-    frame: &mut Frame,
-    editor: &Editor,
-    theme: &Theme,
+    ctx: &mut RenderTreeContext,
     node: &WindowNode,
     area: Rect,
-    focused_index: usize,
-    current_index: &mut usize,
-    line_cache: &mut LineRenderCache,
 ) -> Option<(usize, BufferLayout)> {
     match node {
         WindowNode::Leaf(window) => {
-            let is_focused = *current_index == focused_index;
-            *current_index += 1;
+            let is_focused = *ctx.current_index == ctx.focused_index;
+            *ctx.current_index += 1;
 
-            let layout = BufferLayout::compute(editor, area);
+            let layout = BufferLayout::compute(ctx.editor, area);
 
             // For non-focused windows, use the window's own cursor and scroll state
             let window_context = if !is_focused {
@@ -675,11 +681,11 @@ fn render_window_tree(
             };
 
             let viewport_start = render_buffer(
-                frame,
-                editor,
-                theme,
+                ctx.frame,
+                ctx.editor,
+                ctx.theme,
                 &layout,
-                line_cache,
+                ctx.line_cache,
                 true,
                 window_context.as_ref(),
             );
@@ -749,28 +755,10 @@ fn render_window_tree(
                 }
             };
 
-            render_separator(frame, sep_area, *direction);
+            render_separator(ctx.frame, sep_area, *direction);
 
-            let first_result = render_window_tree(
-                frame,
-                editor,
-                theme,
-                first,
-                first_area,
-                focused_index,
-                current_index,
-                line_cache,
-            );
-            let second_result = render_window_tree(
-                frame,
-                editor,
-                theme,
-                second,
-                second_area,
-                focused_index,
-                current_index,
-                line_cache,
-            );
+            let first_result = render_window_tree(ctx, first, first_area);
+            let second_result = render_window_tree(ctx, second, second_area);
 
             first_result.or(second_result)
         }
