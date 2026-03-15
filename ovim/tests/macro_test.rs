@@ -579,10 +579,7 @@ fn test_macro_aborts_on_failed_j_at_eof() {
     // Play 1000 times — should stop after 4 more iterations (lines 1-4)
     test.keys("1000@q");
 
-    assert_eq!(
-        test.buffer_content(),
-        ">aaa\n>bbb\n>ccc\n>ddd\n>eee\n"
-    );
+    assert_eq!(test.buffer_content(), ">aaa\n>bbb\n>ccc\n>ddd\n>eee\n");
     // Cursor should be on the last line
     assert_eq!(test.editor.buffer().cursor().line(), 4);
 }
@@ -617,11 +614,7 @@ fn test_macro_abort_repeat_at_at() {
     // @@ should also respect abort
     let mut test = EditorTest::new("x\ny\nz\nw");
 
-    test.press('q')
-        .press('a')
-        .press('x')
-        .press('j')
-        .press('q');
+    test.press('q').press('a').press('x').press('j').press('q');
 
     // Recording deleted 'x' on line 0 and moved to line 1
     assert_eq!(test.buffer_content(), "\ny\nz\nw\n");
@@ -659,4 +652,25 @@ fn test_macro_k_abort_at_first_line() {
     test.keys("100@a");
 
     assert_eq!(test.buffer_content(), ">aaa\n>bbb\n>ccc\n");
+}
+
+#[test]
+fn test_f_space_then_insert_newlines() {
+    // Regression: `0f i<CR><CR><CR>` on "Hello world" should insert 3 newlines
+    // at the space position without producing extra spaces.
+    let mut test = EditorTest::new("Hello world");
+
+    test.press('0')
+        .keys("f ")
+        .press('i')
+        .press_enter()
+        .press_enter()
+        .press_enter();
+
+    test.press_esc();
+
+    // Cursor is at col 5 (the space), insert 3 newlines:
+    // "Hello" + newline + newline + newline + " world"
+    // The space before "world" remains since we inserted *before* it.
+    assert_eq!(test.buffer_content(), "Hello\n\n\n world\n");
 }

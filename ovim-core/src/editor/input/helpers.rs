@@ -167,7 +167,11 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let cursor_before = (line_idx, grapheme_col);
 
     // Snapshot line text and compute char col (drops borrow before mutation)
-    let line_text = editor.buffer().line(line_idx).unwrap_or_default().to_string();
+    let line_text = editor
+        .buffer()
+        .line(line_idx)
+        .unwrap_or_default()
+        .to_string();
     let line_text_trimmed = line_text.trim_end_matches('\n');
     let char_col = grapheme_to_char_col(line_text_trimmed, grapheme_col);
     let position = (line_idx, char_col);
@@ -191,8 +195,12 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
         .is_some_and(|c| c == '\n');
     let needs_double_newline = at_eof && !ends_with_newline;
 
-    // Get indentation from current line
-    let indent: String = line_text
+    // Get indentation from text before cursor. Using the text before cursor
+    // (rather than the full line) prevents duplication when the cursor sits at
+    // or inside leading whitespace — the remainder already carries that
+    // whitespace and copying it again would produce extra spaces.
+    let text_before: String = line_text.chars().take(char_col).collect();
+    let indent: String = text_before
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
         .collect();
