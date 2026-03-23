@@ -206,7 +206,7 @@ fn test_undo_o_command() {
 }
 
 #[test]
-fn test_undo_O_command() {
+fn test_undo_big_o_command() {
     let mut test = EditorTest::new("line 1\nline 2");
 
     test.press('O').type_text("new line").press_esc().press('u');

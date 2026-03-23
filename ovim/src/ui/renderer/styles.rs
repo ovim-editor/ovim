@@ -112,17 +112,3 @@ pub fn blame_color_for_hash(hash: &str) -> Color {
     });
     BLAME_COLORS[idx % BLAME_COLORS.len()]
 }
-
-/// Returns the (icon, foreground color, background color) for diagnostic virtual text
-pub fn get_diagnostic_virtual_text_style(
-    severity: Option<lsp_types::DiagnosticSeverity>,
-) -> (&'static str, Color, Color) {
-    use lsp_types::DiagnosticSeverity;
-    match severity {
-        Some(DiagnosticSeverity::ERROR) => ("", Color::Red, Color::Rgb(60, 20, 20)),
-        Some(DiagnosticSeverity::WARNING) => ("", Color::Yellow, Color::Rgb(60, 50, 20)),
-        Some(DiagnosticSeverity::INFORMATION) => ("", Color::Cyan, Color::Rgb(20, 40, 60)),
-        Some(DiagnosticSeverity::HINT) => ("", Color::Gray, Color::Rgb(40, 40, 40)),
-        _ => ("", Color::Gray, Color::Rgb(40, 40, 40)),
-    }
-}

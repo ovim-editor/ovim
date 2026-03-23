@@ -16,7 +16,7 @@ use super::helpers::{
 };
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
-    blame_color_for_hash, get_diagnostic_sign_style, get_diagnostic_virtual_text_style,
+    blame_color_for_hash, get_diagnostic_sign_style,
     get_git_sign_style, get_line_number_style, remap_highlights,
 };
 use crate::syntax::HighlightGroup;
@@ -649,195 +649,8 @@ fn build_gutter_line(
     Line::from(spans)
 }
 
-/// Appends diagnostic virtual text to a rendered row, if there's enough room.
-/// The diagnostic is appended inline after the code text, truncated to fit within `text_width`.
-/// Requires at least 6 columns of remaining space (for "  ⚠ X…").
-fn append_diagnostic_virtual_text(
-    row: &mut Line<'static>,
-    diagnostics: &[&lsp_types::Diagnostic],
-    text_width: usize,
-) {
-    if diagnostics.is_empty() {
-        return;
-    }
-
-    // Remove trailing padding spans (spaces) so we can correctly measure and append.
-    // Note: `split_line_into_rows` pads each wrapped row to `text_width`, so if we measure
-    // before stripping, the row always appears "full" and virtual text never renders.
-    while let Some(last) = row.spans.last() {
-        if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
-            row.spans.pop();
-        } else {
-            break;
-        }
-    }
-
-    // Measure the row's current display width (after padding removal)
-    let row_width: usize = row
-        .spans
-        .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-        .sum();
-
-    // Need at least 6 cols: "  " + icon + " " + 1 char message
-    let remaining = text_width.saturating_sub(row_width);
-    if remaining < 6 {
-        // Re-pad to avoid shrinking the row if we removed padding spans above.
-        if row_width < text_width {
-            row.spans
-                .push(Span::raw(" ".repeat(text_width - row_width)));
-        }
-        return;
-    }
-
-    let diag = diagnostics[0];
-    let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
-    // "  " prefix + icon + " " = 4 chars overhead (icon is 1 display col for nerdfont)
-    let max_msg_len = remaining.saturating_sub(4);
-    let msg = diag.message.lines().next().unwrap_or("");
-    let msg = if msg.chars().count() > max_msg_len {
-        format!(
-            "{}...",
-            msg.chars()
-                .take(max_msg_len.saturating_sub(3))
-                .collect::<String>()
-        )
-    } else {
-        msg.to_string()
-    };
-    let vtext_style = Style::default()
-        .fg(fg_color)
-        .bg(bg_color)
-        .add_modifier(Modifier::ITALIC);
-
-    row.spans.push(Span::raw("  "));
-    row.spans
-        .push(Span::styled(format!("{} {}", icon, msg), vtext_style));
-    // Re-pad to text_width
-    let new_width: usize = row
-        .spans
-        .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-        .sum();
-    if new_width < text_width {
-        row.spans
-            .push(Span::raw(" ".repeat(text_width - new_width)));
-    }
-}
-
-/// Inserts inlay hint spans inline at the correct character positions within a rendered line.
-///
-/// For PARAMETER hints (e.g., `name:`), the hint is inserted BEFORE the argument.
-/// For TYPE hints (e.g., `: String`), the hint is inserted AFTER the variable.
-///
-/// The hint label is rendered in a muted style to distinguish it from real code.
-fn insert_inlay_hints(
-    line: &mut Line<'static>,
-    hints: &[&lsp_types::InlayHint],
-    original_text: &str,
-    char_mapping: &[usize],
-    h_offset: usize,
-    wrap: bool,
-) {
-    // Sort hints by position (right-to-left) so insertions don't shift subsequent positions
-    let mut sorted_hints: Vec<&&lsp_types::InlayHint> = hints.iter().collect();
-    sorted_hints.sort_by(|a, b| b.position.character.cmp(&a.position.character));
-
-    let hint_style = Style::default()
-        .fg(Color::Rgb(120, 120, 140))
-        .add_modifier(Modifier::ITALIC);
-
-    for hint in sorted_hints {
-        // Convert UTF-16 position to char index in original text
-        let char_idx = utf16_offset_to_char_idx(original_text, hint.position.character as usize);
-
-        // Map through char_mapping (handles tab expansion)
-        let expanded_col = if char_idx < char_mapping.len() {
-            char_mapping[char_idx]
-        } else if !char_mapping.is_empty() {
-            *char_mapping.last().unwrap() + 1
-        } else {
-            char_idx
-        };
-
-        // Adjust for horizontal scroll in nowrap mode
-        let insert_col = if !wrap {
-            if expanded_col < h_offset {
-                continue; // Hint is scrolled out of view
-            }
-            expanded_col - h_offset
-        } else {
-            expanded_col
-        };
-
-        // Extract label text
-        let label = match &hint.label {
-            lsp_types::InlayHintLabel::String(s) => s.clone(),
-            lsp_types::InlayHintLabel::LabelParts(parts) => {
-                parts.iter().map(|p| &*p.value).collect::<String>()
-            }
-        };
-
-        // Add padding based on hint kind
-        let display_label = if hint.padding_right.unwrap_or(false) {
-            format!("{} ", label)
-        } else {
-            label
-        };
-
-        // Walk spans to find insertion point, then split and insert
-        let mut char_count = 0;
-        let mut span_idx = 0;
-        let mut found = false;
-
-        while span_idx < line.spans.len() {
-            let span_chars: usize = line.spans[span_idx].content.chars().count();
-            if char_count + span_chars > insert_col {
-                // Split this span at the insertion point
-                let offset_in_span = insert_col - char_count;
-                let content = line.spans[span_idx].content.to_string();
-                let style = line.spans[span_idx].style;
-
-                let before: String = content.chars().take(offset_in_span).collect();
-                let after: String = content.chars().skip(offset_in_span).collect();
-
-                // Replace current span with [before, hint, after]
-                line.spans.remove(span_idx);
-                let mut insert_at = span_idx;
-                if !before.is_empty() {
-                    line.spans.insert(insert_at, Span::styled(before, style));
-                    insert_at += 1;
-                }
-                line.spans
-                    .insert(insert_at, Span::styled(display_label.clone(), hint_style));
-                insert_at += 1;
-                if !after.is_empty() {
-                    line.spans.insert(insert_at, Span::styled(after, style));
-                }
-                found = true;
-                break;
-            } else if char_count + span_chars == insert_col {
-                // Insert after this span
-                line.spans.insert(
-                    span_idx + 1,
-                    Span::styled(display_label.clone(), hint_style),
-                );
-                found = true;
-                break;
-            }
-            char_count += span_chars;
-            span_idx += 1;
-        }
-
-        if !found {
-            // Append at the end
-            line.spans.push(Span::styled(display_label, hint_style));
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
-// Unified decoration rendering (replaces direct insert_inlay_hints / append_diagnostic_virtual_text calls)
+// Unified decoration rendering
 // ---------------------------------------------------------------------------
 
 use ovim_core::editor::decoration::{Decoration, DecorationPlacement, DecorationStyle as DecStyle};
@@ -1278,7 +1091,7 @@ pub fn render_buffer(
     theme: &Theme,
     layout: &BufferLayout,
     line_cache: &mut super::line_cache::LineRenderCache,
-    render_diagnostic_virtual_text_inline: bool,
+    show_eol_decorations: bool,
     window_context: Option<&WindowRenderContext>,
 ) -> usize {
     let area = layout.buffer_area;
@@ -1947,7 +1760,7 @@ pub fn render_buffer(
                     .iter()
                     .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
                     .collect();
-                let eol_decs: Vec<&Decoration> = if render_diagnostic_virtual_text_inline {
+                let eol_decs: Vec<&Decoration> = if show_eol_decorations {
                     line_decorations
                         .iter()
                         .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
@@ -2604,29 +2417,23 @@ mod tests {
     }
 
     #[test]
-    fn test_append_diagnostic_virtual_text_on_padded_wrapped_row() {
+    fn test_apply_eol_decorations_on_padded_wrapped_row() {
+        use ovim_core::editor::decoration::*;
+
         let base = Line::from("let x = 1;".to_string());
         let mut rows = split_line_into_rows(base, 30);
         let mut first = rows.remove(0);
 
-        let diag = lsp_types::Diagnostic {
-            range: lsp_types::Range {
-                start: lsp_types::Position {
-                    line: 0,
-                    character: 0,
-                },
-                end: lsp_types::Position {
-                    line: 0,
-                    character: 1,
-                },
-            },
-            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
-            message: "uh oh".to_string(),
-            ..Default::default()
+        let dec = Decoration {
+            placement: DecorationPlacement::EndOfLine { line: 0 },
+            source: DecorationSource::Diagnostic,
+            text: "\u{f057} uh oh".to_string(),
+            display_width: 7,
+            style: DecorationStyle::new(ovim_core::color::Color::Red).with_italic(),
+            priority: 0,
         };
-        let diags = vec![&diag];
 
-        append_diagnostic_virtual_text(&mut first, &diags, 30);
+        apply_eol_decorations(&mut first, &[&dec], 30);
 
         let mut rendered = String::new();
         for span in &first.spans {

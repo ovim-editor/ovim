@@ -335,15 +335,13 @@ fn render_buffer_area(
 
         let full_area = areas.buffer_chunk;
         let centered = buffer_area.width < full_area.width;
-        let render_inline_vtext = !centered;
-
         let viewport_start = render_buffer(
             frame,
             editor,
             theme,
             &single_layout,
             line_cache,
-            render_inline_vtext,
+            !centered, // EOL decorations shown inline when not centered; overlay handles centered case
             None,
         );
         if centered {
