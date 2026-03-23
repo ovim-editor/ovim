@@ -11,7 +11,9 @@ use ratatui::{
 use crate::display::char_display_width;
 use crate::ui::renderer::markdown_conceal::scan_markdown_conceal;
 
-use super::helpers::{compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col};
+use super::helpers::{
+    compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col, ExpandedLine,
+};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
     blame_color_for_hash, get_diagnostic_sign_style, get_diagnostic_virtual_text_style,
@@ -1216,19 +1218,19 @@ pub fn render_buffer(
                 && !has_ai_lock_on_line
                 && !has_ai_generated_on_line;
 
-            let line_cache_key = super::line_cache::LineCacheKey {
-                buffer_id,
-                line_idx,
-                buffer_version,
-                h_offset,
-                text_width,
-                wrap,
-                tab_width,
-                markdown_conceal: editor.options.markdown_conceal,
-            };
+            let md_conceal = editor.options.markdown_conceal;
 
             if is_stable {
-                if let Some(cached_line) = line_cache.get(&line_cache_key) {
+                if let Some(cached_line) = line_cache.get(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                    md_conceal,
+                ) {
                     let cached_line = cached_line.clone();
                     // Use cached line — skip all expensive computation
                     if has_wrap {
@@ -1695,7 +1697,18 @@ pub fn render_buffer(
                 }
 
                 // Store in cache (stable lines will be served from cache next frame)
-                line_cache.put(line_cache_key.clone(), line.clone(), is_stable);
+                line_cache.put(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                    md_conceal,
+                    line.clone(),
+                    is_stable,
+                );
 
                 // Insert inlay hints (after cache, since hints are viewport-dependent)
                 let line_hints = editor.inlay_hints_for_line(line_idx);
@@ -1769,7 +1782,18 @@ pub fn render_buffer(
             } else {
                 // Simple rendering path (no highlighting) — always stable
                 let simple_line = Line::from(line_text.to_string());
-                line_cache.put(line_cache_key, simple_line, true);
+                line_cache.put(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                    md_conceal,
+                    simple_line,
+                    true,
+                );
 
                 if has_wrap {
                     let chars: Vec<char> = line_text.chars().collect();

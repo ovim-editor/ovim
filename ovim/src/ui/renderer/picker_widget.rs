@@ -944,8 +944,11 @@ fn render_preview_with_syntax(
         }
 
         // Expand tabs in preview content and get byte mapping
-        let (line_text, tab_mapping, _control_ranges, _char_mapping) =
-            expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
+        let super::helpers::ExpandedLine {
+            text: line_text,
+            byte_mapping: tab_mapping,
+            ..
+        } = expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
 
         // Truncate line to fit width (line number prefix is 7 chars: "  1 | ")
         let content_width = area.width.saturating_sub(7) as usize;

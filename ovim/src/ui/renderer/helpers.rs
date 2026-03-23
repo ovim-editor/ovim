@@ -3,16 +3,23 @@ use crate::ui::renderer::markdown_conceal::LineTransform;
 use std::ops::Range;
 use unicode_width::UnicodeWidthChar;
 
+/// Result of expanding tabs and control characters for rendering.
+/// Carries the expanded text alongside the mappings needed to remap
+/// byte offsets, char indices, and control-char ranges from the
+/// original source text into the expanded coordinate space.
+pub struct ExpandedLine {
+    /// Expanded text (tabs → spaces, control chars → caret notation).
+    pub text: String,
+    /// Byte mapping: `byte_mapping[i] = (original_byte, expanded_byte)`.
+    pub byte_mapping: Vec<(usize, usize)>,
+    /// Byte ranges in the expanded string that correspond to control characters.
+    pub control_ranges: Vec<Range<usize>>,
+    /// Char mapping: `char_mapping[original_char_idx] = expanded_char_idx`.
+    pub char_mapping: Vec<usize>,
+}
+
 /// Expands tabs and control characters for rendering.
-/// Returns:
-/// - The expanded string (tabs → spaces, control chars → caret notation)
-/// - Byte mapping from original byte offsets to expanded byte offsets
-/// - Control char ranges in the expanded string (for special styling)
-/// - Char mapping: char_mapping[i] = expanded char index for original char i
-pub fn expand_tabs_with_mapping(
-    text: &str,
-    tab_width: usize,
-) -> (String, Vec<(usize, usize)>, Vec<Range<usize>>, Vec<usize>) {
+pub fn expand_tabs_with_mapping(text: &str, tab_width: usize) -> ExpandedLine {
     let mut result = String::with_capacity(text.len() * 2);
     let mut display_col = 0;
     let mut byte_mapping = Vec::new(); // original_byte_idx -> expanded_byte_idx
@@ -55,24 +62,27 @@ pub fn expand_tabs_with_mapping(
     byte_mapping.push((text.len(), expanded_byte_pos));
     char_mapping.push(expanded_char_idx);
 
-    (result, byte_mapping, control_ranges, char_mapping)
+    ExpandedLine {
+        text: result,
+        byte_mapping,
+        control_ranges,
+        char_mapping,
+    }
 }
 
 /// Compose a conceal transform (src->view) with tab expansion mapping.
-/// Returns the expanded text and a char_mapping from original char idx to expanded char idx.
 pub fn compose_conceal_and_tabs(
     original: &str,
     transform: &LineTransform,
     tab_width: usize,
-) -> (
-    String,              // expanded text
-    Vec<(usize, usize)>, // byte mapping: original byte -> expanded byte
-    Vec<Range<usize>>,   // control ranges (from tab expansion)
-    Vec<usize>,          // char mapping: original char idx -> expanded char idx
-) {
+) -> ExpandedLine {
     // Expand the transformed text (post-conceal) for tabs/control chars
-    let (expanded, byte_map_after, control, char_map_after) =
-        expand_tabs_with_mapping(&transform.text, tab_width);
+    let ExpandedLine {
+        text: expanded,
+        byte_mapping: byte_map_after,
+        control_ranges: control,
+        char_mapping: char_map_after,
+    } = expand_tabs_with_mapping(&transform.text, tab_width);
 
     // Build byte mapping from original to expanded using src_to_view -> view_to_src/byte map
     let mut orig_byte_to_expanded: Vec<(usize, usize)> = Vec::with_capacity(original.len() + 1);
@@ -114,17 +124,17 @@ pub fn compose_conceal_and_tabs(
     // sentinel
     orig_char_to_expanded.push(*char_map_after.last().unwrap_or(&expanded.chars().count()));
 
-    (
-        expanded,
-        orig_byte_to_expanded,
-        control,
-        orig_char_to_expanded,
-    )
+    ExpandedLine {
+        text: expanded,
+        byte_mapping: orig_byte_to_expanded,
+        control_ranges: control,
+        char_mapping: orig_char_to_expanded,
+    }
 }
 
 /// Expands tabs and control characters (simple version without mapping)
 pub fn expand_tabs(text: &str, tab_width: usize) -> String {
-    expand_tabs_with_mapping(text, tab_width).0
+    expand_tabs_with_mapping(text, tab_width).text
 }
 
 /// Remaps an original char column index through the char mapping from expand_tabs_with_mapping.
@@ -188,7 +198,7 @@ mod tests {
 
     #[test]
     fn test_expand_tabs_basic() {
-        let (text, _, control_ranges, _) = expand_tabs_with_mapping("\thello", 4);
+        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("\thello", 4);
         assert_eq!(text, "    hello");
         assert!(control_ranges.is_empty());
     }
@@ -196,7 +206,7 @@ mod tests {
     #[test]
     fn test_expand_control_chars() {
         // ESC (0x1B) → ^[
-        let (text, _, control_ranges, _) = expand_tabs_with_mapping("\x1b[31m", 4);
+        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("\x1b[31m", 4);
         assert_eq!(text, "^[[31m");
         assert_eq!(control_ranges.len(), 1);
         assert_eq!(control_ranges[0], 0..2); // ^[ occupies bytes 0..2
@@ -204,7 +214,7 @@ mod tests {
 
     #[test]
     fn test_expand_nul() {
-        let (text, _, control_ranges, _) = expand_tabs_with_mapping("a\x00b", 4);
+        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("a\x00b", 4);
         assert_eq!(text, "a^@b");
         assert_eq!(control_ranges.len(), 1);
         assert_eq!(control_ranges[0], 1..3); // ^@ at byte offset 1..3
@@ -212,7 +222,7 @@ mod tests {
 
     #[test]
     fn test_expand_del() {
-        let (text, _, control_ranges, _) = expand_tabs_with_mapping("x\x7fy", 4);
+        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("x\x7fy", 4);
         assert_eq!(text, "x^?y");
         assert_eq!(control_ranges.len(), 1);
         assert_eq!(control_ranges[0], 1..3);
@@ -221,7 +231,7 @@ mod tests {
     #[test]
     fn test_expand_multiple_control_chars() {
         // "\x1b[31mred\x1b[0m" → "^[[31mred^[[0m"
-        let (text, _, control_ranges, _) = expand_tabs_with_mapping("\x1b[31mred\x1b[0m", 4);
+        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("\x1b[31mred\x1b[0m", 4);
         assert_eq!(text, "^[[31mred^[[0m");
         assert_eq!(control_ranges.len(), 2);
         assert_eq!(control_ranges[0], 0..2); // first ^[
@@ -230,7 +240,7 @@ mod tests {
 
     #[test]
     fn test_expand_no_control_chars() {
-        let (text, _, control_ranges, _) = expand_tabs_with_mapping("hello world", 4);
+        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("hello world", 4);
         assert_eq!(text, "hello world");
         assert!(control_ranges.is_empty());
     }
@@ -238,7 +248,7 @@ mod tests {
     #[test]
     fn test_byte_mapping_with_control_chars() {
         // "a\x01b" → "a^Ab"
-        let (text, mapping, _, _) = expand_tabs_with_mapping("a\x01b", 4);
+        let ExpandedLine { text, byte_mapping: mapping, .. } = expand_tabs_with_mapping("a\x01b", 4);
         assert_eq!(text, "a^Ab");
         // mapping: orig 0 → exp 0 ('a'), orig 1 → exp 1 ('\x01' → ^A), orig 2 → exp 3 ('b'), end
         assert_eq!(mapping[0], (0, 0));
@@ -250,7 +260,7 @@ mod tests {
     #[test]
     fn test_char_mapping_with_tabs() {
         // "\thello" with tab_width=4 → "    hello"
-        let (_, _, _, char_mapping) = expand_tabs_with_mapping("\thello", 4);
+        let ExpandedLine { char_mapping, .. } = expand_tabs_with_mapping("\thello", 4);
         // original char 0 (tab) → expanded char 0 (first of 4 spaces)
         assert_eq!(char_mapping[0], 0);
         // original char 1 ('h') → expanded char 4
@@ -264,7 +274,7 @@ mod tests {
     #[test]
     fn test_char_mapping_with_control_chars() {
         // "a\x01b" → "a^Ab"
-        let (_, _, _, char_mapping) = expand_tabs_with_mapping("a\x01b", 4);
+        let ExpandedLine { char_mapping, .. } = expand_tabs_with_mapping("a\x01b", 4);
         assert_eq!(char_mapping[0], 0); // 'a' → expanded 0
         assert_eq!(char_mapping[1], 1); // '\x01' → expanded 1 (^A takes 2 chars)
         assert_eq!(char_mapping[2], 3); // 'b' → expanded 3
@@ -273,7 +283,7 @@ mod tests {
 
     #[test]
     fn test_char_mapping_plain_text() {
-        let (_, _, _, char_mapping) = expand_tabs_with_mapping("hello", 4);
+        let ExpandedLine { char_mapping, .. } = expand_tabs_with_mapping("hello", 4);
         for i in 0..=5 {
             assert_eq!(char_mapping[i], i); // 1:1 mapping for plain text
         }
@@ -281,7 +291,7 @@ mod tests {
 
     #[test]
     fn test_remap_char_col() {
-        let (_, _, _, char_mapping) = expand_tabs_with_mapping("\thello", 4);
+        let ExpandedLine { char_mapping, .. } = expand_tabs_with_mapping("\thello", 4);
         assert_eq!(remap_char_col(0, &char_mapping), 0);
         assert_eq!(remap_char_col(1, &char_mapping), 4);
         assert_eq!(remap_char_col(2, &char_mapping), 5);
