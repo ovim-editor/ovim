@@ -117,25 +117,27 @@ fn test_show_diagnostic_at_cursor_chooses_nearest_on_line() {
 }
 
 #[test]
-fn test_show_diagnostic_at_cursor_hides_stale_diagnostics_while_unsent_edits_exist() {
+fn test_show_diagnostic_at_cursor_hides_stale_diagnostics_after_buffer_edit() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     let mut test = EditorTest::new("console.log(pendingCount);\n");
     test.set_file_path(path);
 
-    // Seed cached diagnostics, then mark document modified without sending to LSP.
-    test.editor
-        .set_test_diagnostics(vec![make_diagnostic(0, 12, "stale diagnostic")]);
-    test.editor.mark_buffer_modified();
-    // set_test_diagnostics only mutates the diagnostic list, so add one back
-    // after mark_buffer_modified() cleared stale caches.
+    // Seed cached diagnostics (stamped as valid for the current buffer generation).
     test.editor
         .set_test_diagnostics(vec![make_diagnostic(0, 12, "stale diagnostic")]);
 
-    test.set_cursor(0, 12);
+    // Edit the buffer — this bumps the version, making the diagnostics stale
+    // because they were stamped for the pre-edit generation.
+    test.editor
+        .buffer_mut()
+        .insert_text_at(0, 0, "x");
+
+    test.set_cursor(0, 13);
     test.editor.show_diagnostic_at_cursor();
 
+    // Diagnostics should be hidden (generation mismatch).
     assert_eq!(test.editor.mode(), ovim::mode::Mode::Normal);
     assert_eq!(test.editor.lsp_status(), "No diagnostics at cursor");
 }

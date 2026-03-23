@@ -874,9 +874,9 @@ impl Editor {
         self.lsp.state.pending_lsp_responses.abort_all();
         self.lsp.state.hover_cache = None;
         // Reset LSP version tracking (new file has its own version space)
-        self.lsp.state.diagnostics_lsp_version = 0;
         self.lsp.state.current_file_lsp_version = 0;
         self.lsp.state.current_file_lsp_sent_version = 0;
+        self.lsp.state.diagnostics_valid_for = usize::MAX;
         self.lsp.state.diagnostics_file_path = None;
         // OV-00157: Abort pending completion request on buffer switch
         if let Some(pending) = self.lsp.state.pending_completion.take() {
@@ -1100,19 +1100,15 @@ impl Editor {
         );
     }
 
-    /// Mark buffer as modified (for LSP didChange tracking)
-    /// Also clears stale cached diagnostics — their line positions are now invalid.
-    /// Fresh diagnostics will arrive when the server processes the didChange.
+    /// Mark buffer as modified (for LSP didChange tracking).
+    ///
+    /// No longer eagerly clears cached diagnostics — the generation-based
+    /// staleness check (`diagnostics_valid_for != buffer.version()`) hides
+    /// them automatically once the buffer version advances past the stamp.
+    /// This eliminates the 0→N diagnostic count flicker on the status line.
     pub fn mark_buffer_modified(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
             state.mark_modified();
-        }
-        // Clear stale diagnostics so wrong-line markers aren't rendered
-        // between the edit and the server's publishDiagnostics response.
-        if !self.lsp.state.current_file_diagnostics.is_empty() {
-            self.lsp.state.current_file_diagnostics.clear();
-            self.lsp.state.diagnostic_count = (0, 0, 0, 0);
-            self.lsp.state.diagnostics_file_path = None;
         }
     }
 
@@ -1126,10 +1122,9 @@ impl Editor {
         self.lsp.state.diagnostics_refresh_requested = true;
     }
 
-    /// Clear cached diagnostics and request a fresh pull from the LSP server.
+    /// Invalidate cached diagnostics and request a fresh pull from the LSP server.
     pub fn clear_and_refresh_diagnostics(&mut self) {
-        self.lsp.state.current_file_diagnostics.clear();
-        self.lsp.state.diagnostic_count = (0, 0, 0, 0);
+        self.lsp.state.diagnostics_valid_for = usize::MAX;
         self.lsp.state.diagnostics_file_path = None;
         self.lsp.state.diagnostics_refresh_requested = true;
     }

@@ -349,19 +349,16 @@ pub struct LspState {
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
-    /// Buffer version when diagnostics were last cached — used to detect staleness
-    pub diagnostics_buffer_version: usize,
+    /// The buffer edit generation for which cached diagnostics are known to be
+    /// correct.  Diagnostics are hidden (stale) whenever this doesn't equal the
+    /// buffer's current `version()`.  Replaces the old multi-field staleness
+    /// check (buffer_version + lsp_version + sent_version + document_sync).
+    pub diagnostics_valid_for: usize,
     /// File path when diagnostics were last cached.
     /// Prevents showing diagnostics from a previous file after save-as/path swaps.
     pub diagnostics_file_path: Option<String>,
-    /// LSP document version when diagnostics were last cached.
-    /// Together with `diagnostics_buffer_version`, provides full provenance:
-    /// diagnostics are only shown if BOTH the buffer version AND the LSP
-    /// version match their current values.  (OV-00161)
-    pub diagnostics_lsp_version: i32,
     /// Current LSP document version for the active file.
-    /// Updated in `send_lsp_changes_if_modified` and `update_diagnostic_cache`.
-    /// Compared against `diagnostics_lsp_version` in rendering guards.
+    /// Updated in `send_lsp_changes_if_modified` and diagnostic refresh.
     pub current_file_lsp_version: i32,
     /// Last LSP document version definitely seen by the server for the active
     /// file (didOpen/didChange flushed, not merely queued locally).
@@ -419,9 +416,8 @@ impl LspState {
             applied_inlay_hint_request: None,
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
-            diagnostics_buffer_version: 0,
+            diagnostics_valid_for: 0,
             diagnostics_file_path: None,
-            diagnostics_lsp_version: 0,
             current_file_lsp_version: 0,
             current_file_lsp_sent_version: 0,
             hover_cache: None,

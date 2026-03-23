@@ -38,56 +38,6 @@ impl Editor {
         Some(diagnostics)
     }
 
-    /// Query and cache diagnostics for the current file
-    pub async fn update_diagnostics(&mut self) {
-        if let Some(lsp) = &self.lsp.state.lsp_manager {
-            if let Some(file_path) = self.buffer().file_path() {
-                let file_path = file_path.to_string();
-                if let Some(uri) = uri_from_file_path(&file_path) {
-                    // OV-00161: Skip caching if there are unsent edits
-                    let doc_version = lsp.get_document_version(&uri).await;
-                    let last_sent = lsp.get_last_sent_version(&uri).await;
-                    self.lsp.state.current_file_lsp_version = doc_version;
-                    self.lsp.state.current_file_lsp_sent_version = last_sent;
-                    if last_sent < doc_version {
-                        self.lsp.state.diagnostics_refresh_requested = true;
-                        return;
-                    }
-
-                    // Snapshot buffer version BEFORE async fetch — if the buffer
-                    // changes during the fetch, the stamp won't match and the
-                    // display-side staleness check will hide them.
-                    let version_before = self.buffer().version();
-                    let diagnostics = lsp.get_diagnostics(&uri).await;
-                    // Compute count directly from fetched diagnostics (not from cached count)
-                    let mut errors = 0;
-                    let mut warnings = 0;
-                    let mut info = 0;
-                    let mut hints = 0;
-                    for d in &diagnostics {
-                        match d.severity {
-                            Some(lsp_types::DiagnosticSeverity::ERROR) => errors += 1,
-                            Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
-                            Some(lsp_types::DiagnosticSeverity::INFORMATION) => info += 1,
-                            Some(lsp_types::DiagnosticSeverity::HINT) => hints += 1,
-                            None => warnings += 1,
-                            _ => {}
-                        }
-                    }
-                    self.lsp.state.diagnostic_count = (errors, warnings, info, hints);
-                    // Cache full diagnostic list with version provenance
-                    self.lsp.state.current_file_diagnostics = diagnostics;
-                    self.lsp.state.diagnostics_buffer_version = version_before;
-                    self.lsp.state.diagnostics_file_path = Some(file_path);
-                    self.lsp.state.diagnostics_lsp_version = doc_version;
-                    return;
-                }
-            }
-        }
-        self.lsp.state.current_file_diagnostics.clear();
-        self.lsp.state.diagnostics_file_path = None;
-    }
-
     /// Get total diagnostic count (errors, warnings, info, hints) from cached diagnostics
     pub async fn get_diagnostic_count(&self) -> (usize, usize, usize, usize) {
         self.lsp.state.diagnostic_count
@@ -191,19 +141,33 @@ impl Editor {
                     return false;
                 }
 
-                if self.buffer().file_path() != Some(result.file_path.as_str())
-                    || self.buffer().version() != result.buffer_version
-                {
+                // Wrong file — ignore entirely.
+                if self.buffer().file_path() != Some(result.file_path.as_str()) {
                     self.lsp.state.diagnostics_refresh_requested = true;
                     return false;
                 }
 
+                // Always store the latest diagnostics from the LS (they're
+                // the best data we have).  Stamp them as valid only when the
+                // buffer hasn't been edited since the refresh was spawned.
+                // If the buffer *did* change, keep the data but leave it
+                // stale — the generation mismatch hides it, and we schedule
+                // another refresh to get diagnostics for the current content.
                 self.lsp.state.diagnostic_count = result.count;
                 self.on_diagnostic_counts_changed(result.count.0, result.count.1);
                 self.lsp.state.current_file_diagnostics = result.diagnostics;
-                self.lsp.state.diagnostics_buffer_version = result.buffer_version;
                 self.lsp.state.diagnostics_file_path = Some(result.file_path);
-                self.lsp.state.diagnostics_lsp_version = result.lsp_version;
+
+                if self.buffer().version() == result.buffer_version {
+                    // Buffer unchanged since spawn — diagnostics match current content.
+                    self.lsp.state.diagnostics_valid_for = result.buffer_version;
+                } else {
+                    // Buffer was edited during the fetch.  The diagnostics may
+                    // have wrong line numbers, so keep them hidden (stale) and
+                    // request a fresh set for the current content.
+                    self.lsp.state.diagnostics_refresh_requested = true;
+                }
+
                 self.record_diagnostic_query_duration(
                     pending.request.started.elapsed().as_micros() as u64,
                 );
@@ -222,123 +186,17 @@ impl Editor {
         }
     }
 
-    /// Updates the cached diagnostic count (should be called when diagnostics change)
-    pub async fn update_diagnostic_cache(&mut self) {
-        let start = std::time::Instant::now();
-
-        // Snapshot buffer version BEFORE async fetches — if the buffer changes
-        // during the fetch, the stamp won't match and diagnostics are hidden.
-        let version_before = self.buffer().version();
-
-        // Query diagnostic count from LSP manager
-        let count = if let Some(lsp) = &self.lsp.state.lsp_manager {
-            if let Some(file_path) = self.buffer().file_path().map(str::to_string) {
-                if let Some(uri) = crate::lsp::uri_from_file_path(&file_path) {
-                    // OV-00161: Check for unsent edits.  If the document version
-                    // has been bumped (in did_change) but the flush hasn't happened
-                    // yet, the diagnostics in the DashMap are from an older content
-                    // version.  Defer the cache update so we don't stamp stale
-                    // diagnostics with the current buffer version.
-                    let doc_version = lsp.get_document_version(&uri).await;
-                    let last_sent = lsp.get_last_sent_version(&uri).await;
-                    self.lsp.state.current_file_lsp_sent_version = last_sent;
-                    if last_sent < doc_version {
-                        crate::log_debug!(
-                            "diagnostics",
-                            "update_diagnostic_cache: deferring (unsent edits: last_sent={} doc_version={})",
-                            last_sent,
-                            doc_version
-                        );
-                        // Ensure we retry on the next tick
-                        self.lsp.state.diagnostics_refresh_requested = true;
-                        // Still update current_file_lsp_version so the rendering
-                        // guard correctly hides stale cached diagnostics.
-                        self.lsp.state.current_file_lsp_version = doc_version;
-                        return;
-                    }
-
-                    let diagnostics = lsp.get_diagnostics(&uri).await;
-                    let c = diagnostic_counts(&diagnostics);
-                    crate::log_debug!(
-                        "diagnostics",
-                        "update_diagnostic_cache: uri={} count={:?} doc_version={}",
-                        uri.as_str(),
-                        c,
-                        doc_version
-                    );
-                    // Store LSP version provenance alongside count
-                    self.lsp.state.current_file_lsp_version = doc_version;
-                    self.lsp.state.current_file_diagnostics = diagnostics;
-                    self.lsp.state.diagnostics_buffer_version = version_before;
-                    self.lsp.state.diagnostics_file_path = Some(file_path.clone());
-                    self.lsp.state.diagnostics_lsp_version = doc_version;
-                    c
-                } else {
-                    crate::log_debug!(
-                        "diagnostics",
-                        "update_diagnostic_cache: uri_from_file_path failed for {}",
-                        file_path
-                    );
-                    (0, 0, 0, 0)
-                }
-            } else {
-                crate::log_debug!("diagnostics", "update_diagnostic_cache: no file_path");
-                (0, 0, 0, 0)
-            }
-        } else {
-            (0, 0, 0, 0)
-        };
-
-        self.lsp.state.diagnostic_count = count;
-
-        // Reset badge dismissal if counts changed
-        self.on_diagnostic_counts_changed(count.0, count.1);
-
-        if self.lsp.state.current_file_diagnostics.is_empty() {
-            crate::log_debug!(
-                "diagnostics",
-                "update_diagnostic_cache: no diagnostics cached for current file (count was {:?})",
-                count
-            );
-            self.lsp.state.current_file_diagnostics.clear();
-            self.lsp.state.diagnostics_file_path = None;
-        }
-
-        let duration = start.elapsed().as_micros() as u64;
-        self.record_diagnostic_query_duration(duration);
-    }
-
-    /// Returns true if the cached diagnostics are stale (buffer or LSP version mismatch).
+    /// Returns true if the cached diagnostics are stale.
+    ///
+    /// Uses a single generation check: diagnostics are valid only when
+    /// `diagnostics_valid_for` equals the buffer's current edit generation.
     pub(crate) fn diagnostics_cache_stale(&self) -> bool {
         // File path mismatch: diagnostics were cached for a different file.
-        let current_path = self.buffer().file_path();
-        if self.lsp.state.diagnostics_file_path.as_deref() != current_path {
+        if self.lsp.state.diagnostics_file_path.as_deref() != self.buffer().file_path() {
             return true;
         }
-
-        // If this document has local edits not yet sent to LSP, any cached diagnostics
-        // are potentially for older content and must be hidden.
-        if let Some(file_path) = self.buffer().file_path() {
-            if self
-                .lsp.state
-                .document_sync
-                .get(file_path)
-                .is_some_and(|state| state.is_modified())
-            {
-                return true;
-            }
-        }
-
-        // Buffer version mismatch: buffer was edited since diagnostics were cached.
-        if self.lsp.state.diagnostics_buffer_version != self.buffer().version() {
-            return true;
-        }
-        // LSP version mismatch: a new document version was assigned (via did_change)
-        // since diagnostics were cached — the server may not have processed it yet.
-        if self.lsp.state.diagnostics_lsp_version != self.lsp.state.current_file_lsp_version {
-            return true;
-        }
-        false
+        // Generation mismatch: buffer was edited since diagnostics were stamped.
+        self.lsp.state.diagnostics_valid_for != self.buffer().version()
     }
 
     /// Get diagnostics for a specific line from cached diagnostics
