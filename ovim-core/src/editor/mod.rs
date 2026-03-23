@@ -25,6 +25,7 @@ mod input;
 mod input_context;
 mod input_state;
 mod keymap;
+pub mod decoration;
 mod debug_integration;
 mod lsp_integration;
 pub mod lsp_manager_panel;
@@ -343,6 +344,8 @@ pub struct Editor {
     git_branch: Option<String>,
     /// Build/test subsystem state
     pub(crate) build: build_state::BuildState,
+    /// Unified virtual text decorations (inlay hints, diagnostics, etc.)
+    pub decorations: decoration::DecorationMap,
 }
 
 /// Pending LSP server installation awaiting user consent
@@ -480,6 +483,7 @@ impl Editor {
             active_session: None,
             git_branch: None,
             build: build_state::BuildState::default(),
+            decorations: decoration::DecorationMap::new(),
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -525,6 +529,7 @@ impl Editor {
             active_session: None,
             git_branch: None,
             build: build_state::BuildState::default(),
+            decorations: decoration::DecorationMap::new(),
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor

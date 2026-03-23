@@ -743,6 +743,13 @@ impl Editor {
                 self.lsp.state.current_file_lsp_sent_version = result.request_key.lsp_version;
                 self.lsp.state.inlay_hints = result.hints;
                 self.lsp.state.applied_inlay_hint_request = Some(result.request_key);
+                // Build unified decorations from the new hints.
+                let hint_decs =
+                    crate::editor::decoration::decorations_from_inlay_hints(&self.lsp.state.inlay_hints);
+                self.decorations.replace_source(
+                    crate::editor::decoration::DecorationSource::InlayHint,
+                    hint_decs,
+                );
                 self.mark_dirty();
                 true
             }
@@ -878,6 +885,7 @@ impl Editor {
         self.lsp.state.current_file_lsp_sent_version = 0;
         self.lsp.state.diagnostics_valid_for = usize::MAX;
         self.lsp.state.diagnostics_file_path = None;
+        self.decorations.clear();
         // OV-00157: Abort pending completion request on buffer switch
         if let Some(pending) = self.lsp.state.pending_completion.take() {
             pending.request.task.abort();

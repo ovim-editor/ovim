@@ -158,6 +158,15 @@ impl Editor {
                 self.lsp.state.current_file_diagnostics = result.diagnostics;
                 self.lsp.state.diagnostics_file_path = Some(result.file_path);
 
+                // Build unified decorations from the new diagnostics.
+                let diag_decs = crate::editor::decoration::decorations_from_diagnostics(
+                    &self.lsp.state.current_file_diagnostics,
+                );
+                self.decorations.replace_source(
+                    crate::editor::decoration::DecorationSource::Diagnostic,
+                    diag_decs,
+                );
+
                 if self.buffer().version() == result.buffer_version {
                     // Buffer unchanged since spawn — diagnostics match current content.
                     self.lsp.state.diagnostics_valid_for = result.buffer_version;
