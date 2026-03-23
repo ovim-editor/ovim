@@ -27,6 +27,10 @@ struct LineCacheKey {
     tab_width: usize,
     /// Whether markdown conceal was active for this render
     markdown_conceal: bool,
+    /// Decoration generation — decorations (inlay hints, diagnostic vtext)
+    /// are now included in the cached line, so the cache must invalidate
+    /// when they change.
+    decoration_generation: u64,
 }
 
 /// A cached rendered line (before soft-wrap splitting).
@@ -112,6 +116,7 @@ impl LineRenderCache {
         wrap: bool,
         tab_width: usize,
         markdown_conceal: bool,
+        decoration_generation: u64,
     ) -> Option<&Line<'static>> {
         // Fast path: if buffer version changed, invalidate everything
         if buffer_version != self.last_buffer_version {
@@ -130,6 +135,7 @@ impl LineRenderCache {
             wrap,
             tab_width,
             markdown_conceal,
+            decoration_generation,
         };
 
         if let Some((cached_key, cached)) = self.entries.get(&line_idx) {
@@ -156,14 +162,12 @@ impl LineRenderCache {
         wrap: bool,
         tab_width: usize,
         markdown_conceal: bool,
+        decoration_generation: u64,
         line: Line<'static>,
         is_stable: bool,
     ) {
         // Evict if over capacity
         if self.entries.len() >= self.max_entries {
-            // Simple eviction: clear everything. A more sophisticated LRU
-            // would be overkill since the working set (visible lines) is
-            // typically much smaller than the capacity.
             self.entries.clear();
         }
 
@@ -176,6 +180,7 @@ impl LineRenderCache {
             wrap,
             tab_width,
             markdown_conceal,
+            decoration_generation,
         };
         self.entries
             .insert(line_idx, (key, CachedLine { line, is_stable }));
@@ -195,9 +200,9 @@ mod tests {
     fn cache_hit() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1; // sync version
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("hello"), true);
+        cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("hello"), true);
 
-        let result = cache.get(1, 0, 1, 0, 80, false, 4, false);
+        let result = cache.get(1, 0, 1, 0, 80, false, 4, false, 0);
         assert!(result.is_some());
         assert_eq!(cache.hits, 1);
         assert_eq!(cache.misses, 0);
@@ -207,10 +212,10 @@ mod tests {
     fn cache_miss_version_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("hello"), true);
+        cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("hello"), true);
 
         // Buffer version changed
-        let result = cache.get(1, 0, 2, 0, 80, false, 4, false);
+        let result = cache.get(1, 0, 2, 0, 80, false, 4, false, 0);
         assert!(result.is_none());
         assert_eq!(cache.misses, 1);
     }
@@ -219,10 +224,10 @@ mod tests {
     fn cache_miss_viewport_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("hello"), true);
+        cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("hello"), true);
 
         // h_offset changed
-        let result = cache.get(1, 0, 1, 5, 80, false, 4, false);
+        let result = cache.get(1, 0, 1, 5, 80, false, 4, false, 0);
         assert!(result.is_none());
     }
 
@@ -231,9 +236,9 @@ mod tests {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
         // Store with is_stable=false (e.g., cursor line)
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("cursor"), false);
+        cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("cursor"), false);
 
-        let result = cache.get(1, 0, 1, 0, 80, false, 4, false);
+        let result = cache.get(1, 0, 1, 0, 80, false, 4, false, 0);
         assert!(result.is_none()); // Should not hit
     }
 

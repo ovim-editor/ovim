@@ -600,6 +600,11 @@ fn set_cursor_position(
         let tab_width = editor.options.tab_width;
         let display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
 
+        // Shift cursor right to account for inline decorations (inlay hints)
+        // that appear before the cursor position.
+        let inline_offset = editor.decorations.inline_width_before(cursor_line, cursor_col);
+        let display_col = display_col + inline_offset;
+
         let buffer_area = layout.buffer_area;
         let gutter_width = layout.gutter_width;
         let text_width = layout.text_width;

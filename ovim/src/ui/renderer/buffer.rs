@@ -836,6 +836,235 @@ fn insert_inlay_hints(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Unified decoration rendering (replaces direct insert_inlay_hints / append_diagnostic_virtual_text calls)
+// ---------------------------------------------------------------------------
+
+use ovim_core::editor::decoration::{Decoration, DecorationPlacement, DecorationStyle as DecStyle};
+
+/// Convert a `DecorationStyle` (framework-independent) to a ratatui `Style`.
+fn decoration_to_ratatui_style(ds: &DecStyle) -> Style {
+    let mut style = Style::default();
+    if let Some(fg) = &ds.fg {
+        style = style.fg(ovim_color_to_ratatui(*fg));
+    }
+    if let Some(bg) = &ds.bg {
+        style = style.bg(ovim_color_to_ratatui(*bg));
+    }
+    if ds.italic {
+        style = style.add_modifier(Modifier::ITALIC);
+    }
+    if ds.bold {
+        style = style.add_modifier(Modifier::BOLD);
+    }
+    if ds.underline {
+        style = style.add_modifier(Modifier::UNDERLINED);
+    }
+    style
+}
+
+fn ovim_color_to_ratatui(c: ovim_core::color::Color) -> Color {
+    use ovim_core::color::Color as C;
+    match c {
+        C::Black => Color::Black,
+        C::Red => Color::Red,
+        C::Green => Color::Green,
+        C::Yellow => Color::Yellow,
+        C::Blue => Color::Blue,
+        C::Magenta => Color::Magenta,
+        C::Cyan => Color::Cyan,
+        C::White => Color::White,
+        C::DarkGray => Color::DarkGray,
+        C::LightRed => Color::LightRed,
+        C::LightGreen => Color::LightGreen,
+        C::LightYellow => Color::LightYellow,
+        C::LightBlue => Color::LightBlue,
+        C::LightMagenta => Color::LightMagenta,
+        C::LightCyan => Color::LightCyan,
+        C::Gray => Color::Gray,
+        C::Rgb(r, g, b) => Color::Rgb(r, g, b),
+        C::Indexed(i) => Color::Indexed(i),
+        C::Reset => Color::Reset,
+    }
+}
+
+/// Apply inline decorations to a rendered line by splicing styled spans.
+///
+/// Decorations are inserted right-to-left (highest char_idx first) so earlier
+/// insertions don't shift the positions of later ones.
+fn apply_inline_decorations(
+    line: &mut Line<'static>,
+    decorations: &[&Decoration],
+    original_text: &str,
+    char_mapping: &[usize],
+    h_offset: usize,
+    wrap: bool,
+) {
+    if decorations.is_empty() {
+        return;
+    }
+
+    // Sort right-to-left by char_idx
+    let mut sorted: Vec<&&Decoration> = decorations.iter().collect();
+    sorted.sort_by(|a, b| {
+        let a_idx = match &a.placement {
+            DecorationPlacement::Inline { char_idx, .. } => *char_idx,
+            _ => 0,
+        };
+        let b_idx = match &b.placement {
+            DecorationPlacement::Inline { char_idx, .. } => *char_idx,
+            _ => 0,
+        };
+        b_idx.cmp(&a_idx) // reverse order
+    });
+
+    for dec in sorted {
+        let char_idx = match &dec.placement {
+            DecorationPlacement::Inline { char_idx, .. } => {
+                // Convert UTF-16 offset to char index (same as inlay hints)
+                utf16_offset_to_char_idx(original_text, *char_idx)
+            }
+            _ => continue,
+        };
+
+        // Map through char_mapping (handles tab expansion)
+        let expanded_col = if char_idx < char_mapping.len() {
+            char_mapping[char_idx]
+        } else if !char_mapping.is_empty() {
+            *char_mapping.last().unwrap() + 1
+        } else {
+            char_idx
+        };
+
+        // Adjust for horizontal scroll in nowrap mode
+        let insert_col = if !wrap {
+            if expanded_col < h_offset {
+                continue;
+            }
+            expanded_col - h_offset
+        } else {
+            expanded_col
+        };
+
+        let style = decoration_to_ratatui_style(&dec.style);
+
+        // Walk spans to find insertion point, then split and insert
+        let mut char_count = 0;
+        let mut span_idx = 0;
+        let mut found = false;
+
+        while span_idx < line.spans.len() {
+            let span_chars: usize = line.spans[span_idx].content.chars().count();
+            if char_count + span_chars > insert_col {
+                let offset_in_span = insert_col - char_count;
+                let content = line.spans[span_idx].content.to_string();
+                let span_style = line.spans[span_idx].style;
+
+                let before: String = content.chars().take(offset_in_span).collect();
+                let after: String = content.chars().skip(offset_in_span).collect();
+
+                line.spans.remove(span_idx);
+                let mut insert_at = span_idx;
+                if !before.is_empty() {
+                    line.spans
+                        .insert(insert_at, Span::styled(before, span_style));
+                    insert_at += 1;
+                }
+                line.spans
+                    .insert(insert_at, Span::styled(dec.text.clone(), style));
+                insert_at += 1;
+                if !after.is_empty() {
+                    line.spans
+                        .insert(insert_at, Span::styled(after, span_style));
+                }
+                found = true;
+                break;
+            } else if char_count + span_chars == insert_col {
+                line.spans
+                    .insert(span_idx + 1, Span::styled(dec.text.clone(), style));
+                found = true;
+                break;
+            }
+            char_count += span_chars;
+            span_idx += 1;
+        }
+
+        if !found {
+            line.spans.push(Span::styled(dec.text.clone(), style));
+        }
+    }
+}
+
+/// Apply end-of-line decorations to a rendered row.
+///
+/// Strips trailing padding, appends each decoration's styled text (with a 2-space gap),
+/// truncates to fit `text_width`, and re-pads.
+fn apply_eol_decorations(
+    row: &mut Line<'static>,
+    decorations: &[&Decoration],
+    text_width: usize,
+) {
+    if decorations.is_empty() {
+        return;
+    }
+
+    // Remove trailing padding spans
+    while let Some(last) = row.spans.last() {
+        if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
+            row.spans.pop();
+        } else {
+            break;
+        }
+    }
+
+    let row_width: usize = row
+        .spans
+        .iter()
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .sum();
+
+    let remaining = text_width.saturating_sub(row_width);
+    if remaining < 6 {
+        // Re-pad
+        if row_width < text_width {
+            row.spans
+                .push(Span::raw(" ".repeat(text_width - row_width)));
+        }
+        return;
+    }
+
+    // Use first decoration (highest priority — already sorted)
+    let dec = &decorations[0];
+    let style = decoration_to_ratatui_style(&dec.style);
+
+    let max_msg_len = remaining.saturating_sub(2); // "  " prefix
+    let msg = if dec.text.chars().count() > max_msg_len {
+        format!(
+            "{}...",
+            dec.text
+                .chars()
+                .take(max_msg_len.saturating_sub(3))
+                .collect::<String>()
+        )
+    } else {
+        dec.text.clone()
+    };
+
+    row.spans.push(Span::raw("  "));
+    row.spans.push(Span::styled(msg, style));
+
+    // Re-pad to text_width
+    let new_width: usize = row
+        .spans
+        .iter()
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .sum();
+    if new_width < text_width {
+        row.spans
+            .push(Span::raw(" ".repeat(text_width - new_width)));
+    }
+}
+
 /// Per-line viewport context shared between `lock_ranges_for_line` and `ai_region_ranges_for_line`.
 struct ViewportSlice<'a> {
     line_idx: usize,
@@ -1213,12 +1442,12 @@ pub fn render_buffer(
                 && !has_yank_flash
                 && !has_bracket
                 && !has_search
-                && line_diagnostics_early.is_empty()
                 && !has_ai_prompt_selection_on_line
                 && !has_ai_lock_on_line
                 && !has_ai_generated_on_line;
 
             let md_conceal = editor.options.markdown_conceal;
+            let dec_gen = editor.decorations.generation;
 
             if is_stable {
                 if let Some(cached_line) = line_cache.get(
@@ -1230,6 +1459,7 @@ pub fn render_buffer(
                     wrap,
                     tab_width,
                     md_conceal,
+                    dec_gen,
                 ) {
                     let cached_line = cached_line.clone();
                     // Use cached line — skip all expensive computation
@@ -1706,16 +1936,30 @@ pub fn render_buffer(
                     wrap,
                     tab_width,
                     md_conceal,
+                    dec_gen,
                     line.clone(),
                     is_stable,
                 );
 
-                // Insert inlay hints (after cache, since hints are viewport-dependent)
-                let line_hints = editor.inlay_hints_for_line(line_idx);
-                if !line_hints.is_empty() {
-                    insert_inlay_hints(
+                // Apply decorations from the unified DecorationMap.
+                let line_decorations = editor.decorations.for_line(line_idx);
+                let inline_decs: Vec<&Decoration> = line_decorations
+                    .iter()
+                    .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
+                    .collect();
+                let eol_decs: Vec<&Decoration> = if render_diagnostic_virtual_text_inline {
+                    line_decorations
+                        .iter()
+                        .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+
+                if !inline_decs.is_empty() {
+                    apply_inline_decorations(
                         &mut line,
-                        &line_hints,
+                        &inline_decs,
                         line_text_original,
                         &char_mapping,
                         h_offset,
@@ -1726,14 +1970,9 @@ pub fn render_buffer(
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
                     let mut visual_rows = split_line_into_rows(line, text_width);
-                    // Append diagnostic virtual text to the first visual row (after splitting)
-                    if has_diagnostics && render_diagnostic_virtual_text_inline {
+                    if !eol_decs.is_empty() {
                         if let Some(first_row) = visual_rows.first_mut() {
-                            append_diagnostic_virtual_text(
-                                first_row,
-                                &line_diagnostics,
-                                text_width,
-                            );
+                            apply_eol_decorations(first_row, &eol_decs, text_width);
                         }
                     }
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
@@ -1755,9 +1994,9 @@ pub fn render_buffer(
                         visual_rows_used += 1;
                     }
                 } else {
-                    // No wrap: append diagnostic virtual text before padding
-                    if has_diagnostics && render_diagnostic_virtual_text_inline {
-                        append_diagnostic_virtual_text(&mut line, &line_diagnostics, text_width);
+                    // No wrap: append EOL decorations before padding
+                    if !eol_decs.is_empty() {
+                        apply_eol_decorations(&mut line, &eol_decs, text_width);
                     }
                     let line_len: usize =
                         line.spans.iter().map(|s| s.content.chars().count()).sum();
@@ -1791,6 +2030,7 @@ pub fn render_buffer(
                     wrap,
                     tab_width,
                     md_conceal,
+                    dec_gen,
                     simple_line,
                     true,
                 );
@@ -1925,7 +2165,12 @@ pub fn render_diagnostic_virtual_text_overlay(
 
     while line_idx < line_count && visual_rows_used < visible_rows {
         let first_row_screen = visual_rows_used;
-        let line_diagnostics = editor.diagnostics_for_line(line_idx);
+        let eol_decs: Vec<&Decoration> = editor
+            .decorations
+            .for_line(line_idx)
+            .iter()
+            .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
+            .collect();
 
         let line_text_raw = if line_idx < rope.len_lines() {
             rope.line(line_idx).to_string()
@@ -1959,17 +2204,10 @@ pub fn render_diagnostic_virtual_text_overlay(
         }
         let code_width: usize = first_row_text.chars().map(char_display_width).sum();
 
-        if !line_diagnostics.is_empty() {
-            let diag = line_diagnostics[0];
-            let msg = diag.message.lines().next().unwrap_or("");
-            let (icon, fg_color, bg_color) = get_diagnostic_virtual_text_style(diag.severity);
-            let vtext_style = Style::default()
-                .fg(fg_color)
-                .bg(bg_color)
-                .add_modifier(Modifier::ITALIC);
+        if let Some(dec) = eol_decs.first() {
+            let vtext_style = decoration_to_ratatui_style(&dec.style);
 
-            // We want virtual text to start after the rendered code, even if that is past the
-            // centered textwidth. This allows it to appear in the right margin.
+            // Place virtual text right after the code, in the right margin.
             let mut x = text_area_x.saturating_add(code_width as u16);
             let y = buffer_area.y + first_row_screen as u16;
 
@@ -1984,33 +2222,22 @@ pub fn render_diagnostic_virtual_text_overlay(
 
             let available = full_right.saturating_sub(x) as usize;
             if available >= 6 {
-                // Draw unstyled gap, then styled message.
                 let buf = frame.buffer_mut();
                 let (nx, _) = buf.set_stringn(x, y, "  ", available, Style::default());
                 x = nx;
                 let available_after_gap = full_right.saturating_sub(x) as usize;
                 if available_after_gap > 0 {
-                    // Keep Vim-ish truncation at terminal edge.
-                    let prefix_width: usize =
-                        format!("{} ", icon).chars().map(char_display_width).sum();
-                    let max_msg_len = available_after_gap.saturating_sub(prefix_width);
-                    let mut render_msg = msg.to_string();
-                    if render_msg.chars().count() > max_msg_len {
+                    let mut render_msg = dec.text.clone();
+                    if render_msg.chars().count() > available_after_gap {
                         render_msg = format!(
                             "{}...",
                             render_msg
                                 .chars()
-                                .take(max_msg_len.saturating_sub(3))
+                                .take(available_after_gap.saturating_sub(3))
                                 .collect::<String>()
                         );
                     }
-                    buf.set_stringn(
-                        x,
-                        y,
-                        format!("{} {}", icon, render_msg),
-                        available_after_gap,
-                        vtext_style,
-                    );
+                    buf.set_stringn(x, y, render_msg, available_after_gap, vtext_style);
                 }
             }
         }
