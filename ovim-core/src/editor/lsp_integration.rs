@@ -757,17 +757,24 @@ impl Editor {
                 self.mark_dirty();
                 true
             }
-            Ok(Err(_)) => false,
+            Ok(Err(_)) => {
+                self.invalidate_inlay_hint_debounce();
+                false
+            }
             Err(TryRecvError::Empty) => {
                 if pending.request.started.elapsed() > std::time::Duration::from_secs(5) {
                     pending.request.task.abort();
+                    self.invalidate_inlay_hint_debounce();
                     return false;
                 }
 
                 self.lsp.state.pending_inlay_hints = Some(pending);
                 false
             }
-            Err(TryRecvError::Closed) => false,
+            Err(TryRecvError::Closed) => {
+                self.invalidate_inlay_hint_debounce();
+                false
+            }
         }
     }
 
