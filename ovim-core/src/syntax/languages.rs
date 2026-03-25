@@ -313,7 +313,22 @@ impl LanguageRegistry {
     pub fn get_lsp_language_id(file_path: &str) -> Option<&'static str> {
         Self::detect_from_path(file_path).and_then(|lang| match lang {
             Language::Rust => Some("rust"),
-            Language::JavaScript => Some("javascript"),
+            // typescript-language-server uses standard LSP language IDs that
+            // distinguish JSX from plain JS.  Both use Language::JavaScript
+            // for syntax (tree-sitter-javascript handles JSX), but the LSP
+            // ID must match what determine_language_id() used at server
+            // registration time.
+            Language::JavaScript => {
+                let ext = std::path::Path::new(file_path)
+                    .extension()
+                    .and_then(|e| e.to_str())
+                    .unwrap_or("");
+                if ext == "jsx" {
+                    Some("javascriptreact")
+                } else {
+                    Some("javascript")
+                }
+            }
             Language::TypeScript => Some("typescript"),
             Language::Tsx => Some("typescriptreact"),
             Language::Python => Some("python"),
