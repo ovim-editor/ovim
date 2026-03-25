@@ -38,6 +38,25 @@ impl WrapMap {
     where
         F: Fn(usize) -> String,
     {
+        Self::new_with_decorations(line_count, wrap_width, tab_width, buffer_version, line_text, |_| Vec::new())
+    }
+
+    /// Creates a new WrapMap that accounts for inline decoration widths.
+    ///
+    /// `inline_widths` returns `(char_idx, display_width)` pairs for each line,
+    /// representing inline decorations (e.g. inlay hints) that add display width.
+    pub fn new_with_decorations<F, D>(
+        line_count: usize,
+        wrap_width: usize,
+        tab_width: usize,
+        buffer_version: usize,
+        line_text: F,
+        inline_widths: D,
+    ) -> Self
+    where
+        F: Fn(usize) -> String,
+        D: Fn(usize) -> Vec<(usize, usize)>,
+    {
         let width = wrap_width.max(1);
         let mut visual_counts = Vec::with_capacity(line_count);
         let mut visual_offsets = Vec::with_capacity(line_count);
@@ -46,7 +65,8 @@ impl WrapMap {
         for i in 0..line_count {
             visual_offsets.push(total);
             let text = line_text(i);
-            let count = crate::wrap::visual_line_count(&text, width, tab_width) as u16;
+            let decs = inline_widths(i);
+            let count = crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs) as u16;
             visual_counts.push(count);
             total += count as usize;
         }
@@ -151,6 +171,22 @@ impl WrapMap {
     ) where
         F: Fn(usize) -> String,
     {
+        self.rebuild_with_decorations(line_count, wrap_width, tab_width, buffer_version, line_text, |_| Vec::new());
+    }
+
+    /// Rebuild with inline decoration widths.
+    pub fn rebuild_with_decorations<F, D>(
+        &mut self,
+        line_count: usize,
+        wrap_width: usize,
+        tab_width: usize,
+        buffer_version: usize,
+        line_text: F,
+        inline_widths: D,
+    ) where
+        F: Fn(usize) -> String,
+        D: Fn(usize) -> Vec<(usize, usize)>,
+    {
         let width = wrap_width.max(1);
         self.wrap_width = width;
         self.tab_width = tab_width;
@@ -164,7 +200,8 @@ impl WrapMap {
         for i in 0..line_count {
             self.visual_offsets.push(total);
             let text = line_text(i);
-            let count = crate::wrap::visual_line_count(&text, width, tab_width) as u16;
+            let decs = inline_widths(i);
+            let count = crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs) as u16;
             self.visual_counts.push(count);
             total += count as usize;
         }
@@ -175,9 +212,24 @@ impl WrapMap {
     ///
     /// Requires the line text to properly compute wrap points for wide chars.
     pub fn cursor_to_visual(&self, line: usize, col: usize, line_text: &str) -> (usize, usize) {
+        self.cursor_to_visual_with_decorations(line, col, line_text, &[])
+    }
+
+    /// Like [`cursor_to_visual`] but accounts for inline decoration widths.
+    pub fn cursor_to_visual_with_decorations(
+        &self,
+        line: usize,
+        col: usize,
+        line_text: &str,
+        inline_widths: &[(usize, usize)],
+    ) -> (usize, usize) {
         let base_row = self.logical_to_visual(line);
-        let wrap_points =
-            crate::wrap::compute_wrap_points(line_text, self.wrap_width, self.tab_width);
+        let wrap_points = crate::wrap::compute_wrap_points_with_decorations(
+            line_text,
+            self.wrap_width,
+            self.tab_width,
+            inline_widths,
+        );
 
         if wrap_points.is_empty() {
             if col < self.wrap_width {
@@ -190,15 +242,24 @@ impl WrapMap {
         }
 
         // Walk characters, tracking display columns per wrap segment.
-        // `col` is a display column; wrap_points are char indices.
-        // Invariant: at each wrap point, col >= segment_start_display
-        // (otherwise we would have broken at a previous wrap point).
+        // `col` is a display column (including inline decoration offsets);
+        // wrap_points are char indices computed with the same decoration
+        // widths, so the display-column tracking here must also include
+        // decoration widths to stay aligned.
         let mut segment_start_display = 0;
         let mut current_display = 0;
         let mut sub_line = 0;
         let mut wp_idx = 0;
+        let mut dec_idx = 0;
 
         for (char_idx, ch) in line_text.chars().enumerate() {
+            // Add decoration widths at this char position (mirrors
+            // compute_wrap_points_with_decorations).
+            while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 == char_idx {
+                current_display += inline_widths[dec_idx].1;
+                dec_idx += 1;
+            }
+
             if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
                 if col < current_display {
                     // col is in the segment that just ended

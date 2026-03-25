@@ -707,10 +707,12 @@ impl Editor {
         match pending.request.receiver.try_recv() {
             Ok(Ok(result)) => {
                 if pending.seq != self.lsp.state.inlay_hint_request_seq {
+                    self.invalidate_inlay_hint_debounce();
                     return false;
                 }
 
                 if result.buffer_version != self.buffer().version() {
+                    self.invalidate_inlay_hint_debounce();
                     return false;
                 }
 
@@ -722,10 +724,12 @@ impl Editor {
                     && self.scroll_offset() + self.viewport_height() + 10
                         == result.request_key.end_line;
                 if !matches_current_viewport {
+                    self.invalidate_inlay_hint_debounce();
                     return false;
                 }
 
                 if result.request_key.lsp_version < self.lsp.state.current_file_lsp_sent_version {
+                    self.invalidate_inlay_hint_debounce();
                     return false;
                 }
 
@@ -765,6 +769,16 @@ impl Editor {
             }
             Err(TryRecvError::Closed) => false,
         }
+    }
+
+    /// Clear the inlay hint debounce state so the next tick can immediately
+    /// re-request hints.  Called when `poll_pending_inlay_hint_response` drops
+    /// a result due to viewport/version mismatch — without this, the 250ms
+    /// debounce suppresses the retry and hints stay missing.
+    fn invalidate_inlay_hint_debounce(&mut self) {
+        self.lsp.state.last_inlay_hint_request = None;
+        self.lsp.state.last_inlay_hint_request_at = None;
+        self.lsp.state.applied_inlay_hint_request = None;
     }
 
     /// Shared handler for a completed location-based LSP result.

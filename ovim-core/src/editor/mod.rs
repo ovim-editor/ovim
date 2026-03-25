@@ -835,15 +835,19 @@ impl Editor {
         // so the wrap map covers all valid cursor positions.
         let line_count = self.buffer().rope().len_lines();
         let buf_version = self.buffer().version();
+        let dec_gen = self.decorations.generation;
         if let Some(ref map) = self.viewport.wrap_map {
             if map.buffer_version() == buf_version
                 && map.wrap_width() == width
                 && map.line_count() == line_count
+                && self.viewport.wrap_decoration_generation == dec_gen
             {
                 // Already up to date
                 return;
             }
         }
+
+        self.viewport.wrap_decoration_generation = dec_gen;
 
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let rope = self.buffer().rope().clone();
@@ -858,12 +862,20 @@ impl Editor {
             }
         };
 
+        let inline_widths = |line_idx: usize| -> Vec<(usize, usize)> {
+            self.decorations.inline_decorations_for_line(line_idx)
+        };
+
         if let Some(map) = self.viewport.wrap_map.as_mut() {
             // On any version mismatch, full rebuild to avoid stale wrap rows.
-            map.rebuild(line_count, width, tab_width, buf_version, make_line_text);
+            map.rebuild_with_decorations(
+                line_count, width, tab_width, buf_version, make_line_text, inline_widths,
+            );
         } else {
             // Build from scratch
-            let map = WrapMap::new(line_count, width, tab_width, buf_version, make_line_text);
+            let map = WrapMap::new_with_decorations(
+                line_count, width, tab_width, buf_version, make_line_text, inline_widths,
+            );
             self.viewport.wrap_map = Some(map);
         }
     }
@@ -1158,11 +1170,16 @@ impl Editor {
         let cursor_char_col = grapheme_to_char_col(&line_text, self.buffer().cursor().col());
         let cursor_display_col =
             crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width);
+        let cursor_inline_widths =
+            self.decorations.inline_decorations_for_line(cursor_line);
+        let cursor_display_col =
+            cursor_display_col + self.decorations.inline_width_before(cursor_line, cursor_char_col);
         let cursor_subline = Self::cursor_subline_in_wrapped_line(
             &line_text,
             cursor_display_col,
             wrap_width,
             tab_width,
+            &cursor_inline_widths,
         );
 
         // Fast path: if cursor is logically far below the viewport, just position it near bottom.
@@ -1232,8 +1249,11 @@ impl Editor {
         cursor_display_col: usize,
         wrap_width: usize,
         tab_width: usize,
+        inline_widths: &[(usize, usize)],
     ) -> usize {
-        let wrap_points = crate::wrap::compute_wrap_points(line_text, wrap_width, tab_width);
+        let wrap_points = crate::wrap::compute_wrap_points_with_decorations(
+            line_text, wrap_width, tab_width, inline_widths,
+        );
         if wrap_points.is_empty() {
             return 0;
         }

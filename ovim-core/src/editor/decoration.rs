@@ -172,6 +172,19 @@ impl DecorationMap {
             .collect()
     }
 
+    /// Returns `(char_idx, display_width)` pairs for inline decorations on a
+    /// line, sorted by char_idx.  Used by WrapMap to account for decoration
+    /// widths when computing wrap points.
+    pub fn inline_decorations_for_line(&self, line: usize) -> Vec<(usize, usize)> {
+        self.for_line(line)
+            .iter()
+            .filter_map(|d| match &d.placement {
+                DecorationPlacement::Inline { char_idx, .. } => Some((*char_idx, d.display_width)),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Total display width of inline decorations on a line
     /// at or before the given char index.
     pub fn inline_width_before(&self, line: usize, char_idx: usize) -> usize {

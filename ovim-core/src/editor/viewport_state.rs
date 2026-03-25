@@ -13,6 +13,10 @@ pub struct ViewportState {
     pub skip_scroll_update: bool,
     /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
     pub wrap_map: Option<WrapMap>,
+    /// Decoration generation when wrap map was last built.  When decorations
+    /// change (e.g. inlay hints arrive), the wrap map must be rebuilt to
+    /// account for new inline widths.
+    pub wrap_decoration_generation: u64,
 }
 
 impl Default for ViewportState {
@@ -22,6 +26,7 @@ impl Default for ViewportState {
             scroll_offset: 0,
             skip_scroll_update: false,
             wrap_map: None,
+            wrap_decoration_generation: 0,
         }
     }
 }
