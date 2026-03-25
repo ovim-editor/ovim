@@ -152,6 +152,7 @@ pub struct PendingLspRequest<T> {
 
 /// Concurrent pending LSP response slots -- each request type has its own field,
 /// so hover and goto can be in-flight simultaneously without conflict.
+#[derive(Default)]
 pub struct PendingLspResponses {
     pub hover: Option<PendingLspRequest<Option<String>>>,
     /// (new_tab, request) -- collapses Definition/DefinitionNewTab into one field
@@ -159,17 +160,6 @@ pub struct PendingLspResponses {
     /// (new_tab, request) -- collapses Implementation/ImplementationNewTab
     pub implementation: Option<(bool, PendingLspRequest<Option<lsp_types::Location>>)>,
     pub type_definition: Option<PendingLspRequest<Option<lsp_types::Location>>>,
-}
-
-impl Default for PendingLspResponses {
-    fn default() -> Self {
-        Self {
-            hover: None,
-            definition: None,
-            implementation: None,
-            type_definition: None,
-        }
-    }
 }
 
 impl PendingLspResponses {
@@ -296,6 +286,7 @@ pub enum LspAction {
 }
 
 /// Container for all LSP-related state in the editor
+#[derive(Default)]
 pub struct LspState {
     /// LSP manager (optional, only if LSP is enabled)
     pub lsp_manager: Option<Arc<LspManager>>,
@@ -392,59 +383,11 @@ pub struct LspState {
 impl LspState {
     /// Creates a new LspState with default values
     pub fn new() -> Self {
-        Self {
-            lsp_manager: None,
-            diagnostic_count: (0, 0, 0, 0),
-            pending_lsp_action: None,
-            lsp_action_retry_count: 0,
-            hover_info: None,
-            hover_scroll: 0,
-            hover_h_scroll: 0,
-            hover_position: None,
-            document_sync: HashMap::new(),
-            lsp_status: String::new(),
-            active_lsp_servers: HashMap::new(),
-            needs_lsp_init: false,
-            pending_did_close_file: None,
-            available_code_actions: Vec::new(),
-            available_completions: Vec::new(),
-            available_references: Vec::new(),
-            available_document_symbols: Vec::new(),
-            available_workspace_symbols: Vec::new(),
-            available_call_hierarchy: Vec::new(),
-            available_type_hierarchy: Vec::new(),
-            inlay_hints: Vec::new(),
-            last_inlay_hint_request: None,
-            last_inlay_hint_request_at: None,
-            applied_inlay_hint_request: None,
-            active_lsp_result_type: None,
-            current_file_diagnostics: Vec::new(),
-            diagnostics_buffer_version: 0,
-            diagnostics_file_path: None,
-            diagnostics_lsp_version: 0,
-            current_file_lsp_version: 0,
-            current_file_lsp_sent_version: 0,
-            hover_cache: None,
-            pending_lsp_responses: PendingLspResponses::default(),
-            pending_completion: None,
-            completion_request_seq: 0,
-            pending_inlay_hints: None,
-            inlay_hint_request_seq: 0,
-            pending_diagnostic_refresh: None,
-            diagnostic_refresh_seq: 0,
-            diagnostics_refresh_requested: false,
-            hover_content_type: HoverContentType::default(),
-        }
+        Self::default()
     }
 
     /// Get language IDs of currently active/running LSP servers
     pub fn running_server_languages(&self) -> Vec<String> {
         self.active_lsp_servers.keys().cloned().collect()
-    }
-}
-
-impl Default for LspState {
-    fn default() -> Self {
-        Self::new()
     }
 }

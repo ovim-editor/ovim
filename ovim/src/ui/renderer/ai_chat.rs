@@ -86,7 +86,7 @@ pub fn compute_chat_split(content_area: Rect, allow_edits: bool) -> (Rect, Rect)
 /// Width of tree panel when open.
 fn tree_panel_width(chat_width: u16) -> u16 {
     let quarter = chat_width / 4;
-    quarter.max(20).min(36)
+    quarter.clamp(20, 36)
 }
 
 /// Render the full chat panel.
@@ -438,7 +438,6 @@ fn fallback_tool_summary(message: &ChatMessage) -> (ToolSummaryKind, String) {
             ToolSummaryKind::Error,
             content
                 .trim_start_matches("Error:")
-                .trim()
                 .split_whitespace()
                 .collect::<Vec<_>>()
                 .join(" "),

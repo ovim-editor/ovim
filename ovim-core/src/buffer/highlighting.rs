@@ -526,7 +526,7 @@ impl Buffer {
             let in_code_block = self
                 .code_block_cache
                 .as_ref()
-                .map_or(false, |c| c.is_line_in_code_block(line_idx));
+                .is_some_and(|c| c.is_line_in_code_block(line_idx));
 
             if !in_code_block {
                 if let Some(line_text) = self.rope.line(line_idx).as_str() {

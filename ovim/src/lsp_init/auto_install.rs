@@ -422,14 +422,12 @@ async fn install_via_github(
     // Expand {os} and {arch} placeholders in the asset pattern
     let expanded_patterns = expand_platform_patterns(asset_pattern);
 
-    let asset = expanded_patterns
-        .iter()
-        .find_map(|pattern| {
-            release
-                .assets
-                .iter()
-                .find(|asset| asset_matches_pattern(&asset.name, pattern))
-        });
+    let asset = expanded_patterns.iter().find_map(|pattern| {
+        release
+            .assets
+            .iter()
+            .find(|asset| asset_matches_pattern(&asset.name, pattern))
+    });
 
     let Some(asset) = asset else {
         return InstallResult::Failed(format!(
@@ -569,7 +567,11 @@ fn expand_platform_patterns(pattern: &str) -> Vec<String> {
         "macos" => &["darwin", "macos"],
         "linux" => &["linux"],
         "windows" => &["windows", "win64"],
-        other => return vec![pattern.replace("{os}", other).replace("{arch}", std::env::consts::ARCH)],
+        other => {
+            return vec![pattern
+                .replace("{os}", other)
+                .replace("{arch}", std::env::consts::ARCH)]
+        }
     };
 
     let arch_variants: &[&str] = match std::env::consts::ARCH {
@@ -588,7 +590,11 @@ fn expand_platform_patterns(pattern: &str) -> Vec<String> {
 }
 
 /// Extract an archive (.tar.gz, .tgz, .zip) to a target directory.
-fn extract_archive(bytes: &[u8], asset_name: &str, target_dir: &std::path::Path) -> Result<(), String> {
+fn extract_archive(
+    bytes: &[u8],
+    asset_name: &str,
+    target_dir: &std::path::Path,
+) -> Result<(), String> {
     let lower = asset_name.to_ascii_lowercase();
 
     if lower.ends_with(".tar.gz") || lower.ends_with(".tgz") {
@@ -635,11 +641,15 @@ fn extract_via_shell_tar(
 ) -> Result<(), String> {
     // Write to temp file and extract with system tar
     let temp_file = target_dir.join(asset_name);
-    std::fs::write(&temp_file, bytes)
-        .map_err(|e| format!("Failed to write temp archive: {e}"))?;
+    std::fs::write(&temp_file, bytes).map_err(|e| format!("Failed to write temp archive: {e}"))?;
 
     let output = Command::new("tar")
-        .args(["xf", &temp_file.to_string_lossy(), "-C", &target_dir.to_string_lossy()])
+        .args([
+            "xf",
+            &temp_file.to_string_lossy(),
+            "-C",
+            &target_dir.to_string_lossy(),
+        ])
         .output()
         .map_err(|e| format!("Failed to run tar: {e}"))?;
 

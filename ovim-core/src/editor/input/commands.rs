@@ -131,8 +131,109 @@ fn update_path_completion(editor: &mut Editor) {
     }
 }
 
+/// Known command names for Tab completion.
+const COMMAND_NAMES: &[&str] = &[
+    "bd",
+    "bdelete",
+    "buffer",
+    "buffers",
+    "cd",
+    "cclose",
+    "cfirst",
+    "clast",
+    "close",
+    "cn",
+    "cnext",
+    "copen",
+    "colorscheme",
+    "cp",
+    "cprev",
+    "cq",
+    "cquit",
+    "delmarks",
+    "e",
+    "edit",
+    "f",
+    "file",
+    "help",
+    "hi",
+    "highlight",
+    "history",
+    "lcd",
+    "ls",
+    "LspInstall",
+    "LspManager",
+    "map",
+    "marks",
+    "messages",
+    "nmap",
+    "nohlsearch",
+    "noh",
+    "norm",
+    "normal",
+    "noremap",
+    "nmapclear",
+    "only",
+    "pwd",
+    "q",
+    "qa",
+    "quit",
+    "quitall",
+    "reg",
+    "registers",
+    "reload",
+    "saveas",
+    "se",
+    "set",
+    "session",
+    "sort",
+    "source",
+    "sp",
+    "split",
+    "tabe",
+    "tabedit",
+    "tabclose",
+    "tabmove",
+    "tabnext",
+    "tabprev",
+    "unmap",
+    "unlet",
+    "vmap",
+    "vsp",
+    "vsplit",
+    "w",
+    "wa",
+    "wq",
+    "wqa",
+    "write",
+    "writeall",
+    "x",
+    "xa",
+];
+
+/// State for command name Tab completion cycling.
+struct CmdCompletion {
+    matches: Vec<&'static str>,
+    index: usize,
+    original_prefix: String,
+}
+
+thread_local! {
+    static CMD_COMPLETION: std::cell::RefCell<Option<CmdCompletion>> = const { std::cell::RefCell::new(None) };
+}
+
 /// Handles Tab (forward=false) or BackTab (backward=true) for path completion.
 fn handle_tab_completion(editor: &mut Editor, backward: bool) {
+    let cmd = editor.command_line().to_string();
+    let trimmed = cmd.trim_start();
+
+    // If the command line has no space, we're completing a command name.
+    if !trimmed.contains(' ') {
+        handle_command_name_completion(editor, trimmed, backward);
+        return;
+    }
+
+    // Otherwise, fall through to path completion.
     if !editor.path_completion().is_visible() {
         // Try to trigger completion from current command line.
         update_path_completion(editor);
@@ -169,6 +270,71 @@ fn handle_tab_completion(editor: &mut Editor, backward: bool) {
             }
         }
     }
+}
+
+/// Handle Tab completion for command names (first word of command line).
+fn handle_command_name_completion(editor: &mut Editor, prefix: &str, backward: bool) {
+    CMD_COMPLETION.with(|cell| {
+        let mut state = cell.borrow_mut();
+
+        // Check if we're continuing a previous completion cycle
+        let continuing = state.as_ref().is_some_and(|s| {
+            s.original_prefix == prefix || {
+                // Also continue if the command line matches a previous completion result
+                s.matches.contains(&prefix)
+            }
+        });
+
+        if continuing {
+            let s = state.as_mut().unwrap();
+            if backward {
+                s.index = if s.index == 0 {
+                    s.matches.len() // wraps to original prefix
+                } else {
+                    s.index - 1
+                };
+            } else {
+                s.index += 1;
+                if s.index > s.matches.len() {
+                    s.index = 0;
+                }
+            }
+            // index == matches.len() means show original prefix
+            if s.index == s.matches.len() {
+                editor.set_command_line(&s.original_prefix);
+            } else {
+                editor.set_command_line(s.matches[s.index]);
+            }
+        } else {
+            // Build new completion list
+            let matches: Vec<&'static str> = COMMAND_NAMES
+                .iter()
+                .filter(|cmd| cmd.starts_with(prefix))
+                .copied()
+                .collect();
+
+            if matches.is_empty() {
+                *state = None;
+                return;
+            }
+
+            if matches.len() == 1 {
+                // Unique match — complete it directly
+                editor.set_command_line(matches[0]);
+                *state = None;
+                return;
+            }
+
+            // Multiple matches — start cycling from first
+            let idx = if backward { matches.len() - 1 } else { 0 };
+            editor.set_command_line(matches[idx]);
+            *state = Some(CmdCompletion {
+                matches,
+                index: idx,
+                original_prefix: prefix.to_string(),
+            });
+        }
+    });
 }
 
 /// Accepts the currently selected path completion entry and updates the command line text.
@@ -259,14 +425,13 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
     let confirm = flags.contains('c');
 
     // Determine the range using the new parser (returns inclusive range)
-    let (start_line, end_line) = if let Some((start, end)) =
-        parse_range_with_status(editor, range_str, None)
-    {
-        (start, end)
-    } else {
-        // Invalid range
-        return Ok(());
-    };
+    let (start_line, end_line) =
+        if let Some((start, end)) = parse_range_with_status(editor, range_str, None) {
+            (start, end)
+        } else {
+            // Invalid range
+            return Ok(());
+        };
 
     // Compile the regex pattern
     use regex::RegexBuilder;
@@ -751,11 +916,11 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
 
     if is_filter {
         // Parse the range
-                let (start_line, end_line) =
-                    match parse_range_with_status(editor, range_str, Some("Invalid range")) {
-                        Some(range) => range,
-                        None => return Ok(()),
-                    };
+        let (start_line, end_line) =
+            match parse_range_with_status(editor, range_str, Some("Invalid range")) {
+                Some(range) => range,
+                None => return Ok(()),
+            };
 
         // Get the text from the range
         let mut input_text = String::new();
@@ -825,10 +990,9 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
         // The TUI will leave alternate screen, run the command with inherited I/O,
         // show a "Press ENTER" prompt, then restore the editor.
         editor.build.last_shell_command = Some(shell_cmd.to_string());
-        editor.build.pending_shell_command =
-            Some(crate::editor::PendingShellCommand {
-                command: shell_cmd.to_string(),
-            });
+        editor.build.pending_shell_command = Some(crate::editor::PendingShellCommand {
+            command: shell_cmd.to_string(),
+        });
     }
 
     Ok(())
@@ -1118,9 +1282,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             expand_shell_command(shell_cmd, &current_file, &alternate_file)
         };
         editor.build.last_shell_command = Some(cmd.clone());
-        editor.build.pending_shell_command = Some(crate::editor::PendingShellCommand {
-            command: cmd,
-        });
+        editor.build.pending_shell_command =
+            Some(crate::editor::PendingShellCommand { command: cmd });
         return Ok(());
     }
 
@@ -1399,7 +1562,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
         if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             // Parse destination address
-            if let Some(dest_line) = parse_range_endpoint_with_status(editor, dest_str, Some("E14: Invalid address"))
+            if let Some(dest_line) =
+                parse_range_endpoint_with_status(editor, dest_str, Some("E14: Invalid address"))
             {
                 // Collect lines to copy
                 let mut lines_to_copy: Vec<String> = Vec::new();

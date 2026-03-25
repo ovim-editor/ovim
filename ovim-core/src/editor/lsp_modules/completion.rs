@@ -256,7 +256,7 @@ impl Editor {
 }
 
 fn filter_supported_trigger(trigger: Option<char>, supported: &HashSet<char>) -> Option<char> {
-    let Some(ch) = trigger else { return None };
+    let ch = trigger?;
     if supported.contains(&ch) {
         Some(ch)
     } else {

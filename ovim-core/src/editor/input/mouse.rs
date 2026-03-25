@@ -111,11 +111,7 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
 
 /// Checks if a click at the given screen coordinates lands on a concealed markdown link.
 /// Returns the URL if it does.
-fn check_concealed_link_click(
-    editor: &Editor,
-    screen_col: u16,
-    screen_row: u16,
-) -> Option<String> {
+fn check_concealed_link_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<String> {
     // Only active for markdown files with concealment on
     if !editor.options.markdown_conceal {
         return None;

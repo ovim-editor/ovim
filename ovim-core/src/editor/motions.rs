@@ -800,9 +800,9 @@ impl Motions {
             let line_text = rope.line(line_idx).to_string();
             let line_chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
             let mut found = None;
-            for search_col in (col + 1)..line_chars.len() {
-                if is_bracket(line_chars[search_col]) {
-                    found = Some((abs_pos + (search_col - col), line_chars[search_col]));
+            for (search_col, &ch) in line_chars.iter().enumerate().skip(col + 1) {
+                if is_bracket(ch) {
+                    found = Some((abs_pos + (search_col - col), ch));
                     break;
                 }
             }

@@ -475,7 +475,7 @@ pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: R
         })
         .max()
         .unwrap_or(20);
-    let menu_width = (max_name_len + 4).min(60).max(20) as u16;
+    let menu_width = (max_name_len + 4).clamp(20, 60) as u16;
 
     // Position above the status line, left-aligned.
     let menu_y = status_area.y.saturating_sub(menu_height);

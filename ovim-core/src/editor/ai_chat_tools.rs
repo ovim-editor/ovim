@@ -298,9 +298,7 @@ impl Editor {
         let requires = match mode {
             ToolApprovalMode::Auto => false,
             ToolApprovalMode::SensitivePrompt => {
-                is_sensitive
-                    || is_external
-                    || (is_mutation && !is_current_target)
+                is_sensitive || is_external || (is_mutation && !is_current_target)
             }
             ToolApprovalMode::AlwaysPrompt => true,
         };
@@ -328,7 +326,10 @@ impl Editor {
         let approval_root = if requested_path.is_dir() {
             requested_path.clone()
         } else {
-            requested_path.clone()
+            requested_path
+                .parent()
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| requested_path.clone())
         };
         let reason = if mode == ToolApprovalMode::AlwaysPrompt {
             "policy requires explicit approval"
@@ -1702,7 +1703,10 @@ mod tests {
                 .buffer()
                 .file_path()
                 .is_some_and(|p| p.ends_with("new_file.rs")));
-            assert_eq!(editor.registers().get(Some('%')), target.to_string_lossy().to_string());
+            assert_eq!(
+                editor.registers().get(Some('%')),
+                target.to_string_lossy().to_string()
+            );
         });
     }
 

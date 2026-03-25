@@ -578,11 +578,7 @@ impl Editor {
         Ok(self.record_ai_chat_save_outcome("saved to disk"))
     }
 
-    fn handle_write_file_at_path(
-        &mut self,
-        args: WriteFileArgs,
-        create_only: bool,
-    ) -> ToolResult {
+    fn handle_write_file_at_path(&mut self, args: WriteFileArgs, create_only: bool) -> ToolResult {
         let path = args.path;
         let mut content = args.content;
         if !content.is_empty() && !content.ends_with('\n') {
@@ -1223,10 +1219,7 @@ mod tests {
             text: "mid 1\nmid 2\nmid 3\n".into(),
         });
         assert!(matches!(result, ToolResult::Success(_)));
-        assert_eq!(
-            buf_content(&editor),
-            "start\nmid 1\nmid 2\nmid 3\nend\n"
-        );
+        assert_eq!(buf_content(&editor), "start\nmid 1\nmid 2\nmid 3\nend\n");
     }
 
     // ====================================================================
@@ -1324,10 +1317,7 @@ mod tests {
     #[test]
     fn apply_multiple_hunks_sequentially() {
         let content = "aaa\nbbb\nccc\n".to_string();
-        let hunks = vec![
-            hunk("aaa\n", "AAA\n"),
-            hunk("ccc\n", "CCC\n"),
-        ];
+        let hunks = vec![hunk("aaa\n", "AAA\n"), hunk("ccc\n", "CCC\n")];
         let result = apply_patch_hunks_to_text(content, &hunks).unwrap();
         assert_eq!(result, "AAA\nbbb\nCCC\n");
     }

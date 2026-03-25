@@ -198,8 +198,8 @@ pub fn compute_simple_diff(
             String::new()
         } else {
             let mut result = String::new();
-            for i in start_line..end_line_new {
-                result.push_str(new_lines[i]);
+            for line in new_lines.iter().take(end_line_new).skip(start_line) {
+                result.push_str(line);
                 result.push('\n');
             }
             result

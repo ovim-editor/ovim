@@ -289,6 +289,9 @@ fn exit_insert_mode(editor: &mut Editor) {
     // so the server sees ALL changes (first line + replayed lines).
     editor.mark_buffer_modified();
 
+    // Clear insert-normal flag on full exit
+    editor.editing.insert_normal_pending = false;
+
     editor.set_mode(Mode::Normal);
 
     // Move cursor left when exiting insert mode (unless at column 0)
@@ -329,6 +332,24 @@ fn exit_insert_mode(editor: &mut Editor) {
 
 /// Handles input in Insert mode
 pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    // Handle pending register insert (Ctrl-R {reg})
+    if editor.editing.pending_register_insert {
+        editor.editing.pending_register_insert = false;
+        if let KeyCode::Char(c) = key_event.code {
+            let text = editor.registers().get(Some(c));
+            if !text.is_empty() {
+                for ch in text.chars() {
+                    if ch == '\n' {
+                        helpers::insert_newline(editor)?;
+                    } else {
+                        helpers::insert_char(editor, ch)?;
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
     match key_event.code {
         KeyCode::Esc => {
             if editor.completion_menu().is_visible() {
@@ -370,13 +391,18 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('h') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             helpers::delete_char_before_cursor(editor)?;
         }
+        // Ctrl-R - Insert register contents
+        KeyCode::Char('r') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.editing.pending_register_insert = true;
+        }
         // Ctrl-Space - Request code completion
         KeyCode::Char(' ') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.request_completion();
         }
-        // Ctrl-O - Request code completion (vim omni-completion)
+        // Ctrl-O - Execute one normal mode command, then return to insert
         KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.request_completion();
+            editor.editing.insert_normal_pending = true;
+            editor.set_mode(Mode::Normal);
         }
         // Ctrl-N - Next completion item
         KeyCode::Char('n') if key_event.modifiers.contains(Modifiers::CONTROL) => {

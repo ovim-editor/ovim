@@ -31,7 +31,7 @@ impl Editor {
         }
 
         // Get current cursor position to copy to new window
-        let cursor = self.buffer().cursor().clone();
+        let cursor = *self.buffer().cursor();
         let scroll_offset = self.scroll_offset();
 
         if let Some(wm) = &mut self.window_manager {
@@ -52,7 +52,7 @@ impl Editor {
         }
 
         // Get current cursor position to copy to new window
-        let cursor = self.buffer().cursor().clone();
+        let cursor = *self.buffer().cursor();
         let scroll_offset = self.scroll_offset();
 
         if let Some(wm) = &mut self.window_manager {
@@ -67,7 +67,7 @@ impl Editor {
 
     /// Saves the buffer's cursor to the currently focused window
     fn save_cursor_to_focused_window(&mut self) {
-        let cursor = self.buffer().cursor().clone();
+        let cursor = *self.buffer().cursor();
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window

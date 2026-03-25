@@ -188,7 +188,7 @@ impl Editor {
         let mut snapshots = Vec::new();
         for ((path, before_bytes), (_, after_bytes)) in before.into_iter().zip(after.into_iter()) {
             if before_bytes != after_bytes {
-                snapshots.push((path, before_bytes, after_bytes));
+                snapshots.push(Change::resource_snapshot(path, before_bytes, after_bytes));
             }
         }
 

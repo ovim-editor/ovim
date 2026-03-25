@@ -4,7 +4,6 @@
 /// (insert_text_at, delete_range) work with char indices. These tests
 /// verify that insert_char, insert_newline, insert_tab, and
 /// delete_char_before_cursor properly convert between the two.
-
 mod helpers;
 use helpers::EditorTest;
 
@@ -19,7 +18,7 @@ fn test_insert_char_after_emoji() {
     // The 'X' should appear between the emoji and 'b', not mid-emoji.
     let mut test = EditorTest::new("a👨‍👩‍👧‍👦b\n");
     test.keys("i"); // insert mode at col 0
-    // Move right twice: col 0 -> 1 -> 2 (past 'a', past emoji, onto 'b')
+                    // Move right twice: col 0 -> 1 -> 2 (past 'a', past emoji, onto 'b')
     test.press_key(ovim_core::KeyCode::Right);
     test.press_key(ovim_core::KeyCode::Right);
     assert_eq!(test.cursor(), (0, 2), "cursor should be at grapheme col 2");
@@ -110,7 +109,7 @@ fn test_backspace_after_emoji() {
     test.press_key(ovim_core::KeyCode::Right); // past 'a'
     test.press_key(ovim_core::KeyCode::Right); // past emoji
     test.press_key(ovim_core::KeyCode::Right); // past 'b'
-    // Cursor at grapheme col 3 (end of "a👨‍👩‍👧‍👦b")
+                                               // Cursor at grapheme col 3 (end of "a👨‍👩‍👧‍👦b")
     test.press_backspace();
 
     let content = test.buffer_content();

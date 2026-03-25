@@ -2,6 +2,7 @@
 ///
 /// Groups fields that bridge between the renderer and input handling:
 /// mouse drag state and cached layout geometry from the last render pass.
+#[derive(Default)]
 pub struct RenderCache {
     /// Mouse interaction state (dragging, drag origin)
     pub mouse_state: super::MouseState,
@@ -38,25 +39,3 @@ pub struct RenderCache {
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
 }
 
-impl Default for RenderCache {
-    fn default() -> Self {
-        Self {
-            mouse_state: super::MouseState::default(),
-            last_buffer_area: None,
-            last_gutter_width: 0,
-            last_text_width: 0,
-            last_blame_width: 0,
-            ai_prompt_input_area: None,
-            ai_prompt_input_rows: Vec::new(),
-            ai_prompt_model_hitboxes: Vec::new(),
-            ai_prompt_model_trigger_hitbox: None,
-            last_chat_area: None,
-            ai_chat_last_total_rows: 0,
-            ai_chat_last_visible_start_row: 0,
-            ai_chat_last_visible_end_row: 0,
-            ai_chat_last_message_row_spans: Vec::new(),
-            ai_chat_input_area: None,
-            ai_chat_input_cursor_pos: None,
-        }
-    }
-}

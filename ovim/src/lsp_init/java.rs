@@ -91,11 +91,7 @@ pub async fn initialize_hyperion_lsp_background(
     language_id: &str,
 ) {
     let language_label = capitalize_first(language_id);
-    ovim_core::lsp_debug!(
-        &language_label,
-        "Starting Hyperion LSP for {:?}",
-        file_path
-    );
+    ovim_core::lsp_debug!(&language_label, "Starting Hyperion LSP for {:?}", file_path);
 
     let Some(lsp_manager) = lsp_manager else {
         send_hyperion_status(&language_label, "No LSP manager available".to_string());

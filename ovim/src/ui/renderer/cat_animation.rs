@@ -186,6 +186,12 @@ pub struct CatAnimation {
     screen_h: u16,
 }
 
+impl Default for CatAnimation {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl CatAnimation {
     pub fn new() -> Self {
         let now = Instant::now();
@@ -406,7 +412,11 @@ impl CatAnimation {
 
         match self.phase {
             Phase::WalkOn | Phase::WalkOff => {
-                let sprite = if self.frame % 2 == 0 { WALK1 } else { WALK2 };
+                let sprite = if self.frame.is_multiple_of(2) {
+                    WALK1
+                } else {
+                    WALK2
+                };
                 let base_y = ground_y.saturating_sub(sprite.len() as u16);
                 // Bouncy hop: odd frames rise 1 row.
                 let y = if self.frame % 2 == 1 {
@@ -455,7 +465,11 @@ impl CatAnimation {
             }
 
             Phase::Fall => {
-                let sprite = if self.frame % 2 == 0 { FALL1 } else { FALL2 };
+                let sprite = if self.frame.is_multiple_of(2) {
+                    FALL1
+                } else {
+                    FALL2
+                };
                 let from = logo_top_y.saturating_sub(sprite.len() as u16) as f32;
                 let to = ground_y.saturating_sub(sprite.len() as u16) as f32;
                 let t = self.frame as f32 / 4.0;

@@ -118,7 +118,8 @@ impl Editor {
 
         let buffer_version = self.buffer().version();
         if self
-            .lsp.state
+            .lsp
+            .state
             .pending_diagnostic_refresh
             .as_ref()
             .is_some_and(|pending| {
@@ -320,7 +321,8 @@ impl Editor {
         // are potentially for older content and must be hidden.
         if let Some(file_path) = self.buffer().file_path() {
             if self
-                .lsp.state
+                .lsp
+                .state
                 .document_sync
                 .get(file_path)
                 .is_some_and(|state| state.is_modified())
@@ -347,7 +349,8 @@ impl Editor {
             return Vec::new();
         }
         let result: Vec<_> = self
-            .lsp.state
+            .lsp
+            .state
             .current_file_diagnostics
             .iter()
             .filter(|d| d.range.start.line as usize == line)
@@ -359,7 +362,8 @@ impl Editor {
                 "diagnostics_for_line({}): 0 matches in {} cached diagnostics, first diag line={}",
                 line,
                 self.lsp.state.current_file_diagnostics.len(),
-                self.lsp.state
+                self.lsp
+                    .state
                     .current_file_diagnostics
                     .first()
                     .map(|d| d.range.start.line)

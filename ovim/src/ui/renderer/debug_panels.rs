@@ -79,8 +79,7 @@ fn render_stack_trace(frame: &mut Frame, editor: &Editor, area: Rect) {
         } else {
             "No stack trace"
         };
-        let paragraph =
-            Paragraph::new(msg).style(Style::default().fg(Color::DarkGray));
+        let paragraph = Paragraph::new(msg).style(Style::default().fg(Color::DarkGray));
         frame.render_widget(paragraph, inner);
         return;
     }
@@ -110,10 +109,7 @@ fn render_stack_trace(frame: &mut Frame, editor: &Editor, area: Rect) {
             } else {
                 "  "
             };
-            Line::from(vec![
-                Span::styled(marker, style),
-                Span::styled(text, style),
-            ])
+            Line::from(vec![Span::styled(marker, style), Span::styled(text, style)])
         })
         .collect();
 
@@ -135,8 +131,7 @@ fn render_variables(frame: &mut Frame, editor: &Editor, area: Rect) {
     frame.render_widget(block, area);
 
     if state.scopes.is_empty() {
-        let paragraph =
-            Paragraph::new("No variables").style(Style::default().fg(Color::DarkGray));
+        let paragraph = Paragraph::new("No variables").style(Style::default().fg(Color::DarkGray));
         frame.render_widget(paragraph, inner);
         return;
     }

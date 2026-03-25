@@ -205,7 +205,12 @@ impl SyntaxHighlighter {
                 // A line overlaps if its end byte > start_byte.
                 let first_rel = line_end_bytes.partition_point(|&line_end| line_end <= start_byte);
 
-                for rel_idx in first_rel..actual_len {
+                for (rel_idx, highlights) in line_highlights
+                    .iter_mut()
+                    .enumerate()
+                    .take(actual_len)
+                    .skip(first_rel)
+                {
                     let line_idx = start_line + rel_idx;
                     let line_start_byte = line_start_bytes[line_idx];
 
@@ -222,7 +227,7 @@ impl SyntaxHighlighter {
                         line_len
                     };
 
-                    line_highlights[rel_idx].push((col_start..col_end, group));
+                    highlights.push((col_start..col_end, group));
                 }
             }
         }

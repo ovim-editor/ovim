@@ -36,10 +36,19 @@ fn list_buffers(editor: &Editor) -> CommandResult {
         .iter()
         .enumerate()
         .map(|(i, name)| {
-            let marker = if i == editor.current_buffer_index() { "%" } else { " " };
-            let modified = if editor.buffer_at(i)
+            let marker = if i == editor.current_buffer_index() {
+                "%"
+            } else {
+                " "
+            };
+            let modified = if editor
+                .buffer_at(i)
                 .is_some_and(|b| !b.change_manager().is_at_save_point())
-            { "+" } else { " " };
+            {
+                "+"
+            } else {
+                " "
+            };
             format!("{} {}  {}", marker, modified, name)
         })
         .collect();
@@ -48,12 +57,22 @@ fn list_buffers(editor: &Editor) -> CommandResult {
 
 fn next_buffer(editor: &mut Editor) -> CommandResult {
     editor.next_buffer();
-    ok(format!("Buffer {} of {}: {}", editor.current_buffer_index() + 1, editor.buffer_count(), buffer_name(editor)))
+    ok(format!(
+        "Buffer {} of {}: {}",
+        editor.current_buffer_index() + 1,
+        editor.buffer_count(),
+        buffer_name(editor)
+    ))
 }
 
 fn prev_buffer(editor: &mut Editor) -> CommandResult {
     editor.prev_buffer();
-    ok(format!("Buffer {} of {}: {}", editor.current_buffer_index() + 1, editor.buffer_count(), buffer_name(editor)))
+    ok(format!(
+        "Buffer {} of {}: {}",
+        editor.current_buffer_index() + 1,
+        editor.buffer_count(),
+        buffer_name(editor)
+    ))
 }
 
 fn delete_buffer(editor: &mut Editor, force: bool) -> CommandResult {
@@ -64,6 +83,9 @@ fn delete_buffer(editor: &mut Editor, force: bool) -> CommandResult {
         editor.quit();
         ok("Last buffer deleted, quitting")
     } else {
-        ok(format!("Buffer deleted. Now showing: {}", buffer_name(editor)))
+        ok(format!(
+            "Buffer deleted. Now showing: {}",
+            buffer_name(editor)
+        ))
     }
 }

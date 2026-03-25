@@ -608,7 +608,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     let visible_results: Vec<Line> = visible_entries
         .iter()
         .enumerate()
-        .map(|(vis_idx, &(actual_idx, ref result))| {
+        .map(|(vis_idx, &(actual_idx, result))| {
             let is_selected = actual_idx == selected_idx;
 
             let max_display_len = result_width.saturating_sub(5);
@@ -944,8 +944,9 @@ fn render_preview_with_syntax(
         }
 
         // Expand tabs in preview content and get byte mapping
-        let (line_text, tab_mapping, _control_ranges, _char_mapping) =
-            expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
+        let exp = expand_tabs_with_mapping(line_text, 4); // Use default tab width for previews
+        let tab_mapping = exp.byte_mapping;
+        let line_text = exp.text;
 
         // Truncate line to fit width (line number prefix is 7 chars: "  1 | ")
         let content_width = area.width.saturating_sub(7) as usize;

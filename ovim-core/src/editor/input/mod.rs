@@ -111,21 +111,15 @@ impl InputHandler {
             match key_event.code {
                 KeyCode::Enter => {
                     // Approve install (once)
-                    editor.resolve_pending_lsp_install(
-                        crate::editor::LspInstallConsent::Yes,
-                    );
+                    editor.resolve_pending_lsp_install(crate::editor::LspInstallConsent::Yes);
                 }
                 KeyCode::Char('a') | KeyCode::Char('A') => {
                     // Always auto-install (sets autoinstall=auto)
-                    editor.resolve_pending_lsp_install(
-                        crate::editor::LspInstallConsent::Always,
-                    );
+                    editor.resolve_pending_lsp_install(crate::editor::LspInstallConsent::Always);
                 }
                 KeyCode::Esc => {
                     // Skip install
-                    editor.resolve_pending_lsp_install(
-                        crate::editor::LspInstallConsent::No,
-                    );
+                    editor.resolve_pending_lsp_install(crate::editor::LspInstallConsent::No);
                 }
                 _ => {} // Ignore other keys while dialog is showing
             }
@@ -179,6 +173,20 @@ impl InputHandler {
                 Mode::AiChat => ai_chat_mode::handle_ai_chat_mode(editor, key_event),
             }
         };
+
+        // Ctrl-O insert-normal: after one normal command, return to insert mode.
+        // Only return if we're still in Normal mode (the command didn't switch to
+        // Insert, Visual, Command, etc. on its own) and no pending multi-key state.
+        if editor.editing.insert_normal_pending && editor.mode() == Mode::Normal {
+            // Check if the command is fully resolved (no pending operator/command)
+            if editor.pending_operator().is_none()
+                && editor.pending_command().is_none()
+                && matches!(editor.input_state(), InputState::Normal)
+            {
+                editor.editing.insert_normal_pending = false;
+                editor.set_mode(Mode::Insert);
+            }
+        }
 
         // Update scroll offset to keep cursor visible with scrolloff margin
         // Skip if:

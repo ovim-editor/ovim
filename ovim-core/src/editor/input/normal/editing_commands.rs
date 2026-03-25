@@ -220,7 +220,7 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
 
     // Get indentation from the current line before deleting
     let indent = if let Some(line) = editor.buffer().line(start_line) {
-        let trimmed = line.trim_start_matches(|c: char| c == ' ' || c == '\t');
+        let trimmed = line.trim_start_matches([' ', '\t']);
         line[..line.len() - trimmed.len()].to_string()
     } else {
         String::new()

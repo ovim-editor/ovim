@@ -17,6 +17,12 @@ pub struct NucleoMatcher {
     last_query: String,
 }
 
+impl Default for NucleoMatcher {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl NucleoMatcher {
     /// Creates a new matcher with 1 column and automatic thread count.
     pub fn new() -> Self {

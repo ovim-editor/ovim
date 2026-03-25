@@ -6,6 +6,7 @@ pub struct PendingShellCommand {
 }
 
 /// Grouped state for the build/test subsystem (`:make`, `<Space>t` test runs).
+#[derive(Default)]
 pub(crate) struct BuildState {
     /// Pending `:make` result from background thread
     pub(crate) pending_make: Option<super::PendingMake>,
@@ -17,16 +18,4 @@ pub(crate) struct BuildState {
     pub(crate) pending_shell_command: Option<PendingShellCommand>,
     /// Last `:!` command (for bare `:!` repeat)
     pub(crate) last_shell_command: Option<String>,
-}
-
-impl Default for BuildState {
-    fn default() -> Self {
-        Self {
-            pending_make: None,
-            last_test_command: None,
-            last_make_output: None,
-            pending_shell_command: None,
-            last_shell_command: None,
-        }
-    }
 }

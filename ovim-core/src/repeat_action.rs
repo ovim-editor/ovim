@@ -487,9 +487,7 @@ impl RepeatAction {
                         final_col += 1;
                     }
                 }
-                if final_col > 0 {
-                    final_col -= 1;
-                }
+                final_col = final_col.saturating_sub(1);
                 buffer.cursor_mut().set_position(final_line, final_col);
             }
             Self::DeleteVisualChar {
@@ -591,9 +589,7 @@ impl RepeatAction {
                             final_col += 1;
                         }
                     }
-                    if final_col > 0 {
-                        final_col -= 1;
-                    }
+                    final_col = final_col.saturating_sub(1);
                     buffer.cursor_mut().set_position(final_line, final_col);
                 } else {
                     let line_len = buffer
@@ -667,9 +663,7 @@ impl RepeatAction {
                             }
                         }
                         // Back up one (Vim positions cursor on last inserted char)
-                        if final_col > 0 {
-                            final_col -= 1;
-                        }
+                        final_col = final_col.saturating_sub(1);
                         buffer.cursor_mut().set_position(final_line, final_col);
                     }
                 }

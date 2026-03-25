@@ -1,6 +1,6 @@
 //! Command execution for ex commands (:w, :q, etc.)
 
-use crate::command_result::{err, ok, CommandResult, ErrorResponse, SuccessResponse};
+use crate::command_result::{err, ok, CommandResult};
 use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
 
@@ -67,7 +67,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         "q" | "quit" => {
             if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
-                ok(format!("Tab closed. Now on tab {}", editor.current_tab_index() + 1))
+                ok(format!(
+                    "Tab closed. Now on tab {}",
+                    editor.current_tab_index() + 1
+                ))
             } else if editor.is_modified() {
                 err("No write since last change (add ! to override)")
             } else {
@@ -78,7 +81,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
         "q!" | "quit!" => {
             if !editor.tab_page_manager().is_single_tab() {
                 editor.close_current_tab();
-                ok(format!("Tab closed. Now on tab {}", editor.current_tab_index() + 1))
+                ok(format!(
+                    "Tab closed. Now on tab {}",
+                    editor.current_tab_index() + 1
+                ))
             } else {
                 editor.quit();
                 ok("Quitting (forced)")
@@ -130,9 +136,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
                         ok(format!(
-                                "\"{}\" {}L, {}C written",
-                                path, line_count, char_count
-                            ))
+                            "\"{}\" {}L, {}C written",
+                            path, line_count, char_count
+                        ))
                     }
                     Err(e) => err(format!("Failed to save: {}", e)),
                 }
@@ -158,9 +164,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
                         ok(format!(
-                                "\"{}\" {}L, {}C written",
-                                path, line_count, char_count
-                            ))
+                            "\"{}\" {}L, {}C written",
+                            path, line_count, char_count
+                        ))
                     }
                     Err(e) => err(format!("Failed to save: {}", e)),
                 }
@@ -536,10 +542,8 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
         }
         // Buffer commands (ls, bn, bp, bd) — dispatched to cmd_buffer module
-        "ls" | "buffers" | "files" | "bnext" | "bn" | "bprev" | "bp" | "bprevious"
-        | "bd" | "bdelete" | "bd!" | "bdelete!" => {
-            return crate::cmd_buffer::try_handle(editor, command).unwrap();
-        }
+        "ls" | "buffers" | "files" | "bnext" | "bn" | "bprev" | "bp" | "bprevious" | "bd"
+        | "bdelete" | "bd!" | "bdelete!" => crate::cmd_buffer::try_handle(editor, command).unwrap(),
         "tabonly" | "tabo" => {
             // Close all tabs except the current one
             if editor.tab_page_manager().is_single_tab() {
@@ -603,9 +607,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
                     Ok(true) => {
                         editor.mark_buffer_modified_force_send();
-                        ok(
-                                "File reloaded from disk (external changes detected)".to_string(),
-                            )
+                        ok("File reloaded from disk (external changes detected)".to_string())
                     }
                     Ok(false) => ok("No external changes detected"),
                     Err(e) => err(format!("Failed to reload: {}", e)),
@@ -714,9 +716,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
 
                             let tab_index = editor.current_tab_index() + 1;
                             ok(format!(
-                                    "Created new file {} in tab {}",
-                                    filename, tab_index
-                                ))
+                                "Created new file {} in tab {}",
+                                filename, tab_index
+                            ))
                         } else {
                             err(format!("Failed to load file: {}", e))
                         }
@@ -751,9 +753,9 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         let line_count = editor.buffer().rope().len_lines();
                         let char_count = editor.buffer().rope().len_chars();
                         ok(format!(
-                                "\"{}\" {}L, {}C written",
-                                saved_path, line_count, char_count
-                            ))
+                            "\"{}\" {}L, {}C written",
+                            saved_path, line_count, char_count
+                        ))
                     }
                     Err(e) => err(format!("Failed to save: {}", e)),
                 }
@@ -812,15 +814,15 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             } else if command == "sp" || command == "split" {
                 editor.split_window_horizontal();
                 ok(format!(
-                        "Split horizontally ({} windows)",
-                        editor.window_count()
-                    ))
+                    "Split horizontally ({} windows)",
+                    editor.window_count()
+                ))
             } else if command == "vsp" || command == "vsplit" {
                 editor.split_window_vertical();
                 ok(format!(
-                        "Split vertically ({} windows)",
-                        editor.window_count()
-                    ))
+                    "Split vertically ({} windows)",
+                    editor.window_count()
+                ))
             } else if command == "only" || command == "on" {
                 // :only - close all other windows
                 if editor.window_count() == 1 {
@@ -989,15 +991,16 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         })
                         .collect();
                     ok(format!(
-                            "--- Marks ---\nmark  line  col  file\n{}",
-                            lines.join("\n")
-                        ))
+                        "--- Marks ---\nmark  line  col  file\n{}",
+                        lines.join("\n")
+                    ))
                 }
             // Handle :help keybindings
             } else if command == "help keybindings" || command == "help keys" {
                 ok(
-                        "Keybinding compatibility guide: architecture/knowledge/keybinding-compat.md".to_string(),
-                    )
+                    "Keybinding compatibility guide: architecture/knowledge/keybinding-compat.md"
+                        .to_string(),
+                )
             // Handle :map, :noremap and variants
             } else if is_map_command(command) {
                 handle_map_command(editor, command)
@@ -1053,8 +1056,17 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                         }
                     }
                     if let Some(var_ref) = found_ref {
-                        if editor.dap_manager_mut().state.expanded_refs.contains(&var_ref) {
-                            editor.dap_manager_mut().state.expanded_refs.remove(&var_ref);
+                        if editor
+                            .dap_manager_mut()
+                            .state
+                            .expanded_refs
+                            .contains(&var_ref)
+                        {
+                            editor
+                                .dap_manager_mut()
+                                .state
+                                .expanded_refs
+                                .remove(&var_ref);
                         } else {
                             editor.dap_manager_mut().state.expanded_refs.insert(var_ref);
                             editor.dap_manager_mut().pending_action =
@@ -1074,7 +1086,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                     if let Some(file_path) = editor.buffer().file_path().map(|s| s.to_string()) {
                         let line = editor.buffer().cursor().line() as u64 + 1;
                         let path = std::path::PathBuf::from(&file_path);
-                        editor.dap_manager_mut().state.set_breakpoint_condition(&path, line, None);
+                        editor
+                            .dap_manager_mut()
+                            .state
+                            .set_breakpoint_condition(&path, line, None);
                     }
                 } else {
                     editor.toggle_conditional_breakpoint(condition);
@@ -1106,6 +1121,53 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 } else {
                     editor.build.last_shell_command = Some(shell_cmd.to_string());
                     execute_shell_command_with_expansion(editor, shell_cmd)
+                }
+            // Handle :file / :f — show file info (like Ctrl-G in vim)
+            } else if command == "f" || command == "file" {
+                let name = editor
+                    .buffer()
+                    .file_path()
+                    .map(|s| format!("\"{}\"", s))
+                    .unwrap_or_else(|| "\"[No Name]\"".to_string());
+                let modified = if editor.is_modified() {
+                    " [Modified]"
+                } else {
+                    ""
+                };
+                let line = editor.buffer().cursor().line() + 1;
+                let total = editor.buffer().line_count();
+                let pct = if total == 0 { 0 } else { (line * 100) / total };
+                ok(format!(
+                    "{}{} line {} of {} --{}%--",
+                    name, modified, line, total, pct
+                ))
+            // Handle :pwd — print working directory
+            } else if command == "pwd" {
+                let cwd = std::env::current_dir()
+                    .map(|p| p.display().to_string())
+                    .unwrap_or_else(|_| "(unknown)".to_string());
+                ok(cwd)
+            // Handle :cd / :lcd — change working directory
+            } else if command == "cd" || command == "lcd" {
+                // :cd with no args → go to $HOME
+                match dirs::home_dir() {
+                    Some(home) => match std::env::set_current_dir(&home) {
+                        Ok(_) => ok(home.display().to_string()),
+                        Err(e) => err(format!("Failed to cd: {}", e)),
+                    },
+                    None => err("Could not determine home directory"),
+                }
+            } else if let Some(path) = command
+                .strip_prefix("cd ")
+                .or_else(|| command.strip_prefix("lcd "))
+            {
+                let path = path.trim();
+                match expand_tilde(path) {
+                    Ok(expanded) => match std::env::set_current_dir(&expanded) {
+                        Ok(_) => ok(expanded.display().to_string()),
+                        Err(e) => err(format!("E344: Can't find directory \"{}\" ({})", path, e)),
+                    },
+                    Err(e) => err(e),
                 }
             // Handle :LspInstall / :LspManager - open LSP manager panel
             } else if command == "LspInstall" || command == "LspManager" {
@@ -1224,11 +1286,11 @@ fn handle_map_command(editor: &mut Editor, command: &str) -> CommandResult {
         let lhs = parse_map_keys(editor, parts[1]);
         if let Some(mapping) = editor.keymaps().get_mapping(mode, &lhs) {
             return ok(format!(
-                    "{}  {}  {}",
-                    mode.display_char(),
-                    mapping.lhs,
-                    mapping.rhs
-                ));
+                "{}  {}  {}",
+                mode.display_char(),
+                mapping.lhs,
+                mapping.rhs
+            ));
         } else {
             return ok("No mapping found");
         }
@@ -1515,7 +1577,11 @@ fn parse_file_line_col(location: &str, message: &str) -> Option<QuickfixEntry> {
     if parts.len() >= 2 {
         let col: usize = parts[0].trim().parse().ok().unwrap_or(0);
         let lnum: usize = parts[1].trim().parse().ok()?;
-        let file = if parts.len() == 3 { parts[2] } else { return None };
+        let file = if parts.len() == 3 {
+            parts[2]
+        } else {
+            return None;
+        };
 
         if !file.contains('.') && !file.contains('/') {
             return None;
@@ -1610,7 +1676,7 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
     let active = &editor.ai_state.active_profile;
 
     let mut lines = Vec::new();
-    lines.push(format!("**AI Configuration**"));
+    lines.push("**AI Configuration**".to_string());
     lines.push(format!("Active profile: {}", active));
     lines.push(format!("Default profile: {}", config.default_profile));
     lines.push(format!(
@@ -1665,7 +1731,7 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
                     lines.push(format!("  Env var status: SET ({})", masked));
                 }
                 Err(_) => {
-                    lines.push(format!("  Env var status: NOT SET"));
+                    lines.push("  Env var status: NOT SET".to_string());
                 }
             }
         }
@@ -1761,10 +1827,7 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             match SessionInfo::list_all() {
                 Ok(sessions) if sessions.is_empty() => {
                     let msg = if let Some(name) = editor.active_session() {
-                        format!(
-                            "Active session: {}",
-                            name
-                        )
+                        format!("Active session: {}", name)
                     } else {
                         "No registered sessions. Use :session start NAME to register.".to_string()
                     };
@@ -1805,9 +1868,9 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             // Check if already registered
             if let Some(existing) = editor.active_session() {
                 return err(format!(
-                        "Already registered as session '{}'. Use :session stop first.",
-                        existing
-                    ));
+                    "Already registered as session '{}'. Use :session stop first.",
+                    existing
+                ));
             }
 
             // Need API port to register
@@ -1842,9 +1905,9 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
             }
         }
         _ => err(format!(
-                "Unknown session subcommand: '{}'. Usage: :session [start NAME|stop|list]",
-                subcmd
-            )),
+            "Unknown session subcommand: '{}'. Usage: :session [start NAME|stop|list]",
+            subcmd
+        )),
     }
 }
 

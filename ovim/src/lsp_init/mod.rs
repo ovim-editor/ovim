@@ -667,7 +667,10 @@ fn determine_language_id(config_id: &str, abs_path: &Path) -> String {
 fn describe_install_method(method: &InstallMethod) -> String {
     match method {
         InstallMethod::Npm {
-            package, packages, global, ..
+            package,
+            packages,
+            global,
+            ..
         } => {
             let pkgs: Vec<&str> = packages
                 .iter()
@@ -713,12 +716,8 @@ pub async fn handle_approved_lsp_install(editor: &mut Editor) {
     };
 
     // Run the actual install
-    let install_result = attempt_auto_install(
-        &lang_config.name,
-        &lsp_config.command,
-        auto_install_config,
-    )
-    .await;
+    let install_result =
+        attempt_auto_install(&lang_config.name, &lsp_config.command, auto_install_config).await;
 
     match install_result {
         InstallResult::Success(path) => {

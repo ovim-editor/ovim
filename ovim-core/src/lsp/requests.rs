@@ -1383,11 +1383,7 @@ impl LspManager {
     /// Returns an empty vec on error or if no Java server is available.
     pub async fn run_configurations(&self) -> Vec<serde_json::Value> {
         let result = self
-            .execute_command(
-                "hyperion.runConfigurations".to_owned(),
-                None,
-                "java",
-            )
+            .execute_command("hyperion.runConfigurations".to_owned(), None, "java")
             .await;
         match result {
             Ok(Some(value)) => {

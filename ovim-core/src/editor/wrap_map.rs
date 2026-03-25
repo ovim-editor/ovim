@@ -124,8 +124,7 @@ impl WrapMap {
         }
         let old_count = self.visual_counts[line] as usize;
         let text = line_text(line);
-        let new_count =
-            crate::wrap::visual_line_count(&text, self.wrap_width, self.tab_width) as usize;
+        let new_count = crate::wrap::visual_line_count(&text, self.wrap_width, self.tab_width);
         if old_count == new_count {
             return;
         }

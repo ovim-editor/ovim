@@ -41,14 +41,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         KeyCode::Char('K') => {
             if editor.is_debug_stopped() {
                 // Evaluate word under cursor via DAP.
-                let word = editor.buffer().word_under_cursor()
+                let word = editor
+                    .buffer()
+                    .word_under_cursor()
                     .map(|(w, _, _)| w)
                     .unwrap_or_default();
                 if !word.is_empty() {
                     editor.dap_manager_mut().pending_action =
-                        Some(crate::dap::PendingDebugAction::Evaluate {
-                            expression: word,
-                        });
+                        Some(crate::dap::PendingDebugAction::Evaluate { expression: word });
                 }
             } else {
                 editor.request_hover();

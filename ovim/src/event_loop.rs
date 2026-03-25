@@ -669,11 +669,7 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
     let _ = std::io::stdout().flush();
     match &status {
         Ok(s) if !s.success() => {
-            let _ = writeln!(
-                std::io::stdout(),
-                "\n\x1b[33mshell returned {}\x1b[0m",
-                s
-            );
+            let _ = writeln!(std::io::stdout(), "\n\x1b[33mshell returned {}\x1b[0m", s);
         }
         Err(e) => {
             let _ = writeln!(
@@ -692,7 +688,10 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
     // Restore the TUI
     if let Err(e) = ui.terminal_mut().resume() {
         // If resume fails, the Drop impl will try to clean up
-        eprintln!("Failed to resume terminal: {e}");
+        #[allow(clippy::print_stderr)]
+        {
+            eprintln!("Failed to resume terminal: {e}");
+        }
     }
 
     // Force full redraw

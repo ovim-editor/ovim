@@ -48,7 +48,10 @@ fn test_shell_command_repeat_empty() {
     // Bare :! with no previous command should not queue
     InputHandler::execute_command_string(&mut test.editor, "!").unwrap();
     let pending = test.editor.take_pending_shell_command();
-    assert!(pending.is_none(), "bare :! with no history should not queue");
+    assert!(
+        pending.is_none(),
+        "bare :! with no history should not queue"
+    );
 }
 
 #[test]

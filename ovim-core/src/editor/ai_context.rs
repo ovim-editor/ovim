@@ -47,7 +47,8 @@ impl Editor {
         }];
 
         let diagnostics = self
-            .lsp.state
+            .lsp
+            .state
             .current_file_diagnostics
             .iter()
             .filter(|diag| {

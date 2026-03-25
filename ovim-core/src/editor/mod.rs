@@ -3,20 +3,21 @@ mod ai_chat;
 mod ai_chat_mutations;
 pub(crate) mod ai_chat_state;
 mod ai_chat_tools;
-mod ai_tool_execution;
-mod ai_tool_path;
-mod ai_tool_streaming;
 mod ai_context;
 pub(crate) mod ai_integration;
 mod ai_state;
+mod ai_tool_execution;
+mod ai_tool_path;
+mod ai_tool_streaming;
 mod ai_workflow;
 mod blame_commands;
-mod build_state;
 mod buffer_manager;
+mod build_state;
 mod change_tracking;
 mod command_context;
 mod command_history;
 mod completion;
+mod debug_integration;
 mod editing_state;
 mod filetree;
 pub mod fuzzy;
@@ -25,7 +26,6 @@ mod input;
 mod input_context;
 mod input_state;
 mod keymap;
-mod debug_integration;
 mod lsp_integration;
 pub mod lsp_manager_panel;
 mod lsp_state;
@@ -51,10 +51,10 @@ mod search_context;
 mod search_manager;
 mod tab_manager;
 mod tabpage;
+mod test_runner;
 mod theme;
 mod theme_state;
 mod toast;
-mod test_runner;
 mod ui_features;
 mod ui_panels;
 mod undo;
@@ -125,20 +125,15 @@ pub enum MarginColor {
 }
 
 /// Controls LSP auto-install behavior
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoInstallMode {
     /// Show a consent dialog before installing (default)
+    #[default]
     Prompt,
     /// Install automatically without asking
     Auto,
     /// Never auto-install, only show install hints
     Off,
-}
-
-impl Default for AutoInstallMode {
-    fn default() -> Self {
-        Self::Prompt
-    }
 }
 
 /// Editor options and settings
@@ -242,7 +237,6 @@ use crate::mode::Mode;
 use crate::unicode::grapheme_to_char_col;
 use anyhow::Result;
 use std::collections::HashMap;
-
 
 /// Commands sent from background tasks to the LSP manager via channel
 #[derive(Debug)]
@@ -1492,9 +1486,7 @@ impl Editor {
         }
 
         // Load git branch name for the new file
-        self.git_branch = new_buffer
-            .file_path()
-            .and_then(|p| crate::git::branch_name(p));
+        self.git_branch = new_buffer.file_path().and_then(crate::git::branch_name);
 
         self.add_buffer(new_buffer);
 

@@ -28,8 +28,7 @@ pub fn compute_wrap_points(line: &str, max_width: usize, tab_width: usize) -> Ve
 
     for (char_idx, ch) in line.chars().enumerate() {
         let ch_width = if ch == '\t' {
-            let spaces = tab_width - (current_width % tab_width);
-            spaces
+            tab_width - (current_width % tab_width)
         } else {
             char_display_width(ch)
         };

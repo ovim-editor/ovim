@@ -105,6 +105,12 @@ pub struct DapManager {
     pub gradle_child: Option<tokio::process::Child>,
 }
 
+impl Default for DapManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DapManager {
     pub fn new() -> Self {
         let (event_tx, event_rx) = mpsc::channel(256);
@@ -189,15 +195,17 @@ impl DapManager {
             .iter()
             .map(|&line| DapSourceBreakpoint {
                 line,
-                condition: self.state.breakpoint_condition(path, line).map(|s| s.to_owned()),
+                condition: self
+                    .state
+                    .breakpoint_condition(path, line)
+                    .map(|s| s.to_owned()),
             })
             .collect();
 
         let result = client.set_breakpoints(&source, &source_bps).await?;
 
         // Update state.
-        self.state
-            .update_breakpoints(path, &result);
+        self.state.update_breakpoints(path, &result);
 
         Ok(result)
     }
@@ -321,11 +329,16 @@ impl DapManager {
                     self.state.scopes.clear();
                     self.state.variables.clear();
                 }
-                DapEvent::Thread { reason: _, thread_id: _ } => {
+                DapEvent::Thread {
+                    reason: _,
+                    thread_id: _,
+                } => {
                     // Thread lifecycle — we can track this later.
                 }
                 DapEvent::Output { category, output } => {
-                    self.state.output_lines.push(format!("[{category}] {output}"));
+                    self.state
+                        .output_lines
+                        .push(format!("[{category}] {output}"));
                     // Cap output buffer.
                     if self.state.output_lines.len() > 10_000 {
                         let drain_count = self.state.output_lines.len() - 5_000;

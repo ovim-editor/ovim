@@ -10,23 +10,23 @@ use std::collections::HashMap;
 
 /// Key identifying a cached rendered line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-struct LineCacheKey {
+pub struct LineCacheKey {
     /// Buffer identity (current buffer index)
-    buffer_id: usize,
+    pub buffer_id: usize,
     /// Logical line index in the buffer
-    line_idx: usize,
+    pub line_idx: usize,
     /// Buffer version when this line was rendered
-    buffer_version: usize,
+    pub buffer_version: usize,
     /// Horizontal scroll offset (display columns)
-    h_offset: usize,
+    pub h_offset: usize,
     /// Available text width (columns)
-    text_width: usize,
+    pub text_width: usize,
     /// Whether wrap mode was enabled
-    wrap: bool,
+    pub wrap: bool,
     /// Tab width setting
-    tab_width: usize,
+    pub tab_width: usize,
     /// Whether markdown conceal was active for this render
-    markdown_conceal: bool,
+    pub markdown_conceal: bool,
 }
 
 /// A cached rendered line (before soft-wrap splitting).
@@ -102,38 +102,17 @@ impl LineRenderCache {
     /// - The buffer version changed since it was cached
     /// - The viewport parameters changed
     /// - The cached entry had transient highlighting
-    pub fn get(
-        &mut self,
-        buffer_id: usize,
-        line_idx: usize,
-        buffer_version: usize,
-        h_offset: usize,
-        text_width: usize,
-        wrap: bool,
-        tab_width: usize,
-        markdown_conceal: bool,
-    ) -> Option<&Line<'static>> {
+    pub fn get(&mut self, key: &LineCacheKey) -> Option<&Line<'static>> {
         // Fast path: if buffer version changed, invalidate everything
-        if buffer_version != self.last_buffer_version {
+        if key.buffer_version != self.last_buffer_version {
             self.clear();
-            self.last_buffer_version = buffer_version;
+            self.last_buffer_version = key.buffer_version;
             self.misses += 1;
             return None;
         }
 
-        let key = LineCacheKey {
-            buffer_id,
-            line_idx,
-            buffer_version,
-            h_offset,
-            text_width,
-            wrap,
-            tab_width,
-            markdown_conceal,
-        };
-
-        if let Some((cached_key, cached)) = self.entries.get(&line_idx) {
-            if *cached_key == key && cached.is_stable {
+        if let Some((cached_key, cached)) = self.entries.get(&key.line_idx) {
+            if cached_key == key && cached.is_stable {
                 self.hits += 1;
                 return Some(&cached.line);
             }
@@ -146,19 +125,7 @@ impl LineRenderCache {
     ///
     /// `is_stable` should be `false` for lines with transient overlays
     /// (cursor line, visual selection, search highlights, yank flash).
-    pub fn put(
-        &mut self,
-        buffer_id: usize,
-        line_idx: usize,
-        buffer_version: usize,
-        h_offset: usize,
-        text_width: usize,
-        wrap: bool,
-        tab_width: usize,
-        markdown_conceal: bool,
-        line: Line<'static>,
-        is_stable: bool,
-    ) {
+    pub fn put(&mut self, key: LineCacheKey, line: Line<'static>, is_stable: bool) {
         // Evict if over capacity
         if self.entries.len() >= self.max_entries {
             // Simple eviction: clear everything. A more sophisticated LRU
@@ -167,16 +134,7 @@ impl LineRenderCache {
             self.entries.clear();
         }
 
-        let key = LineCacheKey {
-            buffer_id,
-            line_idx,
-            buffer_version,
-            h_offset,
-            text_width,
-            wrap,
-            tab_width,
-            markdown_conceal,
-        };
+        let line_idx = key.line_idx;
         self.entries
             .insert(line_idx, (key, CachedLine { line, is_stable }));
     }
@@ -191,13 +149,27 @@ mod tests {
         Line::from(vec![Span::raw(text.to_string())])
     }
 
+    fn make_key(buffer_id: usize, line_idx: usize, buffer_version: usize) -> LineCacheKey {
+        LineCacheKey {
+            buffer_id,
+            line_idx,
+            buffer_version,
+            h_offset: 0,
+            text_width: 80,
+            wrap: false,
+            tab_width: 4,
+            markdown_conceal: false,
+        }
+    }
+
     #[test]
     fn cache_hit() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1; // sync version
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("hello"), true);
+        let key = make_key(1, 0, 1);
+        cache.put(key.clone(), make_line("hello"), true);
 
-        let result = cache.get(1, 0, 1, 0, 80, false, 4, false);
+        let result = cache.get(&key);
         assert!(result.is_some());
         assert_eq!(cache.hits, 1);
         assert_eq!(cache.misses, 0);
@@ -207,10 +179,14 @@ mod tests {
     fn cache_miss_version_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("hello"), true);
+        cache.put(make_key(1, 0, 1), make_line("hello"), true);
 
         // Buffer version changed
-        let result = cache.get(1, 0, 2, 0, 80, false, 4, false);
+        let key_v2 = LineCacheKey {
+            buffer_version: 2,
+            ..make_key(1, 0, 1)
+        };
+        let result = cache.get(&key_v2);
         assert!(result.is_none());
         assert_eq!(cache.misses, 1);
     }
@@ -219,10 +195,14 @@ mod tests {
     fn cache_miss_viewport_change() {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("hello"), true);
+        cache.put(make_key(1, 0, 1), make_line("hello"), true);
 
         // h_offset changed
-        let result = cache.get(1, 0, 1, 5, 80, false, 4, false);
+        let key_offset = LineCacheKey {
+            h_offset: 5,
+            ..make_key(1, 0, 1)
+        };
+        let result = cache.get(&key_offset);
         assert!(result.is_none());
     }
 
@@ -231,9 +211,10 @@ mod tests {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
         // Store with is_stable=false (e.g., cursor line)
-        cache.put(1, 0, 1, 0, 80, false, 4, false, make_line("cursor"), false);
+        let key = make_key(1, 0, 1);
+        cache.put(key.clone(), make_line("cursor"), false);
 
-        let result = cache.get(1, 0, 1, 0, 80, false, 4, false);
+        let result = cache.get(&key);
         assert!(result.is_none()); // Should not hit
     }
 
