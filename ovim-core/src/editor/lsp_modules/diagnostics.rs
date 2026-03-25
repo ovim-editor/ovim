@@ -44,7 +44,25 @@ impl Editor {
     }
 
     /// Spawn a background diagnostics refresh for the current file.
+    ///
+    /// INVARIANT: Callers must sync pending edits to the LSP server
+    /// (`send_lsp_changes_if_modified`) before calling this.  Use
+    /// `sync_lsp_and_refresh_diagnostics()` which enforces this ordering.
     pub fn spawn_diagnostic_cache_refresh(&mut self) {
+        // Catch ordering violations in dev builds.  If the document sync
+        // state is still dirty, diagnostics will be fetched against stale
+        // server state — the exact bug we fixed by colocating sync + refresh.
+        if let Some(file_path) = self.buffer().file_path() {
+            if let Some(sync_state) = self.lsp.state.document_sync.get(file_path) {
+                debug_assert!(
+                    !sync_state.is_modified(),
+                    "spawn_diagnostic_cache_refresh called while document sync is dirty \
+                     for {} — send_lsp_changes_if_modified must run first",
+                    file_path
+                );
+            }
+        }
+
         let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
             self.lsp.state.current_file_diagnostics.clear();
             self.lsp.state.diagnostic_count = (0, 0, 0, 0);
@@ -172,8 +190,13 @@ impl Editor {
                     self.lsp.state.diagnostics_valid_for = result.buffer_version;
                 } else {
                     // Buffer was edited during the fetch.  The diagnostics may
-                    // have wrong line numbers, so keep them hidden (stale) and
-                    // request a fresh set for the current content.
+                    // have wrong line numbers — clear decorations so the renderer
+                    // doesn't show stale underlines/EOL markers, and request a
+                    // fresh set for the current content.
+                    self.decorations.replace_source(
+                        crate::editor::decoration::DecorationSource::Diagnostic,
+                        Vec::new(),
+                    );
                     self.lsp.state.diagnostics_refresh_requested = true;
                 }
 
@@ -402,6 +425,166 @@ mod tests {
         assert_eq!(editor.lsp.state.current_file_diagnostics.len(), 1);
         assert_eq!(editor.lsp.state.current_file_lsp_version, 4);
         assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 4);
+    }
+
+    /// Regression test: when the buffer is edited between spawning a diagnostic
+    /// refresh and receiving the result, the poll must clear diagnostic
+    /// decorations so the renderer doesn't show stale underlines/EOL markers.
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_clears_decorations_when_buffer_edited_during_fetch() {
+        use crate::editor::decoration::{
+            Decoration, DecorationPlacement, DecorationSource, DecorationStyle,
+        };
+
+        let mut editor = Editor::with_content("let x = 1;\n");
+        let file_path = "/tmp/test.rs".to_string();
+        editor.set_file_path(file_path.clone());
+        editor.lsp.state.diagnostic_refresh_seq = 1;
+
+        let initial_version = editor.buffer().version();
+
+        // Simulate a diagnostic decoration already present from a prior refresh.
+        editor.decorations.replace_source(
+            DecorationSource::Diagnostic,
+            vec![Decoration {
+                placement: DecorationPlacement::EndOfLine { line: 0 },
+                source: DecorationSource::Diagnostic,
+                text: "old error".to_string(),
+                display_width: 9,
+                style: DecorationStyle::new(crate::color::Color::Red),
+                priority: 0,
+            }],
+        );
+        assert_eq!(editor.decorations.for_line(0).len(), 1);
+
+        // Build a result that was spawned at the initial buffer version.
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 4), Position::new(0, 5)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "unused variable".to_string(),
+            ..Diagnostic::default()
+        };
+
+        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
+        tx.send(Ok(DiagnosticRefreshTaskResult {
+            file_path: file_path.clone(),
+            buffer_version: initial_version,
+            lsp_version: 2,
+            lsp_sent_version: 2,
+            diagnostics: vec![diagnostic],
+            count: (1, 0, 0, 0),
+            deferred: false,
+        }))
+        .unwrap();
+
+        editor.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
+            seq: 1,
+            file_path: file_path.clone(),
+            buffer_version: initial_version,
+            request: PendingLspRequest {
+                task: tokio::spawn(async move {
+                    Ok(DiagnosticRefreshTaskResult {
+                        file_path,
+                        buffer_version: 0,
+                        lsp_version: 0,
+                        lsp_sent_version: 0,
+                        diagnostics: Vec::new(),
+                        count: (0, 0, 0, 0),
+                        deferred: false,
+                    })
+                }),
+                receiver,
+                started: std::time::Instant::now(),
+            },
+        });
+
+        // Simulate a buffer edit AFTER the refresh was spawned.
+        editor.buffer_mut().insert_text_at(0, 0, "// ");
+
+        assert_ne!(
+            editor.buffer().version(),
+            initial_version,
+            "buffer version should have changed after edit"
+        );
+
+        // Poll should succeed (result ready) and detect the version mismatch.
+        let changed = editor.poll_pending_diagnostic_refresh_response();
+        assert!(changed);
+
+        // Diagnostics cache should be stale.
+        assert!(editor.diagnostics_cache_stale());
+        assert!(editor.lsp.state.diagnostics_refresh_requested);
+
+        // CRITICAL: diagnostic decorations must be cleared so the renderer
+        // doesn't show stale underlines for wrong positions.
+        assert!(
+            editor.decorations.for_line(0).is_empty(),
+            "stale diagnostic decorations should be cleared when buffer was edited during fetch"
+        );
+    }
+
+    /// Verify that when the buffer hasn't changed, decorations ARE applied and
+    /// diagnostics are marked valid.
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_applies_decorations_when_buffer_unchanged() {
+        let mut editor = Editor::with_content("let x = 1;\n");
+        let file_path = "/tmp/test.rs".to_string();
+        editor.set_file_path(file_path.clone());
+        editor.lsp.state.diagnostic_refresh_seq = 1;
+
+        let buffer_version = editor.buffer().version();
+
+        let diagnostic = Diagnostic {
+            range: Range::new(Position::new(0, 4), Position::new(0, 5)),
+            severity: Some(DiagnosticSeverity::ERROR),
+            message: "unused variable".to_string(),
+            ..Diagnostic::default()
+        };
+
+        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
+        tx.send(Ok(DiagnosticRefreshTaskResult {
+            file_path: file_path.clone(),
+            buffer_version,
+            lsp_version: 2,
+            lsp_sent_version: 2,
+            diagnostics: vec![diagnostic],
+            count: (1, 0, 0, 0),
+            deferred: false,
+        }))
+        .unwrap();
+
+        editor.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
+            seq: 1,
+            file_path: file_path.clone(),
+            buffer_version,
+            request: PendingLspRequest {
+                task: tokio::spawn(async move {
+                    Ok(DiagnosticRefreshTaskResult {
+                        file_path,
+                        buffer_version: 0,
+                        lsp_version: 0,
+                        lsp_sent_version: 0,
+                        diagnostics: Vec::new(),
+                        count: (0, 0, 0, 0),
+                        deferred: false,
+                    })
+                }),
+                receiver,
+                started: std::time::Instant::now(),
+            },
+        });
+
+        // No buffer edits — poll should apply decorations.
+        let changed = editor.poll_pending_diagnostic_refresh_response();
+        assert!(changed);
+        assert!(!editor.diagnostics_cache_stale());
+        assert_eq!(editor.lsp.state.diagnostics_valid_for, buffer_version);
+
+        // Decorations should be present.
+        assert!(
+            !editor.decorations.for_line(0).is_empty(),
+            "diagnostic decorations should be applied when buffer is unchanged"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

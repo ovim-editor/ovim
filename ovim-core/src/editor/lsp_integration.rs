@@ -1130,6 +1130,33 @@ impl Editor {
         self.lsp.state.diagnostics_refresh_requested = true;
     }
 
+    /// Sync pending edits/saves to the LSP server, then poll and refresh
+    /// diagnostics.  Colocating these operations enforces the invariant that
+    /// the server always has the latest content before we check for fresh
+    /// diagnostics — preventing the one-tick-behind staleness bug where
+    /// diagnostics were fetched before `didChange` was sent.
+    ///
+    /// Returns `true` if diagnostics changed and the UI should redraw.
+    pub async fn sync_lsp_and_refresh_diagnostics(&mut self) -> bool {
+        // Step 1: Push pending content to the server.
+        self.send_lsp_changes_if_modified().await;
+        self.send_lsp_save_if_needed().await;
+
+        // Step 2: Now that the server is up-to-date, process diagnostics.
+        let Some(lsp_manager) = self.lsp.state.lsp_manager.clone() else {
+            return false;
+        };
+
+        self.refresh_current_lsp_sync_versions().await;
+        let diagnostics_refresh = self.take_diagnostics_refresh_request()
+            || lsp_manager.diagnostics_changed();
+        let changed = self.poll_pending_diagnostic_refresh_response();
+        if diagnostics_refresh {
+            self.spawn_diagnostic_cache_refresh();
+        }
+        changed
+    }
+
     /// Invalidate cached diagnostics and request a fresh pull from the LSP server.
     pub fn clear_and_refresh_diagnostics(&mut self) {
         self.lsp.state.diagnostics_valid_for = usize::MAX;

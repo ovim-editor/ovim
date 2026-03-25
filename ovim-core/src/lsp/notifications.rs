@@ -204,6 +204,18 @@ impl LspManager {
                     // when unsent edits exist (OV-00162).
                     let mut sent = self.last_sent_versions.lock().await;
                     sent.insert(uri.clone(), version);
+                    drop(sent);
+
+                    // Re-stamp last_local_edit to the flush instant so that
+                    // the unversioned-diagnostics settle timer measures time
+                    // since the server *received* new content, not since the
+                    // edit was queued locally.  Without this, the settle
+                    // (150ms) expires at the same time the debounce (150ms)
+                    // fires, allowing stale diagnostics through.
+                    self.last_local_edit
+                        .lock()
+                        .await
+                        .insert(uri.clone(), std::time::Instant::now());
                 }
                 Ok(Err(e)) => {
                     lsp_error!(
@@ -485,6 +497,14 @@ impl LspManager {
             if any_sent {
                 let mut sent = self.last_sent_versions.lock().await;
                 sent.insert(uri.clone(), version);
+                drop(sent);
+
+                // Re-stamp last_local_edit so unversioned-diagnostics settle
+                // timer measures from flush, not from queue time.
+                self.last_local_edit
+                    .lock()
+                    .await
+                    .insert(uri.clone(), std::time::Instant::now());
             }
         }
         Ok(())

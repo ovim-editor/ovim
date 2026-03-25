@@ -79,18 +79,14 @@ async fn process_editor_tick(
         editor.clear_lsp_init_flag();
     }
 
-    if let Some(lsp_manager) = editor.lsp_manager() {
-        editor.refresh_current_lsp_sync_versions().await;
-        let diagnostics_refresh =
-            editor.take_diagnostics_refresh_request() || lsp_manager.diagnostics_changed();
-        let viewport_hint_refresh = editor.inlay_hints_refresh_needed_for_viewport();
-        if editor.poll_pending_diagnostic_refresh_response() {
-            editor.mark_dirty();
-        }
-        if diagnostics_refresh {
-            editor.spawn_diagnostic_cache_refresh();
-        }
-        if viewport_hint_refresh {
+    // Sync edits to the LSP server and refresh diagnostics in one step.
+    // Colocated to enforce: server always has latest content before we
+    // check for fresh diagnostics.
+    if editor.sync_lsp_and_refresh_diagnostics().await {
+        editor.mark_dirty();
+    }
+    if let Some(_lsp_manager) = editor.lsp_manager() {
+        if editor.inlay_hints_refresh_needed_for_viewport() {
             editor.request_inlay_hints_refresh();
         }
     }
@@ -503,8 +499,6 @@ async fn process_editor_tick(
         }
     }
 
-    editor.send_lsp_changes_if_modified().await;
-    editor.send_lsp_save_if_needed().await;
 }
 
 /// Spawn background tasks for pending LSP install requests
