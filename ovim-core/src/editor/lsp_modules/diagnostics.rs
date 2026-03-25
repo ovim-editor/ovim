@@ -165,12 +165,10 @@ impl Editor {
                     return false;
                 }
 
-                // Always store the latest diagnostics from the LS (they're
-                // the best data we have).  Stamp them as valid only when the
-                // buffer hasn't been edited since the refresh was spawned.
-                // If the buffer *did* change, keep the data but leave it
-                // stale — the generation mismatch hides it, and we schedule
-                // another refresh to get diagnostics for the current content.
+                // Always store and display the latest diagnostics — they're the
+                // best data we have.  Showing slightly stale positions during
+                // editing is better UX than hiding all feedback for 150ms+.
+                // If the buffer changed since spawn, also request a fresh set.
                 self.lsp.state.diagnostic_count = result.count;
                 self.on_diagnostic_counts_changed(result.count.0, result.count.1);
                 self.lsp.state.current_file_diagnostics = result.diagnostics;
@@ -185,18 +183,10 @@ impl Editor {
                     diag_decs,
                 );
 
-                if self.buffer().version() == result.buffer_version {
-                    // Buffer unchanged since spawn — diagnostics match current content.
-                    self.lsp.state.diagnostics_valid_for = result.buffer_version;
-                } else {
-                    // Buffer was edited during the fetch.  The diagnostics may
-                    // have wrong line numbers — clear decorations so the renderer
-                    // doesn't show stale underlines/EOL markers, and request a
-                    // fresh set for the current content.
-                    self.decorations.replace_source(
-                        crate::editor::decoration::DecorationSource::Diagnostic,
-                        Vec::new(),
-                    );
+                if self.buffer().version() != result.buffer_version {
+                    // Buffer was edited during the fetch — request a fresh set
+                    // for the current content.  The stale diagnostics stay visible
+                    // until the refresh completes (better than blank).
                     self.lsp.state.diagnostics_refresh_requested = true;
                 }
 
@@ -218,17 +208,14 @@ impl Editor {
         }
     }
 
-    /// Returns true if the cached diagnostics are stale.
+    /// Returns true if the cached diagnostics are for a different file.
     ///
-    /// Uses a single generation check: diagnostics are valid only when
-    /// `diagnostics_valid_for` equals the buffer's current edit generation.
+    /// Content edits do NOT make diagnostics stale — showing slightly
+    /// out-of-date diagnostics (possibly at wrong positions) is better UX
+    /// than hiding all feedback for 150ms+ on every keystroke.  Fresh
+    /// diagnostics replace stale ones atomically when the LSP responds.
     pub(crate) fn diagnostics_cache_stale(&self) -> bool {
-        // File path mismatch: diagnostics were cached for a different file.
-        if self.lsp.state.diagnostics_file_path.as_deref() != self.buffer().file_path() {
-            return true;
-        }
-        // Generation mismatch: buffer was edited since diagnostics were stamped.
-        self.lsp.state.diagnostics_valid_for != self.buffer().version()
+        self.lsp.state.diagnostics_file_path.as_deref() != self.buffer().file_path()
     }
 
     /// Get diagnostics for a specific line from cached diagnostics
@@ -427,11 +414,11 @@ mod tests {
         assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 4);
     }
 
-    /// Regression test: when the buffer is edited between spawning a diagnostic
-    /// refresh and receiving the result, the poll must clear diagnostic
-    /// decorations so the renderer doesn't show stale underlines/EOL markers.
+    /// When the buffer is edited between spawning a diagnostic refresh and
+    /// receiving the result, diagnostics should still be stored and displayed
+    /// (stale data is better than no data), and a re-request should be scheduled.
     #[tokio::test(flavor = "current_thread")]
-    async fn poll_clears_decorations_when_buffer_edited_during_fetch() {
+    async fn poll_keeps_diagnostics_when_buffer_edited_during_fetch() {
         use crate::editor::decoration::{
             Decoration, DecorationPlacement, DecorationSource, DecorationStyle,
         };
@@ -511,15 +498,15 @@ mod tests {
         let changed = editor.poll_pending_diagnostic_refresh_response();
         assert!(changed);
 
-        // Diagnostics cache should be stale.
-        assert!(editor.diagnostics_cache_stale());
+        // File path still matches, so diagnostics are NOT stale (show-until-replaced).
+        assert!(!editor.diagnostics_cache_stale());
+        // A refresh should be requested for the current buffer content.
         assert!(editor.lsp.state.diagnostics_refresh_requested);
 
-        // CRITICAL: diagnostic decorations must be cleared so the renderer
-        // doesn't show stale underlines for wrong positions.
+        // Diagnostic decorations should PERSIST (stale data is better than blank).
         assert!(
-            editor.decorations.for_line(0).is_empty(),
-            "stale diagnostic decorations should be cleared when buffer was edited during fetch"
+            !editor.decorations.for_line(0).is_empty(),
+            "diagnostic decorations should persist when buffer was edited during fetch"
         );
     }
 
@@ -578,7 +565,6 @@ mod tests {
         let changed = editor.poll_pending_diagnostic_refresh_response();
         assert!(changed);
         assert!(!editor.diagnostics_cache_stale());
-        assert_eq!(editor.lsp.state.diagnostics_valid_for, buffer_version);
 
         // Decorations should be present.
         assert!(

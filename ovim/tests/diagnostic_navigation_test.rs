@@ -117,29 +117,30 @@ fn test_show_diagnostic_at_cursor_chooses_nearest_on_line() {
 }
 
 #[test]
-fn test_show_diagnostic_at_cursor_hides_stale_diagnostics_after_buffer_edit() {
+fn test_show_diagnostic_at_cursor_shows_stale_diagnostics_after_buffer_edit() {
     let tmp = tempfile::NamedTempFile::new().unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     let mut test = EditorTest::new("console.log(pendingCount);\n");
     test.set_file_path(path);
 
-    // Seed cached diagnostics (stamped as valid for the current buffer generation).
+    // Seed cached diagnostics.
     test.editor
         .set_test_diagnostics(vec![make_diagnostic(0, 12, "stale diagnostic")]);
 
-    // Edit the buffer — this bumps the version, making the diagnostics stale
-    // because they were stamped for the pre-edit generation.
+    // Edit the buffer — diagnostics are now stale but should remain visible
+    // ("show until replaced" model — better than hiding all feedback).
     test.editor
         .buffer_mut()
         .insert_text_at(0, 0, "x");
 
+    // Diagnostic was at col 12, but the edit shifted it. The cursor at col 13
+    // still finds the diagnostic (it's at the old position, stale but visible).
     test.set_cursor(0, 13);
     test.editor.show_diagnostic_at_cursor();
 
-    // Diagnostics should be hidden (generation mismatch).
-    assert_eq!(test.editor.mode(), ovim::mode::Mode::Normal);
-    assert_eq!(test.editor.lsp_status(), "No diagnostics at cursor");
+    // Diagnostics should still be visible (stale data is shown until replaced).
+    assert_eq!(test.editor.mode(), ovim::mode::Mode::HoverPreview);
 }
 
 #[test]

@@ -734,8 +734,9 @@ fn apply_inline_decorations(
     for dec in sorted {
         let char_idx = match &dec.placement {
             DecorationPlacement::Inline { char_idx, .. } => {
-                // Convert UTF-16 offset to char index (same as inlay hints)
-                utf16_offset_to_char_idx(original_text, *char_idx)
+                // Positions are already char indices (converted at decoration
+                // creation time), so no UTF-16 conversion needed here.
+                *char_idx
             }
             _ => continue,
         };
@@ -1784,8 +1785,12 @@ pub fn render_buffer(
                 if has_wrap {
                     let mut visual_rows = split_line_into_rows(line, text_width);
                     if !eol_decs.is_empty() {
-                        if let Some(first_row) = visual_rows.first_mut() {
-                            apply_eol_decorations(first_row, &eol_decs, text_width);
+                        // Apply EOL decorations (diagnostics) to the last visual
+                        // row — it has the line ending and typically the most
+                        // available space.  Inline decorations (inlay hints) on
+                        // earlier rows won't crowd out the diagnostic.
+                        if let Some(last_row) = visual_rows.last_mut() {
+                            apply_eol_decorations(last_row, &eol_decs, text_width);
                         }
                     }
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {

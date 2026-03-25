@@ -218,14 +218,27 @@ impl DecorationMap {
 // ---------------------------------------------------------------------------
 
 /// Convert LSP inlay hints into inline decorations.
-pub fn decorations_from_inlay_hints(hints: &[lsp_types::InlayHint]) -> Vec<Decoration> {
+///
+/// `line_text` returns the text of a given line (without trailing newline).
+/// Used to convert LSP UTF-16 offsets to char indices at creation time,
+/// so every downstream consumer (cursor, WrapMap, renderer) sees char indices.
+pub fn decorations_from_inlay_hints<F>(
+    hints: &[lsp_types::InlayHint],
+    line_text: F,
+) -> Vec<Decoration>
+where
+    F: Fn(usize) -> String,
+{
     let hint_style = DecorationStyle::new(Color::Rgb(120, 120, 140)).with_italic();
 
     hints
         .iter()
         .map(|hint| {
             let line = hint.position.line as usize;
-            let char_idx = hint.position.character as usize; // UTF-16 offset; renderer remaps later
+            let utf16_col = hint.position.character as u32;
+            // Convert UTF-16 offset → char index at creation time.
+            let text_for_line = line_text(line);
+            let char_idx = crate::lsp::utf16_to_char_col(&text_for_line, utf16_col);
 
             let label = match &hint.label {
                 lsp_types::InlayHintLabel::String(s) => s.clone(),

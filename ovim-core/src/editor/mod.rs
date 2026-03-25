@@ -2052,11 +2052,10 @@ impl Default for Editor {
 
 impl Editor {
     /// Inject diagnostics for testing diagnostic navigation.
-    /// Stamps them as valid for the current buffer generation.
+    /// Sets diagnostics for the current file (test helper).
     pub fn set_test_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
         self.lsp.state.current_file_diagnostics = diagnostics;
         self.lsp.state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
-        self.lsp.state.diagnostics_valid_for = self.buffer().version();
     }
 }
 

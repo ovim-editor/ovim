@@ -349,11 +349,6 @@ pub struct LspState {
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
-    /// The buffer edit generation for which cached diagnostics are known to be
-    /// correct.  Diagnostics are hidden (stale) whenever this doesn't equal the
-    /// buffer's current `version()`.  Replaces the old multi-field staleness
-    /// check (buffer_version + lsp_version + sent_version + document_sync).
-    pub diagnostics_valid_for: usize,
     /// File path when diagnostics were last cached.
     /// Prevents showing diagnostics from a previous file after save-as/path swaps.
     pub diagnostics_file_path: Option<String>,
@@ -416,7 +411,6 @@ impl LspState {
             applied_inlay_hint_request: None,
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
-            diagnostics_valid_for: 0,
             diagnostics_file_path: None,
             current_file_lsp_version: 0,
             current_file_lsp_sent_version: 0,

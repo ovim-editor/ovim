@@ -747,8 +747,18 @@ impl Editor {
                 self.lsp.state.inlay_hints = result.hints;
                 self.lsp.state.applied_inlay_hint_request = Some(result.request_key);
                 // Build unified decorations from the new hints.
+                let rope = self.buffer().rope().clone();
                 let hint_decs =
-                    crate::editor::decoration::decorations_from_inlay_hints(&self.lsp.state.inlay_hints);
+                    crate::editor::decoration::decorations_from_inlay_hints(
+                        &self.lsp.state.inlay_hints,
+                        |line_idx| {
+                            if line_idx < rope.len_lines() {
+                                rope.line(line_idx).to_string().trim_end_matches('\n').to_string()
+                            } else {
+                                String::new()
+                            }
+                        },
+                    );
                 self.decorations.replace_source(
                     crate::editor::decoration::DecorationSource::InlayHint,
                     hint_decs,
@@ -903,7 +913,6 @@ impl Editor {
         // Reset LSP version tracking (new file has its own version space)
         self.lsp.state.current_file_lsp_version = 0;
         self.lsp.state.current_file_lsp_sent_version = 0;
-        self.lsp.state.diagnostics_valid_for = usize::MAX;
         self.lsp.state.diagnostics_file_path = None;
         self.decorations.clear();
         // OV-00157: Abort pending completion request on buffer switch
@@ -1129,11 +1138,6 @@ impl Editor {
     }
 
     /// Mark buffer as modified (for LSP didChange tracking).
-    ///
-    /// No longer eagerly clears cached diagnostics — the generation-based
-    /// staleness check (`diagnostics_valid_for != buffer.version()`) hides
-    /// them automatically once the buffer version advances past the stamp.
-    /// This eliminates the 0→N diagnostic count flicker on the status line.
     pub fn mark_buffer_modified(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
             state.mark_modified();
@@ -1179,7 +1183,6 @@ impl Editor {
 
     /// Invalidate cached diagnostics and request a fresh pull from the LSP server.
     pub fn clear_and_refresh_diagnostics(&mut self) {
-        self.lsp.state.diagnostics_valid_for = usize::MAX;
         self.lsp.state.diagnostics_file_path = None;
         self.lsp.state.diagnostics_refresh_requested = true;
     }
