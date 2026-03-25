@@ -86,7 +86,7 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
     if let Some(_lsp_manager) = editor.lsp_manager() {
-        if editor.inlay_hints_refresh_needed_for_viewport() {
+        if editor.inlay_hints_refresh_needed() {
             editor.request_inlay_hints_refresh();
         }
     }

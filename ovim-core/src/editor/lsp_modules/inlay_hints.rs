@@ -14,14 +14,17 @@ fn should_skip_inlay_hint_refresh(
         && last_at.is_some_and(|last| now.duration_since(last) < INLAY_HINT_REFRESH_DEBOUNCE)
 }
 
+/// File-scoped request key.  Hints are requested for the entire file,
+/// not just the visible viewport, so scrolling never invalidates them.
+/// Only `lsp_version` changes (from buffer edits) trigger re-requests.
 fn current_inlay_hint_request_key(
     editor: &Editor,
 ) -> Option<crate::editor::lsp_state::InlayHintRequestKey> {
     let file_path = editor.buffer().file_path()?.to_string();
     crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)?;
 
-    let start_line = editor.scroll_offset();
-    let end_line = start_line + editor.viewport_height() + 10;
+    let start_line = 0;
+    let end_line = editor.buffer().line_count();
 
     Some(crate::editor::lsp_state::InlayHintRequestKey {
         file_path,
@@ -31,20 +34,7 @@ fn current_inlay_hint_request_key(
     })
 }
 
-#[cfg(test)]
-fn viewport_matches_request_key(
-    editor: &Editor,
-    request_key: &crate::editor::lsp_state::InlayHintRequestKey,
-) -> bool {
-    editor
-        .buffer()
-        .file_path()
-        .is_some_and(|path| path == request_key.file_path)
-        && editor.scroll_offset() == request_key.start_line
-        && editor.scroll_offset() + editor.viewport_height() + 10 == request_key.end_line
-}
-
-fn pending_request_matches_viewport(
+fn pending_request_matches_file(
     editor: &Editor,
     pending: &crate::editor::lsp_state::PendingInlayHintRequest,
 ) -> bool {
@@ -53,14 +43,13 @@ fn pending_request_matches_viewport(
             .buffer()
             .file_path()
             .is_some_and(|path| path == pending.request_key.file_path)
-        && editor.scroll_offset() == pending.request_key.start_line
-        && editor.scroll_offset() + editor.viewport_height() + 10 == pending.request_key.end_line
 }
 
 impl Editor {
-    /// Returns true when the viewport/LSP-sync fingerprint differs from the last
-    /// applied or pending inlay hint request.
-    pub fn inlay_hints_refresh_needed_for_viewport(&self) -> bool {
+    /// Returns true when the file-scoped hint fingerprint differs from the
+    /// last applied or pending request.  Scroll changes do NOT trigger a
+    /// refresh — only LSP version changes (from buffer edits) do.
+    pub fn inlay_hints_refresh_needed(&self) -> bool {
         if self.lsp.state.lsp_manager.is_none() {
             return false;
         }
@@ -73,7 +62,7 @@ impl Editor {
             .lsp.state
             .pending_inlay_hints
             .as_ref()
-            .is_some_and(|pending| pending_request_matches_viewport(self, pending))
+            .is_some_and(|pending| pending_request_matches_file(self, pending))
         {
             return false;
         }
@@ -312,31 +301,48 @@ mod tests {
     }
 
     #[test]
-    fn viewport_change_requires_refresh_after_initial_sync() {
+    fn initial_request_needed_then_satisfied() {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
         editor.lsp.state.current_file_lsp_sent_version = 1;
 
-        assert!(editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(editor.inlay_hints_refresh_needed());
 
         let key = current_inlay_hint_request_key(&editor).expect("request key");
         editor.lsp.state.applied_inlay_hint_request = Some(key);
-        assert!(!editor.inlay_hints_refresh_needed_for_viewport());
-
-        editor.viewport.scroll_offset = 5;
-        assert!(editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(!editor.inlay_hints_refresh_needed());
     }
 
     #[test]
-    fn initial_viewport_probe_can_request_background_sync() {
+    fn scroll_does_not_trigger_refresh() {
+        let mut editor = Editor::with_content("class Test {}\nline2\nline3\n");
+        editor.enable_lsp();
+        editor.set_file_path("/tmp/Test.java".to_string());
+        editor.set_viewport_height(20);
+        editor.lsp.state.current_file_lsp_sent_version = 1;
+
+        let key = current_inlay_hint_request_key(&editor).expect("request key");
+        editor.lsp.state.applied_inlay_hint_request = Some(key);
+        assert!(!editor.inlay_hints_refresh_needed());
+
+        // Scrolling should NOT trigger a refresh — hints are file-scoped.
+        editor.viewport.scroll_offset = 5;
+        assert!(
+            !editor.inlay_hints_refresh_needed(),
+            "scroll should not invalidate file-scoped hints"
+        );
+    }
+
+    #[test]
+    fn initial_probe_can_request_background_sync() {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
 
-        assert!(editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(editor.inlay_hints_refresh_needed());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -375,11 +381,11 @@ mod tests {
                 buffer_version: editor.buffer().version(),
             });
 
-        assert!(!editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(!editor.inlay_hints_refresh_needed());
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn pending_request_same_viewport_suppresses_refresh_after_sent_version_advances() {
+    async fn pending_request_suppresses_refresh_even_after_sent_version_advances() {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
@@ -389,7 +395,7 @@ mod tests {
         let pending_key = crate::editor::lsp_state::InlayHintRequestKey {
             file_path: "/tmp/Test.java".to_string(),
             start_line: 0,
-            end_line: 30,
+            end_line: 1,
             lsp_version: 0,
         };
         let (_, receiver) = tokio::sync::oneshot::channel::<
@@ -420,7 +426,7 @@ mod tests {
                 buffer_version: editor.buffer().version(),
             });
 
-        assert!(!editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(!editor.inlay_hints_refresh_needed());
     }
 
     #[test]
@@ -435,22 +441,25 @@ mod tests {
         editor.lsp.state.applied_inlay_hint_request = Some(key);
 
         editor.buffer_mut().insert_text_at(0, 0, "x");
-        assert!(!editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(!editor.inlay_hints_refresh_needed());
 
         editor.lsp.state.current_file_lsp_sent_version = 4;
-        assert!(editor.inlay_hints_refresh_needed_for_viewport());
+        assert!(editor.inlay_hints_refresh_needed());
     }
 
     #[test]
-    fn viewport_match_checks_file_buffer_and_scroll() {
-        let mut editor = Editor::with_content("class Test {}\n");
+    fn request_key_is_file_scoped() {
+        let mut editor = Editor::with_content("class Test {}\nline2\n");
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
 
-        let key = current_inlay_hint_request_key(&editor).expect("request key");
-        assert!(viewport_matches_request_key(&editor, &key));
+        let key1 = current_inlay_hint_request_key(&editor).expect("request key");
+        assert_eq!(key1.start_line, 0);
+        assert_eq!(key1.end_line, editor.buffer().line_count());
 
+        // Scrolling doesn't change the key.
         editor.viewport.scroll_offset = 3;
-        assert!(!viewport_matches_request_key(&editor, &key));
+        let key2 = current_inlay_hint_request_key(&editor).expect("request key");
+        assert_eq!(key1, key2);
     }
 }

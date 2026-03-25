@@ -716,14 +716,13 @@ impl Editor {
                     return false;
                 }
 
-                let matches_current_viewport = self
+                // File-scoped hints: only check that the file matches.
+                // Scroll position is irrelevant since hints cover the full file.
+                let matches_file = self
                     .buffer()
                     .file_path()
-                    .is_some_and(|path| path == result.request_key.file_path)
-                    && self.scroll_offset() == result.request_key.start_line
-                    && self.scroll_offset() + self.viewport_height() + 10
-                        == result.request_key.end_line;
-                if !matches_current_viewport {
+                    .is_some_and(|path| path == result.request_key.file_path);
+                if !matches_file {
                     self.invalidate_inlay_hint_debounce();
                     return false;
                 }
@@ -1943,7 +1942,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn poll_pending_inlay_hint_response_drops_stale_viewport_result() {
+    async fn poll_pending_inlay_hint_response_drops_stale_buffer_version_result() {
         let mut editor = Editor::with_content("class Test {}\n");
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
