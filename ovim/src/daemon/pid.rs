@@ -295,8 +295,8 @@ fn get_boot_time() -> Result<SystemTime> {
     let stat = fs::read_to_string("/proc/stat")?;
 
     for line in stat.lines() {
-        if line.starts_with("btime ") {
-            let boot_secs: u64 = line[6..].trim().parse().context("Failed to parse btime")?;
+        if let Some(stripped) = line.strip_prefix("btime ") {
+            let boot_secs: u64 = stripped.trim().parse().context("Failed to parse btime")?;
 
             return Ok(UNIX_EPOCH + std::time::Duration::from_secs(boot_secs));
         }

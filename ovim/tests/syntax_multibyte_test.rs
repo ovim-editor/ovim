@@ -6,7 +6,6 @@
 ///           chars().count() instead of text.len().
 /// OV-00218: shift_highlights_for_deletion col params are char indices but
 ///           highlight cache stores byte offsets.
-
 use ovim::buffer::Buffer;
 use ovim_core::syntax::HighlightGroup;
 
@@ -143,7 +142,8 @@ fn test_ov_00217_multiline_insert_last_line_len_is_bytes() {
     if let Some(range) = constant_after {
         let expected = (start_before - 8) + "sécond".len(); // 0 + 7 = 7
         assert_eq!(
-            range.start, expected,
+            range.start,
+            expected,
             "After multi-line insert, highlight offset should use byte length of last line \
              ('sécond' = {} bytes, not {} chars). Got {}.",
             "sécond".len(),           // 7

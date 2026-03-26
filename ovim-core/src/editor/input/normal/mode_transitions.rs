@@ -20,11 +20,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
             if overlay_visible {
                 if let Some(last) = editor.last_escape_time() {
-                    if last.elapsed() < std::time::Duration::from_millis(300) {
-                        if editor.dismiss_top_right_overlay() {
-                            editor.clear_last_escape_time();
-                            return Ok(true);
-                        }
+                    if last.elapsed() < std::time::Duration::from_millis(300)
+                        && editor.dismiss_top_right_overlay()
+                    {
+                        editor.clear_last_escape_time();
+                        return Ok(true);
                     }
                 }
             }

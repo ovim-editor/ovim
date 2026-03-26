@@ -160,11 +160,7 @@ fn test_zb_then_j_at_end() {
 
     // After j, cursor at line 48. Scroll stays at 30 (cursor in safe zone).
     assert_eq!(viewport.cursor_line(), 48);
-    assert_eq!(
-        viewport.scroll_offset(),
-        30,
-        "Scroll stays at 30"
-    );
+    assert_eq!(viewport.scroll_offset(), 30, "Scroll stays at 30");
 }
 
 #[test]

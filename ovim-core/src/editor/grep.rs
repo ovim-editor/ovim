@@ -101,7 +101,7 @@ pub fn grep_search_sync(query: &str, base_dir: &Path, max_results: usize) -> Vec
             Ok(e) => e,
             Err(_) => continue,
         };
-        if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+        if entry.file_type().is_none_or(|ft| !ft.is_file()) {
             continue;
         }
 
@@ -177,10 +177,11 @@ pub fn spawn_grep_search(
             let walker = build_walker(&root)
                 .filter_entry(move |entry| {
                     // For the base-dir pass, skip the preferred subtree to avoid duplicates.
-                    if !is_preferred_root && preferred_for_filter != base_for_filter {
-                        if entry.path().starts_with(&preferred_for_filter) {
-                            return false;
-                        }
+                    if !is_preferred_root
+                        && preferred_for_filter != base_for_filter
+                        && entry.path().starts_with(&preferred_for_filter)
+                    {
+                        return false;
                     }
                     true
                 })
@@ -196,7 +197,7 @@ pub fn spawn_grep_search(
                     Err(_) => continue,
                 };
 
-                if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+                if entry.file_type().is_none_or(|ft| !ft.is_file()) {
                     continue;
                 }
 

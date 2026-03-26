@@ -7,23 +7,12 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct AiPromptState {
     pub input: String,
     pub cursor: usize,
     pub model_picker_open: bool,
     pub model_picker_index: usize,
-}
-
-impl Default for AiPromptState {
-    fn default() -> Self {
-        Self {
-            input: String::new(),
-            cursor: 0,
-            model_picker_open: false,
-            model_picker_index: 0,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

@@ -161,7 +161,8 @@ impl Editor {
     /// Used by LSP pre-warming to prevent duplicate didOpen
     pub fn mark_document_opened(&mut self, file_path: &str) {
         let state = self
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .entry(file_path.to_string())
             .or_default();
@@ -296,7 +297,8 @@ impl Editor {
             .filter(|path| *path == file_path)
             .map(|_| self.buffer().rope().to_string());
         let state = self
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .entry(file_path.to_string())
             .or_default();
@@ -354,7 +356,8 @@ impl Editor {
 
         // --- Poll implementation ---
         if self
-            .lsp.state
+            .lsp
+            .state
             .pending_lsp_responses
             .implementation
             .is_some()
@@ -364,7 +367,8 @@ impl Editor {
 
         // --- Poll type_definition ---
         if self
-            .lsp.state
+            .lsp
+            .state
             .pending_lsp_responses
             .type_definition
             .is_some()
@@ -430,7 +434,8 @@ impl Editor {
             Err(TryRecvError::Empty) => {
                 // Check for timeout (re-borrow since we still hold the slot)
                 let timed_out = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .hover
                     .as_ref()
@@ -464,7 +469,8 @@ impl Editor {
         match req.receiver.try_recv() {
             Ok(result) => {
                 let (new_tab, pending) = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .definition
                     .take()
@@ -479,14 +485,16 @@ impl Editor {
             }
             Err(TryRecvError::Empty) => {
                 let timed_out = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .definition
                     .as_ref()
                     .is_some_and(|(_, p)| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
                     let (_, pending) = self
-                        .lsp.state
+                        .lsp
+                        .state
                         .pending_lsp_responses
                         .definition
                         .take()
@@ -523,7 +531,8 @@ impl Editor {
         match req.receiver.try_recv() {
             Ok(result) => {
                 let (new_tab, pending) = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .implementation
                     .take()
@@ -538,14 +547,16 @@ impl Editor {
             }
             Err(TryRecvError::Empty) => {
                 let timed_out = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .implementation
                     .as_ref()
                     .is_some_and(|(_, p)| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
                     let (_, pending) = self
-                        .lsp.state
+                        .lsp
+                        .state
                         .pending_lsp_responses
                         .implementation
                         .take()
@@ -582,7 +593,8 @@ impl Editor {
         match req.receiver.try_recv() {
             Ok(result) => {
                 let pending = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .type_definition
                     .take()
@@ -591,14 +603,16 @@ impl Editor {
             }
             Err(TryRecvError::Empty) => {
                 let timed_out = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .pending_lsp_responses
                     .type_definition
                     .as_ref()
                     .is_some_and(|p| p.started.elapsed() > std::time::Duration::from_secs(10));
                 if timed_out {
                     let pending = self
-                        .lsp.state
+                        .lsp
+                        .state
                         .pending_lsp_responses
                         .type_definition
                         .take()
@@ -882,7 +896,8 @@ impl Editor {
     /// Register a new LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
         self.lsp.state.lsp_status = format!("LSP: {} ready", server_name);
-        self.lsp.state
+        self.lsp
+            .state
             .active_lsp_servers
             .insert(language_id, server_name);
     }
@@ -1067,7 +1082,8 @@ impl Editor {
         self.lsp.state.current_file_lsp_sent_version = sent_version;
 
         let state = self
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .entry(file_path.to_string())
             .or_default();
@@ -1122,7 +1138,8 @@ impl Editor {
         let manager_version = lsp.get_document_version(&uri).await;
         let sent_version = lsp.get_last_sent_version(&uri).await;
         let needs_content = self
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .get(&file_path)
             .is_some_and(|state| {
@@ -1225,7 +1242,8 @@ impl Editor {
 
     pub fn lsp_document_is_modified(&self) -> Option<bool> {
         let file_path = self.buffer().file_path()?;
-        self.lsp.state
+        self.lsp
+            .state
             .document_sync
             .get(file_path)
             .map(|s| s.is_modified())
@@ -1264,7 +1282,8 @@ impl Editor {
         let sent_version = lsp.get_last_sent_version(&uri).await;
         let needs_reconcile = manager_version > 0
             && self
-                .lsp.state
+                .lsp
+                .state
                 .document_sync
                 .get(&state_key)
                 .is_some_and(|state| {
@@ -1290,7 +1309,8 @@ impl Editor {
 
         // Check if we need to send — only guard is didOpen + modified
         let should_send = self
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .get(&state_key)
             .is_some_and(|state| state.did_open_sent && state.is_modified());
@@ -1301,7 +1321,8 @@ impl Editor {
 
             {
                 let state = self
-                    .lsp.state
+                    .lsp
+                    .state
                     .document_sync
                     .entry(state_key.clone())
                     .or_default();
@@ -1327,7 +1348,8 @@ impl Editor {
 
             // Get old content for incremental sync
             let old_content = self
-                .lsp.state
+                .lsp
+                .state
                 .document_sync
                 .get(&state_key)
                 .and_then(|state| state.last_flushed_content.clone());
@@ -1499,7 +1521,8 @@ impl Editor {
                 let queued_version = lsp.get_document_version(&uri).await;
                 {
                     let state = self
-                        .lsp.state
+                        .lsp
+                        .state
                         .document_sync
                         .entry(state_key.clone())
                         .or_default();
@@ -1673,7 +1696,8 @@ impl Editor {
         feature_name: &str,
     ) -> Result<LspRequestContext> {
         let lsp = self
-            .lsp.state
+            .lsp
+            .state
             .lsp_manager
             .clone()
             .ok_or_else(|| anyhow!("LSP not available"))?;
@@ -1792,7 +1816,8 @@ mod tests {
         editor.set_file_path(file_path.clone());
 
         let state = editor
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .entry(file_path.clone())
             .or_default();
@@ -1814,7 +1839,8 @@ mod tests {
         editor.set_file_path(file_path.clone());
 
         let state = editor
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .entry(file_path.clone())
             .or_default();
@@ -1824,7 +1850,8 @@ mod tests {
         editor.reconcile_document_sync_with_manager(&file_path, Some("class Test {}\n"), 4, 4);
 
         let state = editor
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .get(&file_path)
             .expect("document sync state");
@@ -1844,7 +1871,8 @@ mod tests {
         editor.set_file_path(file_path.clone());
 
         let state = editor
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .entry(file_path.clone())
             .or_default();
@@ -1859,7 +1887,8 @@ mod tests {
         );
 
         let state = editor
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .get(&file_path)
             .expect("document sync state");
@@ -1936,7 +1965,8 @@ mod tests {
         );
 
         let sync_state = editor
-            .lsp.state
+            .lsp
+            .state
             .document_sync
             .get(&file_path)
             .expect("document sync state");

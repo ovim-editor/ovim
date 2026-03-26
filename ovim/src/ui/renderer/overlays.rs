@@ -40,8 +40,8 @@ pub fn render_hover_window(
     const MIN_HEIGHT: u16 = 3;
 
     // Adaptive max dimensions: use up to 80% of available space, but cap at sane limits.
-    let max_width = (buffer_area.width * 4 / 5).max(MIN_WIDTH).min(120);
-    let max_height = (buffer_area.height * 4 / 5).max(MIN_HEIGHT).min(40);
+    let max_width = (buffer_area.width * 4 / 5).clamp(MIN_WIDTH, 120);
+    let max_height = (buffer_area.height * 4 / 5).clamp(MIN_HEIGHT, 40);
 
     // Parse markdown for preview mode
     let elements = parse_markdown(hover_text);
@@ -477,8 +477,7 @@ pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, theme: &The
         return;
     }
     let width = ((full.width * 70) / 100)
-        .max(48)
-        .min(100)
+        .clamp(48, 100)
         .min(full.width.saturating_sub(2));
     let height = 9u16.min(full.height.saturating_sub(2)).max(7);
     let area = centered_area(full, width, height);
@@ -562,8 +561,7 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, them
         return;
     }
     let width = ((full.width * 70) / 100)
-        .max(48)
-        .min(100)
+        .clamp(48, 100)
         .min(full.width.saturating_sub(2));
     let height = 9u16.min(full.height.saturating_sub(2)).max(7);
     let area = centered_area(full, width, height);

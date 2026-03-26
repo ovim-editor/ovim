@@ -625,10 +625,7 @@ async fn test_command_tabnew_nonexistent_file_updates_current_file_register() {
     let mut test = EditorTest::new("test\n");
     test.set_file_path("existing.txt".to_string());
 
-    let file_name = format!(
-        "ovim_test_tabnew_nonexistent_{}.txt",
-        unique_test_id()
-    );
+    let file_name = format!("ovim_test_tabnew_nonexistent_{}.txt", unique_test_id());
     let file_path = std::env::temp_dir().join(file_name);
     let file_path = file_path.to_string_lossy().to_string();
 

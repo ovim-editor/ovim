@@ -16,6 +16,7 @@ pub struct PendingChangeRepeat {
 }
 
 /// State for active editing operations (insert, replace, substitute, rename).
+#[derive(Default)]
 pub struct EditingState {
     /// Last insert position (line, col) for gi command
     pub last_insert_position: Option<(usize, usize)>,
@@ -36,25 +37,12 @@ pub struct EditingState {
     pub substitute_match_index: usize,
     /// Regex pattern for substitute confirmation (for highlighting)
     pub substitute_pattern: Option<regex::Regex>,
+    /// Awaiting register char for Ctrl-R in insert mode
+    pub pending_register_insert: bool,
+    /// Awaiting one normal-mode command for Ctrl-O in insert mode
+    pub insert_normal_pending: bool,
     /// Rename input buffer (for LSP rename mode)
     pub rename_buffer: String,
     /// Cursor position within the rename input buffer
     pub rename_cursor: usize,
-}
-
-impl Default for EditingState {
-    fn default() -> Self {
-        Self {
-            last_insert_position: None,
-            pending_change_repeat: None,
-            pending_visual_block_change_repeat: None,
-            pending_visual_block_change_delete_token: None,
-            replace_mode_state: None,
-            substitute_matches: Vec::new(),
-            substitute_match_index: 0,
-            substitute_pattern: None,
-            rename_buffer: String::new(),
-            rename_cursor: 0,
-        }
-    }
 }

@@ -152,10 +152,7 @@ fn parse_single_lsp_config(value: &Value) -> Option<DebugRunConfig> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("127.0.0.1")
                 .to_owned(),
-            port: value
-                .get("port")
-                .and_then(|v| v.as_u64())
-                .unwrap_or(5005) as u16,
+            port: value.get("port").and_then(|v| v.as_u64()).unwrap_or(5005) as u16,
             project_root: value
                 .get("projectRoot")
                 .and_then(|v| v.as_str())

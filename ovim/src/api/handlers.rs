@@ -93,10 +93,11 @@ fn send_keys_to_plain_text(response: ApiResponse) -> Response {
 
             builder.body(ctx.context.clone().into()).unwrap()
         }
-        ApiResponse::Error(err) => {
-            plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, &err.error)
-        }
-        _ => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected response type"),
+        ApiResponse::Error(err) => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, &err.error),
+        _ => plain_text_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response type",
+        ),
     }
 }
 
@@ -277,8 +278,8 @@ pub async fn get_render(
     let _timer = metrics::HTTP_REQUEST_DURATION.start_timer();
     metrics::HTTP_REQUESTS_TOTAL.inc();
 
-    let width = params.width.unwrap_or(120).min(500).max(10);
-    let height = params.height.unwrap_or(40).min(200).max(3);
+    let width = params.width.unwrap_or(120).clamp(10, 500);
+    let height = params.height.unwrap_or(40).clamp(3, 200);
     let plain = params.plain.unwrap_or(false);
 
     let (tx, rx) = oneshot::channel();
@@ -305,19 +306,18 @@ pub async fn get_render(
 /// Convert a Render API response into a plain-text HTTP response with metadata headers.
 fn render_to_plain_text(response: ApiResponse) -> Response {
     match response {
-        ApiResponse::Render(info) => {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-                .header("X-Ovim-Width", info.width.to_string())
-                .header("X-Ovim-Height", info.height.to_string())
-                .body(info.ansi.into())
-                .unwrap()
-        }
-        ApiResponse::Error(err) => {
-            plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, &err.error)
-        }
-        _ => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Unexpected response type"),
+        ApiResponse::Render(info) => Response::builder()
+            .status(StatusCode::OK)
+            .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
+            .header("X-Ovim-Width", info.width.to_string())
+            .header("X-Ovim-Height", info.height.to_string())
+            .body(info.ansi.into())
+            .unwrap(),
+        ApiResponse::Error(err) => plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, &err.error),
+        _ => plain_text_error(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Unexpected response type",
+        ),
     }
 }
 

@@ -439,10 +439,7 @@ impl Editor {
         // file_path() is always Some. The unwrap_or is a defensive fallback
         // that is unreachable in practice.
         let buffer = Buffer::load_file(path)?;
-        let resolved_path = buffer
-            .file_path()
-            .unwrap_or(path_str)
-            .to_string();
+        let resolved_path = buffer.file_path().unwrap_or(path_str).to_string();
         self.add_buffer(buffer);
         self.registers.set_current_file(resolved_path);
         Ok(())
@@ -522,7 +519,9 @@ mod tests {
         let mut editor = Editor::default();
         editor.open_file(&file).expect("open file");
         // Set # to a known value
-        editor.registers_mut().set_alternate_file(expected_path.clone());
+        editor
+            .registers_mut()
+            .set_alternate_file(expected_path.clone());
 
         // Open scratch buffer — it should NOT overwrite #
         editor.open_scratch_buffer("Scratch", "scratch content");

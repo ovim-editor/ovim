@@ -595,7 +595,7 @@ impl WindowManager {
                     direction,
                     buffer_id,
                     current_index,
-                    cursor.clone(),
+                    cursor,
                     scroll_offset,
                 );
                 if found {

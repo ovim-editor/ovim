@@ -55,17 +55,12 @@ impl Default for ProfileScope {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolApprovalMode {
     Auto,
+    #[default]
     SensitivePrompt,
     AlwaysPrompt,
-}
-
-impl Default for ToolApprovalMode {
-    fn default() -> Self {
-        Self::SensitivePrompt
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -87,20 +82,15 @@ impl std::fmt::Display for AiProviderKind {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub enum EditFormat {
     Codeblock,
+    #[default]
     Json,
     Raw,
     ApplyPatch,
     StrReplace,
     Lua(String),
-}
-
-impl Default for EditFormat {
-    fn default() -> Self {
-        Self::Json
-    }
 }
 
 impl std::fmt::Display for EditFormat {
@@ -156,19 +146,10 @@ impl Default for AgentLoopConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct RetryPolicy {
     pub max: u8,
     pub fallback: Option<String>,
-}
-
-impl Default for RetryPolicy {
-    fn default() -> Self {
-        Self {
-            max: 0,
-            fallback: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone)]

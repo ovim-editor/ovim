@@ -59,7 +59,8 @@ impl Editor {
         };
 
         if self
-            .lsp.state
+            .lsp
+            .state
             .pending_inlay_hints
             .as_ref()
             .is_some_and(|pending| pending_request_matches_file(self, pending))
@@ -100,7 +101,8 @@ impl Editor {
         }
 
         if self
-            .lsp.state
+            .lsp
+            .state
             .pending_inlay_hints
             .as_ref()
             .is_some_and(|pending| pending.request_key == request_key)
@@ -240,7 +242,8 @@ impl Editor {
 
     /// Get inlay hints for a specific line (0-indexed).
     pub fn inlay_hints_for_line(&self, line: usize) -> Vec<&lsp_types::InlayHint> {
-        self.lsp.state
+        self.lsp
+            .state
             .inlay_hints
             .iter()
             .filter(|h| h.position.line as usize == line)

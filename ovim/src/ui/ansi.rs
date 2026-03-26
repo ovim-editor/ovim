@@ -140,8 +140,8 @@ pub fn strip_ansi(s: &str) -> String {
             // Skip CSI sequences: ESC [ ... final_byte
             if chars.peek() == Some(&'[') {
                 chars.next(); // consume '['
-                // Consume parameter bytes (0x30–0x3F), intermediate (0x20–0x2F),
-                // then the final byte (0x40–0x7E).
+                              // Consume parameter bytes (0x30–0x3F), intermediate (0x20–0x2F),
+                              // then the final byte (0x40–0x7E).
                 loop {
                     match chars.peek() {
                         Some(&c) if ('@'..='~').contains(&c) => {

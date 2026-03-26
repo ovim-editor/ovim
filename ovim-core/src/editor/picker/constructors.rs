@@ -21,7 +21,7 @@ impl Picker {
             base_dir,
             preferred_dir,
             pending_filter: false,
-            backend: PickerBackend::Nucleo(NucleoState::new()),
+            backend: PickerBackend::Nucleo(Box::new(NucleoState::new())),
         }
     }
 

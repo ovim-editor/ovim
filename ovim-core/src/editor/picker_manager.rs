@@ -545,8 +545,7 @@ impl Editor {
             .buffer()
             .file_path()
             .and_then(|fp| {
-                crate::language_config::LanguageRegistry::try_get()
-                    .and_then(|reg| reg.detect(fp))
+                crate::language_config::LanguageRegistry::try_get().and_then(|reg| reg.detect(fp))
             })
             .and_then(|lang| lang.dap.as_ref())
             .and_then(|dap_config| {
@@ -555,12 +554,11 @@ impl Editor {
             });
 
         if let Some((command, args)) = dap_start {
-            self.dap_manager.pending_action =
-                Some(crate::dap::PendingDebugAction::Start {
-                    command,
-                    args,
-                    run_config: Some(config),
-                });
+            self.dap_manager.pending_action = Some(crate::dap::PendingDebugAction::Start {
+                command,
+                args,
+                run_config: Some(config),
+            });
         } else {
             self.set_lsp_status("No DAP adapter configured for this language".to_string());
         }

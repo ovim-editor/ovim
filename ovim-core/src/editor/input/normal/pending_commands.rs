@@ -459,19 +459,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // '"' - Register selection
         // =====================================================================
-        (
-            '"',
-            KeyCode::Char(ch),
-        ) if ch.is_ascii_alphanumeric()
-            || ch == '"'
-            || ch == '_'
-            || ch == '+'
-            || ch == '*'
-            || ch == '%'
-            || ch == '.'
-            || ch == ':'
-            || ch == '#'
-            || ch == '/' =>
+        ('"', KeyCode::Char(ch))
+            if ch.is_ascii_alphanumeric()
+                || ch == '"'
+                || ch == '_'
+                || ch == '+'
+                || ch == '*'
+                || ch == '%'
+                || ch == '.'
+                || ch == ':'
+                || ch == '#'
+                || ch == '/' =>
         {
             editor.set_pending_register(ch);
         }
@@ -495,9 +493,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     editor.clear_macro_abort();
                     'outer_repeat: for _ in 0..count {
                         for event in &events {
-                            crate::editor::input::InputHandler::handle_key_event(
-                                editor, *event,
-                            )?;
+                            crate::editor::input::InputHandler::handle_key_event(editor, *event)?;
                             if editor.macro_aborted() {
                                 break 'outer_repeat;
                             }

@@ -144,12 +144,12 @@ impl Editor {
     }
 
     /// Fetch and store variables for a given reference.
-    pub async fn debug_fetch_variables(
-        &mut self,
-        variables_reference: u64,
-    ) -> anyhow::Result<()> {
+    pub async fn debug_fetch_variables(&mut self, variables_reference: u64) -> anyhow::Result<()> {
         let vars = self.dap_manager.variables(variables_reference).await?;
-        self.dap_manager.state.variables.insert(variables_reference, vars);
+        self.dap_manager
+            .state
+            .variables
+            .insert(variables_reference, vars);
         self.mark_dirty();
         Ok(())
     }
@@ -178,10 +178,7 @@ impl Editor {
             // Navigate to the frame's source location.
             if let Some(frame) = self.dap_manager.state.stack_frames.get(index) {
                 let line = frame.line.saturating_sub(1) as usize;
-                let path = frame
-                    .source
-                    .as_ref()
-                    .and_then(|s| s.path.clone());
+                let path = frame.source.as_ref().and_then(|s| s.path.clone());
                 if let Some(path) = path {
                     if self.load_file(&path).is_ok() {
                         self.buffer_mut().cursor_mut().set_position(line, 0);
@@ -237,7 +234,9 @@ impl Editor {
         };
         let line = self.buffer().cursor().line() as u64 + 1;
         let path = std::path::PathBuf::from(&file_path);
-        self.dap_manager.state.set_breakpoint_condition(&path, line, Some(condition));
+        self.dap_manager
+            .state
+            .set_breakpoint_condition(&path, line, Some(condition));
         self.mark_dirty();
     }
 

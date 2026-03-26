@@ -21,11 +21,7 @@ impl Editor {
 
         // Ensure conversation exists
         let key = (buffer_id, opts.name.clone());
-        if !self.ai_state.conversations.contains_key(&key) {
-            self.ai_state
-                .conversations
-                .insert(key, ConversationTree::new());
-        }
+        self.ai_state.conversations.entry(key).or_default();
 
         // Send initial message if provided and conversation is empty
         let initial = opts.initial_message.clone();

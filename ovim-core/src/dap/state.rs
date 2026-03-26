@@ -66,6 +66,12 @@ pub struct DebugState {
     pub execution_line: Option<u64>,
 }
 
+impl Default for DebugState {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl DebugState {
     pub fn new() -> Self {
         Self {
@@ -128,7 +134,8 @@ impl DebugState {
         for bp in dap_bps {
             if let Some(line) = bp.line {
                 // Preserve existing condition if the breakpoint was already there.
-                let existing_condition = old_entries.iter()
+                let existing_condition = old_entries
+                    .iter()
                     .find(|old| old.line == line)
                     .and_then(|old| old.condition.clone());
                 entry.push(BreakpointState {

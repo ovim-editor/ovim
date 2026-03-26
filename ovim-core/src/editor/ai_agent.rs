@@ -44,7 +44,7 @@ impl Editor {
                 let per_iteration_target = if target_related == 0 {
                     0
                 } else {
-                    (target_related + max_iterations as usize - 1) / max_iterations as usize
+                    target_related.div_ceil(max_iterations as usize)
                 };
                 let slice_radius = RELATED_SLICE_RADIUS.saturating_mul(2).min(12);
                 let mut seen_ranges = HashSet::new();
@@ -159,7 +159,7 @@ fn estimate_tokens(text: &str) -> usize {
     if char_count == 0 {
         0
     } else {
-        (char_count + TOKEN_ESTIMATE_CHAR_DIVISOR - 1) / TOKEN_ESTIMATE_CHAR_DIVISOR
+        char_count.div_ceil(TOKEN_ESTIMATE_CHAR_DIVISOR)
     }
 }
 

@@ -350,18 +350,13 @@ pub struct ChatOpts {
     pub initial_message: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChatFocus {
+    #[default]
     TextInput,
     MessageHistory,
     ModelSelector,
     TreePanel,
-}
-
-impl Default for ChatFocus {
-    fn default() -> Self {
-        Self::TextInput
-    }
 }
 
 /// Apply observation masking to a message list for API serialization.

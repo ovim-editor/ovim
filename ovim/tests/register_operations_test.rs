@@ -793,7 +793,9 @@ fn test_yank_to_hash_register_is_ignored() {
     let mut test = EditorTest::new("hello world");
 
     // # register holds alternate filename — set it indirectly
-    test.editor.registers_mut().set_alternate_file("alt.rs".to_string());
+    test.editor
+        .registers_mut()
+        .set_alternate_file("alt.rs".to_string());
 
     // Try to yank into # register
     test.keys("\"#yiw");

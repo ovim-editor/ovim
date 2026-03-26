@@ -429,8 +429,7 @@ fn handle_read_selection(_args: &serde_json::Value, ctx: &ToolExecutionContext) 
         end_line + 1
     ));
 
-    for i in start_line..=end_line {
-        let line = lines[i];
+    for (i, line) in lines.iter().enumerate().take(end_line + 1).skip(start_line) {
         let grapheme_col_to_byte =
             |col: usize| byte_offset_for_grapheme(line, col).unwrap_or(line.len());
         let slice = if i == start_line && i == end_line {
@@ -819,7 +818,7 @@ fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> To
             Ok(e) => e,
             Err(_) => continue,
         };
-        if entry.file_type().map_or(true, |ft| !ft.is_file()) {
+        if entry.file_type().is_none_or(|ft| !ft.is_file()) {
             continue;
         }
         let rel_path = entry

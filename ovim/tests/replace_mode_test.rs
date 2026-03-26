@@ -633,11 +633,9 @@ fn test_ctrl_r_insert_register() {
         .press('a') // Insert from register 'a'
         .press_esc();
 
-    // Ctrl-R followed by 'a' inserts register 'a' content
-    // If Ctrl-R is not implemented, 'r' and 'a' are inserted literally
-    // Actual behavior shows "ratest" meaning Ctrl-R inserts 'r' and 'a' is literal
-    assert_eq!(test.buffer_content(), "ratest\n");
-    test.assert_cursor(0, 1); // Cursor after "ra"
+    // Ctrl-R followed by 'a' inserts register 'a' content ("test")
+    assert_eq!(test.buffer_content(), "testtest\n");
+    test.assert_cursor(0, 3); // Cursor on last char of inserted "test"
 }
 
 #[test]

@@ -8,6 +8,7 @@ use crate::dashboard::DashboardAnimation;
 ///
 /// Groups fields for file tree, quickfix/location lists,
 /// path completion, dashboard, cat animation, diagnostics, and toast notifications.
+#[derive(Default)]
 pub struct UiPanels {
     /// File tree explorer
     pub file_tree: FileTree,
@@ -35,21 +36,3 @@ pub struct UiPanels {
     pub toast_center: ToastCenter,
 }
 
-impl Default for UiPanels {
-    fn default() -> Self {
-        Self {
-            file_tree: FileTree::new(),
-            quickfix_list: QuickfixList::new(),
-            location_list: LocationList::new(),
-            quickfix_window_open: false,
-            location_window_open: false,
-            path_completion: PathCompletionState::new(),
-            dashboard_selected: 0,
-            cat_animation: None,
-            diagnostic_badge_dismissed: false,
-            diagnostic_badge_last_count: (0, 0),
-            last_escape_time: None,
-            toast_center: ToastCenter::default(),
-        }
-    }
-}

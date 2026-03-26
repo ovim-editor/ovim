@@ -70,6 +70,17 @@ pub enum TextObjectType {
 }
 
 /// Range in the buffer
+/// A filesystem snapshot for undo/redo of LSP resource operations.
+///
+/// Captures file contents before and after an operation so that
+/// undo can restore `before` and redo can restore `after`.
+#[derive(Clone, Debug)]
+pub struct ResourceSnapshot {
+    pub path: PathBuf,
+    pub before: Option<Vec<u8>>,
+    pub after: Option<Vec<u8>>,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Range {
     pub start: Position,
@@ -190,7 +201,7 @@ pub enum Change {
     /// Filesystem snapshots for LSP workspace `ResourceOp` (create/rename/delete).
     /// Undo restores `before` bytes; redo applies `after` bytes.
     ResourceOp {
-        snapshots: Vec<(PathBuf, Option<Vec<u8>>, Option<Vec<u8>>)>,
+        snapshots: Vec<ResourceSnapshot>,
         cursor_before: Position,
         cursor_after: Position,
     },
@@ -322,9 +333,22 @@ impl Change {
         }
     }
 
+    /// Creates a single resource snapshot entry.
+    pub fn resource_snapshot(
+        path: PathBuf,
+        before: Option<Vec<u8>>,
+        after: Option<Vec<u8>>,
+    ) -> ResourceSnapshot {
+        ResourceSnapshot {
+            path,
+            before,
+            after,
+        }
+    }
+
     /// Creates a ResourceOp snapshot change (filesystem-only, no buffer edits).
     pub fn resource_op(
-        snapshots: Vec<(PathBuf, Option<Vec<u8>>, Option<Vec<u8>>)>,
+        snapshots: Vec<ResourceSnapshot>,
         cursor_before: Position,
         cursor_after: Position,
     ) -> Self {
@@ -475,8 +499,8 @@ impl Change {
                 cursor_after,
                 ..
             } => {
-                for (path, _, after) in snapshots {
-                    Self::restore_file_snapshot(path, after);
+                for snap in snapshots {
+                    Self::restore_file_snapshot(&snap.path, &snap.after);
                 }
                 buffer
                     .cursor_mut()
@@ -638,8 +662,8 @@ impl Change {
                 cursor_before,
                 ..
             } => {
-                for (path, before, _) in snapshots.iter().rev() {
-                    Self::restore_file_snapshot(path, before);
+                for snap in snapshots.iter().rev() {
+                    Self::restore_file_snapshot(&snap.path, &snap.before);
                 }
                 buffer
                     .cursor_mut()
@@ -1478,13 +1502,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
                 start_col -= 1;
                 break;
             } else if start_col >= 2
-                && (prev_ch == 'x' || prev_ch == 'X')
-                && chars[start_col - 2] == '0'
-            {
-                start_col -= 2;
-                break;
-            } else if start_col >= 2
-                && (prev_ch == 'b' || prev_ch == 'B' || prev_ch == 'o' || prev_ch == 'O')
+                && matches!(prev_ch, 'x' | 'X' | 'b' | 'B' | 'o' | 'O')
                 && chars[start_col - 2] == '0'
             {
                 start_col -= 2;
@@ -1502,9 +1520,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
         let mut end_col = cursor_col + 1;
         while end_col < chars.len() {
             let ch = chars[end_col];
-            if is_hex && ch.is_ascii_hexdigit() {
-                end_col += 1;
-            } else if ch.is_ascii_digit() {
+            if (is_hex && ch.is_ascii_hexdigit()) || ch.is_ascii_digit() {
                 end_col += 1;
             } else {
                 break;

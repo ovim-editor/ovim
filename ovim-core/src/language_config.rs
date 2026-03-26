@@ -188,21 +188,16 @@ pub struct AutoInstallConfig {
     pub allow_headless: bool,
 }
 
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AutoInstallPolicy {
     /// Never auto-install automatically.
     ManualOnly,
     /// Auto-install only when the LSP command is missing.
+    #[default]
     AutoOnMissing,
     /// Auto-install when missing, and attempt one repair on known startup failures.
     AutoOnMissingOrKnownFailure,
-}
-
-impl Default for AutoInstallPolicy {
-    fn default() -> Self {
-        Self::AutoOnMissing
-    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -620,7 +615,12 @@ fn find_in_well_known_locations(binary: &str) -> Option<String> {
         // pip / pipx
         Some(home.join(".local/bin").join(binary)),
         // ovim-managed LSP installs
-        Some(home.join(".local/share/ovim/lsp").join(binary).join("bin").join(binary)),
+        Some(
+            home.join(".local/share/ovim/lsp")
+                .join(binary)
+                .join("bin")
+                .join(binary),
+        ),
     ];
 
     for candidate in candidates.into_iter().flatten() {
@@ -631,10 +631,7 @@ fn find_in_well_known_locations(binary: &str) -> Option<String> {
 
     // gem install locations — version dirs need scanning
     // ~/.local/share/gem/ruby/*/bin (Arch), ~/.gem/ruby/*/bin (other distros)
-    for gem_base in [
-        home.join(".local/share/gem/ruby"),
-        home.join(".gem/ruby"),
-    ] {
+    for gem_base in [home.join(".local/share/gem/ruby"), home.join(".gem/ruby")] {
         if let Ok(entries) = std::fs::read_dir(&gem_base) {
             for entry in entries.flatten() {
                 let candidate = entry.path().join("bin").join(binary);

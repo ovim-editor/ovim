@@ -520,7 +520,7 @@ fn render_hint_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
                 .add_modifier(Modifier::BOLD),
         ));
         spans.push(Span::styled(
-            format!("{desc}"),
+            desc.to_string(),
             Style::default().fg(colors::HINT_TEXT),
         ));
     }

@@ -60,8 +60,8 @@ pub fn apply_conceal(src: &str, spans: &[ConcealSpan]) -> LineTransform {
         }
 
         // map concealed bytes to current view index (start of replacement)
-        for b in cursor..end {
-            src_to_view[b] = view_idx;
+        for item in src_to_view.iter_mut().take(end).skip(cursor) {
+            *item = view_idx;
         }
 
         for ch in span.replacement.chars() {
@@ -176,11 +176,15 @@ pub struct ConcealedLink {
 }
 
 /// Extract link ranges in view-space from conceal spans and their transform.
-pub fn extract_concealed_links(spans: &[ConcealSpan], transform: &LineTransform) -> Vec<ConcealedLink> {
+pub fn extract_concealed_links(
+    spans: &[ConcealSpan],
+    transform: &LineTransform,
+) -> Vec<ConcealedLink> {
     let mut links = Vec::new();
     for span in spans {
         if let Some(ref url) = span.url {
-            let view_start = transform.src_to_view[span.src_start.min(transform.src_to_view.len() - 1)];
+            let view_start =
+                transform.src_to_view[span.src_start.min(transform.src_to_view.len() - 1)];
             let replacement_len = span.replacement.chars().count();
             let view_end = view_start + replacement_len;
             links.push(ConcealedLink {

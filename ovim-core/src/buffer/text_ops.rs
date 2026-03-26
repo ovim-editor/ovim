@@ -128,7 +128,9 @@ impl Buffer {
         let start_byte_col = self.rope.char_to_byte(start_line_char + actual_start_col)
             - self.rope.char_to_byte(start_line_char);
         let end_line_char_offset = self.rope.line_to_char(actual_end_line);
-        let end_byte_col = self.rope.char_to_byte(end_line_char_offset + actual_end_col)
+        let end_byte_col = self
+            .rope
+            .char_to_byte(end_line_char_offset + actual_end_col)
             - self.rope.char_to_byte(end_line_char_offset);
 
         // Create tree-sitter edit BEFORE modifying rope (needs old state)
@@ -141,7 +143,12 @@ impl Buffer {
         );
 
         // Shift highlights BEFORE modifying rope
-        self.shift_highlights_for_deletion(start_line, start_byte_col, actual_end_line, end_byte_col);
+        self.shift_highlights_for_deletion(
+            start_line,
+            start_byte_col,
+            actual_end_line,
+            end_byte_col,
+        );
 
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
@@ -208,8 +215,13 @@ impl Buffer {
         let end_byte_col = self.rope.char_to_byte(end_line_char_offset + end_char_col)
             - self.rope.char_to_byte(end_line_char_offset);
 
-        let ts_edit =
-            self.create_ts_delete_edit(start_line, start_byte_col, end_line, end_byte_col, &deleted);
+        let ts_edit = self.create_ts_delete_edit(
+            start_line,
+            start_byte_col,
+            end_line,
+            end_byte_col,
+            &deleted,
+        );
         self.shift_highlights_for_deletion(start_line, start_byte_col, end_line, end_byte_col);
 
         self.rope.remove(start_pos..end_pos);
@@ -621,23 +633,21 @@ impl Buffer {
                 }
             }
             found_idx
+        } else if col == 0 {
+            None
         } else {
-            if col == 0 {
-                None
-            } else {
-                let mut seen = 0usize;
-                let mut found_idx = None;
-                for i in (0..col).rev() {
-                    if chars.get(i).copied() == Some(target) {
-                        seen += 1;
-                        if seen == count {
-                            found_idx = Some(i);
-                            break;
-                        }
+            let mut seen = 0usize;
+            let mut found_idx = None;
+            for i in (0..col).rev() {
+                if chars.get(i).copied() == Some(target) {
+                    seen += 1;
+                    if seen == count {
+                        found_idx = Some(i);
+                        break;
                     }
                 }
-                found_idx
             }
+            found_idx
         };
 
         let Some(found_idx) = found else {

@@ -55,8 +55,7 @@ impl DebugAdapterClient {
         let child_stdout = child.stdout.take().ok_or_else(|| anyhow!("no stdout"))?;
         let child_stdin = child.stdin.take().ok_or_else(|| anyhow!("no stdin"))?;
 
-        let pending: Arc<DashMap<u64, oneshot::Sender<Result<Value>>>> =
-            Arc::new(DashMap::new());
+        let pending: Arc<DashMap<u64, oneshot::Sender<Result<Value>>>> = Arc::new(DashMap::new());
 
         // Writer task: send requests to stdin.
         let (writer_tx, mut writer_rx) = mpsc::channel::<DapRequest>(256);
@@ -326,7 +325,9 @@ fn parse_dap_event(msg: &DapIncoming) -> Option<DapEvent> {
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown")
                 .to_owned();
-            let thread_id = body.and_then(|b| b.get("threadId")).and_then(|v| v.as_u64());
+            let thread_id = body
+                .and_then(|b| b.get("threadId"))
+                .and_then(|v| v.as_u64());
             let all_threads_stopped = body
                 .and_then(|b| b.get("allThreadsStopped"))
                 .and_then(|v| v.as_bool())

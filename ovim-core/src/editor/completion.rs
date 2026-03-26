@@ -116,11 +116,11 @@ impl CompletionMenu {
         } else {
             self.all_items
                 .iter()
-                .cloned()
                 .filter(|item| {
                     let text = item.insert_text.as_deref().unwrap_or(&item.label);
                     text.to_lowercase().starts_with(&prefix_lower)
                 })
+                .cloned()
                 .collect()
         };
 

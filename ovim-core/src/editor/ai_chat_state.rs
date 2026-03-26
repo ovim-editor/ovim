@@ -49,19 +49,12 @@ impl Default for ChatViewportState {
 }
 
 /// Selection state for message-history interactions.
+#[derive(Default)]
 pub struct ChatHistoryState {
     /// Selected node in the active branch, if any.
     ///
     /// Using node identity keeps selection stable when new messages append.
     pub selected_node_id: Option<NodeId>,
-}
-
-impl Default for ChatHistoryState {
-    fn default() -> Self {
-        Self {
-            selected_node_id: None,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

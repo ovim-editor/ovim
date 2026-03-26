@@ -258,7 +258,11 @@ fn z_enter_moves_to_first_non_blank() {
     test.keys("z<CR>");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.cursor_col(), 4, "z<CR> moves cursor to first non-blank (col 4)");
+    assert_eq!(
+        vp.cursor_col(),
+        4,
+        "z<CR> moves cursor to first non-blank (col 4)"
+    );
 }
 
 // ==========================================================================
@@ -327,7 +331,11 @@ fn count_zt_moves_cursor_to_target_line() {
     test.keys("10zt");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.cursor_line(), 9, "10zt moves cursor to line 9 (0-indexed)");
+    assert_eq!(
+        vp.cursor_line(),
+        9,
+        "10zt moves cursor to line 9 (0-indexed)"
+    );
     assert_eq!(vp.scroll_offset(), 9, "line 9 at viewport top");
 }
 
@@ -339,7 +347,11 @@ fn count_zz_moves_cursor_to_target_line() {
     test.keys("25zz");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.cursor_line(), 24, "25zz moves cursor to line 24 (0-indexed)");
+    assert_eq!(
+        vp.cursor_line(),
+        24,
+        "25zz moves cursor to line 24 (0-indexed)"
+    );
     assert_eq!(vp.scroll_offset(), 14, "line 24 centered: 24 - 10 = 14");
 }
 
@@ -351,7 +363,11 @@ fn count_zb_moves_cursor_to_target_line() {
     test.keys("25zb");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.cursor_line(), 24, "25zb moves cursor to line 24 (0-indexed)");
+    assert_eq!(
+        vp.cursor_line(),
+        24,
+        "25zb moves cursor to line 24 (0-indexed)"
+    );
     assert_eq!(vp.scroll_offset(), 5, "line 24 at bottom: 24 - 19 = 5");
 }
 
@@ -405,7 +421,11 @@ fn zt_file_smaller_than_viewport() {
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 5);
     // max_scroll = max(0, 10 - 20) = 0
-    assert_eq!(vp.scroll_offset(), 0, "can't scroll when file fits in viewport");
+    assert_eq!(
+        vp.scroll_offset(),
+        0,
+        "can't scroll when file fits in viewport"
+    );
 }
 
 #[test]
@@ -417,7 +437,11 @@ fn zz_file_smaller_than_viewport() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 5);
-    assert_eq!(vp.scroll_offset(), 0, "can't scroll when file fits in viewport");
+    assert_eq!(
+        vp.scroll_offset(),
+        0,
+        "can't scroll when file fits in viewport"
+    );
 }
 
 #[test]
@@ -429,7 +453,11 @@ fn zb_file_smaller_than_viewport() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 5);
-    assert_eq!(vp.scroll_offset(), 0, "can't scroll when file fits in viewport");
+    assert_eq!(
+        vp.scroll_offset(),
+        0,
+        "can't scroll when file fits in viewport"
+    );
 }
 
 // ==========================================================================
@@ -472,7 +500,11 @@ fn zt_then_k_scrolls_cursor_back_in() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 23);
-    assert_eq!(vp.scroll_offset(), 23, "viewport scrolls to keep cursor visible");
+    assert_eq!(
+        vp.scroll_offset(),
+        23,
+        "viewport scrolls to keep cursor visible"
+    );
 }
 
 #[test]
@@ -485,7 +517,11 @@ fn zb_then_j_scrolls_cursor_back_in() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 6, "viewport scrolls to keep cursor visible");
+    assert_eq!(
+        vp.scroll_offset(),
+        6,
+        "viewport scrolls to keep cursor visible"
+    );
 }
 
 // ==========================================================================
@@ -563,7 +599,11 @@ fn zz_ignores_scrolloff() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 14, "zz centers at 24-10=14, ignoring scrolloff");
+    assert_eq!(
+        vp.scroll_offset(),
+        14,
+        "zz centers at 24-10=14, ignoring scrolloff"
+    );
 }
 
 #[test]
@@ -578,7 +618,11 @@ fn zb_respects_scrolloff() {
     assert_eq!(vp.cursor_line(), 24);
     // zb respects scrolloff: cursor is scrolloff lines from bottom
     // bottom_position = 19 - 5 = 14, scroll = 24 - 14 = 10
-    assert_eq!(vp.scroll_offset(), 10, "zb respects scrolloff: 24-(19-5)=10");
+    assert_eq!(
+        vp.scroll_offset(),
+        10,
+        "zb respects scrolloff: 24-(19-5)=10"
+    );
 }
 
 #[test]
@@ -590,7 +634,11 @@ fn z_enter_respects_scrolloff() {
     test.keys("z<CR>");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 19, "z<CR> respects scrolloff like zt: 24-5=19");
+    assert_eq!(
+        vp.scroll_offset(),
+        19,
+        "z<CR> respects scrolloff like zt: 24-5=19"
+    );
 }
 
 #[test]
@@ -614,7 +662,11 @@ fn z_minus_respects_scrolloff() {
     test.keys("z-");
 
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 10, "z- respects scrolloff like zb: 24-(19-5)=10");
+    assert_eq!(
+        vp.scroll_offset(),
+        10,
+        "z- respects scrolloff like zb: 24-(19-5)=10"
+    );
 }
 
 // ==========================================================================
@@ -631,13 +683,16 @@ fn zt_then_j_no_scroll_needed() {
     test.editor.options.scrolloff = 5;
     test.keys("24j");
     test.keys("zt"); // scroll=19, cursor at row 5 (scrolloff)
-    test.keys("j");  // cursor moves to line 25, row 6 — still in safe zone
+    test.keys("j"); // cursor moves to line 25, row 6 — still in safe zone
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
     // Cursor at row 6 (25-19), safe zone is [5, 14]. No scroll needed.
-    assert_eq!(vp.scroll_offset(), 19,
-        "after zt+j, cursor stays in safe zone — no jump");
+    assert_eq!(
+        vp.scroll_offset(),
+        19,
+        "after zt+j, cursor stays in safe zone — no jump"
+    );
 }
 
 #[test]
@@ -647,13 +702,16 @@ fn zb_then_k_no_scroll_needed() {
     test.editor.options.scrolloff = 5;
     test.keys("24j");
     test.keys("zb"); // scroll=10, cursor at row 14 (scrolloff from bottom)
-    test.keys("k");  // cursor moves to line 23, row 13 — still in safe zone
+    test.keys("k"); // cursor moves to line 23, row 13 — still in safe zone
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 23);
     // Cursor at row 13 (23-10), safe zone is [5, 14]. No scroll needed.
-    assert_eq!(vp.scroll_offset(), 10,
-        "after zb+k, cursor stays in safe zone — no jump");
+    assert_eq!(
+        vp.scroll_offset(),
+        10,
+        "after zb+k, cursor stays in safe zone — no jump"
+    );
 }
 
 #[test]
@@ -669,8 +727,11 @@ fn zz_then_j_within_scrolloff_does_not_scroll() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 14,
-        "j from center doesn't trigger scroll (cursor still within scrolloff bounds)");
+    assert_eq!(
+        vp.scroll_offset(),
+        14,
+        "j from center doesn't trigger scroll (cursor still within scrolloff bounds)"
+    );
 }
 
 #[test]
@@ -684,20 +745,29 @@ fn zt_then_multiple_j_scrolloff_tracks() {
     // First j: cursor at line 25, row 4. Safe zone [3, 16]. In zone.
     test.keys("j");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 21,
-        "after zt + 1j: cursor in safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        21,
+        "after zt + 1j: cursor in safe zone, no scroll"
+    );
 
     // Second j: cursor at line 26, row 5. In zone.
     test.keys("j");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 21,
-        "after zt + 2j: cursor within safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        21,
+        "after zt + 2j: cursor within safe zone, no scroll"
+    );
 
     // Third j: cursor at line 27, row 6. Still in zone.
     test.keys("j");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 21,
-        "after zt + 3j: cursor within safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        21,
+        "after zt + 3j: cursor within safe zone, no scroll"
+    );
 }
 
 #[test]
@@ -711,14 +781,20 @@ fn zb_then_multiple_k_scrolloff_tracks() {
     // First k: cursor at line 23, row 15. Safe zone [3, 16]. In zone.
     test.keys("k");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 8,
-        "after zb + 1k: cursor in safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        8,
+        "after zb + 1k: cursor in safe zone, no scroll"
+    );
 
     // Second k: cursor at line 22, row 14. In zone.
     test.keys("k");
     let vp = ViewportAssertion::new(&test.editor);
-    assert_eq!(vp.scroll_offset(), 8,
-        "after zb + 2k: cursor within safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        8,
+        "after zb + 2k: cursor within safe zone, no scroll"
+    );
 }
 
 // ==========================================================================
@@ -736,7 +812,11 @@ fn zt_with_scrolloff_larger_than_half_viewport() {
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
     // scrolloff=15 clamped to (20-1)/2=9, scroll = 24-9 = 15
-    assert_eq!(vp.scroll_offset(), 15, "zt with large scrolloff clamped to 9: 24-9=15");
+    assert_eq!(
+        vp.scroll_offset(),
+        15,
+        "zt with large scrolloff clamped to 9: 24-9=15"
+    );
 }
 
 #[test]
@@ -750,7 +830,11 @@ fn zb_with_scrolloff_larger_than_half_viewport() {
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
     // scrolloff=15 clamped to 9, bottom_position = 19-9 = 10, scroll = 24-10 = 14
-    assert_eq!(vp.scroll_offset(), 14, "zb with large scrolloff clamped to 9: 24-10=14");
+    assert_eq!(
+        vp.scroll_offset(),
+        14,
+        "zb with large scrolloff clamped to 9: 24-10=14"
+    );
 }
 
 // ==========================================================================
@@ -766,7 +850,11 @@ fn count_zt_with_scrolloff_respects_scrolloff() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 19, "[count]zt respects scrolloff: 24-5=19");
+    assert_eq!(
+        vp.scroll_offset(),
+        19,
+        "[count]zt respects scrolloff: 24-5=19"
+    );
 }
 
 #[test]
@@ -778,7 +866,11 @@ fn count_zb_with_scrolloff_respects_scrolloff() {
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 24);
-    assert_eq!(vp.scroll_offset(), 10, "[count]zb respects scrolloff: 24-(19-5)=10");
+    assert_eq!(
+        vp.scroll_offset(),
+        10,
+        "[count]zb respects scrolloff: 24-(19-5)=10"
+    );
 }
 
 #[test]
@@ -787,12 +879,15 @@ fn count_zt_then_j_no_scroll_needed() {
     let mut test = setup(&content, 20);
     test.editor.options.scrolloff = 5;
     test.keys("25zt"); // scroll=19, cursor at row 5
-    test.keys("j");    // cursor 25, row 6 — in safe zone
+    test.keys("j"); // cursor 25, row 6 — in safe zone
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 19,
-        "[count]zt + j: cursor in safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        19,
+        "[count]zt + j: cursor in safe zone, no scroll"
+    );
 }
 
 // ==========================================================================
@@ -806,11 +901,15 @@ fn zt_then_j_with_scrolloff_0() {
     test.editor.options.scrolloff = 0;
     test.keys("24j");
     test.keys("zt"); // scroll=24
-    test.keys("j");  // line 25, scrolloff=0 → no scroll needed, cursor at row 1
+    test.keys("j"); // line 25, scrolloff=0 → no scroll needed, cursor at row 1
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 24, "scrolloff=0: no scroll needed after j");
+    assert_eq!(
+        vp.scroll_offset(),
+        24,
+        "scrolloff=0: no scroll needed after j"
+    );
 }
 
 #[test]
@@ -820,12 +919,15 @@ fn zt_then_j_with_scrolloff_1() {
     test.editor.options.scrolloff = 1;
     test.keys("24j");
     test.keys("zt"); // scroll=23 (24-1), cursor at row 1
-    test.keys("j");  // line 25, row 2. Safe zone [1,18]. In zone.
+    test.keys("j"); // line 25, row 2. Safe zone [1,18]. In zone.
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 23,
-        "scrolloff=1: cursor in safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        23,
+        "scrolloff=1: cursor in safe zone, no scroll"
+    );
 }
 
 #[test]
@@ -836,12 +938,15 @@ fn zt_then_j_with_scrolloff_10() {
     test.keys("24j");
     // scrolloff=10 clamped to 9. zt: scroll = 24-9 = 15, cursor at row 9
     test.keys("zt");
-    test.keys("j");  // cursor 25, row 10. Safe zone [9, 10]. In zone.
+    test.keys("j"); // cursor 25, row 10. Safe zone [9, 10]. In zone.
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 25);
-    assert_eq!(vp.scroll_offset(), 15,
-        "scrolloff=10 clamped to 9: cursor in safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        15,
+        "scrolloff=10 clamped to 9: cursor in safe zone, no scroll"
+    );
 }
 
 #[test]
@@ -851,12 +956,15 @@ fn zb_then_k_with_scrolloff_1() {
     test.editor.options.scrolloff = 1;
     test.keys("24j");
     test.keys("zb"); // scroll=6 (24-18), cursor at row 18
-    test.keys("k");  // cursor 23, row 17. Safe zone [1,18]. In zone.
+    test.keys("k"); // cursor 23, row 17. Safe zone [1,18]. In zone.
 
     let vp = ViewportAssertion::new(&test.editor);
     assert_eq!(vp.cursor_line(), 23);
-    assert_eq!(vp.scroll_offset(), 6,
-        "scrolloff=1: cursor in safe zone, no scroll");
+    assert_eq!(
+        vp.scroll_offset(),
+        6,
+        "scrolloff=1: cursor in safe zone, no scroll"
+    );
 }
 
 // ==========================================================================
