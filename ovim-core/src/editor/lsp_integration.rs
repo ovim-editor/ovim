@@ -922,6 +922,9 @@ impl Editor {
         if let Some(pending) = self.lsp.state.pending_inlay_hints.take() {
             pending.request.task.abort();
         }
+        if let Some(pending) = self.lsp.state.pending_diagnostic_refresh.take() {
+            pending.request.task.abort();
+        }
     }
 
     /// Get active LSP servers map
