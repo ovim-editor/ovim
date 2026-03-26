@@ -1059,7 +1059,13 @@ impl Editor {
             self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
         let cursor_display_col = {
             let line_text = self.buffer().line(cursor_line).unwrap_or_default();
-            crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width)
+            let raw_col =
+                crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width);
+            // Include inline decoration widths (inlay hints) so horizontal
+            // scroll keeps the *decorated* cursor position visible.  Without
+            // this, h_offset is set from raw text only, but the renderer adds
+            // decoration widths to the cursor, causing it to float right.
+            raw_col + self.decorations.inline_width_before(cursor_line, cursor_char_col)
         };
         let wrap = self.options.wrap;
         let sidescroll = self.options.sidescroll;
