@@ -191,11 +191,16 @@ impl Editor {
                     }
                 }
                 super::super::DocumentSyncRequestAction::FlushQueued => {
-                    let _ = lsp
+                    // Use the ACTUAL flushed content — the debouncer may have
+                    // been updated by the main loop since we captured our
+                    // snapshot, so `content` could be stale.
+                    if let Ok(Some((flushed_text, _))) = lsp
                         .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await;
-                    synced_content = Some(content.clone());
-                    synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                        .await
+                    {
+                        synced_content = Some(flushed_text);
+                        synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                    }
                 }
                 super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
                     let ok = lsp
@@ -207,10 +212,16 @@ impl Editor {
                         )
                         .await;
                     if ok.is_ok() {
-                        let _ = lsp
+                        // Use the ACTUAL flushed content — another thread may
+                        // have replaced the debouncer's pending_text.
+                        if let Ok(Some((flushed_text, _))) = lsp
                             .flush_pending_changes_broadcast(&uri, &language_id)
-                            .await;
-                        synced_content = Some(content.clone());
+                            .await
+                        {
+                            synced_content = Some(flushed_text);
+                        } else {
+                            synced_content = Some(content.clone());
+                        }
                         synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
                     }
                 }

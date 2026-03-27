@@ -701,6 +701,49 @@ fn ovim_color_to_ratatui(c: ovim_core::color::Color) -> Color {
     }
 }
 
+/// Truncate a rendered line to `max_width` display columns.
+///
+/// Walks spans left-to-right, keeping whole characters that fit.  Partial
+/// spans at the boundary are split so the total display width is exactly
+/// `max_width` (or less if the last character is wide).
+fn truncate_line_to_width(line: &mut Line<'static>, max_width: usize) {
+    let mut total: usize = 0;
+    let mut keep_spans = 0;
+
+    // First pass: find the truncation point.
+    let mut split_at: Option<(usize, usize)> = None; // (span_index, budget_cols)
+    for (i, span) in line.spans.iter().enumerate() {
+        let span_width: usize = span.content.chars().map(char_display_width).sum();
+        if total + span_width <= max_width {
+            total += span_width;
+            keep_spans += 1;
+        } else {
+            split_at = Some((i, max_width - total));
+            break;
+        }
+    }
+
+    // Second pass: apply truncation.
+    if let Some((span_idx, budget)) = split_at {
+        let style = line.spans[span_idx].style;
+        let mut kept = String::new();
+        let mut used = 0;
+        for ch in line.spans[span_idx].content.chars() {
+            let w = char_display_width(ch);
+            if used + w > budget {
+                break;
+            }
+            kept.push(ch);
+            used += w;
+        }
+        line.spans.truncate(keep_spans);
+        if !kept.is_empty() {
+            line.spans.push(Span::styled(kept, style));
+        }
+    }
+    // All spans fit — nothing to truncate.
+}
+
 /// Apply inline decorations to a rendered line by splicing styled spans.
 ///
 /// Decorations are inserted right-to-left (highest char_idx first) so earlier
@@ -876,6 +919,68 @@ fn apply_eol_decorations(
     if new_width < text_width {
         row.spans
             .push(Span::raw(" ".repeat(text_width - new_width)));
+    }
+}
+
+/// Overlay an EOL decoration at the right edge of a line that already exceeds
+/// `text_width` (typically because inline decorations pushed it beyond the
+/// viewport).  The diagnostic replaces the rightmost columns of the rendered
+/// line so it's always visible without affecting cursor positioning.
+fn overlay_eol_decoration_at_edge(
+    line: &mut Line<'static>,
+    decorations: &[&Decoration],
+    text_width: usize,
+) {
+    if decorations.is_empty() || text_width < 8 {
+        return;
+    }
+
+    let dec = &decorations[0];
+    let style = decoration_to_ratatui_style(&dec.style);
+
+    // Budget: "  MSG" at the right edge, capped at 1/3 of viewport.
+    let max_msg_chars = text_width / 3;
+    let msg = if dec.text.chars().count() > max_msg_chars {
+        format!(
+            "{}...",
+            dec.text
+                .chars()
+                .take(max_msg_chars.saturating_sub(3))
+                .collect::<String>()
+        )
+    } else {
+        dec.text.clone()
+    };
+    let gap = "  ";
+    let overlay_width = gap.len() + msg.chars().map(char_display_width).sum::<usize>();
+
+    // Truncate to make room for the overlay at the right edge.
+    let truncate_to = text_width.saturating_sub(overlay_width);
+    truncate_line_to_width(line, truncate_to);
+
+    // Pad if needed to reach the truncation point.
+    let current_width: usize = line
+        .spans
+        .iter()
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .sum();
+    if current_width < truncate_to {
+        line.spans
+            .push(Span::raw(" ".repeat(truncate_to - current_width)));
+    }
+
+    line.spans.push(Span::raw(gap.to_string()));
+    line.spans.push(Span::styled(msg, style));
+
+    // Pad to fill text_width.
+    let final_width: usize = line
+        .spans
+        .iter()
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .sum();
+    if final_width < text_width {
+        line.spans
+            .push(Span::raw(" ".repeat(text_width - final_width)));
     }
 }
 
@@ -1275,10 +1380,25 @@ pub fn render_buffer(
                     md_conceal,
                     dec_gen,
                 ) {
-                    let cached_line = cached_line.clone();
-                    // Use cached line — skip all expensive computation
+                    let mut cached_line = cached_line.clone();
+                    // Cached line has inline decorations but needs
+                    // EOL decorations (diagnostics) applied fresh.
+                    let eol_decs: Vec<&Decoration> = if show_eol_decorations {
+                        editor
+                            .decorations
+                            .eol_for_line(line_idx)
+                    } else {
+                        Vec::new()
+                    };
+
                     if has_wrap {
-                        let visual_rows = split_line_into_rows(cached_line, text_width);
+                        let mut visual_rows =
+                            split_line_into_rows(cached_line, text_width);
+                        if !eol_decs.is_empty() {
+                            if let Some(last_row) = visual_rows.last_mut() {
+                                apply_eol_decorations(last_row, &eol_decs, text_width);
+                            }
+                        }
                         for (row_idx, row) in visual_rows.into_iter().enumerate() {
                             if visual_rows_used >= visible_lines {
                                 break;
@@ -1298,14 +1418,39 @@ pub fn render_buffer(
                             visual_rows_used += 1;
                         }
                     } else {
+                        // Apply EOL decorations (same logic as cache-miss path).
+                        if !eol_decs.is_empty() {
+                            let line_width: usize = cached_line
+                                .spans
+                                .iter()
+                                .map(|s| {
+                                    s.content
+                                        .chars()
+                                        .map(char_display_width)
+                                        .sum::<usize>()
+                                })
+                                .sum();
+                            if line_width >= text_width {
+                                overlay_eol_decoration_at_edge(
+                                    &mut cached_line,
+                                    &eol_decs,
+                                    text_width,
+                                );
+                            } else {
+                                apply_eol_decorations(
+                                    &mut cached_line,
+                                    &eol_decs,
+                                    text_width,
+                                );
+                            }
+                        }
                         let line_len: usize = cached_line
                             .spans
                             .iter()
                             .map(|s| s.content.chars().count())
                             .sum();
-                        let mut padded = cached_line;
                         if line_len < text_width {
-                            padded
+                            cached_line
                                 .spans
                                 .push(Span::raw(" ".repeat(text_width - line_len)));
                         }
@@ -1320,7 +1465,7 @@ pub fn render_buffer(
                                     .and_then(|b| b.get(line_idx - start_line)),
                             ));
                         }
-                        lines.push(padded);
+                        lines.push(cached_line);
                         visual_rows_used += 1;
                     }
                     line_idx += 1;
@@ -1740,22 +1885,11 @@ pub fn render_buffer(
                     apply_style_at_column(&mut line, col, bracket_style);
                 }
 
-                // Store in cache (stable lines will be served from cache next frame)
-                line_cache.put(
-                    buffer_id,
-                    line_idx,
-                    buffer_version,
-                    h_offset,
-                    text_width,
-                    wrap,
-                    tab_width,
-                    md_conceal,
-                    dec_gen,
-                    line.clone(),
-                    is_stable,
-                );
-
-                // Apply decorations from the unified DecorationMap.
+                // Apply decorations from the unified DecorationMap BEFORE
+                // caching.  The cache key includes dec_gen so it misses when
+                // decorations change.  Storing the decorated line ensures
+                // cache-hit frames render the same decorations that cursor
+                // positioning (inline_width_before) accounts for.
                 let line_decorations = editor.decorations.for_line(line_idx);
                 let inline_decs: Vec<&Decoration> = line_decorations
                     .iter()
@@ -1780,6 +1914,22 @@ pub fn render_buffer(
                         wrap,
                     );
                 }
+
+                // Store in cache AFTER decorations so cache-hit frames
+                // match cursor positioning.
+                line_cache.put(
+                    buffer_id,
+                    line_idx,
+                    buffer_version,
+                    h_offset,
+                    text_width,
+                    wrap,
+                    tab_width,
+                    md_conceal,
+                    dec_gen,
+                    line.clone(),
+                    is_stable,
+                );
 
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
@@ -1812,9 +1962,33 @@ pub fn render_buffer(
                         visual_rows_used += 1;
                     }
                 } else {
-                    // No wrap: append EOL decorations before padding
+                    // No wrap: DON'T truncate — inline decorations shift
+                    // cursor position, and truncation would desync the
+                    // cursor from what's visible.  Ratatui clips overflow.
+                    //
+                    // When inline decorations pushed the line beyond
+                    // text_width, overlay the diagnostic at the right edge
+                    // instead of appending (which would be clipped away).
                     if !eol_decs.is_empty() {
-                        apply_eol_decorations(&mut line, &eol_decs, text_width);
+                        let line_width: usize = line
+                            .spans
+                            .iter()
+                            .map(|s| {
+                                s.content
+                                    .chars()
+                                    .map(char_display_width)
+                                    .sum::<usize>()
+                            })
+                            .sum();
+                        if line_width >= text_width {
+                            overlay_eol_decoration_at_edge(
+                                &mut line,
+                                &eol_decs,
+                                text_width,
+                            );
+                        } else {
+                            apply_eol_decorations(&mut line, &eol_decs, text_width);
+                        }
                     }
                     let line_len: usize =
                         line.spans.iter().map(|s| s.content.chars().count()).sum();

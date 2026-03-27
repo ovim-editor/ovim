@@ -725,11 +725,6 @@ impl Editor {
                     return false;
                 }
 
-                if result.buffer_version != self.buffer().version() {
-                    self.invalidate_inlay_hint_debounce();
-                    return false;
-                }
-
                 // File-scoped hints: only check that the file matches.
                 // Scroll position is irrelevant since hints cover the full file.
                 let matches_file = self
@@ -777,6 +772,15 @@ impl Editor {
                     crate::editor::decoration::DecorationSource::InlayHint,
                     hint_decs,
                 );
+
+                // If the buffer was edited since we spawned the request,
+                // keep the hints visible (stale is better than blank) but
+                // invalidate so a fresh set is requested on the next tick.
+                // This is the same pattern diagnostics use.
+                if result.buffer_version != self.buffer().version() {
+                    self.invalidate_inlay_hint_debounce();
+                }
+
                 self.mark_dirty();
                 true
             }
@@ -1497,11 +1501,22 @@ impl Editor {
                 true
             }
             DocumentSyncRequestAction::FlushQueued => {
-                let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
-                let flushed_version = lsp.get_last_sent_version(&uri).await;
+                // Use actual flushed content to avoid desync with LSP server.
+                let flushed = lsp
+                    .flush_pending_changes_broadcast(&uri, language_id)
+                    .await
+                    .ok()
+                    .flatten();
+                let (flushed_content, flushed_version) = match flushed {
+                    Some((text, ver)) => (text, ver),
+                    None => {
+                        let ver = lsp.get_last_sent_version(&uri).await;
+                        (content, ver)
+                    }
+                };
                 self.lsp.state.current_file_lsp_version = lsp.get_document_version(&uri).await;
                 self.lsp.state.current_file_lsp_sent_version = flushed_version;
-                self.mark_document_flushed(&state_key, content, flushed_version);
+                self.mark_document_flushed(&state_key, flushed_content, flushed_version);
                 true
             }
             DocumentSyncRequestAction::QueueChangeAndFlush => {
@@ -1529,11 +1544,22 @@ impl Editor {
                     state.mark_change_queued(content.clone(), queued_version);
                 }
 
-                let _ = lsp.flush_pending_changes_broadcast(&uri, language_id).await;
-                let flushed_version = lsp.get_last_sent_version(&uri).await;
+                // Use actual flushed content to avoid desync with LSP server.
+                let flushed = lsp
+                    .flush_pending_changes_broadcast(&uri, language_id)
+                    .await
+                    .ok()
+                    .flatten();
+                let (flushed_content, flushed_version) = match flushed {
+                    Some((text, ver)) => (text, ver),
+                    None => {
+                        let ver = lsp.get_last_sent_version(&uri).await;
+                        (content, ver)
+                    }
+                };
                 self.lsp.state.current_file_lsp_version = lsp.get_document_version(&uri).await;
                 self.lsp.state.current_file_lsp_sent_version = flushed_version;
-                self.mark_document_flushed(&state_key, content, flushed_version);
+                self.mark_document_flushed(&state_key, flushed_content, flushed_version);
                 true
             }
         }
@@ -1978,7 +2004,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn poll_pending_inlay_hint_response_drops_stale_buffer_version_result() {
+    async fn poll_pending_inlay_hint_response_keeps_stale_hints_and_requests_refresh() {
         let mut editor = Editor::with_content("class Test {}\n");
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
@@ -2022,8 +2048,9 @@ mod tests {
             },
         });
 
-        assert!(!editor.poll_pending_inlay_hint_response());
-        assert!(editor.lsp.state.inlay_hints.is_empty());
+        // Stale hints are still applied (better than flashing).
+        assert!(editor.poll_pending_inlay_hint_response());
+        // But debounce is invalidated so a fresh request fires next tick.
         assert!(editor.lsp.state.applied_inlay_hint_request.is_none());
     }
 

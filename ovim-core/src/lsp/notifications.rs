@@ -445,11 +445,18 @@ impl LspManager {
     /// Uses the version that was pre-assigned in `did_change()` rather than
     /// re-incrementing.  This ensures the version in the didChange notification
     /// matches what `set_diagnostics()` already uses for staleness checks.
+    /// Flushes pending changes and broadcasts to all servers for the language.
+    ///
+    /// Returns the `(content, version)` that was actually sent to the LSP
+    /// server, or `None` if there was nothing to flush.  Callers that record
+    /// `synced_content` (e.g. inlay-hint / completion tasks) **must** use the
+    /// returned content — the debouncer may have been updated by another thread
+    /// since the caller captured its snapshot.
     pub async fn flush_pending_changes_broadcast(
         &self,
         uri: &Uri,
         language_id: &str,
-    ) -> Result<()> {
+    ) -> Result<Option<(String, i32)>> {
         // First, remove the debouncer to get pending text
         if let Some((_, debouncer_arc)) = self.change_debouncers.remove(uri) {
             let mut debouncer = debouncer_arc.lock().await;
@@ -505,9 +512,11 @@ impl LspManager {
                     .lock()
                     .await
                     .insert(uri.clone(), std::time::Instant::now());
+
+                return Ok(Some((text, version)));
             }
         }
-        Ok(())
+        Ok(None)
     }
 
     /// Sends didSave to the server group responsible for this document.
@@ -518,7 +527,8 @@ impl LspManager {
         text: Option<String>,
     ) -> Result<()> {
         // Flush pending changes to ALL servers (not just primary)
-        self.flush_pending_changes_broadcast(&uri, language_id)
+        let _ = self
+            .flush_pending_changes_broadcast(&uri, language_id)
             .await?;
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
@@ -541,7 +551,8 @@ impl LspManager {
 
     /// Sends didClose to the server group responsible for this document.
     pub async fn did_close_broadcast(&self, uri: Uri, language_id: &str) -> Result<()> {
-        self.flush_pending_changes_broadcast(&uri, language_id)
+        let _ = self
+            .flush_pending_changes_broadcast(&uri, language_id)
             .await?;
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
@@ -1101,6 +1112,7 @@ impl LspManager {
             if let Err(e) = self
                 .flush_pending_changes_broadcast(&uri, &language_id)
                 .await
+                .map(|_| ())
             {
                 lsp_error!(
                     "Debounce",

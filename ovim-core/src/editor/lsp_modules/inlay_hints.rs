@@ -157,11 +157,16 @@ impl Editor {
                     }
                 }
                 super::super::DocumentSyncRequestAction::FlushQueued => {
-                    let _ = lsp
+                    // Use the ACTUAL flushed content — the debouncer may have
+                    // been updated by the main loop since we captured our
+                    // snapshot, so `content` could be stale.
+                    if let Ok(Some((flushed_text, _))) = lsp
                         .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await;
-                    synced_content = Some(content.clone());
-                    lsp_version = lsp.get_last_sent_version(&uri).await;
+                        .await
+                    {
+                        synced_content = Some(flushed_text);
+                        lsp_version = lsp.get_last_sent_version(&uri).await;
+                    }
                 }
                 super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
                     if lsp
@@ -174,10 +179,19 @@ impl Editor {
                         .await
                         .is_ok()
                     {
-                        let _ = lsp
+                        // Use the ACTUAL flushed content — another thread may
+                        // have replaced the debouncer's pending_text between
+                        // our did_change and flush calls.
+                        if let Ok(Some((flushed_text, _))) = lsp
                             .flush_pending_changes_broadcast(&uri, &language_id)
-                            .await;
-                        synced_content = Some(content.clone());
+                            .await
+                        {
+                            synced_content = Some(flushed_text);
+                        } else {
+                            // Debouncer was already consumed (e.g. timer fired
+                            // between our calls) — our content was likely sent.
+                            synced_content = Some(content.clone());
+                        }
                         lsp_version = lsp.get_last_sent_version(&uri).await;
                     }
                 }
