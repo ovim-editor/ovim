@@ -134,13 +134,6 @@ impl Editor {
         cursor_before: Position,
         cursor_after: Position,
     ) {
-        // Adjust decoration positions to follow the edits.
-        // This keeps inlay hints at correct positions between the edit
-        // and the next LSP response (~500ms), avoiding stale coordinates.
-        for edit in &edits {
-            self.adjust_decorations_for_edit(edit);
-        }
-
         let group_id = self
             .ai_state
             .chat
@@ -219,65 +212,6 @@ impl Editor {
             let inserted_text = change.get_inserted_text();
             if !inserted_text.is_empty() {
                 self.registers.set_last_inserted(inserted_text);
-            }
-        }
-    }
-
-    /// Adjust decoration positions to track a buffer edit.
-    ///
-    /// Converts the absolute char-offset `Edit` into line/col deltas and
-    /// calls `DecorationMap::adjust_for_edit`.  The rope must still reflect
-    /// the **post-edit** state (this runs after `buffer.record()` applies
-    /// the edit).
-    fn adjust_decorations_for_edit(&mut self, edit: &Edit) {
-        let rope = self.buffer().rope().clone();
-        match edit {
-            Edit::Insert { offset, text } => {
-                let newlines = text.chars().filter(|&c| c == '\n').count();
-                // The offset is where text was inserted (in the NOW-modified rope).
-                // We need the pre-insert position.  Since the insert already
-                // happened, `offset` points into the new rope.  The line/col of
-                // the insert point is the same in both old and new rope (text was
-                // added AFTER this point).
-                let insert_offset = (*offset).min(rope.len_chars());
-                let edit_line = rope.char_to_line(insert_offset);
-                let line_start = rope.line_to_char(edit_line);
-                let edit_col = insert_offset - line_start;
-
-                if newlines > 0 {
-                    self.decorations.adjust_for_edit(
-                        edit_line,
-                        edit_col,
-                        newlines as isize,
-                        0,
-                    );
-                } else {
-                    let chars_inserted = text.chars().count() as isize;
-                    self.decorations
-                        .adjust_for_edit(edit_line, edit_col, 0, chars_inserted);
-                }
-            }
-            Edit::Delete { offset, text } => {
-                let newlines = text.chars().filter(|&c| c == '\n').count();
-                // After deletion, `offset` points to where the deleted text
-                // was.  The rope is already modified (text removed).
-                let del_offset = (*offset).min(rope.len_chars());
-                let edit_line = rope.char_to_line(del_offset);
-                let line_start = rope.line_to_char(edit_line);
-                let edit_col = del_offset - line_start;
-
-                if newlines > 0 {
-                    self.decorations.adjust_for_edit(
-                        edit_line,
-                        edit_col,
-                        -(newlines as isize),
-                        0,
-                    );
-                } else {
-                    let chars_deleted = text.chars().count() as isize;
-                    self.decorations
-                        .adjust_for_edit(edit_line, edit_col, 0, -chars_deleted);
-                }
             }
         }
     }
