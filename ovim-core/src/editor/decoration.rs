@@ -211,6 +211,135 @@ impl DecorationMap {
     pub fn is_empty(&self) -> bool {
         self.lines.is_empty()
     }
+
+    /// Adjust decoration positions after a buffer edit.
+    ///
+    /// `edit_line` / `edit_col`: where the edit occurred (0-indexed).
+    /// `lines_inserted`: net lines added (negative = deleted).
+    /// `col_delta`: for single-line edits on `edit_line`, how many chars
+    ///   were inserted (positive) or deleted (negative) at `edit_col`.
+    ///
+    /// Decorations on the edited line at or after `edit_col` shift by
+    /// `col_delta`.  Decorations on lines after the edit shift by
+    /// `lines_inserted`.  Decorations that fall inside a deleted region
+    /// are removed.
+    pub fn adjust_for_edit(
+        &mut self,
+        edit_line: usize,
+        edit_col: usize,
+        lines_inserted: isize,
+        col_delta: isize,
+    ) {
+        if self.lines.is_empty() {
+            return;
+        }
+
+        // Collect all decorations, adjust, then rebuild the BTreeMap.
+        let mut all_decs: Vec<Decoration> = self
+            .lines
+            .values()
+            .flat_map(|v| v.iter().cloned())
+            .collect();
+        self.lines.clear();
+
+        let mut any_changed = false;
+        all_decs.retain_mut(|dec| {
+            let line = dec.placement.line();
+
+            if lines_inserted == 0 {
+                // Single-line edit: only affects decorations on edit_line.
+                if line == edit_line {
+                    match &mut dec.placement {
+                        DecorationPlacement::Inline { char_idx, .. } => {
+                            if *char_idx >= edit_col {
+                                let new_idx = (*char_idx as isize + col_delta).max(0) as usize;
+                                if col_delta < 0
+                                    && *char_idx < edit_col + (-col_delta) as usize
+                                {
+                                    // Decoration was inside deleted region.
+                                    any_changed = true;
+                                    return false;
+                                }
+                                if new_idx != *char_idx {
+                                    any_changed = true;
+                                }
+                                *char_idx = new_idx;
+                            }
+                        }
+                        DecorationPlacement::EndOfLine { .. } => {
+                            // EOL stays on the same line, no adjustment.
+                        }
+                    }
+                }
+            } else if lines_inserted > 0 {
+                // Lines were inserted at edit_line.
+                if line > edit_line || (line == edit_line && matches!(&dec.placement, DecorationPlacement::Inline { char_idx, .. } if *char_idx >= edit_col)) {
+                    let new_line = (line as isize + lines_inserted) as usize;
+                    match &mut dec.placement {
+                        DecorationPlacement::Inline { line: l, char_idx } => {
+                            if *l == edit_line {
+                                // Decoration on the edit line at/after the
+                                // edit column moves to the new line with
+                                // adjusted column.
+                                *char_idx = char_idx.saturating_sub(edit_col);
+                            }
+                            *l = new_line;
+                        }
+                        DecorationPlacement::EndOfLine { line: l } => {
+                            *l = new_line;
+                        }
+                    }
+                    any_changed = true;
+                }
+            } else {
+                // Lines were deleted.
+                let deleted = (-lines_inserted) as usize;
+                let del_start = edit_line;
+                let del_end = edit_line + deleted; // exclusive
+
+                if line >= del_start && line < del_end && line != edit_line {
+                    // Decoration on a fully deleted line — remove it.
+                    any_changed = true;
+                    return false;
+                }
+                if line >= del_end {
+                    let new_line = line - deleted;
+                    match &mut dec.placement {
+                        DecorationPlacement::Inline { line: l, .. } => *l = new_line,
+                        DecorationPlacement::EndOfLine { line: l } => *l = new_line,
+                    }
+                    any_changed = true;
+                }
+            }
+
+            true
+        });
+
+        // Re-insert into the BTreeMap.
+        for dec in all_decs {
+            let line = dec.placement.line();
+            self.lines.entry(line).or_default().push(dec);
+        }
+
+        // Re-sort each line.
+        for line_decs in self.lines.values_mut() {
+            line_decs.sort_by(|a, b| {
+                let pos_a = match &a.placement {
+                    DecorationPlacement::Inline { char_idx, .. } => (0, *char_idx),
+                    DecorationPlacement::EndOfLine { .. } => (1, 0),
+                };
+                let pos_b = match &b.placement {
+                    DecorationPlacement::Inline { char_idx, .. } => (0, *char_idx),
+                    DecorationPlacement::EndOfLine { .. } => (1, 0),
+                };
+                pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
+            });
+        }
+
+        if any_changed {
+            self.generation = self.generation.wrapping_add(1);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

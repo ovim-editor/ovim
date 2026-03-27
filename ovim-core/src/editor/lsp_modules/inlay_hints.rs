@@ -2,7 +2,7 @@ use crate::editor::Editor;
 use lsp_types::Position;
 use std::time::{Duration, Instant};
 
-const INLAY_HINT_REFRESH_DEBOUNCE: Duration = Duration::from_millis(250);
+const INLAY_HINT_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
 
 fn should_skip_inlay_hint_refresh(
     last_key: Option<&crate::editor::lsp_state::InlayHintRequestKey>,
@@ -307,7 +307,7 @@ mod tests {
             Some(&key),
             Some(now),
             &key,
-            now + Duration::from_millis(300),
+            now + Duration::from_millis(600),
         ));
         assert!(!should_skip_inlay_hint_refresh(
             Some(&key),
