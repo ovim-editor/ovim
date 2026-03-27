@@ -16,7 +16,6 @@ use std::io;
 use super::buffer::{render_buffer, WindowRenderContext};
 use super::dashboard::render_dashboard;
 use super::file_tree_widget::render_file_tree;
-use super::helpers::grapheme_col_to_display_col;
 use super::layout::{BufferLayout, OverlayContext};
 use super::line_cache::LineRenderCache;
 use super::overlays::{
@@ -596,43 +595,63 @@ fn set_cursor_position(
         let line_text = line_text.trim_end_matches('\n').to_string();
 
         let tab_width = editor.options.tab_width;
-        let display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
 
-        // Shift cursor right to account for inline decorations (inlay hints)
-        // that appear before the cursor position.  Decorations store char
-        // indices, so convert the grapheme-based cursor_col first.
+        // Compute the cursor's column in the rendered line — the same line
+        // the Paragraph widget displays.  We expand tabs, then add
+        // inline decoration widths before the cursor's char position.
+        // This produces a "rendered column" that directly corresponds to
+        // how the renderer builds and wraps lines, avoiding the wrap-point
+        // mismatch that `cursor_to_visual_with_decorations` suffers from
+        // when decoration text spans multiple visual rows.
+        let exp = super::helpers::expand_tabs_with_mapping(&line_text, tab_width);
         let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, cursor_col);
+        let expanded_col = if char_col < exp.char_mapping.len() {
+            exp.char_mapping[char_col]
+        } else if !exp.char_mapping.is_empty() {
+            *exp.char_mapping.last().unwrap()
+        } else {
+            char_col
+        };
         let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col);
-        let display_col = display_col + inline_offset;
+        let display_col = expanded_col + inline_offset;
 
         let buffer_area = layout.buffer_area;
         let gutter_width = layout.gutter_width;
         let text_width = layout.text_width;
 
         let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
-            if let Some(wrap_map) = editor.wrap_map() {
-                let inline_widths =
-                    editor.decorations.inline_decorations_for_line(cursor_line);
-                let (abs_visual_row, visual_col) =
-                    wrap_map.cursor_to_visual_with_decorations(
-                        cursor_line, display_col, &line_text, &inline_widths,
-                    );
-                let viewport_visual_row = wrap_map.logical_to_visual(viewport_start);
-                let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
-                let screen_col = visual_col;
-                (
-                    screen_row.min(buffer_area.height.saturating_sub(1) as usize),
-                    screen_col.min(text_width.saturating_sub(1)),
-                )
+            // In wrap mode, divide the rendered column by text_width to
+            // find which visual sub-row and column the cursor lands on.
+            // This matches `split_line_into_rows` because both operate on
+            // the same rendered-column space.
+            let sub_row = if text_width > 0 {
+                display_col / text_width
             } else {
-                let screen_line = cursor_line.saturating_sub(viewport_start);
-                let h_offset = editor.horizontal_offset();
-                let adjusted_col = display_col.saturating_sub(h_offset);
-                (
-                    screen_line.min(buffer_area.height.saturating_sub(1) as usize),
-                    adjusted_col.min(text_width.saturating_sub(1)),
-                )
-            }
+                0
+            };
+            let visual_col = if text_width > 0 {
+                display_col % text_width
+            } else {
+                display_col
+            };
+
+            // Count visual rows consumed by lines before the cursor line.
+            let abs_visual_row = if let Some(wrap_map) = editor.wrap_map() {
+                let base = wrap_map.logical_to_visual(cursor_line);
+                base + sub_row
+            } else {
+                cursor_line + sub_row
+            };
+            let viewport_visual_row = if let Some(wrap_map) = editor.wrap_map() {
+                wrap_map.logical_to_visual(viewport_start)
+            } else {
+                viewport_start
+            };
+            let screen_row = abs_visual_row.saturating_sub(viewport_visual_row);
+            (
+                screen_row.min(buffer_area.height.saturating_sub(1) as usize),
+                visual_col.min(text_width.saturating_sub(1)),
+            )
         } else {
             let screen_line = cursor_line.saturating_sub(viewport_start);
             let h_offset = editor.horizontal_offset();
