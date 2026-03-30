@@ -39,6 +39,9 @@ impl Editor {
     /// Undoes the last change
     pub fn undo(&mut self) {
         self.buffer_mut().undo();
+        // Decoration char_offsets can't be adjusted here (edit list not
+        // exposed from buffer.undo()).  Clear and let LSP refresh.
+        self.decorations.clear();
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
@@ -47,6 +50,7 @@ impl Editor {
     /// Redoes the next change
     pub fn redo(&mut self) {
         self.buffer_mut().redo();
+        self.decorations.clear();
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
@@ -134,6 +138,12 @@ impl Editor {
         cursor_before: Position,
         cursor_after: Position,
     ) {
+        // Adjust decoration char_offsets to follow the edits.
+        // The rope is already in post-edit state; the arithmetic adjustment
+        // uses only the edit offsets/lengths, not line/col, so this is correct.
+        let rope = self.buffer().rope().clone();
+        self.decorations.adjust_for_edits(&edits, &rope);
+
         let group_id = self
             .ai_state
             .chat

@@ -851,9 +851,10 @@ impl Editor {
 
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let rope = self.buffer().rope().clone();
+        let rope_for_text = rope.clone();
         let make_line_text = move |line_idx: usize| -> String {
-            if line_idx < rope.len_lines() {
-                let line = rope.line(line_idx);
+            if line_idx < rope_for_text.len_lines() {
+                let line = rope_for_text.line(line_idx);
                 let text = line.to_string();
                 let trimmed = text.trim_end_matches('\n');
                 trimmed.to_string()
@@ -863,7 +864,7 @@ impl Editor {
         };
 
         let inline_widths = |line_idx: usize| -> Vec<(usize, usize)> {
-            self.decorations.inline_decorations_for_line(line_idx)
+            self.decorations.inline_decorations_for_line(line_idx, &rope)
         };
 
         if let Some(map) = self.viewport.wrap_map.as_mut() {
@@ -1065,7 +1066,7 @@ impl Editor {
             // scroll keeps the *decorated* cursor position visible.  Without
             // this, h_offset is set from raw text only, but the renderer adds
             // decoration widths to the cursor, causing it to float right.
-            raw_col + self.decorations.inline_width_before(cursor_line, cursor_char_col)
+            raw_col + self.decorations.inline_width_before(cursor_line, cursor_char_col, self.buffer().rope())
         };
         let wrap = self.options.wrap;
         let sidescroll = self.options.sidescroll;
@@ -1176,10 +1177,11 @@ impl Editor {
         let cursor_char_col = grapheme_to_char_col(&line_text, self.buffer().cursor().col());
         let cursor_display_col =
             crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width);
+        let rope = self.buffer().rope();
         let cursor_inline_widths =
-            self.decorations.inline_decorations_for_line(cursor_line);
+            self.decorations.inline_decorations_for_line(cursor_line, rope);
         let cursor_display_col =
-            cursor_display_col + self.decorations.inline_width_before(cursor_line, cursor_char_col);
+            cursor_display_col + self.decorations.inline_width_before(cursor_line, cursor_char_col, rope);
         let cursor_subline = Self::cursor_subline_in_wrapped_line(
             &line_text,
             cursor_display_col,

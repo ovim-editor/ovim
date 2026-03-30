@@ -755,31 +755,25 @@ fn apply_inline_decorations(
     char_mapping: &[usize],
     h_offset: usize,
     wrap: bool,
+    line_start_offset: usize,
 ) {
     if decorations.is_empty() {
         return;
     }
 
-    // Sort right-to-left by char_idx
+    // Sort right-to-left by char_offset
     let mut sorted: Vec<&&Decoration> = decorations.iter().collect();
     sorted.sort_by(|a, b| {
-        let a_idx = match &a.placement {
-            DecorationPlacement::Inline { char_idx, .. } => *char_idx,
-            _ => 0,
-        };
-        let b_idx = match &b.placement {
-            DecorationPlacement::Inline { char_idx, .. } => *char_idx,
-            _ => 0,
-        };
-        b_idx.cmp(&a_idx) // reverse order
+        let a_off = a.placement.char_offset();
+        let b_off = b.placement.char_offset();
+        b_off.cmp(&a_off) // reverse order
     });
 
     for dec in sorted {
+        // Derive line-relative char_idx from absolute char_offset.
         let char_idx = match &dec.placement {
-            DecorationPlacement::Inline { char_idx, .. } => {
-                // Positions are already char indices (converted at decoration
-                // creation time), so no UTF-16 conversion needed here.
-                *char_idx
+            DecorationPlacement::Inline { char_offset } => {
+                char_offset.saturating_sub(line_start_offset)
             }
             _ => continue,
         };
@@ -1905,6 +1899,7 @@ pub fn render_buffer(
                 };
 
                 if !inline_decs.is_empty() {
+                    let line_start_offset = editor.buffer().rope().line_to_char(line_idx);
                     apply_inline_decorations(
                         &mut line,
                         &inline_decs,
@@ -1912,6 +1907,7 @@ pub fn render_buffer(
                         &char_mapping,
                         h_offset,
                         wrap,
+                        line_start_offset,
                     );
                 }
 
@@ -2604,7 +2600,7 @@ mod tests {
         let mut first = rows.remove(0);
 
         let dec = Decoration {
-            placement: DecorationPlacement::EndOfLine { line: 0 },
+            placement: DecorationPlacement::EndOfLine { char_offset: 0 },
             source: DecorationSource::Diagnostic,
             text: "\u{f057} uh oh".to_string(),
             display_width: 7,

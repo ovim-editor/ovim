@@ -612,7 +612,7 @@ fn set_cursor_position(
         } else {
             char_col
         };
-        let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col);
+        let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, editor.buffer().rope());
         let display_col = expanded_col + inline_offset;
 
         let buffer_area = layout.buffer_area;

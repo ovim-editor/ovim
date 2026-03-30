@@ -1,26 +1,57 @@
 use crate::color::Color;
+use crate::edit::Edit;
+use ropey::Rope;
 use std::collections::BTreeMap;
 
 /// Where a decoration appears relative to buffer text.
+///
+/// Positions are stored as **absolute char offsets** into the rope.
+/// This allows edits to adjust positions with simple arithmetic
+/// (shift forward for inserts, backward for deletes) without any
+/// line/col conversion.  The line number and line-relative char index
+/// are derived at query time from the rope.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DecorationPlacement {
     /// Inserted inline at a buffer position. Affects display width,
     /// cursor positioning, and wrap calculation.
     Inline {
-        line: usize,
-        /// Character index within the line (original text space, pre-expansion).
-        char_idx: usize,
+        /// Absolute char offset in the rope.
+        char_offset: usize,
     },
     /// Appended after the code text on a line. Does not affect cursor.
     /// Rendered after wrapping (first visual row only).
-    EndOfLine { line: usize },
+    EndOfLine {
+        /// Char offset of the start of the target line in the rope.
+        char_offset: usize,
+    },
 }
 
 impl DecorationPlacement {
-    pub fn line(&self) -> usize {
+    /// Absolute char offset into the rope.
+    pub fn char_offset(&self) -> usize {
         match self {
-            Self::Inline { line, .. } | Self::EndOfLine { line } => *line,
+            Self::Inline { char_offset } | Self::EndOfLine { char_offset } => *char_offset,
         }
+    }
+
+    /// Mutable reference to the char offset (for edit adjustment).
+    fn char_offset_mut(&mut self) -> &mut usize {
+        match self {
+            Self::Inline { char_offset } | Self::EndOfLine { char_offset } => char_offset,
+        }
+    }
+
+    /// Derive the line number from the rope.
+    pub fn line(&self, rope: &Rope) -> usize {
+        let offset = self.char_offset().min(rope.len_chars());
+        rope.char_to_line(offset)
+    }
+
+    /// Derive the line-relative char index from the rope.
+    pub fn char_idx(&self, rope: &Rope) -> usize {
+        let offset = self.char_offset().min(rope.len_chars());
+        let line = rope.char_to_line(offset);
+        offset - rope.line_to_char(line)
     }
 }
 
@@ -103,11 +134,13 @@ impl DecorationMap {
     }
 
     /// Replace all decorations from a given source.
+    /// The rope is needed to derive line numbers for the index.
     /// Returns true if the set actually changed.
     pub fn replace_source(
         &mut self,
         source: DecorationSource,
         decorations: Vec<Decoration>,
+        rope: &Rope,
     ) -> bool {
         // Remove old decorations from this source.
         let mut any_removed = false;
@@ -122,26 +155,14 @@ impl DecorationMap {
 
         let any_added = !decorations.is_empty();
 
-        // Insert new decorations.
+        // Insert new decorations, keyed by line derived from char_offset.
         for dec in decorations {
-            let line = dec.placement.line();
+            let line = dec.placement.line(rope);
             self.lines.entry(line).or_default().push(dec);
         }
 
         // Sort each affected line by position then priority.
-        for line_decs in self.lines.values_mut() {
-            line_decs.sort_by(|a, b| {
-                let pos_a = match &a.placement {
-                    DecorationPlacement::Inline { char_idx, .. } => (0, *char_idx),
-                    DecorationPlacement::EndOfLine { .. } => (1, 0),
-                };
-                let pos_b = match &b.placement {
-                    DecorationPlacement::Inline { char_idx, .. } => (0, *char_idx),
-                    DecorationPlacement::EndOfLine { .. } => (1, 0),
-                };
-                pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
-            });
-        }
+        Self::sort_all_lines(&mut self.lines);
 
         if any_removed || any_added {
             self.generation = self.generation.wrapping_add(1);
@@ -149,6 +170,72 @@ impl DecorationMap {
         } else {
             false
         }
+    }
+
+    /// Adjust decoration char_offsets after buffer edits, then rebuild
+    /// the line index.  Edits must be in the order they were applied.
+    ///
+    /// The rope must be the **post-edit** rope (edits already applied).
+    /// The arithmetic adjustment is independent of rope state — it only
+    /// uses the edit offsets and lengths.
+    pub fn adjust_for_edits(&mut self, edits: &[Edit], rope: &Rope) {
+        if self.lines.is_empty() || edits.is_empty() {
+            return;
+        }
+
+        // Collect all decorations, adjust offsets, then rebuild index.
+        let mut all_decs: Vec<Decoration> = self
+            .lines
+            .values_mut()
+            .flat_map(|v| v.drain(..))
+            .collect();
+        self.lines.clear();
+
+        for edit in edits {
+            match edit {
+                Edit::Insert { offset, text } => {
+                    let len = text.chars().count();
+                    for dec in &mut all_decs {
+                        let off = dec.placement.char_offset_mut();
+                        if *off >= *offset {
+                            *off += len;
+                        }
+                    }
+                }
+                Edit::Delete { offset, text } => {
+                    let len = text.chars().count();
+                    let end = offset + len;
+                    all_decs.retain_mut(|dec| {
+                        let off = dec.placement.char_offset_mut();
+                        if *off >= end {
+                            *off -= len;
+                            true
+                        } else if *off > *offset {
+                            // Inside deleted region — remove decoration.
+                            false
+                        } else {
+                            true
+                        }
+                    });
+                }
+            }
+        }
+
+        // Clamp offsets to valid range and rebuild line index.
+        let max_offset = rope.len_chars();
+        for dec in &mut all_decs {
+            let off = dec.placement.char_offset_mut();
+            if *off > max_offset {
+                *off = max_offset;
+            }
+        }
+
+        for dec in all_decs {
+            let line = dec.placement.line(rope);
+            self.lines.entry(line).or_default().push(dec);
+        }
+        Self::sort_all_lines(&mut self.lines);
+        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Get all decorations for a line, sorted by position then priority.
@@ -175,11 +262,14 @@ impl DecorationMap {
     /// Returns `(char_idx, display_width)` pairs for inline decorations on a
     /// line, sorted by char_idx.  Used by WrapMap to account for decoration
     /// widths when computing wrap points.
-    pub fn inline_decorations_for_line(&self, line: usize) -> Vec<(usize, usize)> {
+    pub fn inline_decorations_for_line(&self, line: usize, rope: &Rope) -> Vec<(usize, usize)> {
+        let line_start = rope.line_to_char(line);
         self.for_line(line)
             .iter()
             .filter_map(|d| match &d.placement {
-                DecorationPlacement::Inline { char_idx, .. } => Some((*char_idx, d.display_width)),
+                DecorationPlacement::Inline { char_offset } => {
+                    Some((char_offset.saturating_sub(line_start), d.display_width))
+                }
                 _ => None,
             })
             .collect()
@@ -187,13 +277,19 @@ impl DecorationMap {
 
     /// Total display width of inline decorations on a line
     /// at or before the given char index.
-    pub fn inline_width_before(&self, line: usize, char_idx: usize) -> usize {
+    pub fn inline_width_before(&self, line: usize, char_idx: usize, rope: &Rope) -> usize {
+        let line_start = rope.line_to_char(line);
         self.for_line(line)
             .iter()
             .filter_map(|d| match &d.placement {
-                DecorationPlacement::Inline {
-                    char_idx: idx, ..
-                } if *idx <= char_idx => Some(d.display_width),
+                DecorationPlacement::Inline { char_offset } => {
+                    let idx = char_offset.saturating_sub(line_start);
+                    if idx <= char_idx {
+                        Some(d.display_width)
+                    } else {
+                        None
+                    }
+                }
                 _ => None,
             })
             .sum()
@@ -212,19 +308,37 @@ impl DecorationMap {
         self.lines.is_empty()
     }
 
+    /// Sort decorations within each line: inline before EOL, then by
+    /// char_offset, then by priority.
+    fn sort_all_lines(lines: &mut BTreeMap<usize, Vec<Decoration>>) {
+        for line_decs in lines.values_mut() {
+            line_decs.sort_by(|a, b| {
+                let pos_a = match &a.placement {
+                    DecorationPlacement::Inline { char_offset } => (0, *char_offset),
+                    DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
+                };
+                let pos_b = match &b.placement {
+                    DecorationPlacement::Inline { char_offset } => (0, *char_offset),
+                    DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
+                };
+                pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
+            });
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
 // LSP → Decoration conversion helpers
 // ---------------------------------------------------------------------------
 
-/// Convert LSP inlay hints into inline decorations.
+/// Convert LSP inlay hints into inline decorations with rope-anchored offsets.
 ///
 /// `line_text` returns the text of a given line (without trailing newline).
-/// Used to convert LSP UTF-16 offsets to char indices at creation time,
-/// so every downstream consumer (cursor, WrapMap, renderer) sees char indices.
+/// Used to convert LSP UTF-16 offsets to char indices.
+/// The rope is used to compute absolute char offsets from (line, char_idx).
 pub fn decorations_from_inlay_hints<F>(
     hints: &[lsp_types::InlayHint],
+    rope: &Rope,
     line_text: F,
 ) -> Vec<Decoration>
 where
@@ -237,9 +351,15 @@ where
         .map(|hint| {
             let line = hint.position.line as usize;
             let utf16_col = hint.position.character as u32;
-            // Convert UTF-16 offset → char index at creation time.
+            // Convert UTF-16 offset → char index.
             let text_for_line = line_text(line);
             let char_idx = crate::lsp::utf16_to_char_col(&text_for_line, utf16_col);
+            // Convert to absolute rope char offset.
+            let char_offset = if line < rope.len_lines() {
+                rope.line_to_char(line) + char_idx
+            } else {
+                rope.len_chars()
+            };
 
             let label = match &hint.label {
                 lsp_types::InlayHintLabel::String(s) => s.clone(),
@@ -257,7 +377,7 @@ where
             let display_width = text.chars().count(); // ASCII-safe for typical hints
 
             Decoration {
-                placement: DecorationPlacement::Inline { line, char_idx },
+                placement: DecorationPlacement::Inline { char_offset },
                 source: DecorationSource::InlayHint,
                 text,
                 display_width,
@@ -301,11 +421,14 @@ fn diagnostic_style(
     }
 }
 
-/// Convert LSP diagnostics into end-of-line decorations.
+/// Convert LSP diagnostics into end-of-line decorations with rope-anchored offsets.
 ///
 /// Only the first (highest-severity) diagnostic per line is converted,
 /// matching the existing renderer behavior.
-pub fn decorations_from_diagnostics(diagnostics: &[lsp_types::Diagnostic]) -> Vec<Decoration> {
+pub fn decorations_from_diagnostics(
+    diagnostics: &[lsp_types::Diagnostic],
+    rope: &Rope,
+) -> Vec<Decoration> {
     use std::collections::HashMap;
 
     // Group by line, keep highest severity per line.
@@ -313,8 +436,6 @@ pub fn decorations_from_diagnostics(diagnostics: &[lsp_types::Diagnostic]) -> Ve
     for diag in diagnostics {
         let line = diag.range.start.line as usize;
         let entry = best_per_line.entry(line).or_insert(diag);
-        // Lower severity number = higher severity (ERROR=1, WARNING=2, etc.)
-        // DiagnosticSeverity is a newtype: ERROR=1, WARNING=2, INFO=3, HINT=4
         let severity_ord = |s: Option<lsp_types::DiagnosticSeverity>| -> u32 {
             match s {
                 Some(lsp_types::DiagnosticSeverity::ERROR) => 1,
@@ -346,8 +467,15 @@ pub fn decorations_from_diagnostics(diagnostics: &[lsp_types::Diagnostic]) -> Ve
                 _ => 3,
             };
 
+            // Anchor to the start of the line in the rope.
+            let char_offset = if line < rope.len_lines() {
+                rope.line_to_char(line)
+            } else {
+                rope.len_chars()
+            };
+
             Decoration {
-                placement: DecorationPlacement::EndOfLine { line },
+                placement: DecorationPlacement::EndOfLine { char_offset },
                 source: DecorationSource::Diagnostic,
                 text,
                 display_width,
@@ -362,10 +490,18 @@ pub fn decorations_from_diagnostics(diagnostics: &[lsp_types::Diagnostic]) -> Ve
 mod tests {
     use super::*;
 
-    fn inline(line: usize, char_idx: usize, text: &str, source: DecorationSource) -> Decoration {
+    /// Test rope: "let x = 1;\nlet y = 2;\nlet z = 3;\n"
+    ///   line 0: chars  0..11  "let x = 1;\n"
+    ///   line 1: chars 11..22  "let y = 2;\n"
+    ///   line 2: chars 22..33  "let z = 3;\n"
+    fn test_rope() -> Rope {
+        Rope::from_str("let x = 1;\nlet y = 2;\nlet z = 3;\n")
+    }
+
+    fn inline_at(char_offset: usize, text: &str, source: DecorationSource) -> Decoration {
         let display_width = text.len(); // ASCII for tests
         Decoration {
-            placement: DecorationPlacement::Inline { line, char_idx },
+            placement: DecorationPlacement::Inline { char_offset },
             source,
             text: text.to_string(),
             display_width,
@@ -374,10 +510,10 @@ mod tests {
         }
     }
 
-    fn eol(line: usize, text: &str, source: DecorationSource) -> Decoration {
+    fn eol_at(char_offset: usize, text: &str, source: DecorationSource) -> Decoration {
         let display_width = text.len();
         Decoration {
-            placement: DecorationPlacement::EndOfLine { line },
+            placement: DecorationPlacement::EndOfLine { char_offset },
             source,
             text: text.to_string(),
             display_width,
@@ -388,15 +524,18 @@ mod tests {
 
     #[test]
     fn replace_source_inserts_and_retrieves() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
         let gen_before = map.generation;
 
+        // char 5 on line 0 = offset 5; char 10 on line 2 = offset 22+10=32
         map.replace_source(
             DecorationSource::InlayHint,
             vec![
-                inline(0, 5, ": String", DecorationSource::InlayHint),
-                inline(2, 10, "count: ", DecorationSource::InlayHint),
+                inline_at(5, ": String", DecorationSource::InlayHint),
+                inline_at(32, "count: ", DecorationSource::InlayHint),
             ],
+            &rope,
         );
 
         assert_eq!(map.for_line(0).len(), 1);
@@ -408,15 +547,18 @@ mod tests {
 
     #[test]
     fn replace_source_replaces_only_same_source() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
 
         map.replace_source(
             DecorationSource::InlayHint,
-            vec![inline(0, 5, ": String", DecorationSource::InlayHint)],
+            vec![inline_at(5, ": String", DecorationSource::InlayHint)],
+            &rope,
         );
         map.replace_source(
             DecorationSource::Diagnostic,
-            vec![eol(0, "error: unused variable", DecorationSource::Diagnostic)],
+            vec![eol_at(0, "error: unused variable", DecorationSource::Diagnostic)],
+            &rope,
         );
 
         assert_eq!(map.for_line(0).len(), 2);
@@ -424,7 +566,8 @@ mod tests {
         // Replace inlay hints with new set
         map.replace_source(
             DecorationSource::InlayHint,
-            vec![inline(0, 3, ": i32", DecorationSource::InlayHint)],
+            vec![inline_at(3, ": i32", DecorationSource::InlayHint)],
+            &rope,
         );
 
         assert_eq!(map.for_line(0).len(), 2);
@@ -435,15 +578,17 @@ mod tests {
 
     #[test]
     fn replace_source_with_empty_removes_all_from_source() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
 
         map.replace_source(
             DecorationSource::InlayHint,
-            vec![inline(0, 5, ": String", DecorationSource::InlayHint)],
+            vec![inline_at(5, ": String", DecorationSource::InlayHint)],
+            &rope,
         );
         let gen_before = map.generation;
 
-        map.replace_source(DecorationSource::InlayHint, vec![]);
+        map.replace_source(DecorationSource::InlayHint, vec![], &rope);
 
         assert!(map.for_line(0).is_empty());
         assert!(map.generation > gen_before);
@@ -451,47 +596,54 @@ mod tests {
 
     #[test]
     fn no_op_replace_does_not_bump_generation() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
         let gen = map.generation;
 
-        map.replace_source(DecorationSource::Diagnostic, vec![]);
+        map.replace_source(DecorationSource::Diagnostic, vec![], &rope);
 
         assert_eq!(map.generation, gen);
     }
 
     #[test]
     fn inline_width_before() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
+        // line 0 starts at offset 0: char_idx 3 = offset 3, char_idx 10 = offset 10
         map.replace_source(
             DecorationSource::InlayHint,
             vec![
-                inline(0, 3, ": i32", DecorationSource::InlayHint),   // 5 cols at char 3
-                inline(0, 10, ": String", DecorationSource::InlayHint), // 8 cols at char 10
+                inline_at(3, ": i32", DecorationSource::InlayHint),     // 5 cols at char 3
+                inline_at(10, ": String", DecorationSource::InlayHint), // 8 cols at char 10
             ],
+            &rope,
         );
 
         // Before any hint
-        assert_eq!(map.inline_width_before(0, 2), 0);
+        assert_eq!(map.inline_width_before(0, 2, &rope), 0);
         // At the first hint
-        assert_eq!(map.inline_width_before(0, 3), 5);
+        assert_eq!(map.inline_width_before(0, 3, &rope), 5);
         // Between hints
-        assert_eq!(map.inline_width_before(0, 7), 5);
+        assert_eq!(map.inline_width_before(0, 7, &rope), 5);
         // At the second hint
-        assert_eq!(map.inline_width_before(0, 10), 13); // 5 + 8
+        assert_eq!(map.inline_width_before(0, 10, &rope), 13); // 5 + 8
         // Different line
-        assert_eq!(map.inline_width_before(1, 10), 0);
+        assert_eq!(map.inline_width_before(1, 10, &rope), 0);
     }
 
     #[test]
     fn inline_for_line_and_eol_for_line() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
         map.replace_source(
             DecorationSource::InlayHint,
-            vec![inline(0, 5, ": String", DecorationSource::InlayHint)],
+            vec![inline_at(5, ": String", DecorationSource::InlayHint)],
+            &rope,
         );
         map.replace_source(
             DecorationSource::Diagnostic,
-            vec![eol(0, "unused variable", DecorationSource::Diagnostic)],
+            vec![eol_at(0, "unused variable", DecorationSource::Diagnostic)],
+            &rope,
         );
 
         assert_eq!(map.inline_for_line(0).len(), 1);
@@ -500,17 +652,20 @@ mod tests {
 
     #[test]
     fn sort_order_inline_before_eol_then_by_position() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
         map.replace_source(
             DecorationSource::Diagnostic,
-            vec![eol(0, "error", DecorationSource::Diagnostic)],
+            vec![eol_at(0, "error", DecorationSource::Diagnostic)],
+            &rope,
         );
         map.replace_source(
             DecorationSource::InlayHint,
             vec![
-                inline(0, 10, "b_hint", DecorationSource::InlayHint),
-                inline(0, 3, "a_hint", DecorationSource::InlayHint),
+                inline_at(10, "b_hint", DecorationSource::InlayHint),
+                inline_at(3, "a_hint", DecorationSource::InlayHint),
             ],
+            &rope,
         );
 
         let decs = map.for_line(0);
@@ -525,10 +680,12 @@ mod tests {
 
     #[test]
     fn clear_empties_and_bumps_generation() {
+        let rope = test_rope();
         let mut map = DecorationMap::new();
         map.replace_source(
             DecorationSource::InlayHint,
-            vec![inline(0, 5, "hint", DecorationSource::InlayHint)],
+            vec![inline_at(5, "hint", DecorationSource::InlayHint)],
+            &rope,
         );
         let gen_before = map.generation;
 
@@ -546,5 +703,111 @@ mod tests {
         map.clear();
 
         assert_eq!(map.generation, gen);
+    }
+
+    #[test]
+    fn adjust_for_insert_shifts_decorations_forward() {
+        let mut rope = Rope::from_str("let x = 1;\n");
+        let mut map = DecorationMap::new();
+        // Decoration at char offset 5 (the 'x' position)
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        // Insert "foo" (3 chars) at offset 0
+        rope.insert(0, "foo");
+        map.adjust_for_edits(
+            &[Edit::Insert {
+                offset: 0,
+                text: "foo".to_string(),
+            }],
+            &rope,
+        );
+
+        // Decoration should now be at offset 8 (5 + 3)
+        let decs = map.for_line(0);
+        assert_eq!(decs.len(), 1);
+        assert_eq!(decs[0].placement.char_offset(), 8);
+    }
+
+    #[test]
+    fn adjust_for_delete_shifts_decorations_back() {
+        let mut rope = Rope::from_str("foobar = 1;\n");
+        let mut map = DecorationMap::new();
+        // Decoration at offset 8 (the '1' position)
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(8, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        // Delete "foo" (3 chars) at offset 0
+        rope.remove(0..3);
+        map.adjust_for_edits(
+            &[Edit::Delete {
+                offset: 0,
+                text: "foo".to_string(),
+            }],
+            &rope,
+        );
+
+        // Decoration should now be at offset 5 (8 - 3)
+        let decs = map.for_line(0);
+        assert_eq!(decs.len(), 1);
+        assert_eq!(decs[0].placement.char_offset(), 5);
+    }
+
+    #[test]
+    fn adjust_for_delete_removes_decoration_inside_deleted_region() {
+        let mut rope = Rope::from_str("let x = 1;\n");
+        let mut map = DecorationMap::new();
+        // Decoration at offset 5 (inside the region we'll delete)
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        // Delete "x = 1" (5 chars) at offset 4
+        rope.remove(4..9);
+        map.adjust_for_edits(
+            &[Edit::Delete {
+                offset: 4,
+                text: "x = 1".to_string(),
+            }],
+            &rope,
+        );
+
+        // Decoration was inside deleted region — should be gone
+        assert!(map.is_empty());
+    }
+
+    #[test]
+    fn adjust_for_newline_insert_moves_decoration_to_new_line() {
+        let mut rope = Rope::from_str("let x = 1;\n");
+        let mut map = DecorationMap::new();
+        // Decoration at offset 5
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        // Insert newline at offset 4 (before "x"), splitting the line
+        rope.insert(4, "\n");
+        map.adjust_for_edits(
+            &[Edit::Insert {
+                offset: 4,
+                text: "\n".to_string(),
+            }],
+            &rope,
+        );
+
+        // Decoration should now be on line 1 (offset 6 = 5+1)
+        assert!(map.for_line(0).is_empty());
+        assert_eq!(map.for_line(1).len(), 1);
+        assert_eq!(map.for_line(1)[0].placement.char_offset(), 6);
     }
 }

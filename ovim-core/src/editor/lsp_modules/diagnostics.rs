@@ -175,12 +175,15 @@ impl Editor {
                 self.lsp.state.diagnostics_file_path = Some(result.file_path);
 
                 // Build unified decorations from the new diagnostics.
+                let rope = self.buffer().rope().clone();
                 let diag_decs = crate::editor::decoration::decorations_from_diagnostics(
                     &self.lsp.state.current_file_diagnostics,
+                    &rope,
                 );
                 self.decorations.replace_source(
                     crate::editor::decoration::DecorationSource::Diagnostic,
                     diag_decs,
+                    &rope,
                 );
 
                 if self.buffer().version() != result.buffer_version {
@@ -431,16 +434,18 @@ mod tests {
         let initial_version = editor.buffer().version();
 
         // Simulate a diagnostic decoration already present from a prior refresh.
+        let rope = editor.buffer().rope().clone();
         editor.decorations.replace_source(
             DecorationSource::Diagnostic,
             vec![Decoration {
-                placement: DecorationPlacement::EndOfLine { line: 0 },
+                placement: DecorationPlacement::EndOfLine { char_offset: 0 },
                 source: DecorationSource::Diagnostic,
                 text: "old error".to_string(),
                 display_width: 9,
                 style: DecorationStyle::new(crate::color::Color::Red),
                 priority: 0,
             }],
+            &rope,
         );
         assert_eq!(editor.decorations.for_line(0).len(), 1);
 

@@ -760,6 +760,7 @@ impl Editor {
                 let hint_decs =
                     crate::editor::decoration::decorations_from_inlay_hints(
                         &self.lsp.state.inlay_hints,
+                        &rope,
                         |line_idx| {
                             if line_idx < rope.len_lines() {
                                 rope.line(line_idx).to_string().trim_end_matches('\n').to_string()
@@ -771,6 +772,7 @@ impl Editor {
                 self.decorations.replace_source(
                     crate::editor::decoration::DecorationSource::InlayHint,
                     hint_decs,
+                    &rope,
                 );
 
                 // If the buffer was edited since we spawned the request,
