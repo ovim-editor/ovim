@@ -12,7 +12,7 @@ use crate::display::char_display_width;
 use crate::ui::renderer::markdown_conceal::scan_markdown_conceal;
 
 use super::helpers::{
-    compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col, ExpandedLine,
+    compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col,
 };
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
@@ -751,7 +751,7 @@ fn truncate_line_to_width(line: &mut Line<'static>, max_width: usize) {
 fn apply_inline_decorations(
     line: &mut Line<'static>,
     decorations: &[&Decoration],
-    original_text: &str,
+    _original_text: &str,
     char_mapping: &[usize],
     h_offset: usize,
     wrap: bool,
