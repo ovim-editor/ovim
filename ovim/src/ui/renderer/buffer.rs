@@ -751,7 +751,6 @@ fn truncate_line_to_width(line: &mut Line<'static>, max_width: usize) {
 fn apply_inline_decorations(
     line: &mut Line<'static>,
     decorations: &[&Decoration],
-    _original_text: &str,
     char_mapping: &[usize],
     h_offset: usize,
     wrap: bool,
@@ -1903,7 +1902,6 @@ pub fn render_buffer(
                     apply_inline_decorations(
                         &mut line,
                         &inline_decs,
-                        line_text_original,
                         &char_mapping,
                         h_offset,
                         wrap,
