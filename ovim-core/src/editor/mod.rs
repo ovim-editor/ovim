@@ -1272,7 +1272,9 @@ impl Editor {
         let mut wp_idx = 0usize;
 
         for (char_idx, ch) in line_text.chars().enumerate() {
-            if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
+            // Consume all wrap points at this char_idx (there can be multiple
+            // when a decoration spans several visual rows).
+            while wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
                 segment_start_display = current_display;
                 sub_line += 1;
                 wp_idx += 1;

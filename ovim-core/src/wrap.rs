@@ -90,8 +90,21 @@ pub fn compute_wrap_points_with_decorations(
         // Add decoration width at this character position.  Decoration text
         // is inserted before the character by the renderer, so its width is
         // accumulated before the character's own width check.
+        //
+        // The renderer inserts decoration text character-by-character and can
+        // wrap in the middle of a decoration.  We simulate this by adding
+        // decoration width one column at a time, flushing a row each time
+        // we fill max_width.  All such mid-decoration wraps are recorded at
+        // char_idx (the next real character), matching the renderer's layout.
         while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 == char_idx {
-            current_width += inline_widths[dec_idx].1;
+            let dec_w = inline_widths[dec_idx].1;
+            for _ in 0..dec_w {
+                current_width += 1;
+                if current_width >= max_width {
+                    wrap_points.push(char_idx);
+                    current_width = 0;
+                }
+            }
             dec_idx += 1;
         }
 
@@ -283,6 +296,36 @@ mod tests {
                 width
             );
         }
+    }
+
+    #[test]
+    fn decoration_spanning_multiple_rows() {
+        // "ab" at width 3, decoration "12345" (5 cols) at char 1.
+        // Composed: "a12345b" → rows: "a12", "345", "b" = 3 rows.
+        // Previously undercounted as 2 because the decoration width
+        // was added atomically.
+        let decs = vec![(1, 5)];
+        assert_eq!(
+            visual_line_count_with_decorations("ab", 3, 4, &decs),
+            3,
+            "decoration spanning multiple rows must count all visual rows"
+        );
+    }
+
+    #[test]
+    fn decoration_exactly_fills_row() {
+        // "ab" at width 5, decoration "123" (3 cols) at char 1.
+        // Composed: "a123b" → row 0: "a123b" (5 cols, exact fit) = 1 row.
+        let decs = vec![(1, 3)];
+        assert_eq!(visual_line_count_with_decorations("ab", 5, 4, &decs), 1);
+    }
+
+    #[test]
+    fn large_decoration_at_start() {
+        // "a" at width 3, decoration "1234567" (7 cols) at char 0.
+        // Composed: "1234567a" → rows: "123", "456", "7a" = 3 rows.
+        let decs = vec![(0, 7)];
+        assert_eq!(visual_line_count_with_decorations("a", 3, 4, &decs), 3);
     }
 
     /// Cross-validation: visual_line_count should agree with
