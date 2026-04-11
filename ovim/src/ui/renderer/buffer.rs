@@ -147,9 +147,28 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> (Stri
     (result, precedes, extends)
 }
 
+/// Reusable scratch buffers for `shift_highlights_for_viewport` to avoid
+/// allocating two `Vec<usize>` per visible line per frame.
+struct HighlightShiftBuffers {
+    byte_to_display: Vec<usize>,
+    display_to_byte: Vec<usize>,
+}
+
+impl HighlightShiftBuffers {
+    fn new() -> Self {
+        Self {
+            byte_to_display: Vec::with_capacity(256),
+            display_to_byte: Vec::with_capacity(256),
+        }
+    }
+}
+
 /// Shifts syntax highlight ranges for horizontal viewport.
 /// Highlights are in expanded byte ranges; h_offset and width are in display columns.
 /// Returns byte ranges into the sliced text.
+///
+/// `buffers` provides reusable scratch space — the caller keeps one instance
+/// across all lines in the render pass, eliminating per-line allocation.
 fn shift_highlights_for_viewport(
     highlights: &[(Range<usize>, HighlightGroup)],
     expanded_text: &str,
@@ -157,37 +176,38 @@ fn shift_highlights_for_viewport(
     h_offset: usize,
     width: usize,
     precedes: bool,
+    buffers: &mut HighlightShiftBuffers,
 ) -> Vec<(Range<usize>, HighlightGroup)> {
     let offset_adjustment = if precedes { 1 } else { 0 }; // Account for '<' indicator
 
     // Build a byte-offset-to-display-column mapping for the expanded text
-    let byte_to_display: Vec<usize> = {
-        let mut mapping = Vec::with_capacity(expanded_text.len() + 1);
+    let byte_to_display = &mut buffers.byte_to_display;
+    byte_to_display.clear();
+    {
         let mut display_col = 0;
         for (byte_idx, ch) in expanded_text.char_indices() {
-            while mapping.len() <= byte_idx {
-                mapping.push(display_col);
+            while byte_to_display.len() <= byte_idx {
+                byte_to_display.push(display_col);
             }
             display_col += char_display_width(ch);
         }
-        while mapping.len() <= expanded_text.len() {
-            mapping.push(display_col);
+        while byte_to_display.len() <= expanded_text.len() {
+            byte_to_display.push(display_col);
         }
-        mapping
-    };
+    }
 
     // Build display-column-to-byte-offset mapping for the sliced text
-    let sliced_display_to_byte: Vec<usize> = {
-        let mut mapping = Vec::new();
+    let sliced_display_to_byte = &mut buffers.display_to_byte;
+    sliced_display_to_byte.clear();
+    {
         for (byte_idx, ch) in sliced_text.char_indices() {
             let ch_width = char_display_width(ch);
             for _ in 0..ch_width {
-                mapping.push(byte_idx);
+                sliced_display_to_byte.push(byte_idx);
             }
         }
-        mapping.push(sliced_text.len()); // sentinel
-        mapping
-    };
+        sliced_display_to_byte.push(sliced_text.len()); // sentinel
+    }
 
     let viewport_end = h_offset + width;
 
@@ -1308,6 +1328,10 @@ pub fn render_buffer(
         .map(|p| p.ends_with(".md"))
         .unwrap_or(false);
 
+    // Reusable scratch buffers for shift_highlights_for_viewport — avoids
+    // allocating two Vec<usize> per visible line per frame.
+    let mut hl_shift_buffers = HighlightShiftBuffers::new();
+
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < visible_lines {
         if line_idx < rope.len_lines() {
@@ -1520,6 +1544,7 @@ pub fn render_buffer(
                     h_offset,
                     text_width,
                     precedes,
+                    &mut hl_shift_buffers,
                 );
             }
 
@@ -2025,8 +2050,7 @@ pub fn render_buffer(
                 );
 
                 if has_wrap {
-                    let chars: Vec<char> = line_text.chars().collect();
-                    if chars.is_empty() {
+                    if line_text.is_empty() {
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
                                 &gutter_ctx,
@@ -2041,10 +2065,48 @@ pub fn render_buffer(
                         lines.push(Line::from(" ".repeat(text_width)));
                         visual_rows_used += 1;
                     } else {
-                        for (chunk_idx, chunk) in chars.chunks(text_width).enumerate() {
-                            if visual_rows_used >= visible_lines {
-                                break;
+                        // Split by display width, not char count — CJK/emoji
+                        // characters are width 2 and would overflow the terminal
+                        // row if counted as 1.
+                        let mut chunk_idx = 0;
+                        let mut row_text = String::new();
+                        let mut row_width = 0;
+
+                        for ch in line_text.chars() {
+                            let ch_width = char_display_width(ch);
+
+                            if row_width + ch_width > text_width && !row_text.is_empty() {
+                                // Flush current row
+                                if visual_rows_used >= visible_lines {
+                                    break;
+                                }
+                                if gutter_area.is_some() {
+                                    gutter_lines.push(build_gutter_line(
+                                        &gutter_ctx,
+                                        line_idx,
+                                        chunk_idx > 0,
+                                        &[],
+                                        blame_brackets
+                                            .as_ref()
+                                            .and_then(|b| b.get(line_idx - start_line)),
+                                    ));
+                                }
+                                let pad = text_width.saturating_sub(row_width);
+                                if pad > 0 {
+                                    row_text.push_str(&" ".repeat(pad));
+                                }
+                                lines.push(Line::from(std::mem::take(&mut row_text)));
+                                visual_rows_used += 1;
+                                chunk_idx += 1;
+                                row_width = 0;
                             }
+
+                            row_text.push(ch);
+                            row_width += ch_width;
+                        }
+
+                        // Flush the last row
+                        if !row_text.is_empty() && visual_rows_used < visible_lines {
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
                                     &gutter_ctx,
@@ -2056,16 +2118,11 @@ pub fn render_buffer(
                                         .and_then(|b| b.get(line_idx - start_line)),
                                 ));
                             }
-                            let text: String = chunk.iter().collect();
-                            let pad = text_width.saturating_sub(
-                                unicode_width::UnicodeWidthStr::width(text.as_str()),
-                            );
-                            let padded = if pad > 0 {
-                                format!("{}{}", text, " ".repeat(pad))
-                            } else {
-                                text
-                            };
-                            lines.push(Line::from(padded));
+                            let pad = text_width.saturating_sub(row_width);
+                            if pad > 0 {
+                                row_text.push_str(&" ".repeat(pad));
+                            }
+                            lines.push(Line::from(row_text));
                             visual_rows_used += 1;
                         }
                     }

@@ -1880,10 +1880,13 @@ impl Motions {
             }
         }
 
-        // Position at the closing brace
+        // Position at the closing brace.
+        // Use char_to_grapheme_col because set_position expects a grapheme index,
+        // and chars().position() gives a char index (not byte offset like str::find).
         if let Some(line) = buffer.line(current_line) {
-            let col = line.find('}').unwrap_or(0);
-            buffer.cursor_mut().set_position(current_line, col);
+            let char_col = line.chars().position(|c| c == '}').unwrap_or(0);
+            let grapheme_col = crate::unicode::char_to_grapheme_col(&line, char_col);
+            buffer.cursor_mut().set_position(current_line, grapheme_col);
         } else {
             buffer.cursor_mut().set_position(current_line, 0);
         }
@@ -1907,10 +1910,11 @@ impl Motions {
             }
         }
 
-        // Position at the closing brace
+        // Position at the closing brace (same conversion as method_end_forward)
         if let Some(line) = buffer.line(current_line) {
-            let col = line.find('}').unwrap_or(0);
-            buffer.cursor_mut().set_position(current_line, col);
+            let char_col = line.chars().position(|c| c == '}').unwrap_or(0);
+            let grapheme_col = crate::unicode::char_to_grapheme_col(&line, char_col);
+            buffer.cursor_mut().set_position(current_line, grapheme_col);
         } else {
             buffer.cursor_mut().set_position(current_line, 0);
         }

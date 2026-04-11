@@ -50,17 +50,15 @@ struct FrameAreas {
 // Extracted render phases (free functions)
 // ---------------------------------------------------------------------------
 
-/// Phase 1: Fill the frame with blanks and initialize the window manager.
-fn clear_frame(frame: &mut Frame, editor: &mut Editor) {
+/// Phase 1: Initialize the window manager for the current terminal size.
+///
+/// Ratatui's double-buffer diff handles clearing stale cells automatically —
+/// we don't need to paint a full blank background every frame. The previous
+/// implementation allocated `" ".repeat(width) × height` strings and rendered
+/// a full-screen paragraph on every frame, which was pure overhead.
+fn init_frame(frame: &Frame, editor: &mut Editor) {
     let area = frame.area();
     editor.init_window_manager(area.width, area.height);
-
-    let blank_line = " ".repeat(area.width as usize);
-    let blank_lines: Vec<Line> = (0..area.height)
-        .map(|_| Line::from(blank_line.clone()))
-        .collect();
-    let bg_paragraph = Paragraph::new(blank_lines).style(Style::default().bg(Color::Reset));
-    frame.render_widget(bg_paragraph, area);
 }
 
 /// Phase 2: Compute the frame layout (tab bar, file tree, buffer, status splits).
@@ -826,6 +824,11 @@ pub struct Renderer {
     theme: Theme,
     /// Per-line render cache to avoid recomputing unchanged lines
     line_cache: LineRenderCache,
+    /// Discriminant of the last emitted cursor style (0=block, 1=bar) to
+    /// avoid redundant crossterm writes every frame.
+    last_cursor_style: Option<u8>,
+    /// Cached terminal title to avoid redundant crossterm writes every frame
+    last_title: String,
 }
 
 impl Default for Renderer {
@@ -843,6 +846,8 @@ impl Renderer {
             terminal,
             theme: Theme::default(),
             line_cache: LineRenderCache::new(),
+            last_cursor_style: None,
+            last_title: String::new(),
         }
     }
 
@@ -852,7 +857,7 @@ impl Renderer {
         editor: &mut Editor,
         line_cache: &mut LineRenderCache,
     ) {
-        clear_frame(frame, editor);
+        init_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {
             Some(areas) => areas,
@@ -924,16 +929,13 @@ impl Renderer {
     /// Renders the editor state to the terminal
     pub fn render(&mut self, editor: &mut Editor) -> Result<()> {
         let cursor_style = match editor.mode() {
-            crate::mode::Mode::Insert => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::Picker => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::Command => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::Search => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::RenameInput => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::AiPrompt => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::AiChat => SetCursorStyle::BlinkingBar,
-            crate::mode::Mode::HoverPreview | crate::mode::Mode::HoverNavigate => {
-                SetCursorStyle::SteadyBlock
-            }
+            crate::mode::Mode::Insert
+            | crate::mode::Mode::Picker
+            | crate::mode::Mode::Command
+            | crate::mode::Mode::Search
+            | crate::mode::Mode::RenameInput
+            | crate::mode::Mode::AiPrompt
+            | crate::mode::Mode::AiChat => SetCursorStyle::BlinkingBar,
             _ => SetCursorStyle::SteadyBlock,
         };
         let title = editor
@@ -946,7 +948,28 @@ impl Renderer {
                     .unwrap_or(p)
             })
             .unwrap_or("ovim");
-        crossterm::execute!(io::stdout(), cursor_style, SetTitle(title))?;
+
+        // Only emit crossterm commands when the values actually change.
+        // These run on every frame otherwise — unnecessary terminal I/O.
+        let style_key = match cursor_style {
+            SetCursorStyle::BlinkingBar => 1u8,
+            _ => 0u8,
+        };
+        let style_changed = self.last_cursor_style != Some(style_key);
+        let title_changed = self.last_title != title;
+        if style_changed && title_changed {
+            crossterm::execute!(io::stdout(), cursor_style, SetTitle(title))?;
+        } else if style_changed {
+            crossterm::execute!(io::stdout(), cursor_style)?;
+        } else if title_changed {
+            crossterm::execute!(io::stdout(), SetTitle(title))?;
+        }
+        if style_changed {
+            self.last_cursor_style = Some(style_key);
+        }
+        if title_changed {
+            self.last_title = title.to_string();
+        }
 
         self.terminal.autoresize()?;
 

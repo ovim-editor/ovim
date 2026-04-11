@@ -240,8 +240,11 @@ impl SyntaxHighlighter {
         line_highlights
     }
 
-    /// Gets highlights for a specific line
-    /// Note: For bulk operations, use highlights_for_all_lines() which is much faster
+    /// Gets highlights for a specific line.
+    ///
+    /// For bulk operations, use `highlights_for_all_lines()` which is much faster.
+    /// This method scans bytes (not lines) to find the target line offset,
+    /// which is O(byte offset to that line) but avoids collecting all lines.
     pub fn highlights_for_line(
         &self,
         line_idx: usize,
@@ -254,54 +257,60 @@ impl SyntaxHighlighter {
         let mut highlights = Vec::new();
         let mut cursor = QueryCursor::new();
 
-        // Calculate line byte range by scanning bytes directly (avoids collecting all lines)
+        // Find the byte offset of line_idx by scanning for newlines in the byte slice.
+        // This is O(byte offset) but avoids allocating a Vec<&str> for all lines.
+        let bytes = source.as_bytes();
         let mut line_start_byte = 0;
-        for (i, line) in source.lines().enumerate() {
-            if i == line_idx {
-                let line_end_byte = line_start_byte + line.len();
-
-                // Restrict query to just this line
-                cursor.set_point_range(
-                    tree_sitter::Point {
-                        row: line_idx,
-                        column: 0,
-                    }..tree_sitter::Point {
-                        row: line_idx + 1,
-                        column: 0,
-                    },
-                );
-
-                let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
-
-                while let Some(m) = matches.next() {
-                    for capture in m.captures {
-                        let node = capture.node;
-                        let start_byte = node.start_byte();
-                        let end_byte = node.end_byte();
-
-                        if start_byte < line_end_byte && end_byte > line_start_byte {
-                            let capture_name = &self.capture_names[capture.index as usize];
-                            let group = Self::capture_to_highlight_group(capture_name);
-
-                            let col_start = start_byte.saturating_sub(line_start_byte);
-                            let col_end = if end_byte <= line_end_byte {
-                                end_byte - line_start_byte
-                            } else {
-                                line.len()
-                            };
-
-                            highlights.push((col_start..col_end, group));
-                        }
-                    }
-                }
-
-                highlights.sort_by_key(|(range, _)| range.start);
-                return highlights;
+        for _ in 0..line_idx {
+            match bytes[line_start_byte..].iter().position(|&b| b == b'\n') {
+                Some(pos) => line_start_byte += pos + 1,
+                None => return Vec::new(), // line_idx out of bounds
             }
-            line_start_byte += line.len() + 1; // +1 for newline
+        }
+        // Find the end of this line
+        let line_end_byte = match bytes[line_start_byte..].iter().position(|&b| b == b'\n') {
+            Some(pos) => line_start_byte + pos,
+            None => source.len(),
+        };
+
+        let line_len = line_end_byte - line_start_byte;
+
+        // Restrict query to just this line
+        cursor.set_point_range(
+            tree_sitter::Point {
+                row: line_idx,
+                column: 0,
+            }..tree_sitter::Point {
+                row: line_idx + 1,
+                column: 0,
+            },
+        );
+
+        let mut matches = cursor.matches(&self.query, tree.root_node(), source.as_bytes());
+
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                let node = capture.node;
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+
+                if start_byte < line_end_byte && end_byte > line_start_byte {
+                    let capture_name = &self.capture_names[capture.index as usize];
+                    let group = Self::capture_to_highlight_group(capture_name);
+
+                    let col_start = start_byte.saturating_sub(line_start_byte);
+                    let col_end = if end_byte <= line_end_byte {
+                        end_byte - line_start_byte
+                    } else {
+                        line_len
+                    };
+
+                    highlights.push((col_start..col_end, group));
+                }
+            }
         }
 
-        // line_idx out of bounds
+        highlights.sort_by_key(|(range, _)| range.start);
         highlights
     }
 

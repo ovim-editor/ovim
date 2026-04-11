@@ -219,8 +219,11 @@ impl Buffer {
         }
     }
 
-    /// Shifts highlights after an insertion
-    pub(super) fn shift_highlights_for_insertion(&mut self, line: usize, col: usize, text: &str) {
+    /// Shifts highlights after an insertion.
+    ///
+    /// `byte_col` is a **byte offset** within the line — the highlight cache
+    /// stores ranges in byte offsets, so all arithmetic here is byte-based.
+    pub(super) fn shift_highlights_for_insertion(&mut self, line: usize, byte_col: usize, text: &str) {
         let Some(ref mut cache) = self.cached_highlights else {
             return; // No cache to shift
         };
@@ -238,11 +241,11 @@ impl Buffer {
             let insert_byte_len = text.len();
 
             for (range, _) in &mut cache[line] {
-                if range.start >= col {
+                if range.start >= byte_col {
                     // Highlight starts after insertion point: shift right
                     range.start += insert_byte_len;
                     range.end += insert_byte_len;
-                } else if range.end > col {
+                } else if range.end > byte_col {
                     // Highlight contains insertion point: extend end
                     range.end += insert_byte_len;
                 }
@@ -259,18 +262,18 @@ impl Buffer {
             let mut after_insert = Vec::new();
 
             for (range, group) in current_line_highlights {
-                if range.end <= col {
+                if range.end <= byte_col {
                     // Entirely before insertion
                     before_insert.push((range, group));
-                } else if range.start >= col {
+                } else if range.start >= byte_col {
                     // Entirely after insertion: will move to new line
                     // Adjust column position (relative to start of new line)
-                    let new_start = range.start - col + last_line_len;
-                    let new_end = range.end - col + last_line_len;
+                    let new_start = range.start - byte_col + last_line_len;
+                    let new_end = range.end - byte_col + last_line_len;
                     after_insert.push((new_start..new_end, group));
                 } else {
                     // Spans insertion point: keep the before part only
-                    before_insert.push((range.start..col, group));
+                    before_insert.push((range.start..byte_col, group));
                     // The after part would be on the new line, but it's cut off
                     // (We can't split highlights perfectly without re-parsing)
                 }
@@ -291,25 +294,30 @@ impl Buffer {
         }
     }
 
-    /// Creates a tree-sitter InputEdit for an insertion operation
-    /// This enables incremental parsing instead of full re-parse
+    /// Creates a tree-sitter InputEdit for an insertion operation.
+    /// This enables incremental parsing instead of full re-parse.
+    ///
+    /// `byte_col` is a **byte offset** within the line — NOT a char index.
+    /// The caller must convert char indices to byte offsets before calling.
+    /// Tree-sitter `Point.column` requires byte offsets.
     pub(super) fn create_ts_insert_edit(
         &self,
         line: usize,
-        col: usize,
+        byte_col: usize,
         text: &str,
     ) -> Option<tree_sitter::InputEdit> {
-        let line_start = self.rope.line_to_char(line);
-        let insert_pos = (line_start + col).min(self.rope.len_chars());
-
-        let start_byte = self.rope.char_to_byte(insert_pos);
+        // Compute absolute byte position: byte offset of line start + byte_col
+        let line_start_byte = self.rope.char_to_byte(self.rope.line_to_char(line));
+        let start_byte = (line_start_byte + byte_col).min(
+            self.rope.char_to_byte(self.rope.len_chars()),
+        );
         let old_end_byte = start_byte;
         let new_end_byte = start_byte + text.len();
 
-        // Calculate positions (row, column) for tree-sitter
+        // Tree-sitter Point.column is a byte offset within the line
         let start_position = tree_sitter::Point {
             row: line,
-            column: col,
+            column: byte_col,
         };
 
         // For insertions, old_end == start
@@ -318,13 +326,11 @@ impl Buffer {
         // Calculate new_end position based on newlines in inserted text
         let newline_count = text.matches('\n').count();
         let new_end_position = if newline_count == 0 {
-            // Single-line insertion — col is already a byte offset
             tree_sitter::Point {
                 row: line,
-                column: col + text.len(),
+                column: byte_col + text.len(),
             }
         } else {
-            // Multi-line insertion
             let last_line = text.split('\n').next_back().unwrap_or("");
             tree_sitter::Point {
                 row: line + newline_count,
@@ -342,31 +348,34 @@ impl Buffer {
         })
     }
 
-    /// Creates a tree-sitter InputEdit for a deletion operation
-    /// This enables incremental parsing instead of full re-parse
+    /// Creates a tree-sitter InputEdit for a deletion operation.
+    /// This enables incremental parsing instead of full re-parse.
+    ///
+    /// `start_byte_col` / `end_byte_col` are **byte offsets** within their
+    /// respective lines — this is what tree-sitter `Point.column` expects.
     pub(super) fn create_ts_delete_edit(
         &self,
         start_line: usize,
-        start_col: usize,
+        start_byte_col: usize,
         end_line: usize,
-        end_col: usize,
+        end_byte_col: usize,
         deleted_text: &str,
     ) -> Option<tree_sitter::InputEdit> {
-        let start_line_char = self.rope.line_to_char(start_line);
-        let start_pos = (start_line_char + start_col).min(self.rope.len_chars());
-
-        let start_byte = self.rope.char_to_byte(start_pos);
+        let start_line_byte = self.rope.char_to_byte(self.rope.line_to_char(start_line));
+        let start_byte = (start_line_byte + start_byte_col).min(
+            self.rope.char_to_byte(self.rope.len_chars()),
+        );
         let old_end_byte = start_byte + deleted_text.len();
         let new_end_byte = start_byte;
 
         let start_position = tree_sitter::Point {
             row: start_line,
-            column: start_col,
+            column: start_byte_col,
         };
 
         let old_end_position = tree_sitter::Point {
             row: end_line,
-            column: end_col,
+            column: end_byte_col,
         };
 
         // For deletions, new_end == start
@@ -395,13 +404,16 @@ impl Buffer {
         }
     }
 
-    /// Shifts highlights after a deletion
+    /// Shifts highlights after a deletion.
+    ///
+    /// `start_byte_col` / `end_byte_col` are **byte offsets** within their
+    /// respective lines — the highlight cache stores ranges in byte offsets.
     pub(super) fn shift_highlights_for_deletion(
         &mut self,
         start_line: usize,
-        start_col: usize,
+        start_byte_col: usize,
         end_line: usize,
-        end_col: usize,
+        end_byte_col: usize,
     ) {
         let Some(ref mut cache) = self.cached_highlights else {
             return; // No cache to shift
@@ -417,34 +429,34 @@ impl Buffer {
                 return;
             }
 
-            let deleted_chars = end_col.saturating_sub(start_col);
+            let deleted_bytes = end_byte_col.saturating_sub(start_byte_col);
             let highlights = &mut cache[start_line];
 
             // Filter and adjust highlights
             highlights.retain_mut(|(range, _)| {
-                if range.end <= start_col {
+                if range.end <= start_byte_col {
                     // Before deletion: keep as-is
                     true
-                } else if range.start >= end_col {
+                } else if range.start >= end_byte_col {
                     // After deletion: shift left
-                    range.start = range.start.saturating_sub(deleted_chars);
-                    range.end = range.end.saturating_sub(deleted_chars);
+                    range.start = range.start.saturating_sub(deleted_bytes);
+                    range.end = range.end.saturating_sub(deleted_bytes);
                     true
-                } else if range.start >= start_col && range.end <= end_col {
+                } else if range.start >= start_byte_col && range.end <= end_byte_col {
                     // Entirely within deletion: remove
                     false
-                } else if range.start < start_col && range.end > end_col {
+                } else if range.start < start_byte_col && range.end > end_byte_col {
                     // Contains deletion: shrink
-                    range.end = start_col + (range.end - end_col);
+                    range.end = start_byte_col + (range.end - end_byte_col);
                     true
-                } else if range.start < start_col {
+                } else if range.start < start_byte_col {
                     // Starts before, ends within deletion
-                    range.end = start_col;
+                    range.end = start_byte_col;
                     true
                 } else {
                     // Starts within, ends after deletion
-                    range.start = start_col;
-                    range.end = start_col + (range.end - end_col);
+                    range.start = start_byte_col;
+                    range.end = start_byte_col + (range.end - end_byte_col);
                     true
                 }
             });
@@ -457,10 +469,10 @@ impl Buffer {
                 cache[end_line]
                     .iter()
                     .filter_map(|(range, group)| {
-                        if range.start >= end_col {
+                        if range.start >= end_byte_col {
                             // After deletion point: shift to start line
-                            let new_start = start_col + (range.start - end_col);
-                            let new_end = start_col + (range.end - end_col);
+                            let new_start = start_byte_col + (range.start - end_byte_col);
+                            let new_end = start_byte_col + (range.end - end_byte_col);
                             Some((new_start..new_end, *group))
                         } else {
                             None
@@ -473,7 +485,7 @@ impl Buffer {
 
             // Trim start line highlights
             if start_line < cache.len() {
-                cache[start_line].retain(|(range, _)| range.end <= start_col);
+                cache[start_line].retain(|(range, _)| range.end <= start_byte_col);
                 // Add surviving highlights from end line
                 cache[start_line].extend(surviving_highlights);
             }

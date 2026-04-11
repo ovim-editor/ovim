@@ -166,9 +166,15 @@ impl LineRenderCache {
         line: Line<'static>,
         is_stable: bool,
     ) {
-        // Evict if over capacity
+        // Evict if over capacity — keep entries near the current viewport
+        // instead of clearing everything (which causes a full cache-miss storm
+        // on the next frame).
         if self.entries.len() >= self.max_entries {
-            self.entries.clear();
+            let center = line_idx;
+            let keep_radius = self.max_entries / 2;
+            let lo = center.saturating_sub(keep_radius);
+            let hi = center.saturating_add(keep_radius);
+            self.entries.retain(|&idx, _| idx >= lo && idx <= hi);
         }
 
         let key = LineCacheKey {
@@ -240,6 +246,29 @@ mod tests {
 
         let result = cache.get(1, 0, 1, 0, 80, false, 4, false, 0);
         assert!(result.is_none()); // Should not hit
+    }
+
+    #[test]
+    fn eviction_keeps_nearby_lines() {
+        let mut cache = LineRenderCache::new();
+        cache.max_entries = 10; // small cap for test
+        cache.last_buffer_version = 1;
+
+        // Fill cache with lines 0..10
+        for i in 0..10 {
+            cache.put(1, i, 1, 0, 80, false, 4, false, 0, make_line("x"), true);
+        }
+        assert_eq!(cache.entries.len(), 10);
+
+        // Insert line 8 — should evict lines far from 8 (keep 3..13)
+        cache.put(1, 8, 1, 0, 80, false, 4, false, 0, make_line("new"), true);
+
+        // Lines near 8 should survive, line 0 should be evicted
+        assert!(cache.entries.contains_key(&8));
+        assert!(cache.entries.contains_key(&5));
+        assert!(!cache.entries.contains_key(&0));
+        assert!(!cache.entries.contains_key(&1));
+        assert!(!cache.entries.contains_key(&2));
     }
 
     #[test]
