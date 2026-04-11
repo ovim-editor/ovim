@@ -16,7 +16,7 @@ use lsp_types::{
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
@@ -26,6 +26,41 @@ use tokio::sync::{mpsc, oneshot, Mutex};
 /// Maximum LSP message size in bytes (50MB)
 /// Must match MAX_MESSAGE_SIZE in mod.rs
 const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
+
+bitflags::bitflags! {
+    /// Cached LSP server capability flags, stored as a single atomic u32.
+    ///
+    /// Set once during initialization (from `ServerCapabilities`) or
+    /// updated via dynamic registration (`client/registerCapability`).
+    /// Queried lock-free via the `supports_*()` accessors.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct LspCapFlags: u32 {
+        const GOTO_DEFINITION    = 1 << 0;
+        const GOTO_DECLARATION   = 1 << 1;
+        const GOTO_IMPLEMENTATION = 1 << 2;
+        const GOTO_TYPE_DEFINITION = 1 << 3;
+        const HOVER              = 1 << 4;
+        const COMPLETION         = 1 << 5;
+        const FORMATTING         = 1 << 6;
+        const RANGE_FORMATTING   = 1 << 7;
+        const CODE_ACTIONS       = 1 << 8;
+        const REFERENCES         = 1 << 9;
+        const RENAME             = 1 << 10;
+        const PREPARE_RENAME     = 1 << 11;
+        const SIGNATURE_HELP     = 1 << 12;
+        const DOCUMENT_SYMBOL    = 1 << 13;
+        const SELECTION_RANGE    = 1 << 14;
+        const WORKSPACE_SYMBOL   = 1 << 15;
+        const DOCUMENT_HIGHLIGHT = 1 << 16;
+        const INCREMENTAL_SYNC   = 1 << 17;
+        const FOLDING_RANGE      = 1 << 18;
+        const CALL_HIERARCHY     = 1 << 19;
+        const TYPE_HIERARCHY     = 1 << 20;
+        const EXECUTE_COMMAND    = 1 << 21;
+        const INLAY_HINT         = 1 << 22;
+        const SEMANTIC_TOKENS    = 1 << 23;
+    }
+}
 
 /// Maximum number of pending requests to prevent OOM
 const MAX_PENDING_REQUESTS: usize = 1000;
@@ -172,61 +207,34 @@ struct LanguageServerInner {
     /// Task supervisor for managing background tasks
     supervisor: TaskSupervisor,
 
-    // Cached capability flags (lock-free, set once during initialization)
-    /// Cached: supports goto definition
-    cap_goto_definition: AtomicBool,
-    /// Cached: supports goto declaration
-    cap_goto_declaration: AtomicBool,
-    /// Cached: supports goto implementation
-    cap_goto_implementation: AtomicBool,
-    /// Cached: supports goto type definition
-    cap_goto_type_definition: AtomicBool,
-    /// Cached: supports hover
-    cap_hover: AtomicBool,
-    /// Cached: supports completion
-    cap_completion: AtomicBool,
-    /// Cached: supports formatting
-    cap_formatting: AtomicBool,
-    /// Cached: supports range formatting
-    cap_range_formatting: AtomicBool,
-    /// Cached: supports code actions
-    cap_code_actions: AtomicBool,
-    /// Cached: supports references
-    cap_references: AtomicBool,
-    /// Cached: supports rename
-    cap_rename: AtomicBool,
-    /// Cached: supports prepare rename
-    cap_prepare_rename: AtomicBool,
-    /// Cached: supports signature help
-    cap_signature_help: AtomicBool,
-    /// Cached: supports document symbols
-    cap_document_symbol: AtomicBool,
-    /// Cached: supports selection range
-    cap_selection_range: AtomicBool,
-    /// Cached: supports workspace symbols
-    cap_workspace_symbol: AtomicBool,
-    /// Cached: supports document highlight
-    cap_document_highlight: AtomicBool,
-    /// Cached: supports incremental sync
-    cap_incremental_sync: AtomicBool,
-    /// Cached: supports folding range
-    cap_folding_range: AtomicBool,
-    /// Cached: supports call hierarchy
-    cap_call_hierarchy: AtomicBool,
-    /// Cached: supports type hierarchy
-    cap_type_hierarchy: AtomicBool,
-    /// Cached: supports execute command
-    cap_execute_command: AtomicBool,
-    /// Cached: supports inlay hints
-    cap_inlay_hint: AtomicBool,
-    /// Cached: supports semantic tokens
-    cap_semantic_tokens: AtomicBool,
+    /// Cached capability flags — lock-free, set once during initialization.
+    /// Use `LspCapFlags` bitflags for the individual capabilities.
+    cap_flags: AtomicU32,
 }
 
 impl LanguageServerInner {
     /// Returns a log prefix with language and command context
     fn log_prefix(&self) -> String {
         format!("[LSP:{}:{}]", self.language, self.command)
+    }
+
+    /// Returns the current capability flags.
+    fn cap_flags(&self) -> LspCapFlags {
+        LspCapFlags::from_bits_truncate(self.cap_flags.load(Ordering::Relaxed))
+    }
+
+    /// Checks whether a specific capability flag is set.
+    fn has_cap(&self, flag: LspCapFlags) -> bool {
+        self.cap_flags().contains(flag)
+    }
+
+    /// Atomically sets or clears a single capability flag.
+    fn set_cap(&self, flag: LspCapFlags, enabled: bool) {
+        if enabled {
+            self.cap_flags.fetch_or(flag.bits(), Ordering::Relaxed);
+        } else {
+            self.cap_flags.fetch_and(!flag.bits(), Ordering::Relaxed);
+        }
     }
 }
 
@@ -291,31 +299,7 @@ impl LanguageServer {
             outgoing_tx,
             incoming_rx: Mutex::new(Some(incoming_rx)),
             supervisor,
-            // Initialize cached capabilities to false (will be set during initialization)
-            cap_goto_definition: AtomicBool::new(false),
-            cap_goto_declaration: AtomicBool::new(false),
-            cap_goto_implementation: AtomicBool::new(false),
-            cap_goto_type_definition: AtomicBool::new(false),
-            cap_hover: AtomicBool::new(false),
-            cap_completion: AtomicBool::new(false),
-            cap_formatting: AtomicBool::new(false),
-            cap_range_formatting: AtomicBool::new(false),
-            cap_code_actions: AtomicBool::new(false),
-            cap_references: AtomicBool::new(false),
-            cap_rename: AtomicBool::new(false),
-            cap_prepare_rename: AtomicBool::new(false),
-            cap_signature_help: AtomicBool::new(false),
-            cap_document_symbol: AtomicBool::new(false),
-            cap_selection_range: AtomicBool::new(false),
-            cap_workspace_symbol: AtomicBool::new(false),
-            cap_document_highlight: AtomicBool::new(false),
-            cap_incremental_sync: AtomicBool::new(false),
-            cap_folding_range: AtomicBool::new(false),
-            cap_call_hierarchy: AtomicBool::new(false),
-            cap_type_hierarchy: AtomicBool::new(false),
-            cap_execute_command: AtomicBool::new(false),
-            cap_inlay_hint: AtomicBool::new(false),
-            cap_semantic_tokens: AtomicBool::new(false),
+            cap_flags: AtomicU32::new(0),
         });
 
         let server = Self {
@@ -1496,103 +1480,45 @@ impl LanguageServer {
         }
     }
 
-    /// Caches capability flags from ServerCapabilities for lock-free access
-    /// Called once during initialization
+    /// Caches capability flags from ServerCapabilities for lock-free access.
+    /// Called once during initialization.
     fn cache_capabilities(&self, caps: &ServerCapabilities) {
-        // Cache goto definition support
-        self.inner
-            .cap_goto_definition
-            .store(caps.definition_provider.is_some(), Ordering::Relaxed);
+        use LspCapFlags as F;
 
-        // Cache goto declaration support
-        self.inner
-            .cap_goto_declaration
-            .store(caps.declaration_provider.is_some(), Ordering::Relaxed);
+        let mut flags = F::empty();
 
-        // Cache goto implementation support
-        self.inner
-            .cap_goto_implementation
-            .store(caps.implementation_provider.is_some(), Ordering::Relaxed);
+        // Simple is_some() checks
+        if caps.definition_provider.is_some() { flags |= F::GOTO_DEFINITION; }
+        if caps.declaration_provider.is_some() { flags |= F::GOTO_DECLARATION; }
+        if caps.implementation_provider.is_some() { flags |= F::GOTO_IMPLEMENTATION; }
+        if caps.type_definition_provider.is_some() { flags |= F::GOTO_TYPE_DEFINITION; }
+        if caps.hover_provider.is_some() { flags |= F::HOVER; }
+        if caps.completion_provider.is_some() { flags |= F::COMPLETION; }
+        if caps.document_formatting_provider.is_some() { flags |= F::FORMATTING; }
+        if caps.document_range_formatting_provider.is_some() { flags |= F::RANGE_FORMATTING; }
+        if caps.code_action_provider.is_some() { flags |= F::CODE_ACTIONS; }
+        if caps.references_provider.is_some() { flags |= F::REFERENCES; }
+        if caps.rename_provider.is_some() { flags |= F::RENAME; }
+        if caps.signature_help_provider.is_some() { flags |= F::SIGNATURE_HELP; }
+        if caps.document_symbol_provider.is_some() { flags |= F::DOCUMENT_SYMBOL; }
+        if caps.selection_range_provider.is_some() { flags |= F::SELECTION_RANGE; }
+        if caps.workspace_symbol_provider.is_some() { flags |= F::WORKSPACE_SYMBOL; }
+        if caps.document_highlight_provider.is_some() { flags |= F::DOCUMENT_HIGHLIGHT; }
+        if caps.folding_range_provider.is_some() { flags |= F::FOLDING_RANGE; }
+        if caps.call_hierarchy_provider.is_some() { flags |= F::CALL_HIERARCHY; }
+        if caps.execute_command_provider.is_some() { flags |= F::EXECUTE_COMMAND; }
+        if caps.inlay_hint_provider.is_some() { flags |= F::INLAY_HINT; }
+        if caps.semantic_tokens_provider.is_some() { flags |= F::SEMANTIC_TOKENS; }
 
-        // Cache goto type definition support
-        self.inner
-            .cap_goto_type_definition
-            .store(caps.type_definition_provider.is_some(), Ordering::Relaxed);
+        // Prepare rename: needs deeper inspection
+        if let Some(lsp_types::OneOf::Right(options)) = &caps.rename_provider {
+            if options.prepare_provider.unwrap_or(false) {
+                flags |= F::PREPARE_RENAME;
+            }
+        }
 
-        // Cache hover support
-        self.inner
-            .cap_hover
-            .store(caps.hover_provider.is_some(), Ordering::Relaxed);
-
-        // Cache completion support
-        self.inner
-            .cap_completion
-            .store(caps.completion_provider.is_some(), Ordering::Relaxed);
-
-        // Cache formatting support
-        self.inner.cap_formatting.store(
-            caps.document_formatting_provider.is_some(),
-            Ordering::Relaxed,
-        );
-
-        // Cache range formatting support
-        self.inner.cap_range_formatting.store(
-            caps.document_range_formatting_provider.is_some(),
-            Ordering::Relaxed,
-        );
-
-        // Cache code actions support
-        self.inner
-            .cap_code_actions
-            .store(caps.code_action_provider.is_some(), Ordering::Relaxed);
-
-        // Cache references support
-        self.inner
-            .cap_references
-            .store(caps.references_provider.is_some(), Ordering::Relaxed);
-
-        // Cache rename support
-        self.inner
-            .cap_rename
-            .store(caps.rename_provider.is_some(), Ordering::Relaxed);
-
-        // Cache prepare rename support
-        let prepare_rename_support = match &caps.rename_provider {
-            Some(lsp_types::OneOf::Right(options)) => options.prepare_provider.unwrap_or(false),
-            _ => false,
-        };
-        self.inner
-            .cap_prepare_rename
-            .store(prepare_rename_support, Ordering::Relaxed);
-
-        // Cache signature help support
-        self.inner
-            .cap_signature_help
-            .store(caps.signature_help_provider.is_some(), Ordering::Relaxed);
-
-        // Cache document symbol support
-        self.inner
-            .cap_document_symbol
-            .store(caps.document_symbol_provider.is_some(), Ordering::Relaxed);
-
-        // Cache selection range support
-        self.inner
-            .cap_selection_range
-            .store(caps.selection_range_provider.is_some(), Ordering::Relaxed);
-
-        // Cache workspace symbol support
-        self.inner
-            .cap_workspace_symbol
-            .store(caps.workspace_symbol_provider.is_some(), Ordering::Relaxed);
-
-        // Cache document highlight support
-        self.inner.cap_document_highlight.store(
-            caps.document_highlight_provider.is_some(),
-            Ordering::Relaxed,
-        );
-
-        // Cache incremental sync support
-        let incremental_sync = match &caps.text_document_sync {
+        // Incremental sync: needs enum matching
+        let incremental = match &caps.text_document_sync {
             Some(lsp_types::TextDocumentSyncCapability::Kind(kind)) => {
                 *kind == lsp_types::TextDocumentSyncKind::INCREMENTAL
             }
@@ -1601,75 +1527,46 @@ impl LanguageServer {
             }
             None => false,
         };
-        self.inner
-            .cap_incremental_sync
-            .store(incremental_sync, Ordering::Relaxed);
+        if incremental { flags |= F::INCREMENTAL_SYNC; }
 
-        // Cache folding range support
-        self.inner
-            .cap_folding_range
-            .store(caps.folding_range_provider.is_some(), Ordering::Relaxed);
-
-        // Cache call hierarchy support
-        self.inner
-            .cap_call_hierarchy
-            .store(caps.call_hierarchy_provider.is_some(), Ordering::Relaxed);
-
-        // Cache type hierarchy support
         // TODO(OV-00132): type_hierarchy_provider requires lsp-types 0.96+
-        // Hardcoded to false until we upgrade from 0.95
-        self.inner
-            .cap_type_hierarchy
-            .store(false, Ordering::Relaxed);
+        // Hardcoded off until we upgrade from 0.95.
+        // flags |= F::TYPE_HIERARCHY;
 
-        // Cache execute command support
-        self.inner
-            .cap_execute_command
-            .store(caps.execute_command_provider.is_some(), Ordering::Relaxed);
-
-        // Cache inlay hint support
-        self.inner
-            .cap_inlay_hint
-            .store(caps.inlay_hint_provider.is_some(), Ordering::Relaxed);
-
-        // Cache semantic tokens support
-        self.inner
-            .cap_semantic_tokens
-            .store(caps.semantic_tokens_provider.is_some(), Ordering::Relaxed);
+        self.inner.cap_flags.store(flags.bits(), Ordering::Relaxed);
     }
 
     /// Sets a cached capability flag based on an LSP method name from dynamic registration.
     /// Called when the server sends `client/registerCapability` or `client/unregisterCapability`.
     pub fn set_capability_by_method(&self, method: &str, enabled: bool) {
+        use LspCapFlags as F;
         let flag = match method {
-            "textDocument/definition" => Some(&self.inner.cap_goto_definition),
-            "textDocument/declaration" => Some(&self.inner.cap_goto_declaration),
-            "textDocument/implementation" => Some(&self.inner.cap_goto_implementation),
-            "textDocument/typeDefinition" => Some(&self.inner.cap_goto_type_definition),
-            "textDocument/hover" => Some(&self.inner.cap_hover),
-            "textDocument/completion" => Some(&self.inner.cap_completion),
-            "textDocument/formatting" => Some(&self.inner.cap_formatting),
-            "textDocument/rangeFormatting" => Some(&self.inner.cap_range_formatting),
-            "textDocument/codeAction" => Some(&self.inner.cap_code_actions),
-            "textDocument/references" => Some(&self.inner.cap_references),
-            "textDocument/rename" => Some(&self.inner.cap_rename),
-            "textDocument/signatureHelp" => Some(&self.inner.cap_signature_help),
-            "textDocument/documentSymbol" => Some(&self.inner.cap_document_symbol),
-            "textDocument/selectionRange" => Some(&self.inner.cap_selection_range),
-            "workspace/symbol" => Some(&self.inner.cap_workspace_symbol),
-            "textDocument/documentHighlight" => Some(&self.inner.cap_document_highlight),
-            "textDocument/foldingRange" => Some(&self.inner.cap_folding_range),
-            "textDocument/prepareCallHierarchy" => Some(&self.inner.cap_call_hierarchy),
-            "workspace/executeCommand" => Some(&self.inner.cap_execute_command),
-            "textDocument/inlayHint" => Some(&self.inner.cap_inlay_hint),
+            "textDocument/definition" => F::GOTO_DEFINITION,
+            "textDocument/declaration" => F::GOTO_DECLARATION,
+            "textDocument/implementation" => F::GOTO_IMPLEMENTATION,
+            "textDocument/typeDefinition" => F::GOTO_TYPE_DEFINITION,
+            "textDocument/hover" => F::HOVER,
+            "textDocument/completion" => F::COMPLETION,
+            "textDocument/formatting" => F::FORMATTING,
+            "textDocument/rangeFormatting" => F::RANGE_FORMATTING,
+            "textDocument/codeAction" => F::CODE_ACTIONS,
+            "textDocument/references" => F::REFERENCES,
+            "textDocument/rename" => F::RENAME,
+            "textDocument/signatureHelp" => F::SIGNATURE_HELP,
+            "textDocument/documentSymbol" => F::DOCUMENT_SYMBOL,
+            "textDocument/selectionRange" => F::SELECTION_RANGE,
+            "workspace/symbol" => F::WORKSPACE_SYMBOL,
+            "textDocument/documentHighlight" => F::DOCUMENT_HIGHLIGHT,
+            "textDocument/foldingRange" => F::FOLDING_RANGE,
+            "textDocument/prepareCallHierarchy" => F::CALL_HIERARCHY,
+            "workspace/executeCommand" => F::EXECUTE_COMMAND,
+            "textDocument/inlayHint" => F::INLAY_HINT,
             "textDocument/semanticTokens"
             | "textDocument/semanticTokens/full"
-            | "textDocument/semanticTokens/range" => Some(&self.inner.cap_semantic_tokens),
-            _ => None,
+            | "textDocument/semanticTokens/range" => F::SEMANTIC_TOKENS,
+            _ => return,
         };
-        if let Some(flag) = flag {
-            flag.store(enabled, Ordering::Relaxed);
-        }
+        self.inner.set_cap(flag, enabled);
     }
 
     /// Gets the server capabilities
@@ -1680,32 +1577,32 @@ impl LanguageServer {
 
     /// Checks if the server supports goto definition (lock-free)
     pub async fn supports_goto_definition(&self) -> bool {
-        self.inner.cap_goto_definition.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::GOTO_DEFINITION)
     }
 
     /// Checks if the server supports goto declaration (lock-free)
     pub async fn supports_goto_declaration(&self) -> bool {
-        self.inner.cap_goto_declaration.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::GOTO_DECLARATION)
     }
 
     /// Checks if the server supports goto implementation (lock-free)
     pub async fn supports_goto_implementation(&self) -> bool {
-        self.inner.cap_goto_implementation.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::GOTO_IMPLEMENTATION)
     }
 
     /// Checks if the server supports goto type definition (lock-free)
     pub async fn supports_goto_type_definition(&self) -> bool {
-        self.inner.cap_goto_type_definition.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::GOTO_TYPE_DEFINITION)
     }
 
     /// Checks if the server supports hover (lock-free)
     pub async fn supports_hover(&self) -> bool {
-        self.inner.cap_hover.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::HOVER)
     }
 
     /// Checks if the server supports completion (lock-free)
     pub async fn supports_completion(&self) -> bool {
-        self.inner.cap_completion.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::COMPLETION)
     }
 
     /// Best-effort: return completion trigger characters advertised by the server.
@@ -1729,92 +1626,92 @@ impl LanguageServer {
 
     /// Checks if the server supports formatting (lock-free)
     pub async fn supports_formatting(&self) -> bool {
-        self.inner.cap_formatting.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::FORMATTING)
     }
 
     /// Checks if the server supports range formatting (lock-free)
     pub async fn supports_range_formatting(&self) -> bool {
-        self.inner.cap_range_formatting.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::RANGE_FORMATTING)
     }
 
     /// Checks if the server supports code actions (lock-free)
     pub async fn supports_code_actions(&self) -> bool {
-        self.inner.cap_code_actions.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::CODE_ACTIONS)
     }
 
     /// Checks if the server supports references (lock-free)
     pub async fn supports_references(&self) -> bool {
-        self.inner.cap_references.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::REFERENCES)
     }
 
     /// Checks if the server supports rename (lock-free)
     pub async fn supports_rename(&self) -> bool {
-        self.inner.cap_rename.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::RENAME)
     }
 
     /// Checks if the server supports prepare rename (lock-free)
     pub async fn supports_prepare_rename(&self) -> bool {
-        self.inner.cap_prepare_rename.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::PREPARE_RENAME)
     }
 
     /// Checks if the server supports signature help (lock-free)
     pub async fn supports_signature_help(&self) -> bool {
-        self.inner.cap_signature_help.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::SIGNATURE_HELP)
     }
 
     /// Checks if the server supports document symbols (lock-free)
     pub async fn supports_document_symbol(&self) -> bool {
-        self.inner.cap_document_symbol.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::DOCUMENT_SYMBOL)
     }
 
     /// Checks if the server supports selection range (lock-free)
     pub async fn supports_selection_range(&self) -> bool {
-        self.inner.cap_selection_range.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::SELECTION_RANGE)
     }
 
     /// Checks if the server supports workspace symbols (lock-free)
     pub async fn supports_workspace_symbol(&self) -> bool {
-        self.inner.cap_workspace_symbol.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::WORKSPACE_SYMBOL)
     }
 
     /// Checks if the server supports document highlight (lock-free)
     pub async fn supports_document_highlight(&self) -> bool {
-        self.inner.cap_document_highlight.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::DOCUMENT_HIGHLIGHT)
     }
 
     /// Checks if the server supports incremental sync (lock-free)
     pub async fn supports_incremental_sync(&self) -> bool {
-        self.inner.cap_incremental_sync.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::INCREMENTAL_SYNC)
     }
 
     /// Checks if the server supports folding range (lock-free)
     pub async fn supports_folding_range(&self) -> bool {
-        self.inner.cap_folding_range.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::FOLDING_RANGE)
     }
 
     /// Checks if the server supports call hierarchy (lock-free)
     pub async fn supports_call_hierarchy(&self) -> bool {
-        self.inner.cap_call_hierarchy.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::CALL_HIERARCHY)
     }
 
     /// Checks if the server supports type hierarchy (lock-free)
     pub async fn supports_type_hierarchy(&self) -> bool {
-        self.inner.cap_type_hierarchy.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::TYPE_HIERARCHY)
     }
 
     /// Checks if the server supports execute command (lock-free)
     pub async fn supports_execute_command(&self) -> bool {
-        self.inner.cap_execute_command.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::EXECUTE_COMMAND)
     }
 
     /// Checks if the server supports inlay hints (lock-free)
     pub async fn supports_inlay_hints(&self) -> bool {
-        self.inner.cap_inlay_hint.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::INLAY_HINT)
     }
 
     /// Checks if the server supports semantic tokens (lock-free)
     pub async fn supports_semantic_tokens(&self) -> bool {
-        self.inner.cap_semantic_tokens.load(Ordering::Relaxed)
+        self.inner.has_cap(LspCapFlags::SEMANTIC_TOKENS)
     }
 
     /// Gets the current server state (alias for introspection)
