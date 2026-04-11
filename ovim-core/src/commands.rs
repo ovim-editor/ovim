@@ -25,6 +25,68 @@ fn expand_tilde(path: &str) -> Result<std::path::PathBuf, String> {
     Ok(std::path::PathBuf::from(path))
 }
 
+/// Options for the `save_buffer` helper.
+struct SaveOpts<'a> {
+    /// Path to save to (None = use buffer's current path).
+    path: Option<&'a str>,
+    /// Skip the read-only check and clear the flag after save.
+    force: bool,
+    /// Quit the editor after a successful save.
+    quit_after: bool,
+}
+
+/// Common save-and-mark logic shared by :w, :w!, :wq, :wq!, and :w <file>.
+fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
+    if !opts.force && editor.buffer().is_read_only() {
+        return err("E45: 'readonly' option is set (add ! to override)");
+    }
+
+    let resolved = match opts.path {
+        Some(raw) => match expand_tilde(raw) {
+            Ok(p) => p.to_string_lossy().to_string(),
+            Err(e) => return err(format!("Failed to expand path '{}': {}", raw, e)),
+        },
+        None => match editor.buffer().file_path().map(|s| s.to_string()) {
+            Some(p) => p,
+            None => return err("No file name"),
+        },
+    };
+
+    let old_path = editor.buffer().file_path().map(|s| s.to_string());
+    match editor.buffer_mut().save_as(&resolved) {
+        Ok(_) => {
+            let new_path = editor.buffer().file_path().map(|s| s.to_string());
+            editor.handle_file_path_transition_after_save(old_path, new_path);
+            if editor.options.blame {
+                editor.buffer_mut().load_git_blame();
+            }
+            if opts.force {
+                editor.buffer_mut().set_read_only(false);
+            }
+            editor.mark_saved();
+            editor.mark_buffer_saved();
+
+            if opts.quit_after {
+                editor.quit();
+                return ok("Saved and quitting");
+            }
+
+            let saved_path = editor
+                .buffer()
+                .file_path()
+                .map(|p| p.to_string())
+                .unwrap_or(resolved);
+            let line_count = editor.buffer().rope().len_lines();
+            let char_count = editor.buffer().rope().len_chars();
+            ok(format!(
+                "\"{}\" {}L, {}C written",
+                saved_path, line_count, char_count
+            ))
+        }
+        Err(e) => err(format!("Failed to save: {}", e)),
+    }
+}
+
 /// Helper function to jump to a quickfix entry
 pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> CommandResult {
     if let Some(ref path) = entry.filename {
@@ -117,105 +179,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.quit();
             ok("Quitting all (forced)")
         }
-        "w" | "write" => {
-            // Check if buffer is read-only
-            if editor.buffer().is_read_only() {
-                return err("E45: 'readonly' option is set (add ! to override)");
-            }
-            if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
-                let old_path = Some(path.clone());
-                match editor.buffer_mut().save_as(&path) {
-                    Ok(_) => {
-                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
-                        editor.handle_file_path_transition_after_save(old_path, new_path);
-                        if editor.options.blame {
-                            editor.buffer_mut().load_git_blame();
-                        }
-                        editor.mark_saved();
-                        editor.mark_buffer_saved(); // Mark for LSP didSave notification
-                        let line_count = editor.buffer().rope().len_lines();
-                        let char_count = editor.buffer().rope().len_chars();
-                        ok(format!(
-                            "\"{}\" {}L, {}C written",
-                            path, line_count, char_count
-                        ))
-                    }
-                    Err(e) => err(format!("Failed to save: {}", e)),
-                }
-            } else {
-                err("No file name")
-            }
-        }
-        "w!" | "write!" => {
-            // Force write even if read-only
-            if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
-                let old_path = Some(path.clone());
-                match editor.buffer_mut().save_as(&path) {
-                    Ok(_) => {
-                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
-                        editor.handle_file_path_transition_after_save(old_path, new_path);
-                        if editor.options.blame {
-                            editor.buffer_mut().load_git_blame();
-                        }
-                        // Clear read-only flag after successful forced write
-                        editor.buffer_mut().set_read_only(false);
-                        editor.mark_saved();
-                        editor.mark_buffer_saved();
-                        let line_count = editor.buffer().rope().len_lines();
-                        let char_count = editor.buffer().rope().len_chars();
-                        ok(format!(
-                            "\"{}\" {}L, {}C written",
-                            path, line_count, char_count
-                        ))
-                    }
-                    Err(e) => err(format!("Failed to save: {}", e)),
-                }
-            } else {
-                err("No file name")
-            }
-        }
-        "wq" => {
-            // Check if buffer is read-only
-            if editor.buffer().is_read_only() {
-                return err("E45: 'readonly' option is set (add ! to override)");
-            }
-            if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
-                let old_path = Some(path.clone());
-                match editor.buffer_mut().save_as(&path) {
-                    Ok(_) => {
-                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
-                        editor.handle_file_path_transition_after_save(old_path, new_path);
-                        editor.mark_saved();
-                        editor.mark_buffer_saved(); // Mark for LSP didSave notification
-                        editor.quit();
-                        ok("Saved and quitting")
-                    }
-                    Err(e) => err(format!("Failed to save: {}", e)),
-                }
-            } else {
-                err("No file name")
-            }
-        }
-        "wq!" => {
-            // Force write even if read-only
-            if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
-                let old_path = Some(path.clone());
-                match editor.buffer_mut().save_as(&path) {
-                    Ok(_) => {
-                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
-                        editor.handle_file_path_transition_after_save(old_path, new_path);
-                        editor.buffer_mut().set_read_only(false);
-                        editor.mark_saved();
-                        editor.mark_buffer_saved();
-                        editor.quit();
-                        ok("Saved and quitting")
-                    }
-                    Err(e) => err(format!("Failed to save: {}", e)),
-                }
-            } else {
-                err("No file name")
-            }
-        }
+        "w" | "write" => save_buffer(editor, SaveOpts { path: None, force: false, quit_after: false }),
+        "w!" | "write!" => save_buffer(editor, SaveOpts { path: None, force: true, quit_after: false }),
+        "wq" => save_buffer(editor, SaveOpts { path: None, force: false, quit_after: true }),
+        "wq!" => save_buffer(editor, SaveOpts { path: None, force: true, quit_after: true }),
         "LspInfo" => {
             // Show LSP status information in a scratch buffer
             let mut info = String::new();
@@ -729,36 +696,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 .strip_prefix("w ")
                 .or_else(|| command.strip_prefix("write "))
             {
-                let old_path = editor.buffer().file_path().map(|s| s.to_string());
-                let filename = match expand_tilde(raw_filename) {
-                    Ok(path) => path.to_string_lossy().to_string(),
-                    Err(e) => {
-                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
-                    }
-                };
-                match editor.buffer_mut().save_as(&filename) {
-                    Ok(_) => {
-                        let new_path = editor.buffer().file_path().map(|s| s.to_string());
-                        editor.handle_file_path_transition_after_save(old_path, new_path);
-                        if editor.options.blame {
-                            editor.buffer_mut().load_git_blame();
-                        }
-                        editor.mark_saved();
-                        editor.mark_buffer_saved(); // Mark for LSP didSave notification
-                        let saved_path = editor
-                            .buffer()
-                            .file_path()
-                            .map(|p| p.to_string())
-                            .unwrap_or(filename);
-                        let line_count = editor.buffer().rope().len_lines();
-                        let char_count = editor.buffer().rope().len_chars();
-                        ok(format!(
-                            "\"{}\" {}L, {}C written",
-                            saved_path, line_count, char_count
-                        ))
-                    }
-                    Err(e) => err(format!("Failed to save: {}", e)),
-                }
+                save_buffer(editor, SaveOpts { path: Some(raw_filename), force: false, quit_after: false })
             // Handle :lua <code>
             } else if let Some(_code) = command.strip_prefix("lua ") {
                 #[cfg(feature = "lua")]
