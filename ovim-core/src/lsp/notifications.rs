@@ -95,6 +95,11 @@ impl LspManager {
     /// Sends textDocument/didChange notification to a specific server with an
     /// explicit version (pre-assigned by `did_change()`).
     /// Supports both full and incremental sync.
+    ///
+    /// Returns `Ok(true)` if the notification was actually sent, or `Ok(false)`
+    /// if the old and new text were identical (no diff to send). Callers should
+    /// still update `last_sent_versions` on `Ok(false)` because the server's
+    /// content already matches — only the version number was bumped locally.
     async fn send_did_change_with_version(
         &self,
         uri: Uri,
@@ -102,7 +107,7 @@ impl LspManager {
         text: String,
         old_text: Option<String>,
         version: i32,
-    ) -> Result<()> {
+    ) -> Result<bool> {
         // Get server reference
         let server = self
             .servers
@@ -122,8 +127,10 @@ impl LspManager {
                         text: new_text,
                     }]
                 } else {
-                    // No changes detected
-                    return Ok(());
+                    // No changes detected — content is identical to what server has.
+                    // Return Ok(false) so callers sync last_sent_versions without
+                    // sending a redundant notification.
+                    return Ok(false);
                 }
             } else {
                 vec![TextDocumentContentChangeEvent {
@@ -167,7 +174,7 @@ impl LspManager {
             .notify("textDocument/didChange", serde_json::to_value(params)?)
             .await?;
 
-        Ok(())
+        Ok(true)
     }
 
     /// Flushes pending changes for a document (sends immediately).
@@ -198,24 +205,27 @@ impl LspManager {
             )
             .await
             {
-                Ok(Ok(())) => {
-                    // Record the version we successfully sent so that
-                    // set_diagnostics() can reject unversioned diagnostics
-                    // when unsent edits exist (OV-00162).
+                Ok(Ok(actually_sent)) => {
+                    // Sync last_sent_versions whether or not the notification
+                    // was actually sent — if no-diff, the server's content
+                    // already matches so the version should be considered
+                    // synced (OV-00211).
                     let mut sent = self.last_sent_versions.lock().await;
                     sent.insert(uri.clone(), version);
                     drop(sent);
 
-                    // Re-stamp last_local_edit to the flush instant so that
-                    // the unversioned-diagnostics settle timer measures time
-                    // since the server *received* new content, not since the
-                    // edit was queued locally.  Without this, the settle
-                    // (150ms) expires at the same time the debounce (150ms)
-                    // fires, allowing stale diagnostics through.
-                    self.last_local_edit
-                        .lock()
-                        .await
-                        .insert(uri.clone(), std::time::Instant::now());
+                    if actually_sent {
+                        // Re-stamp last_local_edit to the flush instant so that
+                        // the unversioned-diagnostics settle timer measures time
+                        // since the server *received* new content, not since the
+                        // edit was queued locally.  Without this, the settle
+                        // (150ms) expires at the same time the debounce (150ms)
+                        // fires, allowing stale diagnostics through.
+                        self.last_local_edit
+                            .lock()
+                            .await
+                            .insert(uri.clone(), std::time::Instant::now());
+                    }
                 }
                 Ok(Err(e)) => {
                     lsp_error!(
@@ -473,6 +483,7 @@ impl LspManager {
             // Send to the server group responsible for this document with the same version
             let server_ids = self.servers_for_document_uri(language_id, &uri);
             let mut any_sent = false;
+            let mut any_synced = false;
             for sid in &server_ids {
                 match tokio::time::timeout(
                     std::time::Duration::from_secs(5),
@@ -486,8 +497,11 @@ impl LspManager {
                 )
                 .await
                 {
-                    Ok(Ok(())) => {
-                        any_sent = true;
+                    Ok(Ok(actually_sent)) => {
+                        any_sent = any_sent || actually_sent;
+                        // Even no-diff (Ok(false)) means content is in sync —
+                        // version should be considered synced (OV-00211).
+                        any_synced = true;
                     }
                     Ok(Err(e)) => {
                         lsp_warn!("LSP-BROADCAST", "Flush failed for server {}: {}", sid, e);
@@ -501,17 +515,19 @@ impl LspManager {
                     }
                 }
             }
-            if any_sent {
+            if any_synced {
                 let mut sent = self.last_sent_versions.lock().await;
                 sent.insert(uri.clone(), version);
                 drop(sent);
 
-                // Re-stamp last_local_edit so unversioned-diagnostics settle
-                // timer measures from flush, not from queue time.
-                self.last_local_edit
-                    .lock()
-                    .await
-                    .insert(uri.clone(), std::time::Instant::now());
+                if any_sent {
+                    // Re-stamp last_local_edit so unversioned-diagnostics settle
+                    // timer measures from flush, not from queue time.
+                    self.last_local_edit
+                        .lock()
+                        .await
+                        .insert(uri.clone(), std::time::Instant::now());
+                }
 
                 return Ok(Some((text, version)));
             }
