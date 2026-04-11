@@ -67,7 +67,7 @@ impl Editor {
                     .iter()
                     .map(|sym| {
                         let line = sym.range.start.line as usize;
-                        let col = self.utf16_to_col(line, sym.range.start.character);
+                        let col = self.utf16_to_grapheme_col(line, sym.range.start.character);
                         PickerResult {
                             display: format!("{}:{}:{} {}", file_path, line + 1, col + 1, sym.name),
                             location: file_path.to_string(),
@@ -114,7 +114,7 @@ impl Editor {
                     .filter_map(|sym| {
                         let path = uri_to_file_path(&sym.location.uri)?;
                         let line = sym.location.range.start.line as usize;
-                        let col = self.utf16_to_col(line, sym.location.range.start.character);
+                        let col = self.utf16_to_grapheme_col(line, sym.location.range.start.character);
                         Some(PickerResult {
                             display: format!(
                                 "{}:{}:{}",
@@ -393,7 +393,7 @@ impl Editor {
                 return;
             }
 
-            let target_col = self.utf16_to_col(target_line, target_character);
+            let target_col = self.utf16_to_grapheme_col(target_line, target_character);
             self.buffer_mut()
                 .cursor_mut()
                 .set_position(target_line, target_col);
@@ -432,7 +432,7 @@ impl Editor {
             .filter_map(|loc| {
                 let path = uri_to_file_path(&loc.uri)?;
                 let line = loc.range.start.line as usize;
-                let col = self.utf16_to_col(line, loc.range.start.character);
+                let col = self.utf16_to_grapheme_col(line, loc.range.start.character);
                 Some(PickerResult {
                     display: format!(
                         "{}:{}:{}",

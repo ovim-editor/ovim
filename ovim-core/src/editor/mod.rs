@@ -2021,7 +2021,7 @@ impl Editor {
             .map(|d| (d.range.start.line as usize, d.range.start.character));
 
         if let Some((line, character)) = target {
-            let col = self.utf16_to_col(line, character);
+            let col = self.utf16_to_grapheme_col(line, character);
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
@@ -2048,7 +2048,7 @@ impl Editor {
             .map(|d| (d.range.start.line as usize, d.range.start.character));
 
         if let Some((line, character)) = target {
-            let col = self.utf16_to_col(line, character);
+            let col = self.utf16_to_grapheme_col(line, character);
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }

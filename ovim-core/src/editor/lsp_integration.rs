@@ -866,7 +866,7 @@ impl Editor {
                     return false;
                 }
 
-                let target_col = self.utf16_to_col(target_line, target_character);
+                let target_col = self.utf16_to_grapheme_col(target_line, target_character);
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(target_line, target_col);
@@ -1663,11 +1663,13 @@ impl Editor {
     // UTF-16 Conversion Helpers (LSP uses UTF-16 code units for positions)
     // -------------------------------------------------------------------------
 
-    /// Converts a column position to UTF-16 code units for LSP
+    /// Converts a **grapheme** column (from `cursor.col()`) to UTF-16 code units
+    /// for LSP `Position.character`.
     ///
-    /// LSP spec requires character positions in UTF-16 code units, not byte offsets.
-    /// This is critical for correct positioning with rust-analyzer and other LSP servers.
-    pub(crate) fn col_to_utf16(&self, line: usize, col: usize) -> u32 {
+    /// The conversion chain is: grapheme index → char index → UTF-16 code units.
+    /// Skipping the grapheme→char step was OV-00226 — combining characters (é = e + ◌́)
+    /// caused every outbound LSP position to be wrong.
+    pub(crate) fn col_to_utf16(&self, line: usize, grapheme_col: usize) -> u32 {
         let rope = self.buffer().rope();
         if line >= rope.len_lines() {
             return 0;
@@ -1675,26 +1677,26 @@ impl Editor {
 
         let line_text = rope.line(line);
 
-        // CRITICAL: rope.line() includes the trailing newline, but LSP positions
-        // should NOT include it. Exclude newline when calculating char count
-        // and when iterating for UTF-16 conversion to prevent off-by-one errors
-        // at end-of-line positions (hover, goto definition, etc.)
-        let chars_without_newline = line_text.chars().take_while(|&c| c != '\n').count();
-        let safe_col = col.min(chars_without_newline);
+        // rope.line() includes the trailing newline — strip it for LSP
+        let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
 
-        // Convert to UTF-16 code units, excluding the newline
-        line_text
+        // Step 1: grapheme index → char index
+        let char_col = crate::unicode::grapheme_to_char_col(&line_str, grapheme_col);
+        let safe_col = char_col.min(line_str.chars().count());
+
+        // Step 2: char index → UTF-16 code units
+        line_str
             .chars()
-            .take_while(|&c| c != '\n')
             .take(safe_col)
             .map(|c| c.len_utf16() as u32)
             .sum()
     }
 
-    /// Converts UTF-16 code units (from LSP) back to character column position
+    /// Converts UTF-16 code units (from LSP) to a **char** column index.
     ///
-    /// LSP responses provide positions in UTF-16 code units. This converts them
-    /// back to character positions for rope operations.
+    /// Returns a char index suitable for rope operations (`insert_text_at`,
+    /// `delete_range`). For cursor positioning (which needs grapheme indices),
+    /// use [`utf16_to_grapheme_col`] instead.
     pub(crate) fn utf16_to_col(&self, line: usize, utf16_col: u32) -> usize {
         let rope = self.buffer().rope();
         if line >= rope.len_lines() {
@@ -1714,6 +1716,24 @@ impl Editor {
         }
 
         char_position
+    }
+
+    /// Converts UTF-16 code units (from LSP) to a **grapheme** column index.
+    ///
+    /// Returns a grapheme index suitable for `cursor.set_position()`. This
+    /// is the correct conversion for goto-definition targets, reference
+    /// locations, and any LSP position that becomes a cursor position.
+    pub(crate) fn utf16_to_grapheme_col(&self, line: usize, utf16_col: u32) -> usize {
+        let char_col = self.utf16_to_col(line, utf16_col);
+
+        let rope = self.buffer().rope();
+        if line >= rope.len_lines() {
+            return 0;
+        }
+        let line_text = rope.line(line);
+        let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
+
+        crate::unicode::char_to_grapheme_col(&line_str, char_col)
     }
 
     /// Prepare common context for an LSP request.
