@@ -82,11 +82,12 @@ impl Editor {
                 let clamped_line = global_mark.line.min(max_line);
 
                 let line_len = if let Some(line) = self.buffer().line(clamped_line) {
-                    line.trim_end_matches('\n').chars().count()
+                    let line_str = line.trim_end_matches('\n');
+                    crate::unicode::grapheme_count(line_str)
                 } else {
                     0
                 };
-                let clamped_col = global_mark.col.min(line_len);
+                let clamped_col = global_mark.col.min(line_len.saturating_sub(1));
 
                 // Jump to the validated position
                 self.buffer_mut()
@@ -116,12 +117,13 @@ impl Editor {
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
             if let Some(mark) = self.nav.marks.get_mark(name) {
-                // Find first non-blank character on the line
+                // Find first non-blank character on the line (char index → grapheme)
                 let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
-                    line_text
+                    let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())
-                        .unwrap_or(0)
+                        .unwrap_or(0);
+                    crate::unicode::char_to_grapheme_col(&line_text, char_col)
                 } else {
                     0
                 };
@@ -152,12 +154,13 @@ impl Editor {
                 let max_line = self.buffer().line_count().saturating_sub(1);
                 let clamped_line = global_mark.line.min(max_line);
 
-                // Find first non-blank character on the line
+                // Find first non-blank character on the line (char index → grapheme)
                 let first_non_blank = if let Some(line_text) = self.buffer().line(clamped_line) {
-                    line_text
+                    let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())
-                        .unwrap_or(0)
+                        .unwrap_or(0);
+                    crate::unicode::char_to_grapheme_col(&line_text, char_col)
                 } else {
                     0
                 };
@@ -316,7 +319,8 @@ impl Editor {
             let clamped_line = entry.line.min(max_line);
 
             let line_len = if let Some(line) = self.buffer().line(clamped_line) {
-                line.trim_end_matches('\n').chars().count()
+                let line_str = line.trim_end_matches('\n');
+                crate::unicode::grapheme_count(line_str)
             } else {
                 0
             };

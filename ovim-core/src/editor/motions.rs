@@ -73,7 +73,7 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return;
@@ -82,6 +82,7 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
+        let col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
         if col >= chars.len() {
             // At end of line (or empty line), advance to next word start.
@@ -145,9 +146,10 @@ impl Motions {
             }
             // else: end of buffer, don't move
         } else {
+            let clamped = new_col.min(chars.len().saturating_sub(1).max(0));
             buffer
                 .cursor_mut()
-                .set_col(new_col.min(chars.len().saturating_sub(1).max(0)));
+                .set_col(crate::unicode::char_to_grapheme_col(line, clamped));
         }
     }
 
@@ -181,9 +183,12 @@ impl Motions {
                 return Some((line_idx, 0));
             }
 
-            // Check if line has any non-whitespace
-            if let Some(pos) = content.chars().position(|c| !c.is_whitespace()) {
-                return Some((line_idx, pos));
+            // Check if line has any non-whitespace (char index → grapheme)
+            if let Some(char_pos) = content.chars().position(|c| !c.is_whitespace()) {
+                return Some((
+                    line_idx,
+                    crate::unicode::char_to_grapheme_col(content, char_pos),
+                ));
             }
 
             // Whitespace-only line — skip.
@@ -211,25 +216,25 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let mut line_idx = cursor.line();
-        let mut col = cursor.col();
+        let mut grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return;
         }
 
-        if col == 0 {
+        if grapheme_col == 0 {
             // At start of line, move to end of previous line and continue
             if line_idx > 0 {
                 line_idx -= 1;
                 let prev_line = rope.line(line_idx).to_string();
                 let prev_line_trimmed = prev_line.trim_end_matches('\n');
-                col = grapheme_count(prev_line_trimmed);
+                grapheme_col = grapheme_count(prev_line_trimmed);
                 // If previous line is empty, just land at col 0
-                if col == 0 {
+                if grapheme_col == 0 {
                     buffer.cursor_mut().set_position(line_idx, 0);
                     return;
                 }
-                // col is now one past the last char; fall through to word-backward logic
+                // grapheme_col is now one past the last grapheme; fall through to word-backward logic
             } else {
                 return;
             }
@@ -238,7 +243,8 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
-        let mut new_col = col;
+        // Convert grapheme col to char col for char-based iteration
+        let mut new_col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
         // Skip backward over whitespace first
         if new_col > 0 && new_col <= chars.len() {
@@ -280,7 +286,10 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(line_idx, new_col);
+        buffer.cursor_mut().set_position(
+            line_idx,
+            crate::unicode::char_to_grapheme_col(line, new_col),
+        );
     }
 
     /// Moves cursor forward to the end of the current/next word
@@ -316,7 +325,7 @@ impl Motions {
     }
 
     fn word_end_forward_once(buffer: &mut Buffer, big_word: bool, prefer_current: bool) {
-        let (line_idx, col, total_lines, line_string) = {
+        let (line_idx, grapheme_col, total_lines, line_string) = {
             let cursor = buffer.cursor();
             let total_lines = buffer.line_count();
 
@@ -334,6 +343,7 @@ impl Motions {
 
         let line = line_string.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
+        let col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
         if chars.is_empty() {
             // Skip consecutive blank lines to find next non-empty line
@@ -342,13 +352,13 @@ impl Motions {
                 let next = buffer.rope().line(next_line).to_string();
                 let next_trimmed = next.trim_end_matches('\n');
                 if !next_trimmed.is_empty() {
-                    let next_chars: Vec<char> = next_trimmed.chars().collect();
                     // Start at first non-ws, then move to end of that word
-                    let Some(start_col) = next_chars.iter().position(|c| !c.is_whitespace()) else {
+                    let Some(char_col) = next_trimmed.chars().position(|c: char| !c.is_whitespace()) else {
                         next_line += 1;
                         continue;
                     };
-                    buffer.cursor_mut().set_position(next_line, start_col);
+                    let start_grapheme = crate::unicode::char_to_grapheme_col(next_trimmed, char_col);
+                    buffer.cursor_mut().set_position(next_line, start_grapheme);
                     Self::word_end_forward_once(buffer, big_word, prefer_current);
                     return;
                 }
@@ -405,7 +415,9 @@ impl Motions {
             };
 
             if prefer_current || idx < end_of_current {
-                buffer.cursor_mut().set_col(end_of_current);
+                buffer
+                    .cursor_mut()
+                    .set_col(crate::unicode::char_to_grapheme_col(line, end_of_current));
                 return;
             }
 
@@ -444,7 +456,9 @@ impl Motions {
             }
         };
 
-        buffer.cursor_mut().set_col(end_of_next);
+        buffer
+            .cursor_mut()
+            .set_col(crate::unicode::char_to_grapheme_col(line, end_of_next));
     }
 
     /// Moves cursor backward to the end of the previous word
@@ -477,11 +491,19 @@ impl Motions {
 
         let rope = buffer.rope();
         let orig_line = buffer.cursor().line();
-        let orig_col = buffer.cursor().col();
+        let orig_grapheme_col = buffer.cursor().col();
 
         if orig_line >= rope.len_lines() {
             return;
         }
+
+        // Helper to get line string (without trailing newline)
+        let get_line_str = |l: usize| -> String {
+            rope.line(l)
+                .to_string()
+                .trim_end_matches('\n')
+                .to_string()
+        };
 
         // Helper to get line chars
         let get_chars = |l: usize| -> Vec<char> {
@@ -492,7 +514,10 @@ impl Motions {
                 .collect()
         };
 
+        let orig_line_str = get_line_str(orig_line);
         let orig_chars = get_chars(orig_line);
+        // Convert grapheme col to char col for internal iteration
+        let orig_col = crate::unicode::grapheme_to_char_col(&orig_line_str, orig_grapheme_col);
         let orig_class = if orig_col < orig_chars.len() {
             Some(if big_word {
                 // For WORD: any non-ws is the same "class"
@@ -548,7 +573,11 @@ impl Motions {
             || col < orig_col.saturating_sub(1); // whitespace was skipped
 
         if crossed_boundary {
-            buffer.cursor_mut().set_position(line_idx, col);
+            let line_str = get_line_str(line_idx);
+            buffer.cursor_mut().set_position(
+                line_idx,
+                crate::unicode::char_to_grapheme_col(&line_str, col),
+            );
             return;
         }
 
@@ -580,8 +609,13 @@ impl Motions {
         }
 
         // Skip whitespace backward again
-        let (final_line, final_col) = Self::skip_whitespace_backward(line_idx, col, &get_chars);
-        buffer.cursor_mut().set_position(final_line, final_col);
+        let (final_line, final_char_col) =
+            Self::skip_whitespace_backward(line_idx, col, &get_chars);
+        let final_line_str = get_line_str(final_line);
+        buffer.cursor_mut().set_position(
+            final_line,
+            crate::unicode::char_to_grapheme_col(&final_line_str, final_char_col),
+        );
     }
 
     /// Skip whitespace backward (crossing lines), returning the position of
@@ -633,7 +667,7 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return false;
@@ -642,13 +676,16 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
+        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
         let mut found_count = 0;
-        for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+        for (i, &c) in chars.iter().enumerate().skip(char_col + 1) {
             if c == ch {
                 found_count += 1;
                 if found_count == count {
-                    buffer.cursor_mut().set_col(i);
+                    buffer
+                        .cursor_mut()
+                        .set_col(crate::unicode::char_to_grapheme_col(line, i));
                     return true;
                 }
             }
@@ -662,7 +699,7 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return false;
@@ -671,17 +708,20 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
+        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
-        if col == 0 {
+        if char_col == 0 {
             return false;
         }
 
         let mut found_count = 0;
-        for i in (0..col).rev() {
+        for i in (0..char_col).rev() {
             if chars[i] == ch {
                 found_count += 1;
                 if found_count == count {
-                    buffer.cursor_mut().set_col(i);
+                    buffer
+                        .cursor_mut()
+                        .set_col(crate::unicode::char_to_grapheme_col(line, i));
                     return true;
                 }
             }
@@ -695,7 +735,7 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return false;
@@ -704,16 +744,19 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
+        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
         let mut found_count = 0;
-        for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+        for (i, &c) in chars.iter().enumerate().skip(char_col + 1) {
             if c == ch {
                 found_count += 1;
                 if found_count == count {
                     // Position cursor one before the character
-                    // Only succeed if there's actual movement (i - 1 > col)
-                    if i > 0 && i - 1 > col {
-                        buffer.cursor_mut().set_col(i - 1);
+                    // Only succeed if there's actual movement (i - 1 > char_col)
+                    if i > 0 && i - 1 > char_col {
+                        buffer
+                            .cursor_mut()
+                            .set_col(crate::unicode::char_to_grapheme_col(line, i - 1));
                         return true;
                     }
                     return false;
@@ -729,7 +772,7 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return false;
@@ -738,19 +781,22 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
+        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
 
-        if col == 0 {
+        if char_col == 0 {
             return false;
         }
 
         let mut found_count = 0;
-        for i in (0..col).rev() {
+        for i in (0..char_col).rev() {
             if chars[i] == ch {
                 found_count += 1;
                 if found_count == count {
                     // Position cursor one after the character
                     if i + 1 < chars.len() {
-                        buffer.cursor_mut().set_col(i + 1);
+                        buffer
+                            .cursor_mut()
+                            .set_col(crate::unicode::char_to_grapheme_col(line, i + 1));
                         return true;
                     }
                 }
@@ -765,7 +811,7 @@ impl Motions {
         let rope = buffer.rope();
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
 
         if line_idx >= rope.len_lines() {
             return false;
@@ -775,6 +821,14 @@ impl Motions {
         let text = rope.to_string();
         let chars: Vec<char> = text.chars().collect();
 
+        // Convert grapheme col to char col for absolute position calculation
+        let current_line_str: String = rope
+            .line(line_idx)
+            .to_string()
+            .trim_end_matches('\n')
+            .to_string();
+        let char_col = crate::unicode::grapheme_to_char_col(&current_line_str, grapheme_col);
+
         // Convert line+col to absolute position
         let mut abs_pos = 0;
         for i in 0..line_idx {
@@ -782,7 +836,7 @@ impl Motions {
                 abs_pos += rope.line(i).len_chars();
             }
         }
-        abs_pos += col;
+        abs_pos += char_col;
 
         if abs_pos >= chars.len() {
             return false;
@@ -800,9 +854,9 @@ impl Motions {
             let line_text = rope.line(line_idx).to_string();
             let line_chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
             let mut found = None;
-            for (search_col, &ch) in line_chars.iter().enumerate().skip(col + 1) {
+            for (search_col, &ch) in line_chars.iter().enumerate().skip(char_col + 1) {
                 if is_bracket(ch) {
-                    found = Some((abs_pos + (search_col - col), ch));
+                    found = Some((abs_pos + (search_col - char_col), ch));
                     break;
                 }
             }
@@ -831,9 +885,18 @@ impl Motions {
         };
 
         if let Some(pos) = match_pos {
-            // Convert absolute position back to line+col
-            let (new_line, new_col) = Self::abs_pos_to_line_col(rope, pos);
-            buffer.cursor_mut().set_position(new_line, new_col);
+            // Convert absolute position back to line+col (char-based)
+            let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, pos);
+            let target_line_str: String = rope
+                .line(new_line)
+                .to_string()
+                .trim_end_matches('\n')
+                .to_string();
+            let new_grapheme_col =
+                crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
+            buffer
+                .cursor_mut()
+                .set_position(new_line, new_grapheme_col);
             true
         } else {
             false
@@ -898,12 +961,15 @@ impl Motions {
 
         if let Some(line) = buffer.line(line_idx) {
             let line_text = line.trim_end_matches('\n');
-            let chars: Vec<char> = line_text.chars().collect();
 
-            // Find first non-whitespace character
-            let first_non_blank = chars.iter().position(|&c| !c.is_whitespace()).unwrap_or(0);
+            // Find first non-whitespace character (char index → grapheme)
+            let char_col = line_text
+                .chars()
+                .position(|c| !c.is_whitespace())
+                .unwrap_or(0);
+            let grapheme_col = crate::unicode::char_to_grapheme_col(line_text, char_col);
 
-            buffer.cursor_mut().set_col(first_non_blank);
+            buffer.cursor_mut().set_col(grapheme_col);
         }
     }
 
@@ -939,17 +1005,17 @@ impl Motions {
 
         if let Some(line) = buffer.line(line_idx) {
             let line_text = line.trim_end_matches('\n');
-            let chars: Vec<char> = line_text.chars().collect();
 
-            // Find last non-whitespace character
-            let mut last_non_blank = 0;
-            for (i, &c) in chars.iter().enumerate() {
+            // Find last non-whitespace character (char index → grapheme)
+            let mut last_char_col = 0;
+            for (i, c) in line_text.chars().enumerate() {
                 if !c.is_whitespace() {
-                    last_non_blank = i;
+                    last_char_col = i;
                 }
             }
+            let grapheme_col = crate::unicode::char_to_grapheme_col(line_text, last_char_col);
 
-            buffer.cursor_mut().set_col(last_non_blank);
+            buffer.cursor_mut().set_col(grapheme_col);
         }
     }
 
@@ -1071,12 +1137,20 @@ impl Motions {
 
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let grapheme_col = cursor.col();
         let total_lines = buffer.line_count();
+
+        // Convert grapheme col to char col for char-based iteration
+        let char_col = if let Some(line) = buffer.line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            crate::unicode::grapheme_to_char_col(line_text, grapheme_col)
+        } else {
+            0
+        };
 
         // Get text from current position onwards
         let mut current_line = line_idx;
-        let mut current_col = col + 1;
+        let mut current_col = char_col + 1;
 
         // Look for sentence-ending punctuation (.!?) followed by space/newline
         while current_line < total_lines {
@@ -1100,13 +1174,26 @@ impl Motions {
                                 if current_line + 1 < total_lines {
                                     buffer.cursor_mut().set_position(current_line + 1, 0);
                                 } else {
-                                    buffer.cursor_mut().set_position(
-                                        current_line,
+                                    let line_str: String =
+                                        line.trim_end_matches('\n').to_string();
+                                    let end_grapheme = crate::unicode::char_to_grapheme_col(
+                                        &line_str,
                                         chars.len().saturating_sub(1).max(0),
                                     );
+                                    buffer
+                                        .cursor_mut()
+                                        .set_position(current_line, end_grapheme);
                                 }
                             } else {
-                                buffer.cursor_mut().set_position(current_line, current_col);
+                                let line_str: String =
+                                    line.trim_end_matches('\n').to_string();
+                                let grapheme = crate::unicode::char_to_grapheme_col(
+                                    &line_str,
+                                    current_col,
+                                );
+                                buffer
+                                    .cursor_mut()
+                                    .set_position(current_line, grapheme);
                             }
                             return;
                         }
@@ -1134,7 +1221,15 @@ impl Motions {
     fn sentence_backward_once(buffer: &mut Buffer) {
         let cursor = buffer.cursor();
         let mut line_idx = cursor.line();
-        let mut col = cursor.col();
+        let grapheme_col = cursor.col();
+
+        // Convert grapheme to char col for char-based iteration
+        let mut col = if let Some(line) = buffer.line(line_idx) {
+            let line_text = line.trim_end_matches('\n');
+            crate::unicode::grapheme_to_char_col(line_text, grapheme_col)
+        } else {
+            0
+        };
 
         if col == 0 && line_idx == 0 {
             return;
@@ -1193,9 +1288,13 @@ impl Motions {
                         if col >= chars.len() && line_idx + 1 < buffer.line_count() {
                             buffer.cursor_mut().set_position(line_idx + 1, 0);
                         } else {
-                            buffer
-                                .cursor_mut()
-                                .set_position(line_idx, col.min(chars.len().saturating_sub(1)));
+                            let clamped = col.min(chars.len().saturating_sub(1));
+                            let line_str: String =
+                                line.trim_end_matches('\n').to_string();
+                            buffer.cursor_mut().set_position(
+                                line_idx,
+                                crate::unicode::char_to_grapheme_col(&line_str, clamped),
+                            );
                         }
                         return;
                     }
