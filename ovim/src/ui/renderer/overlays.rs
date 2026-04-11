@@ -93,22 +93,29 @@ pub fn render_hover_window(
     };
     let line_text = line_text.trim_end_matches('\n');
     let tab_width = editor.options.tab_width;
-    let display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, cursor_col);
+    let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+    let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, rope);
+    let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
+    let inline_widths = editor.decorations.inline_decorations_for_line(cursor_line, rope);
 
-    let screen_line = if editor.options.wrap && text_width > 0 {
+    let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
         if let Some(wrap_map) = editor.wrap_map() {
-            let (abs_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+            let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
+                cursor_line, display_col, line_text, &inline_widths,
+            );
             let viewport_row = wrap_map.logical_to_visual(viewport_start);
-            abs_row.saturating_sub(viewport_row)
+            (abs_row.saturating_sub(viewport_row), vcol)
         } else {
-            cursor_line.saturating_sub(viewport_start)
+            (cursor_line.saturating_sub(viewport_start), display_col)
         }
     } else {
-        cursor_line.saturating_sub(viewport_start)
+        let h_offset = editor.horizontal_offset();
+        (cursor_line.saturating_sub(viewport_start), display_col.saturating_sub(h_offset))
     };
 
-    let cursor_screen_x = buffer_area.x + gutter_width as u16 + display_col as u16;
+    let cursor_screen_x = buffer_area.x + gutter_width as u16 + visual_col as u16;
     let cursor_screen_y = buffer_area.y + screen_line as u16;
 
     // Determine vertical position (prefer below, fallback to above)
@@ -267,27 +274,34 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     };
     let line_text = line_text.trim_end_matches('\n');
 
-    // Convert character column to display column (accounting for tabs and emojis)
+    // Convert character column to display column (accounting for tabs, emojis, and inline decorations)
     let tab_width = editor.options.tab_width;
-    let display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, cursor_col);
+    let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+    let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, rope);
+    let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
+    let inline_widths = editor.decorations.inline_decorations_for_line(cursor_line, rope);
 
-    let screen_line = if editor.options.wrap && text_width > 0 {
+    let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
         if let Some(wrap_map) = editor.wrap_map() {
-            let (abs_row, _) = wrap_map.cursor_to_visual(cursor_line, display_col, line_text);
+            let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
+                cursor_line, display_col, line_text, &inline_widths,
+            );
             let viewport_row = wrap_map.logical_to_visual(viewport_start);
-            abs_row.saturating_sub(viewport_row)
+            (abs_row.saturating_sub(viewport_row), vcol)
         } else {
-            cursor_line.saturating_sub(viewport_start)
+            (cursor_line.saturating_sub(viewport_start), display_col)
         }
     } else {
-        cursor_line.saturating_sub(viewport_start)
+        let h_offset = editor.horizontal_offset();
+        (cursor_line.saturating_sub(viewport_start), display_col.saturating_sub(h_offset))
     };
 
     let gutter_width = layout.gutter_width;
 
     // Position menu below cursor
-    let menu_x = buffer_area.x + gutter_width as u16 + display_col as u16;
+    let menu_x = buffer_area.x + gutter_width as u16 + visual_col as u16;
     let menu_y = buffer_area.y + screen_line as u16 + 1; // Below current line
 
     // Determine menu dimensions

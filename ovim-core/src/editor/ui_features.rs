@@ -44,36 +44,119 @@ impl Editor {
     /// Accepts the currently selected completion
     pub fn accept_completion(&mut self) {
         if let Some(item) = self.completion_menu.selected_item() {
-            // Get the text to insert (prefer insertText, fallback to label)
-            let text_to_insert = if let Some(ref insert_text) = item.insert_text {
-                insert_text.clone()
-            } else {
-                item.label.clone()
-            };
+            // Extract the main edit: prefer textEdit (with proper range) over
+            // insertText/label (which only knows about the trigger column).
+            let (replace_start_line, replace_start_col, replace_end_line, replace_end_col, text_to_insert) =
+                if let Some(ref text_edit) = item.text_edit {
+                    let (range, new_text) = match text_edit {
+                        lsp_types::CompletionTextEdit::Edit(edit) => {
+                            (edit.range, edit.new_text.clone())
+                        }
+                        lsp_types::CompletionTextEdit::InsertAndReplace(ir) => {
+                            // On accept/confirm, use the replace range (broader)
+                            (ir.replace, ir.new_text.clone())
+                        }
+                    };
+                    let start_line = range.start.line as usize;
+                    let start_col = self.utf16_to_col(start_line, range.start.character);
+                    let end_line = range.end.line as usize;
+                    let end_col = self.utf16_to_col(end_line, range.end.character);
+                    (start_line, start_col, end_line, end_col, new_text)
+                } else {
+                    // Fallback: delete trigger..cursor and insert insertText/label
+                    let cursor_line = self.buffer().cursor().line();
+                    let cursor_col = self.buffer().cursor().col();
+                    let trigger_col = self.completion_menu.trigger_col();
+                    let text = if let Some(ref insert_text) = item.insert_text {
+                        insert_text.clone()
+                    } else {
+                        item.label.clone()
+                    };
+                    (cursor_line, trigger_col, cursor_line, cursor_col, text)
+                };
 
-            // Get cursor position
+            // Collect additional text edits (e.g., auto-imports) before mutating
+            let additional_edits: Vec<lsp_types::TextEdit> = item
+                .additional_text_edits
+                .clone()
+                .unwrap_or_default();
+
             let cursor_line = self.buffer().cursor().line();
             let cursor_col = self.buffer().cursor().col();
-
-            // Calculate the range to replace
-            let trigger_col = self.completion_menu.trigger_col();
-
             let cursor_before = (cursor_line, cursor_col);
+
             let ((), edits) = self.buffer_mut().record(|buf| {
-                if cursor_col > trigger_col {
-                    buf.delete_range(cursor_line, trigger_col, cursor_line, cursor_col);
+                // Apply main completion edit
+                if replace_start_line != replace_end_line
+                    || replace_start_col != replace_end_col
+                {
+                    buf.delete_range(
+                        replace_start_line,
+                        replace_start_col,
+                        replace_end_line,
+                        replace_end_col,
+                    );
                 }
                 if !text_to_insert.is_empty() {
-                    buf.insert_text_at(cursor_line, trigger_col, &text_to_insert);
+                    buf.insert_text_at(
+                        replace_start_line,
+                        replace_start_col,
+                        &text_to_insert,
+                    );
                 }
 
-                // Cursor moves to end of accepted completion text.
-                let new_col = trigger_col + text_to_insert.chars().count();
-                buf.cursor_mut().set_position(cursor_line, new_col);
+                // Position cursor at the end of inserted text
+                let insert_lines: Vec<&str> = text_to_insert.split('\n').collect();
+                let (end_line, end_col) = if insert_lines.len() > 1 {
+                    (
+                        replace_start_line + insert_lines.len() - 1,
+                        insert_lines.last().map_or(0, |l| l.chars().count()),
+                    )
+                } else {
+                    (
+                        replace_start_line,
+                        replace_start_col + text_to_insert.chars().count(),
+                    )
+                };
+                buf.cursor_mut().set_position(end_line, end_col);
             });
             if !edits.is_empty() {
                 let cursor_after = self.cursor_position();
                 self.push_recorded_undo(edits, cursor_before, cursor_after);
+            }
+
+            // Apply additional text edits (auto-imports, etc.) in reverse order
+            // to avoid position invalidation
+            if !additional_edits.is_empty() {
+                // Pre-compute UTF-16 → char column conversions before mutating
+                let mut converted: Vec<(usize, usize, usize, usize, String)> = additional_edits
+                    .iter()
+                    .map(|edit| {
+                        let sl = edit.range.start.line as usize;
+                        let sc = self.utf16_to_col(sl, edit.range.start.character);
+                        let el = edit.range.end.line as usize;
+                        let ec = self.utf16_to_col(el, edit.range.end.character);
+                        (sl, sc, el, ec, edit.new_text.clone())
+                    })
+                    .collect();
+                // Sort reverse (bottom-to-top) to avoid position invalidation
+                converted.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+
+                let cursor_before = self.cursor_position();
+                let ((), edits) = self.buffer_mut().record(|buf| {
+                    for (sl, sc, el, ec, new_text) in &converted {
+                        if sl != el || sc != ec {
+                            buf.delete_range(*sl, *sc, *el, *ec);
+                        }
+                        if !new_text.is_empty() {
+                            buf.insert_text_at(*sl, *sc, new_text);
+                        }
+                    }
+                });
+                if !edits.is_empty() {
+                    let cursor_after = self.cursor_position();
+                    self.push_recorded_undo(edits, cursor_before, cursor_after);
+                }
             }
         }
 

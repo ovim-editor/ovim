@@ -596,13 +596,8 @@ fn set_cursor_position(
 
         let tab_width = editor.options.tab_width;
 
-        // Compute the cursor's column in the rendered line — the same line
-        // the Paragraph widget displays.  We expand tabs, then add
+        // Compute the cursor's flat display column: expand tabs, then add
         // inline decoration widths before the cursor's char position.
-        // This produces a "rendered column" that directly corresponds to
-        // how the renderer builds and wraps lines, avoiding the wrap-point
-        // mismatch that `cursor_to_visual_with_decorations` suffers from
-        // when decoration text spans multiple visual rows.
         let exp = super::helpers::expand_tabs_with_mapping(&line_text, tab_width);
         let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, cursor_col);
         let expanded_col = if char_col < exp.char_mapping.len() {
@@ -620,28 +615,26 @@ fn set_cursor_position(
         let text_width = layout.text_width;
 
         let (cursor_y, cursor_x) = if editor.options.wrap && text_width > 0 {
-            // In wrap mode, divide the rendered column by text_width to
-            // find which visual sub-row and column the cursor lands on.
-            // This matches `split_line_into_rows` because both operate on
-            // the same rendered-column space.
-            let sub_row = if text_width > 0 {
-                display_col / text_width
+            // Use WrapMap's cursor_to_visual_with_decorations which correctly
+            // handles wide chars pushed to next row, variable-width tabs at
+            // row boundaries, and decorations spanning multiple visual rows.
+            let rope = editor.buffer().rope();
+            let inline_widths = editor.decorations.inline_decorations_for_line(cursor_line, rope);
+
+            let (abs_visual_row, visual_col) = if let Some(wrap_map) = editor.wrap_map() {
+                wrap_map.cursor_to_visual_with_decorations(
+                    cursor_line,
+                    display_col,
+                    &line_text,
+                    &inline_widths,
+                )
             } else {
-                0
-            };
-            let visual_col = if text_width > 0 {
-                display_col % text_width
-            } else {
-                display_col
+                // Fallback: simple division when no wrap map
+                let sub_row = display_col / text_width;
+                let col = display_col % text_width;
+                (cursor_line + sub_row, col)
             };
 
-            // Count visual rows consumed by lines before the cursor line.
-            let abs_visual_row = if let Some(wrap_map) = editor.wrap_map() {
-                let base = wrap_map.logical_to_visual(cursor_line);
-                base + sub_row
-            } else {
-                cursor_line + sub_row
-            };
             let viewport_visual_row = if let Some(wrap_map) = editor.wrap_map() {
                 wrap_map.logical_to_visual(viewport_start)
             } else {

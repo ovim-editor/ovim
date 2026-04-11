@@ -596,6 +596,22 @@ impl LspManager {
         // Signal diagnostics changed so UI refreshes
         self.diagnostics_changed.store(true, Ordering::SeqCst);
 
+        // Clear document version tracking so the restarted server gets fresh
+        // didOpen notifications. Without this, did_open() sees stale entries
+        // in document_versions and skips sending didOpen to the new server.
+        {
+            let mut versions = self.document_versions.lock().await;
+            versions.clear();
+        }
+        {
+            let mut sent = self.last_sent_versions.lock().await;
+            sent.clear();
+        }
+        {
+            let mut edits = self.last_local_edit.lock().await;
+            edits.clear();
+        }
+
         Ok(())
     }
 

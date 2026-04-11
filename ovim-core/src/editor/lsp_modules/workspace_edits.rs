@@ -70,30 +70,9 @@ impl Editor {
         let mut all_applied = true;
         let mut modified_files = Vec::new();
 
-        // Handle `changes` (deprecated but still widely used)
-        if let Some(changes) = edit.changes {
-            for (uri, text_edits) in changes {
-                if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(&uri) {
-                    if let Some(path) = uri_to_file_path(&uri) {
-                        let file_name = path
-                            .file_name()
-                            .and_then(|n| n.to_str())
-                            .unwrap_or("unknown");
-                        if !modified_files.contains(&file_name.to_string()) {
-                            modified_files.push(file_name.to_string());
-                        }
-                    }
-
-                    if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
-                        all_applied = false;
-                    }
-                } else {
-                    all_applied = false;
-                }
-            }
-        }
-
-        // Handle `document_changes` (newer, more powerful format)
+        // LSP spec: when `document_changes` is present, `changes` is ignored.
+        // `document_changes` is the newer, more powerful format that supports
+        // versioned edits and resource operations.
         if let Some(document_changes) = edit.document_changes {
             match document_changes {
                 lsp_types::DocumentChanges::Edits(edits) => {
@@ -143,6 +122,18 @@ impl Editor {
                             }
                         }
                     }
+                }
+            }
+        } else if let Some(changes) = edit.changes {
+            // Fallback: deprecated `changes` field (still widely used by older servers)
+            for (uri, text_edits) in changes {
+                if let Some(buffer_index) = self.find_or_load_buffer_index_by_uri(&uri) {
+                    Self::track_modified_file(&uri, &mut modified_files);
+                    if !self.apply_lsp_edits_to_buffer_index(buffer_index, text_edits) {
+                        all_applied = false;
+                    }
+                } else {
+                    all_applied = false;
                 }
             }
         }

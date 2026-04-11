@@ -530,6 +530,26 @@ impl LanguageServer {
                         content_length,
                         MAX_MESSAGE_SIZE / (1024 * 1024)
                     );
+                    // Drain the oversized message body to keep framing in sync.
+                    // Read in chunks to avoid allocating the full oversized buffer.
+                    let mut remaining = content_length;
+                    let mut drain_buf = vec![0u8; 64 * 1024]; // 64KB chunks
+                    while remaining > 0 {
+                        let to_read = remaining.min(drain_buf.len());
+                        if let Err(_) = tokio::io::AsyncReadExt::read_exact(
+                            &mut reader,
+                            &mut drain_buf[..to_read],
+                        )
+                        .await
+                        {
+                            got_error = true;
+                            break;
+                        }
+                        remaining -= to_read;
+                    }
+                    if got_error {
+                        break;
+                    }
                     continue;
                 }
 

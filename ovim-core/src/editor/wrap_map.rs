@@ -215,6 +215,14 @@ impl WrapMap {
     }
 
     /// Like [`cursor_to_visual`] but accounts for inline decoration widths.
+    ///
+    /// Simulates the same walk as [`crate::wrap::compute_wrap_points_with_decorations`],
+    /// adding decoration widths column-by-column so mid-decoration wraps are
+    /// tracked correctly.
+    ///
+    /// `col` is a **flat display column** — the sum of content widths (characters
+    /// + decorations) from the line start, *without* padding from wide-char
+    /// pushes. This matches how callers compute it: `expanded_col + inline_offset`.
     pub fn cursor_to_visual_with_decorations(
         &self,
         line: usize,
@@ -223,67 +231,74 @@ impl WrapMap {
         inline_widths: &[(usize, usize)],
     ) -> (usize, usize) {
         let base_row = self.logical_to_visual(line);
-        let wrap_points = crate::wrap::compute_wrap_points_with_decorations(
-            line_text,
-            self.wrap_width,
-            self.tab_width,
-            inline_widths,
-        );
+        let max_width = self.wrap_width;
 
-        if wrap_points.is_empty() {
-            if col < self.wrap_width {
-                return (base_row, col);
-            }
-            // Insert-mode cursor past the right edge (e.g. col == wrap_width
-            // when the line exactly fills the row). Compute virtual sub-row.
-            let sub = col / self.wrap_width;
-            return (base_row + sub, col % self.wrap_width);
-        }
+        // `flat_col` tracks the flat display column (content widths only,
+        // no wrap-boundary padding) — this is the coordinate system `col`
+        // lives in. `row_col` tracks display columns consumed on the
+        // current visual row (used for wrap decisions and tab stops).
+        let mut flat_col: usize = 0;
+        let mut row_col: usize = 0;
+        let mut sub_line: usize = 0;
+        let mut dec_idx: usize = 0;
 
-        // Walk characters, tracking display columns per wrap segment.
-        // `col` is a display column (including inline decoration offsets);
-        // wrap_points are char indices computed with the same decoration
-        // widths, so the display-column tracking here must also include
-        // decoration widths to stay aligned.
-        let mut segment_start_display = 0;
-        let mut current_display = 0;
-        let mut sub_line = 0;
-        let mut wp_idx = 0;
-        let mut dec_idx = 0;
-
-        for (char_idx, ch) in line_text.chars().enumerate() {
-            // Add decoration widths at this char position (mirrors
-            // compute_wrap_points_with_decorations).
-            while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 == char_idx {
-                current_display += inline_widths[dec_idx].1;
+        for (_char_idx, ch) in line_text.chars().enumerate() {
+            // Decoration widths at this char position, added column-by-column
+            // to match compute_wrap_points_with_decorations.
+            while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 == _char_idx {
+                let dec_w = inline_widths[dec_idx].1;
+                for _ in 0..dec_w {
+                    if flat_col == col {
+                        return (base_row + sub_line, row_col);
+                    }
+                    flat_col += 1;
+                    row_col += 1;
+                    if row_col >= max_width {
+                        sub_line += 1;
+                        row_col = 0;
+                    }
+                }
                 dec_idx += 1;
             }
 
-            if wp_idx < wrap_points.len() && char_idx == wrap_points[wp_idx] {
-                if col < current_display {
-                    // col is in the segment that just ended
-                    break;
-                }
-                segment_start_display = current_display;
-                sub_line += 1;
-                wp_idx += 1;
-            }
-
             let ch_width = if ch == '\t' {
-                self.tab_width - (current_display % self.tab_width)
+                self.tab_width - (row_col % self.tab_width)
             } else {
                 crate::display::char_display_width(ch)
             };
-            current_display += ch_width;
+
+            // Wide char that doesn't fit on current row → push to next row.
+            // Padding is NOT added to flat_col (it's a rendering artifact,
+            // not content width).
+            if row_col + ch_width > max_width {
+                sub_line += 1;
+                row_col = 0;
+            }
+
+            if flat_col == col {
+                return (base_row + sub_line, row_col);
+            }
+
+            flat_col += ch_width;
+            row_col += ch_width;
+
+            if row_col >= max_width {
+                sub_line += 1;
+                row_col = 0;
+            }
         }
 
-        let visual_col = col - segment_start_display;
-        if visual_col >= self.wrap_width {
-            // Insert-mode cursor past the right edge of the last segment
-            let extra = visual_col / self.wrap_width;
-            (base_row + sub_line + extra, visual_col % self.wrap_width)
+        // Col is at or past the end of the line content.
+        if col <= flat_col {
+            return (base_row + sub_line, row_col);
+        }
+        let remaining = col - flat_col;
+        let final_col = row_col + remaining;
+        if final_col >= max_width {
+            let extra = final_col / max_width;
+            (base_row + sub_line + extra, final_col % max_width)
         } else {
-            (base_row + sub_line, visual_col)
+            (base_row + sub_line, final_col)
         }
     }
 
@@ -664,5 +679,90 @@ mod tests {
         assert_eq!(map.sub_line_display_range("\ta", 1), Some((4, 5)));
         assert_eq!(map.sub_line_display_range("", 0), Some((0, 0)));
         assert_eq!(map.sub_line_display_range("", 1), None);
+    }
+
+    // ---- Bug reproduction: wide char at wrap boundary ----
+
+    #[test]
+    fn test_cursor_to_visual_wide_char_pushed_to_next_row() {
+        // "aaa世" with wrap_width=4
+        // 'a'(1) + 'a'(1) + 'a'(1) = 3, then 世(2) needs 2 but 3+2=5 > 4
+        // So 世 is pushed to next row with 1 col of padding on row 0.
+        // Row 0: "aaa " (3 content + 1 pad), Row 1: "世  " (2 content + 2 pad)
+        let text = "aaa世";
+        let map = WrapMap::new(1, 4, 4, 0, make_text(&[text]));
+        assert_eq!(map.visual_lines_for(0), 2);
+
+        // cursor_to_visual should place 世 on row 1, col 0
+        // display_col for 世 = 3 (after three 1-wide 'a' chars)
+        // Simple division: 3/4 = row 0, 3%4 = col 3  ← WRONG (that's the padding)
+        // Correct: row 1, col 0 (世 was pushed to next row)
+        assert_eq!(map.cursor_to_visual(0, 3, text), (1, 0));
+    }
+
+    #[test]
+    fn test_cursor_to_visual_wide_char_at_boundary_multi_line() {
+        // Line 0: "aaa世" wraps to 2 visual rows at width 4
+        // Line 1: "hello" fits in 1 visual row
+        // Cursor on line 1 should be at visual row 2 (0-indexed)
+        let text0 = "aaa世";
+        let text1 = "hello";
+        let map = WrapMap::new(2, 4, 4, 0, make_text(&[text0, text1]));
+        assert_eq!(map.visual_lines_for(0), 2);
+        assert_eq!(map.visual_lines_for(1), 2); // "hello" = 5 chars > 4 width
+        assert_eq!(map.logical_to_visual(1), 2); // line 1 starts at visual row 2
+    }
+
+    // ---- Bug reproduction: decoration spanning multiple rows ----
+
+    #[test]
+    fn test_cursor_to_visual_decoration_spanning_rows() {
+        // "ab" at width 4, decoration "123456" (6 cols) at char 1.
+        // Rendered: "a123456b"
+        // Row 0: "a123" (4 cols), Row 1: "456b" (4 cols) → 2 rows
+        // Cursor at char 'b' (char_idx 1, display col = 1 + 6 = 7)
+        // should be at row 1, display col 7 - 4 = 3
+        let text = "ab";
+        let decs = vec![(1, 6)]; // 6-col decoration at char 1
+        let map = WrapMap::new_with_decorations(
+            1, 4, 4, 0,
+            make_text(&[text]),
+            |_| decs.clone(),
+        );
+        // With decoration: total display = 1 + 6 + 1 = 8, at width 4 = 2 rows
+        assert_eq!(map.visual_lines_for(0), 2);
+
+        // Cursor on 'b' (char 1) — display col after decoration = 1 + 6 = 7
+        let (row, col) = map.cursor_to_visual_with_decorations(0, 7, text, &decs);
+        assert_eq!((row, col), (1, 3), "cursor on 'b' after 6-col decoration");
+    }
+
+    #[test]
+    fn test_cursor_to_visual_large_decoration_many_rows() {
+        // "ab" at width 3, decoration "1234567" (7 cols) at char 1.
+        // Rendered: "a1234567b" = 9 display cols at width 3
+        // Row 0: "a12" (3 cols), Row 1: "345" (3 cols), Row 2: "67b" (3 cols)
+        // = 3 rows
+        let text = "ab";
+        let decs = vec![(1, 7)]; // 7-col decoration at char 1
+        let map = WrapMap::new_with_decorations(
+            1, 3, 4, 0,
+            make_text(&[text]),
+            |_| decs.clone(),
+        );
+        assert_eq!(map.visual_lines_for(0), 3);
+
+        // Cursor on 'a' (display col 0) → row 0, col 0
+        assert_eq!(
+            map.cursor_to_visual_with_decorations(0, 0, text, &decs),
+            (0, 0),
+        );
+
+        // Cursor on 'b' (display col = 1 + 7 = 8) → row 2, col 2
+        assert_eq!(
+            map.cursor_to_visual_with_decorations(0, 8, text, &decs),
+            (2, 2),
+            "cursor on 'b' after 7-col decoration spanning 3 rows",
+        );
     }
 }

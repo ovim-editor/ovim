@@ -1984,8 +1984,11 @@ pub fn render_buffer(
                             apply_eol_decorations(&mut line, &eol_decs, text_width);
                         }
                     }
-                    let line_len: usize =
-                        line.spans.iter().map(|s| s.content.chars().count()).sum();
+                    let line_len: usize = line
+                        .spans
+                        .iter()
+                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
+                        .sum();
                     if line_len < text_width {
                         line.spans
                             .push(Span::raw(" ".repeat(text_width - line_len)));
@@ -2054,7 +2057,9 @@ pub fn render_buffer(
                                 ));
                             }
                             let text: String = chunk.iter().collect();
-                            let pad = text_width.saturating_sub(chunk.len());
+                            let pad = text_width.saturating_sub(
+                                unicode_width::UnicodeWidthStr::width(text.as_str()),
+                            );
                             let padded = if pad > 0 {
                                 format!("{}{}", text, " ".repeat(pad))
                             } else {
@@ -2077,9 +2082,10 @@ pub fn render_buffer(
                                 .and_then(|b| b.get(line_idx - start_line)),
                         ));
                     }
-                    let line_len = line_text.chars().count();
-                    let line_text = if line_len < text_width {
-                        format!("{}{}", line_text, " ".repeat(text_width - line_len))
+                    let line_display_len =
+                        unicode_width::UnicodeWidthStr::width(&*line_text);
+                    let line_text = if line_display_len < text_width {
+                        format!("{}{}", line_text, " ".repeat(text_width - line_display_len))
                     } else {
                         line_text.to_string()
                     };

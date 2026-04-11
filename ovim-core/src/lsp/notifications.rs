@@ -803,6 +803,50 @@ impl LspManager {
                     }
                 }
             }
+            "workspace/configuration" => {
+                // Server requests configuration settings. Respond with one
+                // Value::Null per requested item (we don't manage settings).
+                if let Some(id) = request_id {
+                    if let Some(server) = self.servers.get(server_id) {
+                        let item_count = request
+                            .params
+                            .as_ref()
+                            .and_then(|p| p.get("items"))
+                            .and_then(|items| items.as_array())
+                            .map(|arr| arr.len())
+                            .unwrap_or(0);
+                        let response_array: Vec<serde_json::Value> =
+                            vec![serde_json::Value::Null; item_count];
+                        let response_msg = JsonRpcMessage::response(
+                            id,
+                            serde_json::Value::Array(response_array),
+                        );
+                        if let Err(e) = server.send_response(response_msg).await {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to send workspace/configuration response: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
+            "window/showMessageRequest" => {
+                // Server wants to show a message with action buttons.
+                // Respond with null (no action selected) to unblock the server.
+                if let Some(id) = request_id {
+                    if let Some(server) = self.servers.get(server_id) {
+                        let response_msg = JsonRpcMessage::response(id, serde_json::Value::Null);
+                        if let Err(e) = server.send_response(response_msg).await {
+                            lsp_error!(
+                                "LSP-SERVER-REQUEST",
+                                "Failed to send showMessageRequest response: {}",
+                                e
+                            );
+                        }
+                    }
+                }
+            }
             "window/workDoneProgress/create" => {
                 // Server wants to create a progress token — acknowledge with success
                 // Responding with an error crashes some LSP servers (e.g. typescript-language-server)
