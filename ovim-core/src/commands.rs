@@ -87,6 +87,48 @@ fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
     }
 }
 
+/// Reload the current buffer from disk (:e / :e!).
+fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
+    if !force && editor.is_modified() {
+        return err("No write since last change (add ! to override)");
+    }
+    let path = match editor.buffer().file_path().map(|s| s.to_string()) {
+        Some(p) => p,
+        None => return err(if force { "No file to reload" } else { "No file name" }),
+    };
+    match editor.buffer_mut().reload_from_disk() {
+        Ok(_) => {
+            editor.mark_saved();
+            editor.mark_buffer_modified_force_send();
+            let line_count = editor.buffer().rope().len_lines();
+            ok(format!("\"{}\" {}L reloaded", path, line_count))
+        }
+        Err(e) => err(format!("Failed to reload: {}", e)),
+    }
+}
+
+/// Open a file for editing (:e <file> / :e! <file>).
+fn edit_file(editor: &mut Editor, raw_filename: &str, force: bool) -> CommandResult {
+    if !force && editor.is_modified() {
+        return err("No write since last change (add ! to override)");
+    }
+    let filename = match expand_tilde(raw_filename) {
+        Ok(path) => path.to_string_lossy().to_string(),
+        Err(e) => return err(format!("Failed to expand path '{}': {}", raw_filename, e)),
+    };
+    match editor.load_file(&filename) {
+        Ok(_) => {
+            let buf_name = editor
+                .buffer()
+                .file_path()
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "[No Name]".to_string());
+            ok(format!("Editing: {}", buf_name))
+        }
+        Err(e) => err(format!("Failed to load file: {}", e)),
+    }
+}
+
 /// Helper function to jump to a quickfix entry
 pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> CommandResult {
     if let Some(ref path) = entry.filename {
@@ -817,85 +859,20 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 err("Lua support not compiled in")
             // Handle :e and :edit (bare) - reload current file if unmodified
             } else if command == "e" || command == "edit" {
-                if editor.buffer().file_path().is_none() {
-                    return err("No file name");
-                }
-                if editor.is_modified() {
-                    return err("No write since last change (add ! to override)");
-                }
-                let path = editor.buffer().file_path().unwrap().to_string();
-                match editor.buffer_mut().reload_from_disk() {
-                    Ok(_) => {
-                        editor.mark_saved();
-                        editor.mark_buffer_modified_force_send();
-                        let line_count = editor.buffer().rope().len_lines();
-                        ok(format!("\"{}\" {}L reloaded", path, line_count))
-                    }
-                    Err(e) => err(format!("Failed to reload: {}", e)),
-                }
-            // Handle :e! and :edit! - reload current file discarding changes
+                reload_buffer(editor, false)
             } else if command == "e!" || command == "edit!" {
-                if let Some(path) = editor.buffer().file_path().map(|s| s.to_string()) {
-                    match editor.buffer_mut().reload_from_disk() {
-                        Ok(_) => {
-                            editor.mark_saved();
-                            editor.mark_buffer_modified_force_send();
-                            let line_count = editor.buffer().rope().len_lines();
-                            ok(format!("\"{}\" {}L reloaded", path, line_count))
-                        }
-                        Err(e) => err(format!("Failed to reload: {}", e)),
-                    }
-                } else {
-                    err("No file to reload")
-                }
-            // :e! <filename> - force-edit file (discard unsaved changes)
-            // Must be checked before :e <filename> since "e " prefix matches "e! "
+                reload_buffer(editor, true)
+            // :e! <filename> must be checked before :e <filename> since "e " prefix matches "e! "
             } else if let Some(raw_filename) = command
                 .strip_prefix("e! ")
                 .or_else(|| command.strip_prefix("edit! "))
             {
-                let filename = match expand_tilde(raw_filename) {
-                    Ok(path) => path.to_string_lossy().to_string(),
-                    Err(e) => {
-                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
-                    }
-                };
-                match editor.load_file(&filename) {
-                    Ok(_) => {
-                        let buf_name = editor
-                            .buffer()
-                            .file_path()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "[No Name]".to_string());
-                        ok(format!("Editing: {}", buf_name))
-                    }
-                    Err(e) => err(format!("Failed to load file: {}", e)),
-                }
+                edit_file(editor, raw_filename, true)
             } else if let Some(raw_filename) = command
                 .strip_prefix("e ")
                 .or_else(|| command.strip_prefix("edit "))
             {
-                // :e <filename> - edit file (check for unsaved changes first)
-                if editor.is_modified() {
-                    return err("No write since last change (add ! to override)");
-                }
-                let filename = match expand_tilde(raw_filename) {
-                    Ok(path) => path.to_string_lossy().to_string(),
-                    Err(e) => {
-                        return err(format!("Failed to expand path '{}': {}", raw_filename, e));
-                    }
-                };
-                match editor.load_file(&filename) {
-                    Ok(_) => {
-                        let buf_name = editor
-                            .buffer()
-                            .file_path()
-                            .map(|s| s.to_string())
-                            .unwrap_or_else(|| "[No Name]".to_string());
-                        ok(format!("Editing: {}", buf_name))
-                    }
-                    Err(e) => err(format!("Failed to load file: {}", e)),
-                }
+                edit_file(editor, raw_filename, false)
             // Handle :registers or :reg (list registers)
             } else if command == "registers"
                 || command == "reg"
