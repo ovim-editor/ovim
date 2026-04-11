@@ -104,9 +104,9 @@ impl Editor {
 
         self.set_lsp_status("Formatting document...".to_string());
 
-        // Get tab settings from buffer
-        let tab_size = 4; // TODO: get from config
-        let insert_spaces = true; // TODO: get from config
+        // Get tab settings from buffer options
+        let tab_size = self.options.tab_width as u32;
+        let insert_spaces = self.options.expand_tab;
 
         let result = ctx
             .lsp
