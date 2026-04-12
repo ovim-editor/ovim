@@ -15,6 +15,7 @@ use crate::change::ChangeManager;
 use crate::edit::Edit;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
+use crate::unicode::GraphemeCol;
 use crate::GitStatus;
 use ropey::Rope;
 use std::path::PathBuf;
@@ -91,7 +92,7 @@ impl Buffer {
         Self {
             id: next_buffer_id(),
             rope: Rope::new(),
-            cursor: Cursor::new(0, 0),
+            cursor: Cursor::new(0, GraphemeCol::ZERO),
             modified: false,
             file_path: None,
             line_ending: LineEnding::default(),
@@ -187,7 +188,7 @@ impl Buffer {
         Self {
             id: next_buffer_id(),
             rope,
-            cursor: Cursor::new(0, 0),
+            cursor: Cursor::new(0, GraphemeCol::ZERO),
             modified: false,
             file_path: None,
             line_ending: LineEnding::detect(content.as_bytes()),
@@ -260,7 +261,7 @@ impl Buffer {
     /// This should be called after operations that may leave cursor in invalid state
     pub fn validate_cursor_position(&mut self) {
         let line = self.cursor.line();
-        let col = self.cursor.col();
+        let col = self.cursor.col().0;
 
         // Clamp line to valid range
         let max_line = self.line_count().saturating_sub(1);
@@ -275,7 +276,7 @@ impl Buffer {
             let line_len = crate::unicode::grapheme_count(line_content.trim_end_matches('\n'));
             if col > 0 && col >= line_len {
                 let new_col = if line_len > 0 { line_len - 1 } else { 0 };
-                self.cursor.set_col(new_col);
+                self.cursor.set_col(GraphemeCol(new_col));
             }
         }
     }
@@ -861,7 +862,7 @@ mod tests {
             "First line should be empty string"
         );
         assert_eq!(buf.cursor().line(), 0, "Cursor should be at line 0");
-        assert_eq!(buf.cursor().col(), 0, "Cursor should be at col 0");
+        assert_eq!(buf.cursor().col(), GraphemeCol::ZERO, "Cursor should be at col 0");
         assert!(!buf.is_modified(), "New buffer should not be modified");
     }
 
@@ -981,7 +982,7 @@ mod tests {
         let buf = Buffer::new_from_str("test");
 
         assert_eq!(buf.cursor().line(), 0);
-        assert_eq!(buf.cursor().col(), 0);
+        assert_eq!(buf.cursor().col(), GraphemeCol::ZERO);
         assert!(!buf.is_modified());
         assert!(buf.file_path().is_none());
     }
@@ -1132,7 +1133,7 @@ mod tests {
     #[test]
     fn test_record_join_lines() {
         let mut buf = Buffer::new_from_str("line1\nline2\n");
-        buf.cursor_mut().set_position(0, 0);
+        buf.cursor_mut().set_position(0, GraphemeCol::ZERO);
         let (result, edits) = buf.record(|b| b.join_lines(1));
         assert!(result.is_ok());
         assert_eq!(buf.rope().to_string(), "line1 line2\n");

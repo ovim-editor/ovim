@@ -28,6 +28,33 @@
 
 use unicode_segmentation::UnicodeSegmentation;
 
+/// A column position measured in grapheme clusters.
+///
+/// This is the unit the cursor stores and what `set_col`/`set_position` expect.
+/// A grapheme cluster is what a user perceives as a single character — e.g.,
+/// 👨‍👩‍👧‍👦 is 1 grapheme (1 `GraphemeCol` wide) but 7 Unicode scalar values.
+///
+/// Construction is intentionally explicit: `GraphemeCol(val)`. There is no
+/// `From<usize>` impl so the compiler catches accidental conversions from
+/// char indices or byte offsets.
+///
+/// Inside functions that iterate by char index, extract the raw value with `.0`:
+/// ```ignore
+/// let raw: usize = grapheme_col.0;
+/// ```
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
+pub struct GraphemeCol(pub usize);
+
+impl GraphemeCol {
+    pub const ZERO: GraphemeCol = GraphemeCol(0);
+}
+
+impl std::fmt::Display for GraphemeCol {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.0.fmt(f)
+    }
+}
+
 /// Count the number of grapheme clusters in a string
 ///
 /// This is the correct way to count "characters" as users perceive them.
@@ -126,21 +153,21 @@ pub fn truncate_graphemes(s: &str, max_graphemes: usize) -> &str {
 ///
 /// # Example
 /// ```
-/// use ovim_core::unicode::grapheme_to_char_col;
+/// use ovim_core::unicode::{grapheme_to_char_col, GraphemeCol};
 ///
 /// // ASCII: 1 grapheme = 1 char, so indices match
-/// assert_eq!(grapheme_to_char_col("hello", 2), 2);
+/// assert_eq!(grapheme_to_char_col("hello", GraphemeCol(2)), 2);
 ///
 /// // "a👨‍👩‍👧‍👦b": grapheme 0='a'(1 char), grapheme 1=emoji(7 chars), grapheme 2='b'(1 char)
-/// assert_eq!(grapheme_to_char_col("a👨‍👩‍👧‍👦b", 0), 0);
-/// assert_eq!(grapheme_to_char_col("a👨‍👩‍👧‍👦b", 1), 1);
-/// assert_eq!(grapheme_to_char_col("a👨‍👩‍👧‍👦b", 2), 8);
+/// assert_eq!(grapheme_to_char_col("a👨‍👩‍👧‍👦b", GraphemeCol(0)), 0);
+/// assert_eq!(grapheme_to_char_col("a👨‍👩‍👧‍👦b", GraphemeCol(1)), 1);
+/// assert_eq!(grapheme_to_char_col("a👨‍👩‍👧‍👦b", GraphemeCol(2)), 8);
 /// ```
 #[inline]
-pub fn grapheme_to_char_col(s: &str, grapheme_col: usize) -> usize {
+pub fn grapheme_to_char_col(s: &str, grapheme_col: GraphemeCol) -> usize {
     let mut char_offset = 0;
     for (i, grapheme) in s.graphemes(true).enumerate() {
-        if i == grapheme_col {
+        if i == grapheme_col.0 {
             return char_offset;
         }
         char_offset += grapheme.chars().count();
@@ -160,28 +187,28 @@ pub fn grapheme_to_char_col(s: &str, grapheme_col: usize) -> usize {
 ///
 /// # Example
 /// ```
-/// use ovim_core::unicode::char_to_grapheme_col;
+/// use ovim_core::unicode::{char_to_grapheme_col, GraphemeCol};
 ///
 /// // ASCII: identity
-/// assert_eq!(char_to_grapheme_col("hello", 2), 2);
+/// assert_eq!(char_to_grapheme_col("hello", 2), GraphemeCol(2));
 ///
 /// // "a👨‍👩‍👧‍👦b": char 0='a', chars 1-7=emoji, char 8='b'
-/// assert_eq!(char_to_grapheme_col("a👨‍👩‍👧‍👦b", 0), 0);
-/// assert_eq!(char_to_grapheme_col("a👨‍👩‍👧‍👦b", 1), 1);
-/// assert_eq!(char_to_grapheme_col("a👨‍👩‍👧‍👦b", 8), 2);
+/// assert_eq!(char_to_grapheme_col("a👨‍👩‍👧‍👦b", 0), GraphemeCol(0));
+/// assert_eq!(char_to_grapheme_col("a👨‍👩‍👧‍👦b", 1), GraphemeCol(1));
+/// assert_eq!(char_to_grapheme_col("a👨‍👩‍👧‍👦b", 8), GraphemeCol(2));
 /// ```
 #[inline]
-pub fn char_to_grapheme_col(s: &str, char_col: usize) -> usize {
+pub fn char_to_grapheme_col(s: &str, char_col: usize) -> GraphemeCol {
     let mut chars_seen = 0;
     for (i, grapheme) in s.graphemes(true).enumerate() {
         let grapheme_chars = grapheme.chars().count();
         if char_col < chars_seen + grapheme_chars {
-            return i;
+            return GraphemeCol(i);
         }
         chars_seen += grapheme_chars;
     }
     // Past the end: return total grapheme count
-    s.graphemes(true).count()
+    GraphemeCol(s.graphemes(true).count())
 }
 
 #[cfg(test)]
@@ -252,66 +279,66 @@ mod tests {
     #[test]
     fn test_grapheme_to_char_col_ascii() {
         // For ASCII, grapheme index == char index
-        assert_eq!(grapheme_to_char_col("hello", 0), 0);
-        assert_eq!(grapheme_to_char_col("hello", 2), 2);
-        assert_eq!(grapheme_to_char_col("hello", 5), 5); // past-the-end
-        assert_eq!(grapheme_to_char_col("", 0), 0);
+        assert_eq!(grapheme_to_char_col("hello", GraphemeCol(0)), 0);
+        assert_eq!(grapheme_to_char_col("hello", GraphemeCol(2)), 2);
+        assert_eq!(grapheme_to_char_col("hello", GraphemeCol(5)), 5); // past-the-end
+        assert_eq!(grapheme_to_char_col("", GraphemeCol(0)), 0);
     }
 
     #[test]
     fn test_grapheme_to_char_col_emoji() {
         // "a👨‍👩‍👧‍👦b": 3 graphemes, 9 chars (a=1, family_emoji=7, b=1)
         let s = "a👨‍👩‍👧‍👦b";
-        assert_eq!(grapheme_to_char_col(s, 0), 0); // 'a' at char 0
-        assert_eq!(grapheme_to_char_col(s, 1), 1); // emoji at char 1
-        assert_eq!(grapheme_to_char_col(s, 2), 8); // 'b' at char 8 (1 + 7)
-        assert_eq!(grapheme_to_char_col(s, 3), 9); // past-the-end
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(0)), 0); // 'a' at char 0
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(1)), 1); // emoji at char 1
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(2)), 8); // 'b' at char 8 (1 + 7)
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(3)), 9); // past-the-end
     }
 
     #[test]
     fn test_grapheme_to_char_col_combining() {
         // "e\u{0301}x" = é + x: 2 graphemes, 3 chars
         let s = "e\u{0301}x";
-        assert_eq!(grapheme_to_char_col(s, 0), 0); // é at char 0
-        assert_eq!(grapheme_to_char_col(s, 1), 2); // 'x' at char 2 (e + combining = 2 chars)
-        assert_eq!(grapheme_to_char_col(s, 2), 3); // past-the-end
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(0)), 0); // é at char 0
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(1)), 2); // 'x' at char 2 (e + combining = 2 chars)
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(2)), 3); // past-the-end
     }
 
     #[test]
     fn test_grapheme_to_char_col_flags() {
         // "🇺🇸x": flag=1 grapheme (2 chars), x=1 grapheme (1 char)
         let s = "🇺🇸x";
-        assert_eq!(grapheme_to_char_col(s, 0), 0); // flag at char 0
-        assert_eq!(grapheme_to_char_col(s, 1), 2); // 'x' at char 2
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(0)), 0); // flag at char 0
+        assert_eq!(grapheme_to_char_col(s, GraphemeCol(1)), 2); // 'x' at char 2
     }
 
     #[test]
     fn test_char_to_grapheme_col_ascii() {
-        assert_eq!(char_to_grapheme_col("hello", 0), 0);
-        assert_eq!(char_to_grapheme_col("hello", 2), 2);
-        assert_eq!(char_to_grapheme_col("hello", 5), 5); // past-the-end
-        assert_eq!(char_to_grapheme_col("", 0), 0);
+        assert_eq!(char_to_grapheme_col("hello", 0), GraphemeCol(0));
+        assert_eq!(char_to_grapheme_col("hello", 2), GraphemeCol(2));
+        assert_eq!(char_to_grapheme_col("hello", 5), GraphemeCol(5)); // past-the-end
+        assert_eq!(char_to_grapheme_col("", 0), GraphemeCol(0));
     }
 
     #[test]
     fn test_char_to_grapheme_col_emoji() {
         // "a👨‍👩‍👧‍👦b": chars 0='a', 1-7=emoji, 8='b'
         let s = "a👨‍👩‍👧‍👦b";
-        assert_eq!(char_to_grapheme_col(s, 0), 0); // char 0 = grapheme 0 ('a')
-        assert_eq!(char_to_grapheme_col(s, 1), 1); // char 1 = grapheme 1 (emoji start)
-        assert_eq!(char_to_grapheme_col(s, 4), 1); // char 4 = still inside emoji = grapheme 1
-        assert_eq!(char_to_grapheme_col(s, 7), 1); // char 7 = still inside emoji = grapheme 1
-        assert_eq!(char_to_grapheme_col(s, 8), 2); // char 8 = grapheme 2 ('b')
-        assert_eq!(char_to_grapheme_col(s, 9), 3); // past-the-end
+        assert_eq!(char_to_grapheme_col(s, 0), GraphemeCol(0)); // char 0 = grapheme 0 ('a')
+        assert_eq!(char_to_grapheme_col(s, 1), GraphemeCol(1)); // char 1 = grapheme 1 (emoji start)
+        assert_eq!(char_to_grapheme_col(s, 4), GraphemeCol(1)); // char 4 = still inside emoji = grapheme 1
+        assert_eq!(char_to_grapheme_col(s, 7), GraphemeCol(1)); // char 7 = still inside emoji = grapheme 1
+        assert_eq!(char_to_grapheme_col(s, 8), GraphemeCol(2)); // char 8 = grapheme 2 ('b')
+        assert_eq!(char_to_grapheme_col(s, 9), GraphemeCol(3)); // past-the-end
     }
 
     #[test]
     fn test_char_to_grapheme_col_combining() {
         // "e\u{0301}x": chars 0='e', 1=combining, 2='x'
         let s = "e\u{0301}x";
-        assert_eq!(char_to_grapheme_col(s, 0), 0); // 'e' = grapheme 0 (é)
-        assert_eq!(char_to_grapheme_col(s, 1), 0); // combining accent = still grapheme 0
-        assert_eq!(char_to_grapheme_col(s, 2), 1); // 'x' = grapheme 1
+        assert_eq!(char_to_grapheme_col(s, 0), GraphemeCol(0)); // 'e' = grapheme 0 (é)
+        assert_eq!(char_to_grapheme_col(s, 1), GraphemeCol(0)); // combining accent = still grapheme 0
+        assert_eq!(char_to_grapheme_col(s, 2), GraphemeCol(1)); // 'x' = grapheme 1
     }
 
     #[test]
@@ -320,10 +347,11 @@ mod tests {
         let s = "Hello 👨‍👩‍👧‍👦 world 🇺🇸!";
         let grapheme_len = grapheme_count(s);
         for g in 0..grapheme_len {
-            let char_col = grapheme_to_char_col(s, g);
+            let gcol = GraphemeCol(g);
+            let char_col = grapheme_to_char_col(s, gcol);
             let back = char_to_grapheme_col(s, char_col);
             assert_eq!(
-                back, g,
+                back, gcol,
                 "roundtrip failed for grapheme {g}: char_col={char_col}"
             );
         }

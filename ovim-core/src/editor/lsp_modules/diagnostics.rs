@@ -285,7 +285,7 @@ impl Editor {
         use crate::mode::Mode;
 
         let line = self.buffer().cursor().line();
-        let col = self.buffer().cursor().col();
+        let col = self.buffer().cursor().col().0;
         let diagnostics = self.diagnostics_for_line(line);
 
         if diagnostics.is_empty() {

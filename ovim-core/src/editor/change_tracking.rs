@@ -82,11 +82,11 @@ impl Editor {
 
             let (before, after, edits) = {
                 let buf = self.buffer_mut();
-                let before = (buf.cursor().line(), buf.cursor().col());
+                let before = (buf.cursor().line(), buf.cursor().col().0);
                 let ((), edits) = buf.record(|b| {
                     action.execute(b);
                 });
-                let after = (buf.cursor().line(), buf.cursor().col());
+                let after = (buf.cursor().line(), buf.cursor().col().0);
                 (before, after, edits)
             };
 
@@ -100,7 +100,7 @@ impl Editor {
         if let Some(mut repeated) = self.buffer().change_manager().last_change().cloned() {
             let (before, after, edits) = {
                 let buf = self.buffer_mut();
-                let before = (buf.cursor().line(), buf.cursor().col());
+                let before = (buf.cursor().line(), buf.cursor().col().0);
 
                 // Record the repeat's buffer mutations for mechanical undo.
                 let ((), edits) = buf.record(|b| {
@@ -110,7 +110,7 @@ impl Editor {
                     repeated.repeat(b);
                 });
 
-                let after = (buf.cursor().line(), buf.cursor().col());
+                let after = (buf.cursor().line(), buf.cursor().col().0);
                 (before, after, edits)
             };
 
@@ -194,7 +194,7 @@ impl Editor {
 
     /// Returns the current cursor position as (line, col).
     pub fn cursor_position(&self) -> Position {
-        (self.buffer().cursor().line(), self.buffer().cursor().col())
+        (self.buffer().cursor().line(), self.buffer().cursor().col().0)
     }
 
     /// Returns the last position where an edit occurred (for g; navigation).

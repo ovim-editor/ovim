@@ -1,6 +1,6 @@
 use super::Editor;
 use crate::editor::Search;
-use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col};
+use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col, GraphemeCol};
 
 impl Editor {
     /// Gets the search buffer
@@ -37,14 +37,14 @@ impl Editor {
     /// This allows restoring the position if search is canceled with ESC
     pub fn save_search_start_position(&mut self) {
         let cursor = self.buffer().cursor();
-        self.search.search_start_pos = Some((cursor.line(), cursor.col()));
+        self.search.search_start_pos = Some((cursor.line(), cursor.col().0));
     }
 
     /// Restores the cursor to the position saved when search mode was entered
     /// Used when canceling search with ESC
     pub fn restore_search_start_position(&mut self) {
         if let Some((line, col)) = self.search.search_start_pos {
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
             self.search.search_start_pos = None;
         }
     }
@@ -86,8 +86,8 @@ impl Editor {
         let cursor = self.buffer().cursor();
 
         // Start search from current cursor position (inclusive)
-        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
-            self.buffer_mut().cursor_mut().set_position(line, col);
+        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col().0) {
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
         // Always update current_search so highlighting reflects the actual pattern.
         // If no match exists, find_all_in_line will return empty for each line,
@@ -99,7 +99,7 @@ impl Editor {
     pub fn search_next(&mut self) {
         // Get cursor position before borrowing
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
+        let cursor_col = self.buffer().cursor().col().0;
 
         // Clone search to avoid borrow conflicts
         if let Some(ref search) = self.search.current_search {
@@ -130,7 +130,7 @@ impl Editor {
             if let Some((line, col, _)) =
                 search_clone.find_next(self.buffer(), search_line, search_col)
             {
-                self.buffer_mut().cursor_mut().set_position(line, col);
+                self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
             }
         }
     }
@@ -147,7 +147,7 @@ impl Editor {
                 self.options.smartcase,
             );
             let cursor_line = self.buffer().cursor().line();
-            let cursor_col = self.buffer().cursor().col();
+            let cursor_col = self.buffer().cursor().col().0;
 
             // For reverse direction: if original was forward, now going backward (use col-1)
             // if original was backward, now going forward (use col+1)
@@ -178,7 +178,7 @@ impl Editor {
             if let Some((line, col, _)) =
                 rev_search.find_next(self.buffer(), search_line, search_col)
             {
-                self.buffer_mut().cursor_mut().set_position(line, col);
+                self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
             }
         }
     }
@@ -206,7 +206,7 @@ impl Editor {
         }
 
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
+        let cursor_col = self.buffer().cursor().col().0;
         let mode = self.mode();
         let in_visual_mode =
             mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
@@ -221,7 +221,7 @@ impl Editor {
             if !in_visual_mode {
                 if let Some(line_text) = self.buffer().line(cursor_line) {
                     let line_trimmed = line_text.trim_end_matches('\n');
-                    let cursor_char_col = grapheme_to_char_col(line_trimmed, cursor_col);
+                    let cursor_char_col = grapheme_to_char_col(line_trimmed, GraphemeCol(cursor_col));
                     let matches = search_clone.find_all_in_line(&line_text);
                     let cursor_in_match = matches.iter().any(|(start_col, end_col)| {
                         cursor_char_col >= *start_col && cursor_char_col < *end_col
@@ -235,7 +235,7 @@ impl Editor {
                             // Convert char cols → grapheme for visual start and cursor
                             let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
                             let end_grapheme = char_to_grapheme_col(line_trimmed, end_col - 1);
-                            self.set_visual_start(cursor_line, start_grapheme);
+                            self.set_visual_start(cursor_line, start_grapheme.0);
                             self.buffer_mut()
                                 .cursor_mut()
                                 .set_position(cursor_line, end_grapheme);
@@ -257,11 +257,11 @@ impl Editor {
 
                 if in_visual_mode {
                     // In visual mode, extend selection to include the next match
-                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
                 } else {
                     // In normal mode, enter visual mode and select the next match
                     self.set_visual_start(line, col);
-                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
                     self.set_mode(Mode::Visual);
                 }
                 return true;
@@ -284,7 +284,7 @@ impl Editor {
         }
 
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
+        let cursor_col = self.buffer().cursor().col().0;
         let mode = self.mode();
         let in_visual_mode =
             mode == Mode::Visual || mode == Mode::VisualLine || mode == Mode::VisualBlock;
@@ -309,7 +309,7 @@ impl Editor {
                 let mut col = if cursor_col > 0 { cursor_col - 1 } else { 0 };
                 if let Some(line_text) = self.buffer().line(cursor_line) {
                     let line_trimmed = line_text.trim_end_matches('\n');
-                    let cursor_char_col = grapheme_to_char_col(line_trimmed, cursor_col);
+                    let cursor_char_col = grapheme_to_char_col(line_trimmed, GraphemeCol(cursor_col));
                     let matches = rev_search.find_all_in_line(&line_text);
                     if let Some((start_col, _end_col)) = matches
                         .iter()
@@ -318,8 +318,8 @@ impl Editor {
                         // Cursor is inside a match — search from before this match's start
                         // Convert char-based start_col to grapheme for the search_col
                         let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
-                        col = if start_grapheme > 0 {
-                            start_grapheme - 1
+                        col = if start_grapheme.0 > 0 {
+                            start_grapheme.0 - 1
                         } else {
                             0
                         };
@@ -336,11 +336,11 @@ impl Editor {
 
                 if in_visual_mode {
                     // In visual mode, extend selection to include the previous match
-                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
                 } else {
                     // In normal mode, enter visual mode and select the previous match
                     self.set_visual_start(line, col);
-                    self.buffer_mut().cursor_mut().set_position(line, match_end);
+                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
                     self.set_mode(Mode::Visual);
                 }
                 return true;

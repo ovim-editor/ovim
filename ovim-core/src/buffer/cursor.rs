@@ -1,9 +1,10 @@
+use crate::unicode::GraphemeCol;
+
 /// Represents a cursor position in a buffer.
 ///
-/// **Important column semantics**: `col` is a **grapheme cluster index**, not a char index.
+/// **Column semantics**: `col` is a [`GraphemeCol`] — a grapheme cluster index.
 /// A grapheme cluster is what a user perceives as a single character (e.g., 👨‍👩‍👧‍👦 is
-/// 1 grapheme but 7 Unicode scalar values). Cursor movement, clamping, and all
-/// code that sets cursor positions should work in grapheme space.
+/// 1 grapheme but 7 Unicode scalar values).
 ///
 /// When passing a cursor column to rope operations (which work in char indices),
 /// convert using `grapheme_to_char_col()`. When converting rope results back to
@@ -22,12 +23,12 @@ pub struct Cursor {
 
 impl Cursor {
     /// Creates a new cursor at the specified position
-    pub fn new(line: usize, col: usize) -> Self {
+    pub fn new(line: usize, col: GraphemeCol) -> Self {
         Self {
             line,
-            col,
-            visual_col: col,
-            desired_col: col,
+            col: col.0,
+            visual_col: col.0,
+            desired_col: col.0,
         }
     }
 
@@ -36,11 +37,11 @@ impl Cursor {
         self.line
     }
 
-    /// Gets the column number (grapheme cluster index, 0-indexed).
+    /// Gets the column number as a [`GraphemeCol`] (0-indexed).
     ///
     /// Convert to char index via `grapheme_to_char_col()` before passing to rope operations.
-    pub fn col(&self) -> usize {
-        self.col
+    pub fn col(&self) -> GraphemeCol {
+        GraphemeCol(self.col)
     }
 
     /// Gets the visual column
@@ -59,29 +60,29 @@ impl Cursor {
     }
 
     /// Sets the column number
-    pub fn set_col(&mut self, col: usize) {
-        self.col = col;
-        self.visual_col = col;
-        self.desired_col = col;
+    pub fn set_col(&mut self, col: GraphemeCol) {
+        self.col = col.0;
+        self.visual_col = col.0;
+        self.desired_col = col.0;
     }
 
     /// Sets the column number without updating desired_col (for vertical movement)
-    pub fn set_col_preserve_desired(&mut self, col: usize) {
-        self.col = col;
-        self.visual_col = col;
+    pub fn set_col_preserve_desired(&mut self, col: GraphemeCol) {
+        self.col = col.0;
+        self.visual_col = col.0;
     }
 
     /// Sets both line and column
-    pub fn set_position(&mut self, line: usize, col: usize) {
+    pub fn set_position(&mut self, line: usize, col: GraphemeCol) {
         self.line = line;
-        self.col = col;
-        self.visual_col = col;
-        self.desired_col = col;
+        self.col = col.0;
+        self.visual_col = col.0;
+        self.desired_col = col.0;
     }
 
     /// Updates the desired column (for sticky column behavior)
-    pub fn update_desired_col(&mut self, col: usize) {
-        self.desired_col = col;
+    pub fn update_desired_col(&mut self, col: GraphemeCol) {
+        self.desired_col = col.0;
     }
 
     /// Sets the visual column

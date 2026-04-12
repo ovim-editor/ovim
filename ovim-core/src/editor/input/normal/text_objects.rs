@@ -10,6 +10,7 @@ use crate::editor::{
 };
 use crate::mode::Mode;
 use crate::repeat_action::{CaseTransform, RepeatAction};
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -199,7 +200,7 @@ fn apply_delete_operator(
             range.end_col,
         );
         buf.cursor_mut()
-            .set_position(range.start_line, range.start_col);
+            .set_position(range.start_line, GraphemeCol(range.start_col));
     });
     let cursor_after = editor.cursor_position();
     if !edits.is_empty() {
@@ -229,9 +230,9 @@ fn apply_yank_operator(
     } else {
         editor.set_yank_flash_range(
             range.start_line,
-            range.start_col,
+            GraphemeCol(range.start_col),
             range.end_line,
-            range.end_col,
+            GraphemeCol(range.end_col),
         );
     }
     Ok(())
@@ -243,7 +244,7 @@ fn apply_change_operator(
     object_type: TextObjectType,
 ) -> Result<()> {
     let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
+    let cursor_before = (cursor.line(), cursor.col().0);
 
     let deleted = TextObjects::yank_range(editor.buffer(), range)?;
 
@@ -255,7 +256,7 @@ fn apply_change_operator(
             range.end_col,
         );
         buf.cursor_mut()
-            .set_position(range.start_line, range.start_col);
+            .set_position(range.start_line, GraphemeCol(range.start_col));
     });
     if edits.is_empty() {
         return Ok(());
@@ -271,7 +272,7 @@ fn apply_change_operator(
     });
 
     let new_cursor = editor.buffer().cursor();
-    let new_cursor_pos = (new_cursor.line(), new_cursor.col());
+    let new_cursor_pos = (new_cursor.line(), new_cursor.col().0);
     editor.start_change_building(new_cursor_pos);
     editor.set_mode(Mode::Insert);
 
@@ -311,7 +312,7 @@ fn apply_case_operator(
                         final_col += 1;
                     }
                 }
-                buf.cursor_mut().set_position(final_line, final_col);
+                buf.cursor_mut().set_position(final_line, GraphemeCol(final_col));
             },
             Some(RepeatAction::ChangeCaseTextObject {
                 object_type,

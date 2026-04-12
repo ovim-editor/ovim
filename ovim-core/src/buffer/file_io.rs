@@ -1,4 +1,5 @@
 use super::{Buffer, Cursor};
+use crate::unicode::GraphemeCol;
 use crate::change::ChangeManager;
 use crate::fold::FoldManager;
 use crate::GitStatus;
@@ -101,7 +102,7 @@ impl Buffer {
         let mut buffer = Self {
             id: super::next_buffer_id(),
             rope: Rope::from_str(&content),
-            cursor: Cursor::new(0, 0),
+            cursor: Cursor::new(0, GraphemeCol::ZERO),
             modified: false,
             file_path: Some(path_str.clone()),
             line_ending,

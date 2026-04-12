@@ -402,7 +402,7 @@ fn find_matching_bracket_position(buffer: &crate::buffer::Buffer) -> Option<(usi
     }
 
     let line = rope.line(line_idx);
-    let col = cursor.col();
+    let col = cursor.col().0;
 
     if col >= line.len_chars() {
         return None;
@@ -1273,7 +1273,7 @@ pub fn render_buffer(
     // Find matching bracket position if showmatch is enabled
     let bracket_positions: Option<((usize, usize), (usize, usize))> = if editor.options.showmatch {
         find_matching_bracket_position(buffer)
-            .map(|matching_pos| ((cursor.line(), cursor.col()), matching_pos))
+            .map(|matching_pos| ((cursor.line(), cursor.col().0), matching_pos))
     } else {
         None
     };

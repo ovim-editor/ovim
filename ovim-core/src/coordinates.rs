@@ -244,7 +244,7 @@ impl GraphemeCol {
     /// Convert to char column using the line text.
     #[inline]
     pub fn to_char_col(self, line_text: &str) -> CharCol {
-        CharCol(crate::unicode::grapheme_to_char_col(line_text, self.0))
+        CharCol(crate::unicode::grapheme_to_char_col(line_text, crate::unicode::GraphemeCol(self.0)))
     }
 }
 

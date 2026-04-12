@@ -5,7 +5,7 @@
 use crate::buffer::Buffer;
 use crate::editor::Editor;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::{grapheme_count, grapheme_to_char_col};
+use crate::unicode::{grapheme_count, grapheme_to_char_col, GraphemeCol};
 use anyhow::Result;
 
 /// Type of case change operation
@@ -74,7 +74,7 @@ where
     F: FnOnce(&mut Buffer, usize),
 {
     let start_cursor = *editor.buffer().cursor();
-    let cursor_before = (start_cursor.line(), start_cursor.col());
+    let cursor_before = (start_cursor.line(), start_cursor.col().0);
     let start_line = start_cursor.line();
     let start_grapheme_col = start_cursor.col(); // grapheme index
 
@@ -90,12 +90,12 @@ where
         .buffer()
         .line(start_line)
         .map(|l| grapheme_to_char_col(l.trim_end_matches('\n'), start_grapheme_col))
-        .unwrap_or(start_grapheme_col);
+        .unwrap_or(start_grapheme_col.0);
     let end_char_col = editor
         .buffer()
         .line(end_line)
         .map(|l| grapheme_to_char_col(l.trim_end_matches('\n'), end_grapheme_col))
-        .unwrap_or(end_grapheme_col);
+        .unwrap_or(end_grapheme_col.0);
 
     // Get the text in the range using char-based offsets
     let start_char = editor.buffer().rope().line_to_char(start_line) + start_char_col;
@@ -146,7 +146,7 @@ pub fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) 
     }
 
     // Convert grapheme col → char col for rope operations
-    let char_col = grapheme_to_char_col(line_text, grapheme_col);
+    let char_col = grapheme_to_char_col(line_text, GraphemeCol(grapheme_col));
     let line_char_len = line_text.chars().count();
 
     let text_to_end: String = line_text.chars().skip(char_col).collect();

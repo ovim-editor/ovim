@@ -2,6 +2,7 @@ use crate::command_result::CommandResult;
 use crate::edit::Edit;
 use crate::editor::path_completion::extract_path_from_command;
 use crate::editor::{Editor, Mode};
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -646,7 +647,7 @@ fn handle_global_command(
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(new_cursor_line, 0);
+                .set_position(new_cursor_line, GraphemeCol::ZERO);
 
             if !edits.is_empty() {
                 let cursor_after = (new_cursor_line, 0);
@@ -967,7 +968,7 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                         if !insert_text.is_empty() {
                             buf.insert_text_at(start_line, 0, &insert_text);
                         }
-                        buf.cursor_mut().set_position(start_line, 0);
+                        buf.cursor_mut().set_position(start_line, GraphemeCol::ZERO);
                     });
                     if !edits.is_empty() {
                         let cursor_after = (start_line, 0);
@@ -1050,7 +1051,7 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 // Record change for undo
                 let cursor_before = (
                     editor.buffer().cursor().line(),
-                    editor.buffer().cursor().col(),
+                    editor.buffer().cursor().col().0,
                 );
 
                 // Calculate insertion point
@@ -1082,7 +1083,7 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(insert_line, 0);
+                    .set_position(insert_line, GraphemeCol::ZERO);
                 editor.push_recorded_undo(
                     vec![Edit::Insert {
                         offset: insert_char,
@@ -1396,7 +1397,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle goto line (just a number or range without command)
     if cmd_part.is_empty() && !range_str.is_empty() {
         if let Some((start_line, _end_line)) = parse_range_with_status(editor, range_str, None) {
-            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+            editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol::ZERO);
             return Ok(());
         }
     }
@@ -1417,7 +1418,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(new_cursor_line, 0);
+                .set_position(new_cursor_line, GraphemeCol::ZERO);
 
             if !edits.is_empty() {
                 let cursor_after = (new_cursor_line, 0);
@@ -1494,7 +1495,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             // Replace the range with sorted lines
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
 
             // Get the char positions for the range
@@ -1578,7 +1579,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 let insert_line = dest_line + 1;
                 let cursor_before = (
                     editor.buffer().cursor().line(),
-                    editor.buffer().cursor().col(),
+                    editor.buffer().cursor().col().0,
                 );
 
                 let insert_char = if insert_line < editor.buffer().line_count() {
@@ -1602,7 +1603,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(insert_line, 0);
+                    .set_position(insert_line, GraphemeCol::ZERO);
                 editor.push_recorded_undo(
                     vec![Edit::Insert {
                         offset: insert_char,
@@ -1655,7 +1656,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
                 let cursor_before = (
                     editor.buffer().cursor().line(),
-                    editor.buffer().cursor().col(),
+                    editor.buffer().cursor().col().0,
                 );
 
                 // Collect lines to move
@@ -1705,7 +1706,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(insert_line, 0);
+                    .set_position(insert_line, GraphemeCol::ZERO);
                 let mut edits = Vec::new();
                 if !text_to_move.is_empty() {
                     edits.push(Edit::Delete {

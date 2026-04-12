@@ -2,7 +2,7 @@
 
 use super::{char_class, CharClass, Motions};
 use crate::buffer::Buffer;
-use crate::unicode::grapheme_count;
+use crate::unicode::{grapheme_count, GraphemeCol};
 
 impl Motions {
     /// Moves cursor forward to the start of the next word
@@ -115,7 +115,7 @@ impl Motions {
         rope: &ropey::Rope,
         start_line: usize,
         _big_word: bool,
-    ) -> Option<(usize, usize)> {
+    ) -> Option<(usize, GraphemeCol)> {
         // Use Vim-compatible line count: exclude the phantom empty line that
         // ropey appends after a trailing '\n'. Motions should not land there.
         let total_lines = {
@@ -132,7 +132,7 @@ impl Motions {
 
             if content.is_empty() {
                 // Truly empty line — word boundary, stop here.
-                return Some((line_idx, 0));
+                return Some((line_idx, GraphemeCol::ZERO));
             }
 
             // Check if line has any non-whitespace (char index → grapheme)
@@ -174,16 +174,16 @@ impl Motions {
             return;
         }
 
-        if grapheme_col == 0 {
+        if grapheme_col == GraphemeCol::ZERO {
             // At start of line, move to end of previous line and continue
             if line_idx > 0 {
                 line_idx -= 1;
                 let prev_line = rope.line(line_idx).to_string();
                 let prev_line_trimmed = prev_line.trim_end_matches('\n');
-                grapheme_col = grapheme_count(prev_line_trimmed);
+                grapheme_col = GraphemeCol(grapheme_count(prev_line_trimmed));
                 // If previous line is empty, just land at col 0
-                if grapheme_col == 0 {
-                    buffer.cursor_mut().set_position(line_idx, 0);
+                if grapheme_col == GraphemeCol::ZERO {
+                    buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
                     return;
                 }
                 // grapheme_col is now one past the last grapheme; fall through to word-backward logic
@@ -207,7 +207,7 @@ impl Motions {
         }
 
         if new_col == 0 {
-            buffer.cursor_mut().set_position(line_idx, 0);
+            buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
             return;
         }
 
@@ -318,13 +318,13 @@ impl Motions {
             }
             buffer
                 .cursor_mut()
-                .set_position(total_lines.saturating_sub(1), 0);
+                .set_position(total_lines.saturating_sub(1), GraphemeCol::ZERO);
             return;
         }
 
         if col >= chars.len() {
             if line_idx + 1 < total_lines {
-                buffer.cursor_mut().set_position(line_idx + 1, 0);
+                buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
                 Self::word_end_forward_once(buffer, big_word, prefer_current);
             }
             return;
@@ -339,7 +339,7 @@ impl Motions {
             }
             if idx >= chars.len() {
                 if line_idx + 1 < total_lines {
-                    buffer.cursor_mut().set_position(line_idx + 1, 0);
+                    buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
                     Self::word_end_forward_once(buffer, big_word, prefer_current);
                 }
                 return;
@@ -380,7 +380,7 @@ impl Motions {
             }
             if idx >= chars.len() {
                 if line_idx + 1 < total_lines {
-                    buffer.cursor_mut().set_position(line_idx + 1, 0);
+                    buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
                     Self::word_end_forward_once(buffer, big_word, prefer_current);
                 }
                 return;
@@ -507,7 +507,7 @@ impl Motions {
 
         let chars = get_chars(line_idx);
         if chars.is_empty() {
-            buffer.cursor_mut().set_position(line_idx, 0);
+            buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
             return;
         }
 

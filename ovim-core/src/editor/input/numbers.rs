@@ -28,7 +28,7 @@ pub fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> 
 
     let ((start_line, _), (end_line, _)) = selection.unwrap();
     let cursor_col = editor.buffer().cursor().col();
-    let cursor_before = (start_line, cursor_col);
+    let cursor_before = (start_line, cursor_col.0);
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
         for line_idx in start_line..=end_line {
@@ -62,7 +62,7 @@ pub fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> 
         buf.cursor_mut().set_position(start_line, cursor_col);
     });
 
-    let cursor_after = (start_line, cursor_col);
+    let cursor_after = (start_line, cursor_col.0);
     if !edits.is_empty() {
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         // No set_repeat_action — visual mode repeat is separate

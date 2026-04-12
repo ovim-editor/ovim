@@ -68,7 +68,7 @@ impl Editor {
         // Get cursor position
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
         // Detect language from file extension
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
@@ -178,7 +178,7 @@ impl Editor {
 
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,
@@ -265,7 +265,7 @@ impl Editor {
 
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,

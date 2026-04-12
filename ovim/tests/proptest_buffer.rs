@@ -275,9 +275,9 @@ proptest! {
 
             let line_len = buffer.line_len(cursor.line());
             prop_assert!(
-                cursor.col() <= line_len,
+                cursor.col().0 <= line_len,
                 "Cursor col {} must be <= line length {}",
-                cursor.col(),
+                cursor.col().0,
                 line_len
             );
         }
@@ -347,7 +347,7 @@ proptest! {
         prop_assert_eq!(buffer.line_count(), 1, "Empty buffer should have exactly 1 line");
         prop_assert_eq!(buffer.line_len(0), 0, "Empty buffer's line should have length 0");
         prop_assert_eq!(buffer.cursor().line(), 0, "Cursor should be at line 0");
-        prop_assert_eq!(buffer.cursor().col(), 0, "Cursor should be at col 0");
+        prop_assert_eq!(buffer.cursor().col(), ovim::unicode::GraphemeCol::ZERO, "Cursor should be at col 0");
     }
 
     /// Property: Delete entire buffer leaves minimal content
@@ -551,9 +551,9 @@ proptest! {
 
             let line_len = buffer.line_len(cursor.line());
             prop_assert!(
-                cursor.col() <= line_len,
+                cursor.col().0 <= line_len,
                 "After operation {}: cursor col {} must be <= line len {}. Op: {:?}",
-                i, cursor.col(), line_len, op
+                i, cursor.col().0, line_len, op
             );
 
             // Invariant 3: Line count > 0
@@ -578,7 +578,7 @@ proptest! {
         for text in modifications {
             // Insert at current cursor position
             let line = buffer.cursor().line();
-            let col = buffer.cursor().col();
+            let col = buffer.cursor().col().0;
 
             buffer.insert_text_at(line, col, &text);
 

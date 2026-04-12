@@ -2,6 +2,7 @@
 
 use super::Motions;
 use crate::buffer::Buffer;
+use crate::unicode::GraphemeCol;
 
 impl Motions {
     /// Move to first non-blank character on line (^ motion)
@@ -34,7 +35,7 @@ impl Motions {
         let current_line = cursor.line();
         let target_line = (current_line + count).min(buffer.line_count().saturating_sub(1));
 
-        buffer.cursor_mut().set_position(target_line, 0);
+        buffer.cursor_mut().set_position(target_line, GraphemeCol::ZERO);
         Self::first_non_blank(buffer);
     }
 
@@ -44,7 +45,7 @@ impl Motions {
         let current_line = cursor.line();
         let target_line = current_line.saturating_sub(count);
 
-        buffer.cursor_mut().set_position(target_line, 0);
+        buffer.cursor_mut().set_position(target_line, GraphemeCol::ZERO);
         Self::first_non_blank(buffer);
     }
 

@@ -1,6 +1,7 @@
 use crate::buffer::Buffer;
 use crate::change::TextObjectType;
 use crate::textobjects::TextObjects;
+use crate::unicode::GraphemeCol;
 
 #[derive(Clone, Copy, Debug)]
 pub enum CaseTransform {
@@ -178,7 +179,7 @@ impl RepeatAction {
                 let end = start + line_count;
                 buffer.indent_lines_at(start, end, *shift_width, *expand_tab);
                 let first_nb = buffer.first_non_blank_col(start);
-                buffer.cursor_mut().set_position(start, first_nb);
+                buffer.cursor_mut().set_position(start, GraphemeCol(first_nb));
             }
             Self::DedentLines {
                 line_count,
@@ -188,7 +189,7 @@ impl RepeatAction {
                 let end = start + line_count;
                 buffer.dedent_lines_at(start, end, *shift_width);
                 let first_nb = buffer.first_non_blank_col(start);
-                buffer.cursor_mut().set_position(start, first_nb);
+                buffer.cursor_mut().set_position(start, GraphemeCol(first_nb));
             }
             Self::ToggleCase { count } => {
                 for _ in 0..*count {
@@ -269,7 +270,7 @@ impl RepeatAction {
                                 final_col += 1;
                             }
                         }
-                        buffer.cursor_mut().set_position(final_line, final_col);
+                        buffer.cursor_mut().set_position(final_line, GraphemeCol(final_col));
                     }
                 }
             }
@@ -304,7 +305,7 @@ impl RepeatAction {
             }
             Self::DeleteWordChange { count } => {
                 let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor().col();
+                let start_col = buffer.cursor().col().0;
 
                 crate::editor::Motions::word_end_forward_prefer_current(buffer, *count);
 
@@ -313,17 +314,17 @@ impl RepeatAction {
                     .line(end_line)
                     .map(|l| l.trim_end_matches('\n').chars().count())
                     .unwrap_or(0);
-                let end_col = (buffer.cursor().col() + 1).min(line_len);
+                let end_col = (buffer.cursor().col().0 + 1).min(line_len);
 
                 buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.cursor_mut().set_position(start_line, start_col);
+                buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
             }
             Self::DeleteSearchMatch {
                 search_pattern,
                 search_forward,
             } => {
                 let line_idx = buffer.cursor().line();
-                let col = buffer.cursor().col();
+                let col = buffer.cursor().col().0;
 
                 let mut search = crate::search::Search::new_with_options(
                     search_pattern.clone(),
@@ -338,7 +339,7 @@ impl RepeatAction {
                     let match_len = match_text.chars().count();
                     let match_end_col = match_col + match_len;
                     buffer.delete_range(match_line, match_col, match_line, match_end_col);
-                    buffer.cursor_mut().set_position(match_line, match_col);
+                    buffer.cursor_mut().set_position(match_line, GraphemeCol(match_col));
                 }
             }
             Self::DeleteWordBackward { count } => {
@@ -391,7 +392,7 @@ impl RepeatAction {
             }
             Self::ReplaceMode { replacements } => {
                 let line_idx = buffer.cursor().line();
-                let col = buffer.cursor().col();
+                let col = buffer.cursor().col().0;
                 let replacement_len = replacements.chars().count();
 
                 if let Some(line) = buffer.line(line_idx) {
@@ -405,7 +406,7 @@ impl RepeatAction {
                     buffer.insert_text_at(line_idx, col, replacements);
 
                     let final_col = col + replacement_len.saturating_sub(1);
-                    buffer.cursor_mut().set_position(line_idx, final_col);
+                    buffer.cursor_mut().set_position(line_idx, GraphemeCol(final_col));
                 }
             }
             Self::PasteAfter { .. } | Self::PasteBefore { .. } => {
@@ -444,7 +445,7 @@ impl RepeatAction {
                     buffer.insert_text_at(line_idx, 0, &text);
                     buffer
                         .cursor_mut()
-                        .set_position(line_idx, indent.chars().count());
+                        .set_position(line_idx, GraphemeCol(indent.chars().count()));
                 } else {
                     let (insert_pos, text) = if line_text.ends_with('\n') {
                         ((line_idx + 1, 0), format!("{}\n", indent))
@@ -455,7 +456,7 @@ impl RepeatAction {
                     buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
                     buffer
                         .cursor_mut()
-                        .set_position(line_idx + 1, indent.chars().count());
+                        .set_position(line_idx + 1, GraphemeCol(indent.chars().count()));
                 }
 
                 if inserted_text.is_empty() {
@@ -466,14 +467,14 @@ impl RepeatAction {
                         if !line_wo_nl.is_empty() && line_wo_nl.chars().all(|c| c.is_whitespace()) {
                             let whitespace_len = line_wo_nl.chars().count();
                             buffer.delete_range(current_line, 0, current_line, whitespace_len);
-                            buffer.cursor_mut().set_position(current_line, 0);
+                            buffer.cursor_mut().set_position(current_line, GraphemeCol(0));
                         }
                     }
                     return;
                 }
 
                 let line = buffer.cursor().line();
-                let col = buffer.cursor().col();
+                let col = buffer.cursor().col().0;
                 buffer.insert_text_at(line, col, inserted_text);
 
                 // Position cursor at end of inserted text - 1 (Vim Esc behavior)
@@ -488,14 +489,14 @@ impl RepeatAction {
                     }
                 }
                 final_col = final_col.saturating_sub(1);
-                buffer.cursor_mut().set_position(final_line, final_col);
+                buffer.cursor_mut().set_position(final_line, GraphemeCol(final_col));
             }
             Self::DeleteVisualChar {
                 line_delta,
                 offset_col,
             } => {
                 let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor().col();
+                let start_col = buffer.cursor().col().0;
                 let end_line = start_line + line_delta;
                 let end_col = if *line_delta == 0 {
                     start_col + offset_col
@@ -503,18 +504,18 @@ impl RepeatAction {
                     *offset_col
                 };
                 buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.cursor_mut().set_position(start_line, start_col);
+                buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
             }
             Self::DeleteVisualLine { line_count } => {
                 let start_line = buffer.cursor().line();
                 let end_line_exclusive = start_line + line_count;
                 buffer.delete_range(start_line, 0, end_line_exclusive, 0);
                 let new_line = start_line.min(buffer.line_count().saturating_sub(1));
-                buffer.cursor_mut().set_position(new_line, 0);
+                buffer.cursor_mut().set_position(new_line, GraphemeCol(0));
             }
             Self::DeleteVisualBlock { line_count, width } => {
                 let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor().col();
+                let start_col = buffer.cursor().col().0;
 
                 for i in 0..*line_count {
                     let line_idx = start_line + i;
@@ -539,7 +540,7 @@ impl RepeatAction {
                 } else {
                     0
                 };
-                buffer.cursor_mut().set_position(start_line, clamped_col);
+                buffer.cursor_mut().set_position(start_line, GraphemeCol(clamped_col));
             }
             Self::ChangeVisualBlock {
                 line_count,
@@ -547,7 +548,7 @@ impl RepeatAction {
                 inserted_text,
             } => {
                 let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor().col();
+                let start_col = buffer.cursor().col().0;
 
                 // Delete block at current cursor geometry.
                 for i in 0..*line_count {
@@ -590,7 +591,7 @@ impl RepeatAction {
                         }
                     }
                     final_col = final_col.saturating_sub(1);
-                    buffer.cursor_mut().set_position(final_line, final_col);
+                    buffer.cursor_mut().set_position(final_line, GraphemeCol(final_col));
                 } else {
                     let line_len = buffer
                         .line(start_line)
@@ -601,7 +602,7 @@ impl RepeatAction {
                     } else {
                         0
                     };
-                    buffer.cursor_mut().set_position(start_line, clamped_col);
+                    buffer.cursor_mut().set_position(start_line, GraphemeCol(clamped_col));
                 }
             }
             Self::Change {
@@ -623,7 +624,7 @@ impl RepeatAction {
                     let line = buffer.cursor().line();
                     let insert_at = line.min(buffer.line_count());
                     buffer.insert_text_at(insert_at, 0, "\n");
-                    buffer.cursor_mut().set_position(insert_at, 0);
+                    buffer.cursor_mut().set_position(insert_at, GraphemeCol(0));
                 } else if !matches!(
                     delete.as_ref(),
                     RepeatAction::DeleteTextObject { .. }
@@ -645,7 +646,7 @@ impl RepeatAction {
                 // Phase 2: Insert the captured text
                 if !inserted_text.is_empty() {
                     let line = buffer.cursor().line();
-                    let col = buffer.cursor().col();
+                    let col = buffer.cursor().col().0;
                     buffer.insert_text_at(line, col, inserted_text);
 
                     // Position cursor at end of inserted text - 1 (Vim Esc behavior)
@@ -664,7 +665,7 @@ impl RepeatAction {
                         }
                         // Back up one (Vim positions cursor on last inserted char)
                         final_col = final_col.saturating_sub(1);
-                        buffer.cursor_mut().set_position(final_line, final_col);
+                        buffer.cursor_mut().set_position(final_line, GraphemeCol(final_col));
                     }
                 }
             }

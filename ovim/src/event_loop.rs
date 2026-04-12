@@ -1032,7 +1032,7 @@ async fn handle_api_request(
                         let context_str = ovim::api::format_context_window(
                             &buffer_content,
                             cursor.line(),
-                            cursor.col(),
+                            cursor.col().0,
                             file_path,
                             &mode_str,
                         );
@@ -1042,7 +1042,7 @@ async fn handle_api_request(
                             file: file_path.map(|s| s.to_string()),
                             mode: mode_str,
                             line: cursor.line(),
-                            column: cursor.col(),
+                            column: cursor.col().0,
                         };
 
                         ApiResponse::SendKeysResult(ovim::api::SendKeysResult {
@@ -1082,7 +1082,7 @@ async fn handle_api_request(
             let cursor = editor.buffer().cursor();
             let pos = CursorPosition {
                 line: cursor.line(),
-                column: cursor.col(),
+                column: cursor.col().0,
             };
             let _ = tx.send(ApiResponse::Cursor(pos));
         }
@@ -1318,7 +1318,7 @@ async fn handle_api_request(
             let buffer = editor.buffer();
             let cursor = buffer.cursor();
             let cursor_line = cursor.line();
-            let cursor_column = cursor.col();
+            let cursor_column = cursor.col().0;
 
             let buffer_content = buffer.rope().to_string();
             let file_path = buffer.file_path();
@@ -1391,7 +1391,7 @@ mod tests {
 
         // Move cursor to EOF and ensure scroll offset is set.
         let last_line = editor.buffer().line_count().saturating_sub(1);
-        editor.buffer_mut().cursor_mut().set_position(last_line, 0);
+        editor.buffer_mut().cursor_mut().set_position(last_line, ovim_core::unicode::GraphemeCol::ZERO);
         editor.update_scroll_offset();
 
         // Shrink the pane; cursor should remain visible in the new viewport.
@@ -1504,7 +1504,7 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
     // Record cursor position before change
     let cursor_before = {
         let c = editor.buffer().cursor();
-        (c.line(), c.col())
+        (c.line(), c.col().0)
     };
 
     // Perform the edit: delete old text, insert new text
@@ -1570,7 +1570,7 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
 
     let cursor_before = {
         let c = editor.buffer().cursor();
-        (c.line(), c.col())
+        (c.line(), c.col().0)
     };
 
     // Convert char_idx to line/col for insert_text_at
@@ -1617,7 +1617,7 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
 
     let cursor_before = {
         let c = editor.buffer().cursor();
-        (c.line(), c.col())
+        (c.line(), c.col().0)
     };
 
     // Calculate end position for delete_range
@@ -1650,7 +1650,7 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
         editor
             .buffer_mut()
             .cursor_mut()
-            .set_position(new_total - 1, 0);
+            .set_position(new_total - 1, ovim_core::unicode::GraphemeCol::ZERO);
     }
 
     ApiResponse::Success(SuccessResponse {
@@ -1873,7 +1873,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
 
     let cursor_pos = CursorPosition {
         line: cursor.line(),
-        column: cursor.col(),
+        column: cursor.col().0,
     };
 
     let visual_selection =
@@ -1959,7 +1959,7 @@ fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
     let cursor = editor.buffer().cursor();
     let cursor_pos = CursorPosition {
         line: cursor.line(),
-        column: cursor.col(),
+        column: cursor.col().0,
     };
 
     EditorSnapshot {

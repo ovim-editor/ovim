@@ -2,6 +2,7 @@
 
 use super::Motions;
 use crate::buffer::Buffer;
+use crate::unicode::GraphemeCol;
 
 impl Motions {
     /// Move forward to start of next paragraph ({ and } motions)
@@ -38,7 +39,7 @@ impl Motions {
 
         // Clamp to buffer bounds
         line_idx = line_idx.min(total_lines.saturating_sub(1));
-        buffer.cursor_mut().set_position(line_idx, 0);
+        buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
     }
 
     /// Move backward to start of previous paragraph
@@ -76,7 +77,7 @@ impl Motions {
                     // Line 0 is non-blank, continue to next phase
                 } else {
                     // Line 0 is blank, stop here
-                    buffer.cursor_mut().set_position(0, 0);
+                    buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
                     return;
                 }
             }
@@ -104,6 +105,6 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(line_idx, 0);
+        buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
     }
 }

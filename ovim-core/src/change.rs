@@ -38,6 +38,7 @@ use crate::editor::motions::Motions;
 use crate::repeat_action::RepeatAction;
 use crate::search::Search;
 use crate::textobjects::TextObjects;
+use crate::unicode::GraphemeCol;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
@@ -395,7 +396,7 @@ impl Change {
                 if buffer.version() != version_before {
                     // Update cursor to end of inserted text
                     let end_pos = Self::calculate_end_position(*position, text);
-                    buffer.cursor_mut().set_position(end_pos.0, end_pos.1);
+                    buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(end_pos.1));
                 }
             }
             Self::DeleteText { range, .. } => {
@@ -406,7 +407,7 @@ impl Change {
                 // Keep cursor stable when deletion was blocked/no-op.
                 if buffer.version() != version_before {
                     // Position cursor at deletion start
-                    buffer.cursor_mut().set_position(start_line, start_col);
+                    buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
                 }
             }
             Self::Composite {
@@ -420,7 +421,7 @@ impl Change {
                 // Restore cursor to final position after composite operation
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::ChangeTextObject {
                 old_range,
@@ -435,7 +436,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, replacement);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::ChangeWord {
                 old_range,
@@ -450,7 +451,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, replacement);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::ReplaceMode {
                 old_range,
@@ -465,7 +466,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, replacements);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::ChangeSearchMatch {
                 old_range,
@@ -480,7 +481,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, replacement);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::Recorded {
                 edits,
@@ -492,7 +493,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::ResourceOp {
                 snapshots,
@@ -504,7 +505,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
         }
     }
@@ -537,7 +538,7 @@ impl Change {
                 // Restore cursor to where it was before the change
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
                 // Validate cursor position in case line no longer exists
                 buffer.validate_cursor_position();
             }
@@ -553,7 +554,7 @@ impl Change {
                 // Restore cursor to where it was before the change
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
                 // Validate cursor position in case line no longer exists
                 buffer.validate_cursor_position();
             }
@@ -569,7 +570,7 @@ impl Change {
                 // Restore cursor to where it was before the composite change
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
                 // Validate cursor position after composite undo - intermediate undos
                 // may have deleted lines that the final cursor position refers to
                 buffer.validate_cursor_position();
@@ -590,7 +591,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, old_text);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
             }
             Self::ChangeWord {
                 cursor_before,
@@ -607,7 +608,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, old_text);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
             }
             Self::ReplaceMode {
                 cursor_before,
@@ -624,7 +625,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, old_text);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
             }
             Self::ChangeSearchMatch {
                 cursor_before,
@@ -641,7 +642,7 @@ impl Change {
                 buffer.insert_text_at(start_line, start_col, old_text);
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
             }
             Self::Recorded {
                 edits,
@@ -654,7 +655,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
                 buffer.validate_cursor_position();
             }
             Self::ResourceOp {
@@ -667,7 +668,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, cursor_before.1);
+                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
                 buffer.validate_cursor_position();
             }
         }
@@ -682,7 +683,7 @@ impl Change {
                 ..
             } => {
                 // Insert the same text at current position
-                let new_pos = (buffer.cursor().line(), buffer.cursor().col());
+                let new_pos = (buffer.cursor().line(), buffer.cursor().col().0);
                 // Update self so undo targets the new position, not the original
                 *self_pos = new_pos;
                 Self::InsertText {
@@ -699,7 +700,8 @@ impl Change {
                 ..
             } => {
                 // Apply the same deletion pattern from current position
-                let cursor_pos = (buffer.cursor().line(), buffer.cursor().col());
+                let cursor_line = buffer.cursor().line();
+                let cursor_col = buffer.cursor().col().0;
                 let offset_line = range.end.0 - range.start.0;
                 let offset_col = if range.end.0 == range.start.0 {
                     range.end.1 - range.start.1
@@ -713,11 +715,11 @@ impl Change {
                     // For backwards deletion (X), treat current cursor as the END
                     // and calculate the start by going backwards
                     let new_start = if offset_line == 0 {
-                        (cursor_pos.0, cursor_pos.1.saturating_sub(offset_col))
-                    } else if cursor_pos.1 == 0 {
+                        (cursor_line, cursor_col.saturating_sub(offset_col))
+                    } else if cursor_col == 0 {
                         // Multi-line backwards deletion with cursor at col 0
                         // (e.g. backspace at col 0 joining lines via I<BS>)
-                        let prev_line = cursor_pos.0.saturating_sub(offset_line);
+                        let prev_line = cursor_line.saturating_sub(offset_line);
                         let prev_line_len = buffer
                             .line(prev_line)
                             .map(|s| s.trim_end_matches('\n').chars().count())
@@ -728,17 +730,17 @@ impl Change {
                         // (e.g. i<BS> at col 0, then repeat at col 2).
                         // Constrain to same-line single-char delete — what BS
                         // would actually do at this cursor position.
-                        (cursor_pos.0, cursor_pos.1.saturating_sub(1))
+                        (cursor_line, cursor_col.saturating_sub(1))
                     };
-                    (new_start.0, new_start.1, cursor_pos.0, cursor_pos.1)
+                    (new_start.0, new_start.1, cursor_line, cursor_col)
                 } else {
                     // For forward deletion (x, d, etc), treat current cursor as the START
                     let new_end = if offset_line == 0 {
-                        (cursor_pos.0, cursor_pos.1 + offset_col)
+                        (cursor_line, cursor_col + offset_col)
                     } else {
-                        (cursor_pos.0 + offset_line, offset_col)
+                        (cursor_line + offset_line, offset_col)
                     };
-                    (cursor_pos.0, cursor_pos.1, new_end.0, new_end.1)
+                    (cursor_line, cursor_col, new_end.0, new_end.1)
                 };
 
                 let actual_deleted = buffer.delete_range(start_line, start_col, end_line, end_col);
@@ -749,7 +751,7 @@ impl Change {
                 *deleted_text = actual_deleted;
 
                 // Position cursor at the start of the deletion
-                buffer.cursor_mut().set_position(start_line, start_col);
+                buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
             }
             Self::Composite {
                 changes,
@@ -775,7 +777,7 @@ impl Change {
                                 .chars()
                                 .position(|c| !c.is_whitespace())
                                 .unwrap_or(0);
-                            buffer.cursor_mut().set_col(col);
+                            buffer.cursor_mut().set_col(GraphemeCol(col));
                         }
                     }
                     InsertEntryMode::EndOfLine => {
@@ -783,7 +785,7 @@ impl Change {
                         let line_idx = buffer.cursor().line();
                         if let Some(line) = buffer.line(line_idx) {
                             let line_len = line.trim_end_matches('\n').chars().count();
-                            buffer.cursor_mut().set_col(line_len);
+                            buffer.cursor_mut().set_col(GraphemeCol(line_len));
                         }
                     }
                     InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove => {}
@@ -796,7 +798,7 @@ impl Change {
                 }
                 // Move cursor back by 1 to match Esc behavior
                 let cursor = buffer.cursor_mut();
-                if cursor.col() > 0 {
+                if cursor.col().0 > 0 {
                     cursor.move_left(1);
                 }
             }
@@ -822,13 +824,13 @@ impl Change {
                         replacement,
                     );
                     let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                    buffer.cursor_mut().set_position(end_pos.0, final_col);
+                    buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(final_col));
                 }
             }
             Self::ChangeWord { replacement, .. } => {
                 // Replicate cw (ce) semantics: delete from cursor to word end, then insert
                 let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor().col();
+                let start_col = buffer.cursor().col().0;
 
                 // Move cursor to word end (ce motion)
                 Motions::word_end_forward_prefer_current(buffer, 1);
@@ -839,22 +841,22 @@ impl Change {
                 } else {
                     0
                 };
-                let end_col = (buffer.cursor().col() + 1).min(line_len);
+                let end_col = (buffer.cursor().col().0 + 1).min(line_len);
 
                 // Restore cursor to start and delete the range
-                buffer.cursor_mut().set_position(start_line, start_col);
+                buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.insert_text_at(start_line, start_col, replacement);
 
                 // Position cursor at end of inserted text (minus 1 for normal mode)
                 let end_pos = Self::calculate_end_position((start_line, start_col), replacement);
                 let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                buffer.cursor_mut().set_position(end_pos.0, final_col);
+                buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(final_col));
             }
             Self::ReplaceMode { replacements, .. } => {
                 // Replay the entire replacement sequence at current cursor
                 let line_idx = buffer.cursor().line();
-                let col = buffer.cursor().col();
+                let col = buffer.cursor().col().0;
                 let replacement_len = replacements.chars().count();
 
                 if let Some(line) = buffer.line(line_idx) {
@@ -871,7 +873,7 @@ impl Change {
                     buffer.insert_text_at(line_idx, col, replacements);
                     // Position cursor at end of replacements (minus 1 for normal mode)
                     let final_col = col + replacement_len.saturating_sub(1);
-                    buffer.cursor_mut().set_position(line_idx, final_col);
+                    buffer.cursor_mut().set_position(line_idx, GraphemeCol(final_col));
                 }
             }
             Self::ChangeSearchMatch {
@@ -882,7 +884,7 @@ impl Change {
             } => {
                 // Find the next search match from current cursor and replace it
                 let line_idx = buffer.cursor().line();
-                let col = buffer.cursor().col();
+                let col = buffer.cursor().col().0;
 
                 let mut search = Search::new_with_options(
                     search_pattern.clone(),
@@ -905,7 +907,7 @@ impl Change {
                     let end_pos =
                         Self::calculate_end_position((match_line, match_col), replacement);
                     let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                    buffer.cursor_mut().set_position(end_pos.0, final_col);
+                    buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(final_col));
                 }
             }
             Self::Recorded {
@@ -919,7 +921,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, cursor_after.1);
+                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
             }
             Self::ResourceOp { .. } => {
                 // Intentionally non-repeatable via `.`.

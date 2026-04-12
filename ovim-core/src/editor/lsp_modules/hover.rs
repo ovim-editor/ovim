@@ -107,7 +107,7 @@ impl Editor {
         let cursor = self.buffer().cursor();
         let buffer_version = self.buffer().version();
         let cursor_line = cursor.line();
-        let cursor_col = cursor.col();
+        let cursor_col = cursor.col().0;
 
         if let Some(ref cache) = self.lsp.state.hover_cache {
             if cache.is_valid(&file_path, cursor_line, cursor_col, buffer_version) {
@@ -147,7 +147,7 @@ impl Editor {
 
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
         let language_id = match crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path) {
             Some(id) => id,

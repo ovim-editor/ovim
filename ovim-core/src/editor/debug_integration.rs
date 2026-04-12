@@ -181,7 +181,7 @@ impl Editor {
                 let path = frame.source.as_ref().and_then(|s| s.path.clone());
                 if let Some(path) = path {
                     if self.load_file(&path).is_ok() {
-                        self.buffer_mut().cursor_mut().set_position(line, 0);
+                        self.buffer_mut().cursor_mut().set_position(line, crate::unicode::GraphemeCol::ZERO);
                         self.buffer_mut().validate_cursor_position();
                     }
                 }

@@ -5,6 +5,7 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{Editor, Motions, Search};
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -63,7 +64,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             if editor.count().is_some() {
                 editor.append_count(0);
             } else {
-                editor.buffer_mut().cursor_mut().set_col(0);
+                editor.buffer_mut().cursor_mut().set_col(GraphemeCol::ZERO);
                 editor.clear_count();
             }
             Ok(true)
@@ -77,8 +78,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let line_len = line.trim_end_matches('\n').chars().count();
                 let col = if line_len > 0 { line_len - 1 } else { 0 };
                 let cursor = editor.buffer_mut().cursor_mut();
-                cursor.set_position(target_line, col);
-                cursor.update_desired_col(usize::MAX);
+                cursor.set_position(target_line, GraphemeCol(col));
+                cursor.update_desired_col(GraphemeCol(usize::MAX));
             }
             editor.clear_count();
             Ok(true)
@@ -199,7 +200,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(target_line, 0);
+                .set_position(target_line, GraphemeCol::ZERO);
             Motions::first_non_blank(editor.buffer_mut());
             editor.add_jump();
             editor.clear_count();
@@ -435,9 +436,9 @@ fn search_word_forward(editor: &mut Editor) {
         let cursor = editor.buffer().cursor();
 
         if let Some((line, col, _)) =
-            search.find_next(editor.buffer(), cursor.line(), cursor.col() + 1)
+            search.find_next(editor.buffer(), cursor.line(), cursor.col().0 + 1)
         {
-            editor.buffer_mut().cursor_mut().set_position(line, col);
+            editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
         editor.set_current_search(search);
     }
@@ -455,13 +456,13 @@ fn search_word_backward(editor: &mut Editor) {
         );
         let cursor = editor.buffer().cursor();
 
-        let search_col = if cursor.col() > 0 {
-            cursor.col() - 1
+        let search_col = if cursor.col().0 > 0 {
+            cursor.col().0 - 1
         } else {
             0
         };
         if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
-            editor.buffer_mut().cursor_mut().set_position(line, col);
+            editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
         editor.set_current_search(search);
     }

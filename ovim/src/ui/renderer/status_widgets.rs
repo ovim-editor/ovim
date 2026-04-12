@@ -222,7 +222,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     } else {
         String::new()
     };
-    let position = format!(" {}:{} ", cursor.line() + 1, cursor.col() + 1);
+    let position = format!(" {}:{} ", cursor.line() + 1, cursor.col().0 + 1);
     let modified = if editor.is_modified() { " [+] " } else { " " };
     let file = buffer.file_path().unwrap_or("[No Name]");
     let branch_display = editor

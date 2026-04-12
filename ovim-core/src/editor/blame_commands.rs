@@ -12,7 +12,7 @@ impl Editor {
         };
 
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
+        let cursor_col = self.buffer().cursor().col().0;
 
         // Resolve the OID for this line
         let oid = self.resolve_blame_oid(&file_path, cursor_line);
@@ -58,7 +58,7 @@ impl Editor {
         };
 
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
+        let cursor_col = self.buffer().cursor().col().0;
 
         let oid = self.resolve_blame_oid(&file_path, cursor_line);
         let oid = match oid {

@@ -19,7 +19,7 @@ impl<'a> ViewportAssertion<'a> {
     }
 
     pub fn cursor_col(&self) -> usize {
-        self.editor.buffer().cursor().col()
+        self.editor.buffer().cursor().col().0
     }
 
     pub fn scroll_offset(&self) -> usize {

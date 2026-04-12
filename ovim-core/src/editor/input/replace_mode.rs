@@ -6,6 +6,7 @@ use super::helpers;
 use crate::editor::{Change, Editor, Range};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -16,7 +17,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             // Save last insert position
             let cursor_line = editor.buffer().cursor().line();
             let cursor_col = editor.buffer().cursor().col();
-            editor.editing.last_insert_position = Some((cursor_line, cursor_col));
+            editor.editing.last_insert_position = Some((cursor_line, cursor_col.0));
 
             // Finalize replace-mode undo and semantic repeat payload.
             if let Some(state) = editor.editing.replace_mode_state.take() {
@@ -39,7 +40,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             editor.mark_buffer_modified();
 
             // Move cursor left one position (unless at column 0)
-            if cursor_col > 0 {
+            if cursor_col > GraphemeCol::ZERO {
                 editor.buffer_mut().cursor_mut().move_left(1);
             }
 
@@ -48,7 +49,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         KeyCode::Char(c) => {
             // Replace character under cursor with the typed character
             let line_idx = editor.buffer().cursor().line();
-            let col = editor.buffer().cursor().col();
+            let col = editor.buffer().cursor().col().0;
 
             if let Some(line) = editor.buffer().line(line_idx) {
                 let line_text = line.trim_end_matches('\n');
@@ -100,7 +101,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         KeyCode::Backspace => {
             // Backspace in replace mode should restore original characters
             // and move cursor left, but only within the current replace session
-            let cursor_col = editor.buffer().cursor().col();
+            let cursor_col = editor.buffer().cursor().col().0;
             let cursor_line = editor.buffer().cursor().line();
 
             if let Some(ref mut state) = editor.editing.replace_mode_state {
@@ -162,7 +163,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         KeyCode::Left => {
             let cursor = editor.buffer_mut().cursor_mut();
-            if cursor.col() > 0 {
+            if cursor.col() > GraphemeCol::ZERO {
                 cursor.move_left(1);
             }
         }

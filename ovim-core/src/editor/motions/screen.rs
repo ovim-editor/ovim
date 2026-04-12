@@ -2,7 +2,7 @@
 
 use super::Motions;
 use crate::buffer::Buffer;
-use crate::unicode::grapheme_count;
+use crate::unicode::{grapheme_count, GraphemeCol};
 
 impl Motions {
     /// Moves cursor to the top of the visible screen (H command)
@@ -21,7 +21,7 @@ impl Motions {
 
             buffer
                 .cursor_mut()
-                .set_position(target_line, first_non_blank);
+                .set_position(target_line, GraphemeCol(first_non_blank));
         }
     }
 
@@ -47,7 +47,7 @@ impl Motions {
 
             buffer
                 .cursor_mut()
-                .set_position(target_line, first_non_blank);
+                .set_position(target_line, GraphemeCol(first_non_blank));
         }
     }
 
@@ -76,7 +76,7 @@ impl Motions {
 
             buffer
                 .cursor_mut()
-                .set_position(target_line, first_non_blank);
+                .set_position(target_line, GraphemeCol(first_non_blank));
         }
     }
 
@@ -139,10 +139,10 @@ impl Motions {
         if let Some(line) = buffer.line(new_cursor_line) {
             let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
-                let clamped_col = col.min(line_len.saturating_sub(1));
+                let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
             } else {
-                buffer.cursor_mut().set_col(0);
+                buffer.cursor_mut().set_col(GraphemeCol::ZERO);
             }
         }
 
@@ -171,10 +171,10 @@ impl Motions {
         if let Some(line) = buffer.line(new_cursor_line) {
             let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
-                let clamped_col = col.min(line_len.saturating_sub(1));
+                let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
             } else {
-                buffer.cursor_mut().set_col(0);
+                buffer.cursor_mut().set_col(GraphemeCol::ZERO);
             }
         }
 
@@ -205,10 +205,10 @@ impl Motions {
         if let Some(line) = buffer.line(new_cursor_line) {
             let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
-                let clamped_col = col.min(line_len.saturating_sub(1));
+                let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
             } else {
-                buffer.cursor_mut().set_col(0);
+                buffer.cursor_mut().set_col(GraphemeCol::ZERO);
             }
         }
 
@@ -238,10 +238,10 @@ impl Motions {
         if let Some(line) = buffer.line(new_cursor_line) {
             let line_len = grapheme_count(line.trim_end_matches('\n'));
             if line_len > 0 {
-                let clamped_col = col.min(line_len.saturating_sub(1));
+                let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
             } else {
-                buffer.cursor_mut().set_col(0);
+                buffer.cursor_mut().set_col(GraphemeCol::ZERO);
             }
         }
 

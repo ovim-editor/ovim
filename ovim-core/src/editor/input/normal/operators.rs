@@ -18,6 +18,7 @@ use crate::editor::{
 };
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -180,21 +181,21 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Yank, KeyCode::Char('w')) => {
             let start_line = editor.buffer().cursor().line();
-            let start_col = editor.buffer().cursor().col();
+            let start_col = editor.buffer().cursor().col().0;
             let yanked = helpers::yank_word(editor.buffer_mut(), count)?;
             let end_col = start_col + yanked.chars().count().saturating_sub(1);
             editor.yank_to_register(yanked);
-            editor.set_yank_flash_range(start_line, start_col, start_line, end_col);
+            editor.set_yank_flash_range(start_line, GraphemeCol(start_col), start_line, GraphemeCol(end_col));
             editor.clear_count();
             true
         }
         (Operator::Yank, KeyCode::Char('$')) => {
             let line = editor.buffer().cursor().line();
-            let start_col = editor.buffer().cursor().col();
+            let start_col = editor.buffer().cursor().col().0;
             let yanked = helpers::yank_to_end_of_line(editor.buffer())?;
             let end_col = start_col + yanked.chars().count().saturating_sub(1);
             editor.yank_to_register(yanked);
-            editor.set_yank_flash_range(line, start_col, line, end_col);
+            editor.set_yank_flash_range(line, GraphemeCol(start_col), line, GraphemeCol(end_col));
             editor.clear_count();
             true
         }
@@ -458,7 +459,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (Operator::Indent, KeyCode::Char('>')) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
+            let cursor_before = (cursor.line(), cursor.col().0);
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
@@ -474,7 +475,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Indent, KeyCode::Char('j')) | (Operator::Indent, KeyCode::Down) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
+            let cursor_before = (cursor.line(), cursor.col().0);
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
@@ -490,7 +491,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Indent, KeyCode::Char('k')) | (Operator::Indent, KeyCode::Up) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
+            let cursor_before = (cursor.line(), cursor.col().0);
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
@@ -561,7 +562,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (Operator::Dedent, KeyCode::Char('<')) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
+            let cursor_before = (cursor.line(), cursor.col().0);
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
@@ -577,7 +578,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Dedent, KeyCode::Char('j')) | (Operator::Dedent, KeyCode::Down) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
+            let cursor_before = (cursor.line(), cursor.col().0);
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
@@ -593,7 +594,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Dedent, KeyCode::Char('k')) | (Operator::Dedent, KeyCode::Up) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col());
+            let cursor_before = (cursor.line(), cursor.col().0);
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
@@ -711,7 +712,7 @@ fn try_handle_char_motion_with_operator(
 fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Result<bool> {
     editor.clear_pending_operator();
     let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
+    let cursor_before = (cursor.line(), cursor.col().0);
     let cursor_line = cursor.line();
     let max_line = editor.buffer().line_count().saturating_sub(1);
     let target_line = if editor.count().is_some() {
@@ -803,7 +804,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
                 // Insert a blank line at where the deletion started
                 let insert_at = del_start.min(buf.line_count());
                 buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
-                buf.cursor_mut().set_position(insert_at, indent.len());
+                buf.cursor_mut().set_position(insert_at, GraphemeCol(indent.len()));
                 deleted
             });
             let delete_token = if !edits.is_empty() {
@@ -836,7 +837,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
     editor.clear_pending_command();
 
     let cursor_line = editor.buffer().cursor().line();
-    let cursor_before = (cursor_line, editor.buffer().cursor().col());
+    let cursor_before = (cursor_line, editor.buffer().cursor().col().0);
     let max_line = editor.buffer().line_count().saturating_sub(1);
     let target_line = if editor.count().is_some() {
         count.saturating_sub(1).min(max_line)
@@ -926,7 +927,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                 // Insert a blank line at where the deletion started
                 let insert_at = del_start.min(buf.line_count());
                 buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
-                buf.cursor_mut().set_position(insert_at, indent.len());
+                buf.cursor_mut().set_position(insert_at, GraphemeCol(indent.len()));
                 deleted
             });
             let delete_token = if !edits.is_empty() {
@@ -1099,7 +1100,7 @@ fn handle_yk(editor: &mut Editor, count: usize) -> Result<()> {
 
 fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor().col().0;
 
     Motions::paragraph_forward(editor.buffer_mut(), count);
     let end_line = editor.buffer().cursor().line();
@@ -1128,14 +1129,14 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(start_line, start_col);
+        .set_position(start_line, GraphemeCol(start_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
+    let end_col = editor.buffer().cursor().col().0;
 
     Motions::paragraph_backward(editor.buffer_mut(), count);
     let start_line = editor.buffer().cursor().line();
@@ -1161,7 +1162,7 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(end_line, end_col);
+        .set_position(end_line, GraphemeCol(end_col));
     editor.clear_count();
     Ok(())
 }
@@ -1187,7 +1188,7 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
         let deleted = buf.delete_range(start_line, 0, end_line, 0);
         let insert_at = start_line.min(buf.line_count());
         buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
-        buf.cursor_mut().set_position(insert_at, indent.len());
+        buf.cursor_mut().set_position(insert_at, GraphemeCol(indent.len()));
         deleted
     });
     let delete_token = if !edits.is_empty() {
@@ -1217,7 +1218,7 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
     // cw delete phase: ce-like behavior (prefer current word end).
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         let start_line = buf.cursor().line();
-        let start_col = buf.cursor().col();
+        let start_col = buf.cursor().col().0;
 
         Motions::word_end_forward_prefer_current(buf, count);
 
@@ -1226,10 +1227,10 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
             .line(end_line)
             .map(|line| line.trim_end_matches('\n').chars().count())
             .unwrap_or(0);
-        let end_col = (buf.cursor().col() + 1).min(line_len);
+        let end_col = (buf.cursor().col().0 + 1).min(line_len);
 
         let deleted = buf.delete_range(start_line, start_col, end_line, end_col);
-        buf.cursor_mut().set_position(start_line, start_col);
+        buf.cursor_mut().set_position(start_line, GraphemeCol(start_col));
         deleted
     });
     let delete_token = if !edits.is_empty() {
@@ -1266,7 +1267,7 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
             .unwrap_or(0);
         if col < line_len {
             let deleted = buf.delete_range(line_idx, col, line_idx, line_len);
-            buf.cursor_mut().set_position(line_idx, col);
+            buf.cursor_mut().set_position(line_idx, GraphemeCol(col));
             deleted
         } else {
             String::new()
@@ -1295,9 +1296,9 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
 
 fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col());
+    let cursor_before = (cursor.line(), cursor.col().0);
     let line_idx = cursor.line();
-    let start_col = cursor.col();
+    let start_col = cursor.col().0;
 
     if let Some(line) = editor.buffer().line(line_idx) {
         let line_text = line.trim_end_matches('\n');
@@ -1307,7 +1308,7 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
         if start_col < end_col {
             let (deleted, edits) = editor.buffer_mut().record(|buf| {
                 let d = buf.delete_range(line_idx, start_col, line_idx, end_col);
-                buf.cursor_mut().set_position(line_idx, start_col);
+                buf.cursor_mut().set_position(line_idx, GraphemeCol(start_col));
                 d
             });
             let delete_token = if !edits.is_empty() {
@@ -1329,7 +1330,7 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(line_idx, start_col);
+                .set_position(line_idx, GraphemeCol(start_col));
 
             editor.start_change_building(editor.cursor_position());
             editor.clear_count();
@@ -1360,7 +1361,7 @@ fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
         let deleted = buf.delete_range(start_line, 0, end_line, 0);
         let insert_at = start_line.min(buf.line_count());
         buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
-        buf.cursor_mut().set_position(insert_at, indent.len());
+        buf.cursor_mut().set_position(insert_at, GraphemeCol(indent.len()));
         deleted
     });
     let delete_token = if !edits.is_empty() {
@@ -1402,7 +1403,7 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
         let deleted = buf.delete_range(start_line, 0, end_line, 0);
         let insert_at = start_line.min(buf.line_count());
         buf.insert_text_at(insert_at, 0, &format!("{}\n", indent));
-        buf.cursor_mut().set_position(insert_at, indent.len());
+        buf.cursor_mut().set_position(insert_at, GraphemeCol(indent.len()));
         deleted
     });
     let delete_token = if !edits.is_empty() {
@@ -1480,7 +1481,7 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 fn handle_zf_percent(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let start_line = cursor.line();
-    let start_col = cursor.col();
+    let start_col = cursor.col().0;
 
     let rope = editor.buffer().rope();
     let text = rope.to_string();
@@ -1641,88 +1642,88 @@ fn handle_d_big_w(editor: &mut Editor, count: usize) -> Result<()> {
 
 fn handle_yb(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor().col().0;
 
     Motions::word_backward(editor.buffer_mut(), count);
 
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
+    let end_col = editor.buffer().cursor().col().0;
 
     let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(end_line, end_col, start_line, start_col.saturating_sub(1));
+    editor.set_yank_flash_range(end_line, GraphemeCol(end_col), start_line, GraphemeCol(start_col.saturating_sub(1)));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(end_line, end_col);
+        .set_position(end_line, GraphemeCol(end_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_ye(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor().col().0;
 
     Motions::word_end_forward(editor.buffer_mut(), count);
 
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
+    let end_col = editor.buffer().cursor().col().0;
 
     // Inclusive: include the char motion lands on
     let yanked = yank_range(editor, start_line, start_col, end_line, end_col + 1);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+    editor.set_yank_flash_range(start_line, GraphemeCol(start_col), end_line, GraphemeCol(end_col));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(start_line, start_col);
+        .set_position(start_line, GraphemeCol(start_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y_big_b(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor().col().0;
 
     Motions::word_backward_big(editor.buffer_mut(), count);
 
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
+    let end_col = editor.buffer().cursor().col().0;
 
     let yanked = yank_range(editor, end_line, end_col, start_line, start_col);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(end_line, end_col, start_line, start_col.saturating_sub(1));
+    editor.set_yank_flash_range(end_line, GraphemeCol(end_col), start_line, GraphemeCol(start_col.saturating_sub(1)));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(end_line, end_col);
+        .set_position(end_line, GraphemeCol(end_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y_big_e(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor().col().0;
 
     Motions::word_end_forward_big(editor.buffer_mut(), count);
 
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
+    let end_col = editor.buffer().cursor().col().0;
 
     let yanked = yank_range(editor, start_line, start_col, end_line, end_col + 1);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+    editor.set_yank_flash_range(start_line, GraphemeCol(start_col), end_line, GraphemeCol(end_col));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(start_line, start_col);
+        .set_position(start_line, GraphemeCol(start_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_yh(editor: &mut Editor, count: usize) -> Result<()> {
     let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col();
+    let col = editor.buffer().cursor().col().0;
     if col == 0 {
         editor.clear_count();
         return Ok(());
@@ -1730,33 +1731,36 @@ fn handle_yh(editor: &mut Editor, count: usize) -> Result<()> {
     let start_col = col.saturating_sub(count);
     let yanked = yank_range(editor, line_idx, start_col, line_idx, col);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(line_idx, start_col, line_idx, col.saturating_sub(1));
+    editor.set_yank_flash_range(line_idx, GraphemeCol(start_col), line_idx, GraphemeCol(col.saturating_sub(1)));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(line_idx, start_col);
+        .set_position(line_idx, GraphemeCol(start_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y0(editor: &mut Editor) -> Result<()> {
     let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col();
+    let col = editor.buffer().cursor().col().0;
     if col == 0 {
         editor.clear_count();
         return Ok(());
     }
     let yanked = yank_range(editor, line_idx, 0, line_idx, col);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(line_idx, 0, line_idx, col.saturating_sub(1));
-    editor.buffer_mut().cursor_mut().set_position(line_idx, 0);
+    editor.set_yank_flash_range(line_idx, GraphemeCol(0), line_idx, GraphemeCol(col.saturating_sub(1)));
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(line_idx, GraphemeCol(0));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y_caret(editor: &mut Editor) -> Result<()> {
     let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col();
+    let col = editor.buffer().cursor().col().0;
     let fnb = editor.buffer().first_non_blank_col(line_idx);
     if fnb == col {
         editor.clear_count();
@@ -1765,18 +1769,18 @@ fn handle_y_caret(editor: &mut Editor) -> Result<()> {
     let (start, end) = if fnb < col { (fnb, col) } else { (col, fnb) };
     let yanked = yank_range(editor, line_idx, start, line_idx, end);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(line_idx, start, line_idx, end.saturating_sub(1));
+    editor.set_yank_flash_range(line_idx, GraphemeCol(start), line_idx, GraphemeCol(end.saturating_sub(1)));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(line_idx, start);
+        .set_position(line_idx, GraphemeCol(start));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_yl(editor: &mut Editor, count: usize) -> Result<()> {
     let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col();
+    let col = editor.buffer().cursor().col().0;
     let line_len = editor
         .buffer()
         .line(line_idx)
@@ -1787,7 +1791,7 @@ fn handle_yl(editor: &mut Editor, count: usize) -> Result<()> {
         if col < line_len {
             let yanked = yank_range(editor, line_idx, col, line_idx, col + 1);
             editor.yank_to_register(yanked);
-            editor.set_yank_flash_range(line_idx, col, line_idx, col);
+            editor.set_yank_flash_range(line_idx, GraphemeCol(col), line_idx, GraphemeCol(col));
         }
         editor.clear_count();
         return Ok(());
@@ -1795,7 +1799,7 @@ fn handle_yl(editor: &mut Editor, count: usize) -> Result<()> {
     let end_col = (col + count).min(line_len);
     let yanked = yank_range(editor, line_idx, col, line_idx, end_col);
     editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(line_idx, col, line_idx, end_col.saturating_sub(1));
+    editor.set_yank_flash_range(line_idx, GraphemeCol(col), line_idx, GraphemeCol(end_col.saturating_sub(1)));
     editor.clear_count();
     Ok(())
 }
@@ -1805,7 +1809,7 @@ fn handle_y_percent(editor: &mut Editor) -> Result<()> {
 
     let buf = editor.buffer();
     let start_line = buf.cursor().line();
-    let start_col = buf.cursor().col();
+    let start_col = buf.cursor().col().0;
     let rope = buf.rope();
 
     // Build absolute position
@@ -1870,28 +1874,28 @@ fn handle_y_percent(editor: &mut Editor) -> Result<()> {
     } else {
         editor.yank_to_register(yanked);
     }
-    editor.set_yank_flash_range(lo_line, lo_col, hi_line, hi_col);
+    editor.set_yank_flash_range(lo_line, GraphemeCol(lo_col), hi_line, GraphemeCol(hi_col));
     editor.clear_count();
     Ok(())
 }
 
 fn handle_y_big_w(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col();
+    let start_col = editor.buffer().cursor().col().0;
 
     Motions::word_forward_big(editor.buffer_mut(), count);
 
     let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col();
+    let end_col = editor.buffer().cursor().col().0;
 
     let yanked = yank_range(editor, start_line, start_col, end_line, end_col);
     editor.yank_to_register(yanked);
     let flash_end_col = if end_col > 0 { end_col - 1 } else { 0 };
-    editor.set_yank_flash_range(start_line, start_col, end_line, flash_end_col);
+    editor.set_yank_flash_range(start_line, GraphemeCol(start_col), end_line, GraphemeCol(flash_end_col));
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(start_line, start_col);
+        .set_position(start_line, GraphemeCol(start_col));
     editor.clear_count();
     Ok(())
 }

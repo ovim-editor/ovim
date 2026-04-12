@@ -1,11 +1,12 @@
 use super::{Editor, FindDirection, FindType, Motions, TagEntry};
 use crate::editor::MarkManager;
+use crate::unicode::GraphemeCol;
 
 impl Editor {
     /// Sets a mark at the current cursor position
     pub fn set_mark(&mut self, name: char) -> bool {
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col();
+        let cursor_col = self.buffer().cursor().col().0;
         let file_path = self.buffer().file_path().map(|s| s.to_string());
         self.nav
             .marks
@@ -22,7 +23,7 @@ impl Editor {
                     let (line, col) = change.cursor_after();
                     self.buffer_mut()
                         .cursor_mut()
-                        .set_position(line, col.saturating_sub(1));
+                        .set_position(line, GraphemeCol(col.saturating_sub(1)));
                     self.center_cursor_in_viewport();
                     return true;
                 }
@@ -35,7 +36,7 @@ impl Editor {
                         let (line, col) = change.cursor_after();
                         self.buffer_mut()
                             .cursor_mut()
-                            .set_position(line, col.saturating_sub(1));
+                            .set_position(line, GraphemeCol(col.saturating_sub(1)));
                         self.center_cursor_in_viewport();
                         return true;
                     }
@@ -44,7 +45,7 @@ impl Editor {
                 if let Some((line, col)) = self.editing.last_insert_position {
                     self.buffer_mut()
                         .cursor_mut()
-                        .set_position(line, col.saturating_sub(1));
+                        .set_position(line, GraphemeCol(col.saturating_sub(1)));
                     self.center_cursor_in_viewport();
                     return true;
                 }
@@ -57,7 +58,7 @@ impl Editor {
             if let Some(mark) = self.nav.marks.get_mark(name) {
                 self.buffer_mut()
                     .cursor_mut()
-                    .set_position(mark.line, mark.col);
+                    .set_position(mark.line, GraphemeCol(mark.col));
                 // Center cursor after jump (Vim behavior)
                 self.center_cursor_in_viewport();
                 return true;
@@ -92,7 +93,7 @@ impl Editor {
                 // Jump to the validated position
                 self.buffer_mut()
                     .cursor_mut()
-                    .set_position(clamped_line, clamped_col);
+                    .set_position(clamped_line, GraphemeCol(clamped_col));
                 // Center cursor after jump (Vim behavior)
                 self.center_cursor_in_viewport();
                 return true;
@@ -125,7 +126,7 @@ impl Editor {
                         .unwrap_or(0);
                     crate::unicode::char_to_grapheme_col(&line_text, char_col)
                 } else {
-                    0
+                    GraphemeCol::ZERO
                 };
 
                 self.buffer_mut()
@@ -162,7 +163,7 @@ impl Editor {
                         .unwrap_or(0);
                     crate::unicode::char_to_grapheme_col(&line_text, char_col)
                 } else {
-                    0
+                    GraphemeCol::ZERO
                 };
 
                 self.buffer_mut()
@@ -180,13 +181,13 @@ impl Editor {
     /// Adds current position to jump list
     pub fn add_jump(&mut self) {
         let cursor = self.buffer().cursor();
-        self.nav.jump_list.add_jump(cursor.line(), cursor.col());
+        self.nav.jump_list.add_jump(cursor.line(), cursor.col().0);
     }
 
     /// Jumps back in the jump list (Ctrl-O)
     pub fn jump_back(&mut self) -> bool {
         if let Some((line, col)) = self.nav.jump_list.jump_back() {
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
             true
@@ -198,7 +199,7 @@ impl Editor {
     /// Jumps forward in the jump list (Ctrl-I)
     pub fn jump_forward(&mut self) -> bool {
         if let Some((line, col)) = self.nav.jump_list.jump_forward() {
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
             true
@@ -246,7 +247,7 @@ impl Editor {
                     if !reverse {
                         // For ';' after `t`, skip past current target before repeating.
                         let col = self.buffer().cursor().col();
-                        self.buffer_mut().cursor_mut().set_col(col + 1);
+                        self.buffer_mut().cursor_mut().set_col(GraphemeCol(col.0 + 1));
                         if !Motions::till_char_forward(self.buffer_mut(), ch, count) {
                             self.buffer_mut().cursor_mut().set_col(col);
                             false
@@ -261,8 +262,8 @@ impl Editor {
                     if !reverse {
                         // For ';' after `T`, skip past current target before repeating.
                         let col = self.buffer().cursor().col();
-                        if col > 0 {
-                            self.buffer_mut().cursor_mut().set_col(col - 1);
+                        if col > GraphemeCol::ZERO {
+                            self.buffer_mut().cursor_mut().set_col(GraphemeCol(col.0 - 1));
                             if !Motions::till_char_backward(self.buffer_mut(), ch, count) {
                                 self.buffer_mut().cursor_mut().set_col(col);
                                 false
@@ -293,7 +294,7 @@ impl Editor {
     pub fn push_tag(&mut self) {
         if let Some(file_path) = self.buffer().file_path().map(|s| s.to_string()) {
             let cursor = self.buffer().cursor();
-            let entry = TagEntry::new(file_path, cursor.line(), cursor.col());
+            let entry = TagEntry::new(file_path, cursor.line(), cursor.col().0);
             self.nav.tag_stack.push(entry);
         }
     }
@@ -329,7 +330,7 @@ impl Editor {
             // Jump to the position
             self.buffer_mut()
                 .cursor_mut()
-                .set_position(clamped_line, clamped_col);
+                .set_position(clamped_line, GraphemeCol(clamped_col));
 
             // Center cursor in viewport (like jump_back does)
             self.center_cursor_in_viewport();

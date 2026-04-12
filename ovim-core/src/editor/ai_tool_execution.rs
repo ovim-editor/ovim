@@ -1,6 +1,7 @@
 use crate::ai::tools::builtins::{self, ToolExecutionContext};
 use crate::ai::tools::ToolResult;
 use crate::ai::truncate_utf8_with_notice;
+use crate::unicode::GraphemeCol;
 use serde_json::json;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -437,7 +438,7 @@ impl Editor {
         let target_line = line.min(max_line);
         self.buffer_mut()
             .cursor_mut()
-            .set_position(target_line, col);
+            .set_position(target_line, GraphemeCol(col));
         self.buffer_mut().validate_cursor_position();
         self.center_cursor_in_viewport();
 
@@ -447,7 +448,7 @@ impl Editor {
         }
 
         let actual_line = self.buffer().cursor().line() + 1;
-        let actual_col = self.buffer().cursor().col() + 1;
+        let actual_col = self.buffer().cursor().col().0 + 1;
         let total_lines = self.buffer().rope().len_lines();
         ToolResult::Success(format!(
             "Opened {} at line {}, column {} ({} lines total).",

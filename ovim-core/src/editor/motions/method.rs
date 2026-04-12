@@ -2,6 +2,7 @@
 
 use super::Motions;
 use crate::buffer::Buffer;
+use crate::unicode::GraphemeCol;
 
 impl Motions {
     /// Method navigation: jump to next method/function start
@@ -33,9 +34,9 @@ impl Motions {
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .count();
-            buffer.cursor_mut().set_position(current_line, col);
+            buffer.cursor_mut().set_position(current_line, GraphemeCol(col));
         } else {
-            buffer.cursor_mut().set_position(current_line, 0);
+            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
         }
     }
 
@@ -69,9 +70,9 @@ impl Motions {
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .count();
-            buffer.cursor_mut().set_position(current_line, col);
+            buffer.cursor_mut().set_position(current_line, GraphemeCol(col));
         } else {
-            buffer.cursor_mut().set_position(current_line, 0);
+            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
         }
     }
 
@@ -103,7 +104,7 @@ impl Motions {
             let grapheme_col = crate::unicode::char_to_grapheme_col(&line, char_col);
             buffer.cursor_mut().set_position(current_line, grapheme_col);
         } else {
-            buffer.cursor_mut().set_position(current_line, 0);
+            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
         }
     }
 
@@ -131,7 +132,7 @@ impl Motions {
             let grapheme_col = crate::unicode::char_to_grapheme_col(&line, char_col);
             buffer.cursor_mut().set_position(current_line, grapheme_col);
         } else {
-            buffer.cursor_mut().set_position(current_line, 0);
+            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
         }
     }
 

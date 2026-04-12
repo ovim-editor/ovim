@@ -116,7 +116,7 @@ impl Editor {
         let file_path = buf.file_path().map(|p| p.to_string());
         let cursor = {
             let c = buf.cursor();
-            (c.line(), c.col())
+            (c.line(), c.col().0)
         };
 
         // Try to get selection from visual mode or last selection

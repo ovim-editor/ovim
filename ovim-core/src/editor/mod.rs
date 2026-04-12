@@ -240,7 +240,7 @@ use crate::buffer::Buffer;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
-use crate::unicode::grapheme_to_char_col;
+use crate::unicode::{grapheme_to_char_col, GraphemeCol};
 use anyhow::Result;
 use std::collections::HashMap;
 
@@ -668,12 +668,12 @@ impl Editor {
     pub fn set_yank_flash_range(
         &mut self,
         start_line: usize,
-        start_col: usize,
+        start_col: GraphemeCol,
         end_line: usize,
-        end_col: usize,
+        end_col: GraphemeCol,
     ) {
         self.yank_flash = Some(yank_flash::YankFlash::range(
-            start_line, start_col, end_line, end_col,
+            start_line, start_col.0, end_line, end_col.0,
         ));
     }
 
@@ -881,7 +881,7 @@ impl Editor {
         }
     }
 
-    fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: usize) -> usize {
+    fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: GraphemeCol) -> usize {
         let line = self.buffer().line(line_idx).unwrap_or_default();
         let line_text = line.trim_end_matches('\n');
         grapheme_to_char_col(line_text, grapheme_col)
@@ -1773,8 +1773,8 @@ impl Editor {
             Mode::Insert => {
                 // Insert pasted text at cursor position as a single change
                 let cursor = self.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col());
-                let position = (cursor.line(), cursor.col());
+                let cursor_before = (cursor.line(), cursor.col().0);
+                let position = (cursor.line(), cursor.col().0);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1790,8 +1790,8 @@ impl Editor {
                 // Set unnamed register and paste after cursor
                 self.registers.set(None, text.to_string());
                 let cursor = self.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col());
-                let position = (cursor.line(), cursor.col() + 1);
+                let cursor_before = (cursor.line(), cursor.col().0);
+                let position = (cursor.line(), cursor.col().0 + 1);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1847,7 +1847,7 @@ impl Editor {
 
     /// Finalizes the current composite change
     pub fn finalize_change_building(&mut self) {
-        let cursor_pos = (self.buffer().cursor().line(), self.buffer().cursor().col());
+        let cursor_pos = (self.buffer().cursor().line(), self.buffer().cursor().col().0);
         self.buffer_mut()
             .change_manager_mut()
             .finalize_building_at(cursor_pos);
@@ -2003,7 +2003,7 @@ impl Editor {
     pub fn goto_next_diagnostic(&mut self) {
         let current_line = self.buffer().cursor().line();
         let current_col = self.buffer().cursor().col();
-        let current_col_utf16 = self.col_to_utf16(current_line, current_col);
+        let current_col_utf16 = self.col_to_utf16(current_line, current_col.0);
         let diagnostics = &self.lsp.state.current_file_diagnostics;
 
         // Find first diagnostic after current position (compare line, then column)
@@ -2022,7 +2022,7 @@ impl Editor {
 
         if let Some((line, character)) = target {
             let col = self.utf16_to_grapheme_col(line, character);
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
     }
 
@@ -2030,7 +2030,7 @@ impl Editor {
     pub fn goto_prev_diagnostic(&mut self) {
         let current_line = self.buffer().cursor().line();
         let current_col = self.buffer().cursor().col();
-        let current_col_utf16 = self.col_to_utf16(current_line, current_col);
+        let current_col_utf16 = self.col_to_utf16(current_line, current_col.0);
         let diagnostics = &self.lsp.state.current_file_diagnostics;
 
         // Find last diagnostic before current position (compare line, then column)
@@ -2049,7 +2049,7 @@ impl Editor {
 
         if let Some((line, character)) = target {
             let col = self.utf16_to_grapheme_col(line, character);
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
     }
 }

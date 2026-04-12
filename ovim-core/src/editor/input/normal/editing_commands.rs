@@ -6,6 +6,7 @@
 use crate::editor::input::helpers;
 use crate::editor::{Editor, PendingChangeRepeat, RegisterType};
 use crate::mode::Mode;
+use crate::unicode::GraphemeCol;
 use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -155,7 +156,7 @@ fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
         if col < line_len {
             let deleted = buf.delete_range(line_idx, col, line_idx, line_len);
             // Keep cursor at col (insert position) — don't clamp to normal mode
-            buf.cursor_mut().set_position(line_idx, col);
+            buf.cursor_mut().set_position(line_idx, GraphemeCol(col));
             deleted
         } else {
             String::new()
@@ -268,7 +269,7 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
     editor
         .buffer_mut()
         .cursor_mut()
-        .set_position(start_line, indent_len);
+        .set_position(start_line, GraphemeCol(indent_len));
 
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();

@@ -5,6 +5,7 @@ use crate::ai::AiExtractedResponse;
 use crate::edit::Edit;
 use crate::editor::lsp_state::HoverContentType;
 use crate::mode::Mode;
+use crate::unicode::GraphemeCol;
 use anyhow::{anyhow, Result};
 use std::time::Instant;
 use tokio::sync::oneshot;
@@ -713,7 +714,7 @@ impl Editor {
 
     pub(crate) fn set_cursor_from_abs_char(&mut self, abs_char: usize) {
         let (line, col) = self.abs_char_to_line_col(abs_char);
-        self.buffer_mut().cursor_mut().set_position(line, col);
+        self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
 
         // In normal-like modes cursor must stay on a valid character cell.
         if !matches!(
@@ -1073,7 +1074,7 @@ impl Editor {
             line_end
         };
         let max_col = line_content_end.saturating_sub(line_start);
-        line_start + cursor.col().min(max_col)
+        line_start + cursor.col().0.min(max_col)
     }
 
     fn abs_char_to_line_col(&self, abs_char: usize) -> (usize, usize) {
@@ -1277,7 +1278,7 @@ mod tests {
         });
 
         // Cursor starts on the "c" line.
-        editor.buffer_mut().cursor_mut().set_position(2, 0);
+        editor.buffer_mut().cursor_mut().set_position(2, crate::unicode::GraphemeCol::ZERO);
 
         let result = AiJobResult {
             replacement: "b\n".to_string(),

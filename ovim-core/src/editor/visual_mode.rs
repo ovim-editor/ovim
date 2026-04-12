@@ -1,5 +1,6 @@
 use super::Editor;
 use crate::mode::Mode;
+use crate::unicode::GraphemeCol;
 
 impl Editor {
     /// Gets the visual selection start position
@@ -64,7 +65,7 @@ impl Editor {
             // Move cursor to end position
             self.buffer_mut()
                 .cursor_mut()
-                .set_position(clamped_end_line, clamped_end_col);
+                .set_position(clamped_end_line, GraphemeCol(clamped_end_col));
         }
     }
 
@@ -96,7 +97,7 @@ impl Editor {
     pub fn visual_selection(&self) -> Option<((usize, usize), (usize, usize))> {
         self.visual.visual_start.map(|start| {
             let cursor = self.buffer().cursor();
-            let mut end = (cursor.line(), cursor.col());
+            let mut end = (cursor.line(), cursor.col().0);
 
             match self.mode {
                 Mode::VisualLine => {

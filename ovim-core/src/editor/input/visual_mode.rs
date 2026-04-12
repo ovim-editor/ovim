@@ -10,6 +10,7 @@
 
 use crate::editor::{Editor, Motions, RegisterType, TextObjectRange, TextObjects};
 use crate::mode::Mode;
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -31,7 +32,7 @@ fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclus
         editor
             .buffer_mut()
             .cursor_mut()
-            .set_position(range.end_line, end_col);
+            .set_position(range.end_line, GraphemeCol(end_col));
     }
 }
 
@@ -117,8 +118,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 cursor.set_line(target_line);
 
                 if !is_visual_block {
-                    cursor.set_col(0);
-                    cursor.update_desired_col(0);
+                    cursor.set_col(GraphemeCol(0));
+                    cursor.update_desired_col(GraphemeCol(0));
                 } else {
                     cursor.set_col(current_col);
                     cursor.update_desired_col(current_col);
@@ -335,7 +336,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             if editor.count().is_some() {
                 editor.append_count(0);
             } else {
-                editor.buffer_mut().cursor_mut().set_col(0);
+                editor.buffer_mut().cursor_mut().set_col(GraphemeCol(0));
             }
         }
         KeyCode::Char('$') => {
@@ -348,8 +349,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     let line_len = line.trim_end_matches('\n').chars().count();
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
                     let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_col(col);
-                    cursor.update_desired_col(usize::MAX);
+                    cursor.set_col(GraphemeCol(col));
+                    cursor.update_desired_col(GraphemeCol(usize::MAX));
                 }
             } else {
                 // Normal visual mode: move to end of current line
@@ -358,9 +359,9 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     let line_len = line.trim_end_matches('\n').chars().count();
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
                     let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_col(col);
+                    cursor.set_col(GraphemeCol(col));
                     // Set desired_col to usize::MAX to indicate "always end of line"
-                    cursor.update_desired_col(usize::MAX);
+                    cursor.update_desired_col(GraphemeCol(usize::MAX));
                 }
             }
         }
@@ -377,8 +378,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             cursor.set_line(target_line);
 
             if !is_visual_block {
-                cursor.set_col(0);
-                cursor.update_desired_col(0);
+                cursor.set_col(GraphemeCol(0));
+                cursor.update_desired_col(GraphemeCol(0));
             } else {
                 cursor.set_col(current_col);
                 cursor.update_desired_col(current_col);
@@ -512,12 +513,12 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(start_line, start_col);
+                    .set_position(start_line, GraphemeCol(start_col));
                 // Flash the yanked region
                 if mode == Mode::VisualLine {
                     editor.set_yank_flash_lines(start_line, end_line);
                 } else {
-                    editor.set_yank_flash_range(start_line, start_col, end_line, end_col);
+                    editor.set_yank_flash_range(start_line, GraphemeCol(start_col), end_line, GraphemeCol(end_col));
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);
@@ -576,14 +577,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 // Join all lines in the selection
                 let count = (end_line - start_line) + 1;
-                editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol(0));
                 helpers::join_lines(editor, count)?;
 
                 // Position cursor at the last inserted space
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(start_line, cursor_col);
+                    .set_position(start_line, GraphemeCol(cursor_col));
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
@@ -591,7 +592,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('o') => {
             if let Some(visual_start) = editor.visual_start() {
                 let cursor = editor.buffer().cursor();
-                let cursor_pos = (cursor.line(), cursor.col());
+                let cursor_pos = (cursor.line(), cursor.col().0);
 
                 if editor.mode() == Mode::VisualBlock {
                     // For visual block mode, flip to diagonally opposite corner
@@ -599,14 +600,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(visual_start.0, cursor_pos.1);
+                        .set_position(visual_start.0, GraphemeCol(cursor_pos.1));
                     editor.set_visual_start(cursor_pos.0, visual_start.1);
                 } else {
                     // For other visual modes, swap positions normally
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(visual_start.0, visual_start.1);
+                        .set_position(visual_start.0, GraphemeCol(visual_start.1));
                     editor.set_visual_start(cursor_pos.0, cursor_pos.1);
                 }
             }
@@ -615,21 +616,21 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('O') => {
             if let Some(visual_start) = editor.visual_start() {
                 let cursor = editor.buffer().cursor();
-                let cursor_pos = (cursor.line(), cursor.col());
+                let cursor_pos = (cursor.line(), cursor.col().0);
 
                 if editor.mode() == Mode::VisualBlock {
                     // For visual block mode, flip horizontally (swap columns only, keep line)
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(cursor_pos.0, visual_start.1);
+                        .set_position(cursor_pos.0, GraphemeCol(visual_start.1));
                     editor.set_visual_start(visual_start.0, cursor_pos.1);
                 } else {
                     // For other visual modes, same as 'o'
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(visual_start.0, visual_start.1);
+                        .set_position(visual_start.0, GraphemeCol(visual_start.1));
                     editor.set_visual_start(cursor_pos.0, cursor_pos.1);
                 }
             }
@@ -673,7 +674,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(start_line, start_col);
+                        .set_position(start_line, GraphemeCol(start_col));
                     // Track visual block insert state: (start_line, end_line, col, is_append, move_to_end)
                     // For 'I', move cursor to end_line (move_to_end = true)
                     editor.set_visual_block_insert_state(Some((
@@ -689,7 +690,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(start_line, start_col);
+                        .set_position(start_line, GraphemeCol(start_col));
                     editor.clear_visual_start();
                     editor.set_mode(Mode::Insert);
                 }
@@ -712,7 +713,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(start_line, append_col);
+                        .set_position(start_line, GraphemeCol(append_col));
                     // Track visual block append state: (start_line, end_line, col, is_append, move_to_end)
                     // For 'A', move cursor to end_line (move_to_end = true)
                     editor.set_visual_block_insert_state(Some((
@@ -728,7 +729,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     editor
                         .buffer_mut()
                         .cursor_mut()
-                        .set_position(end_line, end_col + 1);
+                        .set_position(end_line, GraphemeCol(end_col + 1));
                     editor.clear_visual_start();
                     editor.set_mode(Mode::Insert);
                 }
@@ -769,9 +770,9 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 helpers::paste_before(editor, 1)?;
             } else {
                 // Character: adjust cursor and paste_after
-                let cursor_col = editor.buffer().cursor().col();
+                let cursor_col = editor.buffer().cursor().col().0;
                 if cursor_col > 0 {
-                    editor.buffer_mut().cursor_mut().set_col(cursor_col - 1);
+                    editor.buffer_mut().cursor_mut().set_col(GraphemeCol(cursor_col - 1));
                 }
                 helpers::paste_after(editor, 1)?;
             }
@@ -797,7 +798,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('>') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let cursor = editor.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col());
+                let cursor_before = (cursor.line(), cursor.col().0);
                 let tab_width = editor.options.tab_width;
                 let is_visual_block = editor.mode() == Mode::VisualBlock;
                 let original_col = cursor_before.1;
@@ -813,7 +814,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // For visual block mode, move cursor to end line at adjusted column
                 if is_visual_block {
                     let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_position(end_line, original_col + tab_width);
+                    cursor.set_position(end_line, GraphemeCol(original_col + tab_width));
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);
@@ -821,7 +822,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('<') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let cursor = editor.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col());
+                let cursor_before = (cursor.line(), cursor.col().0);
                 let tab_width = editor.options.tab_width;
                 let is_visual_block = editor.mode() == Mode::VisualBlock;
 
@@ -835,7 +836,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 // For visual block mode, move cursor to start position (start_line, 0)
                 if is_visual_block {
-                    editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+                    editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol(0));
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);

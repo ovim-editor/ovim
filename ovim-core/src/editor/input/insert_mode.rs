@@ -12,6 +12,7 @@
 use crate::editor::{Change, Editor, InsertEntryMode, Range};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -57,7 +58,7 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(current_line_idx, 0);
+                .set_position(current_line_idx, GraphemeCol::ZERO);
             return true;
         }
     }
@@ -68,7 +69,7 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
 fn exit_insert_mode(editor: &mut Editor) {
     // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
     let cursor = editor.buffer().cursor();
-    editor.editing.last_insert_position = Some((cursor.line(), cursor.col()));
+    editor.editing.last_insert_position = Some((cursor.line(), cursor.col().0));
 
     // Cleanup whitespace-only lines before finalizing changes
     cleanup_whitespace_only_line(editor);
@@ -310,21 +311,21 @@ fn exit_insert_mode(editor: &mut Editor) {
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(target_line, final_col);
+                    .set_position(target_line, GraphemeCol(final_col));
             }
         } else {
             // For insert mode, use the same column as on the first line
             let cursor = editor.buffer().cursor();
-            let current_col = cursor.col();
+            let current_col = cursor.col().0;
             let inserted_col = if current_col > 0 { current_col - 1 } else { 0 };
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(target_line, inserted_col);
+                .set_position(target_line, GraphemeCol(inserted_col));
         }
     } else {
         let cursor = editor.buffer_mut().cursor_mut();
-        if cursor.col() > 0 {
+        if cursor.col().0 > 0 {
             cursor.move_left(1);
         }
     }
@@ -448,18 +449,18 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.request_completion();
             } else if c == ':' {
                 let cursor = editor.buffer().cursor();
-                if cursor.col() >= 2 {
+                if cursor.col().0 >= 2 {
                     let line_text = editor
                         .buffer()
                         .line(cursor.line())
                         .unwrap_or_default()
                         .trim_end_matches('\n')
                         .to_string();
-                    if crate::unicode::grapheme_at_index(&line_text, cursor.col().saturating_sub(1))
+                    if crate::unicode::grapheme_at_index(&line_text, cursor.col().0.saturating_sub(1))
                         == Some(":")
                         && crate::unicode::grapheme_at_index(
                             &line_text,
-                            cursor.col().saturating_sub(2),
+                            cursor.col().0.saturating_sub(2),
                         ) == Some(":")
                     {
                         editor.request_completion();
@@ -498,7 +499,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.hide_completion_menu();
             }
             let cursor = editor.buffer_mut().cursor_mut();
-            if cursor.col() > 0 {
+            if cursor.col().0 > 0 {
                 cursor.move_left(1);
             }
         }

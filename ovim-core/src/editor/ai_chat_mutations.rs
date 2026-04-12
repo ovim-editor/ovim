@@ -2,6 +2,7 @@ use crate::ai::formats::apply_patch::parse_apply_patch;
 use crate::ai::formats::matching::{find_match, MatchResult};
 use crate::ai::formats::Hunk;
 use crate::ai::tools::ToolResult;
+use crate::unicode::GraphemeCol;
 use serde::Deserialize;
 
 use super::ai_integration::remap_abs_char_through_edits;
@@ -304,7 +305,7 @@ impl Editor {
         let target_line = line.min(max_line);
         self.buffer_mut()
             .cursor_mut()
-            .set_position(target_line, col);
+            .set_position(target_line, GraphemeCol(col));
         self.buffer_mut().validate_cursor_position();
         self.center_cursor_in_viewport();
 
@@ -317,7 +318,7 @@ impl Editor {
 
         // Return a snippet around the target position
         let actual_line = self.buffer().cursor().line() + 1; // back to 1-indexed
-        let actual_col = self.buffer().cursor().col() + 1;
+        let actual_col = self.buffer().cursor().col().0 + 1;
         let total_lines = self.buffer().rope().len_lines();
         let snip = snippet_around(self.buffer().rope(), actual_line, actual_line, 5);
         ToolResult::Success(format!(
@@ -371,9 +372,9 @@ impl Editor {
         // Compute char offsets for the selection snapshot
         let rope = self.buffer().rope();
         let start_char = rope.line_to_char(start_line_0)
-            + crate::unicode::grapheme_to_char_col(&rope.line(start_line_0).to_string(), start_col);
+            + crate::unicode::grapheme_to_char_col(&rope.line(start_line_0).to_string(), GraphemeCol(start_col));
         let end_char = rope.line_to_char(end_line_0)
-            + crate::unicode::grapheme_to_char_col(&rope.line(end_line_0).to_string(), end_col);
+            + crate::unicode::grapheme_to_char_col(&rope.line(end_line_0).to_string(), GraphemeCol(end_col));
 
         // Store as active selection (same structure used by AI prompt mode)
         let selected_text = if end_char > start_char {
@@ -397,7 +398,7 @@ impl Editor {
 
         // Move cursor to the midpoint and center
         let mid_line = (start_line_0 + end_line_0) / 2;
-        self.buffer_mut().cursor_mut().set_position(mid_line, 0);
+        self.buffer_mut().cursor_mut().set_position(mid_line, GraphemeCol(0));
         self.center_cursor_in_viewport();
 
         let file_label = self.buffer().file_path().unwrap_or("[No Name]").to_string();

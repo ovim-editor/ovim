@@ -1,4 +1,5 @@
 use crate::buffer::Buffer;
+use crate::unicode::GraphemeCol;
 use anyhow::Result;
 
 /// Represents a text object selection range
@@ -21,7 +22,7 @@ impl TextObjects {
     pub fn inner_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -105,7 +106,7 @@ impl TextObjects {
     pub fn around_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -192,7 +193,7 @@ impl TextObjects {
     pub fn inner_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -248,7 +249,7 @@ impl TextObjects {
     pub fn around_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -325,7 +326,7 @@ impl TextObjects {
     ) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -429,7 +430,7 @@ impl TextObjects {
     ) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let cursor_line = cursor.line();
-        let cursor_col = cursor.col();
+        let cursor_col = cursor.col().0;
         let rope = buffer.rope();
         let line_count = buffer.line_count();
 
@@ -536,7 +537,7 @@ impl TextObjects {
         // Position cursor at start of deleted range
         buffer
             .cursor_mut()
-            .set_position(range.start_line, range.start_col);
+            .set_position(range.start_line, GraphemeCol(range.start_col));
 
         Ok(deleted)
     }
@@ -555,7 +556,7 @@ impl TextObjects {
     pub fn tag(buffer: &Buffer, include_tags: bool) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -850,7 +851,7 @@ impl TextObjects {
     pub fn inner_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -902,7 +903,7 @@ impl TextObjects {
     pub fn around_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
-        let col = cursor.col();
+        let col = cursor.col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -1160,7 +1161,7 @@ impl TextObjects {
 
             // Search from end of line (or cursor col if on cursor line)
             let end_pos = if search_line == cursor_line {
-                buffer.cursor().col().min(chars.len())
+                buffer.cursor().col().0.min(chars.len())
             } else {
                 chars.len()
             };

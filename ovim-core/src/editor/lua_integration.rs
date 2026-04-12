@@ -89,7 +89,7 @@ impl Editor {
     fn sync_lua_bridge(&self, bridge: &crate::lua::EditorBridge) {
         // Update cursor position
         let cursor = self.buffer().cursor();
-        bridge.update_cursor(cursor.line(), cursor.col());
+        bridge.update_cursor(cursor.line(), cursor.col().0);
         // Update buffer content
         bridge.update_buffer(self.buffer().rope().to_string());
         // Update mode

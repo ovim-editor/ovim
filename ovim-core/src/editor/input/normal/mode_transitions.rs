@@ -6,6 +6,7 @@
 use crate::editor::input::helpers;
 use crate::editor::{Editor, InsertEntryMode, Motions};
 use crate::mode::Mode;
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -50,7 +51,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.set_mode(Mode::Insert);
@@ -61,7 +62,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::Append);
@@ -76,7 +77,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::FirstNonBlank);
@@ -90,7 +91,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::EndOfLine);
@@ -99,7 +100,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let line_idx = editor.buffer().cursor().line();
             if let Some(line) = editor.buffer().line(line_idx) {
                 let line_len = line.trim_end_matches('\n').chars().count();
-                editor.buffer_mut().cursor_mut().set_col(line_len);
+                editor.buffer_mut().cursor_mut().set_col(GraphemeCol(line_len));
             }
             Ok(true)
         }
@@ -108,7 +109,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::OpenBelow);
@@ -125,7 +126,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::OpenAbove);
@@ -140,7 +141,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // v - visual mode
         KeyCode::Char('v') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             let cursor = editor.buffer().cursor();
-            editor.set_visual_start(cursor.line(), cursor.col());
+            editor.set_visual_start(cursor.line(), cursor.col().0);
             editor.set_mode(Mode::Visual);
             Ok(true)
         }
@@ -154,7 +155,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Ctrl-V - visual block mode
         KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             let cursor = editor.buffer().cursor();
-            editor.set_visual_start(cursor.line(), cursor.col());
+            editor.set_visual_start(cursor.line(), cursor.col().0);
             editor.set_mode(Mode::VisualBlock);
             Ok(true)
         }
@@ -162,7 +163,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         KeyCode::Char('R') => {
             let cursor_before = (
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col(),
+                editor.buffer().cursor().col().0,
             );
             editor.start_change_building(cursor_before);
             editor.editing.replace_mode_state = Some(crate::editor::ReplaceModeState {

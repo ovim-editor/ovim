@@ -205,11 +205,12 @@ impl EditorTest {
                 let line_display = line.trim_end_matches('\n');
                 if i == cursor.line() {
                     // Show cursor position with a marker
-                    let before = line_display.chars().take(cursor.col()).collect::<String>();
-                    let at_cursor = line_display.chars().nth(cursor.col()).unwrap_or(' ');
+                    let col = cursor.col().0;
+                    let before = line_display.chars().take(col).collect::<String>();
+                    let at_cursor = line_display.chars().nth(col).unwrap_or(' ');
                     let after = line_display
                         .chars()
-                        .skip(cursor.col() + 1)
+                        .skip(col + 1)
                         .collect::<String>();
                     lines.push(format!("{}[{}]{}", before, at_cursor, after));
                 } else {
@@ -243,13 +244,13 @@ impl EditorTest {
     pub fn assert_cursor(&self, line: usize, col: usize) {
         let cursor = self.editor.buffer().cursor();
         assert_eq!(
-            (cursor.line(), cursor.col()),
+            (cursor.line(), cursor.col().0),
             (line, col),
             "Expected cursor at {}:{}, got {}:{}",
             line,
             col,
             cursor.line(),
-            cursor.col()
+            cursor.col().0
         );
     }
 
@@ -293,7 +294,7 @@ impl EditorTest {
     /// Get cursor position as (line, col)
     pub fn cursor(&self) -> (usize, usize) {
         let c = self.editor.buffer().cursor();
-        (c.line(), c.col())
+        (c.line(), c.col().0)
     }
 
     /// Set cursor position directly
@@ -303,7 +304,7 @@ impl EditorTest {
         self.editor
             .buffer_mut()
             .cursor_mut()
-            .set_position(line, col);
+            .set_position(line, ovim::unicode::GraphemeCol(col));
         self
     }
 
@@ -348,7 +349,7 @@ impl EditorTest {
         buffer.insert_text_at(0, 0, content);
 
         // Reset cursor to start
-        buffer.cursor_mut().set_position(0, 0);
+        buffer.cursor_mut().set_position(0, ovim::unicode::GraphemeCol::ZERO);
 
         self
     }

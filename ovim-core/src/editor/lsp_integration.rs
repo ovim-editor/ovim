@@ -397,7 +397,7 @@ impl Editor {
                 let cursor = self.buffer().cursor();
                 let buffer_version = self.buffer().version();
                 let cursor_line = cursor.line();
-                let cursor_col = cursor.col();
+                let cursor_col = cursor.col().0;
                 let file_path = self.buffer().file_path().unwrap_or("").to_string();
 
                 self.lsp.state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
@@ -869,7 +869,7 @@ impl Editor {
                 let target_col = self.utf16_to_grapheme_col(target_line, target_character);
                 self.buffer_mut()
                     .cursor_mut()
-                    .set_position(target_line, target_col);
+                    .set_position(target_line, crate::unicode::GraphemeCol(target_col));
                 self.buffer_mut().validate_cursor_position();
                 self.center_cursor_in_viewport();
                 let actual_col = self.buffer().cursor().col();
@@ -881,7 +881,7 @@ impl Editor {
                     suffix,
                     path.file_name().unwrap_or_default().to_string_lossy(),
                     target_line + 1,
-                    actual_col + 1
+                    actual_col.0 + 1
                 ));
                 self.mark_dirty();
                 true
@@ -1681,7 +1681,7 @@ impl Editor {
         let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
 
         // Step 1: grapheme index → char index
-        let char_col = crate::unicode::grapheme_to_char_col(&line_str, grapheme_col);
+        let char_col = crate::unicode::grapheme_to_char_col(&line_str, crate::unicode::GraphemeCol(grapheme_col));
         let safe_col = char_col.min(line_str.chars().count());
 
         // Step 2: char index → UTF-16 code units
@@ -1733,7 +1733,7 @@ impl Editor {
         let line_text = rope.line(line);
         let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
 
-        crate::unicode::char_to_grapheme_col(&line_str, char_col)
+        crate::unicode::char_to_grapheme_col(&line_str, char_col).0
     }
 
     /// Prepare common context for an LSP request.
@@ -1769,7 +1769,7 @@ impl Editor {
 
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let character = self.col_to_utf16(cursor.line(), cursor.col().0);
 
         let language_id = crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
             .ok_or_else(|| anyhow!("Language not supported for LSP"))?

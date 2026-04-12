@@ -29,7 +29,7 @@ impl Editor {
             .trim_end_matches('\n')
             .to_string();
 
-        completion_trigger_context_from_line(&line_text, cursor_col)
+        completion_trigger_context_from_line(&line_text, cursor_col.0)
     }
 
     /// Apply a completion by index from available completions
@@ -60,7 +60,7 @@ impl Editor {
             let cursor = self.buffer().cursor();
             (cursor.line(), cursor.col())
         };
-        self.buffer_mut().insert_text_at(line, col, &insert_text);
+        self.buffer_mut().insert_text_at(line, col.0, &insert_text);
 
         // Clear completions after applying
         self.lsp.state.available_completions.clear();
@@ -98,7 +98,8 @@ impl Editor {
 
         let cursor = self.buffer().cursor();
         let line = cursor.line() as u32;
-        let character = self.col_to_utf16(cursor.line(), cursor.col());
+        let col = cursor.col().0;
+        let character = self.col_to_utf16(cursor.line(), col);
         let raw_trigger_char = {
             let line_text = self
                 .buffer()
@@ -106,10 +107,10 @@ impl Editor {
                 .unwrap_or_default()
                 .trim_end_matches('\n')
                 .to_string();
-            if cursor.col() > 0 {
-                if cursor.col() >= 2 {
-                    let g1 = grapheme_at_index(&line_text, cursor.col().saturating_sub(1));
-                    let g2 = grapheme_at_index(&line_text, cursor.col().saturating_sub(2));
+            if col > 0 {
+                if col >= 2 {
+                    let g1 = grapheme_at_index(&line_text, col.saturating_sub(1));
+                    let g2 = grapheme_at_index(&line_text, col.saturating_sub(2));
                     if g2 == Some(":") && g1 == Some(":") {
                         Some(':')
                     } else if g2 == Some("-") && g1 == Some(">") {
@@ -121,7 +122,7 @@ impl Editor {
                         }
                     }
                 } else {
-                    match grapheme_at_index(&line_text, cursor.col().saturating_sub(1)) {
+                    match grapheme_at_index(&line_text, col.saturating_sub(1)) {
                         Some(".") => Some('.'),
                         _ => None,
                     }

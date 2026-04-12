@@ -17,6 +17,7 @@
 
 use ovim::buffer::Buffer;
 use ovim::editor::Motions;
+use ovim::unicode::GraphemeCol;
 use proptest::prelude::*;
 
 // ============================================================================
@@ -77,7 +78,7 @@ fn arb_bracket_text() -> impl Strategy<Value = String> {
 
 /// Helper: absolute cursor position as (line * MAX_COL + col) for ordering comparisons.
 fn cursor_ord(buffer: &Buffer) -> (usize, usize) {
-    (buffer.cursor().line(), buffer.cursor().col())
+    (buffer.cursor().line(), buffer.cursor().col().0)
 }
 
 /// Helper: clamp cursor to valid buffer position before applying motion.
@@ -91,11 +92,11 @@ fn clamp_cursor(buffer: &mut Buffer) {
     let line = buffer.cursor().line();
     let line_text = buffer.line(line).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
-    let cur_col = buffer.cursor().col();
+    let cur_col = buffer.cursor().col().0;
     if line_len == 0 {
-        buffer.cursor_mut().set_col(0);
+        buffer.cursor_mut().set_col(GraphemeCol::ZERO);
     } else if cur_col >= line_len {
-        buffer.cursor_mut().set_col(line_len.saturating_sub(1));
+        buffer.cursor_mut().set_col(GraphemeCol(line_len.saturating_sub(1)));
     }
 }
 
@@ -117,10 +118,10 @@ fn assert_cursor_in_bounds(buffer: &Buffer, context: &str) -> Result<(), TestCas
     let line_text = buffer.line(cursor.line()).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
     prop_assert!(
-        cursor.col() <= line_len,
+        cursor.col().0 <= line_len,
         "{}: cursor col {} > line_len {} on line {}",
         context,
-        cursor.col(),
+        cursor.col().0,
         line_len,
         cursor.line()
     );
@@ -145,7 +146,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_forward(&mut buffer, count);
@@ -164,7 +165,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_forward_big(&mut buffer, count);
@@ -183,7 +184,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_backward(&mut buffer, count);
@@ -202,7 +203,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_backward_big(&mut buffer, count);
@@ -221,7 +222,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_end_forward(&mut buffer, count);
@@ -240,7 +241,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_end_forward_big(&mut buffer, count);
@@ -259,7 +260,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_end_backward(&mut buffer, count);
@@ -278,7 +279,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::word_end_backward_big(&mut buffer, count);
@@ -299,7 +300,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let before = cursor_ord(&buffer);
@@ -323,7 +324,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let before = cursor_ord(&buffer);
@@ -347,7 +348,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let before = cursor_ord(&buffer);
@@ -371,7 +372,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let before = cursor_ord(&buffer);
@@ -399,7 +400,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
         let clamped_pos = cursor_ord(&buffer);
 
@@ -408,7 +409,7 @@ proptest! {
         let counted_pos = cursor_ord(&buffer);
 
         // Apply motion N times individually
-        buffer.cursor_mut().set_position(clamped_pos.0, clamped_pos.1);
+        buffer.cursor_mut().set_position(clamped_pos.0, GraphemeCol(clamped_pos.1));
         for _ in 0..count {
             Motions::word_forward(&mut buffer, 1);
         }
@@ -432,14 +433,14 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
         let clamped_pos = cursor_ord(&buffer);
 
         Motions::word_backward(&mut buffer, count);
         let counted_pos = cursor_ord(&buffer);
 
-        buffer.cursor_mut().set_position(clamped_pos.0, clamped_pos.1);
+        buffer.cursor_mut().set_position(clamped_pos.0, GraphemeCol(clamped_pos.1));
         for _ in 0..count {
             Motions::word_backward(&mut buffer, 1);
         }
@@ -463,14 +464,14 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
         let clamped_pos = cursor_ord(&buffer);
 
         Motions::word_end_forward(&mut buffer, count);
         let counted_pos = cursor_ord(&buffer);
 
-        buffer.cursor_mut().set_position(clamped_pos.0, clamped_pos.1);
+        buffer.cursor_mut().set_position(clamped_pos.0, GraphemeCol(clamped_pos.1));
         for _ in 0..count {
             Motions::word_end_forward(&mut buffer, 1);
         }
@@ -502,7 +503,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let line_before = buffer.cursor().line();
@@ -528,7 +529,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let line_before = buffer.cursor().line();
@@ -553,7 +554,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let line_before = buffer.cursor().line();
@@ -578,7 +579,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         let line_before = buffer.cursor().line();
@@ -604,7 +605,7 @@ proptest! {
         let safe_col = start_col.min(
             text.chars().count().saturating_sub(1)
         );
-        buffer.cursor_mut().set_col(safe_col);
+        buffer.cursor_mut().set_col(GraphemeCol(safe_col));
 
         let col_before = buffer.cursor().col();
         let found = Motions::find_char_forward(&mut buffer, ch, 1);
@@ -643,7 +644,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         // Should never panic, even on unmatched brackets
@@ -670,13 +671,13 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         // Check if cursor is directly on a bracket character
         let line_text = buffer.line(buffer.cursor().line()).unwrap_or_default();
         let chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
-        let col = buffer.cursor().col();
+        let col = buffer.cursor().col().0;
         let on_bracket = col < chars.len()
             && matches!(chars[col], '(' | ')' | '[' | ']' | '{' | '}');
 
@@ -721,7 +722,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::paragraph_forward(&mut buffer, count);
 
@@ -738,7 +739,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::paragraph_backward(&mut buffer, count);
 
@@ -754,7 +755,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         let before = buffer.cursor().line();
         Motions::paragraph_forward(&mut buffer, 1);
@@ -776,7 +777,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         let before = buffer.cursor().line();
         Motions::paragraph_backward(&mut buffer, 1);
@@ -800,7 +801,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::sentence_forward(&mut buffer, count);
@@ -819,7 +820,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::sentence_backward(&mut buffer, count);
@@ -844,11 +845,11 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::first_non_blank(&mut buffer);
 
-        let col = buffer.cursor().col();
+        let col = buffer.cursor().col().0;
         let line_text = buffer
             .line(safe_line)
             .unwrap_or_default();
@@ -881,11 +882,11 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::last_non_blank(&mut buffer);
 
-        let col = buffer.cursor().col();
+        let col = buffer.cursor().col().0;
         let line_text = buffer
             .line(safe_line)
             .unwrap_or_default();
@@ -923,7 +924,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::plus_motion(&mut buffer, count);
 
@@ -946,7 +947,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::minus_motion(&mut buffer, count);
 
@@ -976,7 +977,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_start = viewport_start.min(lc.saturating_sub(1));
-        buffer.cursor_mut().set_position(safe_start, 0);
+        buffer.cursor_mut().set_position(safe_start, GraphemeCol::ZERO);
 
         let _ = Motions::scroll_half_page_down(&mut buffer, safe_start, viewport_height);
 
@@ -993,7 +994,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_start = viewport_start.min(lc.saturating_sub(1));
-        buffer.cursor_mut().set_position(safe_start, 0);
+        buffer.cursor_mut().set_position(safe_start, GraphemeCol::ZERO);
 
         let _ = Motions::scroll_half_page_up(&mut buffer, safe_start, viewport_height);
 
@@ -1010,7 +1011,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_start = viewport_start.min(lc.saturating_sub(1));
-        buffer.cursor_mut().set_position(safe_start, 0);
+        buffer.cursor_mut().set_position(safe_start, GraphemeCol::ZERO);
 
         let _ = Motions::scroll_page_down(&mut buffer, safe_start, viewport_height);
 
@@ -1027,7 +1028,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_start = viewport_start.min(lc.saturating_sub(1));
-        buffer.cursor_mut().set_position(safe_start, 0);
+        buffer.cursor_mut().set_position(safe_start, GraphemeCol::ZERO);
 
         let _ = Motions::scroll_page_up(&mut buffer, safe_start, viewport_height);
 
@@ -1052,7 +1053,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         let before = buffer.cursor().line();
         Motions::section_forward(&mut buffer, count);
@@ -1072,7 +1073,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         let before = buffer.cursor().line();
         Motions::section_backward(&mut buffer, count);
@@ -1092,7 +1093,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::method_forward(&mut buffer, count);
 
@@ -1109,7 +1110,7 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, 0);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol::ZERO);
 
         Motions::method_backward(&mut buffer, count);
 
@@ -1135,14 +1136,14 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::unmatched_brace_backward(&mut buffer, count);
         assert_cursor_in_bounds(&buffer, "unmatched_brace_backward")?;
 
         // Reset position for the forward test
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::unmatched_brace_forward(&mut buffer, count);
@@ -1160,13 +1161,13 @@ proptest! {
         let mut buffer = Buffer::new_from_str(&text);
         let lc = buffer.line_count();
         let safe_line = start_line % lc;
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::unmatched_paren_backward(&mut buffer, count);
         assert_cursor_in_bounds(&buffer, "unmatched_paren_backward")?;
 
-        buffer.cursor_mut().set_position(safe_line, start_col);
+        buffer.cursor_mut().set_position(safe_line, GraphemeCol(start_col));
         clamp_cursor(&mut buffer);
 
         Motions::unmatched_paren_forward(&mut buffer, count);

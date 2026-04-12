@@ -1,4 +1,5 @@
 use ovim::editor::{Editor, InputHandler};
+use ovim::unicode::GraphemeCol;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Helper function to create a KeyEvent
@@ -28,14 +29,14 @@ fn test_goal_column_preserved_through_short_line() {
     }
 
     assert_eq!(editor.buffer().cursor().line(), 0);
-    assert_eq!(editor.buffer().cursor().col(), 8);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(8));
 
     // Move down to short line
     press(&mut editor, KeyCode::Char('j'));
 
     assert_eq!(editor.buffer().cursor().line(), 1);
     // Should be clamped to end of shorter line (column 2, last char of "aaa")
-    assert_eq!(editor.buffer().cursor().col(), 2);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2));
 
     // Move down to long line again
     press(&mut editor, KeyCode::Char('j'));
@@ -44,7 +45,7 @@ fn test_goal_column_preserved_through_short_line() {
     // Should return to original goal column 8 (the 'B')
     assert_eq!(
         editor.buffer().cursor().col(),
-        8,
+        GraphemeCol(8),
         "Cursor should return to goal column 8 when line is long enough"
     );
 }
@@ -67,26 +68,26 @@ fn test_goal_column_preserved_through_multiple_short_lines() {
         press(&mut editor, KeyCode::Char('l'));
     }
 
-    assert_eq!(editor.buffer().cursor().col(), 10);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(10));
 
     // Move down through short lines
     press(&mut editor, KeyCode::Char('j')); // Line 1: "a"
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 0); // Clamped to col 0
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO); // Clamped to col 0
 
     press(&mut editor, KeyCode::Char('j')); // Line 2: "aa"
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 1); // Clamped to col 1
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1)); // Clamped to col 1
 
     press(&mut editor, KeyCode::Char('j')); // Line 3: "aaa"
     assert_eq!(editor.buffer().cursor().line(), 3);
-    assert_eq!(editor.buffer().cursor().col(), 2); // Clamped to col 2
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2)); // Clamped to col 2
 
     press(&mut editor, KeyCode::Char('j')); // Line 4: "aaaaaaaaaaaB"
     assert_eq!(editor.buffer().cursor().line(), 4);
     assert_eq!(
         editor.buffer().cursor().col(),
-        10,
+        GraphemeCol(10),
         "Cursor should return to goal column 10 after passing through multiple short lines"
     );
 }
@@ -112,13 +113,13 @@ fn test_goal_column_up_movement() {
     }
 
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 8);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(8));
 
     // Move up to short line
     press(&mut editor, KeyCode::Char('k'));
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 2); // Clamped
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2)); // Clamped
 
     // Move up to long line
     press(&mut editor, KeyCode::Char('k'));
@@ -126,7 +127,7 @@ fn test_goal_column_up_movement() {
     assert_eq!(editor.buffer().cursor().line(), 0);
     assert_eq!(
         editor.buffer().cursor().col(),
-        8,
+        GraphemeCol(8),
         "Cursor should return to goal column 8 when moving up"
     );
 }
@@ -148,23 +149,23 @@ fn test_goal_column_reset_on_horizontal_movement() {
         press(&mut editor, KeyCode::Char('l'));
     }
 
-    assert_eq!(editor.buffer().cursor().col(), 8);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(8));
 
     // Move down to short line
     press(&mut editor, KeyCode::Char('j'));
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 2); // Clamped
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2)); // Clamped
 
     // Move left to column 1
     press(&mut editor, KeyCode::Char('h'));
-    assert_eq!(editor.buffer().cursor().col(), 1);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1));
 
     // Move down to long line - should use column 1, not original column 8
     press(&mut editor, KeyCode::Char('j'));
     assert_eq!(editor.buffer().cursor().line(), 2);
     assert_eq!(
         editor.buffer().cursor().col(),
-        1,
+        GraphemeCol(1),
         "Cursor should be at column 1 (new goal column), not column 8 (old goal column)"
     );
 }
@@ -183,7 +184,7 @@ fn test_goal_column_with_dollar_motion() {
     press(&mut editor, KeyCode::Char('$'));
 
     assert_eq!(editor.buffer().cursor().line(), 0);
-    assert_eq!(editor.buffer().cursor().col(), 10); // Last char of "hello world"
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(10)); // Last char of "hello world"
 
     // Move down to shorter line
     press(&mut editor, KeyCode::Char('j'));
@@ -191,7 +192,7 @@ fn test_goal_column_with_dollar_motion() {
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(
         editor.buffer().cursor().col(),
-        1,
+        GraphemeCol(1),
         "Should be at end of line (last char of 'hi')"
     );
 
@@ -201,7 +202,7 @@ fn test_goal_column_with_dollar_motion() {
     assert_eq!(editor.buffer().cursor().line(), 2);
     assert_eq!(
         editor.buffer().cursor().col(),
-        10,
+        GraphemeCol(10),
         "Should be at end of line (last char of 'hello again')"
     );
 }
@@ -221,12 +222,12 @@ fn test_goal_column_with_zero_motion() {
         press(&mut editor, KeyCode::Char('l'));
     }
 
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
 
     // Press 0 to go to start of line
     press(&mut editor, KeyCode::Char('0'));
 
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Move down
     press(&mut editor, KeyCode::Char('j'));
@@ -234,7 +235,7 @@ fn test_goal_column_with_zero_motion() {
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(
         editor.buffer().cursor().col(),
-        0,
+        GraphemeCol::ZERO,
         "Should remain at column 0 after 0 motion"
     );
 }
@@ -255,13 +256,13 @@ fn test_goal_column_empty_line() {
         press(&mut editor, KeyCode::Char('l'));
     }
 
-    assert_eq!(editor.buffer().cursor().col(), 8);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(8));
 
     // Move down to empty line
     press(&mut editor, KeyCode::Char('j'));
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 0); // Empty line
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO); // Empty line
 
     // Move down to long line
     press(&mut editor, KeyCode::Char('j'));
@@ -269,7 +270,7 @@ fn test_goal_column_empty_line() {
     assert_eq!(editor.buffer().cursor().line(), 2);
     assert_eq!(
         editor.buffer().cursor().col(),
-        8,
+        GraphemeCol(8),
         "Should return to goal column 8"
     );
 }

@@ -2,6 +2,7 @@
 
 use super::Motions;
 use crate::buffer::Buffer;
+use crate::unicode::GraphemeCol;
 
 impl Motions {
     /// Move forward to start of next sentence (( and ) motions)
@@ -54,7 +55,7 @@ impl Motions {
                             if current_col >= chars.len() {
                                 // Move to next line
                                 if current_line + 1 < total_lines {
-                                    buffer.cursor_mut().set_position(current_line + 1, 0);
+                                    buffer.cursor_mut().set_position(current_line + 1, GraphemeCol::ZERO);
                                 } else {
                                     let line_str: String =
                                         line.trim_end_matches('\n').to_string();
@@ -90,7 +91,7 @@ impl Motions {
 
         // No sentence found, move to end of buffer
         let last_line = buffer.line_count().saturating_sub(1);
-        buffer.cursor_mut().set_position(last_line, 0);
+        buffer.cursor_mut().set_position(last_line, GraphemeCol::ZERO);
     }
 
     /// Move backward to start of previous sentence
@@ -139,7 +140,7 @@ impl Motions {
                 if chars.is_empty() {
                     // Empty line — skip to previous line
                     if line_idx == 0 {
-                        buffer.cursor_mut().set_position(0, 0);
+                        buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
                         return;
                     }
                     line_idx -= 1;
@@ -168,7 +169,7 @@ impl Motions {
                         }
 
                         if col >= chars.len() && line_idx + 1 < buffer.line_count() {
-                            buffer.cursor_mut().set_position(line_idx + 1, 0);
+                            buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
                         } else {
                             let clamped = col.min(chars.len().saturating_sub(1));
                             let line_str: String =
@@ -185,7 +186,7 @@ impl Motions {
             }
 
             if line_idx == 0 {
-                buffer.cursor_mut().set_position(0, 0);
+                buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
                 return;
             }
 

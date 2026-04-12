@@ -4,6 +4,7 @@ use crate::ai::chat_types::{
 };
 use crate::buffer::BufferId;
 use crate::mode::Mode;
+use crate::unicode::GraphemeCol;
 use anyhow::Result;
 
 use super::ai_chat_state::{AiChatState, ChatViewMode, ScratchBufferState, ToolEventSummary};
@@ -792,7 +793,7 @@ impl Editor {
         });
 
         if let Some(line) = target {
-            self.buffer_mut().cursor_mut().set_position(line, 0);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(0));
             self.center_cursor_in_viewport();
         }
     }

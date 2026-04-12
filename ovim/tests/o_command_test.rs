@@ -1,4 +1,5 @@
 use ovim::editor::{Editor, InputHandler};
+use ovim::unicode::GraphemeCol;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
 /// Helper function to create a KeyEvent
@@ -46,7 +47,7 @@ fn test_o_middle_of_file() {
 
     // Cursor should be on line 1 (the new line)
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Lines should be correct
     assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
@@ -77,7 +78,7 @@ fn test_o_last_line_no_newline() {
 
     // Cursor should be on line 2 (the new line)
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Verify content
     assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
@@ -102,7 +103,7 @@ fn test_o_with_indentation() {
 
     // Cursor should be at column 4 (after the indentation)
     assert_eq!(editor.buffer().cursor().line(), 2);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
 
     // New line should have indentation
     assert_eq!(editor.buffer().line(2).unwrap(), "    \n");
@@ -211,7 +212,7 @@ fn test_o_single_line_no_newline() {
 
     // Cursor should be on line 1 (the new line)
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Line content
     assert_eq!(editor.buffer().line(0).unwrap(), "hello\n");
@@ -256,7 +257,7 @@ fn test_o_preserves_tab_indentation() {
 
     // New line should have tab indentation
     assert_eq!(editor.buffer().line(2).unwrap(), "\t\n");
-    assert_eq!(editor.buffer().cursor().col(), 1); // After the tab
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1)); // After the tab
 }
 
 #[test]
@@ -363,7 +364,7 @@ fn test_o_undo_redo_cursor_valid() {
 
     // After redo, cursor should be within valid line bounds (normal mode)
     let cursor_line = editor.buffer().cursor().line();
-    let cursor_col = editor.buffer().cursor().col();
+    let cursor_col = editor.buffer().cursor().col().0;
     let line = editor.buffer().line(cursor_line).unwrap();
     let line_len = line.trim_end_matches('\n').chars().count();
     assert!(
@@ -414,7 +415,7 @@ fn test_o_after_opening_brace_adds_indent() {
 
     // Should add shiftwidth (4 spaces) indent
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
     assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
 }
 
@@ -425,7 +426,7 @@ fn test_o_after_opening_paren_adds_indent() {
     press_char(&mut editor, 'o');
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
     assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
 }
 
@@ -436,7 +437,7 @@ fn test_o_after_opening_bracket_adds_indent() {
     press_char(&mut editor, 'o');
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
     assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
 }
 
@@ -448,7 +449,7 @@ fn test_o_after_brace_with_trailing_spaces() {
     press_char(&mut editor, 'o');
 
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
     assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
 }
 
@@ -460,7 +461,7 @@ fn test_o_no_extra_indent_on_normal_line() {
 
     // Should copy indent (4 spaces) but not add extra
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
     assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
 }
 
@@ -478,6 +479,6 @@ fn test_big_o_on_line_after_brace_no_extra_indent() {
 
     // Should copy indent from "    body" (4 spaces), no extra
     assert_eq!(editor.buffer().cursor().line(), 1);
-    assert_eq!(editor.buffer().cursor().col(), 4);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
     assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
 }

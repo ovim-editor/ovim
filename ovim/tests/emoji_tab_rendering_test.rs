@@ -1,5 +1,6 @@
 use ovim::editor::Editor;
 use ovim::ui::Renderer;
+use ovim::unicode::GraphemeCol;
 
 #[test]
 fn test_expand_tabs_basic() {
@@ -212,7 +213,7 @@ fn test_cursor_position_tracking() {
     let mut editor = Editor::with_content("😀😁😂");
 
     // Initial cursor should be at start
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
     assert_eq!(editor.buffer().cursor().line(), 0);
 
     // Rendering should not panic
@@ -262,7 +263,7 @@ fn test_cursor_with_tabs() {
     let mut editor = Editor::with_content("\thello");
 
     // Start at beginning (before tab)
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Rendering should handle cursor display correctly with tabs
     let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);
@@ -275,7 +276,7 @@ fn test_cursor_with_emoji_and_tabs() {
     let mut editor = Editor::with_content("😀\thello");
 
     // Start at emoji
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Cursor should handle display correctly even with emoji + tab
     let result = ovim::ui::render_editor_to_ansi(&mut editor, 80, 24);

@@ -79,7 +79,7 @@ pub fn render_hover_window(
     // Calculate cursor screen position
     let (cursor_line, cursor_col) = hover_position.unwrap_or_else(|| {
         let cursor = editor.buffer().cursor();
-        (cursor.line(), cursor.col())
+        (cursor.line(), cursor.col().0)
     });
 
     let gutter_width = layout.gutter_width;
@@ -93,7 +93,7 @@ pub fn render_hover_window(
     };
     let line_text = line_text.trim_end_matches('\n');
     let tab_width = editor.options.tab_width;
-    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, cursor_col);
+    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, ovim_core::unicode::GraphemeCol(cursor_col));
     let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
     let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, rope);
     let display_col = base_display_col + inline_offset;
@@ -262,7 +262,7 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     // Get cursor position on screen
     let cursor = editor.buffer().cursor();
     let cursor_line = cursor.line();
-    let cursor_col = cursor.col();
+    let cursor_col = cursor.col().0;
 
     // Get the line text and convert character column to display column
     let rope = editor.buffer().rope();
@@ -276,7 +276,7 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
 
     // Convert character column to display column (accounting for tabs, emojis, and inline decorations)
     let tab_width = editor.options.tab_width;
-    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, cursor_col);
+    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, ovim_core::unicode::GraphemeCol(cursor_col));
     let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
     let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, rope);
     let display_col = base_display_col + inline_offset;

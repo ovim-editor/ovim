@@ -14,6 +14,7 @@ use crate::editor::RegisterType;
 use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::GraphemeCol;
 
 /// Handles the second key in a character motion sequence.
 ///
@@ -121,7 +122,7 @@ fn handle_mark_operator(
     };
 
     let cursor_line = editor.buffer().cursor().line();
-    let cursor_col = editor.buffer().cursor().col();
+    let cursor_col = editor.buffer().cursor().col().0;
     let cursor_before = (cursor_line, cursor_col);
 
     if line_wise {
@@ -279,7 +280,7 @@ fn apply_charwise_operator(
         Operator::Delete => {
             let (deleted, edits) = editor.buffer_mut().record(|buf| {
                 let d = buf.delete_range(start_line, start_col, end_line, end_col);
-                buf.cursor_mut().set_position(start_line, start_col);
+                buf.cursor_mut().set_position(start_line, GraphemeCol(start_col));
                 d
             });
             let cursor_after = editor.cursor_position();
@@ -297,7 +298,7 @@ fn apply_charwise_operator(
         Operator::Change => {
             let (deleted, edits) = editor.buffer_mut().record(|buf| {
                 let d = buf.delete_range(start_line, start_col, end_line, end_col);
-                buf.cursor_mut().set_position(start_line, start_col);
+                buf.cursor_mut().set_position(start_line, GraphemeCol(start_col));
                 d
             });
             let delete_token = if !edits.is_empty() {
@@ -338,15 +339,15 @@ fn apply_charwise_operator(
                 editor.yank_to_register_with_type(yanked, RegisterType::Character);
                 editor.set_yank_flash_range(
                     start_line,
-                    start_col,
+                    GraphemeCol(start_col),
                     end_line,
-                    end_col.saturating_sub(1),
+                    GraphemeCol(end_col.saturating_sub(1)),
                 );
             }
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(start_line, start_col);
+                .set_position(start_line, GraphemeCol(start_col));
         }
         _ => {}
     }
@@ -363,7 +364,7 @@ fn apply_linewise_operator(
 
     match operator {
         Operator::Delete => {
-            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+            editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol(0));
             let deleted = editor.record_operation(|buf| buf.delete_lines(line_count), None);
             if !deleted.is_empty() {
                 editor.delete_to_register_with_type(deleted, RegisterType::Line);
@@ -380,7 +381,7 @@ fn apply_linewise_operator(
             editor.set_yank_flash_lines(start_line, end_line);
         }
         Operator::Change => {
-            editor.buffer_mut().cursor_mut().set_position(start_line, 0);
+            editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol(0));
 
             let indent = editor
                 .buffer()
@@ -396,7 +397,7 @@ fn apply_linewise_operator(
                 |buf| {
                     let d = buf.delete_lines(line_count);
                     buf.insert_text_at(start_line, 0, &format!("{}\n", indent));
-                    buf.cursor_mut().set_position(start_line, indent.len());
+                    buf.cursor_mut().set_position(start_line, GraphemeCol(indent.len()));
                     d
                 },
                 None,

@@ -83,7 +83,7 @@ async fn main() -> Result<()> {
         if let Some(line) = file.line {
             let line_0 = line.saturating_sub(1);
             let col_0 = file.col.unwrap_or(1).saturating_sub(1);
-            ed.buffer_mut().cursor_mut().set_position(line_0, col_0);
+            ed.buffer_mut().cursor_mut().set_position(line_0, ovim_core::unicode::GraphemeCol(col_0));
             ed.buffer_mut().validate_cursor_position();
         }
         // Switch from Dashboard to Normal mode when a file is loaded

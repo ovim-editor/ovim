@@ -4,6 +4,7 @@ use super::{
     CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry,
     QuickfixList,
 };
+use crate::unicode::GraphemeCol;
 
 impl Editor {
     /// Gets a reference to the completion menu
@@ -65,7 +66,7 @@ impl Editor {
                 } else {
                     // Fallback: delete trigger..cursor and insert insertText/label
                     let cursor_line = self.buffer().cursor().line();
-                    let cursor_col = self.buffer().cursor().col();
+                    let cursor_col = self.buffer().cursor().col().0;
                     let trigger_col = self.completion_menu.trigger_col();
                     let text = if let Some(ref insert_text) = item.insert_text {
                         insert_text.clone()
@@ -82,7 +83,7 @@ impl Editor {
                 .unwrap_or_default();
 
             let cursor_line = self.buffer().cursor().line();
-            let cursor_col = self.buffer().cursor().col();
+            let cursor_col = self.buffer().cursor().col().0;
             let cursor_before = (cursor_line, cursor_col);
 
             let ((), edits) = self.buffer_mut().record(|buf| {
@@ -118,7 +119,7 @@ impl Editor {
                         replace_start_col + text_to_insert.chars().count(),
                     )
                 };
-                buf.cursor_mut().set_position(end_line, end_col);
+                buf.cursor_mut().set_position(end_line, GraphemeCol(end_col));
             });
             if !edits.is_empty() {
                 let cursor_after = self.cursor_position();
@@ -306,7 +307,7 @@ impl Editor {
                 if lnum > 0 {
                     let line = lnum.saturating_sub(1);
                     let col = if qcol > 0 { qcol.saturating_sub(1) } else { 0 };
-                    self.buffer_mut().cursor_mut().set_position(line, col);
+                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
                 }
             }
         }
@@ -410,7 +411,7 @@ impl Editor {
                 if lnum > 0 {
                     let line = lnum.saturating_sub(1);
                     let col = if lcol > 0 { lcol.saturating_sub(1) } else { 0 };
-                    self.buffer_mut().cursor_mut().set_position(line, col);
+                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
                 }
             }
         }
@@ -431,7 +432,7 @@ impl Editor {
             self.mode = Mode::SubstituteConfirm;
             // Move cursor to first match
             let (line, col, _, _) = self.editing.substitute_matches[0];
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
     }
 
@@ -479,7 +480,7 @@ impl Editor {
                     self.editing.substitute_matches[self.editing.substitute_match_index];
                 self.buffer_mut()
                     .cursor_mut()
-                    .set_position(next_line, next_col);
+                    .set_position(next_line, GraphemeCol(next_col));
             }
         }
     }
@@ -493,7 +494,7 @@ impl Editor {
             // Move cursor to next match
             let (line, col, _, _) =
                 self.editing.substitute_matches[self.editing.substitute_match_index];
-            self.buffer_mut().cursor_mut().set_position(line, col);
+            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         }
     }
 

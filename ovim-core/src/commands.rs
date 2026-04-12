@@ -3,6 +3,7 @@
 use crate::command_result::{err, ok, CommandResult};
 use crate::editor::Editor;
 use crate::editor::QuickfixEntry;
+use crate::unicode::GraphemeCol;
 
 /// Expands ~ to home directory in file paths
 ///
@@ -141,7 +142,7 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Com
         // Jump to line/column (convert from 1-indexed to 0-indexed)
         let line = entry.lnum.saturating_sub(1);
         let col = entry.col.saturating_sub(1);
-        editor.buffer_mut().cursor_mut().set_position(line, col);
+        editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
         editor.buffer_mut().validate_cursor_position();
 
         ok(entry.display_text())
@@ -1093,7 +1094,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 let target_line = line_num.saturating_sub(1); // 1-indexed to 0-indexed
                 let max_line = editor.buffer().line_count().saturating_sub(1);
                 let final_line = target_line.min(max_line);
-                editor.buffer_mut().cursor_mut().set_position(final_line, 0);
+                editor.buffer_mut().cursor_mut().set_position(final_line, GraphemeCol::ZERO);
                 ok(format!("Line {}", line_num))
             } else {
                 err(format!("Not an editor command: {}", command))

@@ -24,7 +24,7 @@ impl Window {
     pub fn new(buffer_id: usize, width: u16, height: u16) -> Self {
         Self {
             buffer_id,
-            cursor: Cursor::new(0, 0),
+            cursor: Cursor::new(0, crate::unicode::GraphemeCol::ZERO),
             scroll_offset: 0,
             horizontal_offset: DisplayCol::ZERO,
             width,
@@ -99,7 +99,7 @@ impl Window {
         // Ensure cursor line is within buffer bounds
         let max_line = buffer.line_count().saturating_sub(1);
         if cursor_line > max_line {
-            self.cursor.set_position(max_line, 0);
+            self.cursor.set_position(max_line, crate::unicode::GraphemeCol::ZERO);
         }
 
         // Adjust scroll to maintain scrolloff distance from top/bottom

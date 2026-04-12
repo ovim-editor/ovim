@@ -1,4 +1,5 @@
 use ovim::editor::{Editor, InputHandler};
+use ovim::unicode::GraphemeCol;
 use ovim_core::buffer::Buffer;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
@@ -69,7 +70,7 @@ fn test_x_at_end_of_line() {
     assert_eq!(editor.buffer().line(0).unwrap(), "hell\n");
 
     // Cursor should be at col 3 (last char)
-    assert_eq!(editor.buffer().cursor().col(), 3);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(3));
 }
 
 #[test]
@@ -86,7 +87,7 @@ fn test_x_delete_all_chars_on_line() {
     assert_eq!(editor.buffer().line(0).unwrap(), "\n");
 
     // Cursor should be at col 0
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 }
 
 #[test]
@@ -132,7 +133,7 @@ fn test_empty_file() {
 
     // Cursor should be at 0,0
     assert_eq!(editor.buffer().cursor().line(), 0);
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 }
 
 #[test]
@@ -150,7 +151,7 @@ fn test_single_line_delete() {
 
     // Cursor should be at 0,0
     assert_eq!(editor.buffer().cursor().line(), 0);
-    assert_eq!(editor.buffer().cursor().col(), 0);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 }
 
 #[test]
@@ -168,7 +169,7 @@ fn test_d_at_end_of_line() {
     assert_eq!(editor.buffer().line(0).unwrap(), "hello worl\n");
 
     // Cursor should be clamped to the new last character
-    assert_eq!(editor.buffer().cursor().col(), 9);
+    assert_eq!(editor.buffer().cursor().col(), GraphemeCol(9));
 }
 
 #[test]
@@ -224,9 +225,9 @@ fn test_cw_at_end_of_line() {
 fn test_clamp_cursor_col_ascii() {
     // Basic ASCII: 5 chars, cursor at col 10 should clamp to col 4
     let mut buf = Buffer::new_from_str("hello\n");
-    buf.cursor_mut().set_col(10);
+    buf.cursor_mut().set_col(GraphemeCol(10));
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 4); // last char index
+    assert_eq!(buf.cursor().col(), GraphemeCol(4)); // last char index
 }
 
 #[test]
@@ -237,9 +238,9 @@ fn test_clamp_cursor_col_emoji() {
     let mut buf = Buffer::new_from_str("a👨‍👩‍👧‍👦b\n");
     // grapheme count of "a👨‍👩‍👧‍👦b" = 3
     // If cursor is at col 5 (past grapheme count), should clamp to 2 (last grapheme)
-    buf.cursor_mut().set_col(5);
+    buf.cursor_mut().set_col(GraphemeCol(5));
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 2); // last grapheme index
+    assert_eq!(buf.cursor().col(), GraphemeCol(2)); // last grapheme index
 }
 
 #[test]
@@ -247,9 +248,9 @@ fn test_clamp_cursor_col_combining_chars() {
     // "e\u{0301}" (e + combining acute) = 1 grapheme, 2 code points
     // "ae\u{0301}b" = 3 graphemes
     let mut buf = Buffer::new_from_str("ae\u{0301}b\n");
-    buf.cursor_mut().set_col(5);
+    buf.cursor_mut().set_col(GraphemeCol(5));
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 2); // last grapheme index
+    assert_eq!(buf.cursor().col(), GraphemeCol(2)); // last grapheme index
 }
 
 #[test]
@@ -257,35 +258,35 @@ fn test_clamp_cursor_col_flag_emoji() {
     // "🇺🇸" = 1 grapheme (regional indicator pair), 2 code points
     // "a🇺🇸b" = 3 graphemes
     let mut buf = Buffer::new_from_str("a🇺🇸b\n");
-    buf.cursor_mut().set_col(5);
+    buf.cursor_mut().set_col(GraphemeCol(5));
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 2);
+    assert_eq!(buf.cursor().col(), GraphemeCol(2));
 }
 
 #[test]
 fn test_clamp_cursor_col_within_bounds_unchanged() {
     // Cursor within valid range should not be moved
     let mut buf = Buffer::new_from_str("a👨‍👩‍👧‍👦b\n");
-    buf.cursor_mut().set_col(1); // on the emoji grapheme
+    buf.cursor_mut().set_col(GraphemeCol(1)); // on the emoji grapheme
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 1); // unchanged
+    assert_eq!(buf.cursor().col(), GraphemeCol(1)); // unchanged
 }
 
 #[test]
 fn test_clamp_cursor_col_empty_line() {
     let mut buf = Buffer::new_from_str("\n");
-    buf.cursor_mut().set_col(3);
+    buf.cursor_mut().set_col(GraphemeCol(3));
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 0);
+    assert_eq!(buf.cursor().col(), GraphemeCol::ZERO);
 }
 
 #[test]
 fn test_clamp_cursor_col_at_zero_stays() {
     // col 0 should never be clamped (the `col > 0` guard)
     let mut buf = Buffer::new_from_str("hello\n");
-    buf.cursor_mut().set_col(0);
+    buf.cursor_mut().set_col(GraphemeCol::ZERO);
     buf.clamp_cursor_col();
-    assert_eq!(buf.cursor().col(), 0);
+    assert_eq!(buf.cursor().col(), GraphemeCol::ZERO);
 }
 
 #[test]
@@ -314,7 +315,7 @@ fn test_dedent_clamps_cursor_with_emoji() {
     );
 
     // Cursor should be clamped to valid grapheme position
-    let col = editor.buffer().cursor().col();
+    let col = editor.buffer().cursor().col().0;
     assert!(
         col <= 2,
         "cursor col {} should be <= 2 (last grapheme index)",

@@ -24,6 +24,7 @@
 //! 5. **Consistency**: visual_col and col track together (unless tabs involved)
 
 use ovim::buffer::{Buffer, Cursor};
+use ovim::unicode::GraphemeCol;
 use proptest::prelude::*;
 
 // ============================================================================
@@ -102,9 +103,9 @@ proptest! {
                 CursorOp::MoveDown(n) => cursor.move_down(*n),
                 CursorOp::MoveLeft(n) => cursor.move_left(*n),
                 CursorOp::MoveRight(n) => cursor.move_right(*n),
-                CursorOp::SetPosition { line, col } => cursor.set_position(*line, *col),
+                CursorOp::SetPosition { line, col } => cursor.set_position(*line, GraphemeCol(*col)),
                 CursorOp::SetLine(line) => cursor.set_line(*line),
-                CursorOp::SetCol(col) => cursor.set_col(*col),
+                CursorOp::SetCol(col) => cursor.set_col(GraphemeCol(*col)),
             }
 
             // Check that cursor values are reasonable (not wildly out of bounds)
@@ -117,9 +118,9 @@ proptest! {
             );
 
             prop_assert!(
-                cursor.col() < usize::MAX / 2,
+                cursor.col().0 < usize::MAX / 2,
                 "After operation {}: cursor col {} should be reasonable. Op: {:?}",
-                i, cursor.col(), op
+                i, cursor.col().0, op
             );
 
             // Note: The Cursor module allows being temporarily out of buffer bounds.
@@ -144,7 +145,7 @@ proptest! {
             return Ok(());
         }
 
-        let mut cursor = Cursor::new(initial_line, 0);
+        let mut cursor = Cursor::new(initial_line, GraphemeCol::ZERO);
         let original_line = cursor.line();
 
         // Move up, then down
@@ -167,7 +168,7 @@ proptest! {
         initial_col in 5..15usize,
         delta in 1..5usize,
     ) {
-        let mut cursor = Cursor::new(0, initial_col);
+        let mut cursor = Cursor::new(0, GraphemeCol(initial_col));
         let original_col = cursor.col();
 
         // Move left, then right
@@ -177,7 +178,7 @@ proptest! {
         prop_assert_eq!(
             cursor.col(),
             original_col,
-            "Moving left {} then right {} should return to col {}",
+            "Moving left {} then right {} should return to col {:?}",
             delta, delta, original_col
         );
     }
@@ -189,13 +190,13 @@ proptest! {
     fn prop_movement_saturates_at_zero(
         move_distance in 1..100usize,
     ) {
-        let mut cursor = Cursor::new(0, 0);
+        let mut cursor = Cursor::new(0, GraphemeCol::ZERO);
 
         // Try to move before start
         cursor.move_left(move_distance);
-        prop_assert_eq!(cursor.col(), 0, "Moving left from 0 should stay at 0");
+        prop_assert_eq!(cursor.col(), GraphemeCol::ZERO, "Moving left from 0 should stay at 0");
 
-        let mut cursor = Cursor::new(0, 0);
+        let mut cursor = Cursor::new(0, GraphemeCol::ZERO);
         cursor.move_up(move_distance);
         prop_assert_eq!(cursor.line(), 0, "Moving up from 0 should stay at 0");
     }
@@ -209,15 +210,15 @@ proptest! {
         initial_col in 0..100usize,
         delta in 1..usize::MAX / 2,
     ) {
-        let mut cursor = Cursor::new(initial_line, initial_col);
+        let mut cursor = Cursor::new(initial_line, GraphemeCol(initial_col));
 
         // These should not panic or overflow
         cursor.move_down(delta);
         prop_assert!(cursor.line() >= initial_line, "Moving down should increase or maintain line");
 
-        let mut cursor = Cursor::new(initial_line, initial_col);
+        let mut cursor = Cursor::new(initial_line, GraphemeCol(initial_col));
         cursor.move_right(delta);
-        prop_assert!(cursor.col() >= initial_col, "Moving right should increase or maintain col");
+        prop_assert!(cursor.col().0 >= initial_col, "Moving right should increase or maintain col");
     }
 
     /// Property: set_position updates all fields correctly
@@ -228,11 +229,11 @@ proptest! {
         line in 0..100usize,
         col in 0..100usize,
     ) {
-        let mut cursor = Cursor::new(0, 0);
-        cursor.set_position(line, col);
+        let mut cursor = Cursor::new(0, GraphemeCol::ZERO);
+        cursor.set_position(line, GraphemeCol(col));
 
         prop_assert_eq!(cursor.line(), line, "Line should be set");
-        prop_assert_eq!(cursor.col(), col, "Col should be set");
+        prop_assert_eq!(cursor.col(), GraphemeCol(col), "Col should be set");
         prop_assert_eq!(cursor.visual_col(), col, "Visual col should sync with col");
         prop_assert_eq!(cursor.desired_col(), col, "Desired col should sync with col");
     }
@@ -246,7 +247,7 @@ proptest! {
         desired_col in 10..20usize,
         vertical_moves in 1..5usize,
     ) {
-        let mut cursor = Cursor::new(5, desired_col);
+        let mut cursor = Cursor::new(5, GraphemeCol(desired_col));
         let original_desired = cursor.desired_col();
 
         // Vertical movements preserve desired_col
@@ -273,10 +274,10 @@ proptest! {
         initial_col in 5..15usize,
         delta in 1..5usize,
     ) {
-        let mut cursor = Cursor::new(0, initial_col);
+        let mut cursor = Cursor::new(0, GraphemeCol(initial_col));
 
         cursor.move_left(delta);
-        let new_col = cursor.col();
+        let new_col = cursor.col().0;
         prop_assert_eq!(
             cursor.desired_col(),
             new_col,
@@ -284,7 +285,7 @@ proptest! {
         );
 
         cursor.move_right(delta);
-        let new_col = cursor.col();
+        let new_col = cursor.col().0;
         prop_assert_eq!(
             cursor.desired_col(),
             new_col,
@@ -300,12 +301,12 @@ proptest! {
         line in 0..50usize,
         col in 0..100usize,
     ) {
-        let mut cursor = Cursor::new(0, 0);
-        cursor.set_position(line, col);
+        let mut cursor = Cursor::new(0, GraphemeCol::ZERO);
+        cursor.set_position(line, GraphemeCol(col));
 
         prop_assert_eq!(
             cursor.visual_col(),
-            cursor.col(),
+            cursor.col().0,
             "Visual col should equal col when no tabs"
         );
     }
@@ -315,12 +316,12 @@ proptest! {
     /// Setting the same column twice should have same effect as setting once.
     #[test]
     fn prop_set_col_idempotent(col in 0..100usize) {
-        let mut cursor1 = Cursor::new(0, 0);
-        cursor1.set_col(col);
+        let mut cursor1 = Cursor::new(0, GraphemeCol::ZERO);
+        cursor1.set_col(GraphemeCol(col));
 
-        let mut cursor2 = Cursor::new(0, 0);
-        cursor2.set_col(col);
-        cursor2.set_col(col);
+        let mut cursor2 = Cursor::new(0, GraphemeCol::ZERO);
+        cursor2.set_col(GraphemeCol(col));
+        cursor2.set_col(GraphemeCol(col));
 
         prop_assert_eq!(cursor1.line(), cursor2.line(), "Line should match");
         prop_assert_eq!(cursor1.col(), cursor2.col(), "Col should match");
@@ -355,9 +356,9 @@ proptest! {
                 CursorOp::MoveDown(n) => cursor.move_down(n),
                 CursorOp::MoveLeft(n) => cursor.move_left(n),
                 CursorOp::MoveRight(n) => cursor.move_right(n),
-                CursorOp::SetPosition { line, col } => cursor.set_position(line, col),
+                CursorOp::SetPosition { line, col } => cursor.set_position(line, GraphemeCol(col)),
                 CursorOp::SetLine(line) => cursor.set_line(line),
-                CursorOp::SetCol(col) => cursor.set_col(col),
+                CursorOp::SetCol(col) => cursor.set_col(GraphemeCol(col)),
             }
         }
 
@@ -368,7 +369,7 @@ proptest! {
         } else {
             0
         };
-        let col = buffer.cursor().col();
+        let col = buffer.cursor().col().0;
 
         // Insert text - this should not panic
         buffer.insert_text_at(line, col, &insert_text);
@@ -427,7 +428,7 @@ proptest! {
         // Move cursor to end of buffer
         let last_line = buffer.line_count().saturating_sub(1);
         let last_col = buffer.line_len(last_line);
-        buffer.cursor_mut().set_position(last_line, last_col);
+        buffer.cursor_mut().set_position(last_line, GraphemeCol(last_col));
 
         // Append text
         buffer.insert_text_at(last_line, last_col, &append_text);
@@ -452,7 +453,7 @@ proptest! {
         let buffer = Buffer::new_from_str("");
 
         prop_assert_eq!(buffer.cursor().line(), 0, "Empty buffer cursor should be at line 0");
-        prop_assert_eq!(buffer.cursor().col(), 0, "Empty buffer cursor should be at col 0");
+        prop_assert_eq!(buffer.cursor().col(), GraphemeCol::ZERO, "Empty buffer cursor should be at col 0");
     }
 }
 
@@ -470,7 +471,7 @@ proptest! {
         initial_col in 0..100usize,
         large_delta in 1000..10000usize,
     ) {
-        let mut cursor = Cursor::new(initial_line, initial_col);
+        let mut cursor = Cursor::new(initial_line, GraphemeCol(initial_col));
 
         // These should not panic
         cursor.move_up(large_delta);
@@ -480,7 +481,7 @@ proptest! {
 
         // Cursor should still be valid (though position may be clamped)
         prop_assert!(cursor.line() < usize::MAX, "Line should not overflow");
-        prop_assert!(cursor.col() < usize::MAX, "Col should not overflow");
+        prop_assert!(cursor.col().0 < usize::MAX, "Col should not overflow");
     }
 
     /// Property: Alternating up/down movements stabilize
@@ -491,7 +492,7 @@ proptest! {
         initial_line in 5..10usize,
         iterations in 1..20usize,
     ) {
-        let mut cursor = Cursor::new(initial_line, 0);
+        let mut cursor = Cursor::new(initial_line, GraphemeCol::ZERO);
 
         for _ in 0..iterations {
             cursor.move_up(1);
@@ -514,7 +515,7 @@ proptest! {
         initial_col in 5..10usize,
         iterations in 1..20usize,
     ) {
-        let mut cursor = Cursor::new(0, initial_col);
+        let mut cursor = Cursor::new(0, GraphemeCol(initial_col));
 
         for _ in 0..iterations {
             cursor.move_left(1);
@@ -524,7 +525,7 @@ proptest! {
         // Should return to original position
         prop_assert_eq!(
             cursor.col(),
-            initial_col,
+            GraphemeCol(initial_col),
             "Alternating left/right should stabilize at original col"
         );
     }
@@ -537,13 +538,13 @@ proptest! {
         initial_col in 10..20usize,
         new_col in 0..50usize,
     ) {
-        let mut cursor = Cursor::new(0, initial_col);
+        let mut cursor = Cursor::new(0, GraphemeCol(initial_col));
         let original_desired = cursor.desired_col();
 
         // Set column while preserving desired
-        cursor.set_col_preserve_desired(new_col);
+        cursor.set_col_preserve_desired(GraphemeCol(new_col));
 
-        prop_assert_eq!(cursor.col(), new_col, "Col should be updated");
+        prop_assert_eq!(cursor.col(), GraphemeCol(new_col), "Col should be updated");
         prop_assert_eq!(
             cursor.desired_col(),
             original_desired,
@@ -558,7 +559,7 @@ proptest! {
     fn prop_complex_sequence_consistency(
         ops in prop::collection::vec(arb_cursor_op(), 0..50)
     ) {
-        let mut cursor = Cursor::new(10, 10);
+        let mut cursor = Cursor::new(10, GraphemeCol(10));
 
         for op in ops {
             match op {
@@ -566,14 +567,14 @@ proptest! {
                 CursorOp::MoveDown(n) => cursor.move_down(n),
                 CursorOp::MoveLeft(n) => cursor.move_left(n),
                 CursorOp::MoveRight(n) => cursor.move_right(n),
-                CursorOp::SetPosition { line, col } => cursor.set_position(line, col),
+                CursorOp::SetPosition { line, col } => cursor.set_position(line, GraphemeCol(col)),
                 CursorOp::SetLine(line) => cursor.set_line(line),
-                CursorOp::SetCol(col) => cursor.set_col(col),
+                CursorOp::SetCol(col) => cursor.set_col(GraphemeCol(col)),
             }
 
             // All fields should be reasonable values (not corrupted)
             prop_assert!(cursor.line() < usize::MAX / 2, "Line should be reasonable");
-            prop_assert!(cursor.col() < usize::MAX / 2, "Col should be reasonable");
+            prop_assert!(cursor.col().0 < usize::MAX / 2, "Col should be reasonable");
             prop_assert!(cursor.visual_col() < usize::MAX / 2, "Visual col should be reasonable");
             prop_assert!(cursor.desired_col() < usize::MAX / 2, "Desired col should be reasonable");
         }

@@ -1,5 +1,5 @@
 use crate::buffer::Buffer;
-use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col};
+use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col, GraphemeCol};
 use regex::{Regex, RegexBuilder};
 
 /// Represents a search query with its direction
@@ -80,7 +80,7 @@ impl Search {
 
         // Convert from_col from grapheme to char for internal search
         let from_col_char = if let Some(line_text) = buffer.line(from_line) {
-            grapheme_to_char_col(line_text.trim_end_matches('\n'), from_col)
+            grapheme_to_char_col(line_text.trim_end_matches('\n'), GraphemeCol(from_col))
         } else {
             from_col
         };
@@ -94,7 +94,7 @@ impl Search {
         // Convert returned col from char to grapheme
         let result = result.map(|(line, char_col, match_text)| {
             let grapheme_col = if let Some(line_text) = buffer.line(line) {
-                char_to_grapheme_col(line_text.trim_end_matches('\n'), char_col)
+                char_to_grapheme_col(line_text.trim_end_matches('\n'), char_col).0
             } else {
                 char_col
             };

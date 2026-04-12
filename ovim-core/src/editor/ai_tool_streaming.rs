@@ -417,7 +417,7 @@ impl Editor {
         let cursor_line = format!(
             "Cursor: line {}, col {}\n",
             cursor.line() + 1,
-            cursor.col() + 1
+            cursor.col().0 + 1
         );
         out.push_str(&cursor_line);
         remaining = remaining.saturating_sub(cursor_line.len());
