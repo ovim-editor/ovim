@@ -354,6 +354,13 @@ impl EditorTest {
         self
     }
 
+    /// Execute an ex command (types `:command<CR>`)
+    pub fn command(&mut self, cmd: &str) -> &mut Self {
+        // Strip leading ':' if present — callers can pass either ":s/a/b/" or "s/a/b/"
+        let cmd = cmd.strip_prefix(':').unwrap_or(cmd);
+        self.keys(&format!(":{}<CR>", cmd))
+    }
+
     /// Load a file into the editor
     pub fn load_file(&mut self, path: &str) -> &mut Self {
         let _ = self.editor.load_file(path);

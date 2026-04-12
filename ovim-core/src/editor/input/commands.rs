@@ -389,19 +389,12 @@ fn convert_vim_backrefs(replacement: &str) -> String {
 }
 
 /// Handles substitute command (:s/pattern/replacement/flags)
-fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
-    // Parse the command to extract range, pattern, replacement, and flags
-    // Supported formats:
-    // :s/pattern/replacement/[flags]
-    // :%s/pattern/replacement/[flags]
-    // :'<,'>s/pattern/replacement/[flags]
-    // :1,5s/pattern/replacement/[flags]
-
-    let (range_str, substitute_part) = if let Some(s_idx) = command.rfind('s') {
-        (&command[..s_idx], &command[s_idx + 1..])
-    } else {
-        return Ok(()); // No 's' found
-    };
+///
+/// `range_str` is the pre-parsed range portion (e.g., "%", "'<,'>", "1,5", or "").
+/// `cmd_part` is the command portion starting with "s/" (e.g., "s/foo/bar/g").
+fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &str) -> Result<()> {
+    // cmd_part starts with "s/..." — strip the leading "s" to get "/pattern/replacement/flags"
+    let substitute_part = &cmd_part[1..];
 
     // Parse substitute pattern: /pattern/replacement/flags
     if !substitute_part.starts_with('/') {
@@ -415,7 +408,21 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
         return Ok(()); // Invalid format - need at least /pattern/replacement/
     }
 
-    let pattern = parts[1];
+    // Empty pattern reuses last search (Vim behavior: :%s//bar/ means "replace last search with bar")
+    let pattern = if parts[1].is_empty() {
+        let last = editor.registers().get_last_search().to_string();
+        if last.is_empty() {
+            editor.set_lsp_status("E35: No previous regular expression".to_string());
+            return Ok(());
+        }
+        last
+    } else {
+        // Update last search register with this pattern
+        editor
+            .registers_mut()
+            .set_last_search(parts[1].to_string());
+        parts[1].to_string()
+    };
     // Convert Vim-style backreferences to Rust regex syntax
     let replacement = convert_vim_backrefs(parts[2]);
     let flags = if parts.len() >= 4 { parts[3] } else { "" };
@@ -436,7 +443,7 @@ fn handle_substitute_command(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Compile the regex pattern
     use regex::RegexBuilder;
-    let regex = match RegexBuilder::new(pattern)
+    let regex = match RegexBuilder::new(&pattern)
         .case_insensitive(ignore_case)
         .build()
     {
@@ -695,7 +702,7 @@ fn handle_global_command(
             let parts: Vec<&str> = sub_command.splitn(4, '/').collect();
             if parts.len() >= 3 {
                 let sub_pattern = parts[1];
-                let replacement = parts[2];
+                let replacement = convert_vim_backrefs(parts[2]);
                 let flags = if parts.len() >= 4 { parts[3] } else { "" };
 
                 let global = flags.contains('g');
@@ -715,9 +722,9 @@ fn handle_global_command(
                                 let line_text = line.trim_end_matches('\n');
 
                                 let new_text = if global {
-                                    sub_regex.replace_all(line_text, replacement).to_string()
+                                    sub_regex.replace_all(line_text, replacement.as_str()).to_string()
                                 } else {
-                                    sub_regex.replace(line_text, replacement).to_string()
+                                    sub_regex.replace(line_text, replacement.as_str()).to_string()
                                 };
 
                                 if new_text != line_text {
@@ -1239,21 +1246,22 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
     execute_command_single(editor, command)
 }
 
-/// Helper: Check if command contains patterns that may include | characters
-/// Returns true for substitute (:s), global (:g), and vglobal (:v) commands
+/// Helper: Check if command contains patterns that may include | characters.
+/// Returns true for substitute (:s), global (:g), and vglobal (:v) commands.
+///
+/// We strip leading range characters (digits, commas, %, ., $, ', <, >) then
+/// check if the command part starts with s/, g/, g!/, or v/.  This avoids
+/// false positives on commands like `:e files/foo | set number`.
 fn is_command_with_pattern(command: &str) -> bool {
-    // Match: :s/, :%s/, :'<,'>s/, :1,5s/, etc.
-    if command.contains("s/") {
-        return true;
-    }
-    // Match: :g/, :g!/, :v/ (including when prefixed by a range like % or .,$)
-    //
-    // This is intentionally permissive: returning true here simply prevents command-chaining
-    // splitting on |, which can legally appear in regex patterns.
-    if command.contains("g/") || command.contains("g!/") || command.contains("v/") {
-        return true;
-    }
-    false
+    let trimmed = command.trim();
+    // Skip past range prefix: digits, commas, %, ., $, ', <, >, +, -, spaces
+    let cmd = trimmed.trim_start_matches(|c: char| {
+        c.is_ascii_digit() || ",%.$ '<>+-".contains(c)
+    });
+    cmd.starts_with("s/")
+        || cmd.starts_with("g/")
+        || cmd.starts_with("g!/")
+        || cmd.starts_with("v/")
 }
 
 /// Execute a single command (no chaining)
@@ -1773,7 +1781,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle substitute command (:s, :%s, :'<,'>s)
     // Only treat as substitute when the command part starts with `s/`.
     if cmd_part.starts_with("s/") {
-        handle_substitute_command(editor, command)?;
+        handle_substitute_command(editor, range_str, cmd_part)?;
         return Ok(());
     }
 
