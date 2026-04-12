@@ -58,7 +58,7 @@ async fn deprecation_middleware(req: Request<axum::body::Body>, next: Next) -> R
 /// Returns the actual port number the server is listening on
 pub async fn start_server(
     addr: &str,
-    tx: mpsc::UnboundedSender<ApiRequest>,
+    tx: mpsc::Sender<ApiRequest>,
     port_tx: tokio::sync::oneshot::Sender<u16>,
 ) -> Result<()> {
     let state = ApiState::new(tx);

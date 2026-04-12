@@ -94,7 +94,7 @@ enum DocumentSyncRequestAction {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct DocumentSyncRequestPlan {
     action: DocumentSyncRequestAction,
-    old_content: Option<String>,
+    old_content: Option<Arc<str>>,
 }
 
 impl Editor {
@@ -171,7 +171,7 @@ impl Editor {
 
     /// Marks a document as opened and synced (didOpen sent with this exact content).
     pub fn mark_document_opened_with_content(&mut self, file_path: &str, content: String) {
-        self.mark_document_flushed(file_path, content, 1);
+        self.mark_document_flushed(file_path, Arc::from(content), 1);
     }
 
     /// Request LSP initialization for the current file
@@ -290,7 +290,7 @@ impl Editor {
         }
     }
 
-    fn mark_document_flushed(&mut self, file_path: &str, content: String, flushed_version: i32) {
+    fn mark_document_flushed(&mut self, file_path: &str, content: Arc<str>, flushed_version: i32) {
         let current_content = self
             .buffer()
             .file_path()
@@ -661,7 +661,11 @@ impl Editor {
                 if let (Some(synced), Some(flushed_version)) =
                     (result.synced_content, result.synced_lsp_version)
                 {
-                    self.mark_document_flushed(&result.file_path, synced, flushed_version);
+                    self.mark_document_flushed(
+                        &result.file_path,
+                        Arc::from(synced),
+                        flushed_version,
+                    );
                 }
 
                 let (trigger_col, trigger_prefix) = self.completion_trigger_context();
@@ -746,7 +750,7 @@ impl Editor {
                 {
                     self.mark_document_flushed(
                         &result.request_key.file_path,
-                        synced,
+                        Arc::from(synced),
                         flushed_version,
                     );
                 }
@@ -1102,7 +1106,7 @@ impl Editor {
             let seeded_content = state
                 .last_queued_content
                 .clone()
-                .or_else(|| current_content.map(|content| content.to_string()));
+                .or_else(|| current_content.map(|content| Arc::from(content)));
             if let Some(content) = seeded_content {
                 state.mark_change_flushed(content, sent_version, current_content);
             }
@@ -1115,7 +1119,7 @@ impl Editor {
             let flushed_content = state
                 .last_queued_content
                 .clone()
-                .or_else(|| current_content.map(|content| content.to_string()));
+                .or_else(|| current_content.map(|content| Arc::from(content)));
             if let Some(content) = flushed_content {
                 state.mark_change_flushed(content, sent_version, current_content);
             }
@@ -1299,9 +1303,9 @@ impl Editor {
                             .is_some_and(|target_version| sent_version >= target_version)
                 });
 
-        let mut content = None;
+        let mut content: Option<Arc<str>> = None;
         if needs_reconcile {
-            content = Some(self.buffer().rope().to_string());
+            content = Some(Arc::from(self.buffer().rope().to_string()));
             self.reconcile_document_sync_with_manager(
                 &state_key,
                 content.as_deref(),
@@ -1323,7 +1327,8 @@ impl Editor {
 
         if should_send {
             // Snapshot current content once for queue/no-op checks and potential send.
-            let content = content.unwrap_or_else(|| self.buffer().rope().to_string());
+            let content: Arc<str> =
+                content.unwrap_or_else(|| Arc::from(self.buffer().rope().to_string()));
 
             {
                 let state = self
@@ -1333,14 +1338,14 @@ impl Editor {
                     .entry(state_key.clone())
                     .or_default();
                 if state.target_lsp_version.is_none()
-                    && state.flushed_content() == Some(content.as_str())
+                    && state.flushed_content() == Some(&*content)
                 {
                     state.buffer_modified = false;
                     state.last_queued_content = None;
                     return;
                 }
 
-                if state.queued_content() == Some(content.as_str()) {
+                if state.queued_content() == Some(&*content) {
                     return;
                 }
             }
@@ -1466,22 +1471,23 @@ impl Editor {
         };
 
         // Get buffer content
-        let content = self.buffer().rope().to_string();
+        let content_str = self.buffer().rope().to_string();
         let manager_version = lsp.get_document_version(&uri).await;
         let sent_version = lsp.get_last_sent_version(&uri).await;
         self.reconcile_document_sync_with_manager(
             &state_key,
-            Some(&content),
+            Some(&content_str),
             manager_version,
             sent_version,
         );
 
+        let content: Arc<str> = Arc::from(content_str);
         let plan = self.document_sync_request_plan(&state_key, &content);
         match plan.action {
             DocumentSyncRequestAction::Noop => false,
             DocumentSyncRequestAction::DidOpen => {
                 match lsp
-                    .did_open_broadcast(uri.clone(), language_id, 1, content.clone())
+                    .did_open_broadcast(uri.clone(), language_id, 1, content.to_string())
                     .await
                 {
                     Ok(_) => {
@@ -1510,7 +1516,7 @@ impl Editor {
                     .ok()
                     .flatten();
                 let (flushed_content, flushed_version) = match flushed {
-                    Some((text, ver)) => (text, ver),
+                    Some((text, ver)) => (Arc::from(text), ver),
                     None => {
                         let ver = lsp.get_last_sent_version(&uri).await;
                         (content, ver)
@@ -1553,7 +1559,7 @@ impl Editor {
                     .ok()
                     .flatten();
                 let (flushed_content, flushed_version) = match flushed {
-                    Some((text, ver)) => (text, ver),
+                    Some((text, ver)) => (Arc::from(text), ver),
                     None => {
                         let ver = lsp.get_last_sent_version(&uri).await;
                         (content, ver)
@@ -1871,8 +1877,8 @@ mod tests {
             .or_default();
         state.did_open_sent = true;
         state.buffer_modified = true;
-        state.last_flushed_content = Some("class Test {\n".to_string());
-        state.last_queued_content = Some("class Test {}\n".to_string());
+        state.last_flushed_content = Some(Arc::from("class Test {\n"));
+        state.last_queued_content = Some(Arc::from("class Test {}\n"));
         state.target_lsp_version = Some(4);
 
         let plan = editor.document_sync_request_plan(&file_path, "class Test {}\n");
@@ -1893,7 +1899,7 @@ mod tests {
             .entry(file_path.clone())
             .or_default();
         state.did_open_sent = true;
-        state.mark_change_queued("class Test {}\n".to_string(), 4);
+        state.mark_change_queued(Arc::from("class Test {}\n"), 4);
 
         editor.reconcile_document_sync_with_manager(&file_path, Some("class Test {}\n"), 4, 4);
 
@@ -1925,7 +1931,7 @@ mod tests {
             .entry(file_path.clone())
             .or_default();
         state.did_open_sent = true;
-        state.mark_change_queued("class Test {}\n".to_string(), 4);
+        state.mark_change_queued(Arc::from("class Test {}\n"), 4);
 
         editor.reconcile_document_sync_with_manager(
             &file_path,

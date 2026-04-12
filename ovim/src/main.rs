@@ -126,13 +126,13 @@ async fn main() -> Result<()> {
     }
 
     // Create channel for Java LSP status updates (needed for both headless and TUI modes)
-    let (java_status_tx, java_status_rx) = mpsc::unbounded_channel();
+    let (java_status_tx, java_status_rx) = mpsc::channel(64);
 
     // Initialize the Java status sender in the lsp_init module
     lsp_init::init_java_status_sender(java_status_tx);
 
     // Set up API server (always start in both headless and UI modes)
-    let (tx, rx) = mpsc::unbounded_channel();
+    let (tx, rx) = mpsc::channel(256);
     let (port_tx, port_rx) = tokio::sync::oneshot::channel();
 
     // Spawn API server in a separate task

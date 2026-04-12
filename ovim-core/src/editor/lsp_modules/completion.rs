@@ -166,7 +166,7 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let language_id = language_id.to_string();
         let task = tokio::spawn(async move {
-            let content = initial_content;
+            let content: std::sync::Arc<str> = std::sync::Arc::from(initial_content);
 
             let mut supported_triggers: HashSet<char> = lsp
                 .completion_trigger_characters_for_servers(&server_ids)
@@ -184,10 +184,10 @@ impl Editor {
                 super::super::DocumentSyncRequestAction::Noop => {}
                 super::super::DocumentSyncRequestAction::DidOpen => {
                     let ok = lsp
-                        .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
+                        .did_open_broadcast(uri.clone(), &language_id, 1, content.to_string())
                         .await;
                     if ok.is_ok() {
-                        synced_content = Some(content.clone());
+                        synced_content = Some(content.to_string());
                         synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
                     }
                 }
@@ -221,7 +221,7 @@ impl Editor {
                         {
                             synced_content = Some(flushed_text);
                         } else {
-                            synced_content = Some(content.clone());
+                            synced_content = Some(content.to_string());
                         }
                         synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
                     }

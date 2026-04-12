@@ -34,7 +34,7 @@ fn apply_java_status(editor: &mut Editor, status: String) {
 /// Handles LSP, diagnostics, syntax, Lua, and background file tasks.
 async fn process_editor_tick(
     editor: &mut Editor,
-    java_status_rx: &mut mpsc::UnboundedReceiver<String>,
+    java_status_rx: &mut mpsc::Receiver<String>,
     preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
     file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
     syntax_tx: &tokio::sync::mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
@@ -594,8 +594,8 @@ fn process_picker_results(
 /// Headless (API-only) event loop.
 pub async fn run_headless_loop(
     editor: &mut Editor,
-    mut api_rx: mpsc::UnboundedReceiver<ApiRequest>,
-    mut java_status_rx: mpsc::UnboundedReceiver<String>,
+    mut api_rx: mpsc::Receiver<ApiRequest>,
+    mut java_status_rx: mpsc::Receiver<String>,
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
 ) -> Result<()> {
@@ -857,8 +857,8 @@ fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
 pub async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
-    mut api_rx: Option<mpsc::UnboundedReceiver<ApiRequest>>,
-    mut java_status_rx: mpsc::UnboundedReceiver<String>,
+    mut api_rx: Option<mpsc::Receiver<ApiRequest>>,
+    mut java_status_rx: mpsc::Receiver<String>,
 ) -> Result<()> {
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(200);
@@ -1151,10 +1151,7 @@ async fn handle_api_request(
         ApiRequest::GetLspStatus(tx) => {
             // Get LSP status from the editor's LSP manager
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
-                let servers = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(async { lsp_manager_arc.get_lsp_status().await })
-                });
+                let servers = lsp_manager_arc.get_lsp_status().await;
 
                 let lsp_status_info = LspStatusInfo {
                     servers: servers
@@ -1190,11 +1187,7 @@ async fn handle_api_request(
             // Get LSP server statuses
             let mut lsp_servers = HashMap::new();
             if let Some(lsp_manager_arc) = editor.lsp_manager() {
-                let lsp_manager_arc = lsp_manager_arc.clone();
-                let servers = tokio::task::block_in_place(|| {
-                    tokio::runtime::Handle::current()
-                        .block_on(async { lsp_manager_arc.get_lsp_status().await })
-                });
+                let servers = lsp_manager_arc.get_lsp_status().await;
 
                 for server in servers {
                     let state = if server.has_capabilities {

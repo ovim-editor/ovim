@@ -80,6 +80,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::SendKeys(keys.to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -103,6 +104,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetBuffer(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -126,6 +128,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::SetBuffer(content.to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -148,6 +151,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetCursor(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -172,6 +176,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::ExecuteCommand(command.to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -195,7 +200,8 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             let (mode_tx, mode_rx) = oneshot::channel();
             let _ = state
                 .tx
-                .send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
+                .send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx))
+                .await;
             let _ = mode_rx.await;
 
             // Send K to trigger hover
@@ -203,6 +209,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::SendKeys("K".to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
             let _ = rx.await;
 
@@ -216,6 +223,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 if state
                     .tx
                     .send(ApiRequest::GetSnapshotLight(snap_tx))
+                    .await
                     .is_err()
                 {
                     break;
@@ -232,7 +240,8 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             let (esc_tx, esc_rx) = oneshot::channel();
             let _ = state
                 .tx
-                .send(ApiRequest::SetMode("NORMAL".to_string(), esc_tx));
+                .send(ApiRequest::SetMode("NORMAL".to_string(), esc_tx))
+                .await;
             let _ = esc_rx.await;
 
             match hover_text {
@@ -247,13 +256,15 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             let (mode_tx, mode_rx) = oneshot::channel();
             let _ = state
                 .tx
-                .send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx));
+                .send(ApiRequest::SetMode("NORMAL".to_string(), mode_tx))
+                .await;
             let _ = mode_rx.await;
 
             let (tx, rx) = oneshot::channel();
             state
                 .tx
                 .send(ApiRequest::SendKeys("gd".to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -278,6 +289,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetSnapshot(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -298,6 +310,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetHealth(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -318,6 +331,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetLspStatus(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -357,6 +371,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::SetMode(mode_str.to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -380,6 +395,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetOutline(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -405,6 +421,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::SearchSymbol(query.to_string(), tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -425,6 +442,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetTrace(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -445,6 +463,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetDiagnostics(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -461,6 +480,7 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             state
                 .tx
                 .send(ApiRequest::GetContextWindow(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -496,6 +516,7 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
             state
                 .tx
                 .send(ApiRequest::GetContextWindow(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -520,6 +541,7 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
             state
                 .tx
                 .send(ApiRequest::GetBuffer(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -544,6 +566,7 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
             state
                 .tx
                 .send(ApiRequest::GetSnapshot(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -569,6 +592,7 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
             state
                 .tx
                 .send(ApiRequest::GetLspStatus(tx))
+                .await
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
             match rx.await {
@@ -599,6 +623,7 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
                 state
                     .tx
                     .send(ApiRequest::GetBuffer(tx))
+                    .await
                     .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
 
                 match rx.await {
@@ -634,7 +659,7 @@ async fn handle_resource_read(state: ApiState, params: Value) -> Result<Value, J
 /// Get current file path from editor
 async fn get_current_file_path(state: &ApiState) -> Option<String> {
     let (tx, rx) = oneshot::channel();
-    state.tx.send(ApiRequest::GetBuffer(tx)).ok()?;
+    state.tx.send(ApiRequest::GetBuffer(tx)).await.ok()?;
 
     match rx.await {
         Ok(super::state::ApiResponse::Buffer(buffer)) => buffer.file_path,

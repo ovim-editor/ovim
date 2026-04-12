@@ -198,8 +198,8 @@ impl LspManager {
                 self.send_did_change_with_version(
                     uri.clone(),
                     &language_id,
-                    text,
-                    old_text,
+                    text.to_string(),
+                    old_text.map(|s| s.to_string()),
                     version,
                 ),
             )
@@ -258,8 +258,8 @@ impl LspManager {
         &self,
         uri: Uri,
         language_id: &str,
-        text: String,
-        old_text: Option<String>,
+        text: Arc<str>,
+        old_text: Option<Arc<str>>,
     ) -> Result<()> {
         // Bump the LSP document version immediately so that set_diagnostics()
         // can reject stale diagnostics even before the debounce timer fires.
@@ -440,8 +440,8 @@ impl LspManager {
         &self,
         uri: Uri,
         language_id: &str,
-        text: String,
-        old_text: Option<String>,
+        text: Arc<str>,
+        old_text: Option<Arc<str>>,
     ) -> Result<()> {
         // The debouncer is shared across all servers for a URI.
         // When the timer fires and flush happens, we send to all servers.
@@ -480,6 +480,10 @@ impl LspManager {
             let version = debouncer.pending_version;
             drop(debouncer);
 
+            // Convert Arc<str> → String once for the LSP protocol layer.
+            let text_string = text.to_string();
+            let old_text_string = old_text.map(|s| s.to_string());
+
             // Send to the server group responsible for this document with the same version
             let server_ids = self.servers_for_document_uri(language_id, &uri);
             let mut any_sent = false;
@@ -490,8 +494,8 @@ impl LspManager {
                     self.send_did_change_with_version(
                         uri.clone(),
                         sid,
-                        text.clone(),
-                        old_text.clone(),
+                        text_string.clone(),
+                        old_text_string.clone(),
                         version,
                     ),
                 )
@@ -529,7 +533,7 @@ impl LspManager {
                         .insert(uri.clone(), std::time::Instant::now());
                 }
 
-                return Ok(Some((text, version)));
+                return Ok(Some((text_string, version)));
             }
         }
         Ok(None)

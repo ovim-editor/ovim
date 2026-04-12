@@ -104,10 +104,10 @@ pub(crate) struct ChangeDebouncer {
     language_id: String,
 
     /// Full text of the pending change
-    pending_text: String,
+    pending_text: Arc<str>,
 
     /// Old text before change (for incremental sync)
-    old_text: Option<String>,
+    old_text: Option<Arc<str>>,
 
     /// Timer handle for the debounce delay
     timer_handle: Option<JoinHandle<()>>,
@@ -124,7 +124,7 @@ impl ChangeDebouncer {
         Self {
             uri,
             language_id,
-            pending_text: String::new(),
+            pending_text: Arc::from(""),
             old_text: None,
             timer_handle: None,
             pending_version: version,

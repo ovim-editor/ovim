@@ -141,18 +141,18 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let mut synced_content = None;
-            let content = initial_content;
+            let content: std::sync::Arc<str> = std::sync::Arc::from(initial_content);
             let mut lsp_version = lsp.get_last_sent_version(&uri).await;
 
             match sync_plan.action {
                 super::super::DocumentSyncRequestAction::Noop => {}
                 super::super::DocumentSyncRequestAction::DidOpen => {
                     if lsp
-                        .did_open_broadcast(uri.clone(), &language_id, 1, content.clone())
+                        .did_open_broadcast(uri.clone(), &language_id, 1, content.to_string())
                         .await
                         .is_ok()
                     {
-                        synced_content = Some(content.clone());
+                        synced_content = Some(content.to_string());
                         lsp_version = lsp.get_last_sent_version(&uri).await;
                     }
                 }
@@ -190,7 +190,7 @@ impl Editor {
                         } else {
                             // Debouncer was already consumed (e.g. timer fired
                             // between our calls) — our content was likely sent.
-                            synced_content = Some(content.clone());
+                            synced_content = Some(content.to_string());
                         }
                         lsp_version = lsp.get_last_sent_version(&uri).await;
                     }

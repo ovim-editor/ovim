@@ -288,11 +288,11 @@ impl From<ovim_core::CommandResult> for ApiResponse {
 /// Shared API state
 #[derive(Clone)]
 pub struct ApiState {
-    pub tx: mpsc::UnboundedSender<ApiRequest>,
+    pub tx: mpsc::Sender<ApiRequest>,
 }
 
 impl ApiState {
-    pub fn new(tx: mpsc::UnboundedSender<ApiRequest>) -> Self {
+    pub fn new(tx: mpsc::Sender<ApiRequest>) -> Self {
         Self { tx }
     }
 }

@@ -21,7 +21,7 @@ pub async fn get_snapshot(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetSnapshot(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetSnapshot(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -61,6 +61,7 @@ pub async fn send_keys(
     if state
         .tx
         .send(ApiRequest::SendKeys(payload.keys, tx))
+        .await
         .is_err()
     {
         return plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Editor not available");
@@ -108,7 +109,7 @@ pub async fn get_buffer(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetBuffer(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetBuffer(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -145,6 +146,7 @@ pub async fn set_buffer(
     if state
         .tx
         .send(ApiRequest::SetBuffer(payload.content, tx))
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -163,7 +165,7 @@ pub async fn get_cursor(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetCursor(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetCursor(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -180,7 +182,7 @@ pub async fn get_mode(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetMode(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetMode(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -208,6 +210,7 @@ pub async fn set_mode(
     if state
         .tx
         .send(ApiRequest::SetMode(payload.mode, tx))
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -246,6 +249,7 @@ pub async fn execute_command(
     if state
         .tx
         .send(ApiRequest::ExecuteCommand(payload.command, tx))
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -292,6 +296,7 @@ pub async fn get_render(
             plain,
             tx,
         })
+        .await
         .is_err()
     {
         return plain_text_error(StatusCode::INTERNAL_SERVER_ERROR, "Editor not available");
@@ -329,7 +334,7 @@ pub async fn get_lsp_status(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetLspStatus(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetLspStatus(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -347,7 +352,7 @@ pub async fn get_health(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetHealth(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetHealth(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -365,7 +370,7 @@ pub async fn get_metrics(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetMetrics(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetMetrics(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -411,7 +416,7 @@ pub async fn get_outline(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetOutline(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetOutline(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -439,6 +444,7 @@ pub async fn search_symbol(
     if state
         .tx
         .send(ApiRequest::SearchSymbol(params.q, tx))
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -457,7 +463,7 @@ pub async fn get_trace(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetTrace(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetTrace(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -474,7 +480,7 @@ pub async fn get_diagnostics(State(state): State<ApiState>) -> Response {
 
     let (tx, rx) = oneshot::channel();
 
-    if state.tx.send(ApiRequest::GetDiagnostics(tx)).is_err() {
+    if state.tx.send(ApiRequest::GetDiagnostics(tx)).await.is_err() {
         return error_response("Editor not available");
     }
 
@@ -512,6 +518,7 @@ pub async fn edit_line(
             new: payload.new,
             tx,
         })
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -560,6 +567,7 @@ pub async fn insert_lines(
             text: payload.text,
             tx,
         })
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -594,6 +602,7 @@ pub async fn delete_lines(
     if state
         .tx
         .send(ApiRequest::DeleteLines { from, to, tx })
+        .await
         .is_err()
     {
         return error_response("Editor not available");
@@ -628,6 +637,7 @@ pub async fn read_lines(
     if state
         .tx
         .send(ApiRequest::ReadLines { from, to, tx })
+        .await
         .is_err()
     {
         return error_response("Editor not available");

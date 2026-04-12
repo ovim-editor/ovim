@@ -22,8 +22,8 @@ pub enum HoverContentType {
 pub struct DocumentSyncState {
     pub buffer_modified: bool,
     pub buffer_saved: bool,
-    pub last_flushed_content: Option<String>,
-    pub last_queued_content: Option<String>,
+    pub last_flushed_content: Option<Arc<str>>,
+    pub last_queued_content: Option<Arc<str>>,
     pub target_lsp_version: Option<i32>,
     /// Track whether we've sent didOpen for this document
     pub did_open_sent: bool,
@@ -54,7 +54,7 @@ impl DocumentSyncState {
         self.last_queued_content.as_deref()
     }
 
-    pub fn mark_change_queued(&mut self, queued_content: String, target_lsp_version: i32) {
+    pub fn mark_change_queued(&mut self, queued_content: Arc<str>, target_lsp_version: i32) {
         self.buffer_modified = true;
         self.last_queued_content = Some(queued_content);
         self.target_lsp_version = Some(target_lsp_version);
@@ -62,7 +62,7 @@ impl DocumentSyncState {
 
     pub fn mark_change_flushed(
         &mut self,
-        flushed_content: String,
+        flushed_content: Arc<str>,
         flushed_version: i32,
         current_content: Option<&str>,
     ) {
@@ -73,13 +73,13 @@ impl DocumentSyncState {
             .is_some_and(|target| target <= flushed_version)
         {
             self.target_lsp_version = None;
-            if self.last_queued_content.as_deref() == Some(flushed_content.as_str()) {
+            if self.last_queued_content.as_deref() == Some(&*flushed_content) {
                 self.last_queued_content = None;
             }
         }
 
         self.buffer_modified = current_content.is_some_and(|current| {
-            current != flushed_content.as_str() || self.target_lsp_version.is_some()
+            current != &*flushed_content || self.target_lsp_version.is_some()
         });
     }
 

@@ -5,12 +5,12 @@ use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
 
 // Global channel for Hyperion LSP status updates (used by all JVM languages)
-static HYPERION_STATUS_SENDER: OnceLock<mpsc::UnboundedSender<String>> = OnceLock::new();
+static HYPERION_STATUS_SENDER: OnceLock<mpsc::Sender<String>> = OnceLock::new();
 
 /// Helper to send Hyperion LSP status updates, prefixed with the language name
 fn send_hyperion_status(language_label: &str, msg: String) {
     if let Some(tx) = HYPERION_STATUS_SENDER.get() {
-        let _ = tx.send(format!("{}: {}", language_label, msg));
+        let _ = tx.try_send(format!("{}: {}", language_label, msg));
     }
 }
 
@@ -21,7 +21,7 @@ fn send_java_status(msg: String) {
 }
 
 /// Initialize the Hyperion status sender (called from main)
-pub fn init_java_status_sender(sender: mpsc::UnboundedSender<String>) {
+pub fn init_java_status_sender(sender: mpsc::Sender<String>) {
     HYPERION_STATUS_SENDER.set(sender).ok();
 }
 
