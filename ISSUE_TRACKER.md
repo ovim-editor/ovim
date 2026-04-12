@@ -204,7 +204,6 @@
 | OV-00240 | Done | MEDIUM | Low | [CMD] Empty substitute pattern `:%s//bar/` didn't reuse last search — Vim behavior is to reuse the `/` register pattern when the substitute pattern is empty. Fixed: reads `get_last_search()` register; shows E35 error if no prior search exists. Also stores non-empty patterns in the search register. (ovim-core/src/editor/input/commands.rs) |
 | OV-00241 | Done | MEDIUM | Low | [CMD] `is_command_with_pattern` was overly broad — matched any command containing `/` anywhere (e.g., `:e path/to/file`), causing file paths to be treated as pattern commands. Fixed: now only matches `s/`, `g/`, `g!/`, `v/` after stripping range prefixes. (ovim-core/src/editor/input/commands.rs) |
 | OV-00242 | Done | MEDIUM | Low | [CMD] `:g/.../s/.../` didn't convert Vim backreferences — the global command's inline substitute used raw replacement text without converting `\1`→`$1`. Fixed: replacement now goes through `convert_vim_backrefs()`. (ovim-core/src/editor/input/commands.rs) |
-| OV-00243 | Pending | LOW | Medium | [CMD] Vim regex syntax not converted for substitute patterns — Vim uses `\|` for alternation, `\(` for groups, `\+` for one-or-more, etc. ovim passes patterns directly to Rust regex engine which uses `|`, `(`, `+`. No conversion layer exists. Users must use Rust/PCRE-style regex. (ovim-core/src/editor/input/commands.rs) |
 
 ## Bugs Filed Against Hyperion (if any)
 

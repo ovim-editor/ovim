@@ -114,6 +114,24 @@ curl -X POST http://127.0.0.1:PORT/v1/mcp \
   -d '{"jsonrpc":"2.0","id":6,"method":"resources/read","params":{"uri":"ovim://buffer"}}'
 ```
 
+## Stdio MCP Server (`.mcp.json`)
+
+For MCP clients that support stdio transport (e.g., Claude Code), create a `.mcp.json` in your project root:
+
+```json
+{
+  "mcpServers": {
+    "ovim": {
+      "command": "ovim",
+      "args": ["mcp-server", "--workspace", "~/.ovim-workspace"],
+      "type": "stdio"
+    }
+  }
+}
+```
+
+This assumes `ovim` is on your `$PATH`. Adjust the command path if using a local build (e.g., `./target/release/ovim`).
+
 ## MCP for Any LLM Client
 
 The **HTTP `/mcp` endpoint** is the primary MCP interface. Any tool can use ovim's MCP by:
