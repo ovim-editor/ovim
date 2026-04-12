@@ -1013,8 +1013,8 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
             spans.push(Span::styled(
                 label,
                 Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Yellow)
+                    .fg(Color::Rgb(30, 30, 30))
+                    .bg(Color::Rgb(240, 180, 50))
                     .add_modifier(Modifier::BOLD),
             ));
             spans.push(Span::styled(

@@ -480,12 +480,31 @@ fn centered_area(full: Rect, width: u16, height: u16) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-/// Centered consent dialog for LSP auto-install requests.
-pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, theme: &Theme) {
-    let Some((language, server, method)) = editor.pending_lsp_install_summary() else {
-        return;
-    };
+/// Colors for modal dialogs. Explicit RGB values so the dialog is always
+/// legible regardless of terminal background or active theme.
+struct ModalColors {
+    bg: Color,
+    border: Color,
+    title: Color,
+    text: Color,
+    secondary: Color,
+    action: Color,
+}
 
+const MODAL_COLORS: ModalColors = ModalColors {
+    bg: Color::Rgb(30, 34, 42),
+    border: Color::Rgb(240, 180, 50),
+    title: Color::Rgb(240, 180, 50),
+    text: Color::Rgb(220, 225, 235),
+    secondary: Color::Rgb(148, 158, 175),
+    action: Color::Rgb(130, 210, 150),
+};
+
+/// Renders a centered modal dialog with the given title and content lines.
+///
+/// Each line is a `(text, role)` pair where role selects the color:
+/// - `'t'` = primary text, `'s'` = secondary/hint, `'a'` = action/keybindings
+fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
     let full = frame.area();
     if full.width < 40 || full.height < 7 {
         return;
@@ -496,43 +515,33 @@ pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, theme: &The
     let height = 9u16.min(full.height.saturating_sub(2)).max(7);
     let area = centered_area(full, width, height);
 
-    let border_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Info));
-    let title_color =
-        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::TabActiveFg));
-    let text_color =
-        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::StatusLineForeground));
-    let hint_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Border));
-
-    let content = vec![
-        Line::from(Span::styled(
-            format!("Install {} for {} support?", server, language),
-            Style::default().fg(text_color).bg(Color::Reset),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            format!("Method: {}", method),
-            Style::default().fg(hint_color).bg(Color::Reset),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "Enter: install   A: always auto-install   Esc: skip",
-            Style::default()
-                .fg(title_color)
-                .bg(Color::Reset)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ];
+    let c = &MODAL_COLORS;
+    let content: Vec<Line> = lines
+        .iter()
+        .map(|(text, role)| {
+            let (fg, bold) = match role {
+                'a' => (c.action, true),
+                's' => (c.secondary, false),
+                _ => (c.text, false),
+            };
+            let mut style = Style::default().fg(fg).bg(c.bg);
+            if bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            Line::from(Span::styled(*text, style))
+        })
+        .collect();
 
     let dialog = Paragraph::new(content).wrap(Wrap { trim: false }).block(
         Block::default()
             .borders(Borders::ALL)
             .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(border_color).bg(Color::Reset))
-            .title(" Install Language Server ")
+            .border_style(Style::default().fg(c.border).bg(c.bg))
+            .title(title)
             .title_style(
                 Style::default()
-                    .fg(title_color)
-                    .bg(Color::Reset)
+                    .fg(c.title)
+                    .bg(c.bg)
                     .add_modifier(Modifier::BOLD),
             ),
     );
@@ -541,11 +550,32 @@ pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, theme: &The
     frame.render_widget(dialog, area);
 }
 
+/// Centered consent dialog for LSP auto-install requests.
+pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, _theme: &Theme) {
+    let Some((language, server, method)) = editor.pending_lsp_install_summary() else {
+        return;
+    };
+
+    let summary = format!("Install {} for {} support?", server, language);
+    let method_line = format!("Method: {}", method);
+    render_modal_dialog(
+        frame,
+        " Install Language Server ",
+        &[
+            (&summary, 't'),
+            (" ", 's'),
+            (&method_line, 's'),
+            (" ", 's'),
+            ("Enter: install   A: always auto-install   Esc: skip", 'a'),
+        ],
+    );
+}
+
 /// Centered permission dialog for AI chat approval requests.
 ///
 /// This is used for high-attention, blocking prompts (tool approval and
 /// no-repo folder approval) instead of relying on low-visibility status bars.
-pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, theme: &Theme) {
+pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _theme: &Theme) {
     let pending_no_repo = editor.ai_chat_has_pending_no_repo_folder_approval();
     let pending_tool = editor.ai_chat_has_pending_tool_approval();
     if !pending_no_repo && !pending_tool {
@@ -570,57 +600,15 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, them
         )
     };
 
-    let full = frame.area();
-    if full.width < 40 || full.height < 7 {
-        return;
-    }
-    let width = ((full.width * 70) / 100)
-        .clamp(48, 100)
-        .min(full.width.saturating_sub(2));
-    let height = 9u16.min(full.height.saturating_sub(2)).max(7);
-    let area = centered_area(full, width, height);
-
-    let border_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Info));
-    let title_color =
-        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::TabActiveFg));
-    let text_color =
-        crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::StatusLineForeground));
-    let hint_color = crate::key_convert::convert_core_color(theme.get_ui_color(UiGroup::Border));
-
-    let content = vec![
-        Line::from(Span::styled(
-            summary,
-            Style::default().fg(text_color).bg(Color::Reset),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            "This request blocks agent progress until resolved.",
-            Style::default().fg(hint_color).bg(Color::Reset),
-        )),
-        Line::from(""),
-        Line::from(Span::styled(
-            hints,
-            Style::default()
-                .fg(title_color)
-                .bg(Color::Reset)
-                .add_modifier(Modifier::BOLD),
-        )),
-    ];
-
-    let dialog = Paragraph::new(content).wrap(Wrap { trim: false }).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_type(ratatui::widgets::BorderType::Rounded)
-            .border_style(Style::default().fg(border_color).bg(Color::Reset))
-            .title(title)
-            .title_style(
-                Style::default()
-                    .fg(title_color)
-                    .bg(Color::Reset)
-                    .add_modifier(Modifier::BOLD),
-            ),
+    render_modal_dialog(
+        frame,
+        title,
+        &[
+            (&summary, 't'),
+            (" ", 's'),
+            ("This request blocks agent progress until resolved.", 's'),
+            (" ", 's'),
+            (hints, 'a'),
+        ],
     );
-
-    frame.render_widget(ratatui::widgets::Clear, area);
-    frame.render_widget(dialog, area);
 }
