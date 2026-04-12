@@ -136,12 +136,15 @@ impl Motions {
                 found_count += 1;
                 if found_count == count {
                     // Position cursor one after the character
-                    if i + 1 < chars.len() {
+                    // Only succeed if there's actual movement (i + 1 < char_col)
+                    // OV-00205: symmetric with the forward till fix (OV-00087)
+                    if i + 1 < char_col {
                         buffer
                             .cursor_mut()
                             .set_col(crate::unicode::char_to_grapheme_col(line, i + 1));
                         return true;
                     }
+                    return false;
                 }
             }
         }

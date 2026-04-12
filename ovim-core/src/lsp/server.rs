@@ -1170,8 +1170,9 @@ impl LanguageServer {
                     return Err(anyhow!("LSP server terminated (method: {})", method));
                 }
                 // OV-00156: Reject requests during shutdown to avoid queuing work
-                // that will never be answered
-                ServerState::ShuttingDown => {
+                // that will never be answered — except for the "shutdown" request
+                // itself, which must be sent during ShuttingDown state (OV-00225)
+                ServerState::ShuttingDown if method != "shutdown" => {
                     return Err(anyhow!("LSP server shutting down (method: {})", method));
                 }
                 _ => {} // Ready or Initializing — proceed

@@ -447,7 +447,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 if editor.buffer().file_path().is_some()
                     && tokio::runtime::Handle::try_current().is_ok()
                 {
-                    let _ = editor.buffer_mut().save();
+                    // OV-00204: Don't quit if save fails — show error instead
+                    if let Err(e) = editor.buffer_mut().save() {
+                        editor.set_lsp_status(format!("Save failed: {}", e));
+                        return Ok(true);
+                    }
                 }
                 editor.quit();
             }
