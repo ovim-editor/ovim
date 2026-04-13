@@ -169,7 +169,16 @@ impl Editor {
                     }
                 }
                 super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
-                    if lsp
+                    // Flush debouncer first — it has more recent text than our
+                    // captured `content` (which may be stale if the user kept
+                    // typing after we spawned).  See completion.rs for details.
+                    if let Ok(Some((flushed_text, _))) = lsp
+                        .flush_pending_changes_broadcast(&uri, &language_id)
+                        .await
+                    {
+                        synced_content = Some(flushed_text);
+                        lsp_version = lsp.get_last_sent_version(&uri).await;
+                    } else if lsp
                         .did_change_broadcast(
                             uri.clone(),
                             &language_id,
@@ -179,17 +188,12 @@ impl Editor {
                         .await
                         .is_ok()
                     {
-                        // Use the ACTUAL flushed content — another thread may
-                        // have replaced the debouncer's pending_text between
-                        // our did_change and flush calls.
                         if let Ok(Some((flushed_text, _))) = lsp
                             .flush_pending_changes_broadcast(&uri, &language_id)
                             .await
                         {
                             synced_content = Some(flushed_text);
                         } else {
-                            // Debouncer was already consumed (e.g. timer fired
-                            // between our calls) — our content was likely sent.
                             synced_content = Some(content.to_string());
                         }
                         lsp_version = lsp.get_last_sent_version(&uri).await;

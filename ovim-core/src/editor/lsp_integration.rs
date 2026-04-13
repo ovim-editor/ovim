@@ -1177,6 +1177,12 @@ impl Editor {
     pub fn mark_buffer_modified_force_send(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
             state.mark_modified();
+            // Clear flushed content so the next sync sends a full document
+            // update rather than an incremental diff.  This is critical after
+            // `:e!` (reload from disk): if a prior desync corrupted
+            // last_flushed_content, incremental diffs against it would produce
+            // further incorrect updates.
+            state.last_flushed_content = None;
         }
     }
 

@@ -204,26 +204,41 @@ impl Editor {
                     }
                 }
                 super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
-                    let ok = lsp
-                        .did_change_broadcast(
-                            uri.clone(),
-                            &language_id,
-                            content.clone(),
-                            sync_plan.old_content,
-                        )
-                        .await;
-                    if ok.is_ok() {
-                        // Use the ACTUAL flushed content — another thread may
-                        // have replaced the debouncer's pending_text.
-                        if let Ok(Some((flushed_text, _))) = lsp
-                            .flush_pending_changes_broadcast(&uri, &language_id)
-                            .await
-                        {
-                            synced_content = Some(flushed_text);
-                        } else {
-                            synced_content = Some(content.to_string());
-                        }
+                    // First try to flush whatever the main loop has already
+                    // queued in the debouncer — that text is more recent than
+                    // `content` which was captured at spawn time and may be
+                    // stale if the user kept typing.  Calling
+                    // did_change_broadcast with stale content would OVERWRITE
+                    // the debouncer's pending_text, causing a permanent desync
+                    // between the editor buffer and the LSP server's copy.
+                    if let Ok(Some((flushed_text, _))) = lsp
+                        .flush_pending_changes_broadcast(&uri, &language_id)
+                        .await
+                    {
+                        synced_content = Some(flushed_text);
                         synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                    } else {
+                        // Nothing was pending — queue our captured content as
+                        // a last resort (main loop hasn't sent any changes yet).
+                        let ok = lsp
+                            .did_change_broadcast(
+                                uri.clone(),
+                                &language_id,
+                                content.clone(),
+                                sync_plan.old_content,
+                            )
+                            .await;
+                        if ok.is_ok() {
+                            if let Ok(Some((flushed_text, _))) = lsp
+                                .flush_pending_changes_broadcast(&uri, &language_id)
+                                .await
+                            {
+                                synced_content = Some(flushed_text);
+                            } else {
+                                synced_content = Some(content.to_string());
+                            }
+                            synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
+                        }
                     }
                 }
             }
