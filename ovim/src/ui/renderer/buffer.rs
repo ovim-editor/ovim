@@ -2286,7 +2286,20 @@ pub fn render_diagnostic_virtual_text_overlay(
                                 .collect::<String>()
                         );
                     }
-                    buf.set_stringn(x, y, render_msg, available_after_gap, vtext_style);
+                    let (nx, _) =
+                        buf.set_stringn(x, y, render_msg, available_after_gap, vtext_style);
+                    // Clear remaining cells so stale characters from prior frames
+                    // don't bleed through after the diagnostic text.
+                    let clear_from = nx;
+                    if clear_from < full_right {
+                        buf.set_stringn(
+                            clear_from,
+                            y,
+                            " ".repeat((full_right - clear_from) as usize),
+                            (full_right - clear_from) as usize,
+                            Style::default(),
+                        );
+                    }
                 }
             }
         }
