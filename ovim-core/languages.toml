@@ -664,5 +664,7 @@ command = "tailwindcss-language-server"
 args = ["--stdio"]
 applies_to = ["typescript", "tsx", "typescriptreact", "javascript", "javascriptreact", "html", "css"]
 root_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs", "package.json"]
-activation_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs"]
+# Tailwind v3: explicit config files. Tailwind v4: CSS-based config (no config file needed,
+# but the package is still in node_modules). node_modules/tailwindcss catches both versions.
+activation_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs", "node_modules/tailwindcss"]
 install_hint = "Install with: npm install -g @tailwindcss/language-server"
