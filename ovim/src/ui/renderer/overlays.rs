@@ -33,7 +33,7 @@ pub fn render_hover_window(
     let viewport_start = ctx.viewport_start;
     let buffer_area = layout.buffer_area;
     use super::markdown::{colors, parse_markdown, render_markdown};
-
+    
     let h_scroll = editor.hover_h_scroll();
 
     const MIN_WIDTH: u16 = 30;

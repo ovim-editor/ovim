@@ -87,10 +87,7 @@ impl Editor {
             }
         };
 
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
+        self.ensure_lsp_document_synced().await;
 
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
         let buffer_version = self.buffer().version() as u64;

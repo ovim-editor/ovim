@@ -82,12 +82,10 @@ impl Editor {
 
         let buffer_version = self.buffer().version();
 
-        // If a diagnostic refresh is already in flight, don't spawn another.
-        // Slot::fire() would cancel the old one, but for diagnostics we want
-        // to let the existing request finish (it's cheap and fast).
-        if self.lsp.slots.diagnostics.is_pending() {
-            return;
-        }
+        // If diagnostics are already in flight, Slot::fire() will cancel the
+        // old request and start a fresh one. This is correct: if new diagnostics
+        // arrived via publishDiagnostics while a fetch was in progress, the
+        // in-flight fetch has stale data and should be replaced.
 
         let file_path_for_task = file_path.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
