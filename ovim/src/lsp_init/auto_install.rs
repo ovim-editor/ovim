@@ -113,9 +113,12 @@ async fn install_via_npm(
     }
 
     // Step 1: Check if npm is available
-    let npm_check = Command::new("npm").arg("--version").output();
+    let npm_ok = Command::new("npm")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
 
-    if npm_check.is_err() || !npm_check.unwrap().status.success() {
+    if !npm_ok {
         return InstallResult::PrerequisitesMissing(
             "npm not found. Install Node.js first:\n  \
              - macOS: brew install node\n  \
@@ -297,9 +300,12 @@ async fn install_via_cargo(
     features: &[String],
 ) -> InstallResult {
     // Check if cargo is available
-    let cargo_check = Command::new("cargo").arg("--version").output();
+    let cargo_ok = Command::new("cargo")
+        .arg("--version")
+        .output()
+        .is_ok_and(|o| o.status.success());
 
-    if cargo_check.is_err() || !cargo_check.unwrap().status.success() {
+    if !cargo_ok {
         return InstallResult::PrerequisitesMissing(
             "cargo not found. Install Rust from https://rustup.rs".to_string(),
         );

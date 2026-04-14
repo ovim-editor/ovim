@@ -5,7 +5,7 @@
 Symptoms:
 
 - `Session '<name>' not found`
-- `ovim-ctl list` shows “No sessions found”
+- `ovim session list` shows no sessions
 
 Checks:
 
@@ -14,15 +14,6 @@ Checks:
   - macOS: `~/Library/Caches/ovim/sessions`
   - Linux: `~/.cache/ovim/sessions`
 - If you set `OVIM_SESSION_DIR`, make sure your tooling uses the same location.
-
-## `ovim-ctl` errors
-
-`ovim-ctl` depends on:
-
-- `curl`
-- `jq` (recommended; some commands assume it)
-
-Install `jq` and retry.
 
 ## LSP not working
 

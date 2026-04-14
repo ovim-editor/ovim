@@ -10,7 +10,7 @@ ovim path/to/file.rs --headless --session dev
 
 ## Inspect and Control Sessions
 
-### Built-in `ovim` subcommands
+### Subcommands
 
 ```bash
 ovim session list
@@ -27,18 +27,6 @@ LSP helpers:
 ovim lsp wait -s dev --timeout 30000
 ovim lsp status -s dev
 ovim lsp hover -s dev
-```
-
-### `ovim-ctl` helper script
-
-`ovim-ctl` is a small helper that shells out to `curl` and (optionally) `jq`.
-
-```bash
-./ovim-ctl list
-./ovim-ctl wait dev 60
-./ovim-ctl send dev "iHello<Esc>"
-./ovim-ctl snapshot dev | jq '.cursor'
-./ovim-ctl kill dev
 ```
 
 ## Session Files
@@ -78,4 +66,4 @@ When headless, ovim exposes endpoints like:
 - `POST /keys`
 - `POST /command`
 
-Use `ovim snapshot -s <name>` (or `ovim-ctl snapshot`) instead of calling the API directly unless you need custom tooling.
+Use `ovim snapshot -s <name>` instead of calling the API directly unless you need custom tooling.
