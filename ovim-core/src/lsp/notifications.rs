@@ -296,9 +296,15 @@ impl LspManager {
         // Update pending text, version, and old text
         debouncer.pending_text = text;
         debouncer.pending_version = assigned_version;
-        // Only set old_text if we don't already have it (first change after sync)
-        if debouncer.old_text.is_none() {
-            debouncer.old_text = old_text;
+        // Always update old_text when the caller provides a baseline.
+        // The caller passes last_flushed_content — what the server actually has.
+        // Between flushes this value is stable (rapid typing passes the same
+        // baseline repeatedly). After undo, it's still the correct baseline
+        // because the server hasn't changed. The previous guard
+        // (`if debouncer.old_text.is_none()`) kept a stale baseline from
+        // pre-undo edits, causing wrong incremental diffs.
+        if let Some(new_old) = old_text {
+            debouncer.old_text = Some(new_old);
         }
 
         // Clone flush channel for timer closure
@@ -1356,5 +1362,100 @@ mod tests {
         assert_eq!(processed, 1);
 
         drop(debouncer_guard);
+    }
+
+    /// Verifies that the debouncer updates old_text when the caller provides
+    /// a fresh baseline (e.g., after undo). Previously, old_text was only
+    /// set when None, causing stale baselines after undo.
+    #[tokio::test(flavor = "current_thread")]
+    async fn debouncer_updates_old_text_on_undo() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-undo-test.rs").expect("uri");
+
+        // Simulate: initial content is "hello\n", flushed to server.
+        // Edit 1: type "x" -> "hellox\n"
+        manager
+            .did_change(
+                uri.clone(),
+                "rust",
+                Arc::from("hellox\n"),
+                Some(Arc::from("hello\n")), // baseline: what the server has
+            )
+            .await
+            .unwrap();
+
+        // Verify debouncer state after first edit
+        {
+            let entry = manager.change_debouncers.get(&uri).unwrap();
+            let debouncer = entry.lock().await;
+            assert_eq!(&*debouncer.pending_text, "hellox\n");
+            assert_eq!(debouncer.old_text.as_deref(), Some("hello\n"));
+        }
+
+        // Edit 2: type "y" -> "helloxy\n" (same baseline — server still has "hello\n")
+        manager
+            .did_change(
+                uri.clone(),
+                "rust",
+                Arc::from("helloxy\n"),
+                Some(Arc::from("hello\n")),
+            )
+            .await
+            .unwrap();
+
+        {
+            let entry = manager.change_debouncers.get(&uri).unwrap();
+            let debouncer = entry.lock().await;
+            assert_eq!(&*debouncer.pending_text, "helloxy\n");
+            // Baseline should still be "hello\n" (server hasn't changed)
+            assert_eq!(debouncer.old_text.as_deref(), Some("hello\n"));
+        }
+
+        // Now simulate: flush happened, server has "helloxy\n".
+        // Then user types "z" -> "helloxyz\n".
+        // Caller passes new baseline: "helloxy\n" (what server now has).
+        manager
+            .did_change(
+                uri.clone(),
+                "rust",
+                Arc::from("helloxyz\n"),
+                Some(Arc::from("helloxy\n")), // new baseline after flush
+            )
+            .await
+            .unwrap();
+
+        {
+            let entry = manager.change_debouncers.get(&uri).unwrap();
+            let debouncer = entry.lock().await;
+            assert_eq!(&*debouncer.pending_text, "helloxyz\n");
+            // Baseline MUST be updated to "helloxy\n", not stuck at "hello\n"
+            assert_eq!(
+                debouncer.old_text.as_deref(),
+                Some("helloxy\n"),
+                "Debouncer must update old_text when caller provides a new baseline"
+            );
+        }
+
+        // Simulate undo: buffer goes back to "helloxy\n".
+        // Server still has "helloxy\n" (from the last flush).
+        // Baseline is "helloxy\n" — same as pending_text.
+        manager
+            .did_change(
+                uri.clone(),
+                "rust",
+                Arc::from("helloxy\n"),
+                Some(Arc::from("helloxy\n")),
+            )
+            .await
+            .unwrap();
+
+        {
+            let entry = manager.change_debouncers.get(&uri).unwrap();
+            let debouncer = entry.lock().await;
+            assert_eq!(&*debouncer.pending_text, "helloxy\n");
+            assert_eq!(debouncer.old_text.as_deref(), Some("helloxy\n"));
+            // When pending_text == old_text, compute_simple_diff returns None
+            // (no diff to send). This is correct — server already has this content.
+        }
     }
 }

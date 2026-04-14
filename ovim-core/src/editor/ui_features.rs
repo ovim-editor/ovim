@@ -360,6 +360,47 @@ impl Editor {
         }
     }
 
+    /// Drains completed background git refresh results. Returns true if any applied.
+    pub fn poll_git_refresh(&mut self) -> bool {
+        let mut changed = false;
+        while let Ok(result) = self.git_refresh_rx.try_recv() {
+            // Apply to the buffer whose file path matches the refresh result.
+            let matching = self
+                .buffers
+                .iter()
+                .position(|b| b.file_path() == Some(&result.path));
+            if let Some(idx) = matching {
+                if let Some(status) = result.status {
+                    self.buffers[idx].set_git_status(status);
+                }
+                if let Some(blame) = result.blame {
+                    self.buffers[idx].set_git_blame(blame);
+                }
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// Spawns a background git status (and optionally blame) refresh for `path`.
+    pub fn spawn_git_refresh(&self, path: &str, blame_enabled: bool) {
+        let path = path.to_string();
+        let tx = self.git_refresh_tx.clone();
+        tokio::task::spawn_blocking(move || {
+            let status = crate::git::GitStatus::from_file(&path).ok();
+            let blame = if blame_enabled {
+                crate::git::GitBlame::from_file(&path).ok().filter(|b| !b.is_empty())
+            } else {
+                None
+            };
+            let _ = tx.blocking_send(super::GitRefreshResult {
+                path,
+                status,
+                blame,
+            });
+        });
+    }
+
     /// Gets the location list
     pub fn location_list(&self) -> &LocationList {
         &self.ui_panels.location_list

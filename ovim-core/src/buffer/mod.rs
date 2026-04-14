@@ -776,9 +776,19 @@ impl Buffer {
         &self.git_status
     }
 
+    /// Sets the git status (used by background refresh after save)
+    pub fn set_git_status(&mut self, status: GitStatus) {
+        self.git_status = status;
+    }
+
     /// Gets the git blame data for this buffer (if loaded)
     pub fn git_blame(&self) -> Option<&GitBlame> {
         self.git_blame.as_ref()
+    }
+
+    /// Sets git blame data (used by background refresh after save)
+    pub fn set_git_blame(&mut self, blame: GitBlame) {
+        self.git_blame = Some(blame);
     }
 
     /// Loads git blame data for the current file

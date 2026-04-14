@@ -346,6 +346,17 @@ pub struct Editor {
     pub(crate) build: build_state::BuildState,
     /// Unified virtual text decorations (inlay hints, diagnostics, etc.)
     pub decorations: decoration::DecorationMap,
+    /// Channel for receiving background git refresh results (status + blame)
+    git_refresh_rx: tokio::sync::mpsc::Receiver<GitRefreshResult>,
+    /// Sender half — cloned into spawn_blocking tasks after save
+    pub(crate) git_refresh_tx: tokio::sync::mpsc::Sender<GitRefreshResult>,
+}
+
+/// Result of a background git status/blame refresh after save.
+pub struct GitRefreshResult {
+    pub path: String,
+    pub status: Option<crate::git::GitStatus>,
+    pub blame: Option<crate::git::GitBlame>,
 }
 
 /// Pending LSP server installation awaiting user consent
@@ -446,6 +457,7 @@ impl Editor {
     /// Starts in Dashboard mode when no file is opened
     pub fn new() -> Self {
         let buffer = Buffer::new();
+        let (git_tx, git_rx) = tokio::sync::mpsc::channel(4);
         let mut editor = Self {
             buffers: vec![buffer],
             current_buffer_index: 0,
@@ -484,6 +496,8 @@ impl Editor {
             git_branch: None,
             build: build_state::BuildState::default(),
             decorations: decoration::DecorationMap::new(),
+            git_refresh_rx: git_rx,
+            git_refresh_tx: git_tx,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor
@@ -492,6 +506,7 @@ impl Editor {
     /// Creates an editor with initial content
     pub fn with_content(content: &str) -> Self {
         let buffer = Buffer::new_from_str(content);
+        let (git_tx, git_rx) = tokio::sync::mpsc::channel(4);
         let mut editor = Self {
             buffers: vec![buffer],
             current_buffer_index: 0,
@@ -530,6 +545,8 @@ impl Editor {
             git_branch: None,
             build: build_state::BuildState::default(),
             decorations: decoration::DecorationMap::new(),
+            git_refresh_rx: git_rx,
+            git_refresh_tx: git_tx,
         };
         editor.ai_state.last_observed_buffer_version = editor.buffer().version();
         editor

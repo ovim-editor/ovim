@@ -58,9 +58,8 @@ fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
         Ok(_) => {
             let new_path = editor.buffer().file_path().map(|s| s.to_string());
             editor.handle_file_path_transition_after_save(old_path, new_path);
-            if editor.options.blame {
-                editor.buffer_mut().load_git_blame();
-            }
+            // Git refresh runs on a background thread to avoid blocking the UI.
+            editor.spawn_git_refresh(&resolved, editor.options.blame);
             if opts.force {
                 editor.buffer_mut().set_read_only(false);
             }

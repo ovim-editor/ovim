@@ -1788,11 +1788,7 @@ impl Editor {
             .to_string();
 
         // Flush pending document changes so LSP has the latest content
-        let did_flush = self.ensure_lsp_document_synced().await;
-        if did_flush {
-            tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-        }
-        tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;
+        self.ensure_lsp_document_synced().await;
 
         // Resolve the server group responsible for this document (primary + companions).
         let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&abs_path));

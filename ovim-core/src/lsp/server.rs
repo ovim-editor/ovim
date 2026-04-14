@@ -604,6 +604,14 @@ impl LanguageServer {
                                         // This can happen for valid responses like hover with no info
                                         let _ = req.sender.send(Ok(Value::Null));
                                     }
+                                } else {
+                                    // Response for unknown request — likely timed out and
+                                    // was already cleaned up. Log so silent drops are visible.
+                                    crate::lsp_warn!(
+                                        &inner_clone.log_prefix(),
+                                        "Response for unknown request ID {:?} (timed out or already handled)",
+                                        id
+                                    );
                                 }
                             }
                         } else {
@@ -1180,16 +1188,9 @@ impl LanguageServer {
             }
         }
 
-        self.inner.outgoing_tx.send(msg).await.map_err(|_| {
-            anyhow!(
-                "LSP server not responding — channel closed (method: {})",
-                method
-            )
-        })?;
-
-        // NOW insert pending entry - message is sent, safe to track.
-        // The reader task needs to lock pending_requests to deliver the response,
-        // so our insert will complete before any response can be processed.
+        // Register FIRST — the entry must exist before the message hits the wire.
+        // A fast LSP server can respond before an insert-after-send would execute,
+        // causing the reader task to silently drop the response.
         {
             let mut pending = self.inner.pending_requests.lock().await;
             pending.insert(
@@ -1200,6 +1201,16 @@ impl LanguageServer {
                     method: method.to_string(),
                 },
             );
+        }
+
+        // THEN send — if send fails, clean up the registration.
+        if self.inner.outgoing_tx.send(msg).await.is_err() {
+            let mut pending = self.inner.pending_requests.lock().await;
+            pending.remove(&request_id);
+            return Err(anyhow!(
+                "LSP server not responding — channel closed (method: {})",
+                method,
+            ));
         }
 
         // Wait for response with timeout

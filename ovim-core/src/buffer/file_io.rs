@@ -247,16 +247,11 @@ impl Buffer {
 
     /// Saves the buffer to a specific file path (blocking wrapper)
     pub fn save_as<P: AsRef<Path>>(&mut self, path: P) -> Result<()> {
-        let result = tokio::task::block_in_place(|| {
+        tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.save_as_async(path))
-        });
-
-        // Refresh git status after save
-        if result.is_ok() {
-            self.refresh_git_status();
-        }
-
-        result
+        })
+        // Git status refresh is handled asynchronously by the event loop
+        // after SaveCompleted — not here, to avoid blocking the UI thread.
     }
 
     // ========== Swap/Backup File Support ==========

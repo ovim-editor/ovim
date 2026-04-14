@@ -456,6 +456,11 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
 
+    // Drain background git refresh results (spawned after :w)
+    if editor.poll_git_refresh() {
+        editor.mark_dirty();
+    }
+
     // Check if user approved an LSP auto-install
     if editor.has_approved_lsp_install() {
         crate::lsp_init::handle_approved_lsp_install(editor).await;
@@ -470,10 +475,10 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
 
-    // Only process new actions if not waiting for response
-    if !editor.has_pending_lsp_response() {
-        editor.process_pending_lsp_actions().await;
-    }
+    // Process pending LSP actions unconditionally. Each _impl() method
+    // manages its own response slot and cancels any previous in-flight
+    // request, so there's no need to gate on has_pending_lsp_response().
+    editor.process_pending_lsp_actions().await;
 
     let _ = editor.process_lua_commands();
 
@@ -916,9 +921,7 @@ pub async fn run_event_loop(
                     }
 
                     // Immediately process LSP actions triggered by input
-                    if !editor.has_pending_lsp_response() {
-                        editor.process_pending_lsp_actions().await;
-                    }
+                    editor.process_pending_lsp_actions().await;
 
                     // If more input queued, skip render to keep input flowing
                     if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
