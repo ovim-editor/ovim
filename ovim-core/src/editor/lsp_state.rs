@@ -150,52 +150,19 @@ pub struct PendingLspRequest<T> {
     pub started: std::time::Instant,
 }
 
-/// Concurrent pending LSP response slots -- each request type has its own field,
-/// so hover and goto can be in-flight simultaneously without conflict.
-pub struct PendingLspResponses {
-    pub hover: Option<PendingLspRequest<Option<String>>>,
-    /// (new_tab, request) -- collapses Definition/DefinitionNewTab into one field
-    pub definition: Option<(bool, PendingLspRequest<Option<lsp_types::Location>>)>,
-    /// (new_tab, request) -- collapses Implementation/ImplementationNewTab
-    pub implementation: Option<(bool, PendingLspRequest<Option<lsp_types::Location>>)>,
-    pub type_definition: Option<PendingLspRequest<Option<lsp_types::Location>>>,
-}
-
-impl Default for PendingLspResponses {
-    fn default() -> Self {
-        Self {
-            hover: None,
-            definition: None,
-            implementation: None,
-            type_definition: None,
-        }
-    }
-}
+/// Legacy struct — all response slots have been migrated to `LspSlots`.
+/// Kept temporarily while downstream references are cleaned up.
+#[derive(Default)]
+pub struct PendingLspResponses;
 
 impl PendingLspResponses {
-    /// Returns true if any response slot is occupied.
+    /// Returns true if any response slot is occupied.  (Always false now.)
     pub fn any_pending(&self) -> bool {
-        self.hover.is_some()
-            || self.definition.is_some()
-            || self.implementation.is_some()
-            || self.type_definition.is_some()
+        false
     }
 
-    /// Abort and clear all pending response slots.
-    pub fn abort_all(&mut self) {
-        if let Some(old) = self.hover.take() {
-            old.task.abort();
-        }
-        if let Some((_, old)) = self.definition.take() {
-            old.task.abort();
-        }
-        if let Some((_, old)) = self.implementation.take() {
-            old.task.abort();
-        }
-        if let Some(old) = self.type_definition.take() {
-            old.task.abort();
-        }
-    }
+    /// Abort and clear all pending response slots.  (No-op now.)
+    pub fn abort_all(&mut self) {}
 }
 
 /// Pending completion request (kept separate from PendingLspResponses to avoid
@@ -415,7 +382,7 @@ impl LspState {
             current_file_lsp_version: 0,
             current_file_lsp_sent_version: 0,
             hover_cache: None,
-            pending_lsp_responses: PendingLspResponses::default(),
+            pending_lsp_responses: PendingLspResponses,
             pending_completion: None,
             completion_request_seq: 0,
             pending_inlay_hints: None,

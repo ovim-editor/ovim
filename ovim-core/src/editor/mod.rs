@@ -29,6 +29,7 @@ pub mod decoration;
 mod debug_integration;
 mod lsp_integration;
 pub mod lsp_manager_panel;
+pub(crate) mod lsp_slot;
 mod lsp_state;
 mod lsp_subsystem;
 mod lsp_ui;

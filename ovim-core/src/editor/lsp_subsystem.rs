@@ -1,3 +1,4 @@
+use super::lsp_slot::LspSlots;
 use super::lsp_state::LspState;
 use super::lsp_ui::LspUi;
 use super::{LspCommand, PendingLspInstall};
@@ -8,6 +9,8 @@ use tokio::sync::mpsc;
 pub(crate) struct LspSubsystem {
     /// Core LSP state (manager, diagnostics, hover, pending actions, etc.)
     pub(crate) state: LspState,
+    /// Generic slots for in-flight LSP requests (Phase 2 migration)
+    pub(crate) slots: LspSlots,
     /// Channel sender for LSP commands from background tasks
     pub(crate) command_tx: Option<mpsc::UnboundedSender<LspCommand>>,
     /// Channel receiver for LSP commands from background tasks

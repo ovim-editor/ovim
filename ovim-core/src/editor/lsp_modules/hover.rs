@@ -101,9 +101,9 @@ impl Editor {
             self.set_lsp_status("Save file first to use hover".to_string());
             return Ok(false);
         };
-        let file_path = file_path_str.to_string(); // Clone to avoid borrow issues
+        let file_path = file_path_str.to_string();
 
-        // Check hover cache first (extract values to avoid borrow issues)
+        // Check hover cache first
         let cursor = self.buffer().cursor();
         let buffer_version = self.buffer().version();
         let cursor_line = cursor.line();
@@ -123,12 +123,6 @@ impl Editor {
                 self.set_lsp_status(String::new());
                 return Ok(true);
             }
-        }
-
-        // Cancel any existing pending hover request by aborting the task
-        if let Some(old) = self.lsp.state.pending_lsp_responses.hover.take() {
-            crate::lsp_debug!("LSP-HOVER", "Aborting previous pending hover request");
-            old.task.abort();
         }
 
         let abs_path = if std::path::Path::new(&file_path).is_absolute() {
@@ -170,15 +164,13 @@ impl Editor {
         // Ensure document is synced before making the request
         let did_flush = self.ensure_lsp_document_synced().await;
         if did_flush {
-            // Only sleep if we flushed changes (gives LSP time to process)
             tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
         }
 
-        // Resolve the server group responsible for this document.
+        // Resolve the server group responsible for this document
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
 
         // Spawn hover request in background (non-blocking)
-        // Uses multi-server fan-out to query all servers concurrently
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = if server_ids.len() > 1 {
@@ -186,23 +178,17 @@ impl Editor {
             } else {
                 lsp.hover(&uri, line, character, language_id).await
             };
-            let _ = tx.send(result);
-            Ok(None)
+            let _ = tx.send(result.map(|text| crate::editor::lsp_slot::HoverResult {
+                hover_text: text,
+            }));
         });
 
-        // Store task handle and receiver for polling
-        self.lsp.state.pending_lsp_responses.hover =
-            Some(crate::editor::lsp_state::PendingLspRequest {
-                task,
-                receiver: rx,
-                started: std::time::Instant::now(),
-            });
+        // Fire into the hover slot (cancels any previous in-flight hover)
+        self.lsp.slots.hover.fire(task, rx, buffer_version as u64);
 
-        // Show loading status
         self.set_lsp_status("Loading hover...".to_string());
         crate::lsp_debug!("LSP-HOVER", "Spawned hover request, waiting for response");
 
-        // Return immediately - no blocking!
-        Ok(false) // No state change yet
+        Ok(false)
     }
 }
