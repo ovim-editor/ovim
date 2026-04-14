@@ -4,11 +4,7 @@
 //! It provides diagnostic querying, caching, and display functionality.
 
 use super::super::Editor;
-use crate::editor::lsp_state::{
-    DiagnosticRefreshTaskResult, PendingDiagnosticRefresh, PendingLspRequest,
-};
 use crate::lsp::uri_from_file_path;
-use tokio::sync::oneshot::error::TryRecvError;
 
 fn diagnostic_counts(diagnostics: &[lsp_types::Diagnostic]) -> (usize, usize, usize, usize) {
     let mut errors = 0;
@@ -85,24 +81,14 @@ impl Editor {
         };
 
         let buffer_version = self.buffer().version();
-        if self
-            .lsp.state
-            .pending_diagnostic_refresh
-            .as_ref()
-            .is_some_and(|pending| {
-                pending.file_path == file_path && pending.buffer_version == buffer_version
-            })
-        {
+
+        // If a diagnostic refresh is already in flight, don't spawn another.
+        // Slot::fire() would cancel the old one, but for diagnostics we want
+        // to let the existing request finish (it's cheap and fast).
+        if self.lsp.slots.diagnostics.is_pending() {
             return;
         }
 
-        if let Some(pending) = self.lsp.state.pending_diagnostic_refresh.take() {
-            pending.request.task.abort();
-        }
-
-        self.lsp.state.diagnostic_refresh_seq =
-            self.lsp.state.diagnostic_refresh_seq.wrapping_add(1);
-        let seq = self.lsp.state.diagnostic_refresh_seq;
         let file_path_for_task = file_path.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -113,7 +99,7 @@ impl Editor {
             } else {
                 lsp.get_diagnostics(&uri).await
             };
-            let task_result = DiagnosticRefreshTaskResult {
+            let task_result = crate::editor::lsp_slot::DiagnosticResult {
                 file_path: file_path_for_task,
                 buffer_version,
                 lsp_version: doc_version,
@@ -123,34 +109,24 @@ impl Editor {
                 deferred: last_sent < doc_version,
             };
 
-            let _ = tx.send(Ok(task_result.clone()));
-            Ok(task_result)
+            let _ = tx.send(Ok(task_result));
         });
 
-        self.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
-            seq,
-            file_path,
-            buffer_version,
-            request: PendingLspRequest {
-                task,
-                receiver: rx,
-                started: std::time::Instant::now(),
-            },
-        });
+        self.lsp
+            .slots
+            .diagnostics
+            .fire(task, rx, buffer_version as u64);
     }
 
     /// Poll background diagnostics refresh responses without blocking the UI tick.
     pub fn poll_pending_diagnostic_refresh_response(&mut self) -> bool {
-        let Some(mut pending) = self.lsp.state.pending_diagnostic_refresh.take() else {
+        let timeout = std::time::Duration::from_secs(15);
+        let Some(result) = self.lsp.slots.diagnostics.poll_with_timeout(timeout) else {
             return false;
         };
 
-        match pending.request.receiver.try_recv() {
-            Ok(Ok(result)) => {
-                if pending.seq != self.lsp.state.diagnostic_refresh_seq {
-                    return false;
-                }
-
+        match result {
+            Ok(result) => {
                 self.lsp.state.current_file_lsp_version = result.lsp_version;
                 self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
 
@@ -193,21 +169,13 @@ impl Editor {
                     self.lsp.state.diagnostics_refresh_requested = true;
                 }
 
-                self.record_diagnostic_query_duration(
-                    pending.request.started.elapsed().as_micros() as u64,
-                );
                 true
             }
-            Ok(Err(e)) => {
+            Err(e) => {
                 crate::lsp_warn!("LSP", "Diagnostics refresh failed: {}", e);
                 self.lsp.state.diagnostics_refresh_requested = true;
                 false
             }
-            Err(TryRecvError::Empty) => {
-                self.lsp.state.pending_diagnostic_refresh = Some(pending);
-                false
-            }
-            Err(TryRecvError::Closed) => false,
         }
     }
 
@@ -357,18 +325,25 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::lsp_state::{
-        DiagnosticRefreshTaskResult, PendingDiagnosticRefresh, PendingLspRequest,
-    };
+    use crate::editor::lsp_slot::DiagnosticResult;
     use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
     use tokio::sync::oneshot;
+
+    /// Helper: fire a pre-built `DiagnosticResult` into the diagnostics slot so
+    /// that `poll_pending_diagnostic_refresh_response` can pick it up immediately.
+    fn fire_diagnostic_result(editor: &mut Editor, result: DiagnosticResult) {
+        let buffer_version = result.buffer_version as u64;
+        let (tx, rx) = oneshot::channel::<anyhow::Result<DiagnosticResult>>();
+        tx.send(Ok(result)).unwrap();
+        let task = tokio::spawn(async {});
+        editor.lsp.slots.diagnostics.fire(task, rx, buffer_version);
+    }
 
     #[tokio::test(flavor = "current_thread")]
     async fn poll_pending_diagnostic_refresh_response_applies_latest_result() {
         let mut editor = Editor::with_content("class Test {}\n");
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
-        editor.lsp.state.diagnostic_refresh_seq = 1;
 
         let diagnostic = Diagnostic {
             range: Range::new(Position::new(0, 0), Position::new(0, 5)),
@@ -377,38 +352,19 @@ mod tests {
             ..Diagnostic::default()
         };
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
-        tx.send(Ok(DiagnosticRefreshTaskResult {
-            file_path: file_path.clone(),
-            buffer_version: editor.buffer().version(),
-            lsp_version: 4,
-            lsp_sent_version: 4,
-            diagnostics: vec![diagnostic],
-            count: (0, 1, 0, 0),
-            deferred: false,
-        }))
-        .unwrap();
-
-        editor.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
-            seq: 1,
-            file_path: file_path.clone(),
-            buffer_version: editor.buffer().version(),
-            request: PendingLspRequest {
-                task: tokio::spawn(async move {
-                    Ok(DiagnosticRefreshTaskResult {
-                        file_path,
-                        buffer_version: 0,
-                        lsp_version: 0,
-                        lsp_sent_version: 0,
-                        diagnostics: Vec::new(),
-                        count: (0, 0, 0, 0),
-                        deferred: false,
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        let bv = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version: bv,
+                lsp_version: 4,
+                lsp_sent_version: 4,
+                diagnostics: vec![diagnostic],
+                count: (0, 1, 0, 0),
+                deferred: false,
             },
-        });
+        );
 
         assert!(editor.poll_pending_diagnostic_refresh_response());
         assert_eq!(editor.lsp.state.diagnostic_count, (0, 1, 0, 0));
@@ -429,7 +385,6 @@ mod tests {
         let mut editor = Editor::with_content("let x = 1;\n");
         let file_path = "/tmp/test.rs".to_string();
         editor.set_file_path(file_path.clone());
-        editor.lsp.state.diagnostic_refresh_seq = 1;
 
         let initial_version = editor.buffer().version();
 
@@ -457,38 +412,18 @@ mod tests {
             ..Diagnostic::default()
         };
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
-        tx.send(Ok(DiagnosticRefreshTaskResult {
-            file_path: file_path.clone(),
-            buffer_version: initial_version,
-            lsp_version: 2,
-            lsp_sent_version: 2,
-            diagnostics: vec![diagnostic],
-            count: (1, 0, 0, 0),
-            deferred: false,
-        }))
-        .unwrap();
-
-        editor.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
-            seq: 1,
-            file_path: file_path.clone(),
-            buffer_version: initial_version,
-            request: PendingLspRequest {
-                task: tokio::spawn(async move {
-                    Ok(DiagnosticRefreshTaskResult {
-                        file_path,
-                        buffer_version: 0,
-                        lsp_version: 0,
-                        lsp_sent_version: 0,
-                        diagnostics: Vec::new(),
-                        count: (0, 0, 0, 0),
-                        deferred: false,
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version: initial_version,
+                lsp_version: 2,
+                lsp_sent_version: 2,
+                diagnostics: vec![diagnostic],
+                count: (1, 0, 0, 0),
+                deferred: false,
             },
-        });
+        );
 
         // Simulate a buffer edit AFTER the refresh was spawned.
         editor.buffer_mut().insert_text_at(0, 0, "// ");
@@ -522,7 +457,6 @@ mod tests {
         let mut editor = Editor::with_content("let x = 1;\n");
         let file_path = "/tmp/test.rs".to_string();
         editor.set_file_path(file_path.clone());
-        editor.lsp.state.diagnostic_refresh_seq = 1;
 
         let buffer_version = editor.buffer().version();
 
@@ -533,38 +467,18 @@ mod tests {
             ..Diagnostic::default()
         };
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
-        tx.send(Ok(DiagnosticRefreshTaskResult {
-            file_path: file_path.clone(),
-            buffer_version,
-            lsp_version: 2,
-            lsp_sent_version: 2,
-            diagnostics: vec![diagnostic],
-            count: (1, 0, 0, 0),
-            deferred: false,
-        }))
-        .unwrap();
-
-        editor.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
-            seq: 1,
-            file_path: file_path.clone(),
-            buffer_version,
-            request: PendingLspRequest {
-                task: tokio::spawn(async move {
-                    Ok(DiagnosticRefreshTaskResult {
-                        file_path,
-                        buffer_version: 0,
-                        lsp_version: 0,
-                        lsp_sent_version: 0,
-                        diagnostics: Vec::new(),
-                        count: (0, 0, 0, 0),
-                        deferred: false,
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version,
+                lsp_version: 2,
+                lsp_sent_version: 2,
+                diagnostics: vec![diagnostic],
+                count: (1, 0, 0, 0),
+                deferred: false,
             },
-        });
+        );
 
         // No buffer edits — poll should apply decorations.
         let changed = editor.poll_pending_diagnostic_refresh_response();
@@ -583,40 +497,20 @@ mod tests {
         let mut editor = Editor::with_content("class Test {}\n");
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
-        editor.lsp.state.diagnostic_refresh_seq = 1;
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<DiagnosticRefreshTaskResult>>();
-        tx.send(Ok(DiagnosticRefreshTaskResult {
-            file_path: file_path.clone(),
-            buffer_version: editor.buffer().version(),
-            lsp_version: 5,
-            lsp_sent_version: 4,
-            diagnostics: Vec::new(),
-            count: (0, 0, 0, 0),
-            deferred: true,
-        }))
-        .unwrap();
-
-        editor.lsp.state.pending_diagnostic_refresh = Some(PendingDiagnosticRefresh {
-            seq: 1,
-            file_path,
-            buffer_version: editor.buffer().version(),
-            request: PendingLspRequest {
-                task: tokio::spawn(async {
-                    Ok(DiagnosticRefreshTaskResult {
-                        file_path: String::new(),
-                        buffer_version: 0,
-                        lsp_version: 0,
-                        lsp_sent_version: 0,
-                        diagnostics: Vec::new(),
-                        count: (0, 0, 0, 0),
-                        deferred: false,
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        let bv = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version: bv,
+                lsp_version: 5,
+                lsp_sent_version: 4,
+                diagnostics: Vec::new(),
+                count: (0, 0, 0, 0),
+                deferred: true,
             },
-        });
+        );
 
         assert!(!editor.poll_pending_diagnostic_refresh_response());
         assert!(editor.lsp.state.diagnostics_refresh_requested);

@@ -34,17 +34,6 @@ fn current_inlay_hint_request_key(
     })
 }
 
-fn pending_request_matches_file(
-    editor: &Editor,
-    pending: &crate::editor::lsp_state::PendingInlayHintRequest,
-) -> bool {
-    pending.buffer_version == editor.buffer().version()
-        && editor
-            .buffer()
-            .file_path()
-            .is_some_and(|path| path == pending.request_key.file_path)
-}
-
 impl Editor {
     /// Returns true when the file-scoped hint fingerprint differs from the
     /// last applied or pending request.  Scroll changes do NOT trigger a
@@ -58,13 +47,9 @@ impl Editor {
             return false;
         };
 
-        if self
-            .lsp
-            .state
-            .pending_inlay_hints
-            .as_ref()
-            .is_some_and(|pending| pending_request_matches_file(self, pending))
-        {
+        // If a request is already in flight for the current file and buffer
+        // version, don't spawn another one.
+        if self.lsp.slots.inlay_hints.is_pending() {
             return false;
         }
 
@@ -100,20 +85,6 @@ impl Editor {
             return;
         }
 
-        if self
-            .lsp
-            .state
-            .pending_inlay_hints
-            .as_ref()
-            .is_some_and(|pending| pending.request_key == request_key)
-        {
-            return;
-        }
-
-        if let Some(pending) = self.lsp.state.pending_inlay_hints.take() {
-            pending.request.task.abort();
-        }
-
         let Some(uri) = crate::lsp::uri_from_file_path(&request_key.file_path) else {
             return;
         };
@@ -131,10 +102,6 @@ impl Editor {
 
         self.lsp.state.last_inlay_hint_request = Some(request_key.clone());
         self.lsp.state.last_inlay_hint_request_at = Some(now);
-
-        self.lsp.state.inlay_hint_request_seq =
-            self.lsp.state.inlay_hint_request_seq.wrapping_add(1);
-        let seq = self.lsp.state.inlay_hint_request_seq;
 
         let request_key_for_task = request_key.clone();
         let language_id = language_id.to_string();
@@ -202,10 +169,11 @@ impl Editor {
             }
 
             if lsp_version <= 0 {
-                return Err(anyhow::anyhow!(
+                let _ = tx.send(Err(anyhow::anyhow!(
                     "LSP document not ready for inlay hints: {}",
                     request_key_for_task.file_path
-                ));
+                )));
+                return;
             }
 
             let range = lsp_types::Range {
@@ -223,7 +191,7 @@ impl Editor {
             let result = lsp
                 .inlay_hints(&uri, range, &language_id)
                 .await
-                .map(|hints| crate::editor::lsp_state::InlayHintTaskResult {
+                .map(|hints| crate::editor::lsp_slot::InlayHintResult {
                     request_key: crate::editor::lsp_state::InlayHintRequestKey {
                         lsp_version,
                         ..request_key_for_task.clone()
@@ -235,27 +203,13 @@ impl Editor {
                 });
 
             let _ = tx.send(result);
-
-            Ok(crate::editor::lsp_state::InlayHintTaskResult {
-                request_key: request_key_for_task,
-                buffer_version,
-                synced_content: None,
-                synced_lsp_version: None,
-                hints: Vec::new(),
-            })
         });
 
-        self.lsp.state.pending_inlay_hints =
-            Some(crate::editor::lsp_state::PendingInlayHintRequest {
-                seq,
-                request_key,
-                buffer_version,
-                request: crate::editor::lsp_state::PendingLspRequest {
-                    task,
-                    receiver: rx,
-                    started: Instant::now(),
-                },
-            });
+        // Slot::fire() cancels any previously in-flight inlay hint request.
+        self.lsp
+            .slots
+            .inlay_hints
+            .fire(task, rx, buffer_version as u64);
     }
 
     /// Get inlay hints for a specific line (0-indexed).
@@ -373,34 +327,12 @@ mod tests {
         editor.set_file_path("/tmp/Test.java".to_string());
         editor.set_viewport_height(20);
 
-        let key = current_inlay_hint_request_key(&editor).expect("request key");
-        let (_, receiver) = tokio::sync::oneshot::channel::<
-            anyhow::Result<crate::editor::lsp_state::InlayHintTaskResult>,
+        // Fire a dummy request into the inlay hints slot to simulate an in-flight request.
+        let (_tx, rx) = tokio::sync::oneshot::channel::<
+            anyhow::Result<crate::editor::lsp_slot::InlayHintResult>,
         >();
-        editor.lsp.state.pending_inlay_hints =
-            Some(crate::editor::lsp_state::PendingInlayHintRequest {
-                seq: 1,
-                request_key: key,
-                request: crate::editor::lsp_state::PendingLspRequest {
-                    task: tokio::spawn(async {
-                        Ok(crate::editor::lsp_state::InlayHintTaskResult {
-                            request_key: crate::editor::lsp_state::InlayHintRequestKey {
-                                file_path: String::new(),
-                                start_line: 0,
-                                end_line: 0,
-                                lsp_version: 0,
-                            },
-                            buffer_version: 0,
-                            synced_content: None,
-                            synced_lsp_version: None,
-                            hints: Vec::new(),
-                        })
-                    }),
-                    receiver,
-                    started: Instant::now(),
-                },
-                buffer_version: editor.buffer().version(),
-            });
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        editor.lsp.slots.inlay_hints.fire(task, rx, editor.buffer().version() as u64);
 
         assert!(!editor.inlay_hints_refresh_needed());
     }
@@ -413,39 +345,12 @@ mod tests {
         editor.set_viewport_height(20);
         editor.lsp.state.current_file_lsp_sent_version = 1;
 
-        let pending_key = crate::editor::lsp_state::InlayHintRequestKey {
-            file_path: "/tmp/Test.java".to_string(),
-            start_line: 0,
-            end_line: 1,
-            lsp_version: 0,
-        };
-        let (_, receiver) = tokio::sync::oneshot::channel::<
-            anyhow::Result<crate::editor::lsp_state::InlayHintTaskResult>,
+        // Fire a dummy request into the inlay hints slot to simulate an in-flight request.
+        let (_tx, rx) = tokio::sync::oneshot::channel::<
+            anyhow::Result<crate::editor::lsp_slot::InlayHintResult>,
         >();
-        editor.lsp.state.pending_inlay_hints =
-            Some(crate::editor::lsp_state::PendingInlayHintRequest {
-                seq: 1,
-                request_key: pending_key,
-                request: crate::editor::lsp_state::PendingLspRequest {
-                    task: tokio::spawn(async {
-                        Ok(crate::editor::lsp_state::InlayHintTaskResult {
-                            request_key: crate::editor::lsp_state::InlayHintRequestKey {
-                                file_path: String::new(),
-                                start_line: 0,
-                                end_line: 0,
-                                lsp_version: 0,
-                            },
-                            buffer_version: 0,
-                            synced_content: None,
-                            synced_lsp_version: None,
-                            hints: Vec::new(),
-                        })
-                    }),
-                    receiver,
-                    started: Instant::now(),
-                },
-                buffer_version: editor.buffer().version(),
-            });
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        editor.lsp.slots.inlay_hints.fire(task, rx, editor.buffer().version() as u64);
 
         assert!(!editor.inlay_hints_refresh_needed());
     }

@@ -323,11 +323,11 @@ impl Editor {
     }
 
     pub fn has_pending_completion_response(&self) -> bool {
-        self.lsp.state.pending_completion.is_some()
+        self.lsp.slots.completion.is_pending()
     }
 
     pub fn has_pending_inlay_hint_response(&self) -> bool {
-        self.lsp.state.pending_inlay_hints.is_some()
+        self.lsp.slots.inlay_hints.is_pending()
     }
 
     /// Polls pending LSP responses (non-blocking)
@@ -526,18 +526,13 @@ impl Editor {
     /// Poll completion responses (non-blocking)
     /// Returns true if a response was processed and UI should redraw
     pub fn poll_pending_completion_response(&mut self) -> bool {
-        use tokio::sync::oneshot::error::TryRecvError;
-
-        let Some(mut pending) = self.lsp.state.pending_completion.take() else {
+        let timeout = Duration::from_secs(3);
+        let Some(result) = self.lsp.slots.completion.poll_with_timeout(timeout) else {
             return false;
         };
 
-        match pending.request.receiver.try_recv() {
-            Ok(Ok(result)) => {
-                if pending.seq != self.lsp.state.completion_request_seq {
-                    return false; // Stale response
-                }
-
+        match result {
+            Ok(result) => {
                 if self.mode() != crate::mode::Mode::Insert {
                     self.hide_completion_menu();
                     return false;
@@ -560,40 +555,11 @@ impl Editor {
                 self.mark_dirty();
                 true
             }
-            Ok(Err(e)) => {
-                if pending.seq == self.lsp.state.completion_request_seq {
-                    self.hide_completion_menu();
-                    self.set_lsp_status(format!("Completion failed: {}", e));
-                    self.mark_dirty();
-                    true
-                } else {
-                    false
-                }
-            }
-            Err(TryRecvError::Empty) => {
-                if pending.request.started.elapsed() > std::time::Duration::from_secs(3) {
-                    pending.request.task.abort();
-                    if pending.seq == self.lsp.state.completion_request_seq {
-                        self.hide_completion_menu();
-                        self.set_lsp_status("Completion request timed out".to_string());
-                        self.mark_dirty();
-                        return true;
-                    }
-                    return false;
-                }
-
-                self.lsp.state.pending_completion = Some(pending);
-                false
-            }
-            Err(TryRecvError::Closed) => {
-                if pending.seq == self.lsp.state.completion_request_seq {
-                    self.hide_completion_menu();
-                    self.set_lsp_status("Completion request cancelled".to_string());
-                    self.mark_dirty();
-                    true
-                } else {
-                    false
-                }
+            Err(e) => {
+                self.hide_completion_menu();
+                self.set_lsp_status(format!("Completion failed: {}", e));
+                self.mark_dirty();
+                true
             }
         }
     }
@@ -601,19 +567,13 @@ impl Editor {
     /// Poll inlay hint responses (non-blocking)
     /// Returns true if a response was processed and UI should redraw
     pub fn poll_pending_inlay_hint_response(&mut self) -> bool {
-        use tokio::sync::oneshot::error::TryRecvError;
-
-        let Some(mut pending) = self.lsp.state.pending_inlay_hints.take() else {
+        let timeout = Duration::from_secs(5);
+        let Some(result) = self.lsp.slots.inlay_hints.poll_with_timeout(timeout) else {
             return false;
         };
 
-        match pending.request.receiver.try_recv() {
-            Ok(Ok(result)) => {
-                if pending.seq != self.lsp.state.inlay_hint_request_seq {
-                    self.invalidate_inlay_hint_debounce();
-                    return false;
-                }
-
+        match result {
+            Ok(result) => {
                 // File-scoped hints: only check that the file matches.
                 // Scroll position is irrelevant since hints cover the full file.
                 let matches_file = self
@@ -675,21 +635,7 @@ impl Editor {
                 self.mark_dirty();
                 true
             }
-            Ok(Err(_)) => {
-                self.invalidate_inlay_hint_debounce();
-                false
-            }
-            Err(TryRecvError::Empty) => {
-                if pending.request.started.elapsed() > std::time::Duration::from_secs(5) {
-                    pending.request.task.abort();
-                    self.invalidate_inlay_hint_debounce();
-                    return false;
-                }
-
-                self.lsp.state.pending_inlay_hints = Some(pending);
-                false
-            }
-            Err(TryRecvError::Closed) => {
+            Err(_) => {
                 self.invalidate_inlay_hint_debounce();
                 false
             }
@@ -765,16 +711,6 @@ impl Editor {
         self.lsp.state.current_file_lsp_sent_version = 0;
         self.lsp.state.diagnostics_file_path = None;
         self.decorations.clear();
-        // OV-00157: Abort pending completion request on buffer switch
-        if let Some(pending) = self.lsp.state.pending_completion.take() {
-            pending.request.task.abort();
-        }
-        if let Some(pending) = self.lsp.state.pending_inlay_hints.take() {
-            pending.request.task.abort();
-        }
-        if let Some(pending) = self.lsp.state.pending_diagnostic_refresh.take() {
-            pending.request.task.abort();
-        }
     }
 
     /// Get active LSP servers map
@@ -1640,9 +1576,8 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::lsp_state::{
-        InlayHintRequestKey, InlayHintTaskResult, PendingInlayHintRequest, PendingLspRequest,
-    };
+    use crate::editor::lsp_slot::InlayHintResult;
+    use crate::editor::lsp_state::{InlayHintRequestKey, PendingLspRequest};
     use crate::lsp::uri_from_file_path;
     use lsp_types::{InlayHint, InlayHintLabel, Location, Position, Range};
     use tokio::sync::oneshot;
@@ -1781,13 +1716,21 @@ mod tests {
         );
     }
 
+    /// Helper: fire a pre-built `InlayHintResult` into the inlay hints slot.
+    fn fire_inlay_hint_result(editor: &mut Editor, result: InlayHintResult) {
+        let buffer_version = result.buffer_version as u64;
+        let (tx, rx) = oneshot::channel::<anyhow::Result<InlayHintResult>>();
+        tx.send(Ok(result)).unwrap();
+        let task = tokio::spawn(async {});
+        editor.lsp.slots.inlay_hints.fire(task, rx, buffer_version);
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn poll_pending_inlay_hint_response_applies_latest_result() {
         let mut editor = Editor::with_content("class Test {}\n");
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
         editor.set_viewport_height(20);
-        editor.lsp.state.inlay_hint_request_seq = 1;
 
         let request_key = InlayHintRequestKey {
             file_path: file_path.clone(),
@@ -1806,35 +1749,17 @@ mod tests {
             data: None,
         };
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<InlayHintTaskResult>>();
-        tx.send(Ok(InlayHintTaskResult {
-            request_key: request_key.clone(),
-            buffer_version: editor.buffer().version(),
-            synced_content: Some("class Test {}\n".to_string()),
-            synced_lsp_version: Some(4),
-            hints: vec![hint],
-        }))
-        .unwrap();
-
-        let request_key_for_task = request_key.clone();
-        editor.lsp.state.pending_inlay_hints = Some(PendingInlayHintRequest {
-            seq: 1,
-            request_key: request_key.clone(),
-            buffer_version: editor.buffer().version(),
-            request: PendingLspRequest {
-                task: tokio::spawn(async move {
-                    Ok(InlayHintTaskResult {
-                        request_key: request_key_for_task,
-                        buffer_version: 0,
-                        synced_content: None,
-                        synced_lsp_version: None,
-                        hints: Vec::new(),
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        let bv = editor.buffer().version();
+        fire_inlay_hint_result(
+            &mut editor,
+            InlayHintResult {
+                request_key: request_key.clone(),
+                buffer_version: bv,
+                synced_content: Some("class Test {}\n".to_string()),
+                synced_lsp_version: Some(4),
+                hints: vec![hint],
             },
-        });
+        );
 
         assert!(editor.poll_pending_inlay_hint_response());
         assert_eq!(editor.lsp.state.current_file_lsp_version, 4);
@@ -1864,7 +1789,6 @@ mod tests {
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
         editor.set_viewport_height(20);
-        editor.lsp.state.inlay_hint_request_seq = 1;
 
         let request_key = InlayHintRequestKey {
             file_path: file_path.clone(),
@@ -1873,35 +1797,17 @@ mod tests {
             lsp_version: 4,
         };
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<InlayHintTaskResult>>();
-        tx.send(Ok(InlayHintTaskResult {
-            request_key: request_key.clone(),
-            buffer_version: editor.buffer().version() + 1,
-            synced_content: None,
-            synced_lsp_version: None,
-            hints: Vec::new(),
-        }))
-        .unwrap();
-
-        let request_key_for_task = request_key.clone();
-        editor.lsp.state.pending_inlay_hints = Some(PendingInlayHintRequest {
-            seq: 1,
-            request_key,
-            buffer_version: editor.buffer().version() + 1,
-            request: PendingLspRequest {
-                task: tokio::spawn(async move {
-                    Ok(InlayHintTaskResult {
-                        request_key: request_key_for_task,
-                        buffer_version: 0,
-                        synced_content: None,
-                        synced_lsp_version: None,
-                        hints: Vec::new(),
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        let bv = editor.buffer().version() + 1;
+        fire_inlay_hint_result(
+            &mut editor,
+            InlayHintResult {
+                request_key: request_key.clone(),
+                buffer_version: bv,
+                synced_content: None,
+                synced_lsp_version: None,
+                hints: Vec::new(),
             },
-        });
+        );
 
         // Stale hints are still applied (better than flashing).
         assert!(editor.poll_pending_inlay_hint_response());
@@ -1915,7 +1821,6 @@ mod tests {
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
         editor.set_viewport_height(20);
-        editor.lsp.state.inlay_hint_request_seq = 1;
         editor.lsp.state.current_file_lsp_sent_version = 5;
 
         let request_key = InlayHintRequestKey {
@@ -1925,35 +1830,17 @@ mod tests {
             lsp_version: 4,
         };
 
-        let (tx, receiver) = oneshot::channel::<anyhow::Result<InlayHintTaskResult>>();
-        tx.send(Ok(InlayHintTaskResult {
-            request_key: request_key.clone(),
-            buffer_version: editor.buffer().version(),
-            synced_content: None,
-            synced_lsp_version: None,
-            hints: Vec::new(),
-        }))
-        .unwrap();
-
-        let request_key_for_task = request_key.clone();
-        editor.lsp.state.pending_inlay_hints = Some(PendingInlayHintRequest {
-            seq: 1,
-            request_key,
-            buffer_version: editor.buffer().version(),
-            request: PendingLspRequest {
-                task: tokio::spawn(async move {
-                    Ok(InlayHintTaskResult {
-                        request_key: request_key_for_task,
-                        buffer_version: 0,
-                        synced_content: None,
-                        synced_lsp_version: None,
-                        hints: Vec::new(),
-                    })
-                }),
-                receiver,
-                started: std::time::Instant::now(),
+        let bv = editor.buffer().version();
+        fire_inlay_hint_result(
+            &mut editor,
+            InlayHintResult {
+                request_key: request_key.clone(),
+                buffer_version: bv,
+                synced_content: None,
+                synced_lsp_version: None,
+                hints: Vec::new(),
             },
-        });
+        );
 
         assert!(!editor.poll_pending_inlay_hint_response());
         assert!(editor.lsp.state.inlay_hints.is_empty());

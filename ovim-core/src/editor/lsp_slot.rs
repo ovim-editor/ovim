@@ -120,6 +120,39 @@ pub struct HoverResult {
     pub hover_text: Option<String>,
 }
 
+/// Result of a completion request.
+#[derive(Debug)]
+pub struct CompletionResult {
+    pub items: Vec<lsp_types::CompletionItem>,
+    pub file_path: String,
+    /// If we successfully flushed content to LSP, record the new synced content.
+    pub synced_content: Option<String>,
+    pub synced_lsp_version: Option<i32>,
+}
+
+/// Result of an inlay hint request.
+#[derive(Debug)]
+pub struct InlayHintResult {
+    pub request_key: super::lsp_state::InlayHintRequestKey,
+    pub buffer_version: usize,
+    /// If we successfully flushed content to LSP, record the new synced content.
+    pub synced_content: Option<String>,
+    pub synced_lsp_version: Option<i32>,
+    pub hints: Vec<lsp_types::InlayHint>,
+}
+
+/// Result of a diagnostic refresh request.
+#[derive(Debug)]
+pub struct DiagnosticResult {
+    pub file_path: String,
+    pub buffer_version: usize,
+    pub lsp_version: i32,
+    pub lsp_sent_version: i32,
+    pub diagnostics: Vec<lsp_types::Diagnostic>,
+    pub count: (usize, usize, usize, usize),
+    pub deferred: bool,
+}
+
 /// All LSP request slots, grouped for easy access from the editor.
 ///
 /// Each feature gets its own slot so different-type requests coexist.
@@ -131,8 +164,10 @@ pub struct LspSlots {
     pub goto_implementation: Slot<GotoLocationResult>,
     pub goto_type_definition: Slot<GotoLocationResult>,
     pub hover: Slot<HoverResult>,
-    // Future steps will add: completion, inlay_hints, diagnostics,
-    // references, document_symbols, workspace_symbols, format, rename, etc.
+    // -- Query (Step 4) --
+    pub completion: Slot<CompletionResult>,
+    pub inlay_hints: Slot<InlayHintResult>,
+    pub diagnostics: Slot<DiagnosticResult>,
 }
 
 impl LspSlots {
@@ -142,6 +177,9 @@ impl LspSlots {
         self.goto_implementation.cancel();
         self.goto_type_definition.cancel();
         self.hover.cancel();
+        self.completion.cancel();
+        self.inlay_hints.cancel();
+        self.diagnostics.cancel();
     }
 
     /// Returns true if any slot has an in-flight request.
@@ -150,5 +188,8 @@ impl LspSlots {
             || self.goto_implementation.is_pending()
             || self.goto_type_definition.is_pending()
             || self.hover.is_pending()
+            || self.completion.is_pending()
+            || self.inlay_hints.is_pending()
+            || self.diagnostics.is_pending()
     }
 }

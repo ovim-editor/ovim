@@ -165,60 +165,6 @@ impl PendingLspResponses {
     pub fn abort_all(&mut self) {}
 }
 
-/// Pending completion request (kept separate from PendingLspResponses to avoid
-/// blocking other LSP actions while completions are in-flight).
-pub struct PendingCompletionRequest {
-    pub seq: u64,
-    pub request: PendingLspRequest<CompletionTaskResult>,
-}
-
-#[derive(Debug, Clone)]
-pub struct CompletionTaskResult {
-    pub items: Vec<lsp_types::CompletionItem>,
-    pub file_path: String,
-    /// If we successfully flushed content to LSP, record the new synced content.
-    pub synced_content: Option<String>,
-    pub synced_lsp_version: Option<i32>,
-}
-
-/// Pending inlay hint request (tracked separately so cosmetic hint refreshes do
-/// not block other LSP actions).
-pub struct PendingInlayHintRequest {
-    pub seq: u64,
-    pub request_key: InlayHintRequestKey,
-    pub buffer_version: usize,
-    pub request: PendingLspRequest<InlayHintTaskResult>,
-}
-
-#[derive(Debug, Clone)]
-pub struct InlayHintTaskResult {
-    pub request_key: InlayHintRequestKey,
-    pub buffer_version: usize,
-    /// If we successfully flushed content to LSP, record the new synced content.
-    pub synced_content: Option<String>,
-    pub synced_lsp_version: Option<i32>,
-    pub hints: Vec<lsp_types::InlayHint>,
-}
-
-/// Pending diagnostics refresh (kept separate so diagnostics can be polled
-/// without blocking the editor tick).
-pub struct PendingDiagnosticRefresh {
-    pub seq: u64,
-    pub file_path: String,
-    pub buffer_version: usize,
-    pub request: PendingLspRequest<DiagnosticRefreshTaskResult>,
-}
-
-#[derive(Debug, Clone)]
-pub struct DiagnosticRefreshTaskResult {
-    pub file_path: String,
-    pub buffer_version: usize,
-    pub lsp_version: i32,
-    pub lsp_sent_version: i32,
-    pub diagnostics: Vec<lsp_types::Diagnostic>,
-    pub count: (usize, usize, usize, usize),
-    pub deferred: bool,
-}
 
 #[derive(Debug, Clone)]
 pub struct AvailableCodeAction {
@@ -329,18 +275,6 @@ pub struct LspState {
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP responses (each request type has its own slot)
     pub pending_lsp_responses: PendingLspResponses,
-    /// Pending completion request (non-blocking, high-frequency)
-    pub pending_completion: Option<PendingCompletionRequest>,
-    /// Monotonic completion request sequence to ignore stale responses
-    pub completion_request_seq: u64,
-    /// Pending inlay hint request (non-blocking, viewport-scoped)
-    pub pending_inlay_hints: Option<PendingInlayHintRequest>,
-    /// Monotonic inlay hint request sequence to ignore stale responses
-    pub inlay_hint_request_seq: u64,
-    /// Pending diagnostics refresh (non-blocking)
-    pub pending_diagnostic_refresh: Option<PendingDiagnosticRefresh>,
-    /// Monotonic diagnostics refresh sequence to ignore stale responses
-    pub diagnostic_refresh_seq: u64,
     /// Request a diagnostic cache refresh on next tick (safety net for cases where
     /// the `diagnostics_changed` flag is missed).
     pub diagnostics_refresh_requested: bool,
@@ -383,12 +317,6 @@ impl LspState {
             current_file_lsp_sent_version: 0,
             hover_cache: None,
             pending_lsp_responses: PendingLspResponses,
-            pending_completion: None,
-            completion_request_seq: 0,
-            pending_inlay_hints: None,
-            inlay_hint_request_seq: 0,
-            pending_diagnostic_refresh: None,
-            diagnostic_refresh_seq: 0,
             diagnostics_refresh_requested: false,
             hover_content_type: HoverContentType::default(),
         }

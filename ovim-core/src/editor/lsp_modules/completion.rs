@@ -140,11 +140,6 @@ impl Editor {
             }
         };
 
-        // Cancel any pending completion request we already spawned.
-        if let Some(pending) = self.lsp.state.pending_completion.take() {
-            pending.request.task.abort();
-        }
-
         // Snapshot sync state so we can flush document changes in the background without blocking UI.
         let state_key = file_path.clone();
         let initial_content = self.buffer().rope().to_string();
@@ -158,11 +153,10 @@ impl Editor {
             return Ok(false);
         }
 
-        self.lsp.state.completion_request_seq =
-            self.lsp.state.completion_request_seq.wrapping_add(1);
-        let seq = self.lsp.state.completion_request_seq;
+        let buffer_version = self.buffer().version() as u64;
 
-        // Spawn completion request in background (non-blocking)
+        // Spawn completion request in background (non-blocking).
+        // Slot::fire() will cancel any previously in-flight completion request.
         let (tx, rx) = tokio::sync::oneshot::channel();
         let language_id = language_id.to_string();
         let task = tokio::spawn(async move {
@@ -250,32 +244,18 @@ impl Editor {
                 lsp.completion(&uri, line, character, &language_id, trigger_char)
                     .await
             };
-            let task_result = result.map(|items| crate::editor::lsp_state::CompletionTaskResult {
-                items,
-                file_path: state_key,
-                synced_content,
-                synced_lsp_version,
-            });
+            let task_result =
+                result.map(|items| crate::editor::lsp_slot::CompletionResult {
+                    items,
+                    file_path: state_key,
+                    synced_content,
+                    synced_lsp_version,
+                });
 
             let _ = tx.send(task_result);
-
-            Ok(crate::editor::lsp_state::CompletionTaskResult {
-                items: Vec::new(),
-                file_path: String::new(),
-                synced_content: None,
-                synced_lsp_version: None,
-            })
         });
 
-        self.lsp.state.pending_completion =
-            Some(crate::editor::lsp_state::PendingCompletionRequest {
-                seq,
-                request: crate::editor::lsp_state::PendingLspRequest {
-                    task,
-                    receiver: rx,
-                    started: std::time::Instant::now(),
-                },
-            });
+        self.lsp.slots.completion.fire(task, rx, buffer_version);
 
         self.set_lsp_status("Requesting completions...".to_string());
         Ok(true)
