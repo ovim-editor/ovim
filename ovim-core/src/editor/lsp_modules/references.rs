@@ -112,28 +112,13 @@ impl Editor {
                                     range: call.from.selection_range,
                                 })
                                 .collect();
-                            let labels: Vec<String> = locations
-                                .iter()
-                                .map(|loc| {
-                                    crate::lsp::uri_to_file_path(&loc.uri)
-                                        .map(|p| {
-                                            p.file_name()
-                                                .unwrap_or_default()
-                                                .to_string_lossy()
-                                                .to_string()
-                                        })
-                                        .unwrap_or_default()
-                                })
-                                .collect();
                             Ok(crate::editor::lsp_slot::CallHierarchyResult {
                                 locations,
-                                labels,
                                 direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
                             })
                         }
                         Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
                             locations: Vec::new(),
-                            labels: Vec::new(),
                             direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
                         }),
                         Err(e) => Err(e),
@@ -141,7 +126,6 @@ impl Editor {
                 }
                 Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
                     locations: Vec::new(),
-                    labels: Vec::new(),
                     direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
                 }),
                 Err(e) => Err(e),
@@ -186,28 +170,13 @@ impl Editor {
                                     range: call.to.selection_range,
                                 })
                                 .collect();
-                            let labels: Vec<String> = locations
-                                .iter()
-                                .map(|loc| {
-                                    crate::lsp::uri_to_file_path(&loc.uri)
-                                        .map(|p| {
-                                            p.file_name()
-                                                .unwrap_or_default()
-                                                .to_string_lossy()
-                                                .to_string()
-                                        })
-                                        .unwrap_or_default()
-                                })
-                                .collect();
                             Ok(crate::editor::lsp_slot::CallHierarchyResult {
                                 locations,
-                                labels,
                                 direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
                             })
                         }
                         Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
                             locations: Vec::new(),
-                            labels: Vec::new(),
                             direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
                         }),
                         Err(e) => Err(e),
@@ -215,7 +184,6 @@ impl Editor {
                 }
                 Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
                     locations: Vec::new(),
-                    labels: Vec::new(),
                     direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
                 }),
                 Err(e) => Err(e),

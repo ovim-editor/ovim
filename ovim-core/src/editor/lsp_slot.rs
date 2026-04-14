@@ -49,6 +49,7 @@ impl<T> Slot<T> {
     /// Non-blocking poll.  Returns `Some(result)` when the response has
     /// arrived, `None` while still waiting.  Automatically aborts requests
     /// that have been in flight longer than `timeout`.
+    #[allow(dead_code)]
     pub fn poll(&mut self) -> Option<anyhow::Result<T>> {
         self.poll_with_timeout(Duration::from_secs(15))
     }
@@ -193,7 +194,6 @@ pub struct OrganizeImportsResult {
 /// Result of a call-hierarchy request (incoming or outgoing).
 pub struct CallHierarchyResult {
     pub locations: Vec<lsp_types::Location>,
-    pub labels: Vec<String>,
     pub direction: CallHierarchyDirection,
 }
 
