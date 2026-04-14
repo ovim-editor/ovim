@@ -8,7 +8,7 @@
 //! - `actions`: Code actions, formatting, refactoring
 
 // Submodules extend Editor with LSP functionality
-mod actions;
+pub(in crate::editor) mod actions;
 mod completion;
 mod diagnostics;
 mod goto;

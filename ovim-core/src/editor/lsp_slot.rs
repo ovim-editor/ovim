@@ -153,6 +153,68 @@ pub struct DiagnosticResult {
     pub deferred: bool,
 }
 
+/// Result of a format-document request.
+pub struct FormatResult {
+    pub edits: Vec<lsp_types::TextEdit>,
+}
+
+/// Result of a find-references request.
+pub struct ReferencesResult {
+    pub locations: Vec<lsp_types::Location>,
+}
+
+/// Result of a document-symbols request.
+pub struct DocumentSymbolsResult {
+    pub symbols: Vec<lsp_types::DocumentSymbol>,
+    pub file_path: String,
+}
+
+/// Result of a workspace-symbols request.
+pub struct WorkspaceSymbolsResult {
+    pub symbols: Vec<lsp_types::SymbolInformation>,
+}
+
+/// Result of a code-actions request.
+pub struct CodeActionsResult {
+    pub actions: Vec<super::lsp_state::AvailableCodeAction>,
+}
+
+/// Result of a rename request.
+pub struct RenameResult {
+    pub edit: Option<lsp_types::WorkspaceEdit>,
+    pub new_name: String,
+}
+
+/// Result of an organize-imports request.
+pub struct OrganizeImportsResult {
+    pub action: Option<super::lsp_state::AvailableCodeAction>,
+}
+
+/// Result of a call-hierarchy request (incoming or outgoing).
+pub struct CallHierarchyResult {
+    pub locations: Vec<lsp_types::Location>,
+    pub labels: Vec<String>,
+    pub direction: CallHierarchyDirection,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum CallHierarchyDirection {
+    Incoming,
+    Outgoing,
+}
+
+/// Result of a type-hierarchy request.
+pub struct TypeHierarchyResult {
+    pub types: Vec<(String, lsp_types::Location)>,
+    pub all_locations: Vec<lsp_types::Location>,
+}
+
+/// Result of a semantic-tokens request.
+pub struct SemanticTokensSlotResult {
+    pub tokens: Option<lsp_types::SemanticTokens>,
+    pub legend: Option<lsp_types::SemanticTokensLegend>,
+}
+
 /// All LSP request slots, grouped for easy access from the editor.
 ///
 /// Each feature gets its own slot so different-type requests coexist.
@@ -168,6 +230,17 @@ pub struct LspSlots {
     pub completion: Slot<CompletionResult>,
     pub inlay_hints: Slot<InlayHintResult>,
     pub diagnostics: Slot<DiagnosticResult>,
+    // -- Actions (Step 5) --
+    pub format: Slot<FormatResult>,
+    pub references: Slot<ReferencesResult>,
+    pub document_symbols: Slot<DocumentSymbolsResult>,
+    pub workspace_symbols: Slot<WorkspaceSymbolsResult>,
+    pub code_actions: Slot<CodeActionsResult>,
+    pub rename: Slot<RenameResult>,
+    pub organize_imports: Slot<OrganizeImportsResult>,
+    pub call_hierarchy: Slot<CallHierarchyResult>,
+    pub type_hierarchy: Slot<TypeHierarchyResult>,
+    pub semantic_tokens: Slot<SemanticTokensSlotResult>,
 }
 
 impl LspSlots {
@@ -180,6 +253,16 @@ impl LspSlots {
         self.completion.cancel();
         self.inlay_hints.cancel();
         self.diagnostics.cancel();
+        self.format.cancel();
+        self.references.cancel();
+        self.document_symbols.cancel();
+        self.workspace_symbols.cancel();
+        self.code_actions.cancel();
+        self.rename.cancel();
+        self.organize_imports.cancel();
+        self.call_hierarchy.cancel();
+        self.type_hierarchy.cancel();
+        self.semantic_tokens.cancel();
     }
 
     /// Returns true if any slot has an in-flight request.
@@ -191,5 +274,15 @@ impl LspSlots {
             || self.completion.is_pending()
             || self.inlay_hints.is_pending()
             || self.diagnostics.is_pending()
+            || self.format.is_pending()
+            || self.references.is_pending()
+            || self.document_symbols.is_pending()
+            || self.workspace_symbols.is_pending()
+            || self.code_actions.is_pending()
+            || self.rename.is_pending()
+            || self.organize_imports.is_pending()
+            || self.call_hierarchy.is_pending()
+            || self.type_hierarchy.is_pending()
+            || self.semantic_tokens.is_pending()
     }
 }

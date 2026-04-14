@@ -21,300 +21,283 @@ impl Editor {
         let ctx = self.prepare_lsp_request("find-references").await?;
 
         self.set_lsp_status("Finding references...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        let result = ctx
-            .lsp
-            .references(&ctx.uri, ctx.line, ctx.character, &ctx.language_id, true)
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = ctx
+                .lsp
+                .references(&ctx.uri, ctx.line, ctx.character, &ctx.language_id, true)
+                .await;
+            let _ = tx.send(result.map(|locations| {
+                crate::editor::lsp_slot::ReferencesResult { locations }
+            }));
+        });
 
-        match result {
-            Ok(locations) if !locations.is_empty() => {
-                self.lsp.state.available_references = locations.clone();
-                self.lsp.state.active_lsp_result_type =
-                    Some(crate::editor::LspResultType::References);
-
-                let items = self.locations_to_picker_items(&locations);
-                self.open_location_picker(items, "References");
-                self.set_lsp_status(format!("Found {} references", locations.len()));
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No references found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("References request failed: {}", e));
-                Err(e)
-            }
-        }
+        self.lsp.slots.references.fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn document_symbols_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("document-symbols").await?;
 
         self.set_lsp_status("Fetching document symbols...".to_string());
+        let buffer_version = self.buffer().version() as u64;
+        let file_path = ctx.file_path.clone();
 
-        let result = ctx.lsp.document_symbols(&ctx.uri, &ctx.language_id).await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = ctx.lsp.document_symbols(&ctx.uri, &ctx.language_id).await;
+            let _ = tx.send(result.map(|symbols| {
+                crate::editor::lsp_slot::DocumentSymbolsResult { symbols, file_path }
+            }));
+        });
 
-        match result {
-            Ok(symbols) if !symbols.is_empty() => {
-                self.lsp.state.available_document_symbols = symbols.clone();
-                self.lsp.state.active_lsp_result_type =
-                    Some(crate::editor::LspResultType::DocumentSymbols);
-
-                let file_path = ctx.file_path.clone();
-                let items: Vec<PickerResult> = symbols
-                    .iter()
-                    .map(|sym| {
-                        let line = sym.range.start.line as usize;
-                        let col = self.utf16_to_grapheme_col(line, sym.range.start.character);
-                        PickerResult {
-                            display: format!("{}:{}:{} {}", file_path, line + 1, col + 1, sym.name),
-                            location: file_path.to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        }
-                    })
-                    .collect();
-
-                self.open_location_picker(items, "Document Symbols");
-                self.set_lsp_status(format!("Found {} symbols", symbols.len()));
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No symbols found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Document symbols request failed: {}", e));
-                Err(e)
-            }
-        }
+        self.lsp
+            .slots
+            .document_symbols
+            .fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn workspace_symbols_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("workspace-symbols").await?;
 
         self.set_lsp_status("Fetching workspace symbols...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        // TODO: Support query parameter for filtering
-        let query = String::new();
-        let result = ctx.lsp.workspace_symbols(&ctx.language_id, query).await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            // TODO: Support query parameter for filtering
+            let query = String::new();
+            let result = ctx.lsp.workspace_symbols(&ctx.language_id, query).await;
+            let _ = tx.send(result.map(|symbols| {
+                crate::editor::lsp_slot::WorkspaceSymbolsResult { symbols }
+            }));
+        });
 
-        match result {
-            Ok(symbols) if !symbols.is_empty() => {
-                self.lsp.state.available_workspace_symbols = symbols.clone();
-                self.lsp.state.active_lsp_result_type =
-                    Some(crate::editor::LspResultType::WorkspaceSymbols);
-
-                let items: Vec<PickerResult> = symbols
-                    .iter()
-                    .filter_map(|sym| {
-                        let path = uri_to_file_path(&sym.location.uri)?;
-                        let line = sym.location.range.start.line as usize;
-                        let col = self.utf16_to_grapheme_col(line, sym.location.range.start.character);
-                        Some(PickerResult {
-                            display: format!(
-                                "{}:{}:{}",
-                                path.file_name().unwrap_or_default().to_string_lossy(),
-                                line + 1,
-                                col + 1
-                            ),
-                            location: path.to_string_lossy().to_string(),
-                            line,
-                            col,
-                            match_positions: Vec::new(),
-                            content: None,
-                        })
-                    })
-                    .collect();
-
-                self.open_location_picker(items, "Workspace Symbols");
-                self.set_lsp_status(format!("Found {} symbols", symbols.len()));
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No workspace symbols found".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Workspace symbols request failed: {}", e));
-                Err(e)
-            }
-        }
+        self.lsp
+            .slots
+            .workspace_symbols
+            .fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn call_hierarchy_incoming_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("call-hierarchy").await?;
 
         self.set_lsp_status("Fetching incoming calls...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        let items = ctx
-            .lsp
-            .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let items = ctx
+                .lsp
+                .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
+                .await;
 
-        match items {
-            Ok(Some(items)) if !items.is_empty() => {
-                let incoming = ctx
-                    .lsp
-                    .incoming_calls(items[0].clone(), &ctx.language_id)
-                    .await;
+            let task_result = match items {
+                Ok(Some(items)) if !items.is_empty() => {
+                    let incoming = ctx
+                        .lsp
+                        .incoming_calls(items[0].clone(), &ctx.language_id)
+                        .await;
 
-                match incoming {
-                    Ok(Some(calls)) if !calls.is_empty() => {
-                        let locations: Vec<Location> = calls
-                            .iter()
-                            .map(|call| Location {
-                                uri: call.from.uri.clone(),
-                                range: call.from.selection_range,
+                    match incoming {
+                        Ok(Some(calls)) if !calls.is_empty() => {
+                            let locations: Vec<Location> = calls
+                                .iter()
+                                .map(|call| Location {
+                                    uri: call.from.uri.clone(),
+                                    range: call.from.selection_range,
+                                })
+                                .collect();
+                            let labels: Vec<String> = locations
+                                .iter()
+                                .map(|loc| {
+                                    crate::lsp::uri_to_file_path(&loc.uri)
+                                        .map(|p| {
+                                            p.file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .to_string()
+                                        })
+                                        .unwrap_or_default()
+                                })
+                                .collect();
+                            Ok(crate::editor::lsp_slot::CallHierarchyResult {
+                                locations,
+                                labels,
+                                direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
                             })
-                            .collect();
-
-                        self.store_call_hierarchy(&locations);
-                        let picker_items = self.locations_to_picker_items(&locations);
-                        self.open_location_picker(picker_items, "Incoming Calls");
-                        self.set_lsp_status(format!("Found {} incoming calls", locations.len()));
-                        Ok(true)
-                    }
-                    Ok(_) => {
-                        self.set_lsp_status("No incoming calls found".to_string());
-                        Ok(false)
-                    }
-                    Err(e) => {
-                        self.set_lsp_status(format!("Incoming calls request failed: {}", e));
-                        Err(e)
+                        }
+                        Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
+                            locations: Vec::new(),
+                            labels: Vec::new(),
+                            direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
+                        }),
+                        Err(e) => Err(e),
                     }
                 }
-            }
-            Ok(_) => {
-                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Call hierarchy prepare failed: {}", e));
-                Err(e)
-            }
-        }
+                Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
+                    locations: Vec::new(),
+                    labels: Vec::new(),
+                    direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
+                }),
+                Err(e) => Err(e),
+            };
+
+            let _ = tx.send(task_result);
+        });
+
+        self.lsp
+            .slots
+            .call_hierarchy
+            .fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn call_hierarchy_outgoing_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("call-hierarchy").await?;
 
         self.set_lsp_status("Fetching outgoing calls...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        let items = ctx
-            .lsp
-            .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let items = ctx
+                .lsp
+                .prepare_call_hierarchy(ctx.uri, ctx.line, ctx.character, &ctx.language_id)
+                .await;
 
-        match items {
-            Ok(Some(items)) if !items.is_empty() => {
-                let outgoing = ctx
-                    .lsp
-                    .outgoing_calls(items[0].clone(), &ctx.language_id)
-                    .await;
+            let task_result = match items {
+                Ok(Some(items)) if !items.is_empty() => {
+                    let outgoing = ctx
+                        .lsp
+                        .outgoing_calls(items[0].clone(), &ctx.language_id)
+                        .await;
 
-                match outgoing {
-                    Ok(Some(calls)) if !calls.is_empty() => {
-                        let locations: Vec<Location> = calls
-                            .iter()
-                            .map(|call| Location {
-                                uri: call.to.uri.clone(),
-                                range: call.to.selection_range,
+                    match outgoing {
+                        Ok(Some(calls)) if !calls.is_empty() => {
+                            let locations: Vec<Location> = calls
+                                .iter()
+                                .map(|call| Location {
+                                    uri: call.to.uri.clone(),
+                                    range: call.to.selection_range,
+                                })
+                                .collect();
+                            let labels: Vec<String> = locations
+                                .iter()
+                                .map(|loc| {
+                                    crate::lsp::uri_to_file_path(&loc.uri)
+                                        .map(|p| {
+                                            p.file_name()
+                                                .unwrap_or_default()
+                                                .to_string_lossy()
+                                                .to_string()
+                                        })
+                                        .unwrap_or_default()
+                                })
+                                .collect();
+                            Ok(crate::editor::lsp_slot::CallHierarchyResult {
+                                locations,
+                                labels,
+                                direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
                             })
-                            .collect();
-
-                        self.store_call_hierarchy(&locations);
-                        let picker_items = self.locations_to_picker_items(&locations);
-                        self.open_location_picker(picker_items, "Outgoing Calls");
-                        self.set_lsp_status(format!("Found {} outgoing calls", locations.len()));
-                        Ok(true)
-                    }
-                    Ok(_) => {
-                        self.set_lsp_status("No outgoing calls found".to_string());
-                        Ok(false)
-                    }
-                    Err(e) => {
-                        self.set_lsp_status(format!("Outgoing calls request failed: {}", e));
-                        Err(e)
+                        }
+                        Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
+                            locations: Vec::new(),
+                            labels: Vec::new(),
+                            direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
+                        }),
+                        Err(e) => Err(e),
                     }
                 }
-            }
-            Ok(_) => {
-                self.set_lsp_status("Call hierarchy not available at cursor position".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Call hierarchy prepare failed: {}", e));
-                Err(e)
-            }
-        }
+                Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
+                    locations: Vec::new(),
+                    labels: Vec::new(),
+                    direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
+                }),
+                Err(e) => Err(e),
+            };
+
+            let _ = tx.send(task_result);
+        });
+
+        self.lsp
+            .slots
+            .call_hierarchy
+            .fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn type_hierarchy_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("type-hierarchy").await?;
 
         self.set_lsp_status("Fetching type hierarchy...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        let prepare_result = ctx
-            .lsp
-            .prepare_type_hierarchy(ctx.uri.clone(), ctx.line, ctx.character, &ctx.language_id)
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let prepare_result = ctx
+                .lsp
+                .prepare_type_hierarchy(ctx.uri.clone(), ctx.line, ctx.character, &ctx.language_id)
+                .await;
 
-        let items = match prepare_result {
-            Ok(Some(items)) => items,
-            Ok(None) => {
-                self.set_lsp_status("No type hierarchy available at cursor".to_string());
-                return Ok(false);
+            let items = match prepare_result {
+                Ok(Some(items)) if !items.is_empty() => items,
+                Ok(_) => {
+                    let _ = tx.send(Ok(crate::editor::lsp_slot::TypeHierarchyResult {
+                        types: Vec::new(),
+                        all_locations: Vec::new(),
+                    }));
+                    return;
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e));
+                    return;
+                }
+            };
+
+            let item = &items[0];
+            let mut all_types = Vec::new();
+            let mut all_types_data = Vec::new();
+
+            if let Ok(Some(supertypes)) =
+                ctx.lsp.supertypes(item.clone(), &ctx.language_id).await
+            {
+                for supertype in supertypes {
+                    let location = Location {
+                        uri: supertype.uri.clone(),
+                        range: supertype.selection_range,
+                    };
+                    all_types.push(location.clone());
+                    all_types_data.push((format!("\u{2191} {}", supertype.name), location));
+                }
             }
-            Err(e) => {
-                self.set_lsp_status(format!("Type hierarchy request failed: {}", e));
-                return Err(e);
+
+            if let Ok(Some(subtypes)) = ctx.lsp.subtypes(item.clone(), &ctx.language_id).await {
+                for subtype in subtypes {
+                    let location = Location {
+                        uri: subtype.uri.clone(),
+                        range: subtype.selection_range,
+                    };
+                    all_types.push(location.clone());
+                    all_types_data.push((format!("\u{2193} {}", subtype.name), location));
+                }
             }
-        };
 
-        let item = &items[0];
-        let mut all_types = Vec::new();
-        let mut all_types_data = Vec::new();
+            let _ = tx.send(Ok(crate::editor::lsp_slot::TypeHierarchyResult {
+                types: all_types_data,
+                all_locations: all_types,
+            }));
+        });
 
-        if let Ok(Some(supertypes)) = ctx.lsp.supertypes(item.clone(), &ctx.language_id).await {
-            for supertype in supertypes {
-                let location = Location {
-                    uri: supertype.uri.clone(),
-                    range: supertype.selection_range,
-                };
-                all_types.push(location.clone());
-                all_types_data.push((format!("↑ {}", supertype.name), location));
-            }
-        }
-
-        if let Ok(Some(subtypes)) = ctx.lsp.subtypes(item.clone(), &ctx.language_id).await {
-            for subtype in subtypes {
-                let location = Location {
-                    uri: subtype.uri.clone(),
-                    range: subtype.selection_range,
-                };
-                all_types.push(location.clone());
-                all_types_data.push((format!("↓ {}", subtype.name), location));
-            }
-        }
-
-        if !all_types.is_empty() {
-            self.lsp.state.available_type_hierarchy = all_types_data;
-            self.lsp.state.active_lsp_result_type =
-                Some(crate::editor::LspResultType::TypeHierarchy);
-
-            let picker_items = self.locations_to_picker_items(&all_types);
-            self.open_location_picker(picker_items, "Type Hierarchy");
-            self.set_lsp_status(format!("Found {} types", all_types.len()));
-            Ok(true)
-        } else {
-            self.set_lsp_status("No type hierarchy found".to_string());
-            Ok(false)
-        }
+        self.lsp
+            .slots
+            .type_hierarchy
+            .fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     /// Navigate to an LSP location by index (from references, symbols, call hierarchy, etc.)
@@ -426,7 +409,10 @@ impl Editor {
     }
 
     /// Convert LSP locations to picker items.
-    fn locations_to_picker_items(&self, locations: &[Location]) -> Vec<PickerResult> {
+    pub(in crate::editor) fn locations_to_picker_items(
+        &self,
+        locations: &[Location],
+    ) -> Vec<PickerResult> {
         locations
             .iter()
             .filter_map(|loc| {
@@ -451,7 +437,7 @@ impl Editor {
     }
 
     /// Store call hierarchy locations for navigation.
-    fn store_call_hierarchy(&mut self, locations: &[Location]) {
+    pub(in crate::editor) fn store_call_hierarchy(&mut self, locations: &[Location]) {
         self.lsp.state.available_call_hierarchy = locations
             .iter()
             .map(|loc| {

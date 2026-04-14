@@ -39,7 +39,7 @@ fn is_organize_imports_action(action: &lsp_types::CodeActionOrCommand) -> bool {
     }
 }
 
-fn code_action_title(action: &lsp_types::CodeActionOrCommand) -> String {
+pub(in crate::editor) fn code_action_title(action: &lsp_types::CodeActionOrCommand) -> String {
     match action {
         lsp_types::CodeActionOrCommand::CodeAction(ca) => ca.title.clone(),
         lsp_types::CodeActionOrCommand::Command(cmd) => cmd.title.clone(),
@@ -104,154 +104,137 @@ impl Editor {
 
         self.set_lsp_status("Formatting document...".to_string());
 
-        // Get tab settings from buffer options
         let tab_size = self.options.tab_width as u32;
         let insert_spaces = self.options.expand_tab;
+        let buffer_version = self.buffer().version() as u64;
 
-        let result = ctx
-            .lsp
-            .format_document(&ctx.uri, &ctx.language_id, tab_size, insert_spaces)
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = ctx
+                .lsp
+                .format_document(&ctx.uri, &ctx.language_id, tab_size, insert_spaces)
+                .await;
+            let _ = tx.send(result.map(|edits| crate::editor::lsp_slot::FormatResult { edits }));
+        });
 
-        match result {
-            Ok(edits) if !edits.is_empty() => {
-                self.apply_lsp_edits(edits);
-                self.set_lsp_status("Document formatted".to_string());
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No formatting changes".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Format request failed: {}", e));
-                Err(e)
-            }
-        }
+        self.lsp.slots.format.fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn code_actions_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("code actions").await?;
 
         self.set_lsp_status("Fetching code actions...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        // Get diagnostics for the current line to provide context for code actions
-        let diagnostics = ctx.lsp.get_diagnostics_for_line(&ctx.uri, ctx.line).await;
-        let result = if ctx.server_ids.len() > 1 {
-            ctx.lsp
-                .code_actions_multi_with_sources(
-                    &ctx.uri,
-                    ctx.line,
-                    ctx.character,
-                    &ctx.server_ids,
-                    diagnostics.clone(),
-                )
-                .await
-        } else {
-            ctx.lsp
-                .code_actions(
-                    &ctx.uri,
-                    ctx.line,
-                    ctx.character,
-                    &ctx.language_id,
-                    diagnostics.clone(),
-                )
-                .await
-                .map(|actions| {
-                    actions
-                        .into_iter()
-                        .map(|action| (ctx.language_id.clone(), action))
-                        .collect()
-                })
-        };
-        let result = match result {
-            Ok(actions) if actions.is_empty() && !diagnostics.is_empty() => {
-                // Some servers only return quickfixes when the request position
-                // intersects the diagnostic span, not just the diagnostic line.
-                if let Some(fallback_character) =
-                    fallback_code_action_character(ctx.character, &diagnostics)
-                {
-                    let retry = if ctx.server_ids.len() > 1 {
-                        ctx.lsp
-                            .code_actions_multi_with_sources(
-                                &ctx.uri,
-                                ctx.line,
-                                fallback_character,
-                                &ctx.server_ids,
-                                diagnostics.clone(),
-                            )
-                            .await
-                    } else {
-                        ctx.lsp
-                            .code_actions(
-                                &ctx.uri,
-                                ctx.line,
-                                fallback_character,
-                                &ctx.language_id,
-                                diagnostics.clone(),
-                            )
-                            .await
-                            .map(|retry_actions| {
-                                retry_actions
-                                    .into_iter()
-                                    .map(|action| (ctx.language_id.clone(), action))
-                                    .collect()
-                            })
-                    };
-
-                    match retry {
-                        Ok(retry_actions) if !retry_actions.is_empty() => Ok(retry_actions),
-                        Ok(_) => Ok(actions),
-                        Err(e) => {
-                            crate::lsp_debug!(
-                                "LSP-ACTION",
-                                "Code action fallback retry failed: {}",
-                                e
-                            );
-                            Ok(actions)
-                        }
-                    }
-                } else {
-                    Ok(actions)
-                }
-            }
-            other => other,
-        };
-
-        match result {
-            Ok(actions) if !actions.is_empty() => {
-                let available = actions
-                    .iter()
-                    .map(|(server_id, action)| {
-                        build_available_code_action(server_id.clone(), action.clone())
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            // Get diagnostics for the current line to provide context for code actions
+            let diagnostics = ctx.lsp.get_diagnostics_for_line(&ctx.uri, ctx.line).await;
+            let result = if ctx.server_ids.len() > 1 {
+                ctx.lsp
+                    .code_actions_multi_with_sources(
+                        &ctx.uri,
+                        ctx.line,
+                        ctx.character,
+                        &ctx.server_ids,
+                        diagnostics.clone(),
+                    )
+                    .await
+            } else {
+                ctx.lsp
+                    .code_actions(
+                        &ctx.uri,
+                        ctx.line,
+                        ctx.character,
+                        &ctx.language_id,
+                        diagnostics.clone(),
+                    )
+                    .await
+                    .map(|actions| {
+                        actions
+                            .into_iter()
+                            .map(|action| (ctx.language_id.clone(), action))
+                            .collect()
                     })
-                    .collect();
-                let available = resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
-                let titles: Vec<String> = available
-                    .iter()
-                    .map(|a| code_action_title(&a.action))
-                    .collect();
+            };
+            let result = match result {
+                Ok(actions) if actions.is_empty() && !diagnostics.is_empty() => {
+                    // Some servers only return quickfixes when the request position
+                    // intersects the diagnostic span, not just the diagnostic line.
+                    if let Some(fallback_character) =
+                        fallback_code_action_character(ctx.character, &diagnostics)
+                    {
+                        let retry = if ctx.server_ids.len() > 1 {
+                            ctx.lsp
+                                .code_actions_multi_with_sources(
+                                    &ctx.uri,
+                                    ctx.line,
+                                    fallback_character,
+                                    &ctx.server_ids,
+                                    diagnostics.clone(),
+                                )
+                                .await
+                        } else {
+                            ctx.lsp
+                                .code_actions(
+                                    &ctx.uri,
+                                    ctx.line,
+                                    fallback_character,
+                                    &ctx.language_id,
+                                    diagnostics.clone(),
+                                )
+                                .await
+                                .map(|retry_actions| {
+                                    retry_actions
+                                        .into_iter()
+                                        .map(|action| (ctx.language_id.clone(), action))
+                                        .collect()
+                                })
+                        };
 
-                self.lsp.state.available_code_actions = available;
+                        match retry {
+                            Ok(retry_actions) if !retry_actions.is_empty() => Ok(retry_actions),
+                            Ok(_) => Ok(actions),
+                            Err(e) => {
+                                crate::lsp_debug!(
+                                    "LSP-ACTION",
+                                    "Code action fallback retry failed: {}",
+                                    e
+                                );
+                                Ok(actions)
+                            }
+                        }
+                    } else {
+                        Ok(actions)
+                    }
+                }
+                other => other,
+            };
 
-                let base_dir =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let picker = crate::editor::picker::Picker::new_custom(base_dir, titles);
-                self.set_picker(picker);
-                self.set_mode(crate::mode::Mode::Picker);
-                self.mark_picker_selection_changed();
+            let task_result = match result {
+                Ok(actions) if !actions.is_empty() => {
+                    let available: Vec<_> = actions
+                        .iter()
+                        .map(|(server_id, action)| {
+                            build_available_code_action(server_id.clone(), action.clone())
+                        })
+                        .collect();
+                    let available =
+                        resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
+                    Ok(crate::editor::lsp_slot::CodeActionsResult { actions: available })
+                }
+                Ok(_) => Ok(crate::editor::lsp_slot::CodeActionsResult {
+                    actions: Vec::new(),
+                }),
+                Err(e) => Err(e),
+            };
 
-                Ok(true)
-            }
-            Ok(_) => {
-                self.set_lsp_status("No code actions available".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Code actions request failed: {}", e));
-                Err(e)
-            }
-        }
+            let _ = tx.send(task_result);
+        });
+
+        self.lsp.slots.code_actions.fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     fn execute_code_action_command(
@@ -348,123 +331,116 @@ impl Editor {
         let ctx = self.prepare_lsp_request("organize imports").await?;
 
         self.set_lsp_status("Organizing imports...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        // Request code actions for organize imports (at file start, no diagnostics needed)
-        let diagnostics = Vec::new();
-        let result = if ctx.server_ids.len() > 1 {
-            ctx.lsp
-                .code_actions_multi_with_sources(&ctx.uri, 0, 0, &ctx.server_ids, diagnostics)
-                .await
-        } else {
-            ctx.lsp
-                .code_actions(&ctx.uri, 0, 0, &ctx.language_id, diagnostics)
-                .await
-                .map(|actions| {
-                    actions
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            // Request code actions for organize imports (at file start, no diagnostics needed)
+            let diagnostics = Vec::new();
+            let result = if ctx.server_ids.len() > 1 {
+                ctx.lsp
+                    .code_actions_multi_with_sources(&ctx.uri, 0, 0, &ctx.server_ids, diagnostics)
+                    .await
+            } else {
+                ctx.lsp
+                    .code_actions(&ctx.uri, 0, 0, &ctx.language_id, diagnostics)
+                    .await
+                    .map(|actions| {
+                        actions
+                            .into_iter()
+                            .map(|action| (ctx.language_id.clone(), action))
+                            .collect()
+                    })
+            };
+
+            let task_result = match result {
+                Ok(actions) => {
+                    let available: Vec<_> = actions
                         .into_iter()
-                        .map(|action| (ctx.language_id.clone(), action))
-                        .collect()
-                })
-        };
+                        .map(|(server_id, action)| build_available_code_action(server_id, action))
+                        .collect();
+                    let available =
+                        resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
+                    let organize_action = available
+                        .into_iter()
+                        .find(|action| is_organize_imports_action(&action.action));
 
-        match result {
-            Ok(actions) => {
-                let available = actions
-                    .into_iter()
-                    .map(|(server_id, action)| build_available_code_action(server_id, action))
-                    .collect();
-                let available = resolve_available_code_actions(ctx.lsp.as_ref(), available).await;
-                let organize_action = available
-                    .into_iter()
-                    .find(|action| is_organize_imports_action(&action.action));
-
-                if let Some(action) = organize_action {
-                    self.lsp.state.available_code_actions = vec![action];
-                    self.apply_code_action(0);
-                    self.set_lsp_status("Imports organized".to_string());
-                    Ok(true)
-                } else {
-                    self.set_lsp_status("No organize imports action available".to_string());
-                    Ok(false)
+                    Ok(crate::editor::lsp_slot::OrganizeImportsResult {
+                        action: organize_action,
+                    })
                 }
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Organize imports failed: {}", e));
-                Err(e)
-            }
-        }
+                Err(e) => Err(e),
+            };
+
+            let _ = tx.send(task_result);
+        });
+
+        self.lsp
+            .slots
+            .organize_imports
+            .fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn rename_impl(&mut self, new_name: String) -> Result<bool> {
         let ctx = self.prepare_lsp_request("rename").await?;
 
         self.set_lsp_status(format!("Renaming to '{}'...", new_name));
+        let buffer_version = self.buffer().version() as u64;
+        let new_name_clone = new_name.clone();
 
-        let result = ctx
-            .lsp
-            .rename(
-                &ctx.uri,
-                ctx.line,
-                ctx.character,
-                &ctx.language_id,
-                new_name,
-            )
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = ctx
+                .lsp
+                .rename(
+                    &ctx.uri,
+                    ctx.line,
+                    ctx.character,
+                    &ctx.language_id,
+                    new_name_clone,
+                )
+                .await;
+            let _ = tx.send(
+                result.map(|edit| crate::editor::lsp_slot::RenameResult { edit, new_name }),
+            );
+        });
 
-        match result {
-            Ok(Some(workspace_edit)) => {
-                let applied = self.apply_workspace_edit(workspace_edit)?;
-                if applied {
-                    self.set_lsp_status("Rename completed".to_string());
-                    Ok(true)
-                } else {
-                    self.set_lsp_status("Rename failed to apply".to_string());
-                    Ok(false)
-                }
-            }
-            Ok(None) => {
-                self.set_lsp_status("Rename not available at this location".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Rename request failed: {}", e));
-                Err(e)
-            }
-        }
+        self.lsp.slots.rename.fire(task, rx, buffer_version);
+        Ok(true)
     }
 
     pub(in crate::editor) async fn semantic_tokens_impl(&mut self) -> Result<bool> {
         let ctx = self.prepare_lsp_request("semantic tokens").await?;
 
         self.set_lsp_status("Fetching semantic tokens...".to_string());
+        let buffer_version = self.buffer().version() as u64;
 
-        let result = ctx
-            .lsp
-            .semantic_tokens_full(&ctx.uri, &ctx.language_id)
-            .await;
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let result = ctx
+                .lsp
+                .semantic_tokens_full(&ctx.uri, &ctx.language_id)
+                .await;
 
-        match result {
-            Ok(Some(tokens)) => {
-                if let Ok(Some(legend)) = ctx.lsp.get_semantic_tokens_legend(&ctx.language_id).await
-                {
-                    self.buffer_mut().decode_semantic_tokens(&tokens, &legend);
-                    self.set_lsp_status("Semantic tokens applied".to_string());
-                } else {
-                    self.set_lsp_status(
-                        "Semantic tokens received (no legend available)".to_string(),
-                    );
+            let task_result = match result {
+                Ok(tokens) => {
+                    let legend = ctx
+                        .lsp
+                        .get_semantic_tokens_legend(&ctx.language_id)
+                        .await
+                        .ok()
+                        .flatten();
+                    Ok(crate::editor::lsp_slot::SemanticTokensSlotResult { tokens, legend })
                 }
-                Ok(true)
-            }
-            Ok(None) => {
-                self.set_lsp_status("No semantic tokens available".to_string());
-                Ok(false)
-            }
-            Err(e) => {
-                self.set_lsp_status(format!("Semantic tokens request failed: {}", e));
-                Err(e)
-            }
-        }
+                Err(e) => Err(e),
+            };
+
+            let _ = tx.send(task_result);
+        });
+
+        self.lsp.slots.semantic_tokens.fire(task, rx, buffer_version);
+        Ok(true)
     }
 }
 

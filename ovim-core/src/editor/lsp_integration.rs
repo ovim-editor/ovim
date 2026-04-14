@@ -349,6 +349,9 @@ impl Editor {
         // --- Poll navigation slots (Slot<T> based) ---
         changed |= self.poll_goto_slots();
 
+        // --- Poll action slots (Step 5) ---
+        changed |= self.poll_action_slots();
+
         changed
     }
 
@@ -521,6 +524,316 @@ impl Editor {
                 false
             }
         }
+    }
+
+    /// Poll all action slots (Step 5 — format, references, symbols, code actions,
+    /// rename, organize imports, call/type hierarchy, semantic tokens).
+    fn poll_action_slots(&mut self) -> bool {
+        let mut changed = false;
+        let timeout = Duration::from_secs(15);
+
+        // Format
+        if let Some(result) = self.lsp.slots.format.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.edits.is_empty() => {
+                    self.apply_lsp_edits(r.edits);
+                    self.set_lsp_status("Document formatted".to_string());
+                    changed = true;
+                }
+                Ok(_) => {
+                    self.set_lsp_status("No formatting changes".to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Format request failed: {}", e));
+                }
+            }
+        }
+
+        // Find references
+        if let Some(result) = self.lsp.slots.references.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.locations.is_empty() => {
+                    let count = r.locations.len();
+                    self.lsp.state.available_references = r.locations.clone();
+                    self.lsp.state.active_lsp_result_type =
+                        Some(crate::editor::LspResultType::References);
+                    let items = self.locations_to_picker_items(&r.locations);
+                    self.open_location_picker(items, "References");
+                    self.set_lsp_status(format!("Found {} references", count));
+                    changed = true;
+                }
+                Ok(_) => {
+                    self.set_lsp_status("No references found".to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("References request failed: {}", e));
+                }
+            }
+        }
+
+        // Document symbols
+        if let Some(result) = self.lsp.slots.document_symbols.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.symbols.is_empty() => {
+                    let count = r.symbols.len();
+                    self.lsp.state.available_document_symbols = r.symbols.clone();
+                    self.lsp.state.active_lsp_result_type =
+                        Some(crate::editor::LspResultType::DocumentSymbols);
+                    let file_path = r.file_path;
+                    let items: Vec<crate::editor::picker::PickerResult> = r
+                        .symbols
+                        .iter()
+                        .map(|sym| {
+                            let line = sym.range.start.line as usize;
+                            let col =
+                                self.utf16_to_grapheme_col(line, sym.range.start.character);
+                            crate::editor::picker::PickerResult {
+                                display: format!(
+                                    "{}:{}:{} {}",
+                                    file_path,
+                                    line + 1,
+                                    col + 1,
+                                    sym.name
+                                ),
+                                location: file_path.to_string(),
+                                line,
+                                col,
+                                match_positions: Vec::new(),
+                                content: None,
+                            }
+                        })
+                        .collect();
+                    self.open_location_picker(items, "Document Symbols");
+                    self.set_lsp_status(format!("Found {} symbols", count));
+                    changed = true;
+                }
+                Ok(_) => {
+                    self.set_lsp_status("No symbols found".to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Document symbols request failed: {}", e));
+                }
+            }
+        }
+
+        // Workspace symbols
+        if let Some(result) = self.lsp.slots.workspace_symbols.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.symbols.is_empty() => {
+                    let count = r.symbols.len();
+                    self.lsp.state.available_workspace_symbols = r.symbols.clone();
+                    self.lsp.state.active_lsp_result_type =
+                        Some(crate::editor::LspResultType::WorkspaceSymbols);
+                    let items: Vec<crate::editor::picker::PickerResult> = r
+                        .symbols
+                        .iter()
+                        .filter_map(|sym| {
+                            let path = crate::lsp::uri_to_file_path(&sym.location.uri)?;
+                            let line = sym.location.range.start.line as usize;
+                            let col = self.utf16_to_grapheme_col(
+                                line,
+                                sym.location.range.start.character,
+                            );
+                            Some(crate::editor::picker::PickerResult {
+                                display: format!(
+                                    "{}:{}:{}",
+                                    path.file_name().unwrap_or_default().to_string_lossy(),
+                                    line + 1,
+                                    col + 1
+                                ),
+                                location: path.to_string_lossy().to_string(),
+                                line,
+                                col,
+                                match_positions: Vec::new(),
+                                content: None,
+                            })
+                        })
+                        .collect();
+                    self.open_location_picker(items, "Workspace Symbols");
+                    self.set_lsp_status(format!("Found {} symbols", count));
+                    changed = true;
+                }
+                Ok(_) => {
+                    self.set_lsp_status("No workspace symbols found".to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Workspace symbols request failed: {}", e));
+                }
+            }
+        }
+
+        // Code actions
+        if let Some(result) = self.lsp.slots.code_actions.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.actions.is_empty() => {
+                    let titles: Vec<String> = r
+                        .actions
+                        .iter()
+                        .map(|a| {
+                            lsp_modules::actions::code_action_title(&a.action)
+                        })
+                        .collect();
+                    self.lsp.state.available_code_actions = r.actions;
+                    let base_dir =
+                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                    let picker = crate::editor::picker::Picker::new_custom(base_dir, titles);
+                    self.set_picker(picker);
+                    self.set_mode(crate::mode::Mode::Picker);
+                    self.mark_picker_selection_changed();
+                    changed = true;
+                }
+                Ok(_) => {
+                    self.set_lsp_status("No code actions available".to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Code actions request failed: {}", e));
+                }
+            }
+        }
+
+        // Rename
+        if let Some(result) = self.lsp.slots.rename.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) => {
+                    if let Some(workspace_edit) = r.edit {
+                        match self.apply_workspace_edit(workspace_edit) {
+                            Ok(true) => {
+                                self.set_lsp_status(format!(
+                                    "Renamed to '{}'",
+                                    r.new_name
+                                ));
+                                changed = true;
+                            }
+                            Ok(false) => {
+                                self.set_lsp_status("Rename failed to apply".to_string());
+                            }
+                            Err(e) => {
+                                self.set_lsp_status(format!(
+                                    "Failed to apply rename: {}",
+                                    e
+                                ));
+                            }
+                        }
+                    } else {
+                        self.set_lsp_status(
+                            "Rename not available at this location".to_string(),
+                        );
+                    }
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Rename request failed: {}", e));
+                }
+            }
+        }
+
+        // Organize imports
+        if let Some(result) = self.lsp.slots.organize_imports.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) => {
+                    if let Some(action) = r.action {
+                        self.lsp.state.available_code_actions = vec![action];
+                        self.apply_code_action(0);
+                        self.set_lsp_status("Imports organized".to_string());
+                        changed = true;
+                    } else {
+                        self.set_lsp_status(
+                            "No organize imports action available".to_string(),
+                        );
+                    }
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Organize imports failed: {}", e));
+                }
+            }
+        }
+
+        // Call hierarchy
+        if let Some(result) = self.lsp.slots.call_hierarchy.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.locations.is_empty() => {
+                    let count = r.locations.len();
+                    let direction_label = match r.direction {
+                        crate::editor::lsp_slot::CallHierarchyDirection::Incoming => {
+                            "Incoming Calls"
+                        }
+                        crate::editor::lsp_slot::CallHierarchyDirection::Outgoing => {
+                            "Outgoing Calls"
+                        }
+                    };
+                    self.store_call_hierarchy(&r.locations);
+                    let picker_items = self.locations_to_picker_items(&r.locations);
+                    self.open_location_picker(picker_items, direction_label);
+                    self.set_lsp_status(format!(
+                        "Found {} {}",
+                        count,
+                        direction_label.to_lowercase()
+                    ));
+                    changed = true;
+                }
+                Ok(r) => {
+                    let msg = match r.direction {
+                        crate::editor::lsp_slot::CallHierarchyDirection::Incoming => {
+                            "No incoming calls found"
+                        }
+                        crate::editor::lsp_slot::CallHierarchyDirection::Outgoing => {
+                            "No outgoing calls found"
+                        }
+                    };
+                    self.set_lsp_status(msg.to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Call hierarchy request failed: {}", e));
+                }
+            }
+        }
+
+        // Type hierarchy
+        if let Some(result) = self.lsp.slots.type_hierarchy.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) if !r.all_locations.is_empty() => {
+                    let count = r.all_locations.len();
+                    self.lsp.state.available_type_hierarchy = r.types;
+                    self.lsp.state.active_lsp_result_type =
+                        Some(crate::editor::LspResultType::TypeHierarchy);
+                    let picker_items = self.locations_to_picker_items(&r.all_locations);
+                    self.open_location_picker(picker_items, "Type Hierarchy");
+                    self.set_lsp_status(format!("Found {} types", count));
+                    changed = true;
+                }
+                Ok(_) => {
+                    self.set_lsp_status("No type hierarchy found".to_string());
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Type hierarchy request failed: {}", e));
+                }
+            }
+        }
+
+        // Semantic tokens
+        if let Some(result) = self.lsp.slots.semantic_tokens.poll_with_timeout(timeout) {
+            match result {
+                Ok(r) => {
+                    if let Some(tokens) = r.tokens {
+                        if let Some(legend) = r.legend {
+                            self.buffer_mut().decode_semantic_tokens(&tokens, &legend);
+                            self.set_lsp_status("Semantic tokens applied".to_string());
+                        } else {
+                            self.set_lsp_status(
+                                "Semantic tokens received (no legend available)".to_string(),
+                            );
+                        }
+                        changed = true;
+                    } else {
+                        self.set_lsp_status("No semantic tokens available".to_string());
+                    }
+                }
+                Err(e) => {
+                    self.set_lsp_status(format!("Semantic tokens request failed: {}", e));
+                }
+            }
+        }
+
+        changed
     }
 
     /// Poll completion responses (non-blocking)
