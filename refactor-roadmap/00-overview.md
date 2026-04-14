@@ -52,29 +52,31 @@ Completion works correctly because it has its own separate slot with sequence-ba
 
 3. **Acknowledge that some things take time.** Save, formatting, git operations are not instant. The type system distinguishes sync from async results. The UI stays responsive.
 
-4. **Completion got it right.** Dedicated slot, sequence-based stale rejection, background task. Apply this pattern uniformly.
+4. **One pattern for all LSP features.** The codebase already has the right pattern (fire into a slot, poll for result, cancel on replace) — it's just implemented five different ways. `Slot<T>` unifies goto, hover, completion, inlay hints, diagnostics, format, rename, and every future LSP feature into one generic abstraction.
 
 ## Phases
 
 | Phase | Scope | Fixes | Risk |
 |-------|-------|-------|------|
-| [**00: Quick Fixes**](./00-phase0-quick-fixes.md) | 5 surgical changes | All four symptoms | Low -- each is small and independent |
-| [01: Request Pipeline](./01-request-pipeline.md) | `server.rs` | Response race, silent drops | Low -- transport-layer fix |
-| [02: Action Dispatch](./02-action-dispatch.md) | `LspState`, `process_pending_lsp_actions` | Action blocking, silent overwrite, inline awaits | Low-Medium -- changes action lifecycle |
-| [03: Document Sync](./03-document-sync.md) | Debouncer, `DocumentSyncState`, content flow | Wrong content after undo, reconciliation complexity | Medium -- fixes the content pipeline |
-| [04: Async Save](./04-async-save.md) | `file_io.rs`, commands, git | Save freezes | Low -- one command changes shape |
+| Phase | Scope | Fixes | Risk |
+|-------|-------|-------|------|
+| [**00: Quick Fixes**](./00-phase0-quick-fixes.md) | 5 surgical changes | All four symptoms | **Done** |
+| [01: Request Pipeline](./01-request-pipeline.md) | `server.rs` | Response race, silent drops | **Done** (shipped in Phase 0) |
+| [**02: Unified Slot Architecture**](./02-action-dispatch.md) | `Slot<T>`, LspSlots, LspIntents | Action blocking, silent overwrite, inline awaits, ad-hoc polling | Medium -- the next structural step |
+| [03: Document Sync](./03-document-sync.md) | Debouncer, `DocumentSyncState`, content flow | Reconciliation complexity | Medium -- simplify after Phase 0 fix |
+| [04: Async Save](./04-async-save.md) | `file_io.rs`, commands, git | Save freezes | **Done** (git ops shipped in Phase 0) |
 | [05: Decoration Projection](./05-decoration-projection.md) | `decoration.rs`, inlay hints | Hint drift, undo clearing hints | Medium -- changes rendering pipeline |
-| [06: LspState Decomposition](./06-lsp-state-decomposition.md) | `lsp_state.rs` | Maintainability | Low -- mechanical refactor |
+| [06: LspState Decomposition](./06-lsp-state-decomposition.md) | `lsp_state.rs` | Maintainability | Low -- largely subsumed by Phase 2 |
 
-**Phase 0 comes first.** It's 5 surgical fixes that address the acute symptoms without creating double work. Each fix is either the final fix or a necessary prerequisite for the later structural phase. Ship it, live with it, then decide which structural phases are worth pursuing.
+**Phase 0 is shipped.** The acute symptoms are fixed. Phases 1 and 4 are done (the core fixes were in Phase 0).
 
-Phases 1-4 are the detailed plans for the structural improvements that Phase 0's fixes leave on the table. Phase 5 is the inlay hint drift fix (needs an edit log). Phase 6 is pure cleanup.
+**Phase 2 is the next big move.** The `Slot<T>` architecture replaces 5 ad-hoc implementations of the same pattern, converts all inline-await actions to non-blocking, and eliminates the single-slot bottleneck. It's designed for incremental migration — each feature conversion is independent and shippable. Phase 6 (LspState decomposition) is largely achieved as a side effect of Phase 2, since the ad-hoc pending structs are replaced by `LspSlots`.
 
-Phase ordering reflects dependencies and risk:
-- Phase 0 is immediate -- do it now, all independent fixes
-- Phases 1-4 become "remaining structural work" after Phase 0
+Phase ordering:
+- Phase 2 is next -- highest impact structural improvement, incremental migration
+- Phase 3 is independent -- simplifies DocumentSyncState now that Phase 0 fixed the baseline bug
 - Phase 5 depends on an edit log (can be added standalone or as part of Phase 3)
-- Phase 6 can happen anytime, no behavioral change
+- Phase 6 may be unnecessary after Phase 2 cleans up LspState
 
 ## Files Involved
 

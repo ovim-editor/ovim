@@ -1,216 +1,341 @@
-# Phase 2: Action Dispatch
+# Phase 2: Unified Slot Architecture
 
-**Goal:** User-triggered LSP actions don't block each other. Each action type manages its own lifecycle. No silent overwrites.
+**Goal:** Every LSP feature uses the same `Slot<T>` pattern. No keystroke is ever lost. No action blocks the event loop. Same-type cancels, different-type coexists.
 
-**Fixes:** Hover blocking goto-definition. Actions lost during fast input. Format/code-actions blocking the event loop for 500ms.
+**Fixes:** Actions lost during fast input. Format/code-actions/rename blocking the event loop for 100-500ms. Ad-hoc polling code for completion, inlay hints, diagnostics, hover, goto.
 
-**Risk:** Low-Medium. Changes how actions are queued and processed, but each action's `_impl()` method is unchanged internally.
+**Risk:** Medium. Replaces the action dispatch system, but each conversion is independent and shippable. The `Slot<T>` abstraction is simple enough to be correct by inspection.
 
-## The Problems
+## The Insight
 
-### Problem 1: The single-slot bottleneck
+The codebase already has the right pattern — it's just implemented four different ways:
 
-`pending_lsp_action` is a single `Option<LspAction>`. All 16 action types share one slot. `queue_lsp_action()` does a silent overwrite:
+| Feature | Slot-like struct | Sequence tracking | Cancel-on-replace | Poll method |
+|---------|-----------------|-------------------|-------------------|-------------|
+| Goto definition | `PendingLspResponses.definition` | No | `task.abort()` | `poll_definition_slot()` |
+| Hover | `PendingLspResponses.hover` | No | `task.abort()` | `poll_hover_slot()` |
+| Completion | `PendingCompletionRequest` | `completion_request_seq` | Stale rejection | `poll_pending_completion_response()` |
+| Inlay hints | `PendingInlayHintRequest` | `inlay_hint_request_seq` | Stale rejection | `poll_pending_inlay_hint_response()` |
+| Diagnostics | `PendingDiagnosticRefresh` | `diagnostic_refresh_seq` | Stale rejection | `poll_pending_diagnostic_refresh_response()` |
+| Format | None (inline await) | No | N/A | N/A (blocks) |
+| Code actions | None (inline await) | No | N/A | N/A (blocks) |
+| References | None (inline await) | No | N/A | N/A (blocks) |
+| Rename | None (inline await) | No | N/A | N/A (blocks) |
+
+Five ad-hoc implementations of the same idea, plus four features that don't use it at all (and block the event loop instead). One generic abstraction replaces all of them.
+
+## The Abstraction
 
 ```rust
-fn queue_lsp_action(&mut self, action: LspAction) {
-    self.lsp.state.pending_lsp_action = Some(action);  // overwrites previous
-    self.lsp.state.lsp_action_retry_count = 0;
+/// A single in-flight request with its expected result type.
+/// The only abstraction needed for async LSP features.
+pub struct Slot<T> {
+    inflight: Option<Inflight<T>>,
+}
+
+struct Inflight<T> {
+    task: JoinHandle<()>,
+    rx: oneshot::Receiver<Result<T>>,
+    started: Instant,
+    buffer_version: u64,
+}
+
+impl<T> Slot<T> {
+    pub fn new() -> Self { Self { inflight: None } }
+
+    /// Fire a new request. If one is already in flight, cancel it.
+    pub fn fire(&mut self, task: JoinHandle<()>, rx: oneshot::Receiver<Result<T>>,
+                buffer_version: u64) {
+        if let Some(old) = self.inflight.take() {
+            old.task.abort();
+        }
+        self.inflight = Some(Inflight { task, rx, started: Instant::now(), buffer_version });
+    }
+
+    /// Check if the result has arrived. Non-blocking.
+    pub fn poll(&mut self) -> Option<Result<T>> {
+        let inflight = self.inflight.as_mut()?;
+        match inflight.rx.try_recv() {
+            Ok(result) => { self.inflight.take(); Some(result) }
+            Err(TryRecvError::Empty) => {
+                // Timeout safety: cancel requests that have been in flight too long
+                if inflight.started.elapsed() > Duration::from_secs(15) {
+                    self.inflight.take().unwrap().task.abort();
+                }
+                None
+            }
+            Err(TryRecvError::Closed) => { self.inflight.take(); None }
+        }
+    }
+
+    pub fn is_pending(&self) -> bool { self.inflight.is_some() }
+    pub fn cancel(&mut self) { if let Some(old) = self.inflight.take() { old.task.abort(); } }
+    pub fn buffer_version(&self) -> Option<u64> {
+        self.inflight.as_ref().map(|i| i.buffer_version)
+    }
 }
 ```
 
-If the user triggers two actions before the first is processed, the first is silently lost.
+Three methods. One struct. The `fire` / `poll` / `cancel` lifecycle covers every LSP feature uniformly.
 
-### Problem 2: The global gate
+### Key properties
+
+**Same-type cancels.** `fire()` aborts the old task before starting the new one. Press `gd` twice: second cancels first. No sequence numbers needed — cancellation is structural.
+
+**Different-type coexists.** Each feature has its own `Slot<T>`. Goto and hover are separate slots — they can't interfere. No gate, no queue, no dispatcher.
+
+**Nothing blocks.** Every `fire_*` method spawns a task and returns immediately. The event loop polls each slot on each tick. The result is applied when it arrives.
+
+**Timeouts are built in.** The `poll()` method checks elapsed time and aborts stale requests. No separate cleanup task needed.
+
+## The Slots
 
 ```rust
-// event_loop.rs:474 and :919
-if !editor.has_pending_lsp_response() {
-    editor.process_pending_lsp_actions().await;
+pub struct LspSlots {
+    // Navigation (spawn-and-poll, currently working)
+    pub goto_definition: Slot<GotoResult>,
+    pub goto_implementation: Slot<GotoResult>,
+    pub goto_type: Slot<GotoResult>,
+    pub hover: Slot<HoverResult>,
+
+    // Query (spawn-and-poll, currently working via ad-hoc structs)
+    pub completion: Slot<CompletionResult>,
+    pub inlay_hints: Slot<InlayHintResult>,
+    pub diagnostics: Slot<DiagnosticResult>,
+
+    // Query (currently inline-await, need conversion)
+    pub references: Slot<ReferencesResult>,
+    pub document_symbols: Slot<DocumentSymbolsResult>,
+    pub workspace_symbols: Slot<WorkspaceSymbolsResult>,
+    pub call_hierarchy: Slot<CallHierarchyResult>,
+    pub type_hierarchy: Slot<TypeHierarchyResult>,
+    pub code_actions: Slot<CodeActionsResult>,
+
+    // Mutate (currently inline-await, need conversion)
+    pub format: Slot<FormatResult>,
+    pub rename: Slot<RenameResult>,
+    pub organize_imports: Slot<OrganizeImportsResult>,
+
+    // Tokens
+    pub semantic_tokens: Slot<SemanticTokensResult>,
 }
 ```
 
-`has_pending_lsp_response()` checks four response slots (hover, definition, implementation, type_definition). If any slot is occupied, no new actions can be dispatched. Hover in flight blocks goto-definition.
+Each result type is a simple struct containing what the poll handler needs to apply the result.
 
-### Problem 3: Mixed sync and async _impl methods
+## The Intent Bridge (sync → async)
 
-Some `_impl()` methods spawn a background task and return immediately:
-- `goto_definition_impl()` -- spawns task, stores in `pending_lsp_responses.definition`
-- `hover_impl()` -- spawns task, stores in `pending_lsp_responses.hover`
-
-Others await the full LSP round-trip inline:
-- `format_document_impl()` -- awaits `format_document()` (100-500ms)
-- `code_actions_impl()` -- awaits `code_actions()` (100-300ms)
-- `find_references_impl()` -- awaits `find_references()` (50-200ms)
-- `rename_impl()` -- awaits `rename()` (100-500ms)
-
-The inline-await ones block `process_pending_lsp_actions()`. During that time, no other action can start, the event loop doesn't process input (within the select arm), and status updates don't render.
-
-All of them also call `prepare_lsp_request()` which includes `ensure_lsp_document_synced()` + a hardcoded `sleep(10ms)` at line 1795. Every action pays 10ms+ of unnecessary latency.
-
-### What completion gets right
-
-Completion has its own `pending_completion` slot and a monotonic `completion_request_seq`. Multiple requests can be in flight; only the latest is used. This is the right pattern.
-
-## The Design
-
-### Observation: Actions fall into two categories
-
-**Navigate-and-show** actions spawn a background task and show results in a popup/picker:
-- Hover, goto-definition/implementation/type, find-references, document-symbols, workspace-symbols, call/type-hierarchy
-
-**Mutate-and-confirm** actions change the buffer and need the result before continuing:
-- Format, code-actions (apply), rename, organize-imports
-
-The first category can safely overlap -- hover and goto can be in flight simultaneously. The second category is naturally sequential -- you don't format while renaming.
-
-### Per-slot dispatch (remove the single slot)
-
-Replace `pending_lsp_action: Option<LspAction>` with direct dispatch. When the user presses a key, the action dispatches immediately into its own slot:
+Key handlers are synchronous. Spawning a tokio task requires async context. The bridge is a per-type intent flag:
 
 ```rust
-// Before:
-pub fn request_goto_definition(&mut self) {
-    self.queue_lsp_action(LspAction::GoToDefinition);  // put in single slot
+pub struct LspIntents {
+    pub goto_definition: Option<LspRequestParams>,
+    pub goto_definition_new_tab: Option<LspRequestParams>,
+    pub hover: Option<LspRequestParams>,
+    pub format: bool,
+    pub code_actions: bool,
+    pub references: bool,
+    // ... one field per action type
 }
 
-// After:
-pub fn request_goto_definition(&mut self) {
-    self.pending_goto_definition = true;  // flag for this specific action
+pub struct LspRequestParams {
+    pub line: u32,
+    pub character: u32,
+    pub uri: Uri,
+    pub language_id: String,
+    pub file_path: String,
 }
 ```
 
-Or simpler -- just process the action inline in the input handler and remove the queue entirely. The `_impl()` methods that spawn background tasks already return immediately:
+The sync key handler records the intent:
 
 ```rust
-// In the input handler (where the key is processed):
-EditorEvent::Key('g', 'd') => {
-    editor.goto_definition_impl().await;  // spawns task, returns Ok(false) immediately
+// In normal mode key handler (synchronous):
+('g', 'd') => {
+    editor.lsp_intents.goto_definition = Some(editor.current_lsp_params());
+}
+'K' => {
+    editor.lsp_intents.hover = Some(editor.current_lsp_params());
+}
+('g', 'q') => {
+    editor.lsp_intents.format = true;
 }
 ```
 
-This is already how it works for the input path at `event_loop.rs:920`:
+The async event loop dispatches all intents after the input batch:
 
 ```rust
-// Immediately process LSP actions triggered by input
-if !editor.has_pending_lsp_response() {  // ← remove this gate
-    editor.process_pending_lsp_actions().await;
+// After process_input_events() returns:
+if let Some(params) = editor.lsp_intents.goto_definition.take() {
+    editor.dispatch_goto_definition(params).await;
+}
+if let Some(params) = editor.lsp_intents.hover.take() {
+    editor.dispatch_hover(params).await;
+}
+if editor.lsp_intents.format.take() {
+    editor.dispatch_format().await;
+}
+// ...
+```
+
+Each `dispatch_*` method calls `ensure_lsp_document_synced()`, spawns the task, and fires into the slot. This is the rewritten `_impl()` method — always spawn-and-poll, never inline-await.
+
+### Why this solves the input batch problem
+
+```
+User types gd then K in the same 16ms frame:
+
+process_input_events():
+  g → pending_command = 'g'
+  d → lsp_intents.goto_definition = Some(params)
+  K → lsp_intents.hover = Some(params)
+
+After batch:
+  goto_definition intent → dispatch_goto_definition → fires into goto slot
+  hover intent → dispatch_hover → fires into hover slot
+  Both in flight simultaneously. Neither lost.
+```
+
+Compare with the old single-slot design:
+
+```
+process_input_events():
+  g → pending_command = 'g'
+  d → pending_lsp_action = Some(GoToDefinition)
+  K → pending_lsp_action = Some(ShowHover)  ← OVERWRITES goto
+
+process_pending_lsp_actions():
+  Only ShowHover fires. GoToDefinition lost.
+```
+
+## The Polling Tick
+
+```rust
+fn poll_lsp_slots(editor: &mut Editor) -> bool {
+    let mut changed = false;
+
+    // Navigation results
+    if let Some(Ok(result)) = editor.lsp_slots.goto_definition.poll() {
+        editor.jump_to_location(result.location, result.new_tab);
+        changed = true;
+    }
+    if let Some(Ok(result)) = editor.lsp_slots.hover.poll() {
+        editor.show_hover_popup(result.text, result.line, result.col);
+        changed = true;
+    }
+
+    // Mutation results
+    if let Some(Ok(result)) = editor.lsp_slots.format.poll() {
+        editor.apply_lsp_edits(result.edits);
+        editor.set_status("Formatted");
+        changed = true;
+    }
+    if let Some(Ok(result)) = editor.lsp_slots.rename.poll() {
+        editor.apply_workspace_edit(result.edit);
+        editor.set_status(format!("Renamed to '{}'", result.new_name));
+        changed = true;
+    }
+
+    // Query results (open pickers)
+    if let Some(Ok(result)) = editor.lsp_slots.references.poll() {
+        editor.open_location_picker(result.locations, "References");
+        changed = true;
+    }
+
+    // ... each is 3-5 lines, independent of the others
+
+    changed
 }
 ```
 
-The fix: **remove the gate**. The `_impl()` methods that spawn tasks already cancel previous requests in the same slot (goto_definition_common at line 93 does `definition.take()` + `old.task.abort()`). The per-slot design handles concurrency correctly.
+Called once per tick. Each poll is independent. Each result handler is focused on one thing.
 
-### Per-slot cancellation
+## What Gets Deleted
 
-Each slot already does cancellation -- goto at line 93:
-
-```rust
-if let Some((_, old)) = self.lsp.state.pending_lsp_responses.definition.take() {
-    old.task.abort();
-}
-```
-
-The user presses `gd`, then quickly `gd` again: the first request is cancelled, the second starts. This is correct behavior.
-
-The pattern should be uniform: every action's `_impl()` method cancels any previous pending request in its slot before starting a new one.
-
-### Make inline-await actions non-blocking
-
-The `_impl()` methods that await inline need to become spawn-and-poll, following the goto/hover pattern:
-
-```rust
-// Before (format_document_impl):
-pub async fn format_document_impl(&mut self) -> Result<bool> {
-    let ctx = self.prepare_lsp_request("format").await?;  // 10ms+ sleep
-    let result = ctx.lsp.format_document(...).await;       // 100-500ms block
-    self.apply_lsp_edits(result);
-    Ok(true)
-}
-
-// After:
-pub async fn format_document_impl(&mut self) -> Result<bool> {
-    self.ensure_lsp_document_synced().await;  // no gratuitous sleep
-    
-    let (tx, rx) = oneshot::channel();
-    let lsp = self.lsp_manager().clone();
-    let task = tokio::spawn(async move {
-        let result = lsp.format_document(...).await;
-        let _ = tx.send(result);
-        Ok(None)
-    });
-    
-    self.pending_format = Some(PendingLspRequest { task, receiver: rx, started: Instant::now() });
-    self.set_lsp_status("Formatting...".to_string());
-    Ok(false)  // result arrives via polling
-}
-```
-
-The response is processed in a `poll_pending_format()` method called from the tick, same as hover and goto.
-
-For actions that mutate the buffer (format, rename), the poll handler applies the edits when the result arrives. The user sees "Formatting..." in the status line and can keep navigating while it runs.
-
-### Remove the hardcoded sleep
-
-`prepare_lsp_request()` at line 1795 has:
-
-```rust
-let did_flush = self.ensure_lsp_document_synced().await;
-if did_flush {
-    tokio::time::sleep(tokio::time::Duration::from_millis(2)).await;
-}
-tokio::time::sleep(tokio::time::Duration::from_millis(10)).await;  // why?
-```
-
-The 10ms sleep exists to "give the server time to process the didChange." This is cargo-cult -- the LSP protocol is request/response; the server will either respond with results based on the new content or with a ContentModified error. The sleep adds latency to every single LSP action.
-
-Remove both sleeps. If a server returns stale results, the retry mechanism (or the user pressing the key again) handles it.
+| Current | Replaced by |
+|---------|------------|
+| `LspAction` enum (16 variants) | Gone. Each slot has its own concrete result type. |
+| `pending_lsp_action: Option<LspAction>` | `LspIntents` struct with per-type flags. |
+| `queue_lsp_action()` | Each key handler sets its own intent flag. |
+| `process_pending_lsp_actions()` (60-line match) | Per-intent dispatch loop (each branch is 1 line). |
+| `PendingLspResponses` (4 named fields) | Subsumed by `LspSlots`. |
+| `PendingCompletionRequest` + `completion_request_seq` | `Slot<CompletionResult>` — cancellation replaces sequence tracking. |
+| `PendingInlayHintRequest` + `inlay_hint_request_seq` | `Slot<InlayHintResult>`. |
+| `PendingDiagnosticRefresh` + `diagnostic_refresh_seq` | `Slot<DiagnosticResult>`. |
+| `has_pending_lsp_response()` | Gone. No gate needed. |
+| `lsp_action_retry_count` | Gone. Retry is the user pressing the key again. |
+| `prepare_lsp_request()` + its sleeps | `ensure_lsp_document_synced()` called in each `dispatch_*`. |
+| 5 separate `poll_*` methods | One `poll_lsp_slots()` function. |
 
 ## Migration Steps
 
-### Step 1: Remove the `has_pending_lsp_response()` gate
+Each step is independently shippable. The old and new systems can coexist during migration.
 
-Delete the guard at `event_loop.rs:474` and `:919`. Let `process_pending_lsp_actions()` run unconditionally. The per-slot cancellation in each `_impl()` method prevents conflicts.
+### Step 1: Introduce `Slot<T>` and `LspSlots`
 
-### Step 2: Convert inline-await actions to spawn-and-poll
+Add the generic `Slot<T>` struct. Add `LspSlots` to the editor with all fields initialized as empty. No behavior change yet — the old system still runs.
 
-Start with `format_document_impl` (most commonly hit). Then `code_actions_impl`, `rename_impl`, `find_references_impl`. Each gets a pending slot and a poll method.
+**File:** `ovim-core/src/editor/lsp_slot.rs` (new)
 
-### Step 3: Remove `pending_lsp_action` single slot
+### Step 2: Convert goto-definition to Slot
 
-Once all actions either dispatch directly or use their own pending slot, the single `Option<LspAction>` slot is unused. Delete it, along with `queue_lsp_action()`, `lsp_action_retry_count`, and the `LspAction` enum.
+Rewrite `goto_definition_impl()` to fire into `lsp_slots.goto_definition` instead of the ad-hoc `pending_lsp_responses.definition` field. Add the poll handler. Remove the old field.
 
-Input handlers call `_impl()` methods directly instead of queueing.
+This is the template conversion — get it right once, then repeat for each feature.
 
-### Step 4: Remove `prepare_lsp_request` sleeps
+**Files:** `ovim-core/src/editor/lsp_modules/goto.rs`, `ovim-core/src/editor/lsp_state.rs`
 
-Delete the hardcoded sleeps. Keep `ensure_lsp_document_synced()` (flushing pending content is correct).
+### Step 3: Convert hover, implementation, type-definition
+
+Same pattern as step 2. After this, `PendingLspResponses` is empty and can be deleted.
+
+### Step 4: Convert completion, inlay hints, diagnostics
+
+Replace `PendingCompletionRequest`, `PendingInlayHintRequest`, `PendingDiagnosticRefresh` with their `Slot<T>` equivalents. Delete `completion_request_seq`, `inlay_hint_request_seq`, `diagnostic_refresh_seq`.
+
+### Step 5: Convert inline-await actions to spawn-and-poll
+
+Convert `format_document_impl`, `code_actions_impl`, `find_references_impl`, `document_symbols_impl`, `workspace_symbols_impl`, `rename_impl`, `organize_imports_impl`, `call_hierarchy_*_impl`, `type_hierarchy_impl`, `semantic_tokens_impl`. Each becomes a `dispatch_*` that fires into its slot.
+
+Priority order:
+1. `format_document_impl` — most visible blocking
+2. `find_references_impl` / `document_symbols_impl` — open pickers, straightforward
+3. `code_actions_impl` — complex (fallback logic, multi-server)
+4. `rename_impl` — interactive (user input first)
+
+### Step 6: Introduce `LspIntents` and remove the single slot
+
+Add `LspIntents` struct. Rewrite key handlers to set intent flags instead of calling `queue_lsp_action()`. Add the per-intent dispatch loop to the event loop. Delete `pending_lsp_action`, `queue_lsp_action()`, `process_pending_lsp_actions()`, and the `LspAction` enum.
+
+### Step 7: Consolidate polling
+
+Replace the scattered `poll_pending_*` calls in `process_editor_tick` with a single `poll_lsp_slots()` function.
+
+## Adding a New LSP Feature After Migration
+
+1. Define the result type: `pub struct FooResult { ... }`
+2. Add the slot: `foo: Slot<FooResult>` to `LspSlots`
+3. Add the intent: `foo: Option<FooParams>` to `LspIntents` (or `foo: bool`)
+4. Write `dispatch_foo()` — spawn task, fire into slot (~10 lines)
+5. Write the poll handler — apply result (~5 lines)
+6. Wire the key binding — set the intent flag (1 line)
+
+No enum variant. No match arm in a dispatcher. No thinking about blocking vs non-blocking.
 
 ## Files Changed
 
 | File | Change |
 |------|--------|
-| `ovim/src/event_loop.rs` | Remove `has_pending_lsp_response()` gates (lines 474, 919) |
-| `ovim-core/src/editor/lsp_integration.rs` | Remove `queue_lsp_action`, `process_pending_lsp_actions`, sleeps in `prepare_lsp_request` |
-| `ovim-core/src/editor/lsp_state.rs` | Remove `pending_lsp_action`, `lsp_action_retry_count`, eventually `LspAction` enum |
-| `ovim-core/src/editor/lsp_modules/actions.rs` | Convert format/code-actions to spawn-and-poll |
-| `ovim-core/src/editor/lsp_modules/references.rs` | Convert find-references to spawn-and-poll |
-| `ovim-core/src/editor/input/normal/pending_commands.rs` | Call `_impl()` methods directly (requires async input handler or spawn) |
-
-## Open Question: Input Handler Async Boundary
-
-Currently, key handlers are sync (`fn handle_key(...) -> Result<Option<KeyEvent>>`). The `_impl()` methods that spawn tasks need async context. Currently this works because `process_pending_lsp_actions()` is called from the async event loop.
-
-If we remove the single slot and dispatch directly from input handlers, we need async input handling. Two options:
-
-**Option A:** Keep the single slot temporarily, but remove the gate and process it unconditionally every tick. This is the smallest change -- `queue_lsp_action` still exists but is never blocked.
-
-**Option B:** Make input processing async. The event loop already calls `process_input_events()` in an async context. The key handlers can return an `Option<LspAction>` that the event loop processes immediately.
-
-Option A is pragmatic and gets 90% of the benefit. Option B is cleaner but touches more code. Recommend A first, B later if the slot becomes a bottleneck again.
+| `ovim-core/src/editor/lsp_slot.rs` | New: `Slot<T>`, `Inflight<T>` |
+| `ovim-core/src/editor/lsp_state.rs` | `LspSlots`, `LspIntents`, delete old structs |
+| `ovim-core/src/editor/lsp_integration.rs` | Delete `queue_lsp_action`, `process_pending_lsp_actions`, add dispatch loop |
+| `ovim-core/src/editor/lsp_modules/*.rs` | Each `_impl()` becomes `dispatch_*()` firing into slot |
+| `ovim/src/event_loop.rs` | Intent dispatch after input, `poll_lsp_slots()` in tick |
+| `ovim-core/src/editor/input/normal/pending_commands.rs` | Set intent flags instead of calling queue_lsp_action |
 
 ## Verification
 
-1. **Concurrent actions test:** Trigger hover (`K`) and immediately goto-definition (`gd`). Both should complete independently.
-2. **Fast input test:** Rapid `gd` `gd` `gd` -- each should cancel the previous. Final result should be the last one.
-3. **Format latency test:** Measure time from `gq` keypress to "Formatting..." status. Should be < 5ms (no sleep).
-4. **No regression:** All existing LSP tests pass.
+1. **Batch input test:** Send `gd` + `K` in same input batch via API. Both should produce results.
+2. **Same-type cancel test:** Send `gd` + `gd` + `gd` rapidly. Only last result should apply.
+3. **Format non-blocking test:** Trigger `gq`. Verify input is still accepted during format (type characters, verify they appear immediately).
+4. **All existing tests pass.** The slot architecture is a structural change, not a behavioral one.
