@@ -501,21 +501,70 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
             continue;
         }
 
-        // Find companion server command
+        // Find companion server command, auto-installing if configured
         let server_command = match find_companion_command(companion) {
             Some(cmd) => cmd,
             None => {
-                if let Some(hint) = &companion.install_hint {
-                    ovim_core::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
+                // Try auto-install if configured
+                if let Some(auto_install_config) = &companion.auto_install {
+                    if editor.options.lsp_auto_install != ovim::editor::AutoInstallMode::Off
+                        && auto_install_on_missing_enabled(auto_install_config)
+                        && is_auto_install_allowed_for_current_mode(auto_install_config)
+                    {
+                        ovim_core::lsp_info!(
+                            "LSP",
+                            "Auto-installing companion {}...",
+                            companion.name
+                        );
+                        editor.set_lsp_status(format!("Installing {}...", companion.name));
+                        match attempt_auto_install(
+                            &companion.command,
+                            &companion.name,
+                            auto_install_config,
+                        )
+                        .await
+                        {
+                            InstallResult::Success(installed_path) => {
+                                ovim_core::lsp_info!(
+                                    "LSP",
+                                    "Installed companion {}: {}",
+                                    companion.name,
+                                    installed_path.display()
+                                );
+                                installed_path.to_string_lossy().to_string()
+                            }
+                            InstallResult::Failed(e) | InstallResult::PrerequisitesMissing(e) => {
+                                ovim_core::lsp_warn!(
+                                    "LSP",
+                                    "Failed to install companion {}: {}",
+                                    companion.name,
+                                    e
+                                );
+                                continue;
+                            }
+                            InstallResult::Declined => {
+                                continue;
+                            }
+                        }
+                    } else {
+                        if let Some(hint) = &companion.install_hint {
+                            ovim_core::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
+                        }
+                        continue;
+                    }
                 } else {
-                    ovim_core::lsp_info!(
-                        "LSP",
-                        "Companion {} not found (command: {})",
-                        companion.name,
-                        companion.command
-                    );
+                    if let Some(hint) = &companion.install_hint {
+                        ovim_core::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
+                    } else {
+                        ovim_core::lsp_info!(
+                            "LSP",
+                            "Companion {} not found (command: {})",
+                            companion.name,
+                            companion.command
+                        );
+                    }
+                    continue;
                 }
-                continue;
             }
         };
 

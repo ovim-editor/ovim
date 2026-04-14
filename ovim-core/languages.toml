@@ -668,3 +668,7 @@ root_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs
 # but the package is still in node_modules). node_modules/tailwindcss catches both versions.
 activation_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs", "node_modules/tailwindcss"]
 install_hint = "Install with: npm install -g @tailwindcss/language-server"
+
+[companion_lsp.auto_install]
+method = { type = "npm", packages = ["@tailwindcss/language-server"], bin = "tailwindcss-language-server", global = true }
+policy = "auto_on_missing"
