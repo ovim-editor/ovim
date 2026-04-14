@@ -921,7 +921,6 @@ impl Editor {
                 self.lsp.state.current_file_lsp_version = result.request_key.lsp_version;
                 self.lsp.state.current_file_lsp_sent_version = result.request_key.lsp_version;
                 self.lsp.state.inlay_hints = result.hints;
-                self.lsp.state.applied_inlay_hint_request = Some(result.request_key);
                 // Build unified decorations from the new hints.
                 let rope = self.buffer().rope().clone();
                 let hint_decs =
@@ -960,14 +959,11 @@ impl Editor {
         }
     }
 
-    /// Clear the inlay hint debounce state so the next tick can immediately
-    /// re-request hints.  Called when `poll_pending_inlay_hint_response` drops
-    /// a result due to viewport/version mismatch — without this, the 250ms
-    /// debounce suppresses the retry and hints stay missing.
+    /// Mark inlay hints as stale so the next tick re-requests them.
+    /// Called when a poll result is dropped (wrong file, stale version)
+    /// or when the buffer version changes.
     fn invalidate_inlay_hint_debounce(&mut self) {
-        self.lsp.state.last_inlay_hint_request = None;
-        self.lsp.state.last_inlay_hint_request_at = None;
-        self.lsp.state.applied_inlay_hint_request = None;
+        self.lsp.slots.inlay_hints.invalidate();
     }
 
     /// Legacy handler — delegates to `handle_goto_location`.
@@ -1016,9 +1012,7 @@ impl Editor {
         self.lsp.state.available_code_actions.clear();
         self.lsp.state.available_completions.clear();
         self.lsp.state.inlay_hints.clear();
-        self.lsp.state.last_inlay_hint_request = None;
-        self.lsp.state.last_inlay_hint_request_at = None;
-        self.lsp.state.applied_inlay_hint_request = None;
+        self.lsp.slots.inlay_hints.cancel_and_invalidate();
         self.lsp.state.pending_lsp_action = None;
         // Abort all pending LSP responses
         self.lsp.state.pending_lsp_responses.abort_all();
@@ -1480,6 +1474,9 @@ impl Editor {
             // promote it to flushed once last_sent catches up.
             let state = self.lsp.state.document_sync.entry(state_key).or_default();
             state.mark_change_queued(content, queued_version);
+
+            // Buffer content changed — inlay hints are stale.
+            self.lsp.slots.inlay_hints.invalidate();
         }
     }
 
@@ -2095,10 +2092,9 @@ mod tests {
         assert_eq!(editor.lsp.state.current_file_lsp_version, 4);
         assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 4);
         assert_eq!(editor.lsp.state.inlay_hints.len(), 1);
-        assert_eq!(
-            editor.lsp.state.applied_inlay_hint_request.as_ref(),
-            Some(&request_key)
-        );
+        // TrackedSlot: after a successful poll, the slot is no longer stale
+        // (the result was applied for the generation that was current at fire time).
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
 
         let sync_state = editor
             .lsp
@@ -2141,8 +2137,8 @@ mod tests {
 
         // Stale hints are still applied (better than flashing).
         assert!(editor.poll_pending_inlay_hint_response());
-        // But debounce is invalidated so a fresh request fires next tick.
-        assert!(editor.lsp.state.applied_inlay_hint_request.is_none());
+        // But the slot is marked stale so a fresh request fires next tick.
+        assert!(editor.lsp.slots.inlay_hints.is_stale());
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2174,6 +2170,7 @@ mod tests {
 
         assert!(!editor.poll_pending_inlay_hint_response());
         assert!(editor.lsp.state.inlay_hints.is_empty());
-        assert!(editor.lsp.state.applied_inlay_hint_request.is_none());
+        // Slot is stale (invalidated) because the result was dropped.
+        assert!(editor.lsp.slots.inlay_hints.is_stale());
     }
 }

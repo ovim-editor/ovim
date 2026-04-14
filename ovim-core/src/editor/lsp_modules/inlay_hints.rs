@@ -1,109 +1,50 @@
 use crate::editor::Editor;
 use lsp_types::Position;
-use std::time::{Duration, Instant};
-
-const INLAY_HINT_REFRESH_DEBOUNCE: Duration = Duration::from_millis(500);
-
-fn should_skip_inlay_hint_refresh(
-    last_key: Option<&crate::editor::lsp_state::InlayHintRequestKey>,
-    last_at: Option<Instant>,
-    next_key: &crate::editor::lsp_state::InlayHintRequestKey,
-    now: Instant,
-) -> bool {
-    last_key == Some(next_key)
-        && last_at.is_some_and(|last| now.duration_since(last) < INLAY_HINT_REFRESH_DEBOUNCE)
-}
-
-/// File-scoped request key.  Hints are requested for the entire file,
-/// not just the visible viewport, so scrolling never invalidates them.
-/// Only `lsp_version` changes (from buffer edits) trigger re-requests.
-fn current_inlay_hint_request_key(
-    editor: &Editor,
-) -> Option<crate::editor::lsp_state::InlayHintRequestKey> {
-    let file_path = editor.buffer().file_path()?.to_string();
-    crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)?;
-
-    let start_line = 0;
-    let end_line = editor.buffer().line_count();
-
-    Some(crate::editor::lsp_state::InlayHintRequestKey {
-        file_path,
-        start_line,
-        end_line,
-        lsp_version: editor.lsp.state.current_file_lsp_sent_version,
-    })
-}
 
 impl Editor {
-    /// Returns true when the file-scoped hint fingerprint differs from the
-    /// last applied or pending request.  Scroll changes do NOT trigger a
-    /// refresh — only LSP version changes (from buffer edits) do.
+    /// Returns true when inlay hints need refreshing and the debounce
+    /// window has elapsed. Delegates to `TrackedSlot::needs_refresh()`.
     pub fn inlay_hints_refresh_needed(&self) -> bool {
         if self.lsp.state.lsp_manager.is_none() {
             return false;
         }
-
-        let Some(next_key) = current_inlay_hint_request_key(self) else {
+        // Ensure we have a valid file with LSP support
+        let Some(file_path) = self.buffer().file_path() else {
             return false;
         };
-
-        // If a request is already in flight for the current file and buffer
-        // version, don't spawn another one.
-        if self.lsp.slots.inlay_hints.is_pending() {
+        if crate::syntax::LanguageRegistry::get_lsp_language_id(file_path).is_none() {
             return false;
         }
-
-        if self.lsp.state.applied_inlay_hint_request.as_ref() == Some(&next_key) {
-            return false;
-        }
-
-        !should_skip_inlay_hint_refresh(
-            self.lsp.state.last_inlay_hint_request.as_ref(),
-            self.lsp.state.last_inlay_hint_request_at,
-            &next_key,
-            Instant::now(),
-        )
+        self.lsp.slots.inlay_hints.needs_refresh()
     }
 
-    /// Spawn a background inlay hint refresh for the current viewport.
+    /// Spawn a background inlay hint refresh for the current file.
     pub fn request_inlay_hints_refresh(&mut self) {
         let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
             return;
         };
 
-        let Some(request_key) = current_inlay_hint_request_key(self) else {
+        let Some(file_path) = self.buffer().file_path().map(|p| p.to_string()) else {
             return;
         };
 
-        let now = Instant::now();
-        if should_skip_inlay_hint_refresh(
-            self.lsp.state.last_inlay_hint_request.as_ref(),
-            self.lsp.state.last_inlay_hint_request_at,
-            &request_key,
-            now,
-        ) {
-            return;
-        }
-
-        let Some(uri) = crate::lsp::uri_from_file_path(&request_key.file_path) else {
+        let Some(uri) = crate::lsp::uri_from_file_path(&file_path) else {
             return;
         };
 
         let Some(language_id) =
-            crate::syntax::LanguageRegistry::get_lsp_language_id(&request_key.file_path)
+            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
         else {
             return;
         };
         let buffer_version = self.buffer().version();
+        let start_line = 0;
+        let end_line = self.buffer().line_count();
 
-        let state_key = request_key.file_path.clone();
         let initial_content = self.buffer().rope().to_string();
-        let sync_plan = self.document_sync_request_plan(&state_key, &initial_content);
+        let sync_plan = self.document_sync_request_plan(&file_path, &initial_content);
 
-        self.lsp.state.last_inlay_hint_request = Some(request_key.clone());
-        self.lsp.state.last_inlay_hint_request_at = Some(now);
-
-        let request_key_for_task = request_key.clone();
+        let file_path_for_task = file_path.clone();
         let language_id = language_id.to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -171,18 +112,18 @@ impl Editor {
             if lsp_version <= 0 {
                 let _ = tx.send(Err(anyhow::anyhow!(
                     "LSP document not ready for inlay hints: {}",
-                    request_key_for_task.file_path
+                    file_path_for_task
                 )));
                 return;
             }
 
             let range = lsp_types::Range {
                 start: Position {
-                    line: request_key_for_task.start_line as u32,
+                    line: start_line as u32,
                     character: 0,
                 },
                 end: Position {
-                    line: request_key_for_task.end_line as u32,
+                    line: end_line as u32,
                     character: 0,
                 },
             };
@@ -193,8 +134,10 @@ impl Editor {
                 .await
                 .map(|hints| crate::editor::lsp_slot::InlayHintResult {
                     request_key: crate::editor::lsp_state::InlayHintRequestKey {
+                        file_path: file_path_for_task,
+                        start_line,
+                        end_line,
                         lsp_version,
-                        ..request_key_for_task.clone()
                     },
                     buffer_version,
                     synced_content,
@@ -228,66 +171,25 @@ mod tests {
     use super::*;
 
     #[test]
-    fn skips_duplicate_refresh_inside_debounce_window() {
-        let key = crate::editor::lsp_state::InlayHintRequestKey {
-            file_path: "src/Test.java".to_string(),
-            start_line: 10,
-            end_line: 40,
-            lsp_version: 3,
-        };
-        let now = Instant::now();
-
-        assert!(should_skip_inlay_hint_refresh(
-            Some(&key),
-            Some(now),
-            &key,
-            now + Duration::from_millis(100),
-        ));
+    fn fresh_editor_does_not_need_refresh_without_lsp() {
+        let editor = Editor::with_content("class Test {}\n");
+        // No LSP enabled — should not request refresh.
+        assert!(!editor.inlay_hints_refresh_needed());
     }
 
     #[test]
-    fn allows_refresh_after_debounce_window_or_key_change() {
-        let key = crate::editor::lsp_state::InlayHintRequestKey {
-            file_path: "src/Test.java".to_string(),
-            start_line: 10,
-            end_line: 40,
-            lsp_version: 3,
-        };
-        let changed_key = crate::editor::lsp_state::InlayHintRequestKey {
-            file_path: "src/Test.java".to_string(),
-            start_line: 20,
-            end_line: 50,
-            lsp_version: 3,
-        };
-        let now = Instant::now();
-
-        assert!(!should_skip_inlay_hint_refresh(
-            Some(&key),
-            Some(now),
-            &key,
-            now + Duration::from_millis(600),
-        ));
-        assert!(!should_skip_inlay_hint_refresh(
-            Some(&key),
-            Some(now),
-            &changed_key,
-            now + Duration::from_millis(100),
-        ));
-    }
-
-    #[test]
-    fn initial_request_needed_then_satisfied() {
+    fn invalidation_triggers_refresh() {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
-        editor.lsp.state.current_file_lsp_sent_version = 1;
 
+        // No invalidation yet — not stale.
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
+
+        // Invalidate — now stale and needs refresh.
+        editor.lsp.slots.inlay_hints.invalidate();
+        assert!(editor.lsp.slots.inlay_hints.is_stale());
         assert!(editor.inlay_hints_refresh_needed());
-
-        let key = current_inlay_hint_request_key(&editor).expect("request key");
-        editor.lsp.state.applied_inlay_hint_request = Some(key);
-        assert!(!editor.inlay_hints_refresh_needed());
     }
 
     #[test]
@@ -295,14 +197,9 @@ mod tests {
         let mut editor = Editor::with_content("class Test {}\nline2\nline3\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
-        editor.lsp.state.current_file_lsp_sent_version = 1;
 
-        let key = current_inlay_hint_request_key(&editor).expect("request key");
-        editor.lsp.state.applied_inlay_hint_request = Some(key);
-        assert!(!editor.inlay_hints_refresh_needed());
-
-        // Scrolling should NOT trigger a refresh — hints are file-scoped.
+        // Not stale — scrolling shouldn't change that.
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
         editor.viewport.scroll_offset = 5;
         assert!(
             !editor.inlay_hints_refresh_needed(),
@@ -311,81 +208,36 @@ mod tests {
     }
 
     #[test]
-    fn initial_probe_can_request_background_sync() {
+    fn debounce_suppresses_rapid_refreshes() {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
 
+        // First invalidation — needs_refresh returns true (no prior fire).
+        editor.lsp.slots.inlay_hints.invalidate();
         assert!(editor.inlay_hints_refresh_needed());
-    }
 
-    #[tokio::test(flavor = "current_thread")]
-    async fn matching_pending_request_suppresses_duplicate_refresh() {
-        let mut editor = Editor::with_content("class Test {}\n");
-        editor.enable_lsp();
-        editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
+        // Simulate fire (marks generation as covered + records timestamp).
+        // Use TrackedSlot's internal state directly for pure state testing.
+        editor.lsp.slots.inlay_hints.fired_at = editor.lsp.slots.inlay_hints.generation;
+        editor.lsp.slots.inlay_hints.last_fired = Some(std::time::Instant::now());
 
-        // Fire a dummy request into the inlay hints slot to simulate an in-flight request.
-        let (_tx, rx) = tokio::sync::oneshot::channel::<
-            anyhow::Result<crate::editor::lsp_slot::InlayHintResult>,
-        >();
-        let task = tokio::spawn(async { std::future::pending::<()>().await });
-        editor.lsp.slots.inlay_hints.fire(task, rx, editor.buffer().version() as u64);
-
-        assert!(!editor.inlay_hints_refresh_needed());
-    }
-
-    #[tokio::test(flavor = "current_thread")]
-    async fn pending_request_suppresses_refresh_even_after_sent_version_advances() {
-        let mut editor = Editor::with_content("class Test {}\n");
-        editor.enable_lsp();
-        editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
-        editor.lsp.state.current_file_lsp_sent_version = 1;
-
-        // Fire a dummy request into the inlay hints slot to simulate an in-flight request.
-        let (_tx, rx) = tokio::sync::oneshot::channel::<
-            anyhow::Result<crate::editor::lsp_slot::InlayHintResult>,
-        >();
-        let task = tokio::spawn(async { std::future::pending::<()>().await });
-        editor.lsp.slots.inlay_hints.fire(task, rx, editor.buffer().version() as u64);
-
-        assert!(!editor.inlay_hints_refresh_needed());
+        // Immediately invalidate again — stale, but within debounce window.
+        editor.lsp.slots.inlay_hints.invalidate();
+        assert!(editor.lsp.slots.inlay_hints.is_stale());
+        assert!(
+            !editor.lsp.slots.inlay_hints.needs_refresh(),
+            "debounce should suppress immediate re-request"
+        );
     }
 
     #[test]
-    fn buffer_edits_do_not_require_refresh_until_sent_version_changes() {
-        let mut editor = Editor::with_content("class Test {}\n");
+    fn no_lsp_language_support_means_no_refresh() {
+        let mut editor = Editor::with_content("hello world\n");
         editor.enable_lsp();
-        editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
-        editor.lsp.state.current_file_lsp_sent_version = 3;
-
-        let key = current_inlay_hint_request_key(&editor).expect("request key");
-        editor.lsp.state.applied_inlay_hint_request = Some(key);
-
-        editor.buffer_mut().insert_text_at(0, 0, "x");
+        // .txt has no LSP language ID — should not request refresh.
+        editor.set_file_path("/tmp/test.txt".to_string());
+        editor.lsp.slots.inlay_hints.invalidate();
         assert!(!editor.inlay_hints_refresh_needed());
-
-        editor.lsp.state.current_file_lsp_sent_version = 4;
-        assert!(editor.inlay_hints_refresh_needed());
-    }
-
-    #[test]
-    fn request_key_is_file_scoped() {
-        let mut editor = Editor::with_content("class Test {}\nline2\n");
-        editor.set_file_path("/tmp/Test.java".to_string());
-        editor.set_viewport_height(20);
-
-        let key1 = current_inlay_hint_request_key(&editor).expect("request key");
-        assert_eq!(key1.start_line, 0);
-        assert_eq!(key1.end_line, editor.buffer().line_count());
-
-        // Scrolling doesn't change the key.
-        editor.viewport.scroll_offset = 3;
-        let key2 = current_inlay_hint_request_key(&editor).expect("request key");
-        assert_eq!(key1, key2);
     }
 }

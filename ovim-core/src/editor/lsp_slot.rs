@@ -125,13 +125,13 @@ impl<T> Default for Slot<T> {
 pub struct TrackedSlot<T> {
     slot: Slot<T>,
     /// Bumped by `invalidate()`. Monotonically increasing.
-    generation: u64,
+    pub(crate) generation: u64,
     /// The generation that was current when `fire()` was last called.
-    fired_at: u64,
+    pub(crate) fired_at: u64,
     /// Optional minimum interval between fires (debounce).
     debounce: Option<Duration>,
     /// When `fire()` was last called.
-    last_fired: Option<Instant>,
+    pub(crate) last_fired: Option<Instant>,
 }
 
 impl<T> TrackedSlot<T> {
@@ -484,7 +484,6 @@ pub struct SemanticTokensSlotResult {
 ///
 /// Each feature gets its own slot so different-type requests coexist.
 /// Same-type requests cancel the previous one automatically via `Slot::fire()`.
-#[derive(Default)]
 pub struct LspSlots {
     // -- Navigation (Step 2-3) --
     pub goto_definition: Slot<GotoLocationResult>,
@@ -493,7 +492,7 @@ pub struct LspSlots {
     pub hover: Slot<HoverResult>,
     // -- Query (Step 4) --
     pub completion: Slot<CompletionResult>,
-    pub inlay_hints: Slot<InlayHintResult>,
+    pub inlay_hints: TrackedSlot<InlayHintResult>,
     pub diagnostics: TrackedSlot<DiagnosticResult>,
     // -- Actions (Step 5) --
     pub format: Slot<FormatResult>,
@@ -549,5 +548,29 @@ impl LspSlots {
             || self.call_hierarchy.is_pending()
             || self.type_hierarchy.is_pending()
             || self.semantic_tokens.is_pending()
+    }
+}
+
+impl Default for LspSlots {
+    fn default() -> Self {
+        Self {
+            goto_definition: Slot::new(),
+            goto_implementation: Slot::new(),
+            goto_type_definition: Slot::new(),
+            hover: Slot::new(),
+            completion: Slot::new(),
+            inlay_hints: TrackedSlot::with_debounce(Duration::from_millis(500)),
+            diagnostics: TrackedSlot::new(),
+            format: Slot::new(),
+            references: Slot::new(),
+            document_symbols: Slot::new(),
+            workspace_symbols: Slot::new(),
+            code_actions: Slot::new(),
+            rename: Slot::new(),
+            organize_imports: Slot::new(),
+            call_hierarchy: Slot::new(),
+            type_hierarchy: Slot::new(),
+            semantic_tokens: Slot::new(),
+        }
     }
 }

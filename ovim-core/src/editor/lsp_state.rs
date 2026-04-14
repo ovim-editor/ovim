@@ -1,7 +1,6 @@
 use crate::lsp::LspManager;
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Instant;
 
 /// Content type for hover window - distinguishes LSP hover from diagnostic popups
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -254,12 +253,6 @@ pub struct LspState {
     pub available_type_hierarchy: Vec<(String, lsp_types::Location)>,
     /// Inlay hints for the visible region
     pub inlay_hints: Vec<lsp_types::InlayHint>,
-    /// Last viewport/LSP-sync fingerprint used for an inlay hint request
-    pub last_inlay_hint_request: Option<InlayHintRequestKey>,
-    /// Timestamp of the most recent inlay hint request attempt
-    pub last_inlay_hint_request_at: Option<Instant>,
-    /// Viewport/LSP-sync fingerprint of the inlay hints currently rendered
-    pub applied_inlay_hint_request: Option<InlayHintRequestKey>,
     /// Currently active LSP result type (for picker navigation)
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
@@ -306,9 +299,6 @@ impl LspState {
             available_call_hierarchy: Vec::new(),
             available_type_hierarchy: Vec::new(),
             inlay_hints: Vec::new(),
-            last_inlay_hint_request: None,
-            last_inlay_hint_request_at: None,
-            applied_inlay_hint_request: None,
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
             diagnostics_file_path: None,
