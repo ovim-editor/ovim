@@ -349,6 +349,11 @@ impl Editor {
         // --- Poll navigation slots (Slot<T> based) ---
         changed |= self.poll_goto_slots();
 
+        // --- Poll query slots (Step 4) ---
+        changed |= self.poll_pending_completion_response();
+        changed |= self.poll_pending_inlay_hint_response();
+        changed |= self.poll_pending_diagnostic_refresh_response();
+
         // --- Poll action slots (Step 5) ---
         changed |= self.poll_action_slots();
 

@@ -435,16 +435,8 @@ async fn process_editor_tick(
         }
     }
 
-    // Poll pending LSP responses (non-blocking)
+    // Poll all LSP response slots (non-blocking)
     if editor.poll_pending_lsp_responses() {
-        editor.mark_dirty(); // Redraw when response arrives
-    }
-
-    if editor.poll_pending_completion_response() {
-        editor.mark_dirty();
-    }
-
-    if editor.poll_pending_inlay_hint_response() {
         editor.mark_dirty();
     }
 
