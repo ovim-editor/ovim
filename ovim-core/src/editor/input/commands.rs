@@ -1195,7 +1195,11 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
                     // Show command output if any
                     let trimmed = stdout.trim();
                     if trimmed.len() > 100 {
-                        format!("{} lines written: {}...", line_count, &trimmed[..100])
+                        format!(
+                            "{} lines written: {}...",
+                            line_count,
+                            crate::unicode::truncate_bytes(trimmed, 100)
+                        )
                     } else {
                         format!("{} lines written: {}", line_count, trimmed)
                     }

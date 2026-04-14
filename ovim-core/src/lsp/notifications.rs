@@ -950,7 +950,10 @@ impl LspManager {
                                 // Show params preview for debugging
                                 let params_str = format!("{:?}", params_clone);
                                 let preview = if params_str.len() > 500 {
-                                    format!("{}...", &params_str[..500])
+                                    format!(
+                                        "{}...",
+                                        crate::unicode::truncate_bytes(&params_str, 500)
+                                    )
                                 } else {
                                     params_str
                                 };

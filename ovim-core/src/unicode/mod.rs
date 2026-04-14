@@ -211,6 +211,33 @@ pub fn char_to_grapheme_col(s: &str, char_col: usize) -> GraphemeCol {
     GraphemeCol(s.graphemes(true).count())
 }
 
+/// Truncate a string to fit within a byte budget, cutting at a valid UTF-8
+/// character boundary. Returns a `&str` no longer than `max_bytes` bytes.
+///
+/// Use this instead of `&s[..n]` whenever `s` might contain multi-byte characters.
+/// `&s[..n]` panics when `n` falls in the middle of a multi-byte sequence;
+/// this function rounds down to the nearest character boundary.
+///
+/// # Example
+/// ```
+/// use ovim_core::unicode::truncate_bytes;
+///
+/// let s = "Hello, 世界!";
+/// // '世' spans bytes 7-9. Byte 8 is mid-char, so truncate_bytes rounds down.
+/// assert_eq!(truncate_bytes(s, 10), "Hello, 世");  // byte 10 = start of '界'
+/// assert_eq!(truncate_bytes(s, 8), "Hello, ");      // byte 8 is mid-'世', rounds to 7
+/// assert_eq!(truncate_bytes(s, 1000), s);            // No truncation needed
+/// assert_eq!(truncate_bytes(s, 0), "");
+/// ```
+#[inline]
+pub fn truncate_bytes(s: &str, max_bytes: usize) -> &str {
+    if max_bytes >= s.len() {
+        s
+    } else {
+        &s[..s.floor_char_boundary(max_bytes)]
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -339,6 +366,49 @@ mod tests {
         assert_eq!(char_to_grapheme_col(s, 0), GraphemeCol(0)); // 'e' = grapheme 0 (é)
         assert_eq!(char_to_grapheme_col(s, 1), GraphemeCol(0)); // combining accent = still grapheme 0
         assert_eq!(char_to_grapheme_col(s, 2), GraphemeCol(1)); // 'x' = grapheme 1
+    }
+
+    #[test]
+    fn test_truncate_bytes_ascii() {
+        assert_eq!(truncate_bytes("hello", 3), "hel");
+        assert_eq!(truncate_bytes("hello", 5), "hello");
+        assert_eq!(truncate_bytes("hello", 100), "hello");
+        assert_eq!(truncate_bytes("hello", 0), "");
+    }
+
+    #[test]
+    fn test_truncate_bytes_multibyte() {
+        // "世界" = 6 bytes (3 per CJK char)
+        let s = "世界";
+        assert_eq!(truncate_bytes(s, 6), "世界"); // exact fit
+        assert_eq!(truncate_bytes(s, 5), "世"); // mid-char rounds down
+        assert_eq!(truncate_bytes(s, 4), "世"); // mid-char rounds down
+        assert_eq!(truncate_bytes(s, 3), "世"); // exact boundary
+        assert_eq!(truncate_bytes(s, 2), ""); // can't fit first char
+        assert_eq!(truncate_bytes(s, 1), ""); // can't fit first char
+    }
+
+    #[test]
+    fn test_truncate_bytes_emoji() {
+        // Family emoji: 25 bytes, 1 grapheme, 7 chars (4 emoji + 3 ZWJ)
+        let s = "a👨‍👩‍👧‍👦b";
+        assert_eq!(truncate_bytes(s, 1), "a");
+        // Mid-emoji lands on a valid char boundary (ZWJ sequences are multi-char).
+        // The key property: it never panics, and the result is valid UTF-8.
+        let truncated = truncate_bytes(s, 5);
+        assert!(truncated.len() <= 5);
+        assert!(truncated.starts_with('a'));
+        // Full string
+        assert_eq!(truncate_bytes(s, 100), s);
+    }
+
+    #[test]
+    fn test_truncate_bytes_mixed() {
+        let s = "Hello, 世界!";
+        // "Hello, " = 7 bytes, "世" = 3 bytes, "界" = 3 bytes, "!" = 1 byte
+        assert_eq!(truncate_bytes(s, 7), "Hello, ");
+        assert_eq!(truncate_bytes(s, 10), "Hello, 世");
+        assert_eq!(truncate_bytes(s, 8), "Hello, ");  // byte 8 is mid-世
     }
 
     #[test]

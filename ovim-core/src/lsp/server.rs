@@ -623,10 +623,11 @@ impl LanguageServer {
                             e
                         );
                         // Show a truncated preview of the malformed content for debugging
-                        let preview = if content.len() > 200 {
-                            format!("{}...", String::from_utf8_lossy(&content[..200]))
+                        let lossy = String::from_utf8_lossy(&content);
+                        let preview = if lossy.len() > 200 {
+                            format!("{}...", crate::unicode::truncate_bytes(&lossy, 200))
                         } else {
-                            String::from_utf8_lossy(&content).to_string()
+                            lossy.into_owned()
                         };
                         crate::lsp_error!(
                             &inner_clone.log_prefix(),
@@ -1222,7 +1223,7 @@ impl LanguageServer {
                         let json_str =
                             serde_json::to_string(value).unwrap_or_else(|_| "?".to_string());
                         if json_str.len() > 200 {
-                            format!("{}...", &json_str[..200])
+                            format!("{}...", crate::unicode::truncate_bytes(&json_str, 200))
                         } else {
                             json_str
                         }

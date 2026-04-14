@@ -1639,8 +1639,10 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
         if let Some(ref name) = profile.api_key_env {
             match std::env::var(name) {
                 Ok(val) => {
-                    let masked = if val.len() > 8 {
-                        format!("{}...{}", &val[..4], &val[val.len() - 4..])
+                    let masked = if val.chars().count() > 8 {
+                        let head: String = val.chars().take(4).collect();
+                        let tail: String = val.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+                        format!("{}...{}", head, tail)
                     } else {
                         "****".to_string()
                     };
@@ -1665,8 +1667,10 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
             || key.contains("OVIM")
             || key.contains("API_KEY")
         {
-            let masked = if val.len() > 8 {
-                format!("{}...{}", &val[..4], &val[val.len() - 4..])
+            let masked = if val.chars().count() > 8 {
+                let head: String = val.chars().take(4).collect();
+                let tail: String = val.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+                format!("{}...{}", head, tail)
             } else {
                 "****".to_string()
             };

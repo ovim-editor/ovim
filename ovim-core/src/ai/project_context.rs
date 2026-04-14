@@ -49,7 +49,7 @@ pub fn load_project_context(config: &ProjectContextConfig, file_path: Option<&st
     // Rough char-to-token budget: budget * 4 chars
     let char_limit = config.budget.saturating_mul(4);
     if joined.len() > char_limit {
-        let mut truncated = joined[..char_limit].to_string();
+        let mut truncated = crate::unicode::truncate_bytes(&joined, char_limit).to_string();
         truncated.push_str("\n[project context truncated]");
         truncated
     } else {
