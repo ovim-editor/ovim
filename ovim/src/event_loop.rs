@@ -50,12 +50,19 @@ async fn process_editor_tick(
 
         // Mark dirty if we processed any LSP messages
         if notification_count > 0 || flush_count > 0 {
+            ovim_core::log_debug!(
+                "tick",
+                "LSP: {} notifications, {} flushes",
+                notification_count,
+                flush_count
+            );
             editor.mark_dirty();
         }
 
         // Poll for server-initiated workspace edits (e.g., from refactoring operations)
         let pending_edits = lsp_manager.poll_pending_workspace_edits().await;
         for workspace_edit in pending_edits {
+            ovim_core::log_debug!("tick", "Applying workspace edit from LSP server");
             match editor.apply_workspace_edit(workspace_edit) {
                 Ok(applied) => {
                     if applied {
@@ -67,6 +74,7 @@ async fn process_editor_tick(
                     }
                 }
                 Err(e) => {
+                    ovim_core::log_error!("tick", "Failed to apply workspace edit: {}", e);
                     editor.set_lsp_status(format!("Failed to apply edit: {}", e));
                     editor.mark_dirty(); // Redraw to show error status
                 }
@@ -75,6 +83,7 @@ async fn process_editor_tick(
     }
 
     if let Some(file_path) = editor.needs_lsp_init() {
+        ovim_core::log_debug!("tick", "Initializing LSP for {}", file_path);
         crate::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
         editor.clear_lsp_init_flag();
     }
@@ -92,7 +101,9 @@ async fn process_editor_tick(
     }
 
     // Poll DAP (debug adapter) events
-    if editor.process_dap_events() > 0 {
+    let dap_count = editor.process_dap_events();
+    if dap_count > 0 {
+        ovim_core::log_debug!("tick", "Processed {} DAP events", dap_count);
         editor.mark_dirty();
         // Auto-fetch stack trace when we stop
         if editor.debug_state().stopped_thread.is_some()

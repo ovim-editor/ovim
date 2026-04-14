@@ -17,6 +17,43 @@ use std::time::SystemTime;
 use tokio::signal::unix::{signal, SignalKind};
 use tokio::sync::mpsc;
 
+/// Install a panic hook that restores the terminal and logs the crash.
+///
+/// In TUI mode, panics would otherwise leave the terminal in raw mode with the
+/// alternate screen still active and no diagnostic trace. This hook:
+/// 1. Restores terminal state so the user gets their shell back cleanly
+/// 2. Logs the panic location and backtrace to ovim.log
+/// 3. Prints a short message to stderr pointing the user to the log
+#[allow(clippy::print_stderr)]
+fn install_panic_hook() {
+    let default_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        // 1. Restore terminal state — best-effort, ignore errors
+        let _ = crossterm::terminal::disable_raw_mode();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableMouseCapture,
+            crossterm::event::DisableFocusChange,
+            crossterm::event::DisableBracketedPaste,
+            crossterm::terminal::LeaveAlternateScreen,
+            crossterm::cursor::SetCursorStyle::DefaultUserShape,
+        );
+
+        // 2. Log the panic with backtrace
+        let backtrace = std::backtrace::Backtrace::force_capture();
+        ovim_core::log_error!("PANIC", "{}", info);
+        ovim_core::log_error!("PANIC", "Backtrace:\n{}", backtrace);
+
+        // 3. Tell the user where to find the details
+        eprintln!("\novim crashed: {}", info);
+        eprintln!("Backtrace logged to ~/Library/Caches/ovim/ovim.log");
+        eprintln!("(or ~/.cache/ovim/ovim.log on Linux)");
+
+        // Run the default hook too (prints to stderr in debug builds)
+        default_hook(info);
+    }));
+}
+
 /// Sanitize session name to prevent path traversal attacks
 fn sanitize_session_name(name: &str) -> String {
     name.chars()
@@ -237,6 +274,10 @@ async fn main() -> Result<()> {
     // TUI mode - no session registration by default
     // The API server still runs for internal communication,
     // but no session file is written. Users can opt in with :session start NAME.
+
+    // Install panic hook BEFORE entering raw mode so crashes restore the terminal
+    // and leave a diagnostic trace in the log file.
+    install_panic_hook();
 
     // Create UI for TUI mode
     let mut ui = if let Some(dimensions) = dimension {
