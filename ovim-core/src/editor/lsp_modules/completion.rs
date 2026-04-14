@@ -140,10 +140,11 @@ impl Editor {
             }
         };
 
-        // Snapshot sync state so we can flush document changes in the background without blocking UI.
-        let state_key = file_path.clone();
-        let initial_content = self.buffer().rope().to_string();
-        let sync_plan = self.document_sync_request_plan(&state_key, &initial_content);
+        // Sync document content to LSP on the main thread before spawning.
+        // This avoids the spawned task racing with send_lsp_changes_if_modified()
+        // over the debouncer — a source of timing bugs where stale content
+        // was sent from the background task, overwriting newer content.
+        self.ensure_lsp_document_synced().await;
 
         // Resolve the server group responsible for this document.
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
@@ -156,12 +157,12 @@ impl Editor {
         let buffer_version = self.buffer().version() as u64;
 
         // Spawn completion request in background (non-blocking).
-        // Slot::fire() will cancel any previously in-flight completion request.
+        // Document sync already happened above via ensure_lsp_document_synced().
+        // The task only makes the LSP request — no debouncer interaction.
         let (tx, rx) = tokio::sync::oneshot::channel();
         let language_id = language_id.to_string();
+        let file_path_for_task = file_path.clone();
         let task = tokio::spawn(async move {
-            let content: std::sync::Arc<str> = std::sync::Arc::from(initial_content);
-
             let mut supported_triggers: HashSet<char> = lsp
                 .completion_trigger_characters_for_servers(&server_ids)
                 .await
@@ -171,71 +172,6 @@ impl Editor {
                 supported_triggers.insert(*ch);
             }
             let trigger_char = filter_supported_trigger(raw_trigger_char, &supported_triggers);
-
-            let mut synced_content: Option<String> = None;
-            let mut synced_lsp_version: Option<i32> = None;
-            match sync_plan.action {
-                super::super::DocumentSyncRequestAction::Noop => {}
-                super::super::DocumentSyncRequestAction::DidOpen => {
-                    let ok = lsp
-                        .did_open_broadcast(uri.clone(), &language_id, 1, content.to_string())
-                        .await;
-                    if ok.is_ok() {
-                        synced_content = Some(content.to_string());
-                        synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
-                    }
-                }
-                super::super::DocumentSyncRequestAction::FlushQueued => {
-                    // Use the ACTUAL flushed content — the debouncer may have
-                    // been updated by the main loop since we captured our
-                    // snapshot, so `content` could be stale.
-                    if let Ok(Some((flushed_text, _))) = lsp
-                        .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await
-                    {
-                        synced_content = Some(flushed_text);
-                        synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
-                    }
-                }
-                super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
-                    // First try to flush whatever the main loop has already
-                    // queued in the debouncer — that text is more recent than
-                    // `content` which was captured at spawn time and may be
-                    // stale if the user kept typing.  Calling
-                    // did_change_broadcast with stale content would OVERWRITE
-                    // the debouncer's pending_text, causing a permanent desync
-                    // between the editor buffer and the LSP server's copy.
-                    if let Ok(Some((flushed_text, _))) = lsp
-                        .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await
-                    {
-                        synced_content = Some(flushed_text);
-                        synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
-                    } else {
-                        // Nothing was pending — queue our captured content as
-                        // a last resort (main loop hasn't sent any changes yet).
-                        let ok = lsp
-                            .did_change_broadcast(
-                                uri.clone(),
-                                &language_id,
-                                content.clone(),
-                                sync_plan.old_content,
-                            )
-                            .await;
-                        if ok.is_ok() {
-                            if let Ok(Some((flushed_text, _))) = lsp
-                                .flush_pending_changes_broadcast(&uri, &language_id)
-                                .await
-                            {
-                                synced_content = Some(flushed_text);
-                            } else {
-                                synced_content = Some(content.to_string());
-                            }
-                            synced_lsp_version = Some(lsp.get_last_sent_version(&uri).await);
-                        }
-                    }
-                }
-            }
 
             let result = if server_ids.len() > 1 {
                 lsp.completion_multi(&uri, line, character, &server_ids, trigger_char)
@@ -247,9 +183,9 @@ impl Editor {
             let task_result =
                 result.map(|items| crate::editor::lsp_slot::CompletionResult {
                     items,
-                    file_path: state_key,
-                    synced_content,
-                    synced_lsp_version,
+                    file_path: file_path_for_task,
+                    synced_content: None,
+                    synced_lsp_version: None,
                 });
 
             let _ = tx.send(task_result);

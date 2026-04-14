@@ -95,6 +95,9 @@ async fn process_editor_tick(
         editor.mark_dirty();
     }
     if let Some(_lsp_manager) = editor.lsp_manager() {
+        if editor.poll_pending_inlay_hint_response() {
+            editor.mark_dirty();
+        }
         if editor.inlay_hints_refresh_needed() {
             editor.request_inlay_hints_refresh();
         }

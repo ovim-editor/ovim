@@ -340,21 +340,21 @@ impl Editor {
 
     /// Each response type is polled independently so that e.g. a hover request
     /// doesn't block or clobber a goto-definition request.
+    ///
+    /// Note: diagnostics and inlay hints are NOT polled here — they have
+    /// dedicated sections earlier in the tick (sync_lsp_and_refresh_diagnostics
+    /// and the inlay hints block) to ensure correct ordering with document sync.
     pub fn poll_pending_lsp_responses(&mut self) -> bool {
         let mut changed = false;
 
-        // --- Poll hover slot (Slot<T> based) ---
+        // --- Navigation ---
         changed |= self.poll_hover_slot();
-
-        // --- Poll navigation slots (Slot<T> based) ---
         changed |= self.poll_goto_slots();
 
-        // --- Poll query slots (Step 4) ---
+        // --- Completion ---
         changed |= self.poll_pending_completion_response();
-        changed |= self.poll_pending_inlay_hint_response();
-        changed |= self.poll_pending_diagnostic_refresh_response();
 
-        // --- Poll action slots (Step 5) ---
+        // --- User-triggered actions ---
         changed |= self.poll_action_slots();
 
         changed

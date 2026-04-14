@@ -40,83 +40,16 @@ impl Editor {
         let buffer_version = self.buffer().version();
         let start_line = 0;
         let end_line = self.buffer().line_count();
+        let lsp_sent_version = self.lsp.state.current_file_lsp_sent_version;
 
-        let initial_content = self.buffer().rope().to_string();
-        let sync_plan = self.document_sync_request_plan(&file_path, &initial_content);
+        // Document sync is handled by send_lsp_changes_if_modified() earlier
+        // in the tick. The task only makes the LSP request — no debouncer
+        // interaction, avoiding races with the main event loop.
 
         let file_path_for_task = file_path.clone();
         let language_id = language_id.to_string();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let mut synced_content = None;
-            let content: std::sync::Arc<str> = std::sync::Arc::from(initial_content);
-            let mut lsp_version = lsp.get_last_sent_version(&uri).await;
-
-            match sync_plan.action {
-                super::super::DocumentSyncRequestAction::Noop => {}
-                super::super::DocumentSyncRequestAction::DidOpen => {
-                    if lsp
-                        .did_open_broadcast(uri.clone(), &language_id, 1, content.to_string())
-                        .await
-                        .is_ok()
-                    {
-                        synced_content = Some(content.to_string());
-                        lsp_version = lsp.get_last_sent_version(&uri).await;
-                    }
-                }
-                super::super::DocumentSyncRequestAction::FlushQueued => {
-                    // Use the ACTUAL flushed content — the debouncer may have
-                    // been updated by the main loop since we captured our
-                    // snapshot, so `content` could be stale.
-                    if let Ok(Some((flushed_text, _))) = lsp
-                        .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await
-                    {
-                        synced_content = Some(flushed_text);
-                        lsp_version = lsp.get_last_sent_version(&uri).await;
-                    }
-                }
-                super::super::DocumentSyncRequestAction::QueueChangeAndFlush => {
-                    // Flush debouncer first — it has more recent text than our
-                    // captured `content` (which may be stale if the user kept
-                    // typing after we spawned).  See completion.rs for details.
-                    if let Ok(Some((flushed_text, _))) = lsp
-                        .flush_pending_changes_broadcast(&uri, &language_id)
-                        .await
-                    {
-                        synced_content = Some(flushed_text);
-                        lsp_version = lsp.get_last_sent_version(&uri).await;
-                    } else if lsp
-                        .did_change_broadcast(
-                            uri.clone(),
-                            &language_id,
-                            content.clone(),
-                            sync_plan.old_content,
-                        )
-                        .await
-                        .is_ok()
-                    {
-                        if let Ok(Some((flushed_text, _))) = lsp
-                            .flush_pending_changes_broadcast(&uri, &language_id)
-                            .await
-                        {
-                            synced_content = Some(flushed_text);
-                        } else {
-                            synced_content = Some(content.to_string());
-                        }
-                        lsp_version = lsp.get_last_sent_version(&uri).await;
-                    }
-                }
-            }
-
-            if lsp_version <= 0 {
-                let _ = tx.send(Err(anyhow::anyhow!(
-                    "LSP document not ready for inlay hints: {}",
-                    file_path_for_task
-                )));
-                return;
-            }
-
             let range = lsp_types::Range {
                 start: Position {
                     line: start_line as u32,
@@ -128,7 +61,6 @@ impl Editor {
                 },
             };
 
-            let synced_lsp_version = synced_content.as_ref().map(|_| lsp_version);
             let result = lsp
                 .inlay_hints(&uri, range, &language_id)
                 .await
@@ -137,11 +69,11 @@ impl Editor {
                         file_path: file_path_for_task,
                         start_line,
                         end_line,
-                        lsp_version,
+                        lsp_version: lsp_sent_version,
                     },
                     buffer_version,
-                    synced_content,
-                    synced_lsp_version,
+                    synced_content: None,
+                    synced_lsp_version: None,
                     hints,
                 });
 
