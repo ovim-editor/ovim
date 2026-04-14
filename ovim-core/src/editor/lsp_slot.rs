@@ -106,6 +106,271 @@ impl<T> Default for Slot<T> {
     }
 }
 
+// ---------------------------------------------------------------------------
+// TrackedSlot<T> — Slot with generation-based invalidation
+// ---------------------------------------------------------------------------
+
+/// A `Slot<T>` with generation-based invalidation tracking.
+///
+/// Use this for features driven by external state changes (diagnostics,
+/// inlay hints, completion) where "something changed, refresh needed" is
+/// a recurring signal that must never be lost.
+///
+/// `invalidate()` bumps a monotonic generation counter. `is_stale()`
+/// compares it against the generation that was current when the last
+/// request was fired. Because the generation is a counter (not a flag),
+/// it can never be "consumed" — calling `invalidate()` ten times while
+/// a request is in flight means `is_stale()` stays true until a new
+/// request fires, no matter how many times you check.
+pub struct TrackedSlot<T> {
+    slot: Slot<T>,
+    /// Bumped by `invalidate()`. Monotonically increasing.
+    generation: u64,
+    /// The generation that was current when `fire()` was last called.
+    fired_at: u64,
+    /// Optional minimum interval between fires (debounce).
+    debounce: Option<Duration>,
+    /// When `fire()` was last called.
+    last_fired: Option<Instant>,
+}
+
+impl<T> TrackedSlot<T> {
+    pub fn new() -> Self {
+        Self {
+            slot: Slot::new(),
+            generation: 0,
+            fired_at: 0,
+            debounce: None,
+            last_fired: None,
+        }
+    }
+
+    /// Create with a minimum interval between fires.
+    pub fn with_debounce(debounce: Duration) -> Self {
+        Self {
+            debounce: Some(debounce),
+            ..Self::new()
+        }
+    }
+
+    /// Mark the current result as stale. Cheap, idempotent-ish, never
+    /// loses information — call it as often as you like.
+    pub fn invalidate(&mut self) {
+        self.generation += 1;
+    }
+
+    /// Has `invalidate()` been called since the last `fire()`?
+    pub fn is_stale(&self) -> bool {
+        self.generation > self.fired_at
+    }
+
+    /// Is stale AND not within the debounce window?
+    pub fn needs_refresh(&self) -> bool {
+        if !self.is_stale() {
+            return false;
+        }
+        if let (Some(debounce), Some(last)) = (self.debounce, self.last_fired) {
+            if last.elapsed() < debounce {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Fire a new request, marking this generation as covered.
+    pub fn fire(
+        &mut self,
+        task: JoinHandle<()>,
+        rx: oneshot::Receiver<anyhow::Result<T>>,
+        buffer_version: u64,
+    ) {
+        self.fired_at = self.generation;
+        self.last_fired = Some(Instant::now());
+        self.slot.fire(task, rx, buffer_version);
+    }
+
+    /// Non-blocking poll. Delegates to inner `Slot`.
+    pub fn poll(&mut self) -> Option<anyhow::Result<T>> {
+        self.slot.poll()
+    }
+
+    /// Non-blocking poll with explicit timeout.
+    pub fn poll_with_timeout(&mut self, timeout: Duration) -> Option<anyhow::Result<T>> {
+        self.slot.poll_with_timeout(timeout)
+    }
+
+    /// Is a request currently in flight?
+    pub fn is_pending(&self) -> bool {
+        self.slot.is_pending()
+    }
+
+    /// Abort the in-flight request and mark as stale so a re-request
+    /// happens on the next tick.
+    pub fn cancel_and_invalidate(&mut self) {
+        self.slot.cancel();
+        self.invalidate();
+    }
+
+    /// Abort the in-flight request without invalidating.
+    pub fn cancel(&mut self) {
+        self.slot.cancel();
+    }
+}
+
+impl<T> Default for TrackedSlot<T> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // -- TrackedSlot unit tests (pure state, no async) --
+
+    /// Simulate firing by advancing the generation bookkeeping
+    /// without needing a real tokio task. For state-machine tests only.
+    fn simulate_fire<T>(slot: &mut TrackedSlot<T>) {
+        slot.fired_at = slot.generation;
+        slot.last_fired = Some(Instant::now());
+    }
+
+    #[test]
+    fn fresh_slot_is_not_stale() {
+        let slot: TrackedSlot<()> = TrackedSlot::new();
+        assert!(!slot.is_stale());
+        assert!(!slot.needs_refresh());
+    }
+
+    #[test]
+    fn invalidate_makes_stale() {
+        let mut slot: TrackedSlot<()> = TrackedSlot::new();
+        slot.invalidate();
+        assert!(slot.is_stale());
+        assert!(slot.needs_refresh());
+    }
+
+    #[test]
+    fn fire_clears_staleness() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::new();
+        slot.invalidate();
+        assert!(slot.is_stale());
+
+        simulate_fire(&mut slot);
+        assert!(!slot.is_stale());
+        assert!(!slot.needs_refresh());
+    }
+
+    #[test]
+    fn invalidate_during_flight_stays_stale_after_fire() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::new();
+        slot.invalidate(); // gen 1
+        simulate_fire(&mut slot); // fired_at = 1
+        assert!(!slot.is_stale());
+
+        slot.invalidate(); // gen 2 — new data arrived while request was in flight
+        assert!(slot.is_stale()); // fired_at(1) < generation(2)
+    }
+
+    #[test]
+    fn multiple_invalidates_without_fire_stay_stale() {
+        let mut slot: TrackedSlot<()> = TrackedSlot::new();
+        slot.invalidate();
+        slot.invalidate();
+        slot.invalidate();
+        assert!(slot.is_stale());
+        // generation is 3, fired_at is 0 — stale no matter how many times we check
+        assert!(slot.is_stale());
+        assert!(slot.is_stale());
+    }
+
+    #[test]
+    fn debounce_suppresses_needs_refresh() {
+        let mut slot: TrackedSlot<String> =
+            TrackedSlot::with_debounce(Duration::from_secs(100));
+        slot.invalidate();
+        simulate_fire(&mut slot);
+
+        // Immediately invalidate again — within debounce window
+        slot.invalidate();
+        assert!(slot.is_stale()); // generation advanced
+        assert!(!slot.needs_refresh()); // but debounce says "too soon"
+    }
+
+    #[test]
+    fn debounce_allows_refresh_after_window() {
+        let mut slot: TrackedSlot<String> =
+            TrackedSlot::with_debounce(Duration::from_millis(0));
+        slot.invalidate();
+        simulate_fire(&mut slot);
+
+        slot.invalidate();
+        // debounce is 0ms so it's immediately ready
+        assert!(slot.needs_refresh());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_returns_result_when_ready() {
+        let mut slot: TrackedSlot<i32> = TrackedSlot::new();
+        slot.invalidate();
+
+        let (tx, rx) = oneshot::channel();
+        tx.send(Ok(42)).ok();
+        let task = tokio::spawn(async {});
+        slot.fire(task, rx, 1);
+
+        let result = slot.poll();
+        assert!(result.is_some());
+        assert_eq!(result.unwrap().unwrap(), 42);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_returns_none_while_pending() {
+        let mut slot: TrackedSlot<i32> = TrackedSlot::new();
+        slot.invalidate();
+
+        let (_tx, rx) = oneshot::channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        slot.fire(task, rx, 1);
+
+        assert!(slot.poll().is_none());
+        assert!(slot.is_pending());
+    }
+
+    #[test]
+    fn cancel_and_invalidate_makes_stale() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::new();
+        slot.invalidate();
+        simulate_fire(&mut slot);
+        assert!(!slot.is_stale());
+
+        slot.cancel_and_invalidate();
+        assert!(!slot.is_pending());
+        assert!(slot.is_stale());
+    }
+
+    /// The scenario that caused the diagnostic bug: invalidate arrives
+    /// while a request is pending, but the old code's is_pending() guard
+    /// prevented re-firing. With TrackedSlot, is_stale() is independent
+    /// of is_pending().
+    #[test]
+    fn invalidate_while_pending_allows_refire() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::new();
+        slot.invalidate(); // gen 1
+        simulate_fire(&mut slot); // fired_at = 1
+        assert!(!slot.is_stale());
+
+        // Simulate: new data arrives from server while we're processing
+        slot.invalidate(); // gen 2
+        assert!(slot.is_stale());
+        assert!(slot.needs_refresh());
+
+        simulate_fire(&mut slot); // fired_at = 2
+        assert!(!slot.is_stale()); // caught up
+    }
+}
+
 // ---- Result types for each slot ----
 
 /// Result of a goto-definition / goto-implementation / goto-type-definition request.
@@ -229,7 +494,7 @@ pub struct LspSlots {
     // -- Query (Step 4) --
     pub completion: Slot<CompletionResult>,
     pub inlay_hints: Slot<InlayHintResult>,
-    pub diagnostics: Slot<DiagnosticResult>,
+    pub diagnostics: TrackedSlot<DiagnosticResult>,
     // -- Actions (Step 5) --
     pub format: Slot<FormatResult>,
     pub references: Slot<ReferencesResult>,

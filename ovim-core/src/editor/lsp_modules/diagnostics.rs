@@ -129,13 +129,13 @@ impl Editor {
                 self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
 
                 if result.deferred {
-                    self.lsp.state.diagnostics_refresh_requested = true;
+                    self.lsp.slots.diagnostics.invalidate();
                     return false;
                 }
 
                 // Wrong file — ignore entirely.
                 if self.buffer().file_path() != Some(result.file_path.as_str()) {
-                    self.lsp.state.diagnostics_refresh_requested = true;
+                    self.lsp.slots.diagnostics.invalidate();
                     return false;
                 }
 
@@ -164,14 +164,14 @@ impl Editor {
                     // Buffer was edited during the fetch — request a fresh set
                     // for the current content.  The stale diagnostics stay visible
                     // until the refresh completes (better than blank).
-                    self.lsp.state.diagnostics_refresh_requested = true;
+                    self.lsp.slots.diagnostics.invalidate();
                 }
 
                 true
             }
             Err(e) => {
                 crate::lsp_warn!("LSP", "Diagnostics refresh failed: {}", e);
-                self.lsp.state.diagnostics_refresh_requested = true;
+                self.lsp.slots.diagnostics.invalidate();
                 false
             }
         }
@@ -439,7 +439,7 @@ mod tests {
         // File path still matches, so diagnostics are NOT stale (show-until-replaced).
         assert!(!editor.diagnostics_cache_stale());
         // A refresh should be requested for the current buffer content.
-        assert!(editor.lsp.state.diagnostics_refresh_requested);
+        assert!(editor.lsp.slots.diagnostics.is_stale());
 
         // Diagnostic decorations should PERSIST (stale data is better than blank).
         assert!(
@@ -511,7 +511,7 @@ mod tests {
         );
 
         assert!(!editor.poll_pending_diagnostic_refresh_response());
-        assert!(editor.lsp.state.diagnostics_refresh_requested);
+        assert!(editor.lsp.slots.diagnostics.is_stale());
         assert!(editor.lsp.state.current_file_diagnostics.is_empty());
         assert_eq!(editor.lsp.state.current_file_lsp_version, 5);
         assert_eq!(editor.lsp.state.current_file_lsp_sent_version, 4);

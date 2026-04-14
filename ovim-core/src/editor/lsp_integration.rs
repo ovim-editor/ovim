@@ -1266,7 +1266,7 @@ impl Editor {
     }
 
     pub fn request_diagnostics_refresh(&mut self) {
-        self.lsp.state.diagnostics_refresh_requested = true;
+        self.lsp.slots.diagnostics.invalidate();
     }
 
     /// Sync pending edits/saves to the LSP server, then poll and refresh
@@ -1287,10 +1287,17 @@ impl Editor {
         };
 
         self.refresh_current_lsp_sync_versions().await;
-        let diagnostics_refresh = self.take_diagnostics_refresh_request()
-            || lsp_manager.diagnostics_changed();
+
+        // Transfer cross-thread signal to the TrackedSlot's generation counter.
+        // diagnostics_changed() is consumed-on-read (AtomicBool swap), but
+        // invalidate() is a monotonic counter that can never be lost.
+        if lsp_manager.diagnostics_changed() {
+            self.lsp.slots.diagnostics.invalidate();
+        }
+
+        // Poll completed results, then fire a new request if stale.
         let changed = self.poll_pending_diagnostic_refresh_response();
-        if diagnostics_refresh {
+        if self.lsp.slots.diagnostics.needs_refresh() {
             self.spawn_diagnostic_cache_refresh();
         }
         changed
@@ -1299,7 +1306,7 @@ impl Editor {
     /// Invalidate cached diagnostics and request a fresh pull from the LSP server.
     pub fn clear_and_refresh_diagnostics(&mut self) {
         self.lsp.state.diagnostics_file_path = None;
-        self.lsp.state.diagnostics_refresh_requested = true;
+        self.lsp.slots.diagnostics.invalidate();
     }
 
     /// Handle LSP/diagnostics state when current buffer path changes (e.g. :w newfile).
@@ -1324,8 +1331,13 @@ impl Editor {
         self.clear_and_refresh_diagnostics();
     }
 
+    /// Returns true if diagnostics need refreshing.
+    /// Note: unlike the old consumed-on-read flag, this is non-destructive —
+    /// calling it multiple times returns the same result until fire() is called.
+    /// Tests that previously used this as a "consume and check" should use
+    /// `lsp.slots.diagnostics.is_stale()` directly for clarity.
     pub fn take_diagnostics_refresh_request(&mut self) -> bool {
-        std::mem::take(&mut self.lsp.state.diagnostics_refresh_requested)
+        self.lsp.slots.diagnostics.is_stale()
     }
 
     pub fn lsp_document_sync_exists(&self) -> bool {

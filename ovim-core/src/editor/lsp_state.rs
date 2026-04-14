@@ -277,9 +277,6 @@ pub struct LspState {
     pub hover_cache: Option<HoverCache>,
     /// Pending LSP responses (each request type has its own slot)
     pub pending_lsp_responses: PendingLspResponses,
-    /// Request a diagnostic cache refresh on next tick (safety net for cases where
-    /// the `diagnostics_changed` flag is missed).
-    pub diagnostics_refresh_requested: bool,
     /// Content type for hover window (LSP hover vs diagnostic)
     pub hover_content_type: HoverContentType,
 }
@@ -319,7 +316,6 @@ impl LspState {
             current_file_lsp_sent_version: 0,
             hover_cache: None,
             pending_lsp_responses: PendingLspResponses,
-            diagnostics_refresh_requested: false,
             hover_content_type: HoverContentType::default(),
         }
     }
