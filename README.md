@@ -1,109 +1,200 @@
 # ovim
 
-A Vim clone in Rust with LSP support and seamless headless mode for testing and automation.
+A batteries-included terminal editor with Vim keybindings, built in Rust.
+
+ovim gives you what Neovim distros give you — LSP, tree-sitter highlighting, AI, sane defaults — without the plugin stack. One binary, zero config required. Your Vim muscle memory works.
+
+## What You Get Out of the Box
+
+- **35+ languages** with tree-sitter syntax highlighting, compiled in
+- **LSP auto-install** — open a file, the language server downloads and starts
+- **AI chat and editing** — `Space Space` to chat, visual select + `Space` to edit
+- **Vim keybindings** — operators + motions, text objects, visual mode, macros, marks, registers
+- **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
+- **Headless mode** — run without a terminal, control via REST API or MCP
 
 ## Quick Start
 
 ```bash
 cargo build --release
 
-# Interactive editing
-./target/release/ovim myfile.txt
+# Open a file
+./target/release/ovim file.rs
 
-# Headless mode with named session
-./target/release/ovim myfile.rs --headless --session dev
+# Jump to a specific line and column
+./target/release/ovim src/main.rs:42:10
 ```
 
-# Development Workflow
-- Session files: macOS `~/Library/Caches/ovim/sessions/`, Linux `~/.cache/ovim/sessions/`
-- Auto-cleanup on exit or manual `./ovim-ctl kill`
-- Multiple concurrent sessions with different names
-- LSP readiness tracking per session
+LSP starts automatically. Syntax highlighting works. No setup needed.
 
-### REST API Endpoints
+> The rest of this README uses `ovim` assuming the binary is on your `PATH`.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/v1/health` | GET | Health check with LSP readiness |
-| `/v1/lsp/status` | GET | LSP server states & pending requests |
-| `/v1/snapshot` | GET | Complete editor state |
-| `/v1/buffer` | GET/PUT | Buffer content |
-| `/v1/cursor` | GET | Cursor position |
-| `/v1/mode` | GET | Current mode |
-| `/v1/keys` | POST | Send keystrokes |
-| `/v1/command` | POST | Execute ex command |
-| `/v1/render` | GET | ANSI rendering |
+## Language Support
 
-### LSP Support
+22 languages with LSP auto-install, 2 more with manual LSP setup, plus syntax-only languages.
 
-Zero-config Java support:
-```bash
-ovim MyClass.java  # Auto-downloads jdtls, detects Java version, full IDE features
-```
+When you open a file and its language server isn't installed, ovim asks once:
 
-Rust (rust-analyzer), Python (pyright), JavaScript (typescript-language-server) also supported.
+- **Enter** — install now
+- **A** — always auto-install
+- **Esc** — skip
 
-#### LSP Logging
+| Languages | LSP Server |
+|-----------|------------|
+| Rust | rust-analyzer |
+| TypeScript / JavaScript | typescript-language-server |
+| Python | pyright |
+| Go | gopls |
+| Java, Kotlin, Scala, Groovy | hyperion-lsp |
+| C# | csharp-ls |
+| C / C++ | clangd (manual install) |
+| Ruby | solargraph |
+| Zig | zls |
+| Lua | lua-language-server |
+| Elixir | elixir-ls |
+| Terraform | terraform-ls |
+| Bash, SQL, JSON, YAML, HTML, CSS, TOML | various |
+| Markdown, HCL | syntax highlighting only |
 
-All LSP communication is logged:
-```
-[LSP-REQUEST] Method: textDocument/hover | Request ID: Number(2) | Server: rust
-[LSP-REQUEST] Pending requests before: 0 | Adding: textDocument/hover
-[LSP-REQUEST] Waiting for response (timeout: 10s)
-[LSP-RESPONSE] Success: textDocument/hover | Took: 751.5µs | Request ID: Number(2)
-```
+Run `ovim lsp languages` for the full list. See [Language Support](user-docs/LANGUAGE_SUPPORT.md) for details.
 
-### Testing
+## Configuration
 
-```bash
-# Unit tests
-cargo test
+Configuration is optional. Create `~/.config/ovim/init.lua` when you're ready to customize:
 
-# Integration tests with headless mode
-./target/release/ovim test.txt --headless --session test &
-./ovim-ctl send test "iHello<Esc>"
-./ovim-ctl snapshot test | jq '.buffer.content'
-./ovim-ctl kill test
-```
-
-### Lua Configuration
-
-Create `~/.config/ovim/init.lua`:
 ```lua
 vim.opt.number = true
 vim.opt.relativenumber = true
 vim.opt.tabstop = 4
 vim.opt.shiftwidth = 4
+vim.opt.scrolloff = 10
 
-print("Config loaded!")
+-- AI (requires OPENAI_API_KEY in environment)
+vim.ai.setup({
+  default_profile = "openai",
+  profiles = {
+    openai = {
+      provider = "openai",
+      model = "gpt-4.1-mini",
+      api_key_env = "OPENAI_API_KEY",
+    },
+  },
+})
 ```
 
-Reload: `:ConfigReload` or `:reload`
+All `:set` options mirror Vim — `:set wrap`, `:set clipboard=unnamedplus`, `:set textwidth=80`, etc.
+
+See [Configuration](user-docs/configuration.md) and [Options Reference](user-docs/options.md) for the full list.
+
+## Headless Mode & Automation
+
+ovim can run without a terminal — as a programmable text engine with a REST API.
+
+```bash
+# Start a headless session
+ovim file.rs --headless --session dev
+
+# Control it from another terminal
+ovim send "iHello, world!<Esc>" -s dev
+ovim buffer -s dev
+ovim exec "set number" -s dev
+ovim context -s dev          # 21-line window around cursor
+```
+
+### REST API
+
+Every session exposes an HTTP server:
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/health` | GET | Health check with LSP readiness |
+| `/v1/buffer` | GET / PUT | Buffer content |
+| `/v1/keys` | POST | Send keystrokes |
+| `/v1/command` | POST | Execute ex command |
+| `/v1/snapshot` | GET | Complete editor state |
+| `/v1/lsp/status` | GET | LSP server states |
+| `/v1/mcp` | POST | MCP JSON-RPC 2.0 |
+
+### MCP Server
+
+ovim speaks [MCP](https://modelcontextprotocol.io), so AI agents can control a real editor — not just string-replace files:
+
+```bash
+# Install as MCP server for Claude or Cursor
+ovim install claude
+ovim install cursor
+```
+
+See [MCP docs](user-docs/MCP.md) for the full tool and resource list.
+
+## CLI Reference
+
+### File Operations (no session needed)
+
+```bash
+ovim edit file.rs --old "foo" --new "bar"
+ovim insert file.rs --after 42 --text "new line"
+ovim delete-lines file.rs --from 42 --to 45
+ovim read-lines file.rs --from 40 --to 60
+```
+
+### Session Control
+
+```bash
+ovim send "ggK" -s dev           # Send keystrokes
+ovim exec "set number" -s dev    # Execute ex command
+ovim context -s dev              # 21-line context window
+ovim buffer -s dev               # Buffer content
+ovim search "pattern" -s dev     # Find pattern
+```
+
+### LSP Commands
+
+```bash
+ovim lsp status -s dev           # Server states
+ovim lsp hover -s dev            # Hover info at cursor
+ovim lsp check file.rs           # Check language detection
+ovim lsp languages               # List all supported languages
+```
+
+### Session Management
+
+```bash
+ovim session list                # List active sessions
+ovim session kill -s dev         # Kill session
+ovim session health -s dev       # Health check
+ovim session cleanup --dry-run   # Preview stale session cleanup
+```
 
 ## Architecture
 
-- **buffer/**: Rope-based text buffer
-- **editor/**: Core logic, operators, motions, LSP actions
-- **lsp/**: Language server protocol client
-- **api/**: REST API server (Axum)
-- **session/**: Session persistence & management
-- **ui/**: Terminal UI (ratatui + crossterm)
+```
+ovim-core/    Shared library — buffer, syntax, LSP, session logic
+ovim/         Binary — TUI, editor, CLI, REST API
+```
 
-## Features
+Key modules:
 
-- Modal editing (Normal, Insert, Visual, Command)
-- Operators + motions (d, c, y + w, $, gg, etc.)
-- Visual selection, undo/redo, macros, marks
-- Text objects (w, p, sentence, quotes, brackets)
-- Search (/, ?, n, N)
-- LSP (hover, go-to-def, completion, diagnostics)
-- Lua configuration
-- Git status in UI
-- Session management for headless mode
+- **buffer/** — rope-based text buffer (ropey)
+- **syntax/** — tree-sitter grammars and highlight queries
+- **lsp/** — language server client with auto-install
+- **editor/** — operators, motions, input handling
+- **ui/** — terminal rendering (ratatui + crossterm)
+- **api/** — REST API and MCP server (Axum)
+
+## Documentation
+
+- [Getting Started](user-docs/getting-started.md)
+- [Configuration](user-docs/configuration.md)
+- [AI Setup](user-docs/ai.md)
+- [Headless & Automation](user-docs/headless.md)
+- [Language Support](user-docs/LANGUAGE_SUPPORT.md)
+- [Options Reference](user-docs/options.md)
+- [MCP](user-docs/MCP.md)
+- [Troubleshooting](user-docs/troubleshooting.md)
 
 ## Contributing
 
-Run before committing:
 ```bash
 cargo fmt
 cargo clippy
@@ -112,4 +203,4 @@ cargo test
 
 ## License
 
-Not yet specified.
+[MIT](LICENSE)
