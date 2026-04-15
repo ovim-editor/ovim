@@ -439,7 +439,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             // - If menu is already visible, keep it updated while typing
             if editor.completion_menu().is_visible() {
                 if is_completion_trigger_char(c) || is_completion_ident_char(c) {
-                    let (_, prefix) = editor.completion_trigger_context();
+                    let prefix = editor.completion_prefix_from_trigger_col();
                     editor.completion_menu_mut().filter(&prefix);
                     editor.request_completion();
                 } else {
@@ -484,7 +484,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Backspace => {
             helpers::delete_char_before_cursor(editor)?;
             if editor.completion_menu().is_visible() {
-                let (_, prefix) = editor.completion_trigger_context();
+                let prefix = editor.completion_prefix_from_trigger_col();
                 if prefix.is_empty() {
                     // If we deleted back to the trigger column, keep showing member completions only
                     editor.request_completion();

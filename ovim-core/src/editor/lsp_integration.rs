@@ -866,7 +866,8 @@ impl Editor {
                     );
                 }
 
-                let (trigger_col, trigger_prefix) = self.completion_trigger_context();
+                let (trigger_col, trigger_prefix) =
+                    self.derive_completion_prefix(&result.items);
                 self.completion_menu_mut()
                     .show(result.items.clone(), trigger_col, trigger_prefix);
                 self.lsp.state.available_completions = result.items;

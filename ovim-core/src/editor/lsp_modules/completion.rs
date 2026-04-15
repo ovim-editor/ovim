@@ -32,39 +32,73 @@ impl Editor {
         completion_trigger_context_from_line(&line_text, cursor_col.0)
     }
 
-    /// Apply a completion by index from available completions
-    pub fn apply_completion(&mut self, completion_index: usize) {
-        if completion_index >= self.lsp.state.available_completions.len() {
-            self.set_lsp_status("Invalid completion index".to_string());
-            return;
+    /// Derives the completion prefix from textEdit ranges when available.
+    ///
+    /// Uses the most common `textEdit.range.start.character` across items
+    /// (majority vote) to determine where the completion token starts, then
+    /// reads the text from that column to the cursor as the prefix.
+    /// Falls back to word-boundary heuristic when no textEdit is present.
+    pub(crate) fn derive_completion_prefix(
+        &self,
+        items: &[lsp_types::CompletionItem],
+    ) -> (usize, String) {
+        // Try to derive trigger_col from the textEdit ranges.
+        // Use majority vote on range.start.character to handle multi-server
+        // scenarios where different servers may have different ranges.
+        let start_char = text_edit_majority_start(items);
+        if let Some(utf16_start) = start_char {
+            let cursor = self.buffer().cursor();
+            let line_idx = cursor.line();
+            let cursor_col = cursor.col().0; // grapheme col
+
+            let trigger_col = self.utf16_to_grapheme_col(line_idx, utf16_start);
+
+            // Sanity: trigger_col must be at or before cursor
+            if trigger_col <= cursor_col {
+                let line_text = self
+                    .buffer()
+                    .line(line_idx)
+                    .unwrap_or_default()
+                    .trim_end_matches('\n')
+                    .to_string();
+
+                let start_byte =
+                    byte_offset_for_grapheme(&line_text, trigger_col).unwrap_or(0);
+                let end_byte = byte_offset_for_grapheme(&line_text, cursor_col)
+                    .unwrap_or(line_text.len());
+                let prefix = line_text[start_byte..end_byte].to_string();
+                return (trigger_col, prefix);
+            }
         }
 
-        let completion = self.lsp.state.available_completions[completion_index].clone();
+        // Fallback: word-boundary heuristic
+        self.completion_trigger_context()
+    }
 
-        // Extract the text to insert
-        let insert_text = if let Some(text_edit) = completion.text_edit {
-            match text_edit {
-                lsp_types::CompletionTextEdit::Edit(edit) => edit.new_text,
-                lsp_types::CompletionTextEdit::InsertAndReplace(insert_replace) => {
-                    insert_replace.new_text
-                }
-            }
-        } else if let Some(insert_text) = completion.insert_text {
-            insert_text
-        } else {
-            completion.label
-        };
+    /// Returns the current prefix text from the stored trigger_col to cursor.
+    /// Used for ongoing filtering while the completion menu is visible,
+    /// so we don't re-derive the trigger column from word boundaries.
+    pub(crate) fn completion_prefix_from_trigger_col(&self) -> String {
+        let trigger_col = self.completion_menu().trigger_col();
+        let cursor = self.buffer().cursor();
+        let cursor_col = cursor.col().0;
 
-        // Insert at cursor position
-        let (line, col) = {
-            let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col())
-        };
-        self.buffer_mut().insert_text_at(line, col.0, &insert_text);
+        if trigger_col > cursor_col {
+            return String::new();
+        }
 
-        // Clear completions after applying
-        self.lsp.state.available_completions.clear();
-        self.set_lsp_status("Completion applied".to_string());
+        let line_text = self
+            .buffer()
+            .line(cursor.line())
+            .unwrap_or_default()
+            .trim_end_matches('\n')
+            .to_string();
+
+        let start_byte =
+            byte_offset_for_grapheme(&line_text, trigger_col).unwrap_or(0);
+        let end_byte =
+            byte_offset_for_grapheme(&line_text, cursor_col).unwrap_or(line_text.len());
+        line_text[start_byte..end_byte].to_string()
     }
 
     /// Implementation of completion request
@@ -149,9 +183,15 @@ impl Editor {
         // Resolve the server group responsible for this document.
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
 
-        // No LSP servers for this language — nothing to complete.
+        // No LSP servers registered yet — server may still be initializing.
+        // Return Err so process_pending_lsp_actions retries once.
         if server_ids.is_empty() {
-            return Ok(false);
+            // Only set "waiting" status if there isn't already a more specific
+            // error (e.g., "LSP: rust-analyzer not found in PATH").
+            if !self.lsp.state.lsp_status.starts_with("LSP:") {
+                self.set_lsp_status("LSP: waiting for server...".to_string());
+            }
+            return Err(anyhow!("No LSP servers ready for {}", language_id));
         }
 
         let buffer_version = self.buffer().version() as u64;
@@ -227,9 +267,32 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
     (trigger_col, trigger_prefix)
 }
 
+/// Returns the most common `textEdit.range.start.character` (UTF-16) across
+/// completion items. Uses majority vote to handle multi-server scenarios.
+fn text_edit_majority_start(items: &[lsp_types::CompletionItem]) -> Option<u32> {
+    use std::collections::HashMap;
+
+    let mut counts: HashMap<u32, usize> = HashMap::new();
+    for item in items {
+        let start = match &item.text_edit {
+            Some(lsp_types::CompletionTextEdit::Edit(edit)) => edit.range.start.character,
+            Some(lsp_types::CompletionTextEdit::InsertAndReplace(ir)) => {
+                ir.insert.start.character
+            }
+            None => continue,
+        };
+        *counts.entry(start).or_default() += 1;
+    }
+
+    counts
+        .into_iter()
+        .max_by_key(|(_, count)| *count)
+        .map(|(start, _)| start)
+}
+
 #[cfg(test)]
 mod tests {
-    use super::completion_trigger_context_from_line;
+    use super::{completion_trigger_context_from_line, text_edit_majority_start};
     use crate::unicode::grapheme_at_index;
 
     #[test]
@@ -271,5 +334,57 @@ mod tests {
     fn trigger_char_detection_dot() {
         let line = "s.";
         assert_eq!(grapheme_at_index(line, 1), Some("."));
+    }
+
+    fn item_with_text_edit(label: &str, start_char: u32, end_char: u32) -> lsp_types::CompletionItem {
+        lsp_types::CompletionItem {
+            label: label.to_string(),
+            text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
+                range: lsp_types::Range {
+                    start: lsp_types::Position { line: 0, character: start_char },
+                    end: lsp_types::Position { line: 0, character: end_char },
+                },
+                new_text: label.to_string(),
+            })),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn majority_start_single_server() {
+        let items = vec![
+            item_with_text_edit("bg-white", 11, 16),
+            item_with_text_edit("bg-black", 11, 16),
+            item_with_text_edit("bg-red-500", 11, 16),
+        ];
+        assert_eq!(text_edit_majority_start(&items), Some(11));
+    }
+
+    #[test]
+    fn majority_start_multi_server_picks_most_common() {
+        // 3 items from Tailwind (start=11), 1 from TypeScript (start=14)
+        let items = vec![
+            item_with_text_edit("bg-white", 11, 16),
+            item_with_text_edit("bg-black", 11, 16),
+            item_with_text_edit("bg-red-500", 11, 16),
+            item_with_text_edit("white", 14, 16),
+        ];
+        assert_eq!(text_edit_majority_start(&items), Some(11));
+    }
+
+    #[test]
+    fn majority_start_no_text_edits() {
+        let items = vec![
+            lsp_types::CompletionItem {
+                label: "foo".to_string(),
+                ..Default::default()
+            },
+        ];
+        assert_eq!(text_edit_majority_start(&items), None);
+    }
+
+    #[test]
+    fn majority_start_empty() {
+        assert_eq!(text_edit_majority_start(&[]), None);
     }
 }

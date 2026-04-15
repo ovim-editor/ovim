@@ -521,7 +521,7 @@ impl Editor {
                 self.apply_code_action(index);
             }
             PickerAction::ApplyCompletion { index } => {
-                self.apply_completion(index);
+                self.accept_completion_at(index);
             }
             PickerAction::SelectDebugConfig { index } => {
                 self.select_debug_config(index);

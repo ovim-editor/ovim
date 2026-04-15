@@ -117,7 +117,7 @@ impl CompletionMenu {
             self.all_items
                 .iter()
                 .filter(|item| {
-                    let text = item.insert_text.as_deref().unwrap_or(&item.label);
+                    let text = item.filter_text.as_deref().unwrap_or(&item.label);
                     text.to_lowercase().starts_with(&prefix_lower)
                 })
                 .cloned()
@@ -175,5 +175,37 @@ mod tests {
         );
         let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels, vec!["Res".to_string(), "Result".to_string()]);
+    }
+
+    #[test]
+    fn completion_menu_uses_filter_text_over_label() {
+        let mut menu = CompletionMenu::new();
+        // Tailwind-style: label is the display name, filterText is what to match
+        let mut tailwind_item = item("bg-white");
+        tailwind_item.filter_text = Some("bg-white".to_string());
+
+        let mut css_item = item("whitespace");
+        css_item.filter_text = Some("whitespace".to_string());
+
+        menu.show(
+            vec![tailwind_item, css_item],
+            0,
+            "bg-wh".to_string(),
+        );
+        let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, vec!["bg-white".to_string()]);
+    }
+
+    #[test]
+    fn completion_menu_falls_back_to_label_without_filter_text() {
+        let mut menu = CompletionMenu::new();
+        // No filterText set — should filter by label
+        menu.show(
+            vec![item("forEach"), item("filter"), item("map")],
+            0,
+            "fo".to_string(),
+        );
+        let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
+        assert_eq!(labels, vec!["forEach".to_string()]);
     }
 }
