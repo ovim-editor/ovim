@@ -68,15 +68,40 @@ Completion works correctly because it has its own separate slot with sequence-ba
 | [05: Decoration Projection](./05-decoration-projection.md) | `decoration.rs`, inlay hints | Hint drift, undo clearing hints | Medium -- changes rendering pipeline |
 | [06: LspState Decomposition](./06-lsp-state-decomposition.md) | `lsp_state.rs` | Maintainability | Low -- largely subsumed by Phase 2 |
 
-**Phase 0 is shipped.** The acute symptoms are fixed. Phases 1 and 4 are done (the core fixes were in Phase 0).
+## Status (April 2026)
 
-**Phase 2 is the next big move.** The `Slot<T>` architecture replaces 5 ad-hoc implementations of the same pattern, converts all inline-await actions to non-blocking, and eliminates the single-slot bottleneck. It's designed for incremental migration — each feature conversion is independent and shippable. Phase 6 (LspState decomposition) is largely achieved as a side effect of Phase 2, since the ad-hoc pending structs are replaced by `LspSlots`.
+The LSP subsystem refactor is **complete**. All user-facing symptoms are fixed.
 
-Phase ordering:
-- Phase 2 is next -- highest impact structural improvement, incremental migration
-- Phase 3 is independent -- simplifies DocumentSyncState now that Phase 0 fixed the baseline bug
-- Phase 5 depends on an edit log (can be added standalone or as part of Phase 3)
-- Phase 6 may be unnecessary after Phase 2 cleans up LspState
+| Phase | Status |
+|-------|--------|
+| 00: Quick Fixes | **Done** |
+| 01: Request Pipeline | **Done** (shipped in Phase 0) |
+| 02: Unified Slot Architecture | **Done** — `Slot<T>`/`TrackedSlot<T>`, `LspIntents` replace `LspAction` enum |
+| 03: Document Sync | **Done** — debouncer baseline bug fixed, `DocumentSyncState` reconciliation works |
+| 04: Async Save | **Done** — git ops on `spawn_blocking` |
+| 05: Decoration Projection | **Partial** — undo/redo preserve hints via `adjust_for_edits`; full versioned projection deferred |
+| 06: LspState Decomposition | **Superseded** by Phase 2 cleanup |
+| 07: Completion textEdit | **Done** — `filterText`, `textEdit` range prefix, consolidated apply |
+
+### What remains from Phase 5
+
+The undo/redo flash is fixed (hints preserved through undo). The full projection system (versioned decorations, edit log, render-time position projection) would additionally fix:
+- Accumulated drift when stale hints are applied at wrong positions
+- Correctness when hints arrive from a different buffer version than current
+
+These are low-severity — `TrackedSlot` invalidation handles the common case.
+
+### Next: Cross-cutting issues
+
+The LSP-specific work is done. The remaining risks are broader:
+
+| # | Title | Type | Priority |
+|---|-------|------|----------|
+| [08](./08-column-coordinates.md) | Column coordinate correctness | **Bug** — grapheme/byte cols passed as char cols | High — real corruption with non-ASCII |
+| [09](./09-undo-unification.md) | Undo system boundary | **Risk** — dual Change/Edit representations | Low — document and test, don't unify yet |
+| [10](./10-editor-decomposition.md) | Editor struct decomposition | Maintainability | Background |
+| [11](./11-event-loop-ordering.md) | Event loop clarity | Readability | Low — comments and grouping |
+| [12](./12-multi-server-sync.md) | Multi-server document sync | **Risk** — per-file version tracking, not per-server | Medium — affects Tailwind + TS setups |
 
 ## Files Involved
 

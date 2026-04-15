@@ -1017,6 +1017,7 @@ impl Editor {
         self.lsp.intents.clear();
         self.lsp.slots.cancel_all();
         self.lsp.state.hover_cache = None;
+        self.completion_menu.hide();
         // Reset LSP version tracking (new file has its own version space)
         self.lsp.state.current_file_lsp_version = 0;
         self.lsp.state.current_file_lsp_sent_version = 0;
