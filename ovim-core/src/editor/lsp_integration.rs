@@ -305,9 +305,9 @@ impl Editor {
         state.mark_change_flushed(content, flushed_version, current_content.as_deref());
     }
 
-    /// Get the currently queued LSP action, if any.
-    pub fn pending_lsp_action(&self) -> Option<&LspAction> {
-        self.lsp.state.pending_lsp_action.as_ref()
+    /// Get a reference to the pending LSP intents.
+    pub fn pending_intents(&self) -> &crate::editor::lsp_state::LspIntents {
+        &self.lsp.intents
     }
 
     /// Invalidate hover cache when buffer is modified
@@ -319,7 +319,7 @@ impl Editor {
 
     /// Returns true if there's a pending LSP response being waited for
     pub fn has_pending_lsp_response(&self) -> bool {
-        self.lsp.state.pending_lsp_responses.any_pending() || self.lsp.slots.any_pending()
+        self.lsp.slots.any_pending()
     }
 
     pub fn has_pending_completion_response(&self) -> bool {
@@ -1014,9 +1014,7 @@ impl Editor {
         self.lsp.state.available_completions.clear();
         self.lsp.state.inlay_hints.clear();
         self.lsp.slots.inlay_hints.cancel_and_invalidate();
-        self.lsp.state.pending_lsp_action = None;
-        // Abort all pending LSP responses
-        self.lsp.state.pending_lsp_responses.abort_all();
+        self.lsp.intents.clear();
         self.lsp.slots.cancel_all();
         self.lsp.state.hover_cache = None;
         // Reset LSP version tracking (new file has its own version space)
@@ -1082,68 +1080,62 @@ impl Editor {
     }
 
     // -------------------------------------------------------------------------
-    // LSP Action Requests (set pending_lsp_action flag)
+    // LSP Action Requests (set per-feature intent flags)
     // -------------------------------------------------------------------------
-
-    /// Queue an LSP action and reset the retry count
-    fn queue_lsp_action(&mut self, action: LspAction) {
-        self.lsp.state.pending_lsp_action = Some(action);
-        self.lsp.state.lsp_action_retry_count = 0;
-    }
 
     /// Request document format
     pub fn request_format_document(&mut self) {
-        self.queue_lsp_action(LspAction::FormatDocument);
+        self.lsp.intents.format_document = true;
     }
 
     /// Request code actions at current cursor position
     pub fn request_code_actions(&mut self) {
-        self.queue_lsp_action(LspAction::CodeActions);
+        self.lsp.intents.code_actions = true;
     }
 
     /// Request call hierarchy (incoming calls) at current cursor position
     pub fn request_call_hierarchy_incoming(&mut self) {
-        self.queue_lsp_action(LspAction::CallHierarchyIncoming);
+        self.lsp.intents.call_hierarchy_incoming = true;
     }
 
     /// Request call hierarchy (outgoing calls) at current cursor position
     pub fn request_call_hierarchy_outgoing(&mut self) {
-        self.queue_lsp_action(LspAction::CallHierarchyOutgoing);
+        self.lsp.intents.call_hierarchy_outgoing = true;
     }
 
     /// Request type hierarchy at current cursor position
     pub fn request_type_hierarchy(&mut self) {
-        self.queue_lsp_action(LspAction::TypeHierarchy);
+        self.lsp.intents.type_hierarchy = true;
     }
 
     /// Request organize imports for the current document
     pub fn request_organize_imports(&mut self) {
-        self.queue_lsp_action(LspAction::OrganizeImports);
+        self.lsp.intents.organize_imports = true;
     }
 
     /// Request find references at current cursor position
     pub fn request_find_references(&mut self) {
-        self.queue_lsp_action(LspAction::FindReferences);
+        self.lsp.intents.find_references = true;
     }
 
     /// Request document symbols for the current document
     pub fn request_document_symbols(&mut self) {
-        self.queue_lsp_action(LspAction::DocumentSymbols);
+        self.lsp.intents.document_symbols = true;
     }
 
     /// Request workspace symbols
     pub fn request_workspace_symbols(&mut self) {
-        self.queue_lsp_action(LspAction::WorkspaceSymbols);
+        self.lsp.intents.workspace_symbols = true;
     }
 
     /// Request rename at current cursor position
     pub fn request_rename(&mut self, new_name: String) {
-        self.queue_lsp_action(LspAction::Rename(new_name));
+        self.lsp.intents.rename = Some(new_name);
     }
 
     /// Request semantic tokens for the current document
     pub fn request_semantic_tokens(&mut self) {
-        self.queue_lsp_action(LspAction::SemanticTokens);
+        self.lsp.intents.semantic_tokens = true;
     }
 
     fn document_sync_state_mut(&mut self) -> Option<&mut lsp_state::DocumentSyncState> {
@@ -1700,63 +1692,66 @@ impl Editor {
 
     /// Process pending LSP actions
     /// Called from the event loop to handle LSP requests asynchronously
-    pub async fn process_pending_lsp_actions(&mut self) {
-        if let Some(action) = self.lsp.state.pending_lsp_action.take() {
-            crate::lsp_debug!(
-                "LSP-ACTION",
-                "process_pending_lsp_actions() - processing action: {:?}",
-                action
-            );
-            let result = match action {
-                LspAction::GoToDefinition => self.goto_definition_impl().await,
-                LspAction::GoToDefinitionNewTab => self.goto_definition_new_tab_impl().await,
-                LspAction::GoToImplementation => self.goto_implementation_impl().await,
-                LspAction::GoToImplementationNewTab => {
-                    self.goto_implementation_new_tab_impl().await
-                }
-                LspAction::GoToType => self.goto_type_impl().await,
-                LspAction::ShowHover => {
-                    crate::lsp_debug!("LSP-HOVER", "About to call hover_impl()");
-                    self.hover_impl().await
-                }
-                LspAction::Completion => self.completion_impl().await,
-                LspAction::FormatDocument => self.format_document_impl().await,
-                LspAction::CodeActions => self.code_actions_impl().await,
-                LspAction::TypeHierarchy => self.type_hierarchy_impl().await,
-                LspAction::CallHierarchyIncoming => self.call_hierarchy_incoming_impl().await,
-                LspAction::CallHierarchyOutgoing => self.call_hierarchy_outgoing_impl().await,
-                LspAction::FindReferences => self.find_references_impl().await,
-                LspAction::DocumentSymbols => self.document_symbols_impl().await,
-                LspAction::WorkspaceSymbols => self.workspace_symbols_impl().await,
-                LspAction::OrganizeImports => self.organize_imports_impl().await,
-                LspAction::Rename(ref new_name) => self.rename_impl(new_name.clone()).await,
-                LspAction::SemanticTokens => self.semantic_tokens_impl().await,
-            };
-
-            match result {
-                Ok(changed) => {
-                    if changed {
-                        // Action changed editor state (e.g., jumped to definition)
-                        // Mark dirty to trigger redraw
-                        self.mark_dirty();
-                    } else {
-                        // Action didn't change editor state (e.g., no results)
-                        // Status message should already be set
-                    }
-                }
-                Err(_e) => {
-                    // LSP request failed - retry ONCE by re-queueing the action
-                    // This handles race conditions where LSP server isn't ready yet
-                    // Only retry if we haven't already retried (prevents infinite loop)
-                    if self.lsp.state.lsp_action_retry_count < 1 {
-                        self.lsp.state.lsp_action_retry_count += 1;
-                        if self.lsp.state.pending_lsp_action.is_none() {
-                            self.lsp.state.pending_lsp_action = Some(action);
-                        }
-                    }
-                    // If retry_count >= 1, we've already retried once, so give up silently
-                }
-            }
+    /// Dispatches all pending LSP intents.
+    ///
+    /// Each intent is checked independently — multiple intents can fire in the
+    /// same tick (unlike the old single-slot `pending_lsp_action` which lost
+    /// actions when two were queued in the same frame). Each `_impl()` method
+    /// fires into its own `Slot<T>` and returns immediately.
+    pub async fn dispatch_pending_intents(&mut self) {
+        if std::mem::take(&mut self.lsp.intents.goto_definition) {
+            let _ = self.goto_definition_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.goto_definition_new_tab) {
+            let _ = self.goto_definition_new_tab_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.goto_implementation) {
+            let _ = self.goto_implementation_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.goto_implementation_new_tab) {
+            let _ = self.goto_implementation_new_tab_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.goto_type) {
+            let _ = self.goto_type_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.hover) {
+            let _ = self.hover_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.completion) {
+            let _ = self.completion_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.format_document) {
+            let _ = self.format_document_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.code_actions) {
+            let _ = self.code_actions_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.type_hierarchy) {
+            let _ = self.type_hierarchy_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.call_hierarchy_incoming) {
+            let _ = self.call_hierarchy_incoming_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.call_hierarchy_outgoing) {
+            let _ = self.call_hierarchy_outgoing_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.find_references) {
+            let _ = self.find_references_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.document_symbols) {
+            let _ = self.document_symbols_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.workspace_symbols) {
+            let _ = self.workspace_symbols_impl().await;
+        }
+        if std::mem::take(&mut self.lsp.intents.organize_imports) {
+            let _ = self.organize_imports_impl().await;
+        }
+        if let Some(new_name) = self.lsp.intents.rename.take() {
+            let _ = self.rename_impl(new_name).await;
+        }
+        if std::mem::take(&mut self.lsp.intents.semantic_tokens) {
+            let _ = self.semantic_tokens_impl().await;
         }
     }
 

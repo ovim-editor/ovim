@@ -90,7 +90,7 @@ pub use input_context::InputContext;
 pub use input_state::{CharMotion, InputState, TextObjectPrefix};
 pub use keymap::{KeyMapManager, KeyMapping, MapMode};
 pub use lsp_manager_panel::LspManagerPanel;
-pub use lsp_state::{HoverContentType, LspAction, LspResultType, LspState};
+pub use lsp_state::{HoverContentType, LspIntents, LspResultType, LspState};
 pub use lsp_ui::LspUi;
 pub use macros::MacroManager;
 pub use marks::{GlobalMark, JumpList, Mark, MarkManager, TagEntry, TagStack};

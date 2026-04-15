@@ -1,5 +1,5 @@
 use super::lsp_slot::LspSlots;
-use super::lsp_state::LspState;
+use super::lsp_state::{LspIntents, LspState};
 use super::lsp_ui::LspUi;
 use super::{LspCommand, PendingLspInstall};
 use tokio::sync::mpsc;
@@ -7,10 +7,12 @@ use tokio::sync::mpsc;
 /// Grouped state for all LSP-related concerns.
 #[derive(Default)]
 pub(crate) struct LspSubsystem {
-    /// Core LSP state (manager, diagnostics, hover, pending actions, etc.)
+    /// Core LSP state (manager, diagnostics, hover, etc.)
     pub(crate) state: LspState,
-    /// Generic slots for in-flight LSP requests (Phase 2 migration)
+    /// Generic slots for in-flight LSP requests
     pub(crate) slots: LspSlots,
+    /// Per-feature intent flags (replaces old single-slot LspAction dispatch)
+    pub(crate) intents: LspIntents,
     /// Channel sender for LSP commands from background tasks
     pub(crate) command_tx: Option<mpsc::UnboundedSender<LspCommand>>,
     /// Channel receiver for LSP commands from background tasks

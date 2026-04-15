@@ -1,7 +1,7 @@
 mod helpers;
 
 use helpers::EditorTest;
-use ovim::editor::{InputHandler, LspAction};
+use ovim::editor::InputHandler;
 use ovim::mode::Mode;
 
 #[test]
@@ -72,10 +72,7 @@ fn test_leader_format_mapping_queues_format_action() {
     InputHandler::execute_command_string(&mut test.editor, "nnoremap <leader>f gq").unwrap();
     test.keys("<Space>f");
 
-    assert_eq!(
-        test.editor.pending_lsp_action(),
-        Some(&LspAction::FormatDocument)
-    );
+    assert!(test.editor.pending_intents().format_document);
 }
 
 #[test]

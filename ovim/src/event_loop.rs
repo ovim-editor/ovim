@@ -473,7 +473,7 @@ async fn process_editor_tick(
     // Process pending LSP actions unconditionally. Each _impl() method
     // manages its own response slot and cancels any previous in-flight
     // request, so there's no need to gate on has_pending_lsp_response().
-    editor.process_pending_lsp_actions().await;
+    editor.dispatch_pending_intents().await;
 
     let _ = editor.process_lua_commands();
 
@@ -916,7 +916,7 @@ pub async fn run_event_loop(
                     }
 
                     // Immediately process LSP actions triggered by input
-                    editor.process_pending_lsp_actions().await;
+                    editor.dispatch_pending_intents().await;
 
                     // If more input queued, skip render to keep input flowing
                     if crossterm::event::poll(std::time::Duration::ZERO).unwrap_or(false) {
@@ -1015,7 +1015,7 @@ async fn handle_api_request(
                     }
 
                     // Process any LSP actions that were triggered by the keys
-                    editor.process_pending_lsp_actions().await;
+                    editor.dispatch_pending_intents().await;
 
                     // If a hover request was just spawned, wait for the LSP to respond
                     // so the caller gets the result instead of null

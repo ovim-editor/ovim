@@ -14,7 +14,7 @@ use std::collections::HashSet;
 impl Editor {
     /// Request completion at current cursor position
     pub fn request_completion(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::Completion);
+        self.lsp.intents.completion = true;
     }
 
     pub(crate) fn completion_trigger_context(&self) -> (usize, String) {
@@ -184,7 +184,6 @@ impl Editor {
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
 
         // No LSP servers registered yet — server may still be initializing.
-        // Return Err so process_pending_lsp_actions retries once.
         if server_ids.is_empty() {
             // Only set "waiting" status if there isn't already a more specific
             // error (e.g., "LSP: rust-analyzer not found in PATH").

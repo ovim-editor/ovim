@@ -1,7 +1,6 @@
 mod helpers;
 
 use helpers::EditorTest;
-use ovim::editor::LspAction;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn temp_test_path(name: &str) -> String {
@@ -379,10 +378,7 @@ fn test_ctrl_g_goto_definition_new_tab() {
     test.keys("<C-g>");
 
     test.assert_mode(ovim::mode::Mode::Normal);
-    assert_eq!(
-        test.editor.pending_lsp_action(),
-        Some(&LspAction::GoToDefinitionNewTab)
-    );
+    assert!(test.editor.pending_intents().goto_definition_new_tab);
 }
 
 /// Test Ctrl-L (redraw screen)

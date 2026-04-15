@@ -11,27 +11,27 @@ use anyhow::Result;
 impl Editor {
     /// Request go-to-definition at current cursor position
     pub fn request_goto_definition(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToDefinition);
+        self.lsp.intents.goto_definition = true;
     }
 
     /// Request go-to-definition at current cursor position, opening in a new tab
     pub fn request_goto_definition_new_tab(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToDefinitionNewTab);
+        self.lsp.intents.goto_definition_new_tab = true;
     }
 
     /// Request go-to-implementation at current cursor position
     pub fn request_goto_implementation(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToImplementation);
+        self.lsp.intents.goto_implementation = true;
     }
 
     /// Request go-to-implementation at current cursor position, opening in a new tab
     pub fn request_goto_implementation_new_tab(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToImplementationNewTab);
+        self.lsp.intents.goto_implementation_new_tab = true;
     }
 
     /// Request go-to-type-definition at current cursor position
     pub fn request_goto_type(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::GoToType);
+        self.lsp.intents.goto_type = true;
     }
 
     /// Shared setup for goto requests: validates LSP state, resolves file path

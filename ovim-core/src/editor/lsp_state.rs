@@ -151,21 +151,6 @@ pub struct PendingLspRequest<T> {
     pub started: std::time::Instant,
 }
 
-/// Legacy struct — all response slots have been migrated to `LspSlots`.
-/// Kept temporarily while downstream references are cleaned up.
-#[derive(Default)]
-pub struct PendingLspResponses;
-
-impl PendingLspResponses {
-    /// Returns true if any response slot is occupied.  (Always false now.)
-    pub fn any_pending(&self) -> bool {
-        false
-    }
-
-    /// Abort and clear all pending response slots.  (No-op now.)
-    pub fn abort_all(&mut self) {}
-}
-
 
 #[derive(Debug, Clone)]
 pub struct AvailableCodeAction {
@@ -187,26 +172,39 @@ pub enum LspResultType {
     TypeHierarchy,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LspAction {
-    GoToDefinition,
-    GoToDefinitionNewTab,
-    GoToImplementation,
-    GoToImplementationNewTab,
-    GoToType,
-    ShowHover,
-    Completion,
-    FormatDocument,
-    CodeActions,
-    TypeHierarchy,
-    CallHierarchyIncoming,
-    CallHierarchyOutgoing,
-    FindReferences,
-    DocumentSymbols,
-    WorkspaceSymbols,
-    OrganizeImports,
-    Rename(String), // New name for the symbol
-    SemanticTokens, // Request semantic tokens for highlighting
+/// Per-feature intent flags for LSP actions.
+///
+/// Multiple intents can be set simultaneously (unlike the old single-slot
+/// `Option<LspAction>` which lost actions when two were queued in the same
+/// frame). Each flag is checked and cleared independently by
+/// `dispatch_pending_intents()`.
+#[derive(Default)]
+pub struct LspIntents {
+    pub goto_definition: bool,
+    pub goto_definition_new_tab: bool,
+    pub goto_implementation: bool,
+    pub goto_implementation_new_tab: bool,
+    pub goto_type: bool,
+    pub hover: bool,
+    pub completion: bool,
+    pub format_document: bool,
+    pub code_actions: bool,
+    pub call_hierarchy_incoming: bool,
+    pub call_hierarchy_outgoing: bool,
+    pub type_hierarchy: bool,
+    pub find_references: bool,
+    pub document_symbols: bool,
+    pub workspace_symbols: bool,
+    pub organize_imports: bool,
+    pub rename: Option<String>,
+    pub semantic_tokens: bool,
+}
+
+impl LspIntents {
+    /// Clear all intent flags.
+    pub fn clear(&mut self) {
+        *self = Self::default();
+    }
 }
 
 /// Container for all LSP-related state in the editor
@@ -215,10 +213,6 @@ pub struct LspState {
     pub lsp_manager: Option<Arc<LspManager>>,
     /// Cached diagnostic count (errors, warnings, info, hints) for status line display
     pub diagnostic_count: (usize, usize, usize, usize),
-    /// Pending LSP action to execute in async context
-    pub pending_lsp_action: Option<LspAction>,
-    /// Retry count for pending LSP action (max 1 retry, then give up)
-    pub lsp_action_retry_count: u8,
     /// Hover information to display (from LSP)
     pub hover_info: Option<String>,
     /// Scroll offset for hover window (line number)
@@ -268,8 +262,6 @@ pub struct LspState {
     pub current_file_lsp_sent_version: i32,
     /// Cached hover result to avoid redundant LSP requests
     pub hover_cache: Option<HoverCache>,
-    /// Pending LSP responses (each request type has its own slot)
-    pub pending_lsp_responses: PendingLspResponses,
     /// Content type for hover window (LSP hover vs diagnostic)
     pub hover_content_type: HoverContentType,
 }
@@ -280,8 +272,6 @@ impl LspState {
         Self {
             lsp_manager: None,
             diagnostic_count: (0, 0, 0, 0),
-            pending_lsp_action: None,
-            lsp_action_retry_count: 0,
             hover_info: None,
             hover_scroll: 0,
             hover_h_scroll: 0,
@@ -305,7 +295,6 @@ impl LspState {
             current_file_lsp_version: 0,
             current_file_lsp_sent_version: 0,
             hover_cache: None,
-            pending_lsp_responses: PendingLspResponses,
             hover_content_type: HoverContentType::default(),
         }
     }

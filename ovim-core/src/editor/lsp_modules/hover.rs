@@ -9,10 +9,8 @@ use anyhow::{anyhow, Result};
 
 impl Editor {
     /// Request hover info at current cursor position
-    /// This will set the pending action flag, which will be processed
-    /// in the next event loop iteration via process_pending_lsp_actions()
     pub fn request_hover(&mut self) {
-        self.queue_lsp_action(crate::editor::lsp_state::LspAction::ShowHover);
+        self.lsp.intents.hover = true;
     }
 
     /// Get current hover info text
