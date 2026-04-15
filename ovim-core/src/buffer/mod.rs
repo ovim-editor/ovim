@@ -813,30 +813,34 @@ impl Buffer {
         &mut self.change_manager
     }
 
-    /// Undoes the last change
-    pub fn undo(&mut self) -> bool {
+    /// Undoes the last change, returning the edits that were applied.
+    /// The edits can be used to adjust decoration positions.
+    pub fn undo(&mut self) -> (bool, Vec<crate::edit::Edit>) {
         // Route through ChangeManager so grouped undo behavior stays centralized.
+        // Wrap in record() to capture the inverse edits applied during undo.
         let mut change_manager = std::mem::take(&mut self.change_manager);
-        let did_undo = change_manager.undo(self);
+        let (did_undo, edits) = self.record(|buf| change_manager.undo(buf));
         self.change_manager = change_manager;
         if did_undo {
             self.validate_cursor_position();
         }
-        did_undo
+        (did_undo, edits)
     }
 
-    /// Redoes the next change
-    pub fn redo(&mut self) -> bool {
+    /// Redoes the next change, returning the edits that were applied.
+    /// The edits can be used to adjust decoration positions.
+    pub fn redo(&mut self) -> (bool, Vec<crate::edit::Edit>) {
         // Route through ChangeManager so grouped redo behavior stays centralized.
+        // Wrap in record() to capture the edits applied during redo.
         let mut change_manager = std::mem::take(&mut self.change_manager);
-        let did_redo = change_manager.redo(self);
+        let (did_redo, edits) = self.record(|buf| change_manager.redo(buf));
         self.change_manager = change_manager;
         if did_redo {
             // apply may restore insert-mode cursor_after which can be past end
             // of line in normal mode.
             self.validate_cursor_position();
         }
-        did_redo
+        (did_redo, edits)
     }
 }
 
@@ -1199,13 +1203,13 @@ mod tests {
         buf.change_manager_mut().undo_stack.push(change2);
 
         // One undo should revert both grouped edits.
-        assert!(buf.undo());
+        assert!(buf.undo().0);
         assert_eq!(buf.rope().to_string(), "abc\n");
         assert_eq!(buf.change_manager().undo_stack.len(), 0);
         assert_eq!(buf.change_manager().redo_stack.len(), 2);
 
         // One redo should restore both grouped edits.
-        assert!(buf.redo());
+        assert!(buf.redo().0);
         assert_eq!(buf.rope().to_string(), "XYabc\n");
         assert_eq!(buf.change_manager().undo_stack.len(), 2);
         assert_eq!(buf.change_manager().redo_stack.len(), 0);

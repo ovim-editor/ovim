@@ -38,10 +38,11 @@ impl Editor {
 
     /// Undoes the last change
     pub fn undo(&mut self) {
-        self.buffer_mut().undo();
-        // Decoration char_offsets can't be adjusted here (edit list not
-        // exposed from buffer.undo()).  Clear and let LSP refresh.
-        self.decorations.clear();
+        let (did_undo, edits) = self.buffer_mut().undo();
+        if did_undo && !edits.is_empty() {
+            let rope = self.buffer().rope().clone();
+            self.decorations.adjust_for_edits(&edits, &rope);
+        }
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
@@ -49,8 +50,11 @@ impl Editor {
 
     /// Redoes the next change
     pub fn redo(&mut self) {
-        self.buffer_mut().redo();
-        self.decorations.clear();
+        let (did_redo, edits) = self.buffer_mut().redo();
+        if did_redo && !edits.is_empty() {
+            let rope = self.buffer().rope().clone();
+            self.decorations.adjust_for_edits(&edits, &rope);
+        }
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
