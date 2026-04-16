@@ -252,6 +252,38 @@ impl Buffer {
         &self.cursor
     }
 
+    /// Positions the cursor at a given char column by converting to grapheme.
+    ///
+    /// Use this after operations that compute a char-based column (e.g., from
+    /// `delete_range`) and need to set the cursor to that position.
+    pub fn set_cursor_char_col(&mut self, line: usize, char_col: usize) {
+        if line >= self.rope.len_lines() {
+            self.cursor.set_position(line, GraphemeCol(0));
+            return;
+        }
+        let line_rope = self.rope.line(line);
+        let line_str: String = line_rope.chars().take_while(|&c| c != '\n').collect();
+        let grapheme_col = crate::unicode::char_to_grapheme_col(&line_str, char_col);
+        self.cursor.set_position(line, grapheme_col);
+    }
+
+    /// Returns the cursor's column as a **char index** (not grapheme index).
+    ///
+    /// Use this instead of `cursor().col().0` when passing a column to
+    /// `delete_range`, `insert_text_at`, or any rope-char-based operation.
+    /// The cursor stores a grapheme column (what the user sees), but rope
+    /// operations use char indices. For ASCII text these are identical;
+    /// they diverge for combining characters (e.g., `e` + `◌́`).
+    pub fn cursor_char_col(&self) -> usize {
+        let line_idx = self.cursor.line();
+        if line_idx >= self.rope.len_lines() {
+            return 0;
+        }
+        let line = self.rope.line(line_idx);
+        let line_str: String = line.chars().take_while(|&c| c != '\n').collect();
+        crate::unicode::grapheme_to_char_col(&line_str, self.cursor.col())
+    }
+
     /// Gets a mutable cursor reference
     pub fn cursor_mut(&mut self) -> &mut Cursor {
         &mut self.cursor

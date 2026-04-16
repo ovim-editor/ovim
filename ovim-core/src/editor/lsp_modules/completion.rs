@@ -5,9 +5,7 @@
 
 use super::super::Editor;
 use crate::lsp::uri_from_file_path;
-use crate::unicode::{
-    byte_offset_for_grapheme, grapheme_at_index, grapheme_count, grapheme_indices,
-};
+use crate::unicode::{byte_offset_for_grapheme, grapheme_at_index, grapheme_indices};
 use anyhow::{anyhow, Result};
 use std::collections::HashSet;
 
@@ -47,11 +45,11 @@ impl Editor {
         // scenarios where different servers may have different ranges.
         let start_char = text_edit_majority_start(items);
         if let Some(utf16_start) = start_char {
-            let cursor = self.buffer().cursor();
-            let line_idx = cursor.line();
-            let cursor_col = cursor.col().0; // grapheme col
+            let line_idx = self.buffer().cursor().line();
+            let cursor_col = self.buffer().cursor_char_col();
 
-            let trigger_col = self.utf16_to_grapheme_col(line_idx, utf16_start);
+            // utf16_to_col returns char col — correct for delete_range
+            let trigger_col = self.utf16_to_col(line_idx, utf16_start);
 
             // Sanity: trigger_col must be at or before cursor
             if trigger_col <= cursor_col {
@@ -62,11 +60,12 @@ impl Editor {
                     .trim_end_matches('\n')
                     .to_string();
 
-                let start_byte =
-                    byte_offset_for_grapheme(&line_text, trigger_col).unwrap_or(0);
-                let end_byte = byte_offset_for_grapheme(&line_text, cursor_col)
-                    .unwrap_or(line_text.len());
-                let prefix = line_text[start_byte..end_byte].to_string();
+                // Extract prefix using char indices
+                let prefix: String = line_text
+                    .chars()
+                    .skip(trigger_col)
+                    .take(cursor_col - trigger_col)
+                    .collect();
                 return (trigger_col, prefix);
             }
         }
@@ -79,9 +78,8 @@ impl Editor {
     /// Used for ongoing filtering while the completion menu is visible,
     /// so we don't re-derive the trigger column from word boundaries.
     pub(crate) fn completion_prefix_from_trigger_col(&self) -> String {
-        let trigger_col = self.completion_menu().trigger_col();
-        let cursor = self.buffer().cursor();
-        let cursor_col = cursor.col().0;
+        let trigger_col = self.completion_menu().trigger_col(); // char col
+        let cursor_col = self.buffer().cursor_char_col();
 
         if trigger_col > cursor_col {
             return String::new();
@@ -89,16 +87,17 @@ impl Editor {
 
         let line_text = self
             .buffer()
-            .line(cursor.line())
+            .line(self.buffer().cursor().line())
             .unwrap_or_default()
             .trim_end_matches('\n')
             .to_string();
 
-        let start_byte =
-            byte_offset_for_grapheme(&line_text, trigger_col).unwrap_or(0);
-        let end_byte =
-            byte_offset_for_grapheme(&line_text, cursor_col).unwrap_or(line_text.len());
-        line_text[start_byte..end_byte].to_string()
+        // Extract prefix using char indices
+        line_text
+            .chars()
+            .skip(trigger_col)
+            .take(cursor_col - trigger_col)
+            .collect()
     }
 
     /// Implementation of completion request
@@ -260,7 +259,7 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
         start_byte = byte_offset;
     }
 
-    let trigger_col = grapheme_count(&line_text[..start_byte.min(line_text.len())]);
+    let trigger_col = line_text[..start_byte.min(line_text.len())].chars().count();
     let trigger_prefix = line_text[start_byte.min(cursor_byte)..cursor_byte].to_string();
 
     (trigger_col, trigger_prefix)

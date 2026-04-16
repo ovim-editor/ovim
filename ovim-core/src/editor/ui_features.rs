@@ -83,7 +83,7 @@ impl Editor {
             } else {
                 // Fallback: delete trigger..cursor and insert insertText/label
                 let cursor_line = self.buffer().cursor().line();
-                let cursor_col = self.buffer().cursor().col().0;
+                let cursor_col = self.buffer().cursor_char_col();
                 let trigger_col = self.completion_menu.trigger_col();
                 let text = if let Some(ref insert_text) = item.insert_text {
                     insert_text.clone()

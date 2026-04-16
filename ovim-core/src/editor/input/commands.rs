@@ -468,7 +468,10 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
                         let replacement_text = regex
                             .replace(mat.as_str(), replacement.as_str())
                             .to_string();
-                        matches.push((line_idx, mat.start(), mat.end(), replacement_text));
+                        // Convert byte offsets to char indices for delete_range
+                        let start_char = line_text[..mat.start()].chars().count();
+                        let end_char = line_text[..mat.end()].chars().count();
+                        matches.push((line_idx, start_char, end_char, replacement_text));
                     }
                 } else {
                     // Only first match per line
@@ -476,7 +479,10 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
                         let replacement_text = regex
                             .replace(mat.as_str(), replacement.as_str())
                             .to_string();
-                        matches.push((line_idx, mat.start(), mat.end(), replacement_text));
+                        // Convert byte offsets to char indices for delete_range
+                        let start_char = line_text[..mat.start()].chars().count();
+                        let end_char = line_text[..mat.end()].chars().count();
+                        matches.push((line_idx, start_char, end_char, replacement_text));
                     }
                 }
             }
