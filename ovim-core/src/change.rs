@@ -34,6 +34,7 @@
 use crate::buffer::Buffer;
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
+use crate::textobjects::{TextObjectRange, TextObjects};
 use crate::unicode::GraphemeCol;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -64,6 +65,55 @@ pub enum TextObjectType {
     Indent { inner: bool, tab_width: usize },
     /// Inner/around function (if/af)
     Function { inner: bool },
+}
+
+impl TextObjectType {
+    /// Resolve this text object to a range at the current cursor position.
+    pub fn resolve(&self, buffer: &Buffer) -> Option<TextObjectRange> {
+        match self {
+            TextObjectType::Word { inner, big } => match (*inner, *big) {
+                (true, true) => TextObjects::inner_big_word(buffer),
+                (true, false) => TextObjects::inner_word(buffer),
+                (false, true) => TextObjects::around_big_word(buffer),
+                (false, false) => TextObjects::around_word(buffer),
+            },
+            TextObjectType::Quote { char, inner } => {
+                TextObjects::quoted_string(buffer, *char, !*inner)
+            }
+            TextObjectType::Paired { open, close, inner } => {
+                TextObjects::paired_delimiters(buffer, *open, *close, !*inner)
+            }
+            TextObjectType::Paragraph { inner } => {
+                if *inner {
+                    TextObjects::inner_paragraph(buffer)
+                } else {
+                    TextObjects::around_paragraph(buffer)
+                }
+            }
+            TextObjectType::Sentence { inner } => {
+                if *inner {
+                    TextObjects::inner_sentence(buffer)
+                } else {
+                    TextObjects::around_sentence(buffer)
+                }
+            }
+            TextObjectType::Tag { inner } => TextObjects::tag(buffer, !*inner),
+            TextObjectType::Indent { inner, tab_width } => {
+                if *inner {
+                    TextObjects::inner_indent(buffer, *tab_width)
+                } else {
+                    TextObjects::around_indent(buffer, *tab_width)
+                }
+            }
+            TextObjectType::Function { inner } => {
+                if *inner {
+                    TextObjects::inner_function(buffer)
+                } else {
+                    TextObjects::around_function(buffer)
+                }
+            }
+        }
+    }
 }
 
 /// Range in the buffer

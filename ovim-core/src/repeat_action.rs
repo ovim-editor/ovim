@@ -202,51 +202,7 @@ impl RepeatAction {
                 object_type,
                 transform,
             } => {
-                let range = match object_type {
-                    TextObjectType::Word { inner, big } => match (*inner, *big) {
-                        (true, true) => TextObjects::inner_big_word(buffer),
-                        (true, false) => TextObjects::inner_word(buffer),
-                        (false, true) => TextObjects::around_big_word(buffer),
-                        (false, false) => TextObjects::around_word(buffer),
-                    },
-                    TextObjectType::Quote { char, inner } => {
-                        TextObjects::quoted_string(buffer, *char, !*inner)
-                    }
-                    TextObjectType::Paired { open, close, inner } => {
-                        TextObjects::paired_delimiters(buffer, *open, *close, !*inner)
-                    }
-                    TextObjectType::Paragraph { inner } => {
-                        if *inner {
-                            TextObjects::inner_paragraph(buffer)
-                        } else {
-                            TextObjects::around_paragraph(buffer)
-                        }
-                    }
-                    TextObjectType::Sentence { inner } => {
-                        if *inner {
-                            TextObjects::inner_sentence(buffer)
-                        } else {
-                            TextObjects::around_sentence(buffer)
-                        }
-                    }
-                    TextObjectType::Tag { inner } => TextObjects::tag(buffer, !*inner),
-                    TextObjectType::Indent { inner, tab_width } => {
-                        if *inner {
-                            TextObjects::inner_indent(buffer, *tab_width)
-                        } else {
-                            TextObjects::around_indent(buffer, *tab_width)
-                        }
-                    }
-                    TextObjectType::Function { inner } => {
-                        if *inner {
-                            TextObjects::inner_function(buffer)
-                        } else {
-                            TextObjects::around_function(buffer)
-                        }
-                    }
-                };
-
-                if let Some(range) = range {
+                if let Some(range) = object_type.resolve(buffer) {
                     let Ok(original) = TextObjects::yank_range(buffer, range) else {
                         return;
                     };

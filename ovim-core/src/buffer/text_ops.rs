@@ -1,7 +1,6 @@
 use super::Buffer;
 use crate::change::{find_number_at_or_after, format_number, parse_number, TextObjectType};
 use crate::edit::Edit;
-use crate::textobjects::TextObjects;
 use crate::unicode::{
     char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col, GraphemeCol,
 };
@@ -547,50 +546,7 @@ impl Buffer {
 
     /// Finds and deletes a text object at the current cursor position.
     pub fn delete_text_object(&mut self, object_type: &TextObjectType) {
-        let range = match object_type {
-            TextObjectType::Word { inner, big } => match (*inner, *big) {
-                (true, true) => TextObjects::inner_big_word(self),
-                (true, false) => TextObjects::inner_word(self),
-                (false, true) => TextObjects::around_big_word(self),
-                (false, false) => TextObjects::around_word(self),
-            },
-            TextObjectType::Quote { char, inner } => {
-                TextObjects::quoted_string(self, *char, !*inner)
-            }
-            TextObjectType::Paired { open, close, inner } => {
-                TextObjects::paired_delimiters(self, *open, *close, !*inner)
-            }
-            TextObjectType::Paragraph { inner } => {
-                if *inner {
-                    TextObjects::inner_paragraph(self)
-                } else {
-                    TextObjects::around_paragraph(self)
-                }
-            }
-            TextObjectType::Sentence { inner } => {
-                if *inner {
-                    TextObjects::inner_sentence(self)
-                } else {
-                    TextObjects::around_sentence(self)
-                }
-            }
-            TextObjectType::Tag { inner } => TextObjects::tag(self, !*inner),
-            TextObjectType::Indent { inner, tab_width } => {
-                if *inner {
-                    TextObjects::inner_indent(self, *tab_width)
-                } else {
-                    TextObjects::around_indent(self, *tab_width)
-                }
-            }
-            TextObjectType::Function { inner } => {
-                if *inner {
-                    TextObjects::inner_function(self)
-                } else {
-                    TextObjects::around_function(self)
-                }
-            }
-        };
-        if let Some(range) = range {
+        if let Some(range) = object_type.resolve(self) {
             self.delete_range(
                 range.start_line,
                 range.start_col,
