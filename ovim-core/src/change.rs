@@ -9,8 +9,7 @@
 //! - Recorded edit batches (`Change::Recorded`)
 //! - Infrastructure wrappers (`Editor::add_change`, `ChangeManager::add_change`)
 //!
-//! Variants: InsertText, DeleteText, Composite, ChangeTextObject, ChangeWord,
-//! ChangeSearchMatch, ReplaceMode, Recorded
+//! Variants: InsertText, DeleteText, Composite, Recorded, ResourceOp
 //!
 //! ## Pattern B: Recorded Undo + RepeatAction (`record()` + `push_recorded_undo()`)
 //! **Default for semantic dot-repeat behavior.** Use when:
@@ -34,10 +33,7 @@
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;
-use crate::editor::motions::Motions;
 use crate::repeat_action::RepeatAction;
-use crate::search::Search;
-use crate::textobjects::TextObjects;
 use crate::unicode::GraphemeCol;
 use anyhow::Result;
 use std::path::{Path, PathBuf};
@@ -146,49 +142,6 @@ pub enum Change {
         /// How insert mode was entered — tells dot repeat how to reposition.
         entry_mode: InsertEntryMode,
     },
-    /// Semantic text object change (ci", ci(, etc.)
-    /// On repeat, re-evaluates the text object at current cursor position
-    ChangeTextObject {
-        object_type: TextObjectType,
-        replacement: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        // Store original for undo
-        old_text: String,
-        old_range: Range,
-    },
-    /// Semantic word change (cw, cW)
-    /// On repeat, changes the word at current cursor position
-    ChangeWord {
-        replacement: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        // Store original for undo
-        old_text: String,
-        old_range: Range,
-    },
-    /// Replace mode operation - stores the full replacement sequence
-    /// On repeat, replays the entire replacement at current cursor position
-    ReplaceMode {
-        replacements: String, // The characters that were typed in replace mode
-        cursor_before: Position,
-        cursor_after: Position,
-        // Store original for undo
-        old_text: String,
-        old_range: Range,
-    },
-    /// Semantic search match change (cgn) - stores the replacement and search pattern
-    /// On repeat, finds the next search match and replaces it
-    ChangeSearchMatch {
-        search_pattern: String,
-        search_forward: bool,
-        replacement: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        // Store original for undo
-        old_text: String,
-        old_range: Range,
-    },
     /// Undo record backed by raw edits (from buffer recording).
     /// Undo applies inverse edits in reverse; redo replays forward.
     Recorded {
@@ -252,62 +205,6 @@ impl Change {
         }
     }
 
-    /// Creates a ChangeTextObject change (for ci", ci(, etc.)
-    pub fn change_text_object(
-        object_type: TextObjectType,
-        replacement: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        old_text: String,
-        old_range: Range,
-    ) -> Self {
-        Self::ChangeTextObject {
-            object_type,
-            replacement,
-            cursor_before,
-            cursor_after,
-            old_text,
-            old_range,
-        }
-    }
-
-    /// Creates a ChangeWord change (for cw)
-    pub fn change_word(
-        replacement: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        old_text: String,
-        old_range: Range,
-    ) -> Self {
-        Self::ChangeWord {
-            replacement,
-            cursor_before,
-            cursor_after,
-            old_text,
-            old_range,
-        }
-    }
-
-    /// Creates a ChangeSearchMatch change (for cgn)
-    pub fn change_search_match(
-        search_pattern: String,
-        search_forward: bool,
-        replacement: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        old_text: String,
-        old_range: Range,
-    ) -> Self {
-        Self::ChangeSearchMatch {
-            search_pattern,
-            search_forward,
-            replacement,
-            cursor_before,
-            cursor_after,
-            old_text,
-            old_range,
-        }
-    }
 
     /// Creates a Recorded change from raw buffer edits
     pub fn recorded(edits: Vec<Edit>, cursor_before: Position, cursor_after: Position) -> Self {
@@ -368,22 +265,6 @@ impl Change {
         }
     }
 
-    /// Creates a ReplaceMode change (for R command)
-    pub fn replace_mode(
-        replacements: String,
-        cursor_before: Position,
-        cursor_after: Position,
-        old_text: String,
-        old_range: Range,
-    ) -> Self {
-        Self::ReplaceMode {
-            replacements,
-            cursor_before,
-            cursor_after,
-            old_text,
-            old_range,
-        }
-    }
 
     /// Applies this change to the buffer
     pub fn apply(&self, buffer: &mut Buffer) {
@@ -419,66 +300,6 @@ impl Change {
                     change.apply(buffer);
                 }
                 // Restore cursor to final position after composite operation
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
-            }
-            Self::ChangeTextObject {
-                old_range,
-                replacement,
-                cursor_after,
-                ..
-            } => {
-                // Delete old text and insert replacement
-                let (start_line, start_col) = old_range.start;
-                let (end_line, end_col) = old_range.end;
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.insert_text_at(start_line, start_col, replacement);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
-            }
-            Self::ChangeWord {
-                old_range,
-                replacement,
-                cursor_after,
-                ..
-            } => {
-                // Delete old word and insert replacement
-                let (start_line, start_col) = old_range.start;
-                let (end_line, end_col) = old_range.end;
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.insert_text_at(start_line, start_col, replacement);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
-            }
-            Self::ReplaceMode {
-                old_range,
-                replacements,
-                cursor_after,
-                ..
-            } => {
-                // Delete old text and insert replacements
-                let (start_line, start_col) = old_range.start;
-                let (end_line, end_col) = old_range.end;
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.insert_text_at(start_line, start_col, replacements);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
-            }
-            Self::ChangeSearchMatch {
-                old_range,
-                replacement,
-                cursor_after,
-                ..
-            } => {
-                // Delete old match and insert replacement
-                let (start_line, start_col) = old_range.start;
-                let (end_line, end_col) = old_range.end;
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.insert_text_at(start_line, start_col, replacement);
                 buffer
                     .cursor_mut()
                     .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
@@ -574,75 +395,6 @@ impl Change {
                 // Validate cursor position after composite undo - intermediate undos
                 // may have deleted lines that the final cursor position refers to
                 buffer.validate_cursor_position();
-            }
-            Self::ChangeTextObject {
-                cursor_before,
-                old_range,
-                old_text,
-                replacement,
-                ..
-            } => {
-                // To undo: delete the replacement and restore old text
-                let (start_line, start_col) = old_range.start;
-                // Calculate where replacement ends
-                let replacement_end =
-                    Self::calculate_end_position((start_line, start_col), replacement);
-                buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
-                buffer.insert_text_at(start_line, start_col, old_text);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
-            }
-            Self::ChangeWord {
-                cursor_before,
-                old_range,
-                old_text,
-                replacement,
-                ..
-            } => {
-                // To undo: delete the replacement and restore old word
-                let (start_line, start_col) = old_range.start;
-                let replacement_end =
-                    Self::calculate_end_position((start_line, start_col), replacement);
-                buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
-                buffer.insert_text_at(start_line, start_col, old_text);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
-            }
-            Self::ReplaceMode {
-                cursor_before,
-                old_range,
-                old_text,
-                replacements,
-                ..
-            } => {
-                // To undo: delete the replacements and restore old text
-                let (start_line, start_col) = old_range.start;
-                let replacement_end =
-                    Self::calculate_end_position((start_line, start_col), replacements);
-                buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
-                buffer.insert_text_at(start_line, start_col, old_text);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
-            }
-            Self::ChangeSearchMatch {
-                cursor_before,
-                old_range,
-                old_text,
-                replacement,
-                ..
-            } => {
-                // To undo: delete the replacement and restore old match text
-                let (start_line, start_col) = old_range.start;
-                let replacement_end =
-                    Self::calculate_end_position((start_line, start_col), replacement);
-                buffer.delete_range(start_line, start_col, replacement_end.0, replacement_end.1);
-                buffer.insert_text_at(start_line, start_col, old_text);
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
             }
             Self::Recorded {
                 edits,
@@ -801,114 +553,6 @@ impl Change {
                     buffer.cursor_mut().move_left(1);
                 }
             }
-            Self::ChangeTextObject {
-                object_type,
-                replacement,
-                ..
-            } => {
-                // Re-evaluate the text object at current cursor and apply replacement
-                if let Some(range) = Self::find_text_object(buffer, object_type) {
-                    // Delete the text object content
-                    buffer.delete_range(
-                        range.start_line,
-                        range.start_col,
-                        range.end_line,
-                        range.end_col,
-                    );
-                    // Insert replacement
-                    buffer.insert_text_at(range.start_line, range.start_col, replacement);
-                    // Position cursor at end of inserted text (minus 1 for normal mode)
-                    let end_pos = Self::calculate_end_position(
-                        (range.start_line, range.start_col),
-                        replacement,
-                    );
-                    let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                    buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(final_col));
-                }
-            }
-            Self::ChangeWord { replacement, .. } => {
-                // Replicate cw (ce) semantics: delete from cursor to word end, then insert
-                let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor_char_col();
-
-                // Move cursor to word end (ce motion)
-                Motions::word_end_forward_prefer_current(buffer, 1);
-
-                let end_line = buffer.cursor().line();
-                let line_len = if let Some(line) = buffer.line(end_line) {
-                    line.trim_end_matches('\n').chars().count()
-                } else {
-                    0
-                };
-                let end_col = (buffer.cursor_char_col() + 1).min(line_len);
-
-                // Restore cursor to start and delete the range
-                buffer.set_cursor_char_col(start_line, start_col);
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.insert_text_at(start_line, start_col, replacement);
-
-                // Position cursor at end of inserted text (minus 1 for normal mode)
-                let end_pos = Self::calculate_end_position((start_line, start_col), replacement);
-                let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                buffer.set_cursor_char_col(end_pos.0, final_col);
-            }
-            Self::ReplaceMode { replacements, .. } => {
-                // Replay the entire replacement sequence at current cursor
-                let line_idx = buffer.cursor().line();
-                let col = buffer.cursor_char_col();
-                let replacement_len = replacements.chars().count();
-
-                if let Some(line) = buffer.line(line_idx) {
-                    let line_text = line.trim_end_matches('\n');
-                    let line_len = line_text.chars().count();
-
-                    // Calculate how much to delete (min of replacement length and remaining line)
-                    let delete_len = replacement_len.min(line_len.saturating_sub(col));
-                    let end_col = col + delete_len;
-
-                    // Delete the characters that will be replaced
-                    buffer.delete_range(line_idx, col, line_idx, end_col);
-                    // Insert the replacement text
-                    buffer.insert_text_at(line_idx, col, replacements);
-                    // Position cursor at end of replacements (minus 1 for normal mode)
-                    let final_col = col + replacement_len.saturating_sub(1);
-                    buffer.set_cursor_char_col(line_idx, final_col);
-                }
-            }
-            Self::ChangeSearchMatch {
-                search_pattern,
-                search_forward,
-                replacement,
-                ..
-            } => {
-                // Find the next search match from current cursor and replace it
-                let line_idx = buffer.cursor().line();
-                let col = buffer.cursor_char_col();
-
-                let mut search = Search::new_with_options(
-                    search_pattern.clone(),
-                    *search_forward,
-                    true, // ignorecase
-                    true, // smartcase
-                );
-
-                if let Some((match_line, match_col, match_text)) =
-                    search.find_next(buffer, line_idx, col)
-                {
-                    let match_len = match_text.chars().count();
-                    let match_end_col = match_col + match_len;
-
-                    // Delete the match
-                    buffer.delete_range(match_line, match_col, match_line, match_end_col);
-                    // Insert replacement
-                    buffer.insert_text_at(match_line, match_col, replacement);
-                    // Position cursor at end of inserted text (minus 1 for normal mode)
-                    let end_pos =
-                        Self::calculate_end_position((match_line, match_col), replacement);
-                    let final_col = if end_pos.1 > 0 { end_pos.1 - 1 } else { 0 };
-                    buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(final_col));
-                }
-            }
             Self::Recorded {
                 edits,
                 cursor_after,
@@ -924,56 +568,6 @@ impl Change {
             }
             Self::ResourceOp { .. } => {
                 // Intentionally non-repeatable via `.`.
-            }
-        }
-    }
-
-    /// Finds a text object range at current cursor position based on type
-    fn find_text_object(
-        buffer: &Buffer,
-        object_type: &TextObjectType,
-    ) -> Option<crate::textobjects::TextObjectRange> {
-        match object_type {
-            TextObjectType::Word { inner, big } => match (*inner, *big) {
-                (true, true) => TextObjects::inner_big_word(buffer),
-                (true, false) => TextObjects::inner_word(buffer),
-                (false, true) => TextObjects::around_big_word(buffer),
-                (false, false) => TextObjects::around_word(buffer),
-            },
-            TextObjectType::Quote { char, inner } => {
-                TextObjects::quoted_string(buffer, *char, !*inner)
-            }
-            TextObjectType::Paired { open, close, inner } => {
-                TextObjects::paired_delimiters(buffer, *open, *close, !*inner)
-            }
-            TextObjectType::Paragraph { inner } => {
-                if *inner {
-                    TextObjects::inner_paragraph(buffer)
-                } else {
-                    TextObjects::around_paragraph(buffer)
-                }
-            }
-            TextObjectType::Sentence { inner } => {
-                if *inner {
-                    TextObjects::inner_sentence(buffer)
-                } else {
-                    TextObjects::around_sentence(buffer)
-                }
-            }
-            TextObjectType::Tag { inner } => TextObjects::tag(buffer, !*inner),
-            TextObjectType::Indent { inner, tab_width } => {
-                if *inner {
-                    TextObjects::inner_indent(buffer, *tab_width)
-                } else {
-                    TextObjects::around_indent(buffer, *tab_width)
-                }
-            }
-            TextObjectType::Function { inner } => {
-                if *inner {
-                    TextObjects::inner_function(buffer)
-                } else {
-                    TextObjects::around_function(buffer)
-                }
             }
         }
     }
@@ -1036,10 +630,6 @@ impl Change {
                 result
             }
             Self::DeleteText { .. } => String::new(),
-            Self::ChangeTextObject { replacement, .. } => replacement.clone(),
-            Self::ChangeWord { replacement, .. } => replacement.clone(),
-            Self::ReplaceMode { replacements, .. } => replacements.clone(),
-            Self::ChangeSearchMatch { replacement, .. } => replacement.clone(),
             Self::Recorded { edits, .. } => {
                 // Concatenate text from insert edits
                 let mut result = String::new();
@@ -1080,10 +670,6 @@ impl Change {
             Self::InsertText { cursor_before, .. } => *cursor_before,
             Self::DeleteText { cursor_before, .. } => *cursor_before,
             Self::Composite { cursor_before, .. } => *cursor_before,
-            Self::ChangeTextObject { cursor_before, .. } => *cursor_before,
-            Self::ChangeWord { cursor_before, .. } => *cursor_before,
-            Self::ReplaceMode { cursor_before, .. } => *cursor_before,
-            Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before,
             Self::Recorded { cursor_before, .. } => *cursor_before,
             Self::ResourceOp { cursor_before, .. } => *cursor_before,
         }
@@ -1107,10 +693,6 @@ impl Change {
             }
             Self::DeleteText { range, .. } => range.start,
             Self::Composite { cursor_after, .. } => *cursor_after,
-            Self::ChangeTextObject { cursor_after, .. } => *cursor_after,
-            Self::ChangeWord { cursor_after, .. } => *cursor_after,
-            Self::ReplaceMode { cursor_after, .. } => *cursor_after,
-            Self::ChangeSearchMatch { cursor_after, .. } => *cursor_after,
             Self::Recorded { cursor_after, .. } => *cursor_after,
             Self::ResourceOp { cursor_after, .. } => *cursor_after,
         }
@@ -1122,10 +704,6 @@ impl Change {
             Self::InsertText { cursor_before, .. } => *cursor_before = pos,
             Self::DeleteText { cursor_before, .. } => *cursor_before = pos,
             Self::Composite { cursor_before, .. } => *cursor_before = pos,
-            Self::ChangeTextObject { cursor_before, .. } => *cursor_before = pos,
-            Self::ChangeWord { cursor_before, .. } => *cursor_before = pos,
-            Self::ReplaceMode { cursor_before, .. } => *cursor_before = pos,
-            Self::ChangeSearchMatch { cursor_before, .. } => *cursor_before = pos,
             Self::Recorded { cursor_before, .. } => *cursor_before = pos,
             Self::ResourceOp { cursor_before, .. } => *cursor_before = pos,
         }
@@ -1137,10 +715,6 @@ impl Change {
             Self::InsertText { .. } => { /* InsertText has no cursor_after field */ }
             Self::DeleteText { .. } => { /* DeleteText has no cursor_after field */ }
             Self::Composite { cursor_after, .. } => *cursor_after = pos,
-            Self::ChangeTextObject { cursor_after, .. } => *cursor_after = pos,
-            Self::ChangeWord { cursor_after, .. } => *cursor_after = pos,
-            Self::ReplaceMode { cursor_after, .. } => *cursor_after = pos,
-            Self::ChangeSearchMatch { cursor_after, .. } => *cursor_after = pos,
             Self::Recorded { cursor_after, .. } => *cursor_after = pos,
             Self::ResourceOp { cursor_after, .. } => *cursor_after = pos,
         }
