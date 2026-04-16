@@ -1852,11 +1852,26 @@ impl Editor {
     }
 
     /// Applies a change and records it only when it mutated the buffer.
+    ///
+    /// Captures the underlying `Edit`s via `buffer.record()` so decorations
+    /// (inlay hints, diagnostics) follow the text. Without this, hints anchored
+    /// to char offsets past the edit point drift as text is inserted/deleted.
     pub fn apply_change_and_record(&mut self, change: Change) -> bool {
         let version_before = self.buffer().version();
-        change.apply(self.buffer_mut());
+        let edits = if self.buffer().is_recording() {
+            // Outer `record()` caller owns decoration adjustment.
+            change.apply(self.buffer_mut());
+            Vec::new()
+        } else {
+            let ((), edits) = self.buffer_mut().record(|b| change.apply(b));
+            edits
+        };
         if self.buffer().version() == version_before {
             return false;
+        }
+        if !edits.is_empty() {
+            let rope = self.buffer().rope().clone();
+            self.decorations.adjust_for_edits(&edits, &rope);
         }
         self.add_change(change);
         true
