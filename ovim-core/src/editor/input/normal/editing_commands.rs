@@ -145,24 +145,24 @@ fn delete_to_end_of_line(editor: &mut Editor) -> Result<()> {
 /// C - change to end of line
 fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
     let cursor_before = editor.cursor_position();
-    let line_idx = cursor_before.0;
-    let col = cursor_before.1;
+    let line_idx = cursor_before.line;
+    let col = cursor_before.col;
 
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         let line_len = buf
             .line(line_idx)
             .map(|l| l.trim_end_matches('\n').chars().count())
             .unwrap_or(0);
-        if col < line_len {
+        if col.0 < line_len {
             // Phase-15 debt: col is grapheme-space; delete_range needs char.
             let deleted = buf.delete_range(
                 line_idx,
-                crate::unicode::CharCol(col),
+                crate::unicode::CharCol(col.0),
                 line_idx,
                 crate::unicode::CharCol(line_len),
             );
             // Keep cursor at col (insert position) — don't clamp to normal mode
-            buf.cursor_mut().set_position(line_idx, GraphemeCol(col));
+            buf.cursor_mut().set_position(line_idx, col);
             deleted
         } else {
             String::new()

@@ -1,6 +1,6 @@
 //! Change tracking and undo/redo operations
 
-use super::{Change, Editor, Position};
+use super::{Change, CursorPos, Editor};
 use crate::change::ChangeToken;
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
@@ -86,11 +86,11 @@ impl Editor {
 
             let (before, after, edits) = {
                 let buf = self.buffer_mut();
-                let before = (buf.cursor().line(), buf.cursor().col().0);
+                let before = CursorPos::new(buf.cursor().line(), buf.cursor().col());
                 let ((), edits) = buf.record(|b| {
                     action.execute(b);
                 });
-                let after = (buf.cursor().line(), buf.cursor().col().0);
+                let after = CursorPos::new(buf.cursor().line(), buf.cursor().col());
                 (before, after, edits)
             };
 
@@ -104,7 +104,7 @@ impl Editor {
         if let Some(mut repeated) = self.buffer().change_manager().last_change().cloned() {
             let (before, after, edits) = {
                 let buf = self.buffer_mut();
-                let before = (buf.cursor().line(), buf.cursor().col().0);
+                let before = CursorPos::new(buf.cursor().line(), buf.cursor().col());
 
                 // Record the repeat's buffer mutations for mechanical undo.
                 let ((), edits) = buf.record(|b| {
@@ -114,7 +114,7 @@ impl Editor {
                     repeated.repeat(b);
                 });
 
-                let after = (buf.cursor().line(), buf.cursor().col().0);
+                let after = CursorPos::new(buf.cursor().line(), buf.cursor().col());
                 (before, after, edits)
             };
 
@@ -139,8 +139,8 @@ impl Editor {
     pub fn push_recorded_undo(
         &mut self,
         edits: Vec<Edit>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
     ) {
         // Adjust decoration char_offsets to follow the edits.
         // The rope is already in post-edit state; the arithmetic adjustment
@@ -171,8 +171,8 @@ impl Editor {
     pub fn push_recorded_undo_returning_token(
         &mut self,
         edits: Vec<Edit>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
     ) -> ChangeToken {
         let change = Change::recorded(edits, cursor_before, cursor_after);
         let token = self
@@ -196,28 +196,25 @@ impl Editor {
         cm.last_change = None; // Mutual exclusion: RepeatAction wins
     }
 
-    /// Returns the current cursor position as (line, col).
-    pub fn cursor_position(&self) -> Position {
-        (
-            self.buffer().cursor().line(),
-            self.buffer().cursor().col().0,
-        )
+    /// Returns the current cursor position (grapheme-space).
+    pub fn cursor_position(&self) -> CursorPos {
+        CursorPos::new(self.buffer().cursor().line(), self.buffer().cursor().col())
     }
 
     /// Returns the last position where an edit occurred (for g; navigation).
-    pub fn last_edit_position(&self) -> Option<Position> {
+    pub fn last_edit_position(&self) -> Option<CursorPos> {
         self.buffer().change_manager().last_edit_position
     }
 
     /// Jump to older changelist position (g;).
-    pub fn jump_change_older(&mut self, count: usize) -> Option<Position> {
+    pub fn jump_change_older(&mut self, count: usize) -> Option<CursorPos> {
         self.buffer_mut()
             .change_manager_mut()
             .jump_change_older(count)
     }
 
     /// Jump to newer changelist position (g,).
-    pub fn jump_change_newer(&mut self, count: usize) -> Option<Position> {
+    pub fn jump_change_newer(&mut self, count: usize) -> Option<CursorPos> {
         self.buffer_mut()
             .change_manager_mut()
             .jump_change_newer(count)

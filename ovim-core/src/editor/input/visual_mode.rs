@@ -8,7 +8,7 @@
 //! - Visual mode commands (o to swap cursor, gv to reselect)
 //! - Visual mode search (/ and ?)
 
-use crate::editor::{Editor, Motions, RegisterType, TextObjectRange, TextObjects};
+use crate::editor::{CursorPos, Editor, Motions, RegisterType, TextObjectRange, TextObjects};
 use crate::mode::Mode;
 use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
@@ -554,7 +554,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 // Set visual block insert state for multi-line replication
                 // For 'c', move cursor to start_line (move_to_end = false)
-                let cursor_before = (start_line, start_col);
+                let cursor_before = CursorPos::new(start_line, GraphemeCol(start_col));
                 editor.set_visual_block_insert_state(Some((
                     start_line, end_line, start_col, false, false,
                 )));
@@ -679,7 +679,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             if editor.mode() == Mode::VisualBlock {
                 // Insert at beginning of block on each line
                 if let Some(((start_line, start_col), (end_line, _))) = editor.visual_selection() {
-                    let cursor_before = (start_line, start_col);
+                    let cursor_before = CursorPos::new(start_line, GraphemeCol(start_col));
                     editor
                         .buffer_mut()
                         .cursor_mut()
@@ -718,7 +718,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     let actual_end_col = end_col.min(line_len.saturating_sub(1));
                     let append_col = actual_end_col.saturating_add(1);
 
-                    let cursor_before = (start_line, append_col);
+                    let cursor_before = CursorPos::new(start_line, GraphemeCol(append_col));
                     editor
                         .buffer_mut()
                         .cursor_mut()
@@ -810,10 +810,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('>') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let cursor = editor.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col().0);
+                let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 let tab_width = editor.options.tab_width;
                 let is_visual_block = editor.mode() == Mode::VisualBlock;
-                let original_col = cursor_before.1;
+                let original_col = cursor_before.col.0;
 
                 helpers::indent_lines_with_tracking(
                     editor,
@@ -834,7 +834,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('<') => {
             if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
                 let cursor = editor.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col().0);
+                let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 let tab_width = editor.options.tab_width;
                 let is_visual_block = editor.mode() == Mode::VisualBlock;
 

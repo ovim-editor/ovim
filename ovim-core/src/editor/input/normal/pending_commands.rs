@@ -4,7 +4,7 @@
 //! g*, z*, Z*, "*, q*, @*, [*, ]*, W* (Ctrl-W)
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, Motions, Operator, PendingChangeRepeat};
+use crate::editor::{CursorPos, Editor, Motions, Operator, PendingChangeRepeat};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col, GraphemeCol};
@@ -118,9 +118,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .cursor_mut()
                     .set_position(line, GraphemeCol(col));
             }
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_mode(Mode::Insert);
@@ -132,9 +132,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('g', KeyCode::Char('I')) => {
             // gI - insert at column 0
             editor.buffer_mut().cursor_mut().set_col(GraphemeCol::ZERO);
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_mode(Mode::Insert);
@@ -146,7 +146,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(pos.0, GraphemeCol(pos.1));
+                    .set_position(pos.line, pos.col);
             }
             editor.clear_count();
         }
@@ -157,7 +157,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 editor
                     .buffer_mut()
                     .cursor_mut()
-                    .set_position(pos.0, GraphemeCol(pos.1));
+                    .set_position(pos.line, pos.col);
             }
             editor.clear_count();
         }
@@ -704,7 +704,7 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
             let delete_token = helpers::delete_visual_selection_with_token(editor)?;
 
             let cursor = editor.buffer().cursor();
-            let cursor_after_delete = (cursor.line(), cursor.col().0);
+            let cursor_after_delete = CursorPos::new(cursor.line(), cursor.col());
 
             if let Some((pattern, forward)) = search_info {
                 editor.set_pending_change_repeat(PendingChangeRepeat {

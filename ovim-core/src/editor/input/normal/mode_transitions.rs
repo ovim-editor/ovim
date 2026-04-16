@@ -4,7 +4,7 @@
 //! i, a, I, A, o, O, v, V, Ctrl-V, R, :, /, ?
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, InsertEntryMode, Motions};
+use crate::editor::{CursorPos, Editor, InsertEntryMode, Motions};
 use crate::mode::Mode;
 use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
@@ -49,9 +49,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // i - insert before cursor
         KeyCode::Char('i') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.clear_count();
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_mode(Mode::Insert);
@@ -60,9 +60,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // a - insert after cursor
         KeyCode::Char('a') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.clear_count();
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::Append);
@@ -75,9 +75,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // I - insert at first non-blank
         KeyCode::Char('I') => {
             editor.clear_count();
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::FirstNonBlank);
@@ -89,9 +89,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // A - insert at end of line
         KeyCode::Char('A') => {
             editor.clear_count();
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::EndOfLine);
@@ -110,9 +110,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // o - open line below
         KeyCode::Char('o') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.clear_count();
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::OpenBelow);
@@ -127,9 +127,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // O - open line above
         KeyCode::Char('O') => {
             editor.clear_count();
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::OpenAbove);
@@ -164,9 +164,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // R - replace mode
         KeyCode::Char('R') => {
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.editing.replace_mode_state = Some(crate::editor::ReplaceModeState {

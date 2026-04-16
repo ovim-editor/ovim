@@ -74,7 +74,8 @@ pub use crate::search;
 pub use crate::textobjects;
 
 pub use crate::change::{
-    Change, ChangeBuilder, ChangeManager, InsertEntryMode, Position, Range, TextObjectType,
+    ApplyPos, Change, ChangeBuilder, ChangeManager, CursorPos, InsertEntryMode, Range,
+    TextObjectType,
 };
 pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use build_state::PendingShellCommand;
@@ -420,8 +421,8 @@ pub struct MouseState {
 /// State for tracking Replace mode for dot-repeat
 #[derive(Clone, Debug)]
 pub struct ReplaceModeState {
-    /// Cursor position when R was pressed
-    pub start_position: (usize, usize),
+    /// Cursor position when R was pressed (grapheme-space).
+    pub start_position: CursorPos,
     /// Characters typed during replace mode
     pub replacements: String,
     /// Original text that was overwritten
@@ -1815,11 +1816,10 @@ impl Editor {
             Mode::Insert => {
                 // Insert pasted text at cursor position as a single change
                 let cursor = self.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col().0);
+                let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 // Convert grapheme col to char col for buffer operations.
-                // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
                 let char_col = self.buffer().cursor_char_col();
-                let position = (cursor.line(), char_col.0);
+                let position = ApplyPos::new(cursor.line(), char_col);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1835,11 +1835,10 @@ impl Editor {
                 // Set unnamed register and paste after cursor
                 self.registers.set(None, text.to_string());
                 let cursor = self.buffer().cursor();
-                let cursor_before = (cursor.line(), cursor.col().0);
+                let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 // Convert grapheme col to char col for buffer operations.
-                // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
                 let char_col = self.buffer().cursor_char_col();
-                let position = (cursor.line(), char_col.0 + 1);
+                let position = ApplyPos::new(cursor.line(), char_col + 1);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1866,7 +1865,7 @@ impl Editor {
     }
 
     /// Starts building a composite change (e.g., when entering insert mode)
-    pub fn start_change_building(&mut self, cursor_before: Position) {
+    pub fn start_change_building(&mut self, cursor_before: CursorPos) {
         self.buffer_mut()
             .change_manager_mut()
             .start_building(cursor_before);
@@ -1910,10 +1909,8 @@ impl Editor {
 
     /// Finalizes the current composite change
     pub fn finalize_change_building(&mut self) {
-        let cursor_pos = (
-            self.buffer().cursor().line(),
-            self.buffer().cursor().col().0,
-        );
+        let cursor_pos =
+            CursorPos::new(self.buffer().cursor().line(), self.buffer().cursor().col());
         self.buffer_mut()
             .change_manager_mut()
             .finalize_building_at(cursor_pos);

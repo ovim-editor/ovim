@@ -1,5 +1,5 @@
 use crate::buffer::Buffer;
-use crate::change::Position;
+use crate::change::CursorPos;
 
 /// A low-level buffer edit using absolute rope char offsets.
 /// Unambiguous — no line/col clamping, no newline confusion.
@@ -67,8 +67,8 @@ pub enum UndoEntry {
     /// Atomic group of edits (undo all or none)
     Group {
         edits: Vec<Edit>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
     },
 }
 
@@ -103,7 +103,7 @@ impl UndoEntry {
     }
 
     /// Returns the cursor position before this change was made.
-    pub fn cursor_before(&self) -> Option<Position> {
+    pub fn cursor_before(&self) -> Option<CursorPos> {
         match self {
             UndoEntry::Single(_) => None,
             UndoEntry::Group { cursor_before, .. } => Some(*cursor_before),
@@ -111,7 +111,7 @@ impl UndoEntry {
     }
 
     /// Returns the cursor position after this change was made.
-    pub fn cursor_after(&self) -> Option<Position> {
+    pub fn cursor_after(&self) -> Option<CursorPos> {
         match self {
             UndoEntry::Single(_) => None,
             UndoEntry::Group { cursor_after, .. } => Some(*cursor_after),
@@ -302,8 +302,8 @@ mod tests {
 
         let entry = UndoEntry::Group {
             edits: vec![edit1, edit2],
-            cursor_before: (0, 6),
-            cursor_after: (0, 9),
+            cursor_before: CursorPos::new(0, crate::unicode::GraphemeCol(6)),
+            cursor_after: CursorPos::new(0, crate::unicode::GraphemeCol(9)),
         };
 
         entry.undo(&mut buffer);
@@ -324,8 +324,8 @@ mod tests {
 
         let entry = UndoEntry::Group {
             edits: vec![edit1, edit2],
-            cursor_before: (0, 6),
-            cursor_after: (0, 9),
+            cursor_before: CursorPos::new(0, crate::unicode::GraphemeCol(6)),
+            cursor_after: CursorPos::new(0, crate::unicode::GraphemeCol(9)),
         };
 
         entry.redo(&mut buffer);
@@ -353,8 +353,8 @@ mod tests {
 
         let entry = UndoEntry::Group {
             edits: vec![edit1, edit2],
-            cursor_before: (0, 0),
-            cursor_after: (0, 5),
+            cursor_before: CursorPos::new(0, crate::unicode::GraphemeCol(0)),
+            cursor_after: CursorPos::new(0, crate::unicode::GraphemeCol(5)),
         };
 
         // Undo should restore original
@@ -411,13 +411,16 @@ mod tests {
 
     #[test]
     fn test_undo_entry_cursor_accessors() {
+        use crate::unicode::GraphemeCol;
+        let before = CursorPos::new(5, GraphemeCol(10));
+        let after = CursorPos::new(5, GraphemeCol(15));
         let entry = UndoEntry::Group {
             edits: vec![],
-            cursor_before: (5, 10),
-            cursor_after: (5, 15),
+            cursor_before: before,
+            cursor_after: after,
         };
-        assert_eq!(entry.cursor_before(), Some((5, 10)));
-        assert_eq!(entry.cursor_after(), Some((5, 15)));
+        assert_eq!(entry.cursor_before(), Some(before));
+        assert_eq!(entry.cursor_after(), Some(after));
 
         let single = UndoEntry::Single(Edit::Insert {
             offset: 0,

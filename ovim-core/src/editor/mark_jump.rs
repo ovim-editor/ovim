@@ -20,10 +20,10 @@ impl Editor {
             // `.` - last change position
             '.' => {
                 if let Some(change) = self.last_change() {
-                    let (line, col) = change.cursor_after();
+                    let pos = change.cursor_after();
                     self.buffer_mut()
                         .cursor_mut()
-                        .set_position(line, GraphemeCol(col.saturating_sub(1)));
+                        .set_position(pos.line, pos.col.saturating_sub(1));
                     self.center_cursor_in_viewport();
                     return true;
                 }
@@ -33,10 +33,10 @@ impl Editor {
                 if let Some(change) = self.last_change() {
                     let inserted = change.get_inserted_text();
                     if !inserted.is_empty() {
-                        let (line, col) = change.cursor_after();
+                        let pos = change.cursor_after();
                         self.buffer_mut()
                             .cursor_mut()
-                            .set_position(line, GraphemeCol(col.saturating_sub(1)));
+                            .set_position(pos.line, pos.col.saturating_sub(1));
                         self.center_cursor_in_viewport();
                         return true;
                     }

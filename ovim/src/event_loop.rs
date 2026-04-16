@@ -1538,10 +1538,10 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
 
     let (match_line, match_col) = matches[0];
 
-    // Record cursor position before change
+    // Record cursor position before change (grapheme-space)
     let cursor_before = {
         let c = editor.buffer().cursor();
-        (c.line(), c.col().0)
+        ovim::editor::CursorPos::new(c.line(), c.col())
     };
 
     // Perform the edit: delete old text, insert new text
@@ -1556,18 +1556,30 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
         .buffer_mut()
         .insert_text_at(match_line, ovim_core::unicode::CharCol(match_col), new);
 
-    // Record composite change for undo
+    // Record composite change for undo (char-space for edit positions,
+    // grapheme-space for cursor snapshots — the legacy ASCII assumption on
+    // cursor_after is preserved).
     let change = ovim::editor::Change::composite(
         vec![
             ovim::editor::Change::delete(
-                ovim::editor::Range::new((match_line, match_col), (match_line, end_col)),
+                ovim::editor::Range::new(
+                    ovim::editor::ApplyPos::new(match_line, ovim_core::unicode::CharCol(match_col)),
+                    ovim::editor::ApplyPos::new(match_line, ovim_core::unicode::CharCol(end_col)),
+                ),
                 deleted,
                 cursor_before,
             ),
-            ovim::editor::Change::insert((match_line, match_col), new.to_string(), cursor_before),
+            ovim::editor::Change::insert(
+                ovim::editor::ApplyPos::new(match_line, ovim_core::unicode::CharCol(match_col)),
+                new.to_string(),
+                cursor_before,
+            ),
         ],
         cursor_before,
-        (match_line, match_col + new.len()),
+        ovim::editor::CursorPos::new(
+            match_line,
+            ovim_core::unicode::GraphemeCol(match_col + new.len()),
+        ),
     );
     editor.add_change(change);
 
@@ -1610,7 +1622,7 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
 
     let cursor_before = {
         let c = editor.buffer().cursor();
-        (c.line(), c.col().0)
+        ovim::editor::CursorPos::new(c.line(), c.col())
     };
 
     // Convert char_idx to line/col for insert_text_at
@@ -1625,7 +1637,11 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
     );
 
     // Record change for undo
-    let change = ovim::editor::Change::insert((ins_line, ins_col), text_with_nl, cursor_before);
+    let change = ovim::editor::Change::insert(
+        ovim::editor::ApplyPos::new(ins_line, ovim_core::unicode::CharCol(ins_col)),
+        text_with_nl,
+        cursor_before,
+    );
     editor.add_change(change);
 
     ApiResponse::Success(SuccessResponse {
@@ -1659,7 +1675,7 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
 
     let cursor_before = {
         let c = editor.buffer().cursor();
-        (c.line(), c.col().0)
+        ovim::editor::CursorPos::new(c.line(), c.col())
     };
 
     // Calculate end position for delete_range
@@ -1682,9 +1698,12 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
         ovim_core::unicode::CharCol(end_col),
     );
 
-    // Record change for undo
+    // Record change for undo (char-space range)
     let change = ovim::editor::Change::delete(
-        ovim::editor::Range::new((from, 0), (end_line, end_col)),
+        ovim::editor::Range::new(
+            ovim::editor::ApplyPos::new(from, ovim_core::unicode::CharCol::ZERO),
+            ovim::editor::ApplyPos::new(end_line, ovim_core::unicode::CharCol(end_col)),
+        ),
         deleted,
         cursor_before,
     );

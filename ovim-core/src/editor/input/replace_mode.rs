@@ -3,10 +3,10 @@
 //! Handles character replacement, backspace (with undo), and cursor movement.
 
 use super::helpers;
-use crate::editor::{Change, Editor, Range};
+use crate::editor::{ApplyPos, Change, CursorPos, Editor, Range};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -14,7 +14,7 @@ use anyhow::Result;
 pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Esc => {
-            // Save last insert position
+            // Save last insert position (grapheme-space)
             let cursor_line = editor.buffer().cursor().line();
             let cursor_col = editor.buffer().cursor().col();
             editor.editing.last_insert_position = Some((cursor_line, cursor_col.0));
@@ -47,9 +47,13 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             editor.set_mode(Mode::Normal);
         }
         KeyCode::Char(c) => {
-            // Replace character under cursor with the typed character
+            // Replace character under cursor with the typed character.
+            // NB: This block indexes `chars` by grapheme col — correct for ASCII,
+            // wrong for multi-char graphemes. That's pre-existing (Class-2 debt);
+            // here we only port tuple positions to the typed CursorPos/ApplyPos.
             let line_idx = editor.buffer().cursor().line();
-            let col = editor.buffer().cursor().col().0;
+            let grapheme_col = editor.buffer().cursor().col();
+            let col = grapheme_col.0;
 
             if let Some(line) = editor.buffer().line(line_idx) {
                 let line_text = line.trim_end_matches('\n');
@@ -58,9 +62,12 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                 if col < chars.len() {
                     // Track the original character for undo
                     let old_char = chars[col];
-                    let cursor_before = (line_idx, col);
+                    let cursor_before = CursorPos::new(line_idx, grapheme_col);
                     let delete_change = Change::delete(
-                        Range::new((line_idx, col), (line_idx, col + 1)),
+                        Range::new(
+                            ApplyPos::new(line_idx, CharCol(col)),
+                            ApplyPos::new(line_idx, CharCol(col + 1)),
+                        ),
                         old_char.to_string(),
                         cursor_before,
                     );
@@ -69,7 +76,11 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     }
 
                     let new_char = c.to_string();
-                    let insert_change = Change::insert((line_idx, col), new_char, cursor_before);
+                    let insert_change = Change::insert(
+                        ApplyPos::new(line_idx, CharCol(col)),
+                        new_char,
+                        cursor_before,
+                    );
                     if !editor.apply_change_and_record(insert_change) {
                         return Ok(());
                     }
@@ -81,9 +92,12 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     }
                 } else {
                     // At end of line, just insert (like append)
-                    let cursor_before = (line_idx, col);
-                    let insert_change =
-                        Change::insert((line_idx, col), c.to_string(), cursor_before);
+                    let cursor_before = CursorPos::new(line_idx, grapheme_col);
+                    let insert_change = Change::insert(
+                        ApplyPos::new(line_idx, CharCol(col)),
+                        c.to_string(),
+                        cursor_before,
+                    );
                     if !editor.apply_change_and_record(insert_change) {
                         return Ok(());
                     }
@@ -100,12 +114,15 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         KeyCode::Backspace => {
             // Backspace in replace mode should restore original characters
-            // and move cursor left, but only within the current replace session
+            // and move cursor left, but only within the current replace session.
+            // NB: This block, like Char above, treats grapheme col as char col.
+            // Pre-existing Class-2 debt; here we only port to typed positions.
             let cursor_col = editor.buffer().cursor().col().0;
             let cursor_line = editor.buffer().cursor().line();
 
             if let Some(ref mut state) = editor.editing.replace_mode_state {
-                let (start_line, start_col) = state.start_position;
+                let start_line = state.start_position.line;
+                let start_col = state.start_position.col.0;
 
                 // Check if we're past the start position and have replacements to undo
                 if cursor_line == start_line
@@ -118,9 +135,12 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     // If there's an old character to restore, restore it
                     if let Some(old_char) = state.old_text.pop() {
                         let restore_col = cursor_col - 1;
-                        let cursor_before = (cursor_line, restore_col);
+                        let cursor_before = CursorPos::new(cursor_line, GraphemeCol(restore_col));
                         let delete_change = Change::delete(
-                            Range::new((cursor_line, restore_col), (cursor_line, restore_col + 1)),
+                            Range::new(
+                                ApplyPos::new(cursor_line, CharCol(restore_col)),
+                                ApplyPos::new(cursor_line, CharCol(restore_col + 1)),
+                            ),
                             replaced_char.to_string(),
                             cursor_before,
                         );
@@ -129,7 +149,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                         }
 
                         let insert_change = Change::insert(
-                            (cursor_line, restore_col),
+                            ApplyPos::new(cursor_line, CharCol(restore_col)),
                             old_char.to_string(),
                             cursor_before,
                         );
@@ -142,9 +162,12 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     } else {
                         // No old_text means this was an insertion at end of line, delete it
                         let delete_col = cursor_col - 1;
-                        let cursor_before = (cursor_line, delete_col);
+                        let cursor_before = CursorPos::new(cursor_line, GraphemeCol(delete_col));
                         let delete_change = Change::delete(
-                            Range::new((cursor_line, delete_col), (cursor_line, delete_col + 1)),
+                            Range::new(
+                                ApplyPos::new(cursor_line, CharCol(delete_col)),
+                                ApplyPos::new(cursor_line, CharCol(delete_col + 1)),
+                            ),
                             replaced_char.to_string(),
                             cursor_before,
                         );

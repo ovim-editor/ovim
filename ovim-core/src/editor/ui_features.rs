@@ -1,8 +1,8 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
 use super::{
-    CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry,
-    QuickfixList,
+    CompletionMenu, CursorPos, Editor, FileTree, LocationList, Mode, PathCompletionState,
+    QuickfixEntry, QuickfixList,
 };
 use crate::unicode::{CharCol, GraphemeCol};
 
@@ -105,7 +105,7 @@ impl Editor {
 
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col().0;
-        let cursor_before = (cursor_line, cursor_col);
+        let cursor_before = CursorPos::new(cursor_line, GraphemeCol(cursor_col));
 
         let ((), edits) = self.buffer_mut().record(|buf| {
             // Apply main completion edit

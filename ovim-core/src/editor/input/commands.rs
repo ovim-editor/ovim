@@ -1,7 +1,7 @@
 use crate::command_result::CommandResult;
 use crate::edit::Edit;
 use crate::editor::path_completion::extract_path_from_command;
-use crate::editor::{Editor, Mode};
+use crate::editor::{CursorPos, Editor, Mode};
 use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
@@ -662,7 +662,7 @@ fn handle_global_command(
                 .set_position(new_cursor_line, GraphemeCol::ZERO);
 
             if !edits.is_empty() {
-                let cursor_after = (new_cursor_line, 0);
+                let cursor_after = CursorPos::new(new_cursor_line, GraphemeCol::ZERO);
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
             }
 
@@ -992,7 +992,7 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                         buf.cursor_mut().set_position(start_line, GraphemeCol::ZERO);
                     });
                     if !edits.is_empty() {
-                        let cursor_after = (start_line, 0);
+                        let cursor_after = CursorPos::new(start_line, GraphemeCol::ZERO);
                         editor.push_recorded_undo(edits, cursor_before, cursor_after);
                     }
 
@@ -1070,9 +1070,9 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 };
 
                 // Record change for undo
-                let cursor_before = (
+                let cursor_before = CursorPos::new(
                     editor.buffer().cursor().line(),
-                    editor.buffer().cursor().col().0,
+                    editor.buffer().cursor().col(),
                 );
 
                 // Calculate insertion point
@@ -1100,7 +1100,7 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
                 // Position cursor at start of inserted text
-                let cursor_after = (insert_line, 0);
+                let cursor_after = CursorPos::new(insert_line, GraphemeCol::ZERO);
                 editor
                     .buffer_mut()
                     .cursor_mut()
@@ -1448,7 +1448,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 .set_position(new_cursor_line, GraphemeCol::ZERO);
 
             if !edits.is_empty() {
-                let cursor_after = (new_cursor_line, 0);
+                let cursor_after = CursorPos::new(new_cursor_line, GraphemeCol::ZERO);
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
             }
 
@@ -1520,9 +1520,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             }
 
             // Replace the range with sorted lines
-            let cursor_before = (
+            let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
-                editor.buffer().cursor().col().0,
+                editor.buffer().cursor().col(),
             );
 
             // Get the char positions for the range
@@ -1604,9 +1604,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
                 // Insert after destination line
                 let insert_line = dest_line + 1;
-                let cursor_before = (
+                let cursor_before = CursorPos::new(
                     editor.buffer().cursor().line(),
-                    editor.buffer().cursor().col().0,
+                    editor.buffer().cursor().col(),
                 );
 
                 let insert_char = if insert_line < editor.buffer().line_count() {
@@ -1626,7 +1626,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
                 // Move cursor to first copied line
-                let cursor_after = (insert_line, 0);
+                let cursor_after = CursorPos::new(insert_line, GraphemeCol::ZERO);
                 editor
                     .buffer_mut()
                     .cursor_mut()
@@ -1681,9 +1681,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     return Ok(());
                 }
 
-                let cursor_before = (
+                let cursor_before = CursorPos::new(
                     editor.buffer().cursor().line(),
-                    editor.buffer().cursor().col().0,
+                    editor.buffer().cursor().col(),
                 );
 
                 // Collect lines to move
@@ -1729,7 +1729,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 editor.buffer_mut().rope_mut().insert(insert_char, &text);
 
                 // Move cursor to first moved line
-                let cursor_after = (insert_line, 0);
+                let cursor_after = CursorPos::new(insert_line, GraphemeCol::ZERO);
                 editor
                     .buffer_mut()
                     .cursor_mut()

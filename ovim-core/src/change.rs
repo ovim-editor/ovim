@@ -170,8 +170,52 @@ use crate::unicode::{CharCol, GraphemeCol};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
-/// Position in the buffer (line, column)
-pub type Position = (usize, usize);
+/// A cursor snapshot: where the cursor sits in grapheme-space.
+///
+/// Cursor indices throughout ovim are grapheme-space (what users perceive as
+/// characters). `cursor_before`/`cursor_after` fields on `Change` store this
+/// type so it is never confused with the char-space positions where a
+/// `Change` applies to the rope. See `ApplyPos` for that counterpart.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub struct CursorPos {
+    pub line: usize,
+    pub col: GraphemeCol,
+}
+
+impl CursorPos {
+    pub const ZERO: CursorPos = CursorPos {
+        line: 0,
+        col: GraphemeCol::ZERO,
+    };
+
+    #[inline]
+    pub fn new(line: usize, col: GraphemeCol) -> Self {
+        Self { line, col }
+    }
+}
+
+/// Where a `Change` applies to the rope: char-space.
+///
+/// Rope operations (`insert_text_at`, `delete_range`) expect char indices.
+/// `InsertText.position` and the endpoints of `Range` on `DeleteText` store
+/// this type so callers can't silently feed grapheme indices into the rope.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ApplyPos {
+    pub line: usize,
+    pub col: CharCol,
+}
+
+impl ApplyPos {
+    pub const ZERO: ApplyPos = ApplyPos {
+        line: 0,
+        col: CharCol::ZERO,
+    };
+
+    #[inline]
+    pub fn new(line: usize, col: CharCol) -> Self {
+        Self { line, col }
+    }
+}
 
 /// Types of text objects for semantic repeat
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -261,17 +305,17 @@ pub struct ResourceSnapshot {
 
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Range {
-    pub start: Position,
-    pub end: Position,
+    pub start: ApplyPos,
+    pub end: ApplyPos,
 }
 
 impl Range {
-    pub fn new(start: Position, end: Position) -> Self {
+    pub fn new(start: ApplyPos, end: ApplyPos) -> Self {
         Self { start, end }
     }
 
     /// Creates a range for a single position (empty range)
-    pub fn at(position: Position) -> Self {
+    pub fn at(position: ApplyPos) -> Self {
         Self {
             start: position,
             end: position,
@@ -301,15 +345,15 @@ pub enum InsertEntryMode {
 pub enum Change {
     /// Insert text at a position
     InsertText {
-        position: Position,
+        position: ApplyPos,
         text: String,
-        cursor_before: Position,
+        cursor_before: CursorPos,
     },
     /// Delete text in a range
     DeleteText {
         range: Range,
         deleted_text: String, // Stored for undo
-        cursor_before: Position,
+        cursor_before: CursorPos,
         /// True when the deletion went backward from cursor (e.g. X command).
         /// Used by repeat() to determine direction — stored explicitly so it
         /// doesn't depend on the value of cursor_before.
@@ -318,8 +362,8 @@ pub enum Change {
     /// A composite of multiple changes (e.g., all changes during insert mode)
     Composite {
         changes: Vec<Change>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
         /// How insert mode was entered — tells dot repeat how to reposition.
         entry_mode: InsertEntryMode,
     },
@@ -327,8 +371,8 @@ pub enum Change {
     /// Undo applies inverse edits in reverse; redo replays forward.
     Recorded {
         edits: Vec<Edit>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
         /// Optional group ID for undo grouping (e.g., agent turns).
         /// Multiple Recorded changes with the same group_id are undone together.
         undo_group_id: Option<u64>,
@@ -337,14 +381,14 @@ pub enum Change {
     /// Undo restores `before` bytes; redo applies `after` bytes.
     ResourceOp {
         snapshots: Vec<ResourceSnapshot>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
     },
 }
 
 impl Change {
     /// Creates an InsertText change
-    pub fn insert(position: Position, text: String, cursor_before: Position) -> Self {
+    pub fn insert(position: ApplyPos, text: String, cursor_before: CursorPos) -> Self {
         Self::InsertText {
             position,
             text,
@@ -353,7 +397,7 @@ impl Change {
     }
 
     /// Creates a forward DeleteText change
-    pub fn delete(range: Range, deleted_text: String, cursor_before: Position) -> Self {
+    pub fn delete(range: Range, deleted_text: String, cursor_before: CursorPos) -> Self {
         Self::DeleteText {
             range,
             deleted_text,
@@ -363,7 +407,7 @@ impl Change {
     }
 
     /// Creates a backward DeleteText change (e.g. X command)
-    pub fn delete_backward(range: Range, deleted_text: String, cursor_before: Position) -> Self {
+    pub fn delete_backward(range: Range, deleted_text: String, cursor_before: CursorPos) -> Self {
         Self::DeleteText {
             range,
             deleted_text,
@@ -375,8 +419,8 @@ impl Change {
     /// Creates a Composite change
     pub fn composite(
         changes: Vec<Change>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
     ) -> Self {
         Self::Composite {
             changes,
@@ -387,7 +431,7 @@ impl Change {
     }
 
     /// Creates a Recorded change from raw buffer edits
-    pub fn recorded(edits: Vec<Edit>, cursor_before: Position, cursor_after: Position) -> Self {
+    pub fn recorded(edits: Vec<Edit>, cursor_before: CursorPos, cursor_after: CursorPos) -> Self {
         Self::Recorded {
             edits,
             cursor_before,
@@ -399,8 +443,8 @@ impl Change {
     /// Creates a Recorded change with an undo group ID for grouped undo.
     pub fn recorded_grouped(
         edits: Vec<Edit>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
         group_id: u64,
     ) -> Self {
         Self::Recorded {
@@ -427,8 +471,8 @@ impl Change {
     /// Creates a ResourceOp snapshot change (filesystem-only, no buffer edits).
     pub fn resource_op(
         snapshots: Vec<ResourceSnapshot>,
-        cursor_before: Position,
-        cursor_after: Position,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
     ) -> Self {
         Self::ResourceOp {
             snapshots,
@@ -449,30 +493,30 @@ impl Change {
     pub fn apply(&self, buffer: &mut Buffer) {
         match self {
             Self::InsertText { position, text, .. } => {
-                // Phase-15 debt: Change::Position tuple stores char coords.
-                let (line, col) = *position;
                 let version_before = buffer.version();
-                buffer.insert_text_at(line, CharCol(col), text);
+                buffer.insert_text_at(position.line, position.col, text);
                 // Keep cursor stable when insertion was blocked/no-op.
                 if buffer.version() != version_before {
                     // Update cursor to end of inserted text
-                    // calculate_end_position returns char-indexed columns,
+                    // calculate_end_position returns a char-space ApplyPos,
                     // so use set_cursor_char_col which converts to grapheme.
                     let end_pos = Self::calculate_end_position(*position, text);
-                    buffer.set_cursor_char_col(end_pos.0, CharCol(end_pos.1));
+                    buffer.set_cursor_char_col(end_pos.line, end_pos.col);
                 }
             }
             Self::DeleteText { range, .. } => {
-                // Phase-15 debt: Change::Position tuple stores char coords.
-                let (start_line, start_col) = range.start;
-                let (end_line, end_col) = range.end;
                 let version_before = buffer.version();
-                buffer.delete_range(start_line, CharCol(start_col), end_line, CharCol(end_col));
+                buffer.delete_range(
+                    range.start.line,
+                    range.start.col,
+                    range.end.line,
+                    range.end.col,
+                );
                 // Keep cursor stable when deletion was blocked/no-op.
                 if buffer.version() != version_before {
-                    // Position cursor at deletion start
-                    // Range cols are char indices; convert to grapheme for cursor.
-                    buffer.set_cursor_char_col(start_line, CharCol(start_col));
+                    // Position cursor at deletion start.
+                    // range.start is char-space; set_cursor_char_col converts to grapheme.
+                    buffer.set_cursor_char_col(range.start.line, range.start.col);
                 }
             }
             Self::Composite {
@@ -486,7 +530,7 @@ impl Change {
                 // Restore cursor to final position after composite operation
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
+                    .set_position(cursor_after.line, cursor_after.col);
             }
             Self::Recorded {
                 edits,
@@ -498,7 +542,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
+                    .set_position(cursor_after.line, cursor_after.col);
             }
             Self::ResourceOp {
                 snapshots,
@@ -510,7 +554,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
+                    .set_position(cursor_after.line, cursor_after.col);
             }
         }
     }
@@ -528,10 +572,8 @@ impl Change {
                 // it clamps columns via line_len() (which excludes newlines),
                 // but insertions can target the newline position (e.g., line
                 // paste inserts at rope().line().len_chars() which includes \n).
-                let (start_line, start_col) = *position;
-
-                let start_char = if start_line < buffer.rope().len_lines() {
-                    buffer.rope().line_to_char(start_line) + start_col
+                let start_char = if position.line < buffer.rope().len_lines() {
+                    buffer.rope().line_to_char(position.line) + position.col.0
                 } else {
                     buffer.rope().len_chars()
                 };
@@ -543,7 +585,7 @@ impl Change {
                 // Restore cursor to where it was before the change
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
+                    .set_position(cursor_before.line, cursor_before.col);
                 // Validate cursor position in case line no longer exists
                 buffer.validate_cursor_position();
             }
@@ -554,13 +596,11 @@ impl Change {
                 ..
             } => {
                 // To undo a delete, re-insert the deleted text.
-                // Phase-15 debt: Change::Position stores char coords in a bare tuple.
-                let (line, col) = range.start;
-                buffer.insert_text_at(line, CharCol(col), deleted_text);
+                buffer.insert_text_at(range.start.line, range.start.col, deleted_text);
                 // Restore cursor to where it was before the change
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
+                    .set_position(cursor_before.line, cursor_before.col);
                 // Validate cursor position in case line no longer exists
                 buffer.validate_cursor_position();
             }
@@ -576,7 +616,7 @@ impl Change {
                 // Restore cursor to where it was before the composite change
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
+                    .set_position(cursor_before.line, cursor_before.col);
                 // Validate cursor position after composite undo - intermediate undos
                 // may have deleted lines that the final cursor position refers to
                 buffer.validate_cursor_position();
@@ -592,7 +632,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
+                    .set_position(cursor_before.line, cursor_before.col);
                 buffer.validate_cursor_position();
             }
             Self::ResourceOp {
@@ -605,7 +645,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_before.0, GraphemeCol(cursor_before.1));
+                    .set_position(cursor_before.line, cursor_before.col);
                 buffer.validate_cursor_position();
             }
         }
@@ -620,14 +660,20 @@ impl Change {
                 ..
             } => {
                 // Insert the same text at current position.
-                // Phase-15 debt: Change::Position stores char coords in a bare tuple.
-                let new_pos = (buffer.cursor().line(), buffer.cursor_char_col().0);
+                let new_pos = ApplyPos {
+                    line: buffer.cursor().line(),
+                    col: buffer.cursor_char_col(),
+                };
+                let new_cursor = CursorPos {
+                    line: buffer.cursor().line(),
+                    col: buffer.cursor().col(),
+                };
                 // Update self so undo targets the new position, not the original
                 *self_pos = new_pos;
                 Self::InsertText {
                     position: new_pos,
                     text: text.clone(),
-                    cursor_before: new_pos,
+                    cursor_before: new_cursor,
                 }
                 .apply(buffer);
             }
@@ -640,11 +686,11 @@ impl Change {
                 // Apply the same deletion pattern from current position
                 let cursor_line = buffer.cursor().line();
                 let cursor_col = buffer.cursor_char_col();
-                let offset_line = range.end.0 - range.start.0;
-                let offset_col = if range.end.0 == range.start.0 {
-                    range.end.1 - range.start.1
+                let offset_line = range.end.line - range.start.line;
+                let offset_col = if range.end.line == range.start.line {
+                    range.end.col.0 - range.start.col.0
                 } else {
-                    range.end.1
+                    range.end.col.0
                 };
 
                 let is_backwards = *backwards;
@@ -686,8 +732,10 @@ impl Change {
 
                 // Update range and deleted_text so undo reverses the actual
                 // deletion, not the original one.
-                // Phase-15 debt: Change::Position stores char coords in a bare tuple.
-                *range = Range::new((start_line, start_col.0), (end_line, end_col.0));
+                *range = Range::new(
+                    ApplyPos::new(start_line, start_col),
+                    ApplyPos::new(end_line, end_col),
+                );
                 *deleted_text = actual_deleted;
 
                 // Position cursor at the start of the deletion
@@ -752,7 +800,7 @@ impl Change {
                 }
                 buffer
                     .cursor_mut()
-                    .set_position(cursor_after.0, GraphemeCol(cursor_after.1));
+                    .set_position(cursor_after.line, cursor_after.col);
             }
             Self::ResourceOp { .. } => {
                 // Intentionally non-repeatable via `.`.
@@ -788,10 +836,12 @@ impl Change {
         }
     }
 
-    /// Helper to calculate end position after inserting text
-    fn calculate_end_position(start: Position, text: &str) -> Position {
-        let mut line = start.0;
-        let mut col = start.1;
+    /// Helper to calculate end position after inserting text.
+    /// Both input and output are char-space (ApplyPos) — the counting iterates
+    /// over chars, not graphemes.
+    fn calculate_end_position(start: ApplyPos, text: &str) -> ApplyPos {
+        let mut line = start.line;
+        let mut col = start.col.0;
 
         for ch in text.chars() {
             if ch == '\n' {
@@ -802,7 +852,7 @@ impl Change {
             }
         }
 
-        (line, col)
+        ApplyPos::new(line, CharCol(col))
     }
 
     /// Extracts the inserted text from this change (for the . register)
@@ -837,7 +887,7 @@ impl Change {
     /// inner change's cursor_before — i.e., where the cursor was AFTER
     /// entry-mode repositioning (A, I, etc.) but before actual editing.
     /// Used by g; to navigate to the changelist position.
-    pub fn edit_position(&self) -> Position {
+    pub fn edit_position(&self) -> CursorPos {
         match self {
             Self::Composite {
                 changes,
@@ -853,7 +903,7 @@ impl Change {
     }
 
     /// Gets the cursor position before this change
-    pub fn cursor_before(&self) -> Position {
+    pub fn cursor_before(&self) -> CursorPos {
         match self {
             Self::InsertText { cursor_before, .. } => *cursor_before,
             Self::DeleteText { cursor_before, .. } => *cursor_before,
@@ -864,11 +914,19 @@ impl Change {
     }
 
     /// Gets the cursor position after this change.
-    pub fn cursor_after(&self) -> Position {
+    ///
+    /// For `Composite`/`Recorded`/`ResourceOp` this is the stored grapheme-space
+    /// cursor snapshot. For `InsertText`/`DeleteText` the value is derived from
+    /// the char-space `position`/`range` by interpreting char indices as grapheme
+    /// indices — this matches the legacy behavior (correct for ASCII, slightly
+    /// wrong for multi-char graphemes) and is load-bearing for mark `'.` / `'^`.
+    /// A future sprint should either store a real grapheme-space cursor on these
+    /// variants or require `&Buffer` here to do a faithful conversion.
+    pub fn cursor_after(&self) -> CursorPos {
         match self {
             Self::InsertText { position, text, .. } => {
-                let mut line = position.0;
-                let mut col = position.1;
+                let mut line = position.line;
+                let mut col = position.col.0;
                 for ch in text.chars() {
                     if ch == '\n' {
                         line += 1;
@@ -877,9 +935,12 @@ impl Change {
                         col += 1;
                     }
                 }
-                (line, col.saturating_sub(1))
+                CursorPos::new(line, GraphemeCol(col.saturating_sub(1)))
             }
-            Self::DeleteText { range, .. } => range.start,
+            Self::DeleteText { range, .. } => {
+                // Char-index repurposed as grapheme-index (legacy behavior).
+                CursorPos::new(range.start.line, GraphemeCol(range.start.col.0))
+            }
             Self::Composite { cursor_after, .. } => *cursor_after,
             Self::Recorded { cursor_after, .. } => *cursor_after,
             Self::ResourceOp { cursor_after, .. } => *cursor_after,
@@ -887,7 +948,7 @@ impl Change {
     }
 
     /// Sets cursor_before on this change (used by repeat to record undo position).
-    pub fn set_cursor_before(&mut self, pos: Position) {
+    pub fn set_cursor_before(&mut self, pos: CursorPos) {
         match self {
             Self::InsertText { cursor_before, .. } => *cursor_before = pos,
             Self::DeleteText { cursor_before, .. } => *cursor_before = pos,
@@ -898,7 +959,7 @@ impl Change {
     }
 
     /// Sets cursor_after on this change (used by repeat to record redo position).
-    pub fn set_cursor_after(&mut self, pos: Position) {
+    pub fn set_cursor_after(&mut self, pos: CursorPos) {
         match self {
             Self::InsertText { .. } => { /* InsertText has no cursor_after field */ }
             Self::DeleteText { .. } => { /* DeleteText has no cursor_after field */ }
@@ -913,13 +974,13 @@ impl Change {
 #[derive(Debug)]
 pub struct ChangeBuilder {
     changes: Vec<Change>,
-    cursor_before: Position,
-    cursor_after: Option<Position>,
+    cursor_before: CursorPos,
+    cursor_after: Option<CursorPos>,
     entry_mode: InsertEntryMode,
 }
 
 impl ChangeBuilder {
-    pub fn new(cursor_before: Position) -> Self {
+    pub fn new(cursor_before: CursorPos) -> Self {
         Self {
             changes: Vec::new(),
             cursor_before,
@@ -939,12 +1000,12 @@ impl ChangeBuilder {
     }
 
     /// Sets the final cursor position after all changes
-    pub fn set_cursor_after(&mut self, cursor_after: Position) {
+    pub fn set_cursor_after(&mut self, cursor_after: CursorPos) {
         self.cursor_after = Some(cursor_after);
     }
 
     /// Finalizes the builder into a Change
-    pub fn build(self, buffer_cursor: Position) -> Option<Change> {
+    pub fn build(self, buffer_cursor: CursorPos) -> Option<Change> {
         if self.changes.is_empty() {
             None
         } else if self.changes.len() == 1 && matches!(self.entry_mode, InsertEntryMode::Insert) {
@@ -987,9 +1048,9 @@ pub struct ChangeManager {
     /// Tracks the undo stack size at last save (None if never saved)
     pub save_point: Option<usize>,
     /// Last position where an edit occurred (for g; navigation)
-    pub last_edit_position: Option<Position>,
+    pub last_edit_position: Option<CursorPos>,
     /// Changelist positions (older/newer navigation via g; / g,)
-    pub change_list: Vec<Position>,
+    pub change_list: Vec<CursorPos>,
     /// Current index in changelist (None when empty)
     pub change_list_index: Option<usize>,
     /// Semantic repeat action for dot-repeat (mutually exclusive with last_change)
@@ -1018,7 +1079,7 @@ impl ChangeManager {
     }
 
     /// Starts building a composite change (e.g., when entering insert mode)
-    pub fn start_building(&mut self, cursor_before: Position) {
+    pub fn start_building(&mut self, cursor_before: CursorPos) {
         self.current_builder = Some(ChangeBuilder::new(cursor_before));
     }
 
@@ -1040,7 +1101,7 @@ impl ChangeManager {
     }
 
     /// Finalizes the current builder and pushes the composite change
-    pub fn finalize_building_at(&mut self, cursor_pos: Position) {
+    pub fn finalize_building_at(&mut self, cursor_pos: CursorPos) {
         if let Some(builder) = self.current_builder.take() {
             if let Some(change) = builder.build(cursor_pos) {
                 self.push_change(change);
@@ -1066,7 +1127,7 @@ impl ChangeManager {
     }
 
     /// Records an edit position in the changelist and moves current index to newest.
-    pub fn note_edit_position(&mut self, pos: Position) {
+    pub fn note_edit_position(&mut self, pos: CursorPos) {
         self.last_edit_position = Some(pos);
 
         if let Some(idx) = self.change_list_index {
@@ -1082,7 +1143,7 @@ impl ChangeManager {
     }
 
     /// Jump to an older entry in the changelist (g;).
-    pub fn jump_change_older(&mut self, count: usize) -> Option<Position> {
+    pub fn jump_change_older(&mut self, count: usize) -> Option<CursorPos> {
         let len = self.change_list.len();
         if len == 0 {
             return None;
@@ -1094,7 +1155,7 @@ impl ChangeManager {
     }
 
     /// Jump to a newer entry in the changelist (g,).
-    pub fn jump_change_newer(&mut self, count: usize) -> Option<Position> {
+    pub fn jump_change_newer(&mut self, count: usize) -> Option<CursorPos> {
         let len = self.change_list.len();
         if len == 0 {
             return None;

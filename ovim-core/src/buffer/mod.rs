@@ -1225,8 +1225,8 @@ mod tests {
                 offset: 0,
                 text: "X".to_string(),
             }],
-            (0, 0),
-            (0, 1),
+            crate::change::CursorPos::new(0, crate::unicode::GraphemeCol(0)),
+            crate::change::CursorPos::new(0, crate::unicode::GraphemeCol(1)),
             42,
         );
         let change2 = crate::change::Change::recorded_grouped(
@@ -1234,8 +1234,8 @@ mod tests {
                 offset: 1,
                 text: "Y".to_string(),
             }],
-            (0, 1),
-            (0, 2),
+            crate::change::CursorPos::new(0, crate::unicode::GraphemeCol(1)),
+            crate::change::CursorPos::new(0, crate::unicode::GraphemeCol(2)),
             42,
         );
         buf.change_manager_mut().undo_stack.push(change1);

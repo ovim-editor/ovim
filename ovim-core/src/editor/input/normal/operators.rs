@@ -14,7 +14,7 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    CharMotion, Editor, InputState, Motions, Operator, PendingChangeRepeat, RegisterType,
+    CharMotion, CursorPos, Editor, InputState, Motions, Operator, PendingChangeRepeat, RegisterType,
 };
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
@@ -464,7 +464,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (Operator::Indent, KeyCode::Char('>')) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col().0);
+            let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
@@ -480,7 +480,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Indent, KeyCode::Char('j')) | (Operator::Indent, KeyCode::Down) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col().0);
+            let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
@@ -496,7 +496,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Indent, KeyCode::Char('k')) | (Operator::Indent, KeyCode::Up) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col().0);
+            let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
@@ -567,7 +567,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (Operator::Dedent, KeyCode::Char('<')) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col().0);
+            let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count;
             let tab_width = editor.options.tab_width;
@@ -583,7 +583,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Dedent, KeyCode::Char('j')) | (Operator::Dedent, KeyCode::Down) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col().0);
+            let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let start_line = cursor.line();
             let end_line = start_line + count + 1;
             let tab_width = editor.options.tab_width;
@@ -599,7 +599,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Dedent, KeyCode::Char('k')) | (Operator::Dedent, KeyCode::Up) => {
             let cursor = editor.buffer().cursor();
-            let cursor_before = (cursor.line(), cursor.col().0);
+            let cursor_before = CursorPos::new(cursor.line(), cursor.col());
             let current_line = cursor.line();
             let start_line = current_line.saturating_sub(count);
             let end_line = current_line + 1;
@@ -717,7 +717,7 @@ fn try_handle_char_motion_with_operator(
 fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Result<bool> {
     editor.clear_pending_operator();
     let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col().0);
+    let cursor_before = CursorPos::new(cursor.line(), cursor.col());
     let cursor_line = cursor.line();
     let max_line = editor.buffer().line_count().saturating_sub(1);
     let target_line = if editor.count().is_some() {
@@ -843,7 +843,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
     editor.clear_pending_command();
 
     let cursor_line = editor.buffer().cursor().line();
-    let cursor_before = (cursor_line, editor.buffer().cursor().col().0);
+    let cursor_before = CursorPos::new(cursor_line, editor.buffer().cursor().col());
     let max_line = editor.buffer().line_count().saturating_sub(1);
     let target_line = if editor.count().is_some() {
         count.saturating_sub(1).min(max_line)
@@ -1267,8 +1267,8 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
 
 fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
     let cursor_before = editor.cursor_position();
-    let line_idx = cursor_before.0;
-    let col = cursor_before.1;
+    let line_idx = cursor_before.line;
+    let col = cursor_before.col.0;
 
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         let line_len = buf
@@ -1307,7 +1307,7 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
 
 fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col().0);
+    let cursor_before = CursorPos::new(cursor.line(), cursor.col());
     let line_idx = cursor.line();
     let start_col = cursor.col().0;
 

@@ -338,7 +338,8 @@ impl Editor {
 
         let (cursor_before, cursor_after, recorded_edits, file_path) = {
             let buffer = &mut self.buffers[buffer_index];
-            let cursor_before = (buffer.cursor().line(), buffer.cursor().col().0);
+            let cursor_before =
+                crate::change::CursorPos::new(buffer.cursor().line(), buffer.cursor().col());
 
             let ((), recorded_edits) = buffer.record(|buf| {
                 for edit in sorted_edits {
@@ -362,7 +363,8 @@ impl Editor {
                 }
             });
 
-            let cursor_after = (buffer.cursor().line(), buffer.cursor().col().0);
+            let cursor_after =
+                crate::change::CursorPos::new(buffer.cursor().line(), buffer.cursor().col());
             let file_path = buffer.file_path().map(|s| s.to_string());
             (cursor_before, cursor_after, recorded_edits, file_path)
         };

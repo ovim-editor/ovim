@@ -9,10 +9,10 @@
 //! - Visual block insert state handling
 //! - Tab/auto-indent
 
-use crate::editor::{Change, Editor, InsertEntryMode, Range};
+use crate::editor::{ApplyPos, Change, CursorPos, Editor, InsertEntryMode, Range};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -42,11 +42,15 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
         if !line_without_newline.is_empty()
             && line_without_newline.chars().all(|c| c.is_whitespace())
         {
-            // Delete the whitespace, leaving just the newline
+            // Delete the whitespace, leaving just the newline.
+            // Whitespace is ASCII, so char count == grapheme count here.
             let whitespace_len = line_without_newline.chars().count();
-            let cursor_before = (current_line_idx, whitespace_len);
+            let cursor_before = CursorPos::new(current_line_idx, GraphemeCol(whitespace_len));
             let deleted_text = line_without_newline.to_string();
-            let range = Range::new((current_line_idx, 0), (current_line_idx, whitespace_len));
+            let range = Range::new(
+                ApplyPos::new(current_line_idx, CharCol::ZERO),
+                ApplyPos::new(current_line_idx, CharCol(whitespace_len)),
+            );
 
             // Create and apply the delete change (records for undo)
             let change = Change::delete(range, deleted_text, cursor_before);
@@ -205,13 +209,13 @@ fn exit_insert_mode(editor: &mut Editor) {
                         let version_before = editor.buffer().version();
                         editor.buffer_mut().insert_text_at(
                             line_idx,
-                            crate::unicode::CharCol(line_len),
+                            CharCol(line_len),
                             &inserted_text,
                         );
                         if editor.buffer().version() != version_before {
-                            // Track this insertion as a change
+                            // Track this insertion as a change (char-space position).
                             let change = Change::insert(
-                                (line_idx, line_len),
+                                ApplyPos::new(line_idx, CharCol(line_len)),
                                 inserted_text.clone(),
                                 cursor_before,
                             );
@@ -219,20 +223,20 @@ fn exit_insert_mode(editor: &mut Editor) {
                         }
                     }
                 } else {
-                    // Insert mode: insert at column
+                    // Insert mode: insert at column (`col` is grapheme from visual-block
+                    // state — pre-existing Class-2 assumption that equals char).
                     if let Some(line) = editor.buffer().line(line_idx) {
                         let line_text = line.trim_end_matches('\n');
                         let insert_col = col.min(line_text.chars().count());
                         let version_before = editor.buffer().version();
                         editor.buffer_mut().insert_text_at(
                             line_idx,
-                            crate::unicode::CharCol(insert_col),
+                            CharCol(insert_col),
                             &inserted_text,
                         );
                         if editor.buffer().version() != version_before {
-                            // Track this insertion as a change
                             let change = Change::insert(
-                                (line_idx, insert_col),
+                                ApplyPos::new(line_idx, CharCol(insert_col)),
                                 inserted_text.clone(),
                                 cursor_before,
                             );
@@ -545,7 +549,8 @@ mod tests {
 
         // Seed history so an accidental pop/replace is observable.
         let cursor = editor.cursor_position();
-        assert!(editor.apply_change_and_record(Change::insert(cursor, "X".to_string(), cursor)));
+        let apply = ApplyPos::new(cursor.line, CharCol(cursor.col.0));
+        assert!(editor.apply_change_and_record(Change::insert(apply, "X".to_string(), cursor)));
         let undo_len_before = editor.buffer().change_manager().undo_stack.len();
 
         // Simulate a no-op change operator (e.g., C at EOL) entering insert mode,
@@ -555,7 +560,7 @@ mod tests {
             linewise: false,
             delete_token: None,
         });
-        editor.start_change_building((0, 0));
+        editor.start_change_building(CursorPos::ZERO);
         editor.set_mode(Mode::Insert);
 
         exit_insert_mode(&mut editor);

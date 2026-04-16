@@ -174,7 +174,7 @@ impl Editor {
     fn build_resource_undo_change(
         before: Vec<(PathBuf, Option<Vec<u8>>)>,
         after: Vec<(PathBuf, Option<Vec<u8>>)>,
-        cursor: (usize, usize),
+        cursor: crate::change::CursorPos,
     ) -> Option<Change> {
         let mut snapshots = Vec::new();
         for ((path, before_bytes), (_, after_bytes)) in before.into_iter().zip(after.into_iter()) {
@@ -199,7 +199,7 @@ impl Editor {
     /// Apply a resource operation (create, rename, delete).
     fn apply_resource_op(
         resource_op: lsp_types::ResourceOp,
-        cursor: (usize, usize),
+        cursor: crate::change::CursorPos,
     ) -> (bool, Option<Change>) {
         match resource_op {
             lsp_types::ResourceOp::Create(create_file) => {

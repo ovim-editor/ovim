@@ -5,8 +5,8 @@
 
 use crate::editor::input::helpers;
 use crate::editor::{
-    Editor, Operator, PendingChangeRepeat, RegisterType, TextObjectRange, TextObjectType,
-    TextObjects,
+    CursorPos, Editor, Operator, PendingChangeRepeat, RegisterType, TextObjectRange,
+    TextObjectType, TextObjects,
 };
 use crate::mode::Mode;
 use crate::repeat_action::{CaseTransform, RepeatAction};
@@ -245,7 +245,7 @@ fn apply_change_operator(
     object_type: TextObjectType,
 ) -> Result<()> {
     let cursor = editor.buffer().cursor();
-    let cursor_before = (cursor.line(), cursor.col().0);
+    let cursor_before = CursorPos::new(cursor.line(), cursor.col());
 
     let deleted = TextObjects::yank_range(editor.buffer(), range)?;
 
@@ -272,7 +272,7 @@ fn apply_change_operator(
     });
 
     let new_cursor = editor.buffer().cursor();
-    let new_cursor_pos = (new_cursor.line(), new_cursor.col().0);
+    let new_cursor_pos = CursorPos::new(new_cursor.line(), new_cursor.col());
     editor.start_change_building(new_cursor_pos);
     editor.set_mode(Mode::Insert);
 

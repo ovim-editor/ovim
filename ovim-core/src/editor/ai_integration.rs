@@ -1303,6 +1303,9 @@ mod tests {
 
         assert_eq!(editor.buffer().rope().to_string(), "// head\na\nb\nc\n");
         // Cursor remains anchored to the original "c" line (now shifted down by one).
-        assert_eq!(editor.cursor_position(), (3, 0));
+        assert_eq!(
+            editor.cursor_position(),
+            crate::change::CursorPos::new(3, crate::unicode::GraphemeCol(0))
+        );
     }
 }

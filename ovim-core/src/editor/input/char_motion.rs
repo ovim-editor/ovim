@@ -10,6 +10,7 @@ use anyhow::Result;
 use crate::editor::editing_state::PendingChangeRepeat;
 use crate::editor::input_state::CharMotion;
 use crate::editor::operators::Operator;
+use crate::editor::CursorPos;
 use crate::editor::Editor;
 use crate::editor::RegisterType;
 use crate::mode::Mode;
@@ -123,7 +124,7 @@ fn handle_mark_operator(
 
     let cursor_line = editor.buffer().cursor().line();
     let cursor_col = editor.buffer().cursor().col().0;
-    let cursor_before = (cursor_line, cursor_col);
+    let cursor_before = CursorPos::new(cursor_line, GraphemeCol(cursor_col));
 
     if line_wise {
         let start_line = cursor_line.min(mark_line);
@@ -227,6 +228,8 @@ fn handle_char_find(
 // ---------------------------------------------------------------------------
 
 /// A character-wise text range for operator application.
+/// Stored as grapheme-space `(line, col)` pairs — the delete_range conversion
+/// (treating these as char indices) is pre-existing Class-2 debt.
 struct OperatorRange {
     start: (usize, usize),
     /// The end column, always stored as exclusive (one past last char to affect).
@@ -236,15 +239,16 @@ struct OperatorRange {
 impl OperatorRange {
     /// Inclusive range — the end position is the last character to include.
     /// Used by f/t motions where the cursor lands *on* the target.
-    fn inclusive(start: (usize, usize), end: (usize, usize)) -> Self {
+    fn inclusive(start: CursorPos, end: CursorPos) -> Self {
         Self {
-            start,
-            end_col_exclusive: (end.0, end.1.saturating_add(1)),
+            start: (start.line, start.col.0),
+            end_col_exclusive: (end.line, end.col.0.saturating_add(1)),
         }
     }
 
     /// Exclusive range — the end position is already one past the last character.
-    /// Used by backtick mark motions.
+    /// Used by backtick mark motions. Accepts grapheme-space tuples directly
+    /// because the backtick-mark caller still works in raw usize cols.
     fn exclusive(start: (usize, usize), end: (usize, usize)) -> Self {
         Self {
             start,
@@ -261,7 +265,7 @@ impl OperatorRange {
 fn apply_charwise_operator(
     editor: &mut Editor,
     operator: Operator,
-    cursor_before: (usize, usize),
+    cursor_before: CursorPos,
     range: OperatorRange,
     repeat: Option<RepeatAction>,
 ) {
