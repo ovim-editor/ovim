@@ -31,7 +31,7 @@ fn apply_java_status(editor: &mut Editor, status: String) {
 }
 
 /// Shared editor tick for both loops.
-/// Handles LSP, diagnostics, syntax, Lua, and background file tasks.
+/// Handles LSP, diagnostics, syntax, DAP, and background tasks.
 async fn process_editor_tick(
     editor: &mut Editor,
     java_status_rx: &mut mpsc::Receiver<String>,
@@ -40,15 +40,57 @@ async fn process_editor_tick(
     syntax_tx: &tokio::sync::mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
     syntax_rx: &mut tokio::sync::mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
 ) {
+    // === LSP lifecycle ===
+    process_java_status(editor, java_status_rx);
+    process_lsp_notifications(editor).await;
+    process_lsp_init(editor).await;
+    process_lsp_sync_and_inlay_hints(editor).await;
+
+    // === Debug adapter ===
+    process_dap_events(editor);
+    process_pending_debug_action(editor).await;
+
+    // === Syntax highlighting ===
+    spawn_syntax_highlighting(editor, syntax_tx);
+    drain_syntax_results(editor, syntax_rx);
+
+    // === LSP responses & intents ===
+    if editor.poll_pending_lsp_responses() {
+        editor.mark_dirty();
+    }
+    editor.dispatch_pending_intents().await;
+
+    // === Background tasks ===
+    poll_background_tasks(editor).await;
+
+    // === Lua ===
+    let _ = editor.process_lua_commands();
+
+    // === LSP installs ===
+    spawn_pending_installs(editor);
+    if editor.poll_install_progress() {
+        editor.mark_dirty();
+    }
+
+    // === Picker ===
+    if editor.mode() == Mode::Picker {
+        process_picker_tick(editor, preview_tx, file_tx);
+    }
+}
+
+/// Drain Java/Kotlin LSP status messages from the channel.
+fn process_java_status(editor: &mut Editor, java_status_rx: &mut mpsc::Receiver<String>) {
     while let Ok(status) = java_status_rx.try_recv() {
         apply_java_status(editor, status);
     }
+}
 
+/// Process LSP notifications and server-initiated workspace edits.
+async fn process_lsp_notifications(editor: &mut Editor) {
     if let Some(lsp_manager) = editor.lsp_manager() {
         let notification_count = lsp_manager.process_notifications().await;
         let flush_count = lsp_manager.process_flush_requests().await;
 
-        // Mark dirty if we processed any LSP messages
         if notification_count > 0 || flush_count > 0 {
             ovim_core::log_debug!(
                 "tick",
@@ -59,7 +101,6 @@ async fn process_editor_tick(
             editor.mark_dirty();
         }
 
-        // Poll for server-initiated workspace edits (e.g., from refactoring operations)
         let pending_edits = lsp_manager.poll_pending_workspace_edits().await;
         for workspace_edit in pending_edits {
             ovim_core::log_debug!("tick", "Applying workspace edit from LSP server");
@@ -67,30 +108,32 @@ async fn process_editor_tick(
                 Ok(applied) => {
                     if applied {
                         editor.set_lsp_status("Applied workspace edit".to_string());
-                        editor.mark_dirty(); // Redraw after applying workspace edit
                     } else {
                         editor.set_lsp_status("Partially applied workspace edit".to_string());
-                        editor.mark_dirty(); // Redraw even if partially applied
                     }
                 }
                 Err(e) => {
                     ovim_core::log_error!("tick", "Failed to apply workspace edit: {}", e);
                     editor.set_lsp_status(format!("Failed to apply edit: {}", e));
-                    editor.mark_dirty(); // Redraw to show error status
                 }
             }
+            editor.mark_dirty();
         }
     }
+}
 
+/// Initialize LSP for a newly opened file if needed.
+async fn process_lsp_init(editor: &mut Editor) {
     if let Some(file_path) = editor.needs_lsp_init() {
         ovim_core::log_debug!("tick", "Initializing LSP for {}", file_path);
         crate::lsp_init::initialize_lsp_for_file(editor, &file_path).await;
         editor.clear_lsp_init_flag();
     }
+}
 
-    // Sync edits to the LSP server and refresh diagnostics in one step.
-    // Colocated to enforce: server always has latest content before we
-    // check for fresh diagnostics.
+/// Sync edits to the LSP server, refresh diagnostics, and poll inlay hints.
+/// Colocated to enforce: server always has latest content before we check for fresh diagnostics.
+async fn process_lsp_sync_and_inlay_hints(editor: &mut Editor) {
     if editor.sync_lsp_and_refresh_diagnostics().await {
         editor.mark_dirty();
     }
@@ -102,13 +145,14 @@ async fn process_editor_tick(
             editor.request_inlay_hints_refresh();
         }
     }
+}
 
-    // Poll DAP (debug adapter) events
+/// Poll DAP events and auto-fetch stack trace on stop.
+fn process_dap_events(editor: &mut Editor) {
     let dap_count = editor.process_dap_events();
     if dap_count > 0 {
         ovim_core::log_debug!("tick", "Processed {} DAP events", dap_count);
         editor.mark_dirty();
-        // Auto-fetch stack trace when we stop
         if editor.debug_state().stopped_thread.is_some()
             && editor.debug_state().stack_frames.is_empty()
         {
@@ -116,312 +160,328 @@ async fn process_editor_tick(
                 Some(ovim::dap::PendingDebugAction::FetchState);
         }
     }
+}
 
-    // Process pending debug actions (async)
-    if let Some(action) = editor.dap_manager_mut().pending_action.take() {
-        use ovim::dap::PendingDebugAction;
-        match action {
-            PendingDebugAction::Start {
+/// Dispatch the pending debug action (start, stop, step, evaluate, etc.).
+async fn process_pending_debug_action(editor: &mut Editor) {
+    let Some(action) = editor.dap_manager_mut().pending_action.take() else {
+        return;
+    };
+
+    use ovim::dap::PendingDebugAction;
+    match action {
+        PendingDebugAction::Start {
+            command,
+            args,
+            run_config,
+        } => {
+            editor.dap_manager_mut().run_config = run_config;
+            if let Err(e) = editor.start_debug_session(&command, &args).await {
+                editor.set_lsp_status(format!("Debug start failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::Stop => {
+            if let Err(e) = editor.stop_debug_session().await {
+                editor.set_lsp_status(format!("Debug stop failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::Continue => {
+            if let Err(e) = editor.debug_continue().await {
+                editor.set_lsp_status(format!("Debug continue failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::StepOver => {
+            if let Err(e) = editor.debug_step_over().await {
+                editor.set_lsp_status(format!("Debug step failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::StepIn => {
+            if let Err(e) = editor.debug_step_in().await {
+                editor.set_lsp_status(format!("Debug step in failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::StepOut => {
+            if let Err(e) = editor.debug_step_out().await {
+                editor.set_lsp_status(format!("Debug step out failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::LaunchOrAttach => {
+            process_dap_launch_or_attach(editor).await;
+        }
+        PendingDebugAction::SyncBreakpoints => {
+            let paths: Vec<std::path::PathBuf> =
+                editor.debug_state().breakpoints.keys().cloned().collect();
+            for path in &paths {
+                let _ = editor.debug_sync_breakpoints(path).await;
+            }
+            if let Err(e) = editor.dap_manager_mut().configuration_done().await {
+                editor.set_lsp_status(format!("configurationDone failed: {}", e));
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::FetchState => {
+            let _ = editor.debug_fetch_stack_trace().await;
+            let _ = editor.debug_fetch_scopes().await;
+            let scope_refs: Vec<u64> = editor
+                .debug_state()
+                .scopes
+                .iter()
+                .filter(|s| !s.expensive)
+                .map(|s| s.variables_reference)
+                .collect();
+            for var_ref in scope_refs {
+                let _ = editor.debug_fetch_variables(var_ref).await;
+            }
+            let expanded: Vec<u64> =
+                editor.debug_state().expanded_refs.iter().copied().collect();
+            for var_ref in expanded {
+                let _ = editor.debug_fetch_variables(var_ref).await;
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::SelectFrame { index: _ } => {
+            let _ = editor.debug_fetch_scopes().await;
+            let scope_refs: Vec<u64> = editor
+                .debug_state()
+                .scopes
+                .iter()
+                .filter(|s| !s.expensive)
+                .map(|s| s.variables_reference)
+                .collect();
+            for var_ref in scope_refs {
+                let _ = editor.debug_fetch_variables(var_ref).await;
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::Evaluate { expression } => {
+            let frame_id = editor.selected_frame_id();
+            match editor
+                .dap_manager()
+                .evaluate(&expression, frame_id, Some("hover"))
+                .await
+            {
+                Ok((result, _type, _var_ref)) => {
+                    editor.set_lsp_status(format!("{expression} = {result}"));
+                }
+                Err(e) => {
+                    editor.set_lsp_status(format!("Eval error: {e}"));
+                }
+            }
+            editor.mark_dirty();
+        }
+        PendingDebugAction::FetchVariables { var_ref } => {
+            let _ = editor.debug_fetch_variables(var_ref).await;
+            editor.mark_dirty();
+        }
+        PendingDebugAction::FetchRunConfigs => {
+            process_dap_fetch_run_configs(editor).await;
+        }
+    }
+}
+
+/// Handle DAP launch/attach based on the stored run config.
+async fn process_dap_launch_or_attach(editor: &mut Editor) {
+    use ovim::dap::PendingDebugAction;
+    use ovim::debug_config::DebugRunKind;
+
+    let result = if let Some(run_cfg) = editor.dap_manager_mut().run_config.clone() {
+        let default_root = std::env::current_dir()
+            .unwrap_or_else(|_| std::path::PathBuf::from("."))
+            .to_string_lossy()
+            .to_string();
+        match run_cfg.kind {
+            DebugRunKind::Gradle {
+                task,
+                args,
+                project_root,
+            } => {
+                let root = project_root.unwrap_or_else(|| default_root.clone());
+                editor.set_lsp_status(format!("Running gradle {} --debug-jvm...", task));
+                editor.mark_dirty();
+                match spawn_gradle_and_wait(&task, &args, &root).await {
+                    Ok(child) => {
+                        editor.dap_manager_mut().gradle_child = Some(child);
+                        let attach_config = serde_json::json!({
+                            "host": "127.0.0.1",
+                            "port": 5005,
+                            "projectRoot": root,
+                        });
+                        editor.dap_manager_mut().attach(attach_config).await
+                    }
+                    Err(e) => Err(e),
+                }
+            }
+            DebugRunKind::Attach {
+                host,
+                port,
+                project_root,
+            } => {
+                let root = project_root.unwrap_or(default_root);
+                let attach_cfg = serde_json::json!({
+                    "host": host,
+                    "port": port,
+                    "projectRoot": root,
+                });
+                editor.dap_manager_mut().attach(attach_cfg).await
+            }
+            DebugRunKind::Launch {
+                main_class,
+                classpath,
+                args,
+                jvm_args,
+                cwd,
+                project_root,
+            } => {
+                let root = project_root.unwrap_or(default_root);
+                let mut launch_cfg = serde_json::json!({
+                    "mainClass": main_class,
+                    "projectRoot": root,
+                });
+                if let Some(cp) = classpath {
+                    launch_cfg["classpath"] = serde_json::json!(cp);
+                }
+                if !args.is_empty() {
+                    launch_cfg["args"] = serde_json::json!(args);
+                }
+                if !jvm_args.is_empty() {
+                    launch_cfg["jvmArgs"] = serde_json::json!(jvm_args);
+                }
+                if let Some(cwd) = cwd {
+                    launch_cfg["cwd"] = serde_json::json!(cwd);
+                }
+                editor.dap_manager_mut().launch(launch_cfg).await
+            }
+        }
+    } else {
+        Ok(())
+    };
+
+    match result {
+        Ok(()) => {
+            editor.dap_manager_mut().pending_action =
+                Some(PendingDebugAction::SyncBreakpoints);
+        }
+        Err(e) => {
+            editor.set_lsp_status(format!("Debug launch/attach failed: {}", e));
+        }
+    }
+    editor.mark_dirty();
+}
+
+/// Fetch debug run configs from TOML and LSP, then start or open picker.
+async fn process_dap_fetch_run_configs(editor: &mut Editor) {
+    use ovim::dap::PendingDebugAction;
+
+    let project_root =
+        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+    let mut configs = ovim::debug_config::load_debug_configs(&project_root);
+
+    if let Some(lsp_manager) = editor.lsp_manager() {
+        let lsp_configs = lsp_manager.run_configurations().await;
+        configs.extend(ovim::debug_config::parse_lsp_run_configs(&lsp_configs));
+    }
+
+    editor.set_lsp_status(String::new());
+
+    if configs.is_empty() {
+        let dap_start = editor
+            .buffer()
+            .file_path()
+            .and_then(|fp| {
+                ovim::language_config::LanguageRegistry::try_get()
+                    .and_then(|reg| reg.detect(fp))
+            })
+            .and_then(|lang| lang.dap.as_ref())
+            .and_then(|config| {
+                ovim::language_config::find_dap_command(config)
+                    .map(|cmd| (cmd, config.args.clone()))
+            });
+        if let Some((command, args)) = dap_start {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
                 command,
                 args,
-                run_config,
-            } => {
-                // Store the run config on DapManager before spawning.
-                editor.dap_manager_mut().run_config = run_config;
-                if let Err(e) = editor.start_debug_session(&command, &args).await {
-                    editor.set_lsp_status(format!("Debug start failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::Stop => {
-                if let Err(e) = editor.stop_debug_session().await {
-                    editor.set_lsp_status(format!("Debug stop failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::Continue => {
-                if let Err(e) = editor.debug_continue().await {
-                    editor.set_lsp_status(format!("Debug continue failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::StepOver => {
-                if let Err(e) = editor.debug_step_over().await {
-                    editor.set_lsp_status(format!("Debug step failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::StepIn => {
-                if let Err(e) = editor.debug_step_in().await {
-                    editor.set_lsp_status(format!("Debug step in failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::StepOut => {
-                if let Err(e) = editor.debug_step_out().await {
-                    editor.set_lsp_status(format!("Debug step out failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::LaunchOrAttach => {
-                use ovim::debug_config::DebugRunKind;
-                let result = if let Some(run_cfg) = editor.dap_manager_mut().run_config.clone() {
-                    let default_root = std::env::current_dir()
-                        .unwrap_or_else(|_| std::path::PathBuf::from("."))
-                        .to_string_lossy()
-                        .to_string();
-                    match run_cfg.kind {
-                        DebugRunKind::Gradle {
-                            task,
-                            args,
-                            project_root,
-                        } => {
-                            let root = project_root.unwrap_or_else(|| default_root.clone());
-                            editor
-                                .set_lsp_status(format!("Running gradle {} --debug-jvm...", task));
-                            editor.mark_dirty();
-                            match spawn_gradle_and_wait(&task, &args, &root).await {
-                                Ok(child) => {
-                                    editor.dap_manager_mut().gradle_child = Some(child);
-                                    let attach_config = serde_json::json!({
-                                        "host": "127.0.0.1",
-                                        "port": 5005,
-                                        "projectRoot": root,
-                                    });
-                                    editor.dap_manager_mut().attach(attach_config).await
-                                }
-                                Err(e) => Err(e),
-                            }
-                        }
-                        DebugRunKind::Attach {
-                            host,
-                            port,
-                            project_root,
-                        } => {
-                            let root = project_root.unwrap_or(default_root);
-                            let attach_cfg = serde_json::json!({
-                                "host": host,
-                                "port": port,
-                                "projectRoot": root,
-                            });
-                            editor.dap_manager_mut().attach(attach_cfg).await
-                        }
-                        DebugRunKind::Launch {
-                            main_class,
-                            classpath,
-                            args,
-                            jvm_args,
-                            cwd,
-                            project_root,
-                        } => {
-                            let root = project_root.unwrap_or(default_root);
-                            let mut launch_cfg = serde_json::json!({
-                                "mainClass": main_class,
-                                "projectRoot": root,
-                            });
-                            if let Some(cp) = classpath {
-                                launch_cfg["classpath"] = serde_json::json!(cp);
-                            }
-                            if !args.is_empty() {
-                                launch_cfg["args"] = serde_json::json!(args);
-                            }
-                            if !jvm_args.is_empty() {
-                                launch_cfg["jvmArgs"] = serde_json::json!(jvm_args);
-                            }
-                            if let Some(cwd) = cwd {
-                                launch_cfg["cwd"] = serde_json::json!(cwd);
-                            }
-                            editor.dap_manager_mut().launch(launch_cfg).await
-                        }
-                    }
+                run_config: None,
+            });
+        } else {
+            editor.set_lsp_status(
+                "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter."
+                    .to_string(),
+            );
+        }
+    } else if configs.len() == 1 {
+        let config = configs.into_iter().next().unwrap();
+        let dap_start = editor
+            .buffer()
+            .file_path()
+            .and_then(|fp| {
+                ovim::language_config::LanguageRegistry::try_get()
+                    .and_then(|reg| reg.detect(fp))
+            })
+            .and_then(|lang| lang.dap.as_ref())
+            .and_then(|dap_config| {
+                ovim::language_config::find_dap_command(dap_config)
+                    .map(|cmd| (cmd, dap_config.args.clone()))
+            });
+        if let Some((command, args)) = dap_start {
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
+                command,
+                args,
+                run_config: Some(config),
+            });
+        }
+    } else {
+        let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
+        editor.dap_manager_mut().available_debug_configs = configs;
+        let picker =
+            ovim::editor::picker::Picker::new_debug_config(project_root, names);
+        editor.set_picker(picker);
+        editor.set_mode(ovim::mode::Mode::Picker);
+        editor.mark_picker_selection_changed();
+    }
+    editor.mark_dirty();
+}
+
+/// Spawn background syntax highlighting if the buffer needs it.
+fn spawn_syntax_highlighting(
+    editor: &mut Editor,
+    syntax_tx: &tokio::sync::mpsc::Sender<(BufferId, Language, Option<LineHighlights>, u64)>,
+) {
+    if !editor.buffer().should_init_syntax() {
+        return;
+    }
+    let buf = editor.buffer();
+    let buffer_id = buf.id();
+    let source = buf.rope().to_string();
+    let version = buf.highlight_version();
+    if let Some(path) = buf.file_path() {
+        if let Some(lang) = LanguageRegistry::detect_from_path(path) {
+            editor.buffer_mut().mark_syntax_loading();
+            let tx = syntax_tx.clone();
+            tokio::task::spawn_blocking(move || {
+                let highlights = if let Ok(mut h) = SyntaxHighlighter::new(lang) {
+                    h.parse(&source);
+                    Some(h.highlights_for_all_lines(&source))
                 } else {
-                    // No run config — skip launch/attach, just sync breakpoints.
-                    Ok(())
+                    None
                 };
-                match result {
-                    Ok(()) => {
-                        // Queue breakpoint sync after successful launch/attach.
-                        editor.dap_manager_mut().pending_action =
-                            Some(PendingDebugAction::SyncBreakpoints);
-                    }
-                    Err(e) => {
-                        editor.set_lsp_status(format!("Debug launch/attach failed: {}", e));
-                    }
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::SyncBreakpoints => {
-                // Send all existing breakpoints to the debug adapter, then configurationDone.
-                let paths: Vec<std::path::PathBuf> =
-                    editor.debug_state().breakpoints.keys().cloned().collect();
-                for path in &paths {
-                    let _ = editor.debug_sync_breakpoints(path).await;
-                }
-                if let Err(e) = editor.dap_manager_mut().configuration_done().await {
-                    editor.set_lsp_status(format!("configurationDone failed: {}", e));
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::FetchState => {
-                let _ = editor.debug_fetch_stack_trace().await;
-                let _ = editor.debug_fetch_scopes().await;
-                // Fetch variables for all non-expensive scopes
-                let scope_refs: Vec<u64> = editor
-                    .debug_state()
-                    .scopes
-                    .iter()
-                    .filter(|s| !s.expensive)
-                    .map(|s| s.variables_reference)
-                    .collect();
-                for var_ref in scope_refs {
-                    let _ = editor.debug_fetch_variables(var_ref).await;
-                }
-                // Also fetch expanded object refs
-                let expanded: Vec<u64> =
-                    editor.debug_state().expanded_refs.iter().copied().collect();
-                for var_ref in expanded {
-                    let _ = editor.debug_fetch_variables(var_ref).await;
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::SelectFrame { index: _ } => {
-                // Frame already selected by select_stack_frame(). Refresh scopes + variables.
-                let _ = editor.debug_fetch_scopes().await;
-                let scope_refs: Vec<u64> = editor
-                    .debug_state()
-                    .scopes
-                    .iter()
-                    .filter(|s| !s.expensive)
-                    .map(|s| s.variables_reference)
-                    .collect();
-                for var_ref in scope_refs {
-                    let _ = editor.debug_fetch_variables(var_ref).await;
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::Evaluate { expression } => {
-                let frame_id = editor.selected_frame_id();
-                match editor
-                    .dap_manager()
-                    .evaluate(&expression, frame_id, Some("hover"))
-                    .await
-                {
-                    Ok((result, _type, _var_ref)) => {
-                        editor.set_lsp_status(format!("{expression} = {result}"));
-                    }
-                    Err(e) => {
-                        editor.set_lsp_status(format!("Eval error: {e}"));
-                    }
-                }
-                editor.mark_dirty();
-            }
-            PendingDebugAction::FetchVariables { var_ref } => {
-                let _ = editor.debug_fetch_variables(var_ref).await;
-                editor.mark_dirty();
-            }
-            PendingDebugAction::FetchRunConfigs => {
-                let project_root =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-                // 1. Load TOML configs (fast, sync)
-                let mut configs = ovim::debug_config::load_debug_configs(&project_root);
-
-                // 2. Request LSP run configurations (async, tolerant of errors)
-                if let Some(lsp_manager) = editor.lsp_manager() {
-                    let lsp_configs = lsp_manager.run_configurations().await;
-                    configs.extend(ovim::debug_config::parse_lsp_run_configs(&lsp_configs));
-                }
-
-                editor.set_lsp_status(String::new());
-
-                if configs.is_empty() {
-                    // No config file — fall back to auto-detect from language
-                    let dap_start = editor
-                        .buffer()
-                        .file_path()
-                        .and_then(|fp| {
-                            ovim::language_config::LanguageRegistry::try_get()
-                                .and_then(|reg| reg.detect(fp))
-                        })
-                        .and_then(|lang| lang.dap.as_ref())
-                        .and_then(|config| {
-                            ovim::language_config::find_dap_command(config)
-                                .map(|cmd| (cmd, config.args.clone()))
-                        });
-                    if let Some((command, args)) = dap_start {
-                        editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
-                            command,
-                            args,
-                            run_config: None,
-                        });
-                    } else {
-                        editor.set_lsp_status(
-                            "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter."
-                                .to_string(),
-                        );
-                    }
-                } else if configs.len() == 1 {
-                    // Single config — use it directly
-                    let config = configs.into_iter().next().unwrap();
-                    let dap_start = editor
-                        .buffer()
-                        .file_path()
-                        .and_then(|fp| {
-                            ovim::language_config::LanguageRegistry::try_get()
-                                .and_then(|reg| reg.detect(fp))
-                        })
-                        .and_then(|lang| lang.dap.as_ref())
-                        .and_then(|dap_config| {
-                            ovim::language_config::find_dap_command(dap_config)
-                                .map(|cmd| (cmd, dap_config.args.clone()))
-                        });
-                    if let Some((command, args)) = dap_start {
-                        editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Start {
-                            command,
-                            args,
-                            run_config: Some(config),
-                        });
-                    }
-                } else {
-                    // Multiple configs — open picker
-                    let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
-                    editor.dap_manager_mut().available_debug_configs = configs;
-                    let picker =
-                        ovim::editor::picker::Picker::new_debug_config(project_root, names);
-                    editor.set_picker(picker);
-                    editor.set_mode(ovim::mode::Mode::Picker);
-                    editor.mark_picker_selection_changed();
-                }
-                editor.mark_dirty();
-            }
+                let _ = tx.blocking_send((buffer_id, lang, highlights, version));
+            });
         }
     }
+}
 
-    // Spawn background syntax highlighting instead of blocking the main thread.
-    // This eliminates the flash of unstyled content (FOUC) on file open.
-    if editor.buffer().should_init_syntax() {
-        let buf = editor.buffer();
-        let buffer_id = buf.id();
-        let source = buf.rope().to_string();
-        let version = buf.highlight_version();
-        if let Some(path) = buf.file_path() {
-            if let Some(lang) = LanguageRegistry::detect_from_path(path) {
-                editor.buffer_mut().mark_syntax_loading();
-                let tx = syntax_tx.clone();
-                tokio::task::spawn_blocking(move || {
-                    let highlights = if let Ok(mut h) = SyntaxHighlighter::new(lang) {
-                        h.parse(&source);
-                        Some(h.highlights_for_all_lines(&source))
-                    } else {
-                        None
-                    };
-                    let _ = tx.blocking_send((buffer_id, lang, highlights, version));
-                });
-            }
-        }
-    }
-
-    // Drain completed background syntax results
+/// Drain completed background syntax results into buffers.
+fn drain_syntax_results(
+    editor: &mut Editor,
+    syntax_rx: &mut tokio::sync::mpsc::Receiver<(BufferId, Language, Option<LineHighlights>, u64)>,
+) {
     while let Ok((buffer_id, lang, highlights, version)) = syntax_rx.try_recv() {
         let is_current = editor.buffer().id() == buffer_id;
         if let Some(buffer) = editor.get_buffer_by_id_mut(buffer_id) {
@@ -437,79 +497,57 @@ async fn process_editor_tick(
             }
         }
     }
+}
 
-    // Poll all LSP response slots (non-blocking)
-    if editor.poll_pending_lsp_responses() {
-        editor.mark_dirty();
-    }
-
+/// Poll all independent background tasks (AI, make, git, chat, workflows).
+async fn poll_background_tasks(editor: &mut Editor) {
     if editor.poll_pending_ai_jobs() {
         editor.mark_dirty();
     }
-
     if editor.poll_pending_make() {
         editor.mark_dirty();
     }
-
-    // Drain background git refresh results (spawned after :w)
     if editor.poll_git_refresh() {
         editor.mark_dirty();
     }
-
-    // Check if user approved an LSP auto-install
     if editor.has_approved_lsp_install() {
         crate::lsp_init::handle_approved_lsp_install(editor).await;
         editor.mark_dirty();
     }
-
     if editor.poll_pending_ai_chat_job() {
         editor.mark_dirty();
     }
-
     if editor.poll_pending_workflow_jobs() {
         editor.mark_dirty();
     }
+}
 
-    // Process pending LSP actions unconditionally. Each _impl() method
-    // manages its own response slot and cancels any previous in-flight
-    // request, so there's no need to gate on has_pending_lsp_response().
-    editor.dispatch_pending_intents().await;
-
-    let _ = editor.process_lua_commands();
-
-    // Process LSP install requests from the LSP Manager panel
-    spawn_pending_installs(editor);
-    if editor.poll_install_progress() {
+/// Drive the picker: nucleo matching, grep drain, debounced filter, preview/file loading.
+fn process_picker_tick(
+    editor: &mut Editor,
+    preview_tx: &tokio::sync::mpsc::Sender<(String, editor::PreviewCache)>,
+    file_tx: &tokio::sync::mpsc::Sender<editor::PickerResult>,
+) {
+    let mut picker_changed = false;
+    if let Some(picker) = editor.picker_mut() {
+        if picker.tick() {
+            picker_changed = true;
+        }
+        if picker.drain_grep_results() {
+            picker_changed = true;
+        }
+    }
+    if picker_changed {
         editor.mark_dirty();
     }
-
-    if editor.mode() == Mode::Picker {
-        // Tick picker: drives nucleo matching (FindFiles) or applies debounced filter (other modes)
-        let mut picker_changed = false;
-        if let Some(picker) = editor.picker_mut() {
-            if picker.tick() {
-                picker_changed = true;
-            }
-            // Drain streaming grep results (LiveGrep mode)
-            if picker.drain_grep_results() {
-                picker_changed = true;
-            }
-        }
-        if picker_changed {
-            editor.mark_dirty();
-        }
-        // Apply debounced filter for non-nucleo modes
-        if editor.apply_pending_picker_filter(50) {
-            editor.mark_dirty();
-        }
-        spawn_picker_preview_loading(editor, preview_tx);
-        spawn_file_finder_loading(editor, file_tx);
-        // Re-render when rapid scrolling stops so syntax highlighting gets applied
-        if editor.picker_rapid_scrolling_just_stopped() {
-            editor.mark_dirty();
-        }
+    if editor.apply_pending_picker_filter(50) {
+        editor.mark_dirty();
     }
-
+    spawn_picker_preview_loading(editor, preview_tx);
+    spawn_file_finder_loading(editor, file_tx);
+    if editor.picker_rapid_scrolling_just_stopped() {
+        editor.mark_dirty();
+    }
 }
 
 /// Spawn background tasks for pending LSP install requests
