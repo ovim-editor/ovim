@@ -192,7 +192,8 @@ impl Editor {
             return Err(anyhow!("No LSP servers ready for {}", language_id));
         }
 
-        let buffer_version = self.buffer().version() as u64;
+        let buffer_version_usize = self.buffer().version();
+        let buffer_version = buffer_version_usize as u64;
 
         // Spawn completion request in background (non-blocking).
         // Document sync already happened above via ensure_lsp_document_synced().
@@ -222,6 +223,7 @@ impl Editor {
                 result.map(|items| crate::editor::lsp_slot::CompletionResult {
                     items,
                     file_path: file_path_for_task,
+                    buffer_version: buffer_version_usize,
                     synced_content: None,
                     synced_lsp_version: None,
                 });

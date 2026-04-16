@@ -390,7 +390,13 @@ pub struct HoverResult {
 #[derive(Debug)]
 pub struct CompletionResult {
     pub items: Vec<lsp_types::CompletionItem>,
+    /// File path at the time the request was fired. Used to drop responses
+    /// that arrive after the user switched files.
     pub file_path: String,
+    /// Buffer version at the time the request was fired. Used to drop
+    /// responses that arrive after the buffer has been edited further,
+    /// so stale completions do not populate the menu.
+    pub buffer_version: usize,
     /// If we successfully flushed content to LSP, record the new synced content.
     pub synced_content: Option<String>,
     pub synced_lsp_version: Option<i32>,

@@ -856,6 +856,26 @@ impl Editor {
                     return false;
                 }
 
+                // Drop responses that arrived after the user switched files.
+                // Without this, completions from file A leak into file B's menu.
+                let matches_file = self
+                    .buffer()
+                    .file_path()
+                    .is_some_and(|path| path == result.file_path);
+                if !matches_file {
+                    self.hide_completion_menu();
+                    return false;
+                }
+
+                // Drop responses that arrived after the buffer has been edited
+                // further. The mode check above is not sufficient: the user
+                // can Esc out and re-enter insert mode before the response
+                // arrives, keeping mode=Insert while the context has shifted.
+                if result.buffer_version != self.buffer().version() {
+                    self.hide_completion_menu();
+                    return false;
+                }
+
                 if let (Some(synced), Some(flushed_version)) =
                     (result.synced_content, result.synced_lsp_version)
                 {
@@ -1900,10 +1920,10 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::lsp_slot::InlayHintResult;
+    use crate::editor::lsp_slot::{CompletionResult, InlayHintResult};
     use crate::editor::lsp_state::{InlayHintRequestKey, PendingLspRequest};
     use crate::lsp::uri_from_file_path;
-    use lsp_types::{InlayHint, InlayHintLabel, Location, Position, Range};
+    use lsp_types::{CompletionItem, InlayHint, InlayHintLabel, Location, Position, Range};
     use tokio::sync::oneshot;
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -2169,5 +2189,100 @@ mod tests {
         assert!(editor.lsp.state.inlay_hints.is_empty());
         // Slot is stale (invalidated) because the result was dropped.
         assert!(editor.lsp.slots.inlay_hints.is_stale());
+    }
+
+    /// Helper: fire a pre-built `CompletionResult` into the completion slot so
+    /// `poll_pending_completion_response` can pick it up immediately.
+    fn fire_completion_result(editor: &mut Editor, result: CompletionResult) {
+        let buffer_version = result.buffer_version as u64;
+        let (tx, rx) = oneshot::channel::<anyhow::Result<CompletionResult>>();
+        tx.send(Ok(result)).unwrap();
+        let task = tokio::spawn(async {});
+        editor.lsp.slots.completion.fire(task, rx, buffer_version);
+    }
+
+    fn completion_item(label: &str) -> CompletionItem {
+        CompletionItem {
+            label: label.to_string(),
+            insert_text: Some(label.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_pending_completion_response_shows_menu_on_fresh_result() {
+        let mut editor = Editor::with_content("let x = fo");
+        editor.set_file_path("/tmp/a.rs".to_string());
+        editor.set_mode(crate::mode::Mode::Insert);
+
+        let bv = editor.buffer().version();
+        fire_completion_result(
+            &mut editor,
+            CompletionResult {
+                items: vec![completion_item("foo")],
+                file_path: "/tmp/a.rs".to_string(),
+                buffer_version: bv,
+                synced_content: None,
+                synced_lsp_version: None,
+            },
+        );
+
+        assert!(editor.poll_pending_completion_response());
+        assert!(editor.completion_menu().is_visible());
+        assert_eq!(editor.completion_menu().items().len(), 1);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_pending_completion_response_drops_result_from_old_file() {
+        let mut editor = Editor::with_content("let x = fo");
+        editor.set_file_path("/tmp/b.rs".to_string());
+        editor.set_mode(crate::mode::Mode::Insert);
+
+        let bv = editor.buffer().version();
+        // Response was fired for /tmp/a.rs but the user has since switched
+        // to /tmp/b.rs. Without validation this would apply to the wrong file.
+        fire_completion_result(
+            &mut editor,
+            CompletionResult {
+                items: vec![completion_item("foo")],
+                file_path: "/tmp/a.rs".to_string(),
+                buffer_version: bv,
+                synced_content: None,
+                synced_lsp_version: None,
+            },
+        );
+
+        assert!(!editor.poll_pending_completion_response());
+        assert!(!editor.completion_menu().is_visible());
+        assert!(editor.completion_menu().items().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn poll_pending_completion_response_drops_result_from_stale_buffer_version() {
+        let mut editor = Editor::with_content("let x = fo");
+        editor.set_file_path("/tmp/a.rs".to_string());
+        editor.set_mode(crate::mode::Mode::Insert);
+
+        // Simulate: request fired at version N, user kept typing (bumping
+        // the buffer version), response arrived carrying the old N. Without
+        // validation the stale items would populate the menu.
+        let stale_version = editor.buffer().version();
+        editor.buffer_mut().insert_text_at(0, 10, "o");
+        assert!(editor.buffer().version() > stale_version);
+
+        fire_completion_result(
+            &mut editor,
+            CompletionResult {
+                items: vec![completion_item("foo")],
+                file_path: "/tmp/a.rs".to_string(),
+                buffer_version: stale_version,
+                synced_content: None,
+                synced_lsp_version: None,
+            },
+        );
+
+        assert!(!editor.poll_pending_completion_response());
+        assert!(!editor.completion_menu().is_visible());
+        assert!(editor.completion_menu().items().is_empty());
     }
 }
