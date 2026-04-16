@@ -193,7 +193,8 @@ impl Editor {
             return Vec::new();
         }
         let result: Vec<_> = self
-            .lsp.state
+            .lsp
+            .state
             .current_file_diagnostics
             .iter()
             .filter(|d| d.range.start.line as usize == line)
@@ -205,7 +206,8 @@ impl Editor {
                 "diagnostics_for_line({}): 0 matches in {} cached diagnostics, first diag line={}",
                 line,
                 self.lsp.state.current_file_diagnostics.len(),
-                self.lsp.state
+                self.lsp
+                    .state
                     .current_file_diagnostics
                     .first()
                     .map(|d| d.range.start.line)
@@ -424,7 +426,9 @@ mod tests {
         );
 
         // Simulate a buffer edit AFTER the refresh was spawned.
-        editor.buffer_mut().insert_text_at(0, 0, "// ");
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol::ZERO, "// ");
 
         assert_ne!(
             editor.buffer().version(),

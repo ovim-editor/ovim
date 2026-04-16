@@ -6,8 +6,8 @@
 use crate::editor::input::helpers;
 use crate::editor::{Editor, PendingChangeRepeat, RegisterType};
 use crate::mode::Mode;
-use crate::unicode::GraphemeCol;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -154,7 +154,13 @@ fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
             .map(|l| l.trim_end_matches('\n').chars().count())
             .unwrap_or(0);
         if col < line_len {
-            let deleted = buf.delete_range(line_idx, col, line_idx, line_len);
+            // Phase-15 debt: col is grapheme-space; delete_range needs char.
+            let deleted = buf.delete_range(
+                line_idx,
+                crate::unicode::CharCol(col),
+                line_idx,
+                crate::unicode::CharCol(line_len),
+            );
             // Keep cursor at col (insert position) — don't clamp to normal mode
             buf.cursor_mut().set_position(line_idx, GraphemeCol(col));
             deleted
@@ -234,7 +240,12 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
             let deleted = if let Some(line) = buf.line(start_line) {
                 let content_len = line.trim_end_matches('\n').chars().count();
                 if content_len > 0 {
-                    buf.delete_range(start_line, 0, start_line, content_len)
+                    buf.delete_range(
+                        start_line,
+                        crate::unicode::CharCol::ZERO,
+                        start_line,
+                        crate::unicode::CharCol(content_len),
+                    )
                 } else {
                     String::new()
                 }
@@ -244,16 +255,21 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
 
             // Insert indentation
             if !indent.is_empty() {
-                buf.insert_text_at(start_line, 0, &indent);
+                buf.insert_text_at(start_line, crate::unicode::CharCol::ZERO, &indent);
             }
 
             deleted
         } else {
             // Multi-line: delete all lines, insert a blank line with indent
-            let deleted = buf.delete_range(start_line, 0, end_line, 0);
+            let deleted = buf.delete_range(
+                start_line,
+                crate::unicode::CharCol::ZERO,
+                end_line,
+                crate::unicode::CharCol::ZERO,
+            );
 
             let new_line_text = format!("{}\n", indent);
-            buf.insert_text_at(start_line, 0, &new_line_text);
+            buf.insert_text_at(start_line, crate::unicode::CharCol::ZERO, &new_line_text);
 
             deleted
         }

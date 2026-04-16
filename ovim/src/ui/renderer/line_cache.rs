@@ -242,7 +242,19 @@ mod tests {
         let mut cache = LineRenderCache::new();
         cache.last_buffer_version = 1;
         // Store with is_stable=false (e.g., cursor line)
-        cache.put(1, 0, 1, 0, 80, false, 4, false, 0, make_line("cursor"), false);
+        cache.put(
+            1,
+            0,
+            1,
+            0,
+            80,
+            false,
+            4,
+            false,
+            0,
+            make_line("cursor"),
+            false,
+        );
 
         let result = cache.get(1, 0, 1, 0, 80, false, 4, false, 0);
         assert!(result.is_none()); // Should not hit

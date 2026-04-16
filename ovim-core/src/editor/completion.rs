@@ -187,11 +187,7 @@ mod tests {
         let mut css_item = item("whitespace");
         css_item.filter_text = Some("whitespace".to_string());
 
-        menu.show(
-            vec![tailwind_item, css_item],
-            0,
-            "bg-wh".to_string(),
-        );
+        menu.show(vec![tailwind_item, css_item], 0, "bg-wh".to_string());
         let labels: Vec<String> = menu.items().iter().map(|i| i.label.clone()).collect();
         assert_eq!(labels, vec!["bg-white".to_string()]);
     }

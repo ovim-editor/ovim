@@ -29,9 +29,9 @@ impl Editor {
                 .lsp
                 .references(&ctx.uri, ctx.line, ctx.character, &ctx.language_id, true)
                 .await;
-            let _ = tx.send(result.map(|locations| {
-                crate::editor::lsp_slot::ReferencesResult { locations }
-            }));
+            let _ = tx.send(
+                result.map(|locations| crate::editor::lsp_slot::ReferencesResult { locations }),
+            );
         });
 
         self.lsp.slots.references.fire(task, rx, buffer_version);
@@ -48,9 +48,12 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = ctx.lsp.document_symbols(&ctx.uri, &ctx.language_id).await;
-            let _ = tx.send(result.map(|symbols| {
-                crate::editor::lsp_slot::DocumentSymbolsResult { symbols, file_path }
-            }));
+            let _ = tx.send(
+                result.map(|symbols| crate::editor::lsp_slot::DocumentSymbolsResult {
+                    symbols,
+                    file_path,
+                }),
+            );
         });
 
         self.lsp
@@ -71,9 +74,9 @@ impl Editor {
             // TODO: Support query parameter for filtering
             let query = String::new();
             let result = ctx.lsp.workspace_symbols(&ctx.language_id, query).await;
-            let _ = tx.send(result.map(|symbols| {
-                crate::editor::lsp_slot::WorkspaceSymbolsResult { symbols }
-            }));
+            let _ = tx.send(
+                result.map(|symbols| crate::editor::lsp_slot::WorkspaceSymbolsResult { symbols }),
+            );
         });
 
         self.lsp
@@ -114,7 +117,8 @@ impl Editor {
                                 .collect();
                             Ok(crate::editor::lsp_slot::CallHierarchyResult {
                                 locations,
-                                direction: crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
+                                direction:
+                                    crate::editor::lsp_slot::CallHierarchyDirection::Incoming,
                             })
                         }
                         Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
@@ -134,10 +138,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp
-            .slots
-            .call_hierarchy
-            .fire(task, rx, buffer_version);
+        self.lsp.slots.call_hierarchy.fire(task, rx, buffer_version);
         Ok(true)
     }
 
@@ -172,7 +173,8 @@ impl Editor {
                                 .collect();
                             Ok(crate::editor::lsp_slot::CallHierarchyResult {
                                 locations,
-                                direction: crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
+                                direction:
+                                    crate::editor::lsp_slot::CallHierarchyDirection::Outgoing,
                             })
                         }
                         Ok(_) => Ok(crate::editor::lsp_slot::CallHierarchyResult {
@@ -192,10 +194,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp
-            .slots
-            .call_hierarchy
-            .fire(task, rx, buffer_version);
+        self.lsp.slots.call_hierarchy.fire(task, rx, buffer_version);
         Ok(true)
     }
 
@@ -231,9 +230,7 @@ impl Editor {
             let mut all_types = Vec::new();
             let mut all_types_data = Vec::new();
 
-            if let Ok(Some(supertypes)) =
-                ctx.lsp.supertypes(item.clone(), &ctx.language_id).await
-            {
+            if let Ok(Some(supertypes)) = ctx.lsp.supertypes(item.clone(), &ctx.language_id).await {
                 for supertype in supertypes {
                     let location = Location {
                         uri: supertype.uri.clone(),
@@ -261,10 +258,7 @@ impl Editor {
             }));
         });
 
-        self.lsp
-            .slots
-            .type_hierarchy
-            .fire(task, rx, buffer_version);
+        self.lsp.slots.type_hierarchy.fire(task, rx, buffer_version);
         Ok(true)
     }
 

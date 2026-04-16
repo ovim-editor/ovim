@@ -5,7 +5,7 @@
 use crate::buffer::Buffer;
 use crate::editor::Editor;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::{grapheme_count, grapheme_to_char_col, GraphemeCol};
+use crate::unicode::{grapheme_count, grapheme_to_char_col, CharCol, GraphemeCol};
 use anyhow::Result;
 
 /// Type of case change operation
@@ -45,8 +45,8 @@ pub fn change_case_line(editor: &mut Editor, count: usize, case_change: CaseChan
 
                 if transformed != line_text {
                     let line_len = line_text.chars().count();
-                    buf.delete_range(line_idx, 0, line_idx, line_len);
-                    buf.insert_text_at(line_idx, 0, &transformed);
+                    buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(line_len));
+                    buf.insert_text_at(line_idx, CharCol::ZERO, &transformed);
                 }
             }
         }
@@ -90,16 +90,16 @@ where
         .buffer()
         .line(start_line)
         .map(|l| grapheme_to_char_col(l.trim_end_matches('\n'), start_grapheme_col))
-        .unwrap_or(start_grapheme_col.0);
+        .unwrap_or(CharCol(start_grapheme_col.0));
     let end_char_col = editor
         .buffer()
         .line(end_line)
         .map(|l| grapheme_to_char_col(l.trim_end_matches('\n'), end_grapheme_col))
-        .unwrap_or(end_grapheme_col.0);
+        .unwrap_or(CharCol(end_grapheme_col.0));
 
     // Get the text in the range using char-based offsets
-    let start_char = editor.buffer().rope().line_to_char(start_line) + start_char_col;
-    let end_char = editor.buffer().rope().line_to_char(end_line) + end_char_col;
+    let start_char = editor.buffer().rope().line_to_char(start_line) + start_char_col.0;
+    let end_char = editor.buffer().rope().line_to_char(end_line) + end_char_col.0;
     let text = editor
         .buffer()
         .rope()
@@ -149,12 +149,12 @@ pub fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) 
     let char_col = grapheme_to_char_col(line_text, GraphemeCol(grapheme_col));
     let line_char_len = line_text.chars().count();
 
-    let text_to_end: String = line_text.chars().skip(char_col).collect();
+    let text_to_end: String = line_text.chars().skip(char_col.0).collect();
     let transformed = apply_case_change(&text_to_end, &case_change);
 
     if transformed != text_to_end {
         let ((), edits) = editor.buffer_mut().record(|buf| {
-            buf.delete_range(line_idx, char_col, line_idx, line_char_len);
+            buf.delete_range(line_idx, char_col, line_idx, CharCol(line_char_len));
             buf.insert_text_at(line_idx, char_col, &transformed);
         });
 

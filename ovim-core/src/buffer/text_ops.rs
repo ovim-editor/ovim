@@ -2,12 +2,13 @@ use super::Buffer;
 use crate::change::{find_number_at_or_after, format_number, parse_number, TextObjectType};
 use crate::edit::Edit;
 use crate::unicode::{
-    char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col, GraphemeCol,
+    char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col, CharCol,
+    GraphemeCol,
 };
 
 impl Buffer {
     /// Inserts text at a specific position (line, col)
-    pub fn insert_text_at(&mut self, line: usize, col: usize, text: &str) {
+    pub fn insert_text_at(&mut self, line: usize, col: CharCol, text: &str) {
         // Track buffer edit metrics
         crate::metrics::BUFFER_EDITS_TOTAL.inc();
 
@@ -18,7 +19,7 @@ impl Buffer {
         }
 
         let line_start = self.rope.line_to_char(line);
-        let insert_pos = line_start + col;
+        let insert_pos = line_start + col.0;
 
         // Clamp to valid position
         let insert_pos = insert_pos.min(self.rope.len_chars());
@@ -31,7 +32,7 @@ impl Buffer {
 
         // Convert char col to byte col for highlighting (cache stores byte offsets)
         let line_start_char = self.rope.line_to_char(line);
-        let col_clamped = col.min(self.rope.len_chars() - line_start_char);
+        let col_clamped = col.0.min(self.rope.len_chars() - line_start_char);
         let byte_col = self.rope.char_to_byte(line_start_char + col_clamped)
             - self.rope.char_to_byte(line_start_char);
 
@@ -70,13 +71,16 @@ impl Buffer {
         self.code_block_cache = None;
     }
 
-    /// Deletes text in a range and returns the deleted text
+    /// Deletes text in a range and returns the deleted text.
+    ///
+    /// Columns are char indices (`CharCol`) — what rope operations use. The
+    /// end column is exclusive.
     pub fn delete_range(
         &mut self,
         start_line: usize,
-        start_col: usize,
+        start_col: CharCol,
         end_line: usize,
-        end_col: usize,
+        end_col: CharCol,
     ) -> String {
         // Track buffer edit metrics
         crate::metrics::BUFFER_EDITS_TOTAL.inc();
@@ -87,7 +91,7 @@ impl Buffer {
 
         // Validate start column is within line bounds to prevent addition overflow
         let start_line_len = self.line_len(start_line);
-        let actual_start_col = start_col.min(start_line_len);
+        let actual_start_col = start_col.0.min(start_line_len);
 
         let start_line_char = self.rope.line_to_char(start_line);
         let start_pos = start_line_char + actual_start_col;
@@ -102,7 +106,7 @@ impl Buffer {
         } else {
             // Validate end column is within line bounds to prevent addition overflow
             let end_line_len = self.line_len(end_line);
-            let actual_end_col = end_col.min(end_line_len);
+            let actual_end_col = end_col.0.min(end_line_len);
 
             let end_line_char = self.rope.line_to_char(end_line);
             (end_line_char + actual_end_col, end_line, actual_end_col)
@@ -314,10 +318,10 @@ impl Buffer {
             };
 
             // Delete both lines (from start_line to start_line+2)
-            self.delete_range(start_line, 0, start_line + 2, 0);
+            self.delete_range(start_line, CharCol::ZERO, start_line + 2, CharCol::ZERO);
 
             // Insert the joined line with newline
-            self.insert_text_at(start_line, 0, &format!("{}\n", joined));
+            self.insert_text_at(start_line, CharCol::ZERO, &format!("{}\n", joined));
 
             // Position cursor at the junction point (end of original first line).
             // cursor.col() is a grapheme index, so use grapheme_count (not chars().count()).
@@ -347,7 +351,7 @@ impl Buffer {
                     }
                 }
                 if remove > 0 {
-                    self.delete_range(line_idx, 0, line_idx, remove);
+                    self.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(remove));
                 }
             }
         }
@@ -389,7 +393,7 @@ impl Buffer {
                     continue;
                 }
             }
-            self.insert_text_at(line_idx, 0, &indent_str);
+            self.insert_text_at(line_idx, CharCol::ZERO, &indent_str);
         }
     }
 
@@ -430,7 +434,12 @@ impl Buffer {
         // Convert grapheme col → char col for rope operations
         let char_col = grapheme_to_char_col(line_text, grapheme_col);
         let grapheme_char_len = grapheme.chars().count();
-        self.delete_range(line_idx, char_col, line_idx, char_col + grapheme_char_len);
+        self.delete_range(
+            line_idx,
+            char_col,
+            line_idx,
+            char_col.saturating_add(grapheme_char_len),
+        );
         self.insert_text_at(line_idx, char_col, &toggled);
 
         // Re-read line: toggling may change grapheme count (e.g. ß → SS)
@@ -468,7 +477,7 @@ impl Buffer {
 
         // Convert grapheme col → char col for indexing into chars vec
         let line_text: String = chars.iter().collect();
-        let char_col = grapheme_to_char_col(&line_text, grapheme_col);
+        let char_col = grapheme_to_char_col(&line_text, grapheme_col).0;
 
         if chars.is_empty() || char_col >= chars.len() {
             return None;
@@ -537,7 +546,8 @@ impl Buffer {
         self.insert_text_at(line_idx, start_col, &new_number_str);
 
         // Convert the char-based end position → grapheme for cursor
-        let new_char_end_col = start_col + new_number_str.chars().count() - 1;
+        let new_char_end_col =
+            start_col.saturating_add(new_number_str.chars().count().saturating_sub(1));
         let new_line = self.line(line_idx).unwrap_or_default();
         let new_line_text = new_line.trim_end_matches('\n');
         let new_grapheme_col = char_to_grapheme_col(new_line_text, new_char_end_col);
@@ -579,7 +589,7 @@ impl Buffer {
         let found = if forward {
             let mut seen = 0usize;
             let mut found_idx = None;
-            for (i, &c) in chars.iter().enumerate().skip(col + 1) {
+            for (i, &c) in chars.iter().enumerate().skip(col.0 + 1) {
                 if c == target {
                     seen += 1;
                     if seen == count {
@@ -594,7 +604,7 @@ impl Buffer {
         } else {
             let mut seen = 0usize;
             let mut found_idx = None;
-            for i in (0..col).rev() {
+            for i in (0..col.0).rev() {
                 if chars.get(i).copied() == Some(target) {
                     seen += 1;
                     if seen == count {
@@ -609,16 +619,17 @@ impl Buffer {
         let Some(found_idx) = found else {
             return String::new();
         };
+        let found_col = CharCol(found_idx);
 
         let (start_col, end_col) = if forward {
-            let end_excl = if till { found_idx } else { found_idx + 1 };
+            let end_excl = if till { found_col } else { found_col + 1 };
             (col, end_excl)
         } else if till {
             // Backward till-motion (T): delete from just after target through cursor.
-            (found_idx.saturating_add(1), col + 1)
+            (found_col + 1, col + 1)
         } else {
             // Backward find-motion (F): delete from target through cursor.
-            (found_idx, col + 1)
+            (found_col, col + 1)
         };
 
         let deleted = self.delete_range(line_idx, start_col, line_idx, end_col);
@@ -638,7 +649,7 @@ impl Buffer {
         if col >= line_len {
             return String::new();
         }
-        let end_col = (col + count).min(line_len);
+        let end_col = (col + count).min_usize(line_len);
         let deleted = self.delete_range(line_idx, col, line_idx, end_col);
         self.clamp_cursor_col();
         deleted
@@ -650,7 +661,7 @@ impl Buffer {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col();
         let col = self.cursor_char_col();
-        if col == 0 {
+        if col == CharCol::ZERO {
             return String::new();
         }
         let start_col = col.saturating_sub(count);
@@ -667,7 +678,7 @@ impl Buffer {
     pub fn delete_lines(&mut self, count: usize) -> String {
         let start_line = self.cursor().line();
         let end_line = (start_line + count).min(self.line_count());
-        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         // Clamp cursor to buffer bounds
         let new_line = start_line.min(self.line_count().saturating_sub(1));
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
@@ -687,7 +698,7 @@ impl Buffer {
         if col >= line_len {
             return String::new();
         }
-        let deleted = self.delete_range(line_idx, col, line_idx, line_len);
+        let deleted = self.delete_range(line_idx, col, line_idx, CharCol(line_len));
         self.clamp_cursor_col();
         deleted
     }
@@ -711,7 +722,8 @@ impl Buffer {
             if let Some(line) = self.line(start_line) {
                 let line_len = line.trim_end_matches('\n').chars().count();
                 self.cursor_mut().set_position(start_line, start_grapheme);
-                let deleted = self.delete_range(start_line, start_col, start_line, line_len);
+                let deleted =
+                    self.delete_range(start_line, start_col, start_line, CharCol(line_len));
                 self.cursor_mut().set_position(start_line, start_grapheme);
                 self.clamp_cursor_col();
                 return deleted;
@@ -722,7 +734,7 @@ impl Buffer {
         {
             // Motion didn't move — last word on last line. Delete to end of line.
             if let Some(line) = self.line(end_line) {
-                end_col = line.trim_end_matches('\n').chars().count();
+                end_col = CharCol(line.trim_end_matches('\n').chars().count());
             }
         }
 
@@ -737,7 +749,7 @@ impl Buffer {
     pub fn delete_line_down(&mut self, count: usize) -> String {
         let start_line = self.cursor().line();
         let end_line = (start_line + count + 1).min(self.line_count());
-        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         let new_line = start_line.min(self.line_count().saturating_sub(1));
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
         self.clamp_cursor_col();
@@ -749,7 +761,7 @@ impl Buffer {
     pub fn delete_line_up(&mut self, count: usize) -> String {
         let end_line = self.cursor().line() + 1;
         let start_line = self.cursor().line().saturating_sub(count);
-        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         let new_line = start_line.min(self.line_count().saturating_sub(1));
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
         self.clamp_cursor_col();
@@ -768,7 +780,7 @@ impl Buffer {
         Motions::paragraph_forward(self, count);
         let end_line = self.cursor().line();
 
-        let deleted = self.delete_range(start_line, start_col, end_line, 0);
+        let deleted = self.delete_range(start_line, start_col, end_line, CharCol::ZERO);
         self.cursor_mut().set_position(start_line, start_grapheme);
         // validate_cursor_position clamps both line (may be past EOF after delete)
         // and column, which is a superset of clamp_cursor_col
@@ -787,7 +799,7 @@ impl Buffer {
         Motions::paragraph_backward(self, count);
         let start_line = self.cursor().line();
 
-        let deleted = self.delete_range(start_line, 0, end_line, end_col);
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, end_col);
         self.cursor_mut().set_position(start_line, GraphemeCol(0));
         // validate_cursor_position clamps both line (may be past EOF after delete)
         // and column, which is a superset of clamp_cursor_col
@@ -801,7 +813,7 @@ impl Buffer {
         let cursor_line = self.cursor().line();
         let start_line = cursor_line.min(target_line);
         let end_line = (cursor_line.max(target_line) + 1).min(self.line_count());
-        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         let new_line = start_line.min(self.line_count().saturating_sub(1));
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
         self.clamp_cursor_col();
@@ -827,7 +839,7 @@ impl Buffer {
                 abs_start += rope.line(i).len_chars();
             }
         }
-        abs_start += start_col;
+        abs_start += start_col.0;
 
         if abs_start >= chars.len() {
             return String::new();
@@ -890,7 +902,7 @@ impl Buffer {
             return String::new();
         }
 
-        let replace_count = count.min(chars_count - col);
+        let replace_count = count.min(chars_count - col.0);
         let end_col = col + replace_count;
 
         let deleted = self.delete_range(line_idx, col, line_idx, end_col);
@@ -988,7 +1000,7 @@ impl Buffer {
     pub fn delete_char_left(&mut self, count: usize) -> String {
         let line_idx = self.cursor().line();
         let col = self.cursor_char_col();
-        if col == 0 {
+        if col == CharCol::ZERO {
             return String::new();
         }
         let start_col = col.saturating_sub(count);
@@ -1003,10 +1015,10 @@ impl Buffer {
     pub fn delete_to_start_of_line(&mut self) -> String {
         let line_idx = self.cursor().line();
         let col = self.cursor_char_col();
-        if col == 0 {
+        if col == CharCol::ZERO {
             return String::new();
         }
-        let deleted = self.delete_range(line_idx, 0, line_idx, col);
+        let deleted = self.delete_range(line_idx, CharCol::ZERO, line_idx, col);
         self.cursor_mut().set_position(line_idx, GraphemeCol(0));
         deleted
     }
@@ -1045,7 +1057,8 @@ impl Buffer {
             if let Some(line) = self.line(start_line) {
                 let line_len = line.trim_end_matches('\n').chars().count();
                 self.set_cursor_char_col(start_line, start_col);
-                let deleted = self.delete_range(start_line, start_col, start_line, line_len);
+                let deleted =
+                    self.delete_range(start_line, start_col, start_line, CharCol(line_len));
                 self.set_cursor_char_col(start_line, start_col);
                 self.clamp_cursor_col();
                 return deleted;
@@ -1056,7 +1069,7 @@ impl Buffer {
         {
             // Motion didn't move — last WORD on last line. Delete to end of line.
             if let Some(line) = self.line(end_line) {
-                end_col = line.trim_end_matches('\n').chars().count();
+                end_col = CharCol(line.trim_end_matches('\n').chars().count());
             }
         }
 
@@ -1073,7 +1086,7 @@ impl Buffer {
         let cursor_line = self.cursor().line();
         let start_line = cursor_line.min(target_line);
         let end_line = (cursor_line.max(target_line) + 1).min(self.line_count());
-        let deleted = self.delete_range(start_line, 0, end_line, 0);
+        let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         let new_line = start_line.min(self.line_count().saturating_sub(1));
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
         self.clamp_cursor_col();

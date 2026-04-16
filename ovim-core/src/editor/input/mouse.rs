@@ -95,7 +95,7 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     let line_text = line_text(buffer_line);
     let tab_width = editor.options.tab_width;
     let char_col = display_col_to_char_col(&line_text, display_col, tab_width);
-    let grapheme_col = char_to_grapheme_col(&line_text, char_col).0;
+    let grapheme_col = char_to_grapheme_col(&line_text, crate::unicode::CharCol(char_col)).0;
 
     // Clamp to line length (Normal mode: last char, Insert mode: past last char)
     let line_len = grapheme_count(&line_text);
@@ -375,21 +375,30 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
 
     // Check blame column click → show blame popup
     if let Some(line) = is_blame_click(editor, col, row) {
-        editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol::ZERO);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol::ZERO);
         editor.show_blame_info();
         return Ok(None);
     }
 
     // Check sign column click → toggle breakpoint
     if let Some(line) = is_sign_column_click(editor, col, row) {
-        editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol::ZERO);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol::ZERO);
         editor.toggle_breakpoint();
         return Ok(None);
     }
 
     // Check gutter click → select line (Visual Line mode)
     if let Some(line) = is_gutter_click(editor, col, row) {
-        editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol::ZERO);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol::ZERO);
         editor.set_visual_start(line, 0);
         editor.set_mode(Mode::VisualLine);
         editor.render_cache.mouse_state.is_dragging = true;

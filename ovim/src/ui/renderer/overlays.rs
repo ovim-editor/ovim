@@ -33,7 +33,7 @@ pub fn render_hover_window(
     let viewport_start = ctx.viewport_start;
     let buffer_area = layout.buffer_area;
     use super::markdown::{colors, parse_markdown, render_markdown};
-    
+
     let h_scroll = editor.hover_h_scroll();
 
     const MIN_WIDTH: u16 = 30;
@@ -93,17 +93,28 @@ pub fn render_hover_window(
     };
     let line_text = line_text.trim_end_matches('\n');
     let tab_width = editor.options.tab_width;
-    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, ovim_core::unicode::GraphemeCol(cursor_col));
+    let char_col = ovim_core::unicode::grapheme_to_char_col(
+        line_text,
+        ovim_core::unicode::GraphemeCol(cursor_col),
+    )
+    .0;
     let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
-    let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, rope);
+    let inline_offset = editor
+        .decorations
+        .inline_width_before(cursor_line, char_col, rope);
     let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
-    let inline_widths = editor.decorations.inline_decorations_for_line(cursor_line, rope);
+    let inline_widths = editor
+        .decorations
+        .inline_decorations_for_line(cursor_line, rope);
 
     let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
         if let Some(wrap_map) = editor.wrap_map() {
             let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
-                cursor_line, display_col, line_text, &inline_widths,
+                cursor_line,
+                display_col,
+                line_text,
+                &inline_widths,
             );
             let viewport_row = wrap_map.logical_to_visual(viewport_start);
             (abs_row.saturating_sub(viewport_row), vcol)
@@ -112,7 +123,10 @@ pub fn render_hover_window(
         }
     } else {
         let h_offset = editor.horizontal_offset();
-        (cursor_line.saturating_sub(viewport_start), display_col.saturating_sub(h_offset))
+        (
+            cursor_line.saturating_sub(viewport_start),
+            display_col.saturating_sub(h_offset),
+        )
     };
 
     let cursor_screen_x = buffer_area.x + gutter_width as u16 + visual_col as u16;
@@ -276,17 +290,28 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
 
     // Convert character column to display column (accounting for tabs, emojis, and inline decorations)
     let tab_width = editor.options.tab_width;
-    let char_col = ovim_core::unicode::grapheme_to_char_col(line_text, ovim_core::unicode::GraphemeCol(cursor_col));
+    let char_col = ovim_core::unicode::grapheme_to_char_col(
+        line_text,
+        ovim_core::unicode::GraphemeCol(cursor_col),
+    )
+    .0;
     let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
-    let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, rope);
+    let inline_offset = editor
+        .decorations
+        .inline_width_before(cursor_line, char_col, rope);
     let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
-    let inline_widths = editor.decorations.inline_decorations_for_line(cursor_line, rope);
+    let inline_widths = editor
+        .decorations
+        .inline_decorations_for_line(cursor_line, rope);
 
     let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
         if let Some(wrap_map) = editor.wrap_map() {
             let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
-                cursor_line, display_col, line_text, &inline_widths,
+                cursor_line,
+                display_col,
+                line_text,
+                &inline_widths,
             );
             let viewport_row = wrap_map.logical_to_visual(viewport_start);
             (abs_row.saturating_sub(viewport_row), vcol)
@@ -295,7 +320,10 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
         }
     } else {
         let h_offset = editor.horizontal_offset();
-        (cursor_line.saturating_sub(viewport_start), display_col.saturating_sub(h_offset))
+        (
+            cursor_line.saturating_sub(viewport_start),
+            display_col.saturating_sub(h_offset),
+        )
     };
 
     let gutter_width = layout.gutter_width;

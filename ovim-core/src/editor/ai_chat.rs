@@ -793,7 +793,9 @@ impl Editor {
         });
 
         if let Some(line) = target {
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(0));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(0));
             self.center_cursor_in_viewport();
         }
     }

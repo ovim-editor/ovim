@@ -2,7 +2,7 @@ use crate::ai::formats::apply_patch::parse_apply_patch;
 use crate::ai::formats::matching::{find_match, MatchResult};
 use crate::ai::formats::Hunk;
 use crate::ai::tools::ToolResult;
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 use serde::Deserialize;
 
 use super::ai_integration::remap_abs_char_through_edits;
@@ -372,9 +372,17 @@ impl Editor {
         // Compute char offsets for the selection snapshot
         let rope = self.buffer().rope();
         let start_char = rope.line_to_char(start_line_0)
-            + crate::unicode::grapheme_to_char_col(&rope.line(start_line_0).to_string(), GraphemeCol(start_col));
+            + crate::unicode::grapheme_to_char_col(
+                &rope.line(start_line_0).to_string(),
+                GraphemeCol(start_col),
+            )
+            .0;
         let end_char = rope.line_to_char(end_line_0)
-            + crate::unicode::grapheme_to_char_col(&rope.line(end_line_0).to_string(), GraphemeCol(end_col));
+            + crate::unicode::grapheme_to_char_col(
+                &rope.line(end_line_0).to_string(),
+                GraphemeCol(end_col),
+            )
+            .0;
 
         // Store as active selection (same structure used by AI prompt mode)
         let selected_text = if end_char > start_char {
@@ -398,7 +406,9 @@ impl Editor {
 
         // Move cursor to the midpoint and center
         let mid_line = (start_line_0 + end_line_0) / 2;
-        self.buffer_mut().cursor_mut().set_position(mid_line, GraphemeCol(0));
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(mid_line, GraphemeCol(0));
         self.center_cursor_in_viewport();
 
         let file_label = self.buffer().file_path().unwrap_or("[No Name]").to_string();
@@ -606,7 +616,7 @@ impl Editor {
                 buf.delete_char_range(0, existing_chars);
             }
             if !content.is_empty() {
-                buf.insert_text_at(0, 0, &content);
+                buf.insert_text_at(0, CharCol::ZERO, &content);
             }
         });
 
@@ -818,7 +828,7 @@ impl Editor {
                 if !text.ends_with('\n') {
                     text.push('\n');
                 }
-                buf.insert_text_at(line, col, &text);
+                buf.insert_text_at(line, CharCol(col), &text);
             }
         });
 
@@ -893,7 +903,7 @@ impl Editor {
             let pos = insert_char.min(buf.rope().len_chars());
             let line = buf.rope().char_to_line(pos);
             let col = pos - buf.rope().line_to_char(line);
-            buf.insert_text_at(line, col, &insert_text);
+            buf.insert_text_at(line, CharCol(col), &insert_text);
         });
 
         if edits.is_empty() {

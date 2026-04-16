@@ -435,10 +435,15 @@ fn search_word_forward(editor: &mut Editor) {
         );
         let cursor = editor.buffer().cursor();
 
-        if let Some((line, col, _)) =
-            search.find_next(editor.buffer(), cursor.line(), cursor.col().0 + 1)
-        {
-            editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+        if let Some((line, col, _)) = search.find_next(
+            editor.buffer(),
+            cursor.line(),
+            GraphemeCol(cursor.col().0 + 1),
+        ) {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
         editor.set_current_search(search);
     }
@@ -461,8 +466,13 @@ fn search_word_backward(editor: &mut Editor) {
         } else {
             0
         };
-        if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
-            editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+        if let Some((line, col, _)) =
+            search.find_next(editor.buffer(), cursor.line(), GraphemeCol(search_col))
+        {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
         editor.set_current_search(search);
     }

@@ -39,7 +39,9 @@ impl Motions {
 
         // Clamp to buffer bounds
         line_idx = line_idx.min(total_lines.saturating_sub(1));
-        buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(line_idx, GraphemeCol::ZERO);
     }
 
     /// Move backward to start of previous paragraph
@@ -105,6 +107,8 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(line_idx, GraphemeCol::ZERO);
     }
 }

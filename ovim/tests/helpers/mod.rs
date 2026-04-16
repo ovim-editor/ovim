@@ -208,10 +208,7 @@ impl EditorTest {
                     let col = cursor.col().0;
                     let before = line_display.chars().take(col).collect::<String>();
                     let at_cursor = line_display.chars().nth(col).unwrap_or(' ');
-                    let after = line_display
-                        .chars()
-                        .skip(col + 1)
-                        .collect::<String>();
+                    let after = line_display.chars().skip(col + 1).collect::<String>();
                     lines.push(format!("{}[{}]{}", before, at_cursor, after));
                 } else {
                     lines.push(line_display.to_string());
@@ -342,14 +339,21 @@ impl EditorTest {
         if line_count > 0 {
             let last_line = line_count - 1;
             let last_col = buffer.line_len(last_line);
-            buffer.delete_range(0, 0, last_line, last_col);
+            buffer.delete_range(
+                0,
+                ovim::unicode::CharCol::ZERO,
+                last_line,
+                ovim::unicode::CharCol(last_col),
+            );
         }
 
         // Insert new content at the beginning
-        buffer.insert_text_at(0, 0, content);
+        buffer.insert_text_at(0, ovim::unicode::CharCol::ZERO, content);
 
         // Reset cursor to start
-        buffer.cursor_mut().set_position(0, ovim::unicode::GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(0, ovim::unicode::GraphemeCol::ZERO);
 
         self
     }

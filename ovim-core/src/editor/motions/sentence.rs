@@ -26,7 +26,7 @@ impl Motions {
         // Convert grapheme col to char col for char-based iteration
         let char_col = if let Some(line) = buffer.line(line_idx) {
             let line_text = line.trim_end_matches('\n');
-            crate::unicode::grapheme_to_char_col(line_text, grapheme_col)
+            crate::unicode::grapheme_to_char_col(line_text, grapheme_col).0
         } else {
             0
         };
@@ -55,28 +55,26 @@ impl Motions {
                             if current_col >= chars.len() {
                                 // Move to next line
                                 if current_line + 1 < total_lines {
-                                    buffer.cursor_mut().set_position(current_line + 1, GraphemeCol::ZERO);
-                                } else {
-                                    let line_str: String =
-                                        line.trim_end_matches('\n').to_string();
-                                    let end_grapheme = crate::unicode::char_to_grapheme_col(
-                                        &line_str,
-                                        chars.len().saturating_sub(1).max(0),
-                                    );
                                     buffer
                                         .cursor_mut()
-                                        .set_position(current_line, end_grapheme);
+                                        .set_position(current_line + 1, GraphemeCol::ZERO);
+                                } else {
+                                    let line_str: String = line.trim_end_matches('\n').to_string();
+                                    let end_grapheme = crate::unicode::char_to_grapheme_col(
+                                        &line_str,
+                                        crate::unicode::CharCol(
+                                            chars.len().saturating_sub(1).max(0),
+                                        ),
+                                    );
+                                    buffer.cursor_mut().set_position(current_line, end_grapheme);
                                 }
                             } else {
-                                let line_str: String =
-                                    line.trim_end_matches('\n').to_string();
+                                let line_str: String = line.trim_end_matches('\n').to_string();
                                 let grapheme = crate::unicode::char_to_grapheme_col(
                                     &line_str,
-                                    current_col,
+                                    crate::unicode::CharCol(current_col),
                                 );
-                                buffer
-                                    .cursor_mut()
-                                    .set_position(current_line, grapheme);
+                                buffer.cursor_mut().set_position(current_line, grapheme);
                             }
                             return;
                         }
@@ -91,7 +89,9 @@ impl Motions {
 
         // No sentence found, move to end of buffer
         let last_line = buffer.line_count().saturating_sub(1);
-        buffer.cursor_mut().set_position(last_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(last_line, GraphemeCol::ZERO);
     }
 
     /// Move backward to start of previous sentence
@@ -109,7 +109,7 @@ impl Motions {
         // Convert grapheme to char col for char-based iteration
         let mut col = if let Some(line) = buffer.line(line_idx) {
             let line_text = line.trim_end_matches('\n');
-            crate::unicode::grapheme_to_char_col(line_text, grapheme_col)
+            crate::unicode::grapheme_to_char_col(line_text, grapheme_col).0
         } else {
             0
         };
@@ -169,14 +169,18 @@ impl Motions {
                         }
 
                         if col >= chars.len() && line_idx + 1 < buffer.line_count() {
-                            buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
+                            buffer
+                                .cursor_mut()
+                                .set_position(line_idx + 1, GraphemeCol::ZERO);
                         } else {
                             let clamped = col.min(chars.len().saturating_sub(1));
-                            let line_str: String =
-                                line.trim_end_matches('\n').to_string();
+                            let line_str: String = line.trim_end_matches('\n').to_string();
                             buffer.cursor_mut().set_position(
                                 line_idx,
-                                crate::unicode::char_to_grapheme_col(&line_str, clamped),
+                                crate::unicode::char_to_grapheme_col(
+                                    &line_str,
+                                    crate::unicode::CharCol(clamped),
+                                ),
                             );
                         }
                         return;

@@ -38,7 +38,14 @@ impl WrapMap {
     where
         F: Fn(usize) -> String,
     {
-        Self::new_with_decorations(line_count, wrap_width, tab_width, buffer_version, line_text, |_| Vec::new())
+        Self::new_with_decorations(
+            line_count,
+            wrap_width,
+            tab_width,
+            buffer_version,
+            line_text,
+            |_| Vec::new(),
+        )
     }
 
     /// Creates a new WrapMap that accounts for inline decoration widths.
@@ -66,7 +73,9 @@ impl WrapMap {
             visual_offsets.push(total);
             let text = line_text(i);
             let decs = inline_widths(i);
-            let count = crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs) as u16;
+            let count =
+                crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs)
+                    as u16;
             visual_counts.push(count);
             total += count as usize;
         }
@@ -170,7 +179,14 @@ impl WrapMap {
     ) where
         F: Fn(usize) -> String,
     {
-        self.rebuild_with_decorations(line_count, wrap_width, tab_width, buffer_version, line_text, |_| Vec::new());
+        self.rebuild_with_decorations(
+            line_count,
+            wrap_width,
+            tab_width,
+            buffer_version,
+            line_text,
+            |_| Vec::new(),
+        );
     }
 
     /// Rebuild with inline decoration widths.
@@ -200,7 +216,9 @@ impl WrapMap {
             self.visual_offsets.push(total);
             let text = line_text(i);
             let decs = inline_widths(i);
-            let count = crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs) as u16;
+            let count =
+                crate::wrap::visual_line_count_with_decorations(&text, width, tab_width, &decs)
+                    as u16;
             self.visual_counts.push(count);
             total += count as usize;
         }
@@ -724,11 +742,7 @@ mod tests {
         // should be at row 1, display col 7 - 4 = 3
         let text = "ab";
         let decs = vec![(1, 6)]; // 6-col decoration at char 1
-        let map = WrapMap::new_with_decorations(
-            1, 4, 4, 0,
-            make_text(&[text]),
-            |_| decs.clone(),
-        );
+        let map = WrapMap::new_with_decorations(1, 4, 4, 0, make_text(&[text]), |_| decs.clone());
         // With decoration: total display = 1 + 6 + 1 = 8, at width 4 = 2 rows
         assert_eq!(map.visual_lines_for(0), 2);
 
@@ -745,11 +759,7 @@ mod tests {
         // = 3 rows
         let text = "ab";
         let decs = vec![(1, 7)]; // 7-col decoration at char 1
-        let map = WrapMap::new_with_decorations(
-            1, 3, 4, 0,
-            make_text(&[text]),
-            |_| decs.clone(),
-        );
+        let map = WrapMap::new_with_decorations(1, 3, 4, 0, make_text(&[text]), |_| decs.clone());
         assert_eq!(map.visual_lines_for(0), 3);
 
         // Cursor on 'a' (display col 0) → row 0, col 0

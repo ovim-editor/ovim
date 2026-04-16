@@ -401,9 +401,8 @@ impl Editor {
                     new_name_clone,
                 )
                 .await;
-            let _ = tx.send(
-                result.map(|edit| crate::editor::lsp_slot::RenameResult { edit, new_name }),
-            );
+            let _ = tx
+                .send(result.map(|edit| crate::editor::lsp_slot::RenameResult { edit, new_name }));
         });
 
         self.lsp.slots.rename.fire(task, rx, buffer_version);
@@ -439,7 +438,10 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp.slots.semantic_tokens.fire(task, rx, buffer_version);
+        self.lsp
+            .slots
+            .semantic_tokens
+            .fire(task, rx, buffer_version);
         Ok(true)
     }
 }

@@ -35,4 +35,3 @@ pub struct UiPanels {
     /// Top-right toast notifications (transient and sticky)
     pub toast_center: ToastCenter,
 }
-

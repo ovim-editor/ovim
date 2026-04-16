@@ -843,10 +843,8 @@ impl LspManager {
                             .unwrap_or(0);
                         let response_array: Vec<serde_json::Value> =
                             vec![serde_json::Value::Null; item_count];
-                        let response_msg = JsonRpcMessage::response(
-                            id,
-                            serde_json::Value::Array(response_array),
-                        );
+                        let response_msg =
+                            JsonRpcMessage::response(id, serde_json::Value::Array(response_array));
                         if let Err(e) = server.send_response(response_msg).await {
                             lsp_error!(
                                 "LSP-SERVER-REQUEST",

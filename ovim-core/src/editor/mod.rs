@@ -3,20 +3,22 @@ mod ai_chat;
 mod ai_chat_mutations;
 pub(crate) mod ai_chat_state;
 mod ai_chat_tools;
-mod ai_tool_execution;
-mod ai_tool_path;
-mod ai_tool_streaming;
 mod ai_context;
 pub(crate) mod ai_integration;
 mod ai_state;
+mod ai_tool_execution;
+mod ai_tool_path;
+mod ai_tool_streaming;
 mod ai_workflow;
 mod blame_commands;
-mod build_state;
 mod buffer_manager;
+mod build_state;
 mod change_tracking;
 mod command_context;
 mod command_history;
 mod completion;
+mod debug_integration;
+pub mod decoration;
 mod editing_state;
 mod filetree;
 pub mod fuzzy;
@@ -25,8 +27,6 @@ mod input;
 mod input_context;
 mod input_state;
 mod keymap;
-pub mod decoration;
-mod debug_integration;
 mod lsp_integration;
 pub mod lsp_manager_panel;
 pub(crate) mod lsp_slot;
@@ -53,10 +53,10 @@ mod search_context;
 mod search_manager;
 mod tab_manager;
 mod tabpage;
+mod test_runner;
 mod theme;
 mod theme_state;
 mod toast;
-mod test_runner;
 mod ui_features;
 mod ui_panels;
 mod undo;
@@ -244,7 +244,6 @@ use crate::mode::Mode;
 use crate::unicode::{grapheme_to_char_col, GraphemeCol};
 use anyhow::Result;
 use std::collections::HashMap;
-
 
 /// Commands sent from background tasks to the LSP manager via channel
 #[derive(Debug)]
@@ -691,7 +690,10 @@ impl Editor {
         end_col: GraphemeCol,
     ) {
         self.yank_flash = Some(yank_flash::YankFlash::range(
-            start_line, start_col.0, end_line, end_col.0,
+            start_line,
+            start_col.0,
+            end_line,
+            end_col.0,
         ));
     }
 
@@ -882,18 +884,29 @@ impl Editor {
         };
 
         let inline_widths = |line_idx: usize| -> Vec<(usize, usize)> {
-            self.decorations.inline_decorations_for_line(line_idx, &rope)
+            self.decorations
+                .inline_decorations_for_line(line_idx, &rope)
         };
 
         if let Some(map) = self.viewport.wrap_map.as_mut() {
             // On any version mismatch, full rebuild to avoid stale wrap rows.
             map.rebuild_with_decorations(
-                line_count, width, tab_width, buf_version, make_line_text, inline_widths,
+                line_count,
+                width,
+                tab_width,
+                buf_version,
+                make_line_text,
+                inline_widths,
             );
         } else {
             // Build from scratch
             let map = WrapMap::new_with_decorations(
-                line_count, width, tab_width, buf_version, make_line_text, inline_widths,
+                line_count,
+                width,
+                tab_width,
+                buf_version,
+                make_line_text,
+                inline_widths,
             );
             self.viewport.wrap_map = Some(map);
         }
@@ -902,7 +915,7 @@ impl Editor {
     fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: GraphemeCol) -> usize {
         let line = self.buffer().line(line_idx).unwrap_or_default();
         let line_text = line.trim_end_matches('\n');
-        grapheme_to_char_col(line_text, grapheme_col)
+        grapheme_to_char_col(line_text, grapheme_col).0
     }
 
     fn cursor_line_text(&self, line_idx: usize) -> String {
@@ -1084,7 +1097,12 @@ impl Editor {
             // scroll keeps the *decorated* cursor position visible.  Without
             // this, h_offset is set from raw text only, but the renderer adds
             // decoration widths to the cursor, causing it to float right.
-            raw_col + self.decorations.inline_width_before(cursor_line, cursor_char_col, self.buffer().rope())
+            raw_col
+                + self.decorations.inline_width_before(
+                    cursor_line,
+                    cursor_char_col,
+                    self.buffer().rope(),
+                )
         };
         let wrap = self.options.wrap;
         let sidescroll = self.options.sidescroll;
@@ -1194,12 +1212,15 @@ impl Editor {
             .to_string();
         let cursor_char_col = grapheme_to_char_col(&line_text, self.buffer().cursor().col());
         let cursor_display_col =
-            crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width);
+            crate::display::char_col_to_display_col(&line_text, cursor_char_col.0, tab_width);
         let rope = self.buffer().rope();
-        let cursor_inline_widths =
-            self.decorations.inline_decorations_for_line(cursor_line, rope);
-        let cursor_display_col =
-            cursor_display_col + self.decorations.inline_width_before(cursor_line, cursor_char_col, rope);
+        let cursor_inline_widths = self
+            .decorations
+            .inline_decorations_for_line(cursor_line, rope);
+        let cursor_display_col = cursor_display_col
+            + self
+                .decorations
+                .inline_width_before(cursor_line, cursor_char_col.0, rope);
         let cursor_subline = Self::cursor_subline_in_wrapped_line(
             &line_text,
             cursor_display_col,
@@ -1278,7 +1299,10 @@ impl Editor {
         inline_widths: &[(usize, usize)],
     ) -> usize {
         let wrap_points = crate::wrap::compute_wrap_points_with_decorations(
-            line_text, wrap_width, tab_width, inline_widths,
+            line_text,
+            wrap_width,
+            tab_width,
+            inline_widths,
         );
         if wrap_points.is_empty() {
             return 0;
@@ -1792,9 +1816,10 @@ impl Editor {
                 // Insert pasted text at cursor position as a single change
                 let cursor = self.buffer().cursor();
                 let cursor_before = (cursor.line(), cursor.col().0);
-                // Convert grapheme col to char col for buffer operations
+                // Convert grapheme col to char col for buffer operations.
+                // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
                 let char_col = self.buffer().cursor_char_col();
-                let position = (cursor.line(), char_col);
+                let position = (cursor.line(), char_col.0);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1811,9 +1836,10 @@ impl Editor {
                 self.registers.set(None, text.to_string());
                 let cursor = self.buffer().cursor();
                 let cursor_before = (cursor.line(), cursor.col().0);
-                // Convert grapheme col to char col for buffer operations
+                // Convert grapheme col to char col for buffer operations.
+                // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
                 let char_col = self.buffer().cursor_char_col();
-                let position = (cursor.line(), char_col + 1);
+                let position = (cursor.line(), char_col.0 + 1);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1884,7 +1910,10 @@ impl Editor {
 
     /// Finalizes the current composite change
     pub fn finalize_change_building(&mut self) {
-        let cursor_pos = (self.buffer().cursor().line(), self.buffer().cursor().col().0);
+        let cursor_pos = (
+            self.buffer().cursor().line(),
+            self.buffer().cursor().col().0,
+        );
         self.buffer_mut()
             .change_manager_mut()
             .finalize_building_at(cursor_pos);
@@ -2059,7 +2088,9 @@ impl Editor {
 
         if let Some((line, character)) = target {
             let col = self.utf16_to_grapheme_col(line, character);
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
     }
 
@@ -2086,7 +2117,9 @@ impl Editor {
 
         if let Some((line, character)) = target {
             let col = self.utf16_to_grapheme_col(line, character);
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
     }
 }

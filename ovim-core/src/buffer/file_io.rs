@@ -1,7 +1,7 @@
 use super::{Buffer, Cursor};
-use crate::unicode::GraphemeCol;
 use crate::change::ChangeManager;
 use crate::fold::FoldManager;
+use crate::unicode::GraphemeCol;
 use crate::GitStatus;
 use anyhow::{Context, Result};
 use ropey::Rope;

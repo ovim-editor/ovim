@@ -15,7 +15,7 @@ use crate::change::ChangeManager;
 use crate::edit::Edit;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 use crate::GitStatus;
 use ropey::Rope;
 use std::path::PathBuf;
@@ -256,7 +256,7 @@ impl Buffer {
     ///
     /// Use this after operations that compute a char-based column (e.g., from
     /// `delete_range`) and need to set the cursor to that position.
-    pub fn set_cursor_char_col(&mut self, line: usize, char_col: usize) {
+    pub fn set_cursor_char_col(&mut self, line: usize, char_col: CharCol) {
         if line >= self.rope.len_lines() {
             self.cursor.set_position(line, GraphemeCol(0));
             return;
@@ -274,10 +274,10 @@ impl Buffer {
     /// The cursor stores a grapheme column (what the user sees), but rope
     /// operations use char indices. For ASCII text these are identical;
     /// they diverge for combining characters (e.g., `e` + `◌́`).
-    pub fn cursor_char_col(&self) -> usize {
+    pub fn cursor_char_col(&self) -> CharCol {
         let line_idx = self.cursor.line();
         if line_idx >= self.rope.len_lines() {
-            return 0;
+            return CharCol::ZERO;
         }
         let line = self.rope.line(line_idx);
         let line_str: String = line.chars().take_while(|&c| c != '\n').collect();
@@ -472,24 +472,27 @@ impl Buffer {
     }
 
     /// Finds the column of the first non-whitespace character on a line (zero-allocation)
-    /// Returns 0 if the line is blank or doesn't exist
-    pub fn first_non_blank_col(&self, idx: usize) -> usize {
+    /// Returns `CharCol::ZERO` if the line is blank or doesn't exist.
+    ///
+    /// Indexes are char-based (what rope operations want); for ASCII this is
+    /// the same as grapheme-based, for combining characters they diverge.
+    pub fn first_non_blank_col(&self, idx: usize) -> CharCol {
         if let Some(line_slice) = self.line_slice(idx) {
             for (i, ch) in line_slice.chars().enumerate() {
                 if ch == '\n' {
                     break;
                 }
                 if !ch.is_whitespace() {
-                    return i;
+                    return CharCol(i);
                 }
             }
         }
-        0
+        CharCol::ZERO
     }
 
     /// Finds the column of the last non-whitespace character on a line (zero-allocation)
-    /// Returns 0 if the line is blank or doesn't exist
-    pub fn last_non_blank_col(&self, idx: usize) -> usize {
+    /// Returns `CharCol::ZERO` if the line is blank or doesn't exist.
+    pub fn last_non_blank_col(&self, idx: usize) -> CharCol {
         if let Some(line_slice) = self.line_slice(idx) {
             let mut last_non_blank = 0;
             for (i, ch) in line_slice.chars().enumerate() {
@@ -500,9 +503,9 @@ impl Buffer {
                     last_non_blank = i;
                 }
             }
-            return last_non_blank;
+            return CharCol(last_non_blank);
         }
-        0
+        CharCol::ZERO
     }
 
     /// Finds the position of a character in a line starting from a given column (zero-allocation)
@@ -908,7 +911,11 @@ mod tests {
             "First line should be empty string"
         );
         assert_eq!(buf.cursor().line(), 0, "Cursor should be at line 0");
-        assert_eq!(buf.cursor().col(), GraphemeCol::ZERO, "Cursor should be at col 0");
+        assert_eq!(
+            buf.cursor().col(),
+            GraphemeCol::ZERO,
+            "Cursor should be at col 0"
+        );
         assert!(!buf.is_modified(), "New buffer should not be modified");
     }
 
@@ -1115,7 +1122,7 @@ mod tests {
     fn test_record_insert() {
         let mut buf = Buffer::new_from_str("hello\n");
         let ((), edits) = buf.record(|b| {
-            b.insert_text_at(0, 5, " world");
+            b.insert_text_at(0, CharCol(5), " world");
         });
         assert_eq!(edits.len(), 1);
         assert_eq!(
@@ -1131,7 +1138,7 @@ mod tests {
     #[test]
     fn test_record_delete() {
         let mut buf = Buffer::new_from_str("hello world\n");
-        let (deleted, edits) = buf.record(|b| b.delete_range(0, 5, 0, 11));
+        let (deleted, edits) = buf.record(|b| b.delete_range(0, CharCol(5), 0, CharCol(11)));
         assert_eq!(deleted, " world");
         assert_eq!(edits.len(), 1);
         assert_eq!(
@@ -1149,9 +1156,9 @@ mod tests {
         let mut buf = Buffer::new_from_str("hello world\n");
         let ((), edits) = buf.record(|b| {
             // Delete " world"
-            b.delete_range(0, 5, 0, 11);
+            b.delete_range(0, CharCol(5), 0, CharCol(11));
             // Insert " rust"
-            b.insert_text_at(0, 5, " rust");
+            b.insert_text_at(0, CharCol(5), " rust");
         });
         assert_eq!(edits.len(), 2);
         assert_eq!(buf.rope().to_string(), "hello rust\n");
@@ -1171,7 +1178,7 @@ mod tests {
     fn test_not_recording_by_default() {
         let mut buf = Buffer::new_from_str("hello\n");
         assert!(!buf.is_recording());
-        buf.insert_text_at(0, 5, " world");
+        buf.insert_text_at(0, CharCol(5), " world");
         // No recording vec, so nothing captured — that's fine
         assert_eq!(buf.rope().to_string(), "hello world\n");
     }
@@ -1209,8 +1216,8 @@ mod tests {
         let mut buf = Buffer::new_from_str("abc\n");
 
         // Apply two edits that belong to the same undo group.
-        buf.insert_text_at(0, 0, "X");
-        buf.insert_text_at(0, 1, "Y");
+        buf.insert_text_at(0, CharCol(0), "X");
+        buf.insert_text_at(0, CharCol(1), "Y");
         assert_eq!(buf.rope().to_string(), "XYabc\n");
 
         let change1 = crate::change::Change::recorded_grouped(

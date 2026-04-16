@@ -198,7 +198,10 @@ impl Editor {
 
     /// Returns the current cursor position as (line, col).
     pub fn cursor_position(&self) -> Position {
-        (self.buffer().cursor().line(), self.buffer().cursor().col().0)
+        (
+            self.buffer().cursor().line(),
+            self.buffer().cursor().col().0,
+        )
     }
 
     /// Returns the last position where an edit occurred (for g; navigation).

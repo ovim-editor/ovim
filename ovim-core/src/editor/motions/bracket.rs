@@ -27,7 +27,7 @@ impl Motions {
             .to_string()
             .trim_end_matches('\n')
             .to_string();
-        let char_col = crate::unicode::grapheme_to_char_col(&current_line_str, grapheme_col);
+        let char_col = crate::unicode::grapheme_to_char_col(&current_line_str, grapheme_col).0;
 
         // Convert line+col to absolute position
         let mut abs_pos = 0;
@@ -94,9 +94,7 @@ impl Motions {
                 .to_string();
             let new_grapheme_col =
                 crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
-            buffer
-                .cursor_mut()
-                .set_position(new_line, new_grapheme_col);
+            buffer.cursor_mut().set_position(new_line, new_grapheme_col);
             true
         } else {
             false
@@ -182,8 +180,13 @@ impl Motions {
                     if depth == 0 {
                         // Found unmatched opening brace
                         let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, search_pos);
-                        let target_line_str: String = rope.line(new_line).to_string().trim_end_matches('\n').to_string();
-                        let new_grapheme_col = crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
+                        let target_line_str: String = rope
+                            .line(new_line)
+                            .to_string()
+                            .trim_end_matches('\n')
+                            .to_string();
+                        let new_grapheme_col =
+                            crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
                         buffer.cursor_mut().set_position(new_line, new_grapheme_col);
                         return true;
                     }
@@ -237,8 +240,13 @@ impl Motions {
                     if depth == 0 {
                         // Found unmatched closing brace
                         let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, search_pos);
-                        let target_line_str: String = rope.line(new_line).to_string().trim_end_matches('\n').to_string();
-                        let new_grapheme_col = crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
+                        let target_line_str: String = rope
+                            .line(new_line)
+                            .to_string()
+                            .trim_end_matches('\n')
+                            .to_string();
+                        let new_grapheme_col =
+                            crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
                         buffer.cursor_mut().set_position(new_line, new_grapheme_col);
                         return true;
                     }
@@ -332,9 +340,17 @@ impl Motions {
                     c if c == close_char => depth += 1,
                     c if c == open_char => {
                         if depth == 0 {
-                            let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, search_pos);
-                            let target_line_str: String = rope.line(new_line).to_string().trim_end_matches('\n').to_string();
-                            let new_grapheme_col = crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
+                            let (new_line, new_char_col) =
+                                Self::abs_pos_to_line_col(rope, search_pos);
+                            let target_line_str: String = rope
+                                .line(new_line)
+                                .to_string()
+                                .trim_end_matches('\n')
+                                .to_string();
+                            let new_grapheme_col = crate::unicode::char_to_grapheme_col(
+                                &target_line_str,
+                                new_char_col,
+                            );
                             buffer.cursor_mut().set_position(new_line, new_grapheme_col);
                             return true;
                         }
@@ -359,9 +375,17 @@ impl Motions {
                     c if c == open_char => depth += 1,
                     c if c == close_char => {
                         if depth == 0 {
-                            let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, search_pos);
-                            let target_line_str: String = rope.line(new_line).to_string().trim_end_matches('\n').to_string();
-                            let new_grapheme_col = crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
+                            let (new_line, new_char_col) =
+                                Self::abs_pos_to_line_col(rope, search_pos);
+                            let target_line_str: String = rope
+                                .line(new_line)
+                                .to_string()
+                                .trim_end_matches('\n')
+                                .to_string();
+                            let new_grapheme_col = crate::unicode::char_to_grapheme_col(
+                                &target_line_str,
+                                new_char_col,
+                            );
                             buffer.cursor_mut().set_position(new_line, new_grapheme_col);
                             return true;
                         }

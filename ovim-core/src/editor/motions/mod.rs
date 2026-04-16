@@ -73,11 +73,14 @@ impl Motions {
         c.is_whitespace()
     }
 
-    /// Convert absolute character position to (line, col)
-    pub fn abs_pos_to_line_col(rope: &ropey::Rope, abs_pos: usize) -> (usize, usize) {
+    /// Convert absolute character position to (line, char col).
+    pub fn abs_pos_to_line_col(
+        rope: &ropey::Rope,
+        abs_pos: usize,
+    ) -> (usize, crate::unicode::CharCol) {
         let line = rope.char_to_line(abs_pos.min(rope.len_chars().saturating_sub(1)));
         let line_start = rope.line_to_char(line);
         let col = abs_pos.saturating_sub(line_start);
-        (line, col)
+        (line, crate::unicode::CharCol(col))
     }
 }

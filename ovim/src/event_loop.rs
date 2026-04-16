@@ -238,8 +238,7 @@ async fn process_pending_debug_action(editor: &mut Editor) {
             for var_ref in scope_refs {
                 let _ = editor.debug_fetch_variables(var_ref).await;
             }
-            let expanded: Vec<u64> =
-                editor.debug_state().expanded_refs.iter().copied().collect();
+            let expanded: Vec<u64> = editor.debug_state().expanded_refs.iter().copied().collect();
             for var_ref in expanded {
                 let _ = editor.debug_fetch_variables(var_ref).await;
             }
@@ -364,8 +363,7 @@ async fn process_dap_launch_or_attach(editor: &mut Editor) {
 
     match result {
         Ok(()) => {
-            editor.dap_manager_mut().pending_action =
-                Some(PendingDebugAction::SyncBreakpoints);
+            editor.dap_manager_mut().pending_action = Some(PendingDebugAction::SyncBreakpoints);
         }
         Err(e) => {
             editor.set_lsp_status(format!("Debug launch/attach failed: {}", e));
@@ -378,8 +376,7 @@ async fn process_dap_launch_or_attach(editor: &mut Editor) {
 async fn process_dap_fetch_run_configs(editor: &mut Editor) {
     use ovim::dap::PendingDebugAction;
 
-    let project_root =
-        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+    let project_root = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
 
     let mut configs = ovim::debug_config::load_debug_configs(&project_root);
 
@@ -395,8 +392,7 @@ async fn process_dap_fetch_run_configs(editor: &mut Editor) {
             .buffer()
             .file_path()
             .and_then(|fp| {
-                ovim::language_config::LanguageRegistry::try_get()
-                    .and_then(|reg| reg.detect(fp))
+                ovim::language_config::LanguageRegistry::try_get().and_then(|reg| reg.detect(fp))
             })
             .and_then(|lang| lang.dap.as_ref())
             .and_then(|config| {
@@ -421,8 +417,7 @@ async fn process_dap_fetch_run_configs(editor: &mut Editor) {
             .buffer()
             .file_path()
             .and_then(|fp| {
-                ovim::language_config::LanguageRegistry::try_get()
-                    .and_then(|reg| reg.detect(fp))
+                ovim::language_config::LanguageRegistry::try_get().and_then(|reg| reg.detect(fp))
             })
             .and_then(|lang| lang.dap.as_ref())
             .and_then(|dap_config| {
@@ -439,8 +434,7 @@ async fn process_dap_fetch_run_configs(editor: &mut Editor) {
     } else {
         let names: Vec<String> = configs.iter().map(|c| c.name.clone()).collect();
         editor.dap_manager_mut().available_debug_configs = configs;
-        let picker =
-            ovim::editor::picker::Picker::new_debug_config(project_root, names);
+        let picker = ovim::editor::picker::Picker::new_debug_config(project_root, names);
         editor.set_picker(picker);
         editor.set_mode(ovim::mode::Mode::Picker);
         editor.mark_picker_selection_changed();
@@ -1431,7 +1425,10 @@ mod tests {
 
         // Move cursor to EOF and ensure scroll offset is set.
         let last_line = editor.buffer().line_count().saturating_sub(1);
-        editor.buffer_mut().cursor_mut().set_position(last_line, ovim_core::unicode::GraphemeCol::ZERO);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(last_line, ovim_core::unicode::GraphemeCol::ZERO);
         editor.update_scroll_offset();
 
         // Shrink the pane; cursor should remain visible in the new viewport.
@@ -1549,12 +1546,15 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
 
     // Perform the edit: delete old text, insert new text
     let end_col = match_col + old.len();
-    let deleted = editor
-        .buffer_mut()
-        .delete_range(match_line, match_col, match_line, end_col);
+    let deleted = editor.buffer_mut().delete_range(
+        match_line,
+        ovim_core::unicode::CharCol(match_col),
+        match_line,
+        ovim_core::unicode::CharCol(end_col),
+    );
     editor
         .buffer_mut()
-        .insert_text_at(match_line, match_col, new);
+        .insert_text_at(match_line, ovim_core::unicode::CharCol(match_col), new);
 
     // Record composite change for undo
     let change = ovim::editor::Change::composite(
@@ -1618,9 +1618,11 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
     let ins_line = rope.char_to_line(char_idx);
     let ins_col = char_idx - rope.line_to_char(ins_line);
 
-    editor
-        .buffer_mut()
-        .insert_text_at(ins_line, ins_col, &text_with_nl);
+    editor.buffer_mut().insert_text_at(
+        ins_line,
+        ovim_core::unicode::CharCol(ins_col),
+        &text_with_nl,
+    );
 
     // Record change for undo
     let change = ovim::editor::Change::insert((ins_line, ins_col), text_with_nl, cursor_before);
@@ -1673,7 +1675,12 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
         0
     };
 
-    let deleted = editor.buffer_mut().delete_range(from, 0, end_line, end_col);
+    let deleted = editor.buffer_mut().delete_range(
+        from,
+        ovim_core::unicode::CharCol::ZERO,
+        end_line,
+        ovim_core::unicode::CharCol(end_col),
+    );
 
     // Record change for undo
     let change = ovim::editor::Change::delete(

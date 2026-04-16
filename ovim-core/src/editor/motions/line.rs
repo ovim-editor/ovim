@@ -18,7 +18,8 @@ impl Motions {
                 .chars()
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
-            let grapheme_col = crate::unicode::char_to_grapheme_col(line_text, char_col);
+            let grapheme_col =
+                crate::unicode::char_to_grapheme_col(line_text, crate::unicode::CharCol(char_col));
 
             buffer.cursor_mut().set_col(grapheme_col);
         }
@@ -35,7 +36,9 @@ impl Motions {
         let current_line = cursor.line();
         let target_line = (current_line + count).min(buffer.line_count().saturating_sub(1));
 
-        buffer.cursor_mut().set_position(target_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(target_line, GraphemeCol::ZERO);
         Self::first_non_blank(buffer);
     }
 
@@ -45,7 +48,9 @@ impl Motions {
         let current_line = cursor.line();
         let target_line = current_line.saturating_sub(count);
 
-        buffer.cursor_mut().set_position(target_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(target_line, GraphemeCol::ZERO);
         Self::first_non_blank(buffer);
     }
 
@@ -64,7 +69,10 @@ impl Motions {
                     last_char_col = i;
                 }
             }
-            let grapheme_col = crate::unicode::char_to_grapheme_col(line_text, last_char_col);
+            let grapheme_col = crate::unicode::char_to_grapheme_col(
+                line_text,
+                crate::unicode::CharCol(last_char_col),
+            );
 
             buffer.cursor_mut().set_col(grapheme_col);
         }

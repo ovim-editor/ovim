@@ -203,9 +203,11 @@ fn exit_insert_mode(editor: &mut Editor) {
                         let line_text = line.trim_end_matches('\n');
                         let line_len = line_text.chars().count();
                         let version_before = editor.buffer().version();
-                        editor
-                            .buffer_mut()
-                            .insert_text_at(line_idx, line_len, &inserted_text);
+                        editor.buffer_mut().insert_text_at(
+                            line_idx,
+                            crate::unicode::CharCol(line_len),
+                            &inserted_text,
+                        );
                         if editor.buffer().version() != version_before {
                             // Track this insertion as a change
                             let change = Change::insert(
@@ -222,9 +224,11 @@ fn exit_insert_mode(editor: &mut Editor) {
                         let line_text = line.trim_end_matches('\n');
                         let insert_col = col.min(line_text.chars().count());
                         let version_before = editor.buffer().version();
-                        editor
-                            .buffer_mut()
-                            .insert_text_at(line_idx, insert_col, &inserted_text);
+                        editor.buffer_mut().insert_text_at(
+                            line_idx,
+                            crate::unicode::CharCol(insert_col),
+                            &inserted_text,
+                        );
                         if editor.buffer().version() != version_before {
                             // Track this insertion as a change
                             let change = Change::insert(
@@ -456,8 +460,10 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         .unwrap_or_default()
                         .trim_end_matches('\n')
                         .to_string();
-                    if crate::unicode::grapheme_at_index(&line_text, cursor.col().0.saturating_sub(1))
-                        == Some(":")
+                    if crate::unicode::grapheme_at_index(
+                        &line_text,
+                        cursor.col().0.saturating_sub(1),
+                    ) == Some(":")
                         && crate::unicode::grapheme_at_index(
                             &line_text,
                             cursor.col().0.saturating_sub(2),

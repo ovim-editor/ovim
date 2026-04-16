@@ -166,7 +166,7 @@ use crate::buffer::Buffer;
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 use crate::textobjects::{TextObjectRange, TextObjects};
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 use anyhow::Result;
 use std::path::{Path, PathBuf};
 
@@ -386,7 +386,6 @@ impl Change {
         }
     }
 
-
     /// Creates a Recorded change from raw buffer edits
     pub fn recorded(edits: Vec<Edit>, cursor_before: Position, cursor_after: Position) -> Self {
         Self::Recorded {
@@ -446,33 +445,34 @@ impl Change {
         }
     }
 
-
     /// Applies this change to the buffer
     pub fn apply(&self, buffer: &mut Buffer) {
         match self {
             Self::InsertText { position, text, .. } => {
+                // Phase-15 debt: Change::Position tuple stores char coords.
                 let (line, col) = *position;
                 let version_before = buffer.version();
-                buffer.insert_text_at(line, col, text);
+                buffer.insert_text_at(line, CharCol(col), text);
                 // Keep cursor stable when insertion was blocked/no-op.
                 if buffer.version() != version_before {
                     // Update cursor to end of inserted text
                     // calculate_end_position returns char-indexed columns,
                     // so use set_cursor_char_col which converts to grapheme.
                     let end_pos = Self::calculate_end_position(*position, text);
-                    buffer.set_cursor_char_col(end_pos.0, end_pos.1);
+                    buffer.set_cursor_char_col(end_pos.0, CharCol(end_pos.1));
                 }
             }
             Self::DeleteText { range, .. } => {
+                // Phase-15 debt: Change::Position tuple stores char coords.
                 let (start_line, start_col) = range.start;
                 let (end_line, end_col) = range.end;
                 let version_before = buffer.version();
-                buffer.delete_range(start_line, start_col, end_line, end_col);
+                buffer.delete_range(start_line, CharCol(start_col), end_line, CharCol(end_col));
                 // Keep cursor stable when deletion was blocked/no-op.
                 if buffer.version() != version_before {
                     // Position cursor at deletion start
                     // Range cols are char indices; convert to grapheme for cursor.
-                    buffer.set_cursor_char_col(start_line, start_col);
+                    buffer.set_cursor_char_col(start_line, CharCol(start_col));
                 }
             }
             Self::Composite {
@@ -553,9 +553,10 @@ impl Change {
                 cursor_before,
                 ..
             } => {
-                // To undo a delete, re-insert the deleted text
+                // To undo a delete, re-insert the deleted text.
+                // Phase-15 debt: Change::Position stores char coords in a bare tuple.
                 let (line, col) = range.start;
-                buffer.insert_text_at(line, col, deleted_text);
+                buffer.insert_text_at(line, CharCol(col), deleted_text);
                 // Restore cursor to where it was before the change
                 buffer
                     .cursor_mut()
@@ -618,8 +619,9 @@ impl Change {
                 position: self_pos,
                 ..
             } => {
-                // Insert the same text at current position
-                let new_pos = (buffer.cursor().line(), buffer.cursor_char_col());
+                // Insert the same text at current position.
+                // Phase-15 debt: Change::Position stores char coords in a bare tuple.
+                let new_pos = (buffer.cursor().line(), buffer.cursor_char_col().0);
                 // Update self so undo targets the new position, not the original
                 *self_pos = new_pos;
                 Self::InsertText {
@@ -647,43 +649,45 @@ impl Change {
 
                 let is_backwards = *backwards;
 
-                let (start_line, start_col, end_line, end_col) = if is_backwards {
-                    // For backwards deletion (X), treat current cursor as the END
-                    // and calculate the start by going backwards
-                    let new_start = if offset_line == 0 {
-                        (cursor_line, cursor_col.saturating_sub(offset_col))
-                    } else if cursor_col == 0 {
-                        // Multi-line backwards deletion with cursor at col 0
-                        // (e.g. backspace at col 0 joining lines via I<BS>)
-                        let prev_line = cursor_line.saturating_sub(offset_line);
-                        let prev_line_len = buffer
-                            .line(prev_line)
-                            .map(|s| s.trim_end_matches('\n').chars().count())
-                            .unwrap_or(0);
-                        (prev_line, prev_line_len)
+                let (start_line, start_col, end_line, end_col): (usize, CharCol, usize, CharCol) =
+                    if is_backwards {
+                        // For backwards deletion (X), treat current cursor as the END
+                        // and calculate the start by going backwards
+                        let new_start: (usize, CharCol) = if offset_line == 0 {
+                            (cursor_line, cursor_col.saturating_sub(offset_col))
+                        } else if cursor_col == CharCol::ZERO {
+                            // Multi-line backwards deletion with cursor at col 0
+                            // (e.g. backspace at col 0 joining lines via I<BS>)
+                            let prev_line = cursor_line.saturating_sub(offset_line);
+                            let prev_line_len = buffer
+                                .line(prev_line)
+                                .map(|s| s.trim_end_matches('\n').chars().count())
+                                .unwrap_or(0);
+                            (prev_line, CharCol(prev_line_len))
+                        } else {
+                            // Original was cross-line but cursor is mid-line now
+                            // (e.g. i<BS> at col 0, then repeat at col 2).
+                            // Constrain to same-line single-char delete — what BS
+                            // would actually do at this cursor position.
+                            (cursor_line, cursor_col.saturating_sub(1))
+                        };
+                        (new_start.0, new_start.1, cursor_line, cursor_col)
                     } else {
-                        // Original was cross-line but cursor is mid-line now
-                        // (e.g. i<BS> at col 0, then repeat at col 2).
-                        // Constrain to same-line single-char delete — what BS
-                        // would actually do at this cursor position.
-                        (cursor_line, cursor_col.saturating_sub(1))
+                        // For forward deletion (x, d, etc), treat current cursor as the START
+                        let new_end: (usize, CharCol) = if offset_line == 0 {
+                            (cursor_line, cursor_col + offset_col)
+                        } else {
+                            (cursor_line + offset_line, CharCol(offset_col))
+                        };
+                        (cursor_line, cursor_col, new_end.0, new_end.1)
                     };
-                    (new_start.0, new_start.1, cursor_line, cursor_col)
-                } else {
-                    // For forward deletion (x, d, etc), treat current cursor as the START
-                    let new_end = if offset_line == 0 {
-                        (cursor_line, cursor_col + offset_col)
-                    } else {
-                        (cursor_line + offset_line, offset_col)
-                    };
-                    (cursor_line, cursor_col, new_end.0, new_end.1)
-                };
 
                 let actual_deleted = buffer.delete_range(start_line, start_col, end_line, end_col);
 
                 // Update range and deleted_text so undo reverses the actual
                 // deletion, not the original one.
-                *range = Range::new((start_line, start_col), (end_line, end_col));
+                // Phase-15 debt: Change::Position stores char coords in a bare tuple.
+                *range = Range::new((start_line, start_col.0), (end_line, end_col.0));
                 *deleted_text = actual_deleted;
 
                 // Position cursor at the start of the deletion
@@ -1201,16 +1205,18 @@ impl ChangeManager {
 // ==============================================================================
 
 /// Finds a number at or after the given column position.
-/// Returns (start_col, end_col, number_string).
+/// Returns (start_col, end_col, number_string) as `CharCol` indices.
 /// Handles cursor on hex digits (a-f) inside a 0x prefix number.
-pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, String)> {
+pub fn find_number_at_or_after(line: &str, col: CharCol) -> Option<(CharCol, CharCol, String)> {
     let chars: Vec<char> = line.chars().collect();
 
     if chars.is_empty() {
         return None;
     }
 
-    // First, check if we're currently inside a number by searching backward
+    // First, check if we're currently inside a number by searching backward.
+    // Internal arithmetic uses raw usize; we wrap at the return boundary.
+    let col = col.0;
     let cursor_col = col.min(chars.len().saturating_sub(1));
 
     // Check if we're on a digit or hex digit that's part of a hex number
@@ -1287,7 +1293,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
         }
 
         let number_str: String = chars[start_col..end_col].iter().collect();
-        return Some((start_col, end_col, number_str));
+        return Some((CharCol(start_col), CharCol(end_col), number_str));
     }
 
     // Not on a digit — search forward only (matches Vim behavior)
@@ -1354,7 +1360,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
 
             if end_col > start_col + 2 {
                 let number_str: String = chars[start_col..end_col].iter().collect();
-                return Some((start_col, end_col, number_str));
+                return Some((CharCol(start_col), CharCol(end_col), number_str));
             }
         }
     }
@@ -1372,7 +1378,7 @@ pub fn find_number_at_or_after(line: &str, col: usize) -> Option<(usize, usize, 
 
     if end_col > start_col {
         let number_str: String = chars[start_col..end_col].iter().collect();
-        Some((start_col, end_col, number_str))
+        Some((CharCol(start_col), CharCol(end_col), number_str))
     } else {
         None
     }

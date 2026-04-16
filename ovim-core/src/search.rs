@@ -1,5 +1,5 @@
 use crate::buffer::Buffer;
-use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col, GraphemeCol};
+use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col, CharCol, GraphemeCol};
 use regex::{Regex, RegexBuilder};
 
 /// Represents a search query with its direction
@@ -73,16 +73,16 @@ impl Search {
         &mut self,
         buffer: &Buffer,
         from_line: usize,
-        from_col: usize,
+        from_col: GraphemeCol,
     ) -> Option<(usize, usize, String)> {
         let regex = self.regex.as_ref()?;
         let forward = self.forward;
 
         // Convert from_col from grapheme to char for internal search
         let from_col_char = if let Some(line_text) = buffer.line(from_line) {
-            grapheme_to_char_col(line_text.trim_end_matches('\n'), GraphemeCol(from_col))
+            grapheme_to_char_col(line_text.trim_end_matches('\n'), from_col)
         } else {
-            from_col
+            CharCol(from_col.0)
         };
 
         let result = if forward {
@@ -96,7 +96,7 @@ impl Search {
             let grapheme_col = if let Some(line_text) = buffer.line(line) {
                 char_to_grapheme_col(line_text.trim_end_matches('\n'), char_col).0
             } else {
-                char_col
+                char_col.0
             };
             (line, grapheme_col, match_text)
         });
@@ -114,14 +114,14 @@ impl Search {
         buffer: &Buffer,
         regex: &Regex,
         from_line: usize,
-        from_col: usize,
-    ) -> Option<(usize, usize, String)> {
+        from_col: CharCol,
+    ) -> Option<(usize, CharCol, String)> {
         let line_count = buffer.line_count();
 
         // Start from the current position
         for line_idx in from_line..line_count {
             if let Some(line_text) = buffer.line(line_idx) {
-                let search_from = if line_idx == from_line { from_col } else { 0 };
+                let search_from = if line_idx == from_line { from_col.0 } else { 0 };
 
                 // Convert character index to byte offset for regex.find_at()
                 let search_from_bytes = line_text
@@ -134,7 +134,7 @@ impl Search {
                 if let Some(mat) = regex.find_at(&line_text, search_from_bytes) {
                     let col = line_text[..mat.start()].chars().count();
                     let match_text = mat.as_str().to_string();
-                    return Some((line_idx, col, match_text));
+                    return Some((line_idx, CharCol(col), match_text));
                 }
             }
         }
@@ -145,7 +145,7 @@ impl Search {
                 if let Some(mat) = regex.find(&line_text) {
                     let col = line_text[..mat.start()].chars().count();
                     let match_text = mat.as_str().to_string();
-                    return Some((line_idx, col, match_text));
+                    return Some((line_idx, CharCol(col), match_text));
                 }
             }
         }
@@ -159,17 +159,17 @@ impl Search {
         buffer: &Buffer,
         regex: &Regex,
         from_line: usize,
-        from_col: usize,
-    ) -> Option<(usize, usize, String)> {
+        from_col: CharCol,
+    ) -> Option<(usize, CharCol, String)> {
         // Search backward from current position
         // First, search the current line up to from_col
         if let Some(line_text) = buffer.line(from_line) {
             // Use character-based slicing to avoid UTF-8 boundary panics
-            let search_text: String = line_text.chars().take(from_col).collect();
+            let search_text: String = line_text.chars().take(from_col.0).collect();
             if let Some(mat) = regex.find_iter(&search_text).last() {
                 let col = search_text[..mat.start()].chars().count();
                 let match_text = mat.as_str().to_string();
-                return Some((from_line, col, match_text));
+                return Some((from_line, CharCol(col), match_text));
             }
         }
 
@@ -180,7 +180,7 @@ impl Search {
                     if let Some(mat) = regex.find_iter(&line_text).last() {
                         let col = line_text[..mat.start()].chars().count();
                         let match_text = mat.as_str().to_string();
-                        return Some((line_idx, col, match_text));
+                        return Some((line_idx, CharCol(col), match_text));
                     }
                 }
             }
@@ -193,7 +193,7 @@ impl Search {
                 if let Some(mat) = regex.find_iter(&line_text).last() {
                     let col = line_text[..mat.start()].chars().count();
                     let match_text = mat.as_str().to_string();
-                    return Some((line_idx, col, match_text));
+                    return Some((line_idx, CharCol(col), match_text));
                 }
             }
         }

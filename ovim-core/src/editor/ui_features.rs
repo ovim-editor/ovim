@@ -4,7 +4,7 @@ use super::{
     CompletionMenu, Editor, FileTree, LocationList, Mode, PathCompletionState, QuickfixEntry,
     QuickfixList,
 };
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 
 impl Editor {
     /// Gets a reference to the completion menu
@@ -62,42 +62,46 @@ impl Editor {
     /// Core completion application: uses textEdit range when available,
     /// falls back to trigger_col..cursor deletion.
     fn accept_completion_item(&mut self, item: &lsp_types::CompletionItem) {
+        use crate::unicode::CharCol;
+
         // Extract the main edit: prefer textEdit (with proper range) over
         // insertText/label (which only knows about the trigger column).
-        let (replace_start_line, replace_start_col, replace_end_line, replace_end_col, text_to_insert) =
-            if let Some(ref text_edit) = item.text_edit {
-                let (range, new_text) = match text_edit {
-                    lsp_types::CompletionTextEdit::Edit(edit) => {
-                        (edit.range, edit.new_text.clone())
-                    }
-                    lsp_types::CompletionTextEdit::InsertAndReplace(ir) => {
-                        // On accept/confirm, use the replace range (broader)
-                        (ir.replace, ir.new_text.clone())
-                    }
-                };
-                let start_line = range.start.line as usize;
-                let start_col = self.utf16_to_col(start_line, range.start.character);
-                let end_line = range.end.line as usize;
-                let end_col = self.utf16_to_col(end_line, range.end.character);
-                (start_line, start_col, end_line, end_col, new_text)
-            } else {
-                // Fallback: delete trigger..cursor and insert insertText/label
-                let cursor_line = self.buffer().cursor().line();
-                let cursor_col = self.buffer().cursor_char_col();
-                let trigger_col = self.completion_menu.trigger_col();
-                let text = if let Some(ref insert_text) = item.insert_text {
-                    insert_text.clone()
-                } else {
-                    item.label.clone()
-                };
-                (cursor_line, trigger_col, cursor_line, cursor_col, text)
+        let (
+            replace_start_line,
+            replace_start_col,
+            replace_end_line,
+            replace_end_col,
+            text_to_insert,
+        ): (usize, CharCol, usize, CharCol, String) = if let Some(ref text_edit) = item.text_edit {
+            let (range, new_text) = match text_edit {
+                lsp_types::CompletionTextEdit::Edit(edit) => (edit.range, edit.new_text.clone()),
+                lsp_types::CompletionTextEdit::InsertAndReplace(ir) => {
+                    // On accept/confirm, use the replace range (broader)
+                    (ir.replace, ir.new_text.clone())
+                }
             };
+            let start_line = range.start.line as usize;
+            let start_col = self.utf16_to_col(start_line, range.start.character);
+            let end_line = range.end.line as usize;
+            let end_col = self.utf16_to_col(end_line, range.end.character);
+            (start_line, start_col, end_line, end_col, new_text)
+        } else {
+            // Fallback: delete trigger..cursor and insert insertText/label
+            let cursor_line = self.buffer().cursor().line();
+            let cursor_col = self.buffer().cursor_char_col();
+            // trigger_col is stored as bare usize in CompletionMenu (char col).
+            let trigger_col = CharCol(self.completion_menu.trigger_col());
+            let text = if let Some(ref insert_text) = item.insert_text {
+                insert_text.clone()
+            } else {
+                item.label.clone()
+            };
+            (cursor_line, trigger_col, cursor_line, cursor_col, text)
+        };
 
         // Collect additional text edits (e.g., auto-imports) before mutating
-        let additional_edits: Vec<lsp_types::TextEdit> = item
-            .additional_text_edits
-            .clone()
-            .unwrap_or_default();
+        let additional_edits: Vec<lsp_types::TextEdit> =
+            item.additional_text_edits.clone().unwrap_or_default();
 
         let cursor_line = self.buffer().cursor().line();
         let cursor_col = self.buffer().cursor().col().0;
@@ -105,9 +109,7 @@ impl Editor {
 
         let ((), edits) = self.buffer_mut().record(|buf| {
             // Apply main completion edit
-            if replace_start_line != replace_end_line
-                || replace_start_col != replace_end_col
-            {
+            if replace_start_line != replace_end_line || replace_start_col != replace_end_col {
                 buf.delete_range(
                     replace_start_line,
                     replace_start_col,
@@ -116,19 +118,15 @@ impl Editor {
                 );
             }
             if !text_to_insert.is_empty() {
-                buf.insert_text_at(
-                    replace_start_line,
-                    replace_start_col,
-                    &text_to_insert,
-                );
+                buf.insert_text_at(replace_start_line, replace_start_col, &text_to_insert);
             }
 
             // Position cursor at the end of inserted text
             let insert_lines: Vec<&str> = text_to_insert.split('\n').collect();
-            let (end_line, end_col) = if insert_lines.len() > 1 {
+            let (end_line, end_col): (usize, CharCol) = if insert_lines.len() > 1 {
                 (
                     replace_start_line + insert_lines.len() - 1,
-                    insert_lines.last().map_or(0, |l| l.chars().count()),
+                    CharCol(insert_lines.last().map_or(0, |l| l.chars().count())),
                 )
             } else {
                 (
@@ -136,7 +134,7 @@ impl Editor {
                     replace_start_col + text_to_insert.chars().count(),
                 )
             };
-            buf.cursor_mut().set_position(end_line, GraphemeCol(end_col));
+            buf.set_cursor_char_col(end_line, end_col);
         });
         if !edits.is_empty() {
             let cursor_after = self.cursor_position();
@@ -147,7 +145,7 @@ impl Editor {
         // to avoid position invalidation
         if !additional_edits.is_empty() {
             // Pre-compute UTF-16 → char column conversions before mutating
-            let mut converted: Vec<(usize, usize, usize, usize, String)> = additional_edits
+            let mut converted: Vec<(usize, CharCol, usize, CharCol, String)> = additional_edits
                 .iter()
                 .map(|edit| {
                     let sl = edit.range.start.line as usize;
@@ -320,7 +318,9 @@ impl Editor {
                 if lnum > 0 {
                     let line = lnum.saturating_sub(1);
                     let col = if qcol > 0 { qcol.saturating_sub(1) } else { 0 };
-                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, GraphemeCol(col));
                 }
             }
         }
@@ -402,7 +402,9 @@ impl Editor {
         tokio::task::spawn_blocking(move || {
             let status = crate::git::GitStatus::from_file(&path).ok();
             let blame = if blame_enabled {
-                crate::git::GitBlame::from_file(&path).ok().filter(|b| !b.is_empty())
+                crate::git::GitBlame::from_file(&path)
+                    .ok()
+                    .filter(|b| !b.is_empty())
             } else {
                 None
             };
@@ -465,7 +467,9 @@ impl Editor {
                 if lnum > 0 {
                     let line = lnum.saturating_sub(1);
                     let col = if lcol > 0 { lcol.saturating_sub(1) } else { 0 };
-                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, GraphemeCol(col));
                 }
             }
         }
@@ -486,7 +490,9 @@ impl Editor {
             self.mode = Mode::SubstituteConfirm;
             // Move cursor to first match
             let (line, col, _, _) = self.editing.substitute_matches[0];
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
     }
 
@@ -515,9 +521,10 @@ impl Editor {
             let ((), edits) = self.buffer_mut().record(|buf| {
                 // Always perform delete + insert for confirmed matches so undo
                 // round-trips exactly what the user confirmed.
-                buf.delete_range(line, start_col, line, end_col);
+                // Phase-15 debt: substitute_matches tuple stores char cols.
+                buf.delete_range(line, CharCol(start_col), line, CharCol(end_col));
                 if !replacement.is_empty() {
-                    buf.insert_text_at(line, start_col, &replacement);
+                    buf.insert_text_at(line, CharCol(start_col), &replacement);
                 }
             });
             if !edits.is_empty() {
@@ -548,7 +555,9 @@ impl Editor {
             // Move cursor to next match
             let (line, col, _, _) =
                 self.editing.substitute_matches[self.editing.substitute_match_index];
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
     }
 

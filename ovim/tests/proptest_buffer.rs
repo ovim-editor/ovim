@@ -23,6 +23,7 @@
 //! 5. **Boundary conditions**: empty buffers, end-of-file, zero-length operations
 
 use ovim::buffer::Buffer;
+use ovim::unicode::CharCol;
 use proptest::prelude::*;
 
 // ============================================================================
@@ -111,7 +112,7 @@ proptest! {
         let col = 0;  // Start of line is always safe
 
         // Insert text at start of line
-        buffer.insert_text_at(line, col, &insert_text);
+        buffer.insert_text_at(line, CharCol(col), &insert_text);
 
         // Verify the insert worked
         let content_after_insert = buffer.rope().to_string();
@@ -124,7 +125,7 @@ proptest! {
         let delete_end_col = insert_text.chars().count();
 
         // Delete the same text
-        let deleted = buffer.delete_range(line, col, line, delete_end_col);
+        let deleted = buffer.delete_range(line, CharCol(col), line, CharCol(delete_end_col));
 
         // Verify we got back what we inserted
         prop_assert_eq!(
@@ -160,11 +161,16 @@ proptest! {
             match &op {
                 BufferOp::Insert { line, col, text } => {
                     // These should handle out-of-bounds gracefully
-                    buffer.insert_text_at(*line, *col, text);
+                    buffer.insert_text_at(*line, CharCol(*col), text);
                 }
                 BufferOp::Delete { start_line, start_col, end_line, end_col } => {
                     // These should handle invalid ranges gracefully
-                    let _ = buffer.delete_range(*start_line, *start_col, *end_line, *end_col);
+                    let _ = buffer.delete_range(
+                        *start_line,
+                        CharCol(*start_col),
+                        *end_line,
+                        CharCol(*end_col),
+                    );
                 }
             }
         }
@@ -187,10 +193,15 @@ proptest! {
         for op in ops {
             match &op {
                 BufferOp::Insert { line, col, text } => {
-                    buffer.insert_text_at(*line, *col, text);
+                    buffer.insert_text_at(*line, CharCol(*col), text);
                 }
                 BufferOp::Delete { start_line, start_col, end_line, end_col } => {
-                    let _ = buffer.delete_range(*start_line, *start_col, *end_line, *end_col);
+                    let _ = buffer.delete_range(
+                        *start_line,
+                        CharCol(*start_col),
+                        *end_line,
+                        CharCol(*end_col),
+                    );
                 }
             }
 
@@ -255,10 +266,15 @@ proptest! {
         for op in ops {
             match &op {
                 BufferOp::Insert { line, col, text } => {
-                    buffer.insert_text_at(*line, *col, text);
+                    buffer.insert_text_at(*line, CharCol(*col), text);
                 }
                 BufferOp::Delete { start_line, start_col, end_line, end_col } => {
-                    let _ = buffer.delete_range(*start_line, *start_col, *end_line, *end_col);
+                    let _ = buffer.delete_range(
+                        *start_line,
+                        CharCol(*start_col),
+                        *end_line,
+                        CharCol(*end_col),
+                    );
                 }
             }
 
@@ -297,7 +313,7 @@ proptest! {
         let mut buffer_copy = Buffer::new_from_str(&text);
 
         // Delete with out-of-bounds positions
-        let deleted = buffer_copy.delete_range(start_line, 0, end_line, 0);
+        let deleted = buffer_copy.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
 
         prop_assert_eq!(deleted, "", "Delete out of bounds should return empty string");
         prop_assert_eq!(
@@ -322,7 +338,7 @@ proptest! {
         let last_line = buffer.line_count().saturating_sub(1);
         let last_col = buffer.line_len(last_line);
 
-        buffer.insert_text_at(last_line, last_col, &append_text);
+        buffer.insert_text_at(last_line, CharCol(last_col), &append_text);
 
         let new_content = buffer.rope().to_string();
 
@@ -368,7 +384,8 @@ proptest! {
         // Delete from start to end of last line
         let last_line_idx = line_count.saturating_sub(1);
         let last_line_len = buffer.line_len(last_line_idx);
-        let deleted = buffer.delete_range(0, 0, last_line_idx, last_line_len);
+        let deleted =
+            buffer.delete_range(0, CharCol::ZERO, last_line_idx, CharCol(last_line_len));
 
         // Should have deleted most or all of the original content
         // (The exact match depends on whether trailing newline is included)
@@ -406,7 +423,7 @@ proptest! {
         let line_len = buffer.line_len(safe_line);
         let safe_col = col % (line_len + 1);
 
-        buffer.insert_text_at(safe_line, safe_col, "");
+        buffer.insert_text_at(safe_line, CharCol(safe_col), "");
 
         prop_assert_eq!(
             buffer.rope().to_string(),
@@ -434,7 +451,7 @@ proptest! {
 
         // Insert more emoji
         let pos = insert_pos % (initial_char_count + 1);
-        buffer.insert_text_at(0, pos, "🎉");
+        buffer.insert_text_at(0, CharCol(pos), "🎉");
 
         // Verify UTF-8 validity
         let content = buffer.rope().to_string();
@@ -523,10 +540,15 @@ proptest! {
             // Apply operation
             match op {
                 BufferOp::Insert { line, col, ref text } => {
-                    buffer.insert_text_at(*line, *col, text);
+                    buffer.insert_text_at(*line, CharCol(*col), text);
                 }
                 BufferOp::Delete { start_line, start_col, end_line, end_col } => {
-                    let _ = buffer.delete_range(*start_line, *start_col, *end_line, *end_col);
+                    let _ = buffer.delete_range(
+                        *start_line,
+                        CharCol(*start_col),
+                        *end_line,
+                        CharCol(*end_col),
+                    );
                 }
             }
 
@@ -580,7 +602,7 @@ proptest! {
             let line = buffer.cursor().line();
             let col = buffer.cursor().col().0;
 
-            buffer.insert_text_at(line, col, &text);
+            buffer.insert_text_at(line, CharCol(col), &text);
 
             // Verify still valid
             let content = buffer.rope().to_string();
@@ -591,7 +613,7 @@ proptest! {
 
             // Now delete what we just inserted
             let delete_end_col = col + text.chars().count();
-            let deleted = buffer.delete_range(line, col, line, delete_end_col);
+            let deleted = buffer.delete_range(line, CharCol(col), line, CharCol(delete_end_col));
 
             prop_assert_eq!(deleted, text, "Should delete what was just inserted");
 

@@ -32,8 +32,7 @@ impl Editor {
             return;
         };
 
-        let Some(language_id) =
-            crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
+        let Some(language_id) = crate::syntax::LanguageRegistry::get_lsp_language_id(&file_path)
         else {
             return;
         };

@@ -2,7 +2,7 @@ use crate::command_result::CommandResult;
 use crate::edit::Edit;
 use crate::editor::path_completion::extract_path_from_command;
 use crate::editor::{Editor, Mode};
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
@@ -418,9 +418,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         last
     } else {
         // Update last search register with this pattern
-        editor
-            .registers_mut()
-            .set_last_search(parts[1].to_string());
+        editor.registers_mut().set_last_search(parts[1].to_string());
         parts[1].to_string()
     };
     // Convert Vim-style backreferences to Rust regex syntax
@@ -520,8 +518,8 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
 
                 if new_text != line_text {
                     let line_len = line_text.chars().count();
-                    buf.delete_range(line_idx, 0, line_idx, line_len);
-                    buf.insert_text_at(line_idx, 0, &new_text);
+                    buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(line_len));
+                    buf.insert_text_at(line_idx, CharCol::ZERO, &new_text);
                 }
             }
         }
@@ -640,7 +638,8 @@ fn handle_global_command(
             let (mut all_deleted, edits) = editor.buffer_mut().record(|buf| {
                 let mut deleted_chunks = Vec::new();
                 for &line_idx in matching_lines.iter().rev() {
-                    let deleted = buf.delete_range(line_idx, 0, line_idx + 1, 0);
+                    let deleted =
+                        buf.delete_range(line_idx, CharCol::ZERO, line_idx + 1, CharCol::ZERO);
                     if deleted.is_empty() {
                         continue;
                     }
@@ -728,15 +727,24 @@ fn handle_global_command(
                                 let line_text = line.trim_end_matches('\n');
 
                                 let new_text = if global {
-                                    sub_regex.replace_all(line_text, replacement.as_str()).to_string()
+                                    sub_regex
+                                        .replace_all(line_text, replacement.as_str())
+                                        .to_string()
                                 } else {
-                                    sub_regex.replace(line_text, replacement.as_str()).to_string()
+                                    sub_regex
+                                        .replace(line_text, replacement.as_str())
+                                        .to_string()
                                 };
 
                                 if new_text != line_text {
                                     let line_len = line_text.chars().count();
-                                    buf.delete_range(line_idx, 0, line_idx, line_len);
-                                    buf.insert_text_at(line_idx, 0, &new_text);
+                                    buf.delete_range(
+                                        line_idx,
+                                        CharCol::ZERO,
+                                        line_idx,
+                                        CharCol(line_len),
+                                    );
+                                    buf.insert_text_at(line_idx, CharCol::ZERO, &new_text);
                                 }
                             }
                         }
@@ -977,9 +985,9 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
 
                     let cursor_before = editor.cursor_position();
                     let ((), edits) = editor.buffer_mut().record(|buf| {
-                        buf.delete_range(start_line, 0, end_line + 1, 0);
+                        buf.delete_range(start_line, CharCol::ZERO, end_line + 1, CharCol::ZERO);
                         if !insert_text.is_empty() {
-                            buf.insert_text_at(start_line, 0, &insert_text);
+                            buf.insert_text_at(start_line, CharCol::ZERO, &insert_text);
                         }
                         buf.cursor_mut().set_position(start_line, GraphemeCol::ZERO);
                     });
@@ -1265,9 +1273,7 @@ fn execute_command_impl(editor: &mut Editor, command: &str) -> Result<()> {
 fn is_command_with_pattern(command: &str) -> bool {
     let trimmed = command.trim();
     // Skip past range prefix: digits, commas, %, ., $, ', <, >, +, -, spaces
-    let cmd = trimmed.trim_start_matches(|c: char| {
-        c.is_ascii_digit() || ",%.$ '<>+-".contains(c)
-    });
+    let cmd = trimmed.trim_start_matches(|c: char| c.is_ascii_digit() || ",%.$ '<>+-".contains(c));
     cmd.starts_with("s/")
         || cmd.starts_with("g/")
         || cmd.starts_with("g!/")
@@ -1415,7 +1421,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle goto line (just a number or range without command)
     if cmd_part.is_empty() && !range_str.is_empty() {
         if let Some((start_line, _end_line)) = parse_range_with_status(editor, range_str, None) {
-            editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol::ZERO);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(start_line, GraphemeCol::ZERO);
             return Ok(());
         }
     }
@@ -1424,9 +1433,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     if cmd_part == "d" || cmd_part == "delete" {
         if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
             let cursor_before = editor.cursor_position();
-            let (deleted_text, edits) = editor
-                .buffer_mut()
-                .record(|buf| buf.delete_range(start_line, 0, end_line + 1, 0));
+            let (deleted_text, edits) = editor.buffer_mut().record(|buf| {
+                buf.delete_range(start_line, CharCol::ZERO, end_line + 1, CharCol::ZERO)
+            });
 
             // Store in register (use delete, which updates " and numbered regs but not 0)
             editor.delete_to_register(deleted_text.clone());
@@ -1827,8 +1836,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                             // Insert contents at current cursor position
                             let cursor = editor.buffer().cursor();
                             let line = cursor.line() + 1; // Insert after current line
-                            let col = 0;
-                            editor.buffer_mut().insert_text_at(line, col, &contents);
+                            editor
+                                .buffer_mut()
+                                .insert_text_at(line, CharCol::ZERO, &contents);
                             editor.set_lsp_status(format!(
                                 "Read {} lines from {}",
                                 contents.lines().count(),

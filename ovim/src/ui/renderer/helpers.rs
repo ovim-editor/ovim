@@ -198,7 +198,11 @@ mod tests {
 
     #[test]
     fn test_expand_tabs_basic() {
-        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("\thello", 4);
+        let ExpandedLine {
+            text,
+            control_ranges,
+            ..
+        } = expand_tabs_with_mapping("\thello", 4);
         assert_eq!(text, "    hello");
         assert!(control_ranges.is_empty());
     }
@@ -206,7 +210,11 @@ mod tests {
     #[test]
     fn test_expand_control_chars() {
         // ESC (0x1B) → ^[
-        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("\x1b[31m", 4);
+        let ExpandedLine {
+            text,
+            control_ranges,
+            ..
+        } = expand_tabs_with_mapping("\x1b[31m", 4);
         assert_eq!(text, "^[[31m");
         assert_eq!(control_ranges.len(), 1);
         assert_eq!(control_ranges[0], 0..2); // ^[ occupies bytes 0..2
@@ -214,7 +222,11 @@ mod tests {
 
     #[test]
     fn test_expand_nul() {
-        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("a\x00b", 4);
+        let ExpandedLine {
+            text,
+            control_ranges,
+            ..
+        } = expand_tabs_with_mapping("a\x00b", 4);
         assert_eq!(text, "a^@b");
         assert_eq!(control_ranges.len(), 1);
         assert_eq!(control_ranges[0], 1..3); // ^@ at byte offset 1..3
@@ -222,7 +234,11 @@ mod tests {
 
     #[test]
     fn test_expand_del() {
-        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("x\x7fy", 4);
+        let ExpandedLine {
+            text,
+            control_ranges,
+            ..
+        } = expand_tabs_with_mapping("x\x7fy", 4);
         assert_eq!(text, "x^?y");
         assert_eq!(control_ranges.len(), 1);
         assert_eq!(control_ranges[0], 1..3);
@@ -231,7 +247,11 @@ mod tests {
     #[test]
     fn test_expand_multiple_control_chars() {
         // "\x1b[31mred\x1b[0m" → "^[[31mred^[[0m"
-        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("\x1b[31mred\x1b[0m", 4);
+        let ExpandedLine {
+            text,
+            control_ranges,
+            ..
+        } = expand_tabs_with_mapping("\x1b[31mred\x1b[0m", 4);
         assert_eq!(text, "^[[31mred^[[0m");
         assert_eq!(control_ranges.len(), 2);
         assert_eq!(control_ranges[0], 0..2); // first ^[
@@ -240,7 +260,11 @@ mod tests {
 
     #[test]
     fn test_expand_no_control_chars() {
-        let ExpandedLine { text, control_ranges, .. } = expand_tabs_with_mapping("hello world", 4);
+        let ExpandedLine {
+            text,
+            control_ranges,
+            ..
+        } = expand_tabs_with_mapping("hello world", 4);
         assert_eq!(text, "hello world");
         assert!(control_ranges.is_empty());
     }
@@ -248,7 +272,11 @@ mod tests {
     #[test]
     fn test_byte_mapping_with_control_chars() {
         // "a\x01b" → "a^Ab"
-        let ExpandedLine { text, byte_mapping: mapping, .. } = expand_tabs_with_mapping("a\x01b", 4);
+        let ExpandedLine {
+            text,
+            byte_mapping: mapping,
+            ..
+        } = expand_tabs_with_mapping("a\x01b", 4);
         assert_eq!(text, "a^Ab");
         // mapping: orig 0 → exp 0 ('a'), orig 1 → exp 1 ('\x01' → ^A), orig 2 → exp 3 ('b'), end
         assert_eq!(mapping[0], (0, 0));
@@ -355,9 +383,9 @@ mod tests {
         // "👨‍👩‍👧‍👦\tx" — 3 graphemes (emoji, tab, x)
         // Emoji is width 2, tab at col 2 expands by 2 to reach col 4
         let text = "👨\u{200D}👩\u{200D}👧\u{200D}👦\tx";
-        assert_eq!(grapheme_col_to_display_col(text, 0, 4), 0);  // emoji at display 0
-        assert_eq!(grapheme_col_to_display_col(text, 1, 4), 2);  // tab starts at display 2
-        assert_eq!(grapheme_col_to_display_col(text, 2, 4), 4);  // x after tab expands to col 4
+        assert_eq!(grapheme_col_to_display_col(text, 0, 4), 0); // emoji at display 0
+        assert_eq!(grapheme_col_to_display_col(text, 1, 4), 2); // tab starts at display 2
+        assert_eq!(grapheme_col_to_display_col(text, 2, 4), 4); // x after tab expands to col 4
     }
 
     #[test]

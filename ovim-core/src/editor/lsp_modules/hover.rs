@@ -173,9 +173,8 @@ impl Editor {
             } else {
                 lsp.hover(&uri, line, character, language_id).await
             };
-            let _ = tx.send(result.map(|text| crate::editor::lsp_slot::HoverResult {
-                hover_text: text,
-            }));
+            let _ = tx
+                .send(result.map(|text| crate::editor::lsp_slot::HoverResult { hover_text: text }));
         });
 
         // Fire into the hover slot (cancels any previous in-flight hover)

@@ -395,12 +395,12 @@ impl Editor {
         true
     }
 
-    /// Helper to convert UTF-16 offset to column for a specific buffer
+    /// Helper to convert UTF-16 offset to char column for a specific buffer
     pub(crate) fn utf16_to_col_for_buffer(
         buffer: &Buffer,
         line: usize,
         utf16_offset: u32,
-    ) -> usize {
+    ) -> crate::unicode::CharCol {
         if let Some(line_text) = buffer.line(line) {
             let line_str = line_text.to_string();
             let mut col = 0;
@@ -413,9 +413,9 @@ impl Editor {
                 utf16_pos += ch.len_utf16() as u32;
                 col += 1;
             }
-            col
+            crate::unicode::CharCol(col)
         } else {
-            utf16_offset as usize
+            crate::unicode::CharCol(utf16_offset as usize)
         }
     }
 

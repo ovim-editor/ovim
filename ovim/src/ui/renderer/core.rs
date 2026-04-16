@@ -242,11 +242,7 @@ fn render_buffer_area(
                 current_index: &mut current_index,
                 line_cache,
             };
-            if let Some((vs, ly)) = render_window_tree(
-                &mut tree_ctx,
-                &root,
-                areas.buffer_chunk,
-            ) {
+            if let Some((vs, ly)) = render_window_tree(&mut tree_ctx, &root, areas.buffer_chunk) {
                 (vs, ly)
             } else {
                 let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
@@ -597,7 +593,7 @@ fn set_cursor_position(
         // Compute the cursor's flat display column: expand tabs, then add
         // inline decoration widths before the cursor's char position.
         let exp = super::helpers::expand_tabs_with_mapping(&line_text, tab_width);
-        let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, cursor_col);
+        let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, cursor_col).0;
         let expanded_col = if char_col < exp.char_mapping.len() {
             exp.char_mapping[char_col]
         } else if !exp.char_mapping.is_empty() {
@@ -605,7 +601,10 @@ fn set_cursor_position(
         } else {
             char_col
         };
-        let inline_offset = editor.decorations.inline_width_before(cursor_line, char_col, editor.buffer().rope());
+        let inline_offset =
+            editor
+                .decorations
+                .inline_width_before(cursor_line, char_col, editor.buffer().rope());
         let display_col = expanded_col + inline_offset;
 
         let buffer_area = layout.buffer_area;
@@ -617,7 +616,9 @@ fn set_cursor_position(
             // handles wide chars pushed to next row, variable-width tabs at
             // row boundaries, and decorations spanning multiple visual rows.
             let rope = editor.buffer().rope();
-            let inline_widths = editor.decorations.inline_decorations_for_line(cursor_line, rope);
+            let inline_widths = editor
+                .decorations
+                .inline_decorations_for_line(cursor_line, rope);
 
             let (abs_visual_row, visual_col) = if let Some(wrap_map) = editor.wrap_map() {
                 wrap_map.cursor_to_visual_with_decorations(

@@ -96,7 +96,9 @@ fn clamp_cursor(buffer: &mut Buffer) {
     if line_len == 0 {
         buffer.cursor_mut().set_col(GraphemeCol::ZERO);
     } else if cur_col >= line_len {
-        buffer.cursor_mut().set_col(GraphemeCol(line_len.saturating_sub(1)));
+        buffer
+            .cursor_mut()
+            .set_col(GraphemeCol(line_len.saturating_sub(1)));
     }
 }
 

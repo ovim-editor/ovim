@@ -272,7 +272,10 @@ mod tests {
         // Decoration (10) > width (8) → wraps, then "ab" fits in next row
         let decs = vec![(0, 10)];
         let points = compute_wrap_points_with_decorations("ab", 8, 4, &decs);
-        assert!(!points.is_empty(), "should wrap when decoration exceeds width");
+        assert!(
+            !points.is_empty(),
+            "should wrap when decoration exceeds width"
+        );
         assert_eq!(visual_line_count_with_decorations("ab", 8, 4, &decs), 2);
     }
 

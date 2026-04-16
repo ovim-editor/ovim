@@ -372,7 +372,7 @@ proptest! {
         let col = buffer.cursor().col().0;
 
         // Insert text - this should not panic
-        buffer.insert_text_at(line, col, &insert_text);
+        buffer.insert_text_at(line, ovim_core::unicode::CharCol(col), &insert_text);
 
         // Just verify we got here without panicking
         prop_assert!(true);
@@ -400,7 +400,12 @@ proptest! {
 
         // Delete that line (delete from start to end of line)
         let line_len = buffer.line_len(safe_cursor_line);
-        let _ = buffer.delete_range(safe_cursor_line, 0, safe_cursor_line, line_len);
+        let _ = buffer.delete_range(
+            safe_cursor_line,
+            ovim_core::unicode::CharCol::ZERO,
+            safe_cursor_line,
+            ovim_core::unicode::CharCol(line_len),
+        );
 
         // Cursor should still be valid (possibly moved to previous line or clamped)
         let cursor = buffer.cursor();
@@ -431,7 +436,7 @@ proptest! {
         buffer.cursor_mut().set_position(last_line, GraphemeCol(last_col));
 
         // Append text
-        buffer.insert_text_at(last_line, last_col, &append_text);
+        buffer.insert_text_at(last_line, ovim_core::unicode::CharCol(last_col), &append_text);
 
         // Cursor should still be valid
         let cursor = buffer.cursor();

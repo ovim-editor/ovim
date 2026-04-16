@@ -5,7 +5,7 @@
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::{grapheme_count, grapheme_to_char_col, GraphemeCol};
+use crate::unicode::{grapheme_count, grapheme_to_char_col, CharCol, GraphemeCol};
 use anyhow::Result;
 
 type Position = (usize, usize);
@@ -135,7 +135,8 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
         let line_text = editor.buffer().line(line_idx).unwrap_or_default();
         grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
     };
-    let position = (line_idx, char_col);
+    // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
+    let position = (line_idx, char_col.0);
 
     // Create and apply the change
     // Change::apply() handles char→grapheme cursor conversion via set_cursor_char_col.
@@ -159,7 +160,8 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
         .to_string();
     let line_text_trimmed = line_text.trim_end_matches('\n');
     let char_col = grapheme_to_char_col(line_text_trimmed, grapheme_col);
-    let position = (line_idx, char_col);
+    // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
+    let position = (line_idx, char_col.0);
 
     // Special case: when the buffer does not end with a newline and the cursor
     // is at EOF, a single '\n' would only add a trailing newline (still 1 Vim
@@ -170,7 +172,7 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let at_eof = {
         let rope = editor.buffer().rope();
         let line_start = rope.line_to_char(line_idx);
-        line_start + char_col == rope.len_chars()
+        line_start + char_col.0 == rope.len_chars()
     };
     let ends_with_newline = editor
         .buffer()
@@ -184,7 +186,7 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     // (rather than the full line) prevents duplication when the cursor sits at
     // or inside leading whitespace — the remainder already carries that
     // whitespace and copying it again would produce extra spaces.
-    let text_before: String = line_text.chars().take(char_col).collect();
+    let text_before: String = line_text.chars().take(char_col.0).collect();
     let indent: String = text_before
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -192,7 +194,7 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
 
     // Check if text before cursor ends with an opening bracket
     // Use char_col (not grapheme_col) since we're iterating chars
-    let text_before_cursor: String = line_text.chars().take(char_col).collect();
+    let text_before_cursor: String = line_text.chars().take(char_col.0).collect();
     let trimmed_before = text_before_cursor.trim_end();
     let extra_indent = if trimmed_before.ends_with('{')
         || trimmed_before.ends_with('(')
@@ -216,13 +218,14 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     if needs_double_newline && inserted {
         let cur = editor.buffer().cursor();
         let cur_char_col = editor.buffer().cursor_char_col();
-        let cursor_after_first = (cur.line(), cur_char_col);
+        // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
+        let cursor_after_first = (cur.line(), cur_char_col.0);
         let change = Change::insert(cursor_after_first, "\n".to_string(), cursor_before);
         editor.apply_change_and_record(change);
         // Move cursor back to the line before the trailing newline
         editor
             .buffer_mut()
-            .set_cursor_char_col(cursor_after_first.0, cursor_after_first.1);
+            .set_cursor_char_col(cursor_after_first.0, CharCol(cursor_after_first.1));
     }
 
     Ok(())
@@ -260,16 +263,20 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
             grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
         };
         let line_start = editor.buffer().rope().line_to_char(line_idx);
-        let delete_pos = line_start + char_col - 1;
+        let delete_pos = line_start + char_col.0 - 1;
         let deleted_char = editor.buffer().rope().get_char(delete_pos).unwrap_or(' ');
         // Compute char col of the previous grapheme
         let prev_char_col = {
             let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-            grapheme_to_char_col(line_text.trim_end_matches('\n'), GraphemeCol(grapheme_col.0 - 1))
+            grapheme_to_char_col(
+                line_text.trim_end_matches('\n'),
+                GraphemeCol(grapheme_col.0 - 1),
+            )
         };
+        // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
         (
-            (line_idx, prev_char_col),
-            (line_idx, char_col),
+            (line_idx, prev_char_col.0),
+            (line_idx, char_col.0),
             deleted_char.to_string(),
         )
     };
@@ -378,7 +385,10 @@ pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
     let range = Range::new((line_idx, 0), (line_idx, col));
     let change = Change::delete(range, deleted_text, cursor_before);
     if editor.apply_change_and_record(change) {
-        editor.buffer_mut().cursor_mut().set_position(line_idx, GraphemeCol(0));
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line_idx, GraphemeCol(0));
     }
 
     Ok(())
@@ -408,7 +418,10 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     // Update cursor position - move column right by indent width
     let indent_width = if expand_tab { shift_width } else { 1 };
     let new_col = col + indent_width;
-    editor.buffer_mut().cursor_mut().set_col(GraphemeCol(new_col));
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_col(GraphemeCol(new_col));
 
     Ok(())
 }
@@ -459,7 +472,10 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
 
     // Update cursor position - move column left by chars_to_remove
     let new_col = col.saturating_sub(chars_to_remove);
-    editor.buffer_mut().cursor_mut().set_col(GraphemeCol(new_col));
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_col(GraphemeCol(new_col));
 
     Ok(())
 }
@@ -585,12 +601,15 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
 
                         let line_len = line_content.chars().count();
 
+                        // paste_col is grapheme-space; treat as char index here
+                        // (pre-existing approximation — fine for ASCII, drifts at
+                        // multi-char graphemes. Covered by phase-15 debt notes.)
                         if paste_col > line_len {
                             let padding = " ".repeat(paste_col - line_len);
                             let padded_text = format!("{}{}", padding, block_line);
-                            buf.insert_text_at(target_line, line_len, &padded_text);
+                            buf.insert_text_at(target_line, CharCol(line_len), &padded_text);
                         } else {
-                            buf.insert_text_at(target_line, paste_col, block_line);
+                            buf.insert_text_at(target_line, CharCol(paste_col), block_line);
                         }
 
                         last_line = target_line;
@@ -639,7 +658,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                 // Insert at (0, 0), cursor on first non-blank of line 0
                 let text_clone = text.clone();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
-                    buf.insert_text_at(0, 0, &text_clone);
+                    buf.insert_text_at(0, CharCol::ZERO, &text_clone);
                 });
 
                 let first_non_blank = editor
@@ -654,7 +673,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                 // first_non_blank is a char index; convert to grapheme for cursor.
                 editor
                     .buffer_mut()
-                    .set_cursor_char_col(0, first_non_blank);
+                    .set_cursor_char_col(0, CharCol(first_non_blank));
 
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
@@ -671,11 +690,11 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                 let text_clone = text.clone();
                 let ((), edits) = editor.buffer_mut().record(|buf| {
                     if has_trailing_newline {
-                        buf.insert_text_at(line_idx, line_char_len, &text_clone);
+                        buf.insert_text_at(line_idx, CharCol(line_char_len), &text_clone);
                     } else {
                         // No trailing newline on current line — prepend \n
                         let insert_text = format!("\n{}", text_clone.trim_end_matches('\n'));
-                        buf.insert_text_at(line_idx, line_char_len, &insert_text);
+                        buf.insert_text_at(line_idx, CharCol(line_char_len), &insert_text);
                     }
                 });
 
@@ -693,7 +712,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                 // first_non_blank is a char index; convert to grapheme for cursor.
                 editor
                     .buffer_mut()
-                    .set_cursor_char_col(new_line, first_non_blank);
+                    .set_cursor_char_col(new_line, CharCol(first_non_blank));
 
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
@@ -715,7 +734,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
 
             let text_clone = text.clone();
             let ((), edits) = editor.buffer_mut().record(|buf| {
-                buf.insert_text_at(line_idx, paste_col, &text_clone);
+                buf.insert_text_at(line_idx, CharCol(paste_col), &text_clone);
             });
 
             // Calculate end position and place cursor on last char of pasted text
@@ -726,7 +745,10 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                     .cursor_mut()
                     .set_position(end_pos.0, GraphemeCol(end_pos.1 - 1));
             } else {
-                editor.buffer_mut().cursor_mut().set_position(end_pos.0, GraphemeCol(0));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(end_pos.0, GraphemeCol(0));
             }
 
             if !edits.is_empty() {
@@ -781,9 +803,9 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
                         if paste_col > line_len {
                             let padding = " ".repeat(paste_col - line_len);
                             let padded_text = format!("{}{}", padding, block_line);
-                            buf.insert_text_at(target_line, line_len, &padded_text);
+                            buf.insert_text_at(target_line, CharCol(line_len), &padded_text);
                         } else {
-                            buf.insert_text_at(target_line, paste_col, block_line);
+                            buf.insert_text_at(target_line, CharCol(paste_col), block_line);
                         }
 
                         last_line = target_line;
@@ -818,9 +840,9 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             let ((), edits) = editor.buffer_mut().record(|buf| {
                 if line_idx > 0 {
                     let prev_line_len = buf.rope().line(line_idx - 1).len_chars();
-                    buf.insert_text_at(line_idx - 1, prev_line_len, &text);
+                    buf.insert_text_at(line_idx - 1, CharCol(prev_line_len), &text);
                 } else {
-                    buf.insert_text_at(0, 0, &text);
+                    buf.insert_text_at(0, CharCol::ZERO, &text);
                 }
             });
 
@@ -838,7 +860,7 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             // first_non_blank is a char index; convert to grapheme for cursor.
             editor
                 .buffer_mut()
-                .set_cursor_char_col(pasted_line, first_non_blank);
+                .set_cursor_char_col(pasted_line, CharCol(first_non_blank));
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
@@ -850,7 +872,7 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             // Character paste before cursor
             let text_clone = text.clone();
             let ((), edits) = editor.buffer_mut().record(|buf| {
-                buf.insert_text_at(line_idx, col, &text_clone);
+                buf.insert_text_at(line_idx, CharCol(col), &text_clone);
             });
 
             // Position cursor on last char of pasted text (match paste_after behavior)
@@ -861,7 +883,10 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
                     .cursor_mut()
                     .set_position(end_pos.0, GraphemeCol(end_pos.1 - 1));
             } else {
-                editor.buffer_mut().cursor_mut().set_position(end_pos.0, GraphemeCol(0));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(end_pos.0, GraphemeCol(0));
             }
 
             if !edits.is_empty() {
@@ -890,11 +915,15 @@ pub fn delete_visual_selection_with_token(
         return Ok(None);
     };
 
-    // Record all deletions in one shot
+    // Record all deletions in one shot.
+    // NOTE: visual_selection cols are grapheme-space; treating them as
+    // char-space is the pre-existing behavior (correct for ASCII, approximate
+    // for multi-char graphemes). Properly converting is phase-15 debt.
     let (deleted_info, edits) = editor.buffer_mut().record(|buf| {
         match mode {
             Mode::VisualLine => {
-                let deleted = buf.delete_range(start_line, 0, end_line + 1, 0);
+                let deleted =
+                    buf.delete_range(start_line, CharCol::ZERO, end_line + 1, CharCol::ZERO);
                 (deleted, RegisterType::Line)
             }
             Mode::VisualBlock => {
@@ -905,8 +934,12 @@ pub fn delete_visual_selection_with_token(
                         let line_len = line_text.trim_end_matches('\n').chars().count();
                         if start_col < line_len {
                             let actual_end_col = (end_col + 1).min(line_len);
-                            let deleted =
-                                buf.delete_range(line_idx, start_col, line_idx, actual_end_col);
+                            let deleted = buf.delete_range(
+                                line_idx,
+                                CharCol(start_col),
+                                line_idx,
+                                CharCol(actual_end_col),
+                            );
                             deleted_lines.push(deleted);
                         } else {
                             deleted_lines.push(String::new());
@@ -917,7 +950,12 @@ pub fn delete_visual_selection_with_token(
                 (deleted_lines.join("\n"), RegisterType::Block)
             }
             _ => {
-                let deleted = buf.delete_range(start_line, start_col, end_line, end_col + 1);
+                let deleted = buf.delete_range(
+                    start_line,
+                    CharCol(start_col),
+                    end_line,
+                    CharCol(end_col + 1),
+                );
                 (deleted, RegisterType::Character)
             }
         }
@@ -933,7 +971,10 @@ pub fn delete_visual_selection_with_token(
     match mode {
         Mode::VisualLine => {
             let new_line = start_line.min(editor.buffer().line_count().saturating_sub(1));
-            editor.buffer_mut().cursor_mut().set_position(new_line, GraphemeCol(0));
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(new_line, GraphemeCol(0));
         }
         Mode::VisualBlock => {
             let line_len = if let Some(line) = editor.buffer().line(start_line) {
@@ -1103,8 +1144,7 @@ pub fn indent_lines_with_tracking(
         let first_nb = editor.buffer().first_non_blank_col(start_line);
         editor
             .buffer_mut()
-            .cursor_mut()
-            .set_position(start_line, GraphemeCol(first_nb));
+            .set_cursor_char_col(start_line, first_nb);
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         let line_count = actual_end - start_line;
@@ -1135,8 +1175,7 @@ pub fn dedent_lines_with_tracking(
         let first_nb = editor.buffer().first_non_blank_col(start_line);
         editor
             .buffer_mut()
-            .cursor_mut()
-            .set_position(start_line, GraphemeCol(first_nb));
+            .set_cursor_char_col(start_line, first_nb);
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         let line_count = end_line.min(editor.buffer().line_count()) - start_line;
@@ -1155,7 +1194,10 @@ pub fn clamp_cursor_to_buffer(editor: &mut Editor) {
     let line_count = editor.buffer().line_count();
     if line_count == 0 {
         // Empty buffer, set to 0,0
-        editor.buffer_mut().cursor_mut().set_position(0, GraphemeCol(0));
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, GraphemeCol(0));
         return;
     }
 
@@ -1206,8 +1248,8 @@ fn transform_visual_selection(
                         let line_text = line.trim_end_matches('\n');
                         let transformed = transform(line_text);
                         let char_count = line_text.chars().count();
-                        buf.delete_range(line_idx, 0, line_idx, char_count);
-                        buf.insert_text_at(line_idx, 0, &transformed);
+                        buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(char_count));
+                        buf.insert_text_at(line_idx, CharCol::ZERO, &transformed);
                     }
                 }
             }
@@ -1218,19 +1260,28 @@ fn transform_visual_selection(
                         let line_start = start_col.min(chars_len);
                         let line_end = (end_col + 1).min(chars_len);
                         if line_start < line_end {
-                            let deleted =
-                                buf.delete_range(line_idx, line_start, line_idx, line_end);
+                            let deleted = buf.delete_range(
+                                line_idx,
+                                CharCol(line_start),
+                                line_idx,
+                                CharCol(line_end),
+                            );
                             let transformed = transform(&deleted);
-                            buf.insert_text_at(line_idx, line_start, &transformed);
+                            buf.insert_text_at(line_idx, CharCol(line_start), &transformed);
                         }
                     }
                 }
             }
             _ => {
                 // Character-wise visual mode
-                let deleted = buf.delete_range(start_line, start_col, end_line, end_col + 1);
+                let deleted = buf.delete_range(
+                    start_line,
+                    CharCol(start_col),
+                    end_line,
+                    CharCol(end_col + 1),
+                );
                 let transformed = transform(&deleted);
-                buf.insert_text_at(start_line, start_col, &transformed);
+                buf.insert_text_at(start_line, CharCol(start_col), &transformed);
             }
         }
     });
@@ -1342,13 +1393,16 @@ fn setup_and_execute_search(editor: &mut Editor, text: &str, forward: bool) -> b
     // So start searching from the next column position (forward) or current position (backward)
     let cursor = editor.buffer().cursor();
     let search_col = if forward {
-        cursor.col().0 + 1
+        GraphemeCol(cursor.col().0 + 1)
     } else {
-        cursor.col().0
+        cursor.col()
     };
 
     if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
-        editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(col));
         editor.set_current_search(search);
         true
     } else {
@@ -1365,7 +1419,9 @@ pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
 
     match mode {
         Mode::Visual => {
-            // Character-wise selection
+            // Character-wise selection.
+            // NOTE: visual cols are grapheme-space; treating them as char-space
+            // is the pre-existing behavior — phase-15 debt.
             let start_char = editor.buffer().rope().line_to_char(start_line) + start_col;
             let end_char = editor.buffer().rope().line_to_char(end_line) + end_col + 1;
             Some(
@@ -1543,7 +1599,9 @@ pub fn yank_word(buffer: &mut crate::buffer::Buffer, count: usize) -> anyhow::Re
     let yanked = buffer.rope().slice(start_char..end_char).to_string();
 
     // Reset cursor to start position
-    buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
+    buffer
+        .cursor_mut()
+        .set_position(start_line, GraphemeCol(start_col));
 
     Ok(yanked)
 }
@@ -1606,12 +1664,12 @@ pub fn auto_indent_lines(
                 // Remove existing indent (use char count, not byte length)
                 let leading_len = line_text.chars().count() - trimmed.chars().count();
                 if leading_len > 0 {
-                    buffer.delete_range(line_idx, 0, line_idx, leading_len);
+                    buffer.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(leading_len));
                 }
                 // Add new indent
                 if current_indent > 0 {
                     let indent_str = indent_string(current_indent, expand_tab, tab_width);
-                    buffer.insert_text_at(line_idx, 0, &indent_str);
+                    buffer.insert_text_at(line_idx, CharCol::ZERO, &indent_str);
                 }
                 lines_indented += 1;
             }
@@ -1710,13 +1768,13 @@ pub fn auto_indent_lines_with_tracking(
                     .take_while(|c| *c == ' ' || *c == '\t')
                     .count();
                 if leading_chars > 0 {
-                    buf.delete_range(line_idx, 0, line_idx, leading_chars);
+                    buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(leading_chars));
                 }
 
                 // Add new indent
                 if line_indent > 0 {
                     let indent_str = indent_string(line_indent, expand_tab, tab_width);
-                    buf.insert_text_at(line_idx, 0, &indent_str);
+                    buf.insert_text_at(line_idx, CharCol::ZERO, &indent_str);
                 }
 
                 lines_indented += 1;
@@ -1769,7 +1827,8 @@ pub fn insert_tab(editor: &mut Editor) -> Result<()> {
             let line_text = editor.buffer().line(line_idx).unwrap_or_default();
             grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
         };
-        let position = (line_idx, char_col);
+        // Phase-15 debt: Change::Position is (usize, usize) storing char coords.
+        let position = (line_idx, char_col.0);
         // Change::apply() handles char→grapheme cursor conversion via set_cursor_char_col.
         let change = Change::insert(position, spaces, cursor_before);
         editor.apply_change_and_record(change);

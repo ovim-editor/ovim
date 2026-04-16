@@ -38,4 +38,3 @@ pub struct RenderCache {
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
 }
-

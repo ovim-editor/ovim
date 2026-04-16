@@ -378,14 +378,13 @@ impl Editor {
                     let cursor_col = cursor.col().0;
                     let file_path = self.buffer().file_path().unwrap_or("").to_string();
 
-                    self.lsp.state.hover_cache =
-                        Some(crate::editor::lsp_state::HoverCache::new(
-                            file_path,
-                            cursor_line,
-                            cursor_col,
-                            buffer_version,
-                            hover_text.clone(),
-                        ));
+                    self.lsp.state.hover_cache = Some(crate::editor::lsp_state::HoverCache::new(
+                        file_path,
+                        cursor_line,
+                        cursor_col,
+                        buffer_version,
+                        hover_text.clone(),
+                    ));
 
                     self.lsp.state.hover_info = Some(hover_text);
                     self.lsp.state.hover_scroll = 0;
@@ -424,11 +423,21 @@ impl Editor {
             changed |= self.handle_goto_slot_result(result, "Definition", "LSP-DEFINITION");
         }
 
-        if let Some(result) = self.lsp.slots.goto_implementation.poll_with_timeout(timeout) {
+        if let Some(result) = self
+            .lsp
+            .slots
+            .goto_implementation
+            .poll_with_timeout(timeout)
+        {
             changed |= self.handle_goto_slot_result(result, "Implementation", "LSP-IMPLEMENTATION");
         }
 
-        if let Some(result) = self.lsp.slots.goto_type_definition.poll_with_timeout(timeout) {
+        if let Some(result) = self
+            .lsp
+            .slots
+            .goto_type_definition
+            .poll_with_timeout(timeout)
+        {
             changed |= self.handle_goto_slot_result(result, "Type", "LSP-TYPE");
         }
 
@@ -590,8 +599,7 @@ impl Editor {
                         .iter()
                         .map(|sym| {
                             let line = sym.range.start.line as usize;
-                            let col =
-                                self.utf16_to_grapheme_col(line, sym.range.start.character);
+                            let col = self.utf16_to_grapheme_col(line, sym.range.start.character);
                             crate::editor::picker::PickerResult {
                                 display: format!(
                                     "{}:{}:{} {}",
@@ -635,10 +643,8 @@ impl Editor {
                         .filter_map(|sym| {
                             let path = crate::lsp::uri_to_file_path(&sym.location.uri)?;
                             let line = sym.location.range.start.line as usize;
-                            let col = self.utf16_to_grapheme_col(
-                                line,
-                                sym.location.range.start.character,
-                            );
+                            let col = self
+                                .utf16_to_grapheme_col(line, sym.location.range.start.character);
                             Some(crate::editor::picker::PickerResult {
                                 display: format!(
                                     "{}:{}:{}",
@@ -674,9 +680,7 @@ impl Editor {
                     let titles: Vec<String> = r
                         .actions
                         .iter()
-                        .map(|a| {
-                            lsp_modules::actions::code_action_title(&a.action)
-                        })
+                        .map(|a| lsp_modules::actions::code_action_title(&a.action))
                         .collect();
                     self.lsp.state.available_code_actions = r.actions;
                     let base_dir =
@@ -703,26 +707,18 @@ impl Editor {
                     if let Some(workspace_edit) = r.edit {
                         match self.apply_workspace_edit(workspace_edit) {
                             Ok(true) => {
-                                self.set_lsp_status(format!(
-                                    "Renamed to '{}'",
-                                    r.new_name
-                                ));
+                                self.set_lsp_status(format!("Renamed to '{}'", r.new_name));
                                 changed = true;
                             }
                             Ok(false) => {
                                 self.set_lsp_status("Rename failed to apply".to_string());
                             }
                             Err(e) => {
-                                self.set_lsp_status(format!(
-                                    "Failed to apply rename: {}",
-                                    e
-                                ));
+                                self.set_lsp_status(format!("Failed to apply rename: {}", e));
                             }
                         }
                     } else {
-                        self.set_lsp_status(
-                            "Rename not available at this location".to_string(),
-                        );
+                        self.set_lsp_status("Rename not available at this location".to_string());
                     }
                 }
                 Err(e) => {
@@ -741,9 +737,7 @@ impl Editor {
                         self.set_lsp_status("Imports organized".to_string());
                         changed = true;
                     } else {
-                        self.set_lsp_status(
-                            "No organize imports action available".to_string(),
-                        );
+                        self.set_lsp_status("No organize imports action available".to_string());
                     }
                 }
                 Err(e) => {
@@ -886,8 +880,7 @@ impl Editor {
                     );
                 }
 
-                let (trigger_col, trigger_prefix) =
-                    self.derive_completion_prefix(&result.items);
+                let (trigger_col, trigger_prefix) = self.derive_completion_prefix(&result.items);
                 self.completion_menu_mut()
                     .show(result.items.clone(), trigger_col, trigger_prefix);
                 self.lsp.state.available_completions = result.items;
@@ -944,18 +937,20 @@ impl Editor {
                 self.lsp.state.inlay_hints = result.hints;
                 // Build unified decorations from the new hints.
                 let rope = self.buffer().rope().clone();
-                let hint_decs =
-                    crate::editor::decoration::decorations_from_inlay_hints(
-                        &self.lsp.state.inlay_hints,
-                        &rope,
-                        |line_idx| {
-                            if line_idx < rope.len_lines() {
-                                rope.line(line_idx).to_string().trim_end_matches('\n').to_string()
-                            } else {
-                                String::new()
-                            }
-                        },
-                    );
+                let hint_decs = crate::editor::decoration::decorations_from_inlay_hints(
+                    &self.lsp.state.inlay_hints,
+                    &rope,
+                    |line_idx| {
+                        if line_idx < rope.len_lines() {
+                            rope.line(line_idx)
+                                .to_string()
+                                .trim_end_matches('\n')
+                                .to_string()
+                        } else {
+                            String::new()
+                        }
+                    },
+                );
                 self.decorations.replace_source(
                     crate::editor::decoration::DecorationSource::InlayHint,
                     hint_decs,
@@ -1442,8 +1437,7 @@ impl Editor {
                     .document_sync
                     .entry(state_key.clone())
                     .or_default();
-                if state.target_lsp_version.is_none()
-                    && state.flushed_content() == Some(&*content)
+                if state.target_lsp_version.is_none() && state.flushed_content() == Some(&*content)
                 {
                     state.buffer_modified = false;
                     state.last_queued_content = None;
@@ -1798,8 +1792,11 @@ impl Editor {
         let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
 
         // Step 1: grapheme index → char index
-        let char_col = crate::unicode::grapheme_to_char_col(&line_str, crate::unicode::GraphemeCol(grapheme_col));
-        let safe_col = char_col.min(line_str.chars().count());
+        let char_col = crate::unicode::grapheme_to_char_col(
+            &line_str,
+            crate::unicode::GraphemeCol(grapheme_col),
+        );
+        let safe_col = char_col.0.min(line_str.chars().count());
 
         // Step 2: char index → UTF-16 code units
         line_str
@@ -1814,10 +1811,10 @@ impl Editor {
     /// Returns a char index suitable for rope operations (`insert_text_at`,
     /// `delete_range`). For cursor positioning (which needs grapheme indices),
     /// use [`utf16_to_grapheme_col`] instead.
-    pub(crate) fn utf16_to_col(&self, line: usize, utf16_col: u32) -> usize {
+    pub(crate) fn utf16_to_col(&self, line: usize, utf16_col: u32) -> crate::unicode::CharCol {
         let rope = self.buffer().rope();
         if line >= rope.len_lines() {
-            return 0;
+            return crate::unicode::CharCol::ZERO;
         }
 
         let line_text = rope.line(line);
@@ -1832,7 +1829,7 @@ impl Editor {
             char_position += 1;
         }
 
-        char_position
+        crate::unicode::CharCol(char_position)
     }
 
     /// Converts UTF-16 code units (from LSP) to a **grapheme** column index.
@@ -2267,7 +2264,9 @@ mod tests {
         // the buffer version), response arrived carrying the old N. Without
         // validation the stale items would populate the menu.
         let stale_version = editor.buffer().version();
-        editor.buffer_mut().insert_text_at(0, 10, "o");
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(10), "o");
         assert!(editor.buffer().version() > stale_version);
 
         fire_completion_result(

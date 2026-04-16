@@ -57,7 +57,10 @@ fn test_shell_command_repeat_empty() {
 #[test]
 fn test_filter_current_line() {
     let mut test = EditorTest::new("hello world\nfoo bar\nbaz qux\n");
-    test.editor.buffer_mut().cursor_mut().set_position(1, ovim::unicode::GraphemeCol::ZERO); // Middle line
+    test.editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(1, ovim::unicode::GraphemeCol::ZERO); // Middle line
 
     // Execute :.!tr 'a-z' 'A-Z' to uppercase current line
     InputHandler::execute_command_string(&mut test.editor, ".!tr 'a-z' 'A-Z'").unwrap();
@@ -106,7 +109,10 @@ fn test_filter_entire_buffer_undo_redo_macro_flow() {
 #[test]
 fn test_read_shell_command() {
     let mut test = EditorTest::new("first line\nsecond line\n");
-    test.editor.buffer_mut().cursor_mut().set_position(0, ovim::unicode::GraphemeCol::ZERO); // First line
+    test.editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(0, ovim::unicode::GraphemeCol::ZERO); // First line
 
     // Execute :r !echo "inserted"
     InputHandler::execute_command_string(&mut test.editor, "r !echo inserted").unwrap();
@@ -284,7 +290,9 @@ fn test_edit_force_reload() {
     assert!(content.contains("original"), "Should have original content");
 
     // Modify the buffer
-    test.editor.buffer_mut().insert_text_at(0, 0, "MODIFIED ");
+    test.editor
+        .buffer_mut()
+        .insert_text_at(0, ovim::unicode::CharCol::ZERO, "MODIFIED ");
     assert!(test.editor.buffer().is_modified());
 
     // Execute :e! to force reload

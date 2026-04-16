@@ -151,7 +151,6 @@ pub struct PendingLspRequest<T> {
     pub started: std::time::Instant,
 }
 
-
 #[derive(Debug, Clone)]
 pub struct AvailableCodeAction {
     /// LSP server ID that produced this action (language ID for primary server).

@@ -23,7 +23,8 @@ use crate::editor::input_state::{CharMotion, InputState};
 /// If `inclusive` is true, end_col is used directly; otherwise it's decremented by 1.
 fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclusive: bool) {
     if let Some(range) = range {
-        editor.set_visual_start(range.start_line, range.start_col);
+        // Phase-15 debt: visual_start stores grapheme cols; range cols are char.
+        editor.set_visual_start(range.start_line, range.start_col.0);
         let end_col = if inclusive {
             range.end_col
         } else {
@@ -32,7 +33,7 @@ fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclus
         editor
             .buffer_mut()
             .cursor_mut()
-            .set_position(range.end_line, GraphemeCol(end_col));
+            .set_position(range.end_line, GraphemeCol(end_col.0));
     }
 }
 
@@ -518,7 +519,12 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 if mode == Mode::VisualLine {
                     editor.set_yank_flash_lines(start_line, end_line);
                 } else {
-                    editor.set_yank_flash_range(start_line, GraphemeCol(start_col), end_line, GraphemeCol(end_col));
+                    editor.set_yank_flash_range(
+                        start_line,
+                        GraphemeCol(start_col),
+                        end_line,
+                        GraphemeCol(end_col),
+                    );
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);
@@ -577,7 +583,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 // Join all lines in the selection
                 let count = (end_line - start_line) + 1;
-                editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol(0));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(start_line, GraphemeCol(0));
                 helpers::join_lines(editor, count)?;
 
                 // Position cursor at the last inserted space
@@ -772,7 +781,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // Character: adjust cursor and paste_after
                 let cursor_col = editor.buffer().cursor().col().0;
                 if cursor_col > 0 {
-                    editor.buffer_mut().cursor_mut().set_col(GraphemeCol(cursor_col - 1));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_col(GraphemeCol(cursor_col - 1));
                 }
                 helpers::paste_after(editor, 1)?;
             }
@@ -836,7 +848,10 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 // For visual block mode, move cursor to start position (start_line, 0)
                 if is_visual_block {
-                    editor.buffer_mut().cursor_mut().set_position(start_line, GraphemeCol(0));
+                    editor
+                        .buffer_mut()
+                        .cursor_mut()
+                        .set_position(start_line, GraphemeCol(0));
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);

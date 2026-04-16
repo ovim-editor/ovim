@@ -1,7 +1,7 @@
 use crate::buffer::Buffer;
 use crate::change::TextObjectType;
 use crate::textobjects::TextObjects;
-use crate::unicode::GraphemeCol;
+use crate::unicode::{CharCol, GraphemeCol};
 
 #[derive(Clone, Copy, Debug)]
 pub enum CaseTransform {
@@ -178,8 +178,7 @@ impl RepeatAction {
                 let start = buffer.cursor().line();
                 let end = start + line_count;
                 buffer.indent_lines_at(start, end, *shift_width, *expand_tab);
-                let first_nb = buffer.first_non_blank_col(start);
-                buffer.cursor_mut().set_position(start, GraphemeCol(first_nb));
+                buffer.set_cursor_char_col(start, buffer.first_non_blank_col(start));
             }
             Self::DedentLines {
                 line_count,
@@ -188,8 +187,7 @@ impl RepeatAction {
                 let start = buffer.cursor().line();
                 let end = start + line_count;
                 buffer.dedent_lines_at(start, end, *shift_width);
-                let first_nb = buffer.first_non_blank_col(start);
-                buffer.cursor_mut().set_position(start, GraphemeCol(first_nb));
+                buffer.set_cursor_char_col(start, buffer.first_non_blank_col(start));
             }
             Self::ToggleCase { count } => {
                 for _ in 0..*count {
@@ -216,17 +214,18 @@ impl RepeatAction {
                         );
                         buffer.insert_text_at(range.start_line, range.start_col, &transformed);
 
+                        // Track position in char space; convert to grapheme for cursor.
                         let mut final_line = range.start_line;
                         let mut final_col = range.start_col;
                         for ch in transformed.chars() {
                             if ch == '\n' {
                                 final_line += 1;
-                                final_col = 0;
+                                final_col = CharCol::ZERO;
                             } else {
                                 final_col += 1;
                             }
                         }
-                        buffer.cursor_mut().set_position(final_line, GraphemeCol(final_col));
+                        buffer.set_cursor_char_col(final_line, final_col);
                     }
                 }
             }
@@ -270,7 +269,7 @@ impl RepeatAction {
                     .line(end_line)
                     .map(|l| l.trim_end_matches('\n').chars().count())
                     .unwrap_or(0);
-                let end_col = (buffer.cursor_char_col() + 1).min(line_len);
+                let end_col = (buffer.cursor_char_col() + 1).min_usize(line_len);
 
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.set_cursor_char_col(start_line, start_col);
@@ -280,7 +279,7 @@ impl RepeatAction {
                 search_forward,
             } => {
                 let line_idx = buffer.cursor().line();
-                let col = buffer.cursor_char_col();
+                let grapheme_col = buffer.cursor().col();
 
                 let mut search = crate::search::Search::new_with_options(
                     search_pattern.clone(),
@@ -289,9 +288,20 @@ impl RepeatAction {
                     true, // smartcase
                 );
 
-                if let Some((match_line, match_col, match_text)) =
-                    search.find_next(buffer, line_idx, col)
+                if let Some((match_line, match_grapheme_col, match_text)) =
+                    search.find_next(buffer, line_idx, grapheme_col)
                 {
+                    // find_next returns grapheme col; delete_range needs char col.
+                    // Convert via the matched line's text.
+                    let match_col = buffer
+                        .line(match_line)
+                        .map(|line_text| {
+                            crate::unicode::grapheme_to_char_col(
+                                line_text.trim_end_matches('\n'),
+                                GraphemeCol(match_grapheme_col),
+                            )
+                        })
+                        .unwrap_or(CharCol(match_grapheme_col));
                     let match_len = match_text.chars().count();
                     let match_end_col = match_col + match_len;
                     buffer.delete_range(match_line, match_col, match_line, match_end_col);
@@ -353,7 +363,7 @@ impl RepeatAction {
 
                 if let Some(line) = buffer.line(line_idx) {
                     let line_len = line.trim_end_matches('\n').chars().count();
-                    let delete_len = replacement_len.min(line_len.saturating_sub(col));
+                    let delete_len = replacement_len.min(line_len.saturating_sub(col.0));
                     let end_col = col + delete_len;
 
                     if delete_len > 0 {
@@ -398,16 +408,16 @@ impl RepeatAction {
 
                 if *above {
                     let text = format!("{}\n", indent);
-                    buffer.insert_text_at(line_idx, 0, &text);
+                    buffer.insert_text_at(line_idx, CharCol::ZERO, &text);
                     buffer
                         .cursor_mut()
                         .set_position(line_idx, GraphemeCol(indent.chars().count()));
                 } else {
                     let (insert_pos, text) = if line_text.ends_with('\n') {
-                        ((line_idx + 1, 0), format!("{}\n", indent))
+                        ((line_idx + 1, CharCol::ZERO), format!("{}\n", indent))
                     } else {
                         let line_len = line_text.chars().count();
-                        ((line_idx, line_len), format!("\n{}\n", indent))
+                        ((line_idx, CharCol(line_len)), format!("\n{}\n", indent))
                     };
                     buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
                     buffer
@@ -422,8 +432,15 @@ impl RepeatAction {
                         let line_wo_nl = line.trim_end_matches('\n');
                         if !line_wo_nl.is_empty() && line_wo_nl.chars().all(|c| c.is_whitespace()) {
                             let whitespace_len = line_wo_nl.chars().count();
-                            buffer.delete_range(current_line, 0, current_line, whitespace_len);
-                            buffer.cursor_mut().set_position(current_line, GraphemeCol(0));
+                            buffer.delete_range(
+                                current_line,
+                                CharCol::ZERO,
+                                current_line,
+                                CharCol(whitespace_len),
+                            );
+                            buffer
+                                .cursor_mut()
+                                .set_position(current_line, GraphemeCol(0));
                         }
                     }
                     return;
@@ -439,7 +456,7 @@ impl RepeatAction {
                 for ch in inserted_text.chars() {
                     if ch == '\n' {
                         final_line += 1;
-                        final_col = 0;
+                        final_col = CharCol::ZERO;
                     } else {
                         final_col += 1;
                     }
@@ -455,9 +472,9 @@ impl RepeatAction {
                 let start_col = buffer.cursor_char_col();
                 let end_line = start_line + line_delta;
                 let end_col = if *line_delta == 0 {
-                    start_col + offset_col
+                    start_col + *offset_col
                 } else {
-                    *offset_col
+                    CharCol(*offset_col)
                 };
                 buffer.delete_range(start_line, start_col, end_line, end_col);
                 buffer.set_cursor_char_col(start_line, start_col);
@@ -465,7 +482,7 @@ impl RepeatAction {
             Self::DeleteVisualLine { line_count } => {
                 let start_line = buffer.cursor().line();
                 let end_line_exclusive = start_line + line_count;
-                buffer.delete_range(start_line, 0, end_line_exclusive, 0);
+                buffer.delete_range(start_line, CharCol::ZERO, end_line_exclusive, CharCol::ZERO);
                 let new_line = start_line.min(buffer.line_count().saturating_sub(1));
                 buffer.cursor_mut().set_position(new_line, GraphemeCol(0));
             }
@@ -481,7 +498,7 @@ impl RepeatAction {
                     if let Some(line_text) = buffer.line(line_idx) {
                         let line_len = line_text.trim_end_matches('\n').chars().count();
                         if start_col < line_len {
-                            let end_col = (start_col + width).min(line_len);
+                            let end_col = (start_col + *width).min_usize(line_len);
                             buffer.delete_range(line_idx, start_col, line_idx, end_col);
                         }
                     }
@@ -492,9 +509,9 @@ impl RepeatAction {
                     .map(|l| l.trim_end_matches('\n').chars().count())
                     .unwrap_or(0);
                 let clamped_col = if line_len > 0 {
-                    start_col.min(line_len - 1)
+                    start_col.min_usize(line_len - 1)
                 } else {
-                    0
+                    CharCol::ZERO
                 };
                 buffer.set_cursor_char_col(start_line, clamped_col);
             }
@@ -515,7 +532,7 @@ impl RepeatAction {
                     if let Some(line_text) = buffer.line(line_idx) {
                         let line_len = line_text.trim_end_matches('\n').chars().count();
                         if start_col < line_len {
-                            let end_col = (start_col + width).min(line_len);
+                            let end_col = (start_col + *width).min_usize(line_len);
                             buffer.delete_range(line_idx, start_col, line_idx, end_col);
                         }
                     }
@@ -531,7 +548,7 @@ impl RepeatAction {
                         }
                         if let Some(line_text) = buffer.line(line_idx) {
                             let line_len = line_text.trim_end_matches('\n').chars().count();
-                            let insert_col = start_col.min(line_len);
+                            let insert_col = start_col.min_usize(line_len);
                             buffer.insert_text_at(line_idx, insert_col, inserted_text);
                         }
                     }
@@ -541,7 +558,7 @@ impl RepeatAction {
                     for ch in inserted_text.chars() {
                         if ch == '\n' {
                             final_line += 1;
-                            final_col = 0;
+                            final_col = CharCol::ZERO;
                         } else {
                             final_col += 1;
                         }
@@ -554,9 +571,9 @@ impl RepeatAction {
                         .map(|l| l.trim_end_matches('\n').chars().count())
                         .unwrap_or(0);
                     let clamped_col = if line_len > 0 {
-                        start_col.min(line_len - 1)
+                        start_col.min_usize(line_len - 1)
                     } else {
-                        0
+                        CharCol::ZERO
                     };
                     buffer.set_cursor_char_col(start_line, clamped_col);
                 }
@@ -579,7 +596,7 @@ impl RepeatAction {
                     // Open a new line for the insertion (like cc after delete)
                     let line = buffer.cursor().line();
                     let insert_at = line.min(buffer.line_count());
-                    buffer.insert_text_at(insert_at, 0, "\n");
+                    buffer.insert_text_at(insert_at, CharCol::ZERO, "\n");
                     buffer.cursor_mut().set_position(insert_at, GraphemeCol(0));
                 } else if !matches!(
                     delete.as_ref(),
@@ -614,7 +631,7 @@ impl RepeatAction {
                         for ch in inserted_text.chars() {
                             if ch == '\n' {
                                 final_line += 1;
-                                final_col = 0;
+                                final_col = CharCol::ZERO;
                             } else {
                                 final_col += 1;
                             }

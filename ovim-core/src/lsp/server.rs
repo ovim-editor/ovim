@@ -1501,27 +1501,69 @@ impl LanguageServer {
         let mut flags = F::empty();
 
         // Simple is_some() checks
-        if caps.definition_provider.is_some() { flags |= F::GOTO_DEFINITION; }
-        if caps.declaration_provider.is_some() { flags |= F::GOTO_DECLARATION; }
-        if caps.implementation_provider.is_some() { flags |= F::GOTO_IMPLEMENTATION; }
-        if caps.type_definition_provider.is_some() { flags |= F::GOTO_TYPE_DEFINITION; }
-        if caps.hover_provider.is_some() { flags |= F::HOVER; }
-        if caps.completion_provider.is_some() { flags |= F::COMPLETION; }
-        if caps.document_formatting_provider.is_some() { flags |= F::FORMATTING; }
-        if caps.document_range_formatting_provider.is_some() { flags |= F::RANGE_FORMATTING; }
-        if caps.code_action_provider.is_some() { flags |= F::CODE_ACTIONS; }
-        if caps.references_provider.is_some() { flags |= F::REFERENCES; }
-        if caps.rename_provider.is_some() { flags |= F::RENAME; }
-        if caps.signature_help_provider.is_some() { flags |= F::SIGNATURE_HELP; }
-        if caps.document_symbol_provider.is_some() { flags |= F::DOCUMENT_SYMBOL; }
-        if caps.selection_range_provider.is_some() { flags |= F::SELECTION_RANGE; }
-        if caps.workspace_symbol_provider.is_some() { flags |= F::WORKSPACE_SYMBOL; }
-        if caps.document_highlight_provider.is_some() { flags |= F::DOCUMENT_HIGHLIGHT; }
-        if caps.folding_range_provider.is_some() { flags |= F::FOLDING_RANGE; }
-        if caps.call_hierarchy_provider.is_some() { flags |= F::CALL_HIERARCHY; }
-        if caps.execute_command_provider.is_some() { flags |= F::EXECUTE_COMMAND; }
-        if caps.inlay_hint_provider.is_some() { flags |= F::INLAY_HINT; }
-        if caps.semantic_tokens_provider.is_some() { flags |= F::SEMANTIC_TOKENS; }
+        if caps.definition_provider.is_some() {
+            flags |= F::GOTO_DEFINITION;
+        }
+        if caps.declaration_provider.is_some() {
+            flags |= F::GOTO_DECLARATION;
+        }
+        if caps.implementation_provider.is_some() {
+            flags |= F::GOTO_IMPLEMENTATION;
+        }
+        if caps.type_definition_provider.is_some() {
+            flags |= F::GOTO_TYPE_DEFINITION;
+        }
+        if caps.hover_provider.is_some() {
+            flags |= F::HOVER;
+        }
+        if caps.completion_provider.is_some() {
+            flags |= F::COMPLETION;
+        }
+        if caps.document_formatting_provider.is_some() {
+            flags |= F::FORMATTING;
+        }
+        if caps.document_range_formatting_provider.is_some() {
+            flags |= F::RANGE_FORMATTING;
+        }
+        if caps.code_action_provider.is_some() {
+            flags |= F::CODE_ACTIONS;
+        }
+        if caps.references_provider.is_some() {
+            flags |= F::REFERENCES;
+        }
+        if caps.rename_provider.is_some() {
+            flags |= F::RENAME;
+        }
+        if caps.signature_help_provider.is_some() {
+            flags |= F::SIGNATURE_HELP;
+        }
+        if caps.document_symbol_provider.is_some() {
+            flags |= F::DOCUMENT_SYMBOL;
+        }
+        if caps.selection_range_provider.is_some() {
+            flags |= F::SELECTION_RANGE;
+        }
+        if caps.workspace_symbol_provider.is_some() {
+            flags |= F::WORKSPACE_SYMBOL;
+        }
+        if caps.document_highlight_provider.is_some() {
+            flags |= F::DOCUMENT_HIGHLIGHT;
+        }
+        if caps.folding_range_provider.is_some() {
+            flags |= F::FOLDING_RANGE;
+        }
+        if caps.call_hierarchy_provider.is_some() {
+            flags |= F::CALL_HIERARCHY;
+        }
+        if caps.execute_command_provider.is_some() {
+            flags |= F::EXECUTE_COMMAND;
+        }
+        if caps.inlay_hint_provider.is_some() {
+            flags |= F::INLAY_HINT;
+        }
+        if caps.semantic_tokens_provider.is_some() {
+            flags |= F::SEMANTIC_TOKENS;
+        }
 
         // Prepare rename: needs deeper inspection
         if let Some(lsp_types::OneOf::Right(options)) = &caps.rename_provider {
@@ -1540,7 +1582,9 @@ impl LanguageServer {
             }
             None => false,
         };
-        if incremental { flags |= F::INCREMENTAL_SYNC; }
+        if incremental {
+            flags |= F::INCREMENTAL_SYNC;
+        }
 
         // TODO(OV-00132): type_hierarchy_provider requires lsp-types 0.96+
         // Hardcoded off until we upgrade from 0.95.

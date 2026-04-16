@@ -287,8 +287,7 @@ mod tests {
 
     #[test]
     fn debounce_suppresses_needs_refresh() {
-        let mut slot: TrackedSlot<String> =
-            TrackedSlot::with_debounce(Duration::from_secs(100));
+        let mut slot: TrackedSlot<String> = TrackedSlot::with_debounce(Duration::from_secs(100));
         slot.invalidate();
         simulate_fire(&mut slot);
 
@@ -300,8 +299,7 @@ mod tests {
 
     #[test]
     fn debounce_allows_refresh_after_window() {
-        let mut slot: TrackedSlot<String> =
-            TrackedSlot::with_debounce(Duration::from_millis(0));
+        let mut slot: TrackedSlot<String> = TrackedSlot::with_debounce(Duration::from_millis(0));
         slot.invalidate();
         simulate_fire(&mut slot);
 

@@ -255,12 +255,7 @@ impl CharMotion {
     }
 
     /// Executes this motion on the buffer. Returns true if the cursor moved.
-    pub fn execute(
-        &self,
-        buffer: &mut crate::buffer::Buffer,
-        target: char,
-        count: usize,
-    ) -> bool {
+    pub fn execute(&self, buffer: &mut crate::buffer::Buffer, target: char, count: usize) -> bool {
         match self {
             Self::Find => crate::editor::Motions::find_char_forward(buffer, target, count),
             Self::Till => crate::editor::Motions::till_char_forward(buffer, target, count),

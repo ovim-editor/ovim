@@ -27,7 +27,9 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(current_line, GraphemeCol::ZERO);
     }
 
     /// Section navigation: jump to previous section start (`{` at column 0)
@@ -58,7 +60,9 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(current_line, GraphemeCol::ZERO);
     }
 
     /// Section navigation: jump to next section end (`}` at column 0)
@@ -83,7 +87,9 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(current_line, GraphemeCol::ZERO);
     }
 
     /// Section navigation: jump to previous section end (`}` at column 0)
@@ -106,6 +112,8 @@ impl Motions {
             }
         }
 
-        buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+        buffer
+            .cursor_mut()
+            .set_position(current_line, GraphemeCol::ZERO);
     }
 }

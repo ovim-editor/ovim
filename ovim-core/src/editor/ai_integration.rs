@@ -509,7 +509,7 @@ impl Editor {
                 let line = buf.rope().char_to_line(insert_pos);
                 let col = insert_pos - buf.rope().line_to_char(line);
                 if !replacement.is_empty() {
-                    buf.insert_text_at(line, col, &replacement);
+                    buf.insert_text_at(line, crate::unicode::CharCol(col), &replacement);
                 }
             })
         });
@@ -714,7 +714,9 @@ impl Editor {
 
     pub(crate) fn set_cursor_from_abs_char(&mut self, abs_char: usize) {
         let (line, col) = self.abs_char_to_line_col(abs_char);
-        self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(col));
 
         // In normal-like modes cursor must stay on a valid character cell.
         if !matches!(
@@ -803,11 +805,11 @@ impl Editor {
                 let line = buf.rope().char_to_line(current_insert);
                 let col = current_insert - buf.rope().line_to_char(line);
                 if !replacement.is_empty() {
-                    buf.insert_text_at(line, col, &replacement);
+                    buf.insert_text_at(line, crate::unicode::CharCol(col), &replacement);
                 }
 
                 if !top_text.is_empty() {
-                    buf.insert_text_at(0, 0, &top_text);
+                    buf.insert_text_at(0, crate::unicode::CharCol::ZERO, &top_text);
                 }
             })
         });
@@ -1278,7 +1280,10 @@ mod tests {
         });
 
         // Cursor starts on the "c" line.
-        editor.buffer_mut().cursor_mut().set_position(2, crate::unicode::GraphemeCol::ZERO);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(2, crate::unicode::GraphemeCol::ZERO);
 
         let result = AiJobResult {
             replacement: "b\n".to_string(),

@@ -124,7 +124,10 @@ impl Editor {
                         .chars()
                         .position(|c| !c.is_whitespace())
                         .unwrap_or(0);
-                    crate::unicode::char_to_grapheme_col(&line_text, char_col)
+                    crate::unicode::char_to_grapheme_col(
+                        &line_text,
+                        crate::unicode::CharCol(char_col),
+                    )
                 } else {
                     GraphemeCol::ZERO
                 };
@@ -161,7 +164,10 @@ impl Editor {
                         .chars()
                         .position(|c| !c.is_whitespace())
                         .unwrap_or(0);
-                    crate::unicode::char_to_grapheme_col(&line_text, char_col)
+                    crate::unicode::char_to_grapheme_col(
+                        &line_text,
+                        crate::unicode::CharCol(char_col),
+                    )
                 } else {
                     GraphemeCol::ZERO
                 };
@@ -187,7 +193,9 @@ impl Editor {
     /// Jumps back in the jump list (Ctrl-O)
     pub fn jump_back(&mut self) -> bool {
         if let Some((line, col)) = self.nav.jump_list.jump_back() {
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
             true
@@ -199,7 +207,9 @@ impl Editor {
     /// Jumps forward in the jump list (Ctrl-I)
     pub fn jump_forward(&mut self) -> bool {
         if let Some((line, col)) = self.nav.jump_list.jump_forward() {
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
             // Center cursor after jump (Vim behavior)
             self.center_cursor_in_viewport();
             true
@@ -247,7 +257,9 @@ impl Editor {
                     if !reverse {
                         // For ';' after `t`, skip past current target before repeating.
                         let col = self.buffer().cursor().col();
-                        self.buffer_mut().cursor_mut().set_col(GraphemeCol(col.0 + 1));
+                        self.buffer_mut()
+                            .cursor_mut()
+                            .set_col(GraphemeCol(col.0 + 1));
                         if !Motions::till_char_forward(self.buffer_mut(), ch, count) {
                             self.buffer_mut().cursor_mut().set_col(col);
                             false
@@ -263,7 +275,9 @@ impl Editor {
                         // For ';' after `T`, skip past current target before repeating.
                         let col = self.buffer().cursor().col();
                         if col > GraphemeCol::ZERO {
-                            self.buffer_mut().cursor_mut().set_col(GraphemeCol(col.0 - 1));
+                            self.buffer_mut()
+                                .cursor_mut()
+                                .set_col(GraphemeCol(col.0 - 1));
                             if !Motions::till_char_backward(self.buffer_mut(), ch, count) {
                                 self.buffer_mut().cursor_mut().set_col(col);
                                 false

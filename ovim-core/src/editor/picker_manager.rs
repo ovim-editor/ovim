@@ -503,7 +503,9 @@ impl Editor {
                     self.set_lsp_status(format!("Failed to load file {}: {}", path, e));
                     return Ok(());
                 }
-                self.buffer_mut().cursor_mut().set_position(line, crate::unicode::GraphemeCol(col));
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, crate::unicode::GraphemeCol(col));
                 self.buffer_mut().validate_cursor_position();
                 self.center_cursor_in_viewport();
             }
@@ -513,7 +515,9 @@ impl Editor {
                     self.set_lsp_status(format!("Failed to load file {}: {}", path, e));
                     return Ok(());
                 }
-                self.buffer_mut().cursor_mut().set_position(line, crate::unicode::GraphemeCol(col));
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, crate::unicode::GraphemeCol(col));
                 self.buffer_mut().validate_cursor_position();
                 self.center_cursor_in_viewport();
             }

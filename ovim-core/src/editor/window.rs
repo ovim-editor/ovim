@@ -99,7 +99,8 @@ impl Window {
         // Ensure cursor line is within buffer bounds
         let max_line = buffer.line_count().saturating_sub(1);
         if cursor_line > max_line {
-            self.cursor.set_position(max_line, crate::unicode::GraphemeCol::ZERO);
+            self.cursor
+                .set_position(max_line, crate::unicode::GraphemeCol::ZERO);
         }
 
         // Adjust scroll to maintain scrolloff distance from top/bottom

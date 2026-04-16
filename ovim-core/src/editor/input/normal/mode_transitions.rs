@@ -100,7 +100,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let line_idx = editor.buffer().cursor().line();
             if let Some(line) = editor.buffer().line(line_idx) {
                 let line_len = line.trim_end_matches('\n').chars().count();
-                editor.buffer_mut().cursor_mut().set_col(GraphemeCol(line_len));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_col(GraphemeCol(line_len));
             }
             Ok(true)
         }

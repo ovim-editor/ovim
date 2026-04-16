@@ -113,7 +113,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('g', KeyCode::Char('i')) => {
             // gi - go to last insert position and enter insert mode
             if let Some((line, col)) = editor.editing.last_insert_position {
-                editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, GraphemeCol(col));
             }
             let cursor_before = (
                 editor.buffer().cursor().line(),
@@ -140,7 +143,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             // g; - jump to older changelist position
             let count = editor.effective_count();
             if let Some(pos) = editor.jump_change_older(count) {
-                editor.buffer_mut().cursor_mut().set_position(pos.0, GraphemeCol(pos.1));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(pos.0, GraphemeCol(pos.1));
             }
             editor.clear_count();
         }
@@ -148,7 +154,10 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             // g, - jump to newer changelist position
             let count = editor.effective_count();
             if let Some(pos) = editor.jump_change_newer(count) {
-                editor.buffer_mut().cursor_mut().set_position(pos.0, GraphemeCol(pos.1));
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(pos.0, GraphemeCol(pos.1));
             }
             editor.clear_count();
         }
@@ -224,7 +233,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
                 let disp_col =
-                    crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+                    crate::display::char_col_to_display_col(&line_text, char_col.0, tab_width);
 
                 let (visual_row, visual_col) =
                     wrap_map.cursor_to_visual(line, disp_col, &line_text);
@@ -250,7 +259,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 );
                 // Clamp col to line length
                 let max_col = GraphemeCol(grapheme_count(&new_line_text).saturating_sub(1));
-                let target_gcol = char_to_grapheme_col(&new_line_text, new_col);
+                let target_gcol =
+                    char_to_grapheme_col(&new_line_text, crate::unicode::CharCol(new_col));
                 editor
                     .buffer_mut()
                     .cursor_mut()
@@ -293,7 +303,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .map(|l| l.trim_end_matches('\n').to_string())
                     .unwrap_or_default();
                 let disp_col =
-                    crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+                    crate::display::char_col_to_display_col(&line_text, char_col.0, tab_width);
 
                 let (visual_row, visual_col) =
                     wrap_map.cursor_to_visual(line, disp_col, &line_text);
@@ -315,7 +325,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     tab_width,
                 );
                 let max_col = GraphemeCol(grapheme_count(&new_line_text).saturating_sub(1));
-                let target_gcol = char_to_grapheme_col(&new_line_text, new_col);
+                let target_gcol =
+                    char_to_grapheme_col(&new_line_text, crate::unicode::CharCol(new_col));
                 editor
                     .buffer_mut()
                     .cursor_mut()
@@ -676,7 +687,12 @@ fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -
             if let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection()
             {
                 helpers::yank_visual_selection(editor)?;
-                editor.set_yank_flash_range(start_line, GraphemeCol(start_col), end_line, GraphemeCol(end_col));
+                editor.set_yank_flash_range(
+                    start_line,
+                    GraphemeCol(start_col),
+                    end_line,
+                    GraphemeCol(end_col),
+                );
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
@@ -759,7 +775,7 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
         .unwrap_or_default();
     let line_len = grapheme_count(&line_text);
     let char_col = grapheme_to_char_col(&line_text, cursor_char_col);
-    let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+    let disp_col = crate::display::char_col_to_display_col(&line_text, char_col.0, tab_width);
     let (visual_row, _visual_col) = wrap_map.cursor_to_visual(line_idx, disp_col, &line_text);
     let (_cursor_line, sub_line) = wrap_map.visual_to_logical(visual_row);
 
@@ -789,8 +805,8 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
 
     let target_char_col =
         crate::display::display_col_to_char_col(&line_text, target_disp_col, tab_width);
-    let target_col =
-        char_to_grapheme_col(&line_text, target_char_col).min(GraphemeCol(line_len.saturating_sub(1)));
+    let target_col = char_to_grapheme_col(&line_text, crate::unicode::CharCol(target_char_col))
+        .min(GraphemeCol(line_len.saturating_sub(1)));
     editor
         .buffer_mut()
         .cursor_mut()
@@ -823,7 +839,10 @@ mod tests {
 
         editor.ensure_wrap_map(5);
 
-        editor.buffer_mut().cursor_mut().set_position(0, GraphemeCol::ZERO);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, GraphemeCol::ZERO);
         editor.set_pending_command('g');
 
         try_handle(
@@ -841,7 +860,10 @@ mod tests {
         let mut editor = Editor::with_content("\t世b\n");
 
         editor.ensure_wrap_map(5);
-        editor.buffer_mut().cursor_mut().set_position(0, GraphemeCol(2));
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, GraphemeCol(2));
 
         let _ = move_to_screen_line_boundary(&mut editor, ScreenLineTarget::Start).unwrap();
 

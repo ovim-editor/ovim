@@ -8,6 +8,7 @@
 ///           highlight cache stores byte offsets.
 use ovim::buffer::Buffer;
 use ovim_core::syntax::HighlightGroup;
+use ovim_core::unicode::CharCol;
 
 /// Helper: create a buffer with syntax highlighting enabled for Rust code.
 fn rust_buffer(source: &str) -> Buffer {
@@ -65,7 +66,7 @@ fn test_ov_00217_highlight_shift_uses_byte_length_for_ascii_insert() {
     let start_before = constant_before.unwrap().start;
 
     // Insert "y, " (3 chars = 3 bytes) before "42" at char col 8
-    buf.insert_text_at(0, 8, "y, ");
+    buf.insert_text_at(0, CharCol(8), "y, ");
 
     // Check shifted highlights (before rehighlight — tests the shift logic only)
     let constant_shifted = find_highlight(&buf, 0, HighlightGroup::Constant);
@@ -95,7 +96,7 @@ fn test_ov_00217_highlight_shift_uses_byte_length_for_multibyte_insert() {
     assert_eq!(start_before, 8, "'42' should start at byte 8");
 
     // Insert "é" (2 bytes, 1 char) at char col 8 (before "42")
-    buf.insert_text_at(0, 8, "é");
+    buf.insert_text_at(0, CharCol(8), "é");
 
     // Check the shifted cache (NOT rebuilt — tests shift_highlights_for_insertion)
     let constant_shifted = find_highlight(&buf, 0, HighlightGroup::Constant);
@@ -133,7 +134,7 @@ fn test_ov_00217_multiline_insert_last_line_len_is_bytes() {
 
     // Insert at char col 8 → "let x = " stays on line 0, "42;" moves to line 1
     // with offset = last_line_len (should be 7 bytes for "sécond")
-    buf.insert_text_at(0, 8, "first\nsécond");
+    buf.insert_text_at(0, CharCol(8), "first\nsécond");
 
     // After insertion, "42;" moves to line 1. Its start col should be:
     //   (original_start - insert_col) + last_line_byte_len = (8 - 8) + 7 = 7
@@ -175,7 +176,7 @@ fn test_ov_00218_deletion_shift_vs_rebuilt() {
     assert!(keyword.is_some(), "Should find 'fn' keyword");
 
     // Delete 'ñ' at char col 13..14 (1 char, 2 bytes at bytes 13..15)
-    buf.delete_range(0, 13, 0, 14);
+    buf.delete_range(0, CharCol(13), 0, CharCol(14));
 
     // Capture shifted highlights (before rebuild)
     let comments_shifted = find_all_highlights(&buf, 0, HighlightGroup::Comment);
@@ -213,7 +214,7 @@ fn test_ov_00218_deletion_retain_logic_with_multibyte() {
     assert!(keyword.is_some(), "Should find 'fn' keyword");
 
     // Delete 'ñ' (char col 3..4, byte range 3..5)
-    buf.delete_range(0, 3, 0, 4);
+    buf.delete_range(0, CharCol(3), 0, CharCol(4));
 
     // Capture shifted punctuation highlights
     let puncts_shifted: Vec<_> = buf
@@ -275,7 +276,7 @@ fn test_ov_00216_ts_insert_edit_column_is_byte_offset() {
 
     // Insert a space at char col 20 (before the space before '42')
     // Char 20 = byte 21 (due to 2-byte ñ). If InputEdit uses char col, it's off by 1.
-    buf.insert_text_at(0, 20, " ");
+    buf.insert_text_at(0, CharCol(20), " ");
 
     // Rebuild with the incrementally-updated tree
     buf.rebuild_highlight_cache();
@@ -304,7 +305,7 @@ fn test_ov_00216_ts_delete_edit_column_is_byte_offset() {
 
     // Delete the space between 'y' and '=' — char col 18, byte col 19.
     // If InputEdit uses char col 18 instead of byte col 19, tree gets corrupted.
-    buf.delete_range(0, 18, 0, 19);
+    buf.delete_range(0, CharCol(18), 0, CharCol(19));
 
     buf.rebuild_highlight_cache();
 

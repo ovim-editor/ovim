@@ -6,6 +6,7 @@
 use crate::change::{find_number_at_or_after, format_number, parse_number};
 use crate::editor::Editor;
 use crate::repeat_action::RepeatAction;
+use crate::unicode::CharCol;
 use anyhow::Result;
 
 /// Increments the number under/after the cursor
@@ -40,7 +41,8 @@ pub fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> 
             };
             let line_text = line.trim_end_matches('\n');
 
-            let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, 0)
+            let Some((start_col, end_col, number_str)) =
+                find_number_at_or_after(line_text, CharCol::ZERO)
             else {
                 continue;
             };

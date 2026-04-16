@@ -548,13 +548,23 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
                         }
                     } else {
                         if let Some(hint) = &companion.install_hint {
-                            ovim_core::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
+                            ovim_core::lsp_info!(
+                                "LSP",
+                                "Companion {} not found. {}",
+                                companion.name,
+                                hint
+                            );
                         }
                         continue;
                     }
                 } else {
                     if let Some(hint) = &companion.install_hint {
-                        ovim_core::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
+                        ovim_core::lsp_info!(
+                            "LSP",
+                            "Companion {} not found. {}",
+                            companion.name,
+                            hint
+                        );
                     } else {
                         ovim_core::lsp_info!(
                             "LSP",

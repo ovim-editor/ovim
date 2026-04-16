@@ -11,13 +11,11 @@ use ratatui::{
 use crate::display::char_display_width;
 use crate::ui::renderer::markdown_conceal::scan_markdown_conceal;
 
-use super::helpers::{
-    compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col,
-};
+use super::helpers::{compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
 use super::styles::{
-    blame_color_for_hash, get_diagnostic_sign_style,
-    get_git_sign_style, get_line_number_style, remap_highlights,
+    blame_color_for_hash, get_diagnostic_sign_style, get_git_sign_style, get_line_number_style,
+    remap_highlights,
 };
 use crate::syntax::HighlightGroup;
 use ovim_core::buffer::Cursor;
@@ -869,11 +867,7 @@ fn apply_inline_decorations(
 ///
 /// Strips trailing padding, appends each decoration's styled text (with a 2-space gap),
 /// truncates to fit `text_width`, and re-pads.
-fn apply_eol_decorations(
-    row: &mut Line<'static>,
-    decorations: &[&Decoration],
-    text_width: usize,
-) {
+fn apply_eol_decorations(row: &mut Line<'static>, decorations: &[&Decoration], text_width: usize) {
     if decorations.is_empty() {
         return;
     }
@@ -1027,14 +1021,11 @@ fn lock_ranges_for_line(
         }
 
         let mut start_col = remap_char_col(start_abs - line_start_char, slice.char_mapping);
-        let mut end_col_exclusive =
-            remap_char_col(end_abs - line_start_char, slice.char_mapping);
+        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, slice.char_mapping);
 
         if !slice.wrap {
-            let start_display =
-                expanded_char_to_display_col(slice.expanded_text, start_col);
-            let end_display =
-                expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
+            let start_display = expanded_char_to_display_col(slice.expanded_text, start_col);
+            let end_display = expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
             if end_display <= slice.h_offset || start_display >= viewport_end {
                 continue;
             }
@@ -1087,14 +1078,11 @@ fn ai_region_ranges_for_line(
         }
 
         let mut start_col = remap_char_col(start_abs - line_start_char, slice.char_mapping);
-        let mut end_col_exclusive =
-            remap_char_col(end_abs - line_start_char, slice.char_mapping);
+        let mut end_col_exclusive = remap_char_col(end_abs - line_start_char, slice.char_mapping);
 
         if !slice.wrap {
-            let start_display =
-                expanded_char_to_display_col(slice.expanded_text, start_col);
-            let end_display =
-                expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
+            let start_display = expanded_char_to_display_col(slice.expanded_text, start_col);
+            let end_display = expanded_char_to_display_col(slice.expanded_text, end_col_exclusive);
             if end_display <= slice.h_offset || start_display >= viewport_end {
                 continue;
             }
@@ -1401,16 +1389,13 @@ pub fn render_buffer(
                     // Cached line has inline decorations but needs
                     // EOL decorations (diagnostics) applied fresh.
                     let eol_decs: Vec<&Decoration> = if show_eol_decorations {
-                        editor
-                            .decorations
-                            .eol_for_line(line_idx)
+                        editor.decorations.eol_for_line(line_idx)
                     } else {
                         Vec::new()
                     };
 
                     if has_wrap {
-                        let mut visual_rows =
-                            split_line_into_rows(cached_line, text_width);
+                        let mut visual_rows = split_line_into_rows(cached_line, text_width);
                         if !eol_decs.is_empty() {
                             if let Some(last_row) = visual_rows.last_mut() {
                                 apply_eol_decorations(last_row, &eol_decs, text_width);
@@ -1440,12 +1425,7 @@ pub fn render_buffer(
                             let line_width: usize = cached_line
                                 .spans
                                 .iter()
-                                .map(|s| {
-                                    s.content
-                                        .chars()
-                                        .map(char_display_width)
-                                        .sum::<usize>()
-                                })
+                                .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
                                 .sum();
                             if line_width >= text_width {
                                 overlay_eol_decoration_at_edge(
@@ -1454,11 +1434,7 @@ pub fn render_buffer(
                                     text_width,
                                 );
                             } else {
-                                apply_eol_decorations(
-                                    &mut cached_line,
-                                    &eol_decs,
-                                    text_width,
-                                );
+                                apply_eol_decorations(&mut cached_line, &eol_decs, text_width);
                             }
                         }
                         let line_len: usize = cached_line
@@ -1499,7 +1475,10 @@ pub fn render_buffer(
                 if is_md_file && editor.options.markdown_conceal && !is_cursor_line_for_conceal {
                     let spans = scan_markdown_conceal(line_text_original);
                     if spans.is_empty() {
-                        (expand_tabs_with_mapping(line_text_original, tab_width), Vec::new())
+                        (
+                            expand_tabs_with_mapping(line_text_original, tab_width),
+                            Vec::new(),
+                        )
                     } else {
                         let transform = crate::ui::renderer::markdown_conceal::apply_conceal(
                             line_text_original,
@@ -1514,7 +1493,10 @@ pub fn render_buffer(
                         )
                     }
                 } else {
-                    (expand_tabs_with_mapping(line_text_original, tab_width), Vec::new())
+                    (
+                        expand_tabs_with_mapping(line_text_original, tab_width),
+                        Vec::new(),
+                    )
                 };
             let line_text = exp.text;
             let conceal_byte_map = exp.byte_mapping;
@@ -1992,19 +1974,10 @@ pub fn render_buffer(
                         let line_width: usize = line
                             .spans
                             .iter()
-                            .map(|s| {
-                                s.content
-                                    .chars()
-                                    .map(char_display_width)
-                                    .sum::<usize>()
-                            })
+                            .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
                             .sum();
                         if line_width >= text_width {
-                            overlay_eol_decoration_at_edge(
-                                &mut line,
-                                &eol_decs,
-                                text_width,
-                            );
+                            overlay_eol_decoration_at_edge(&mut line, &eol_decs, text_width);
                         } else {
                             apply_eol_decorations(&mut line, &eol_decs, text_width);
                         }
@@ -2139,8 +2112,7 @@ pub fn render_buffer(
                                 .and_then(|b| b.get(line_idx - start_line)),
                         ));
                     }
-                    let line_display_len =
-                        unicode_width::UnicodeWidthStr::width(&*line_text);
+                    let line_display_len = unicode_width::UnicodeWidthStr::width(&*line_text);
                     let line_text = if line_display_len < text_width {
                         format!("{}{}", line_text, " ".repeat(text_width - line_display_len))
                     } else {

@@ -223,7 +223,12 @@ impl Buffer {
     ///
     /// `byte_col` is a **byte offset** within the line — the highlight cache
     /// stores ranges in byte offsets, so all arithmetic here is byte-based.
-    pub(super) fn shift_highlights_for_insertion(&mut self, line: usize, byte_col: usize, text: &str) {
+    pub(super) fn shift_highlights_for_insertion(
+        &mut self,
+        line: usize,
+        byte_col: usize,
+        text: &str,
+    ) {
         let Some(ref mut cache) = self.cached_highlights else {
             return; // No cache to shift
         };
@@ -308,9 +313,8 @@ impl Buffer {
     ) -> Option<tree_sitter::InputEdit> {
         // Compute absolute byte position: byte offset of line start + byte_col
         let line_start_byte = self.rope.char_to_byte(self.rope.line_to_char(line));
-        let start_byte = (line_start_byte + byte_col).min(
-            self.rope.char_to_byte(self.rope.len_chars()),
-        );
+        let start_byte =
+            (line_start_byte + byte_col).min(self.rope.char_to_byte(self.rope.len_chars()));
         let old_end_byte = start_byte;
         let new_end_byte = start_byte + text.len();
 
@@ -362,9 +366,8 @@ impl Buffer {
         deleted_text: &str,
     ) -> Option<tree_sitter::InputEdit> {
         let start_line_byte = self.rope.char_to_byte(self.rope.line_to_char(start_line));
-        let start_byte = (start_line_byte + start_byte_col).min(
-            self.rope.char_to_byte(self.rope.len_chars()),
-        );
+        let start_byte =
+            (start_line_byte + start_byte_col).min(self.rope.char_to_byte(self.rope.len_chars()));
         let old_end_byte = start_byte + deleted_text.len();
         let new_end_byte = start_byte;
 

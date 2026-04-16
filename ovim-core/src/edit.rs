@@ -35,7 +35,7 @@ impl Edit {
                 let pos = (*offset).min(buffer.rope().len_chars());
                 let line = buffer.rope().char_to_line(pos);
                 let col = pos - buffer.rope().line_to_char(line);
-                buffer.insert_text_at(line, col, text);
+                buffer.insert_text_at(line, crate::unicode::CharCol(col), text);
             }
             Edit::Delete { offset, text } => {
                 let end = offset + text.chars().count();

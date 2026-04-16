@@ -94,7 +94,13 @@ fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
     }
     let path = match editor.buffer().file_path().map(|s| s.to_string()) {
         Some(p) => p,
-        None => return err(if force { "No file to reload" } else { "No file name" }),
+        None => {
+            return err(if force {
+                "No file to reload"
+            } else {
+                "No file name"
+            })
+        }
     };
     match editor.buffer_mut().reload_from_disk() {
         Ok(_) => {
@@ -141,7 +147,10 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Com
         // Jump to line/column (convert from 1-indexed to 0-indexed)
         let line = entry.lnum.saturating_sub(1);
         let col = entry.col.saturating_sub(1);
-        editor.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(col));
         editor.buffer_mut().validate_cursor_position();
 
         ok(entry.display_text())
@@ -221,10 +230,38 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
             editor.quit();
             ok("Quitting all (forced)")
         }
-        "w" | "write" => save_buffer(editor, SaveOpts { path: None, force: false, quit_after: false }),
-        "w!" | "write!" => save_buffer(editor, SaveOpts { path: None, force: true, quit_after: false }),
-        "wq" => save_buffer(editor, SaveOpts { path: None, force: false, quit_after: true }),
-        "wq!" => save_buffer(editor, SaveOpts { path: None, force: true, quit_after: true }),
+        "w" | "write" => save_buffer(
+            editor,
+            SaveOpts {
+                path: None,
+                force: false,
+                quit_after: false,
+            },
+        ),
+        "w!" | "write!" => save_buffer(
+            editor,
+            SaveOpts {
+                path: None,
+                force: true,
+                quit_after: false,
+            },
+        ),
+        "wq" => save_buffer(
+            editor,
+            SaveOpts {
+                path: None,
+                force: false,
+                quit_after: true,
+            },
+        ),
+        "wq!" => save_buffer(
+            editor,
+            SaveOpts {
+                path: None,
+                force: true,
+                quit_after: true,
+            },
+        ),
         "LspInfo" => {
             // Show LSP status information in a scratch buffer
             let mut info = String::new();
@@ -738,7 +775,14 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 .strip_prefix("w ")
                 .or_else(|| command.strip_prefix("write "))
             {
-                save_buffer(editor, SaveOpts { path: Some(raw_filename), force: false, quit_after: false })
+                save_buffer(
+                    editor,
+                    SaveOpts {
+                        path: Some(raw_filename),
+                        force: false,
+                        quit_after: false,
+                    },
+                )
             // Handle :lua <code>
             } else if let Some(_code) = command.strip_prefix("lua ") {
                 #[cfg(feature = "lua")]
@@ -1093,7 +1137,10 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 let target_line = line_num.saturating_sub(1); // 1-indexed to 0-indexed
                 let max_line = editor.buffer().line_count().saturating_sub(1);
                 let final_line = target_line.min(max_line);
-                editor.buffer_mut().cursor_mut().set_position(final_line, GraphemeCol::ZERO);
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(final_line, GraphemeCol::ZERO);
                 ok(format!("Line {}", line_num))
             } else {
                 err(format!("Not an editor command: {}", command))
@@ -1640,7 +1687,14 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
                 Ok(val) => {
                     let masked = if val.chars().count() > 8 {
                         let head: String = val.chars().take(4).collect();
-                        let tail: String = val.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+                        let tail: String = val
+                            .chars()
+                            .rev()
+                            .take(4)
+                            .collect::<Vec<_>>()
+                            .into_iter()
+                            .rev()
+                            .collect();
                         format!("{}...{}", head, tail)
                     } else {
                         "****".to_string()
@@ -1668,7 +1722,14 @@ fn handle_ai_status(editor: &mut Editor) -> CommandResult {
         {
             let masked = if val.chars().count() > 8 {
                 let head: String = val.chars().take(4).collect();
-                let tail: String = val.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+                let tail: String = val
+                    .chars()
+                    .rev()
+                    .take(4)
+                    .collect::<Vec<_>>()
+                    .into_iter()
+                    .rev()
+                    .collect();
                 format!("{}...{}", head, tail)
             } else {
                 "****".to_string()

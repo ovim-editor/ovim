@@ -34,7 +34,7 @@ impl Motions {
         let line = rope.line(line_idx).to_string();
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
-        let col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
+        let col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
 
         if col >= chars.len() {
             // At end of line (or empty line), advance to next word start.
@@ -101,7 +101,10 @@ impl Motions {
             let clamped = new_col.min(chars.len().saturating_sub(1).max(0));
             buffer
                 .cursor_mut()
-                .set_col(crate::unicode::char_to_grapheme_col(line, clamped));
+                .set_col(crate::unicode::char_to_grapheme_col(
+                    line,
+                    crate::unicode::CharCol(clamped),
+                ));
         }
     }
 
@@ -139,7 +142,10 @@ impl Motions {
             if let Some(char_pos) = content.chars().position(|c| !c.is_whitespace()) {
                 return Some((
                     line_idx,
-                    crate::unicode::char_to_grapheme_col(content, char_pos),
+                    crate::unicode::char_to_grapheme_col(
+                        content,
+                        crate::unicode::CharCol(char_pos),
+                    ),
                 ));
             }
 
@@ -183,7 +189,9 @@ impl Motions {
                 grapheme_col = GraphemeCol(grapheme_count(prev_line_trimmed));
                 // If previous line is empty, just land at col 0
                 if grapheme_col == GraphemeCol::ZERO {
-                    buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx, GraphemeCol::ZERO);
                     return;
                 }
                 // grapheme_col is now one past the last grapheme; fall through to word-backward logic
@@ -196,7 +204,7 @@ impl Motions {
         let line = line.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
         // Convert grapheme col to char col for char-based iteration
-        let mut new_col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
+        let mut new_col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
 
         // Skip backward over whitespace first
         if new_col > 0 && new_col <= chars.len() {
@@ -207,7 +215,9 @@ impl Motions {
         }
 
         if new_col == 0 {
-            buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(line_idx, GraphemeCol::ZERO);
             return;
         }
 
@@ -240,7 +250,7 @@ impl Motions {
 
         buffer.cursor_mut().set_position(
             line_idx,
-            crate::unicode::char_to_grapheme_col(line, new_col),
+            crate::unicode::char_to_grapheme_col(line, crate::unicode::CharCol(new_col)),
         );
     }
 
@@ -295,7 +305,7 @@ impl Motions {
 
         let line = line_string.trim_end_matches('\n');
         let chars: Vec<char> = line.chars().collect();
-        let col = crate::unicode::grapheme_to_char_col(line, grapheme_col);
+        let col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
 
         if chars.is_empty() {
             // Skip consecutive blank lines to find next non-empty line
@@ -305,11 +315,16 @@ impl Motions {
                 let next_trimmed = next.trim_end_matches('\n');
                 if !next_trimmed.is_empty() {
                     // Start at first non-ws, then move to end of that word
-                    let Some(char_col) = next_trimmed.chars().position(|c: char| !c.is_whitespace()) else {
+                    let Some(char_col) =
+                        next_trimmed.chars().position(|c: char| !c.is_whitespace())
+                    else {
                         next_line += 1;
                         continue;
                     };
-                    let start_grapheme = crate::unicode::char_to_grapheme_col(next_trimmed, char_col);
+                    let start_grapheme = crate::unicode::char_to_grapheme_col(
+                        next_trimmed,
+                        crate::unicode::CharCol(char_col),
+                    );
                     buffer.cursor_mut().set_position(next_line, start_grapheme);
                     Self::word_end_forward_once(buffer, big_word, prefer_current);
                     return;
@@ -324,7 +339,9 @@ impl Motions {
 
         if col >= chars.len() {
             if line_idx + 1 < total_lines {
-                buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
+                buffer
+                    .cursor_mut()
+                    .set_position(line_idx + 1, GraphemeCol::ZERO);
                 Self::word_end_forward_once(buffer, big_word, prefer_current);
             }
             return;
@@ -339,7 +356,9 @@ impl Motions {
             }
             if idx >= chars.len() {
                 if line_idx + 1 < total_lines {
-                    buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx + 1, GraphemeCol::ZERO);
                     Self::word_end_forward_once(buffer, big_word, prefer_current);
                 }
                 return;
@@ -369,7 +388,10 @@ impl Motions {
             if prefer_current || idx < end_of_current {
                 buffer
                     .cursor_mut()
-                    .set_col(crate::unicode::char_to_grapheme_col(line, end_of_current));
+                    .set_col(crate::unicode::char_to_grapheme_col(
+                        line,
+                        crate::unicode::CharCol(end_of_current),
+                    ));
                 return;
             }
 
@@ -380,7 +402,9 @@ impl Motions {
             }
             if idx >= chars.len() {
                 if line_idx + 1 < total_lines {
-                    buffer.cursor_mut().set_position(line_idx + 1, GraphemeCol::ZERO);
+                    buffer
+                        .cursor_mut()
+                        .set_position(line_idx + 1, GraphemeCol::ZERO);
                     Self::word_end_forward_once(buffer, big_word, prefer_current);
                 }
                 return;
@@ -410,7 +434,10 @@ impl Motions {
 
         buffer
             .cursor_mut()
-            .set_col(crate::unicode::char_to_grapheme_col(line, end_of_next));
+            .set_col(crate::unicode::char_to_grapheme_col(
+                line,
+                crate::unicode::CharCol(end_of_next),
+            ));
     }
 
     /// Moves cursor backward to the end of the previous word
@@ -450,12 +477,8 @@ impl Motions {
         }
 
         // Helper to get line string (without trailing newline)
-        let get_line_str = |l: usize| -> String {
-            rope.line(l)
-                .to_string()
-                .trim_end_matches('\n')
-                .to_string()
-        };
+        let get_line_str =
+            |l: usize| -> String { rope.line(l).to_string().trim_end_matches('\n').to_string() };
 
         // Helper to get line chars
         let get_chars = |l: usize| -> Vec<char> {
@@ -469,7 +492,7 @@ impl Motions {
         let orig_line_str = get_line_str(orig_line);
         let orig_chars = get_chars(orig_line);
         // Convert grapheme col to char col for internal iteration
-        let orig_col = crate::unicode::grapheme_to_char_col(&orig_line_str, orig_grapheme_col);
+        let orig_col = crate::unicode::grapheme_to_char_col(&orig_line_str, orig_grapheme_col).0;
         let orig_class = if orig_col < orig_chars.len() {
             Some(if big_word {
                 // For WORD: any non-ws is the same "class"
@@ -507,7 +530,9 @@ impl Motions {
 
         let chars = get_chars(line_idx);
         if chars.is_empty() {
-            buffer.cursor_mut().set_position(line_idx, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(line_idx, GraphemeCol::ZERO);
             return;
         }
 
@@ -528,7 +553,7 @@ impl Motions {
             let line_str = get_line_str(line_idx);
             buffer.cursor_mut().set_position(
                 line_idx,
-                crate::unicode::char_to_grapheme_col(&line_str, col),
+                crate::unicode::char_to_grapheme_col(&line_str, crate::unicode::CharCol(col)),
             );
             return;
         }
@@ -566,7 +591,10 @@ impl Motions {
         let final_line_str = get_line_str(final_line);
         buffer.cursor_mut().set_position(
             final_line,
-            crate::unicode::char_to_grapheme_col(&final_line_str, final_char_col),
+            crate::unicode::char_to_grapheme_col(
+                &final_line_str,
+                crate::unicode::CharCol(final_char_col),
+            ),
         );
     }
 

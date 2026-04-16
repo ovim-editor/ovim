@@ -184,11 +184,8 @@ impl DecorationMap {
         }
 
         // Collect all decorations, adjust offsets, then rebuild index.
-        let mut all_decs: Vec<Decoration> = self
-            .lines
-            .values_mut()
-            .flat_map(|v| v.drain(..))
-            .collect();
+        let mut all_decs: Vec<Decoration> =
+            self.lines.values_mut().flat_map(|v| v.drain(..)).collect();
         self.lines.clear();
 
         for edit in edits {
@@ -557,7 +554,11 @@ mod tests {
         );
         map.replace_source(
             DecorationSource::Diagnostic,
-            vec![eol_at(0, "error: unused variable", DecorationSource::Diagnostic)],
+            vec![eol_at(
+                0,
+                "error: unused variable",
+                DecorationSource::Diagnostic,
+            )],
             &rope,
         );
 
@@ -613,7 +614,7 @@ mod tests {
         map.replace_source(
             DecorationSource::InlayHint,
             vec![
-                inline_at(3, ": i32", DecorationSource::InlayHint),     // 5 cols at char 3
+                inline_at(3, ": i32", DecorationSource::InlayHint), // 5 cols at char 3
                 inline_at(10, ": String", DecorationSource::InlayHint), // 8 cols at char 10
             ],
             &rope,
@@ -627,7 +628,7 @@ mod tests {
         assert_eq!(map.inline_width_before(0, 7, &rope), 5);
         // At the second hint
         assert_eq!(map.inline_width_before(0, 10, &rope), 13); // 5 + 8
-        // Different line
+                                                               // Different line
         assert_eq!(map.inline_width_before(1, 10, &rope), 0);
     }
 

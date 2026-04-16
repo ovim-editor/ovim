@@ -20,7 +20,7 @@ impl Motions {
                 .unwrap_or(0);
 
             // first_non_blank is a char index; convert to grapheme for cursor.
-            buffer.set_cursor_char_col(target_line, first_non_blank);
+            buffer.set_cursor_char_col(target_line, crate::unicode::CharCol(first_non_blank));
         }
     }
 
@@ -45,7 +45,7 @@ impl Motions {
                 .unwrap_or(0);
 
             // first_non_blank is a char index; convert to grapheme for cursor.
-            buffer.set_cursor_char_col(target_line, first_non_blank);
+            buffer.set_cursor_char_col(target_line, crate::unicode::CharCol(first_non_blank));
         }
     }
 
@@ -73,7 +73,7 @@ impl Motions {
                 .unwrap_or(0);
 
             // first_non_blank is a char index; convert to grapheme for cursor.
-            buffer.set_cursor_char_col(target_line, first_non_blank);
+            buffer.set_cursor_char_col(target_line, crate::unicode::CharCol(first_non_blank));
         }
     }
 

@@ -1,17 +1,21 @@
 use crate::buffer::Buffer;
-use crate::unicode::GraphemeCol;
+use crate::unicode::CharCol;
 use anyhow::Result;
 
 /// Represents a text object selection range
 /// NOTE: Uses half-open range semantics: [start_col, end_col)
 /// The end_col is EXCLUSIVE (one past the last character to include)
-/// This matches Rust's range semantics and buffer delete_range expectations
+/// This matches Rust's range semantics and buffer delete_range expectations.
+///
+/// Columns are `CharCol` (Unicode scalar value indices) — the unit rope
+/// operations like `delete_range` use. This avoids the char/grapheme
+/// confusion that previously caused the bug class fixed in commit 10226d2.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TextObjectRange {
     pub start_line: usize,
-    pub start_col: usize,
+    pub start_col: CharCol,
     pub end_line: usize,
-    pub end_col: usize, // EXCLUSIVE - one past the last character
+    pub end_col: CharCol, // EXCLUSIVE - one past the last character
 }
 
 /// Handles text object operations
@@ -21,7 +25,7 @@ impl TextObjects {
     /// Gets the range for "inner word" (iw)
     pub fn inner_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -50,9 +54,9 @@ impl TextObjects {
             }
             return Some(TextObjectRange {
                 start_line: line_idx,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: line_idx,
-                end_col,
+                end_col: CharCol(end_col),
             });
         }
 
@@ -74,9 +78,9 @@ impl TextObjects {
             }
             return Some(TextObjectRange {
                 start_line: line_idx,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: line_idx,
-                end_col,
+                end_col: CharCol(end_col),
             });
         }
 
@@ -95,16 +99,16 @@ impl TextObjects {
         // Note: iw does NOT include trailing whitespace - that's aw (around word)
         Some(TextObjectRange {
             start_line: line_idx,
-            start_col,
+            start_col: CharCol(start_col),
             end_line: line_idx,
-            end_col, // Already exclusive
+            end_col: CharCol(end_col), // Already exclusive
         })
     }
 
     /// Gets the range for "around word" (aw)
     pub fn around_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -134,9 +138,9 @@ impl TextObjects {
 
             return Some(TextObjectRange {
                 start_line: line_idx,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: line_idx,
-                end_col, // Already exclusive
+                end_col: CharCol(end_col), // Already exclusive
             });
         }
 
@@ -180,9 +184,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line: line_idx,
-            start_col,
+            start_col: CharCol(start_col),
             end_line: line_idx,
-            end_col, // Already exclusive
+            end_col: CharCol(end_col), // Already exclusive
         })
     }
 
@@ -190,7 +194,7 @@ impl TextObjects {
     /// WORD uses non-whitespace runs (punctuation is part of the WORD).
     pub fn inner_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -216,9 +220,9 @@ impl TextObjects {
             }
             return Some(TextObjectRange {
                 start_line: line_idx,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: line_idx,
-                end_col,
+                end_col: CharCol(end_col),
             });
         }
 
@@ -235,9 +239,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line: line_idx,
-            start_col,
+            start_col: CharCol(start_col),
             end_line: line_idx,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -245,7 +249,7 @@ impl TextObjects {
     /// WORD uses non-whitespace runs (punctuation is part of the WORD).
     pub fn around_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -271,9 +275,9 @@ impl TextObjects {
             }
             return Some(TextObjectRange {
                 start_line: line_idx,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: line_idx,
-                end_col,
+                end_col: CharCol(end_col),
             });
         }
 
@@ -306,9 +310,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line: line_idx,
-            start_col,
+            start_col: CharCol(start_col),
             end_line: line_idx,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -321,7 +325,7 @@ impl TextObjects {
         include_quotes: bool,
     ) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -394,9 +398,9 @@ impl TextObjects {
             // "around" - include the quotes
             Some(TextObjectRange {
                 start_line: line_idx,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: line_idx,
-                end_col: end_col + 1,
+                end_col: CharCol(end_col + 1),
             })
         } else {
             // "inner" - exclude the quotes
@@ -405,9 +409,9 @@ impl TextObjects {
             }
             Some(TextObjectRange {
                 start_line: line_idx,
-                start_col: start_col + 1,
+                start_col: CharCol(start_col + 1),
                 end_line: line_idx,
-                end_col,
+                end_col: CharCol(end_col),
             })
         }
     }
@@ -424,7 +428,7 @@ impl TextObjects {
         include_delimiters: bool,
     ) -> Option<TextObjectRange> {
         let cursor_line = buffer.cursor().line();
-        let cursor_col = buffer.cursor_char_col();
+        let cursor_col = buffer.cursor_char_col().0;
         let rope = buffer.rope();
         let line_count = buffer.line_count();
 
@@ -493,9 +497,9 @@ impl TextObjects {
             // "around" - include the delimiters
             Some(TextObjectRange {
                 start_line: open_line,
-                start_col: open_col,
+                start_col: CharCol(open_col),
                 end_line: close_line,
-                end_col: close_col + 1,
+                end_col: CharCol(close_col + 1),
             })
         } else {
             // "inner" - exclude the delimiters
@@ -512,9 +516,9 @@ impl TextObjects {
 
             Some(TextObjectRange {
                 start_line,
-                start_col,
+                start_col: CharCol(start_col),
                 end_line: close_line,
-                end_col: close_col,
+                end_col: CharCol(close_col),
             })
         }
     }
@@ -522,16 +526,16 @@ impl TextObjects {
     /// Deletes text within a text object range
     /// Note: range.end_col is exclusive (one past the last character)
     pub fn delete_range(buffer: &mut Buffer, range: TextObjectRange) -> Result<String> {
-        let start_char = buffer.rope().line_to_char(range.start_line) + range.start_col;
-        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col;
+        let start_char = buffer.rope().line_to_char(range.start_line) + range.start_col.0;
+        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col.0;
 
         let deleted = buffer.rope().slice(start_char..end_char).to_string();
         buffer.rope_mut().remove(start_char..end_char);
 
-        // Position cursor at start of deleted range
-        buffer
-            .cursor_mut()
-            .set_position(range.start_line, GraphemeCol(range.start_col));
+        // Position cursor at start of deleted range.
+        // range.start_col is a CharCol — convert via the line text to avoid
+        // the char/grapheme confusion bug class (commit 10226d2).
+        buffer.set_cursor_char_col(range.start_line, range.start_col);
 
         Ok(deleted)
     }
@@ -539,8 +543,8 @@ impl TextObjects {
     /// Yanks text within a text object range
     /// Note: range.end_col is exclusive (one past the last character)
     pub fn yank_range(buffer: &Buffer, range: TextObjectRange) -> Result<String> {
-        let start_char = buffer.rope().line_to_char(range.start_line) + range.start_col;
-        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col;
+        let start_char = buffer.rope().line_to_char(range.start_line) + range.start_col.0;
+        let end_char = buffer.rope().line_to_char(range.end_line) + range.end_col.0;
 
         Ok(buffer.rope().slice(start_char..end_char).to_string())
     }
@@ -549,7 +553,7 @@ impl TextObjects {
     /// include_tags: true for "around" (includes opening and closing tags), false for "inner" (content only)
     pub fn tag(buffer: &Buffer, include_tags: bool) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -646,9 +650,9 @@ impl TextObjects {
 
                             return Some(TextObjectRange {
                                 start_line,
-                                start_col,
+                                start_col: CharCol(start_col),
                                 end_line,
-                                end_col,
+                                end_col: CharCol(end_col),
                             });
                         }
                     }
@@ -744,9 +748,9 @@ impl TextObjects {
         if end_line + 1 < line_count {
             Some(TextObjectRange {
                 start_line,
-                start_col: 0,
+                start_col: CharCol::ZERO,
                 end_line: end_line + 1,
-                end_col: 0,
+                end_col: CharCol::ZERO,
             })
         } else {
             // Last line of file - use the actual end
@@ -754,9 +758,9 @@ impl TextObjects {
             let end_col = end_line_text.chars().count();
             Some(TextObjectRange {
                 start_line,
-                start_col: 0,
+                start_col: CharCol::ZERO,
                 end_line,
-                end_col,
+                end_col: CharCol(end_col),
             })
         }
     }
@@ -822,9 +826,9 @@ impl TextObjects {
         if end_line + 1 < line_count {
             Some(TextObjectRange {
                 start_line,
-                start_col: 0,
+                start_col: CharCol::ZERO,
                 end_line: end_line + 1,
-                end_col: 0,
+                end_col: CharCol::ZERO,
             })
         } else {
             // Last line of file - use the actual end
@@ -832,9 +836,9 @@ impl TextObjects {
             let end_col = end_line_text.chars().count();
             Some(TextObjectRange {
                 start_line,
-                start_col: 0,
+                start_col: CharCol::ZERO,
                 end_line,
-                end_col,
+                end_col: CharCol(end_col),
             })
         }
     }
@@ -843,7 +847,7 @@ impl TextObjects {
     /// A sentence ends with '.', '!', or '?' followed by whitespace or end of line
     pub fn inner_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -884,9 +888,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line: line_idx,
-            start_col,
+            start_col: CharCol(start_col),
             end_line: line_idx,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -894,7 +898,7 @@ impl TextObjects {
     /// Includes the sentence and trailing whitespace
     pub fn around_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
         let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col();
+        let col = buffer.cursor_char_col().0;
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -942,9 +946,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line: line_idx,
-            start_col,
+            start_col: CharCol(start_col),
             end_line: line_idx,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -1017,9 +1021,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line,
-            start_col: 0,
+            start_col: CharCol::ZERO,
             end_line,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -1045,7 +1049,7 @@ impl TextObjects {
                 range.end_line += 1;
                 // Update end_col for the new last line
                 let last_line = buffer.line(range.end_line)?;
-                range.end_col = last_line.trim_end_matches('\n').chars().count();
+                range.end_col = CharCol(last_line.trim_end_matches('\n').chars().count());
             } else {
                 break;
             }
@@ -1099,9 +1103,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line,
-            start_col,
+            start_col: CharCol(start_col),
             end_line,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -1133,9 +1137,9 @@ impl TextObjects {
 
         Some(TextObjectRange {
             start_line,
-            start_col: 0,
+            start_col: CharCol::ZERO,
             end_line,
-            end_col,
+            end_col: CharCol(end_col),
         })
     }
 
@@ -1152,7 +1156,7 @@ impl TextObjects {
 
             // Search from end of line (or cursor col if on cursor line)
             let end_pos = if search_line == cursor_line {
-                buffer.cursor_char_col().min(chars.len())
+                buffer.cursor_char_col().0.min(chars.len())
             } else {
                 chars.len()
             };

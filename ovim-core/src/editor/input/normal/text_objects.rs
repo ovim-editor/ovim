@@ -199,8 +199,7 @@ fn apply_delete_operator(
             range.end_line,
             range.end_col,
         );
-        buf.cursor_mut()
-            .set_position(range.start_line, GraphemeCol(range.start_col));
+        buf.set_cursor_char_col(range.start_line, range.start_col);
     });
     let cursor_after = editor.cursor_position();
     if !edits.is_empty() {
@@ -228,11 +227,13 @@ fn apply_yank_operator(
     if reg_type == RegisterType::Line {
         editor.set_yank_flash_lines(range.start_line, range.end_line);
     } else {
+        // range cols are char-space (CharCol); flash range takes grapheme cols.
+        // Use the raw value — phase-15 debt since visual/flash uses grapheme.
         editor.set_yank_flash_range(
             range.start_line,
-            GraphemeCol(range.start_col),
+            GraphemeCol(range.start_col.0),
             range.end_line,
-            GraphemeCol(range.end_col),
+            GraphemeCol(range.end_col.0),
         );
     }
     Ok(())
@@ -255,8 +256,7 @@ fn apply_change_operator(
             range.end_line,
             range.end_col,
         );
-        buf.cursor_mut()
-            .set_position(range.start_line, GraphemeCol(range.start_col));
+        buf.set_cursor_char_col(range.start_line, range.start_col);
     });
     if edits.is_empty() {
         return Ok(());
@@ -301,18 +301,18 @@ fn apply_case_operator(
                 buf.insert_text_at(range.start_line, range.start_col, &transformed);
 
                 // Keep cursor behavior consistent with prior path: land at end
-                // of the transformed text.
+                // of the transformed text. Tracked in char-space (CharCol).
                 let mut final_line = range.start_line;
                 let mut final_col = range.start_col;
                 for ch in transformed.chars() {
                     if ch == '\n' {
                         final_line += 1;
-                        final_col = 0;
+                        final_col = crate::unicode::CharCol::ZERO;
                     } else {
                         final_col += 1;
                     }
                 }
-                buf.cursor_mut().set_position(final_line, GraphemeCol(final_col));
+                buf.set_cursor_char_col(final_line, final_col);
             },
             Some(RepeatAction::ChangeCaseTextObject {
                 object_type,

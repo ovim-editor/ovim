@@ -44,7 +44,9 @@ impl Editor {
     /// Used when canceling search with ESC
     pub fn restore_search_start_position(&mut self) {
         if let Some((line, col)) = self.search.search_start_pos {
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
             self.search.search_start_pos = None;
         }
     }
@@ -86,8 +88,10 @@ impl Editor {
         let cursor = self.buffer().cursor();
 
         // Start search from current cursor position (inclusive)
-        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col().0) {
-            self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
         // Always update current_search so highlighting reflects the actual pattern.
         // If no match exists, find_all_in_line will return empty for each line,
@@ -128,9 +132,11 @@ impl Editor {
             };
 
             if let Some((line, col, _)) =
-                search_clone.find_next(self.buffer(), search_line, search_col)
+                search_clone.find_next(self.buffer(), search_line, GraphemeCol(search_col))
             {
-                self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, GraphemeCol(col));
             }
         }
     }
@@ -176,9 +182,11 @@ impl Editor {
             };
 
             if let Some((line, col, _)) =
-                rev_search.find_next(self.buffer(), search_line, search_col)
+                rev_search.find_next(self.buffer(), search_line, GraphemeCol(search_col))
             {
-                self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(col));
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, GraphemeCol(col));
             }
         }
     }
@@ -221,7 +229,8 @@ impl Editor {
             if !in_visual_mode {
                 if let Some(line_text) = self.buffer().line(cursor_line) {
                     let line_trimmed = line_text.trim_end_matches('\n');
-                    let cursor_char_col = grapheme_to_char_col(line_trimmed, GraphemeCol(cursor_col));
+                    let cursor_char_col =
+                        grapheme_to_char_col(line_trimmed, GraphemeCol(cursor_col)).0;
                     let matches = search_clone.find_all_in_line(&line_text);
                     let cursor_in_match = matches.iter().any(|(start_col, end_col)| {
                         cursor_char_col >= *start_col && cursor_char_col < *end_col
@@ -233,8 +242,14 @@ impl Editor {
                             cursor_char_col >= *start && cursor_char_col < *end
                         }) {
                             // Convert char cols → grapheme for visual start and cursor
-                            let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
-                            let end_grapheme = char_to_grapheme_col(line_trimmed, end_col - 1);
+                            let start_grapheme = char_to_grapheme_col(
+                                line_trimmed,
+                                crate::unicode::CharCol(*start_col),
+                            );
+                            let end_grapheme = char_to_grapheme_col(
+                                line_trimmed,
+                                crate::unicode::CharCol(end_col - 1),
+                            );
                             self.set_visual_start(cursor_line, start_grapheme.0);
                             self.buffer_mut()
                                 .cursor_mut()
@@ -247,7 +262,7 @@ impl Editor {
             }
 
             // Find the next match (always search from cursor + 1 to skip current position)
-            let search_col = cursor_col + 1;
+            let search_col = GraphemeCol(cursor_col + 1);
             if let Some((line, col, match_text)) =
                 search_clone.find_next(self.buffer(), cursor_line, search_col)
             {
@@ -257,11 +272,15 @@ impl Editor {
 
                 if in_visual_mode {
                     // In visual mode, extend selection to include the next match
-                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, GraphemeCol(match_end));
                 } else {
                     // In normal mode, enter visual mode and select the next match
                     self.set_visual_start(line, col);
-                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, GraphemeCol(match_end));
                     self.set_mode(Mode::Visual);
                 }
                 return true;
@@ -309,7 +328,8 @@ impl Editor {
                 let mut col = if cursor_col > 0 { cursor_col - 1 } else { 0 };
                 if let Some(line_text) = self.buffer().line(cursor_line) {
                     let line_trimmed = line_text.trim_end_matches('\n');
-                    let cursor_char_col = grapheme_to_char_col(line_trimmed, GraphemeCol(cursor_col));
+                    let cursor_char_col =
+                        grapheme_to_char_col(line_trimmed, GraphemeCol(cursor_col)).0;
                     let matches = rev_search.find_all_in_line(&line_text);
                     if let Some((start_col, _end_col)) = matches
                         .iter()
@@ -317,7 +337,8 @@ impl Editor {
                     {
                         // Cursor is inside a match — search from before this match's start
                         // Convert char-based start_col to grapheme for the search_col
-                        let start_grapheme = char_to_grapheme_col(line_trimmed, *start_col);
+                        let start_grapheme =
+                            char_to_grapheme_col(line_trimmed, crate::unicode::CharCol(*start_col));
                         col = if start_grapheme.0 > 0 {
                             start_grapheme.0 - 1
                         } else {
@@ -328,7 +349,7 @@ impl Editor {
                 col
             };
             if let Some((line, col, match_text)) =
-                rev_search.find_next(self.buffer(), cursor_line, search_col)
+                rev_search.find_next(self.buffer(), cursor_line, GraphemeCol(search_col))
             {
                 // col is now grapheme-based (from find_next); use grapheme_count for match length
                 let match_grapheme_len = grapheme_count(&match_text);
@@ -336,11 +357,15 @@ impl Editor {
 
                 if in_visual_mode {
                     // In visual mode, extend selection to include the previous match
-                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, GraphemeCol(match_end));
                 } else {
                     // In normal mode, enter visual mode and select the previous match
                     self.set_visual_start(line, col);
-                    self.buffer_mut().cursor_mut().set_position(line, GraphemeCol(match_end));
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(line, GraphemeCol(match_end));
                     self.set_mode(Mode::Visual);
                 }
                 return true;

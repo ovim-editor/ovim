@@ -24,7 +24,10 @@ fn wrap_allows_scrolling_to_reveal_final_logical_lines() {
     editor.ensure_wrap_map(10);
 
     let last_line = editor.buffer().line_count().saturating_sub(1);
-    editor.buffer_mut().cursor_mut().set_position(last_line, ovim::unicode::GraphemeCol::ZERO);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(last_line, ovim::unicode::GraphemeCol::ZERO);
 
     editor.update_scroll_offset();
 

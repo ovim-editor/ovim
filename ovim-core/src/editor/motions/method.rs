@@ -34,9 +34,13 @@ impl Motions {
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .count();
-            buffer.cursor_mut().set_position(current_line, GraphemeCol(col));
+            buffer
+                .cursor_mut()
+                .set_position(current_line, GraphemeCol(col));
         } else {
-            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(current_line, GraphemeCol::ZERO);
         }
     }
 
@@ -70,9 +74,13 @@ impl Motions {
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .count();
-            buffer.cursor_mut().set_position(current_line, GraphemeCol(col));
+            buffer
+                .cursor_mut()
+                .set_position(current_line, GraphemeCol(col));
         } else {
-            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(current_line, GraphemeCol::ZERO);
         }
     }
 
@@ -101,10 +109,13 @@ impl Motions {
         // and chars().position() gives a char index (not byte offset like str::find).
         if let Some(line) = buffer.line(current_line) {
             let char_col = line.chars().position(|c| c == '}').unwrap_or(0);
-            let grapheme_col = crate::unicode::char_to_grapheme_col(&line, char_col);
+            let grapheme_col =
+                crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(char_col));
             buffer.cursor_mut().set_position(current_line, grapheme_col);
         } else {
-            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(current_line, GraphemeCol::ZERO);
         }
     }
 
@@ -129,10 +140,13 @@ impl Motions {
         // Position at the closing brace (same conversion as method_end_forward)
         if let Some(line) = buffer.line(current_line) {
             let char_col = line.chars().position(|c| c == '}').unwrap_or(0);
-            let grapheme_col = crate::unicode::char_to_grapheme_col(&line, char_col);
+            let grapheme_col =
+                crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(char_col));
             buffer.cursor_mut().set_position(current_line, grapheme_col);
         } else {
-            buffer.cursor_mut().set_position(current_line, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(current_line, GraphemeCol::ZERO);
         }
     }
 

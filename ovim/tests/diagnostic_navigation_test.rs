@@ -132,7 +132,7 @@ fn test_show_diagnostic_at_cursor_shows_stale_diagnostics_after_buffer_edit() {
     // ("show until replaced" model — better than hiding all feedback).
     test.editor
         .buffer_mut()
-        .insert_text_at(0, 0, "x");
+        .insert_text_at(0, ovim::unicode::CharCol::ZERO, "x");
 
     // Diagnostic was at col 12, but the edit shifted it. The cursor at col 13
     // still finds the diagnostic (it's at the old position, stale but visible).

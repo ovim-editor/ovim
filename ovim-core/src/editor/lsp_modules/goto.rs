@@ -38,10 +38,7 @@ impl Editor {
     /// and cursor position, ensures document is synced.  Returns the pieces
     /// needed to spawn the actual LSP request, or `None` (with a status message
     /// already set) if a precondition wasn't met.
-    async fn prepare_goto_request(
-        &mut self,
-        feature_name: &str,
-    ) -> Option<GotoPrepared> {
+    async fn prepare_goto_request(&mut self, feature_name: &str) -> Option<GotoPrepared> {
         let lsp = match &self.lsp.state.lsp_manager {
             Some(lsp) => lsp.clone(),
             None => {
@@ -139,7 +136,10 @@ impl Editor {
             }));
         });
 
-        self.lsp.slots.goto_definition.fire(task, rx, p.buffer_version);
+        self.lsp
+            .slots
+            .goto_definition
+            .fire(task, rx, p.buffer_version);
         self.set_lsp_status("Jumping to definition...".to_string());
 
         Ok(false)
@@ -176,7 +176,10 @@ impl Editor {
             }));
         });
 
-        self.lsp.slots.goto_implementation.fire(task, rx, p.buffer_version);
+        self.lsp
+            .slots
+            .goto_implementation
+            .fire(task, rx, p.buffer_version);
         self.set_lsp_status("Jumping to implementation...".to_string());
 
         Ok(false)
@@ -215,7 +218,10 @@ impl Editor {
             }));
         });
 
-        self.lsp.slots.goto_type_definition.fire(task, rx, p.buffer_version);
+        self.lsp
+            .slots
+            .goto_type_definition
+            .fire(task, rx, p.buffer_version);
         self.set_lsp_status("Jumping to type definition...".to_string());
 
         Ok(false)

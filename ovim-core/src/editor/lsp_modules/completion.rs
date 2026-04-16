@@ -63,10 +63,10 @@ impl Editor {
                 // Extract prefix using char indices
                 let prefix: String = line_text
                     .chars()
-                    .skip(trigger_col)
-                    .take(cursor_col - trigger_col)
+                    .skip(trigger_col.0)
+                    .take(cursor_col.0 - trigger_col.0)
                     .collect();
-                return (trigger_col, prefix);
+                return (trigger_col.0, prefix);
             }
         }
 
@@ -78,10 +78,10 @@ impl Editor {
     /// Used for ongoing filtering while the completion menu is visible,
     /// so we don't re-derive the trigger column from word boundaries.
     pub(crate) fn completion_prefix_from_trigger_col(&self) -> String {
-        let trigger_col = self.completion_menu().trigger_col(); // char col
+        let trigger_col = self.completion_menu().trigger_col(); // char col (bare usize)
         let cursor_col = self.buffer().cursor_char_col();
 
-        if trigger_col > cursor_col {
+        if trigger_col > cursor_col.0 {
             return String::new();
         }
 
@@ -96,7 +96,7 @@ impl Editor {
         line_text
             .chars()
             .skip(trigger_col)
-            .take(cursor_col - trigger_col)
+            .take(cursor_col.0 - trigger_col)
             .collect()
     }
 
@@ -219,14 +219,13 @@ impl Editor {
                 lsp.completion(&uri, line, character, &language_id, trigger_char)
                     .await
             };
-            let task_result =
-                result.map(|items| crate::editor::lsp_slot::CompletionResult {
-                    items,
-                    file_path: file_path_for_task,
-                    buffer_version: buffer_version_usize,
-                    synced_content: None,
-                    synced_lsp_version: None,
-                });
+            let task_result = result.map(|items| crate::editor::lsp_slot::CompletionResult {
+                items,
+                file_path: file_path_for_task,
+                buffer_version: buffer_version_usize,
+                synced_content: None,
+                synced_lsp_version: None,
+            });
 
             let _ = tx.send(task_result);
         });
@@ -276,9 +275,7 @@ fn text_edit_majority_start(items: &[lsp_types::CompletionItem]) -> Option<u32> 
     for item in items {
         let start = match &item.text_edit {
             Some(lsp_types::CompletionTextEdit::Edit(edit)) => edit.range.start.character,
-            Some(lsp_types::CompletionTextEdit::InsertAndReplace(ir)) => {
-                ir.insert.start.character
-            }
+            Some(lsp_types::CompletionTextEdit::InsertAndReplace(ir)) => ir.insert.start.character,
             None => continue,
         };
         *counts.entry(start).or_default() += 1;
@@ -336,13 +333,23 @@ mod tests {
         assert_eq!(grapheme_at_index(line, 1), Some("."));
     }
 
-    fn item_with_text_edit(label: &str, start_char: u32, end_char: u32) -> lsp_types::CompletionItem {
+    fn item_with_text_edit(
+        label: &str,
+        start_char: u32,
+        end_char: u32,
+    ) -> lsp_types::CompletionItem {
         lsp_types::CompletionItem {
             label: label.to_string(),
             text_edit: Some(lsp_types::CompletionTextEdit::Edit(lsp_types::TextEdit {
                 range: lsp_types::Range {
-                    start: lsp_types::Position { line: 0, character: start_char },
-                    end: lsp_types::Position { line: 0, character: end_char },
+                    start: lsp_types::Position {
+                        line: 0,
+                        character: start_char,
+                    },
+                    end: lsp_types::Position {
+                        line: 0,
+                        character: end_char,
+                    },
                 },
                 new_text: label.to_string(),
             })),
@@ -374,12 +381,10 @@ mod tests {
 
     #[test]
     fn majority_start_no_text_edits() {
-        let items = vec![
-            lsp_types::CompletionItem {
-                label: "foo".to_string(),
-                ..Default::default()
-            },
-        ];
+        let items = vec![lsp_types::CompletionItem {
+            label: "foo".to_string(),
+            ..Default::default()
+        }];
         assert_eq!(text_edit_majority_start(&items), None);
     }
 

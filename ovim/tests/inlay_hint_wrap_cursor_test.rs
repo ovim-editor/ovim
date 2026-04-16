@@ -287,11 +287,7 @@ fn hint_wider_than_textwidth() {
     // A hint so wide it alone exceeds textwidth.  Cursor motions must
     // still operate in buffer coordinates.
     let mut test = setup_wrapped("ab", 5);
-    add_hints(
-        &mut test,
-        vec![hint_at(1, ": SomeVeryLongTypeName")],
-        5,
-    );
+    add_hints(&mut test, vec![hint_at(1, ": SomeVeryLongTypeName")], 5);
 
     test.assert_cursor(0, 0);
     test.keys("l");
