@@ -20,9 +20,8 @@ pub struct TextObjects;
 impl TextObjects {
     /// Gets the range for "inner word" (iw)
     pub fn inner_word(buffer: &Buffer) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -104,9 +103,8 @@ impl TextObjects {
 
     /// Gets the range for "around word" (aw)
     pub fn around_word(buffer: &Buffer) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -191,9 +189,8 @@ impl TextObjects {
     /// Gets the range for "inner WORD" (iW).
     /// WORD uses non-whitespace runs (punctuation is part of the WORD).
     pub fn inner_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -247,9 +244,8 @@ impl TextObjects {
     /// Gets the range for "around WORD" (aW).
     /// WORD uses non-whitespace runs (punctuation is part of the WORD).
     pub fn around_big_word(buffer: &Buffer) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -324,9 +320,8 @@ impl TextObjects {
         quote_char: char,
         include_quotes: bool,
     ) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -428,9 +423,8 @@ impl TextObjects {
         close_char: char,
         include_delimiters: bool,
     ) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let cursor_line = cursor.line();
-        let cursor_col = cursor.col().0;
+        let cursor_line = buffer.cursor().line();
+        let cursor_col = buffer.cursor_char_col();
         let rope = buffer.rope();
         let line_count = buffer.line_count();
 
@@ -554,9 +548,8 @@ impl TextObjects {
     /// Gets the range for an HTML/XML tag (inner or around)
     /// include_tags: true for "around" (includes opening and closing tags), false for "inner" (content only)
     pub fn tag(buffer: &Buffer, include_tags: bool) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -849,9 +842,8 @@ impl TextObjects {
     /// Gets the range for "inner sentence" (is)
     /// A sentence ends with '.', '!', or '?' followed by whitespace or end of line
     pub fn inner_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -901,9 +893,8 @@ impl TextObjects {
     /// Gets the range for "around sentence" (as)
     /// Includes the sentence and trailing whitespace
     pub fn around_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let col = cursor.col().0;
+        let line_idx = buffer.cursor().line();
+        let col = buffer.cursor_char_col();
 
         if line_idx >= buffer.line_count() {
             return None;
@@ -1161,7 +1152,7 @@ impl TextObjects {
 
             // Search from end of line (or cursor col if on cursor line)
             let end_pos = if search_line == cursor_line {
-                buffer.cursor().col().0.min(chars.len())
+                buffer.cursor_char_col().min(chars.len())
             } else {
                 chars.len()
             };
