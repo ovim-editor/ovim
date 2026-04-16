@@ -19,9 +19,8 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol(first_non_blank));
+            // first_non_blank is a char index; convert to grapheme for cursor.
+            buffer.set_cursor_char_col(target_line, first_non_blank);
         }
     }
 
@@ -45,9 +44,8 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol(first_non_blank));
+            // first_non_blank is a char index; convert to grapheme for cursor.
+            buffer.set_cursor_char_col(target_line, first_non_blank);
         }
     }
 
@@ -74,9 +72,8 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
 
-            buffer
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol(first_non_blank));
+            // first_non_blank is a char index; convert to grapheme for cursor.
+            buffer.set_cursor_char_col(target_line, first_non_blank);
         }
     }
 

@@ -5,7 +5,7 @@
 use crate::editor::{Change, Editor, Range, RegisterType};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
-use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col, GraphemeCol};
+use crate::unicode::{grapheme_count, grapheme_to_char_col, GraphemeCol};
 use anyhow::Result;
 
 type Position = (usize, usize);
@@ -138,24 +138,9 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
     let position = (line_idx, char_col);
 
     // Create and apply the change
+    // Change::apply() handles char→grapheme cursor conversion via set_cursor_char_col.
     let change = Change::insert(position, c.to_string(), cursor_before);
     editor.apply_change_and_record(change);
-
-    // calculate_end_position returns char-indexed col; convert back to grapheme
-    let (cur_line, cur_col) = {
-        let cur = editor.buffer().cursor();
-        (cur.line(), cur.col().0)
-    };
-    let new_grapheme_col = {
-        let new_line_text = editor.buffer().line(cur_line).unwrap_or_default();
-        char_to_grapheme_col(new_line_text.trim_end_matches('\n'), cur_col)
-    };
-    if new_grapheme_col.0 != cur_col {
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(cur_line, new_grapheme_col);
-    }
 
     Ok(())
 }
@@ -224,36 +209,20 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
 
     // Insert newline + indentation
     let text_to_insert = format!("\n{}{}", indent, extra_indent);
+    // Change::apply() handles char→grapheme cursor conversion via set_cursor_char_col.
     let change = Change::insert(position, text_to_insert, cursor_before);
     let inserted = editor.apply_change_and_record(change);
 
-    // calculate_end_position returns char-indexed col; convert back to grapheme
-    let (cur_line, cur_col) = {
-        let cur = editor.buffer().cursor();
-        (cur.line(), cur.col().0)
-    };
-    let new_grapheme_col = {
-        let new_line_text = editor.buffer().line(cur_line).unwrap_or_default();
-        char_to_grapheme_col(new_line_text.trim_end_matches('\n'), cur_col)
-    };
-    if new_grapheme_col.0 != cur_col {
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(cur_line, new_grapheme_col);
-    }
-
     if needs_double_newline && inserted {
-        let cursor_after_first = (
-            editor.buffer().cursor().line(),
-            editor.buffer().cursor().col().0,
-        );
+        let cur = editor.buffer().cursor();
+        let cur_char_col = editor.buffer().cursor_char_col();
+        let cursor_after_first = (cur.line(), cur_char_col);
         let change = Change::insert(cursor_after_first, "\n".to_string(), cursor_before);
         editor.apply_change_and_record(change);
+        // Move cursor back to the line before the trailing newline
         editor
             .buffer_mut()
-            .cursor_mut()
-            .set_position(cursor_after_first.0, GraphemeCol(cursor_after_first.1));
+            .set_cursor_char_col(cursor_after_first.0, cursor_after_first.1);
     }
 
     Ok(())
@@ -307,23 +276,8 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
 
     let range = Range::new(start_pos, end_pos);
     let change = Change::delete_backward(range, deleted_text, cursor_before);
+    // Change::apply() handles char→grapheme cursor conversion via set_cursor_char_col.
     editor.apply_change_and_record(change);
-
-    // Change::apply sets cursor to range.start (char-indexed); convert back to grapheme
-    let (cur_line, cur_col) = {
-        let cur = editor.buffer().cursor();
-        (cur.line(), cur.col().0)
-    };
-    let new_grapheme_col = {
-        let line_text = editor.buffer().line(cur_line).unwrap_or_default();
-        char_to_grapheme_col(line_text.trim_end_matches('\n'), cur_col)
-    };
-    if new_grapheme_col.0 != cur_col {
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(cur_line, new_grapheme_col);
-    }
 
     Ok(())
 }
@@ -697,10 +651,10 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                             .count()
                     })
                     .unwrap_or(0);
+                // first_non_blank is a char index; convert to grapheme for cursor.
                 editor
                     .buffer_mut()
-                    .cursor_mut()
-                    .set_position(0, GraphemeCol(first_non_blank));
+                    .set_cursor_char_col(0, first_non_blank);
 
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
@@ -736,10 +690,10 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                             .count()
                     })
                     .unwrap_or(0);
+                // first_non_blank is a char index; convert to grapheme for cursor.
                 editor
                     .buffer_mut()
-                    .cursor_mut()
-                    .set_position(new_line, GraphemeCol(first_non_blank));
+                    .set_cursor_char_col(new_line, first_non_blank);
 
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
@@ -881,10 +835,10 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
                         .count()
                 })
                 .unwrap_or(0);
+            // first_non_blank is a char index; convert to grapheme for cursor.
             editor
                 .buffer_mut()
-                .cursor_mut()
-                .set_position(pasted_line, GraphemeCol(first_non_blank));
+                .set_cursor_char_col(pasted_line, first_non_blank);
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
@@ -1816,24 +1770,9 @@ pub fn insert_tab(editor: &mut Editor) -> Result<()> {
             grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
         };
         let position = (line_idx, char_col);
+        // Change::apply() handles char→grapheme cursor conversion via set_cursor_char_col.
         let change = Change::insert(position, spaces, cursor_before);
         editor.apply_change_and_record(change);
-
-        // Convert char-indexed cursor back to grapheme
-        let (cur_line, cur_col) = {
-            let cur = editor.buffer().cursor();
-            (cur.line(), cur.col().0)
-        };
-        let new_grapheme_col = {
-            let new_line_text = editor.buffer().line(cur_line).unwrap_or_default();
-            char_to_grapheme_col(new_line_text.trim_end_matches('\n'), cur_col)
-        };
-        if new_grapheme_col.0 != cur_col {
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(cur_line, new_grapheme_col);
-        }
     } else {
         insert_char(editor, '\t')?;
     }

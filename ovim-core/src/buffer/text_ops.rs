@@ -553,8 +553,8 @@ impl Buffer {
                 range.end_line,
                 range.end_col,
             );
-            self.cursor_mut()
-                .set_position(range.start_line, GraphemeCol(range.start_col));
+            // TextObjectRange cols are char indices; convert to grapheme for cursor.
+            self.set_cursor_char_col(range.start_line, range.start_col);
         }
     }
 
@@ -1078,8 +1078,9 @@ impl Buffer {
         self.cursor_mut().set_position(new_line, GraphemeCol(0));
         self.clamp_cursor_col();
         // Move to first non-blank character
+        // first_non_blank_col returns char index; convert to grapheme for cursor.
         let fnb = self.first_non_blank_col(new_line);
-        self.cursor_mut().set_position(new_line, GraphemeCol(fnb));
+        self.set_cursor_char_col(new_line, fnb);
         deleted
     }
 }

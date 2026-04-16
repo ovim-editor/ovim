@@ -457,8 +457,10 @@ impl Change {
                 // Keep cursor stable when insertion was blocked/no-op.
                 if buffer.version() != version_before {
                     // Update cursor to end of inserted text
+                    // calculate_end_position returns char-indexed columns,
+                    // so use set_cursor_char_col which converts to grapheme.
                     let end_pos = Self::calculate_end_position(*position, text);
-                    buffer.cursor_mut().set_position(end_pos.0, GraphemeCol(end_pos.1));
+                    buffer.set_cursor_char_col(end_pos.0, end_pos.1);
                 }
             }
             Self::DeleteText { range, .. } => {
@@ -469,7 +471,8 @@ impl Change {
                 // Keep cursor stable when deletion was blocked/no-op.
                 if buffer.version() != version_before {
                     // Position cursor at deletion start
-                    buffer.cursor_mut().set_position(start_line, GraphemeCol(start_col));
+                    // Range cols are char indices; convert to grapheme for cursor.
+                    buffer.set_cursor_char_col(start_line, start_col);
                 }
             }
             Self::Composite {

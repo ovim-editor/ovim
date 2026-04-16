@@ -1792,7 +1792,9 @@ impl Editor {
                 // Insert pasted text at cursor position as a single change
                 let cursor = self.buffer().cursor();
                 let cursor_before = (cursor.line(), cursor.col().0);
-                let position = (cursor.line(), cursor.col().0);
+                // Convert grapheme col to char col for buffer operations
+                let char_col = self.buffer().cursor_char_col();
+                let position = (cursor.line(), char_col);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
@@ -1809,7 +1811,9 @@ impl Editor {
                 self.registers.set(None, text.to_string());
                 let cursor = self.buffer().cursor();
                 let cursor_before = (cursor.line(), cursor.col().0);
-                let position = (cursor.line(), cursor.col().0 + 1);
+                // Convert grapheme col to char col for buffer operations
+                let char_col = self.buffer().cursor_char_col();
+                let position = (cursor.line(), char_col + 1);
                 let change = Change::insert(position, text.to_string(), cursor_before);
                 self.apply_change_and_record(change);
             }
