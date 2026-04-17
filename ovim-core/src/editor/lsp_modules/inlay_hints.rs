@@ -171,4 +171,190 @@ mod tests {
         editor.lsp.slots.inlay_hints.invalidate();
         assert!(!editor.inlay_hints_refresh_needed());
     }
+
+    // -------------------------------------------------------------------
+    // Sprint 1 — Canonical buffer-mutation hook invalidates slots.
+    //
+    // These tests pin the three "LSP view just went stale" signals and
+    // the bonus correctness cliff. Before the fix, each of these paths
+    // left slots clean even though the server's view of the world had
+    // drifted from ours (or vice versa), causing inlay hints and
+    // diagnostics to silently fail to refresh.
+    // -------------------------------------------------------------------
+
+    /// Signal 1 (pre-warm): after we send didOpen to the LSP server for
+    /// the first time, the server now has a document we need hints and
+    /// diagnostics for — without any buffer edit having occurred. The
+    /// "document opened" hook must invalidate both slots.
+    #[test]
+    fn did_open_hook_invalidates_slots() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        editor.enable_lsp();
+        editor.set_file_path("/tmp/Test.java".to_string());
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
+        assert!(!editor.lsp.slots.diagnostics.is_stale());
+
+        // Simulate the pre-warm didOpen completion path
+        // (lsp_init/mod.rs:248-ish and lsp_integration.rs:1595-ish both
+        // call this after a successful did_open_broadcast).
+        editor.mark_document_opened_with_content("/tmp/Test.java", "class Test {}\n".to_string());
+
+        assert!(
+            editor.lsp.slots.inlay_hints.is_stale(),
+            "didOpen should invalidate inlay_hints — server has a new document"
+        );
+        assert!(
+            editor.lsp.slots.diagnostics.is_stale(),
+            "didOpen should invalidate diagnostics — server has a new document"
+        );
+    }
+
+    /// Signal 2 (save): after sending didSave, the server may re-analyze
+    /// the document and emit new diagnostics / hints even though the
+    /// buffer itself didn't change. The "save sent" hook must invalidate.
+    #[test]
+    fn did_save_hook_invalidates_slots() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        editor.enable_lsp();
+        editor.set_file_path("/tmp/Test.java".to_string());
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
+        assert!(!editor.lsp.slots.diagnostics.is_stale());
+
+        // Simulate the didSave broadcast success path. This mirrors what
+        // send_lsp_save_if_needed does after a successful broadcast:
+        // the slot invalidate must happen regardless of buffer state.
+        editor.on_lsp_save_sent("/tmp/Test.java");
+
+        assert!(
+            editor.lsp.slots.inlay_hints.is_stale(),
+            "didSave should invalidate inlay_hints — server may re-analyze on save"
+        );
+        assert!(
+            editor.lsp.slots.diagnostics.is_stale(),
+            "didSave should invalidate diagnostics — server may re-analyze on save"
+        );
+    }
+
+    /// Signal 3 (undo, content-equals-flushed cliff): when the user types
+    /// a char and undoes it, buffer content equals the last-flushed
+    /// content, so send_lsp_changes_if_modified takes the early-return
+    /// path and never invalidates. The canonical mark_buffer_modified
+    /// hook must invalidate so we don't miss this case.
+    #[test]
+    fn undo_invalidates_slots_even_when_content_equals_flushed() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        editor.enable_lsp();
+        editor.set_file_path("/tmp/Test.java".to_string());
+
+        // Simulate the "already flushed" state: last_flushed_content
+        // matches current buffer content, no target version pending.
+        {
+            let state = editor
+                .lsp
+                .state
+                .document_sync
+                .entry("/tmp/Test.java".to_string())
+                .or_default();
+            state.did_open_sent = true;
+            state.last_flushed_content = Some(std::sync::Arc::from("class Test {}\n"));
+            state.target_lsp_version = None;
+            state.buffer_modified = false;
+        }
+
+        // Type a char to create an undo-able edit.
+        editor.record_operation(
+            |buf| {
+                buf.insert_text_at(0, crate::unicode::CharCol::ZERO, "x");
+            },
+            None,
+        );
+
+        // Clear staleness introduced by the insertion so we can
+        // isolate the undo-path signal.
+        editor.lsp.slots.inlay_hints.fired_at = editor.lsp.slots.inlay_hints.generation;
+        editor.lsp.slots.inlay_hints.last_fired = Some(std::time::Instant::now());
+        editor.lsp.slots.diagnostics.fired_at = editor.lsp.slots.diagnostics.generation;
+        editor.lsp.slots.diagnostics.last_fired = Some(std::time::Instant::now());
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
+        assert!(!editor.lsp.slots.diagnostics.is_stale());
+
+        // Undo: buffer content is now back to what was flushed.
+        editor.undo();
+
+        assert!(
+            editor.lsp.slots.inlay_hints.is_stale(),
+            "undo must invalidate inlay_hints even when content == last_flushed"
+        );
+        assert!(
+            editor.lsp.slots.diagnostics.is_stale(),
+            "undo must invalidate diagnostics even when content == last_flushed"
+        );
+    }
+
+    /// Bonus cliff: typing a char and immediately backspacing it leaves
+    /// buffer content == last-flushed. Under the old design the early
+    /// return in send_lsp_changes_if_modified skipped invalidation. With
+    /// the canonical hook in mark_buffer_modified, the TrackedSlot's
+    /// debounce absorbs the extra invalidations but the final state
+    /// must still be stale.
+    #[test]
+    fn type_then_backspace_still_invalidates_slots() {
+        let mut editor = Editor::with_content("hello\n");
+        editor.enable_lsp();
+        editor.set_file_path("/tmp/test.rs".to_string());
+
+        // Pretend we've already flushed the current content to the server.
+        {
+            let state = editor
+                .lsp
+                .state
+                .document_sync
+                .entry("/tmp/test.rs".to_string())
+                .or_default();
+            state.did_open_sent = true;
+            state.last_flushed_content = Some(std::sync::Arc::from("hello\n"));
+            state.target_lsp_version = None;
+            state.buffer_modified = false;
+        }
+
+        // Reset slots to a clean baseline.
+        editor.lsp.slots.inlay_hints.fired_at = editor.lsp.slots.inlay_hints.generation;
+        editor.lsp.slots.inlay_hints.last_fired = Some(std::time::Instant::now());
+        editor.lsp.slots.diagnostics.fired_at = editor.lsp.slots.diagnostics.generation;
+        editor.lsp.slots.diagnostics.last_fired = Some(std::time::Instant::now());
+        assert!(!editor.lsp.slots.inlay_hints.is_stale());
+        assert!(!editor.lsp.slots.diagnostics.is_stale());
+
+        // Type a char ("x"), then delete it — content returns to "hello\n".
+        editor.record_operation(
+            |buf| {
+                buf.insert_text_at(0, crate::unicode::CharCol::ZERO, "x");
+            },
+            None,
+        );
+        editor.record_operation(
+            |buf| {
+                buf.delete_range(
+                    0,
+                    crate::unicode::CharCol::ZERO,
+                    0,
+                    crate::unicode::CharCol(1),
+                );
+            },
+            None,
+        );
+
+        // Content now matches last_flushed_content — the early-return
+        // path would have skipped invalidation. But both slots should
+        // still be stale because mark_buffer_modified fired twice.
+        assert_eq!(editor.buffer().rope().to_string(), "hello\n");
+        assert!(
+            editor.lsp.slots.inlay_hints.is_stale(),
+            "inlay_hints must be stale after type+backspace cycle"
+        );
+        assert!(
+            editor.lsp.slots.diagnostics.is_stale(),
+            "diagnostics must be stale after type+backspace cycle"
+        );
+    }
 }

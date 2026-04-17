@@ -166,11 +166,23 @@ impl Editor {
             .entry(file_path.to_string())
             .or_default();
         state.did_open_sent = true;
+
+        // Server-state-changed boundary: document is now open on the server
+        // without any local buffer mutation. Invalidate derived slots so the
+        // next event-loop tick requests fresh hints/diagnostics.
+        self.lsp.slots.inlay_hints.invalidate();
+        self.lsp.slots.diagnostics.invalidate();
     }
 
     /// Marks a document as opened and synced (didOpen sent with this exact content).
     pub fn mark_document_opened_with_content(&mut self, file_path: &str, content: String) {
         self.mark_document_flushed(file_path, Arc::from(content), 1);
+
+        // Server-state-changed boundary: document is now open on the server
+        // without any local buffer mutation. Invalidate derived slots so the
+        // next event-loop tick requests fresh hints/diagnostics.
+        self.lsp.slots.inlay_hints.invalidate();
+        self.lsp.slots.diagnostics.invalidate();
     }
 
     /// Request LSP initialization for the current file
@@ -303,6 +315,18 @@ impl Editor {
             .or_default();
         state.did_open_sent = true;
         state.mark_change_flushed(content, flushed_version, current_content.as_deref());
+
+        // Intentionally no slot invalidation here. `mark_document_flushed`
+        // has dual semantics — it's called both for "server just received
+        // new content" (pre-warm, ensure_lsp_document_synced DidOpen) AND
+        // for "we just recorded that an in-flight LSP result came back
+        // with flushed content" (poll response success). The first case
+        // needs invalidation, the second does not — putting it here would
+        // re-mark a just-completed request as stale, forcing an immediate
+        // re-fire of the same query. Invalidation for the first case
+        // lives in `mark_document_opened` / `mark_document_opened_with_content`
+        // (pre-warm) and next to `did_open_broadcast` in
+        // `ensure_lsp_document_synced` (on-demand DidOpen).
     }
 
     /// Get a reference to the pending LSP intents.
@@ -1250,10 +1274,27 @@ impl Editor {
     }
 
     /// Mark buffer as modified (for LSP didChange tracking).
+    ///
+    /// This is the **canonical "buffer just mutated" hook**. Every path that
+    /// touches buffer content (operators, insert-mode keystrokes, undo/redo,
+    /// completion accept, substitute, workspace-edit apply, dot-repeat, etc.)
+    /// routes through here. That makes it the natural home for invalidating
+    /// derived LSP state that becomes stale whenever the buffer changes —
+    /// specifically, inlay hints and diagnostics.
+    ///
+    /// Hoisting the invalidation here (rather than inside `send_lsp_changes_if_modified`)
+    /// fixes a class of silent staleness bugs: when buffer content equals
+    /// the last-flushed content (e.g. type-then-backspace, or any undo that
+    /// returns the document to a flushed state), the send path takes an
+    /// early return and the slot invalidation downstream was never reached.
+    /// Here the invalidation is unconditional on mutation, independent of
+    /// document-sync state. `TrackedSlot`'s debounce absorbs tight loops.
     pub fn mark_buffer_modified(&mut self) {
         if let Some(state) = self.document_sync_state_mut() {
             state.mark_modified();
         }
+        self.lsp.slots.inlay_hints.invalidate();
+        self.lsp.slots.diagnostics.invalidate();
     }
 
     pub fn mark_buffer_modified_force_send(&mut self) {
@@ -1266,9 +1307,30 @@ impl Editor {
             // further incorrect updates.
             state.last_flushed_content = None;
         }
+        self.lsp.slots.inlay_hints.invalidate();
+        self.lsp.slots.diagnostics.invalidate();
     }
 
     pub fn request_diagnostics_refresh(&mut self) {
+        self.lsp.slots.diagnostics.invalidate();
+    }
+
+    /// Canonical hook called after a successful `didSave` broadcast.
+    ///
+    /// This is a server-state-changed boundary that does NOT ride through
+    /// `mark_buffer_modified` (the buffer didn't mutate), so it needs its
+    /// own explicit invalidation of the slot generations. Without this,
+    /// servers that re-analyze on save (e.g. rust-analyzer's cargo check)
+    /// produce diagnostics/hints that never get re-requested.
+    pub fn on_lsp_save_sent(&mut self, file_path: &str) {
+        let state = self
+            .lsp
+            .state
+            .document_sync
+            .entry(file_path.to_string())
+            .or_default();
+        state.mark_save_sent();
+        self.lsp.slots.inlay_hints.invalidate();
         self.lsp.slots.diagnostics.invalidate();
     }
 
@@ -1483,8 +1545,12 @@ impl Editor {
             let state = self.lsp.state.document_sync.entry(state_key).or_default();
             state.mark_change_queued(content, queued_version);
 
-            // Buffer content changed — inlay hints are stale.
-            self.lsp.slots.inlay_hints.invalidate();
+            // Note: slot invalidation for inlay_hints and diagnostics happens
+            // upstream in the canonical `mark_buffer_modified` hook (and in
+            // `mark_document_flushed` for server-state-changed boundaries).
+            // The explicit invalidate that used to live here was pure
+            // duplication — every path that produced modified content
+            // already bumped the generation counter.
         }
     }
 
@@ -1533,9 +1599,11 @@ impl Editor {
                 .await
             {
                 Ok(()) => {
-                    // Mark as sent AFTER successful send
-                    let state = self.lsp.state.document_sync.entry(state_key).or_default();
-                    state.mark_save_sent();
+                    // Mark as sent AFTER successful send; this hook also
+                    // invalidates inlay_hints + diagnostics because servers
+                    // may re-analyze on save (e.g. rust-analyzer's cargo
+                    // check pass) and emit fresh data for unchanged buffers.
+                    self.on_lsp_save_sent(&state_key);
                 }
                 Err(e) => {
                     crate::lsp_warn!("LSP", "didSave failed for {}: {}", file_path, e);
@@ -1598,6 +1666,11 @@ impl Editor {
                             lsp.get_document_version(&uri).await;
                         self.lsp.state.current_file_lsp_sent_version = flushed_version;
                         self.mark_document_flushed(&state_key, content, flushed_version);
+                        // Server just got a fresh view of the document —
+                        // invalidate derived slots so hints/diagnostics
+                        // get re-requested against the newly-open doc.
+                        self.lsp.slots.inlay_hints.invalidate();
+                        self.lsp.slots.diagnostics.invalidate();
                     }
                     Err(e) => {
                         crate::lsp_warn!(

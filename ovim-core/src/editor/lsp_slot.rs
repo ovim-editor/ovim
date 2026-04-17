@@ -308,6 +308,40 @@ mod tests {
         assert!(slot.needs_refresh());
     }
 
+    /// Confirms that a tight loop of invalidate() calls is fully absorbed
+    /// by the debounce window — the slot reports "stale but not yet ready"
+    /// for every invalidation inside the window.
+    ///
+    /// This is the safety guarantee that lets us hoist slot invalidation
+    /// into the canonical `mark_buffer_modified` hook without fear of
+    /// thrashing the LSP server: even if mark_buffer_modified fires 10k
+    /// times per second, `needs_refresh()` stays false until the debounce
+    /// window elapses after the last fire.
+    #[test]
+    fn tight_invalidate_loop_is_debounced() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::with_debounce(Duration::from_secs(60));
+        slot.invalidate();
+        simulate_fire(&mut slot);
+
+        // Invalidate 1000 times in rapid succession.
+        for _ in 0..1000 {
+            slot.invalidate();
+        }
+
+        // Every invalidation advanced the generation, but the debounce
+        // window suppresses the refresh signal.
+        assert!(slot.is_stale());
+        assert!(
+            !slot.needs_refresh(),
+            "debounce must absorb a tight loop of invalidations"
+        );
+        assert_eq!(
+            slot.generation,
+            slot.fired_at + 1000,
+            "each invalidate bumps generation — no coalescing"
+        );
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn poll_returns_result_when_ready() {
         let mut slot: TrackedSlot<i32> = TrackedSlot::new();
