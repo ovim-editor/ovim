@@ -1,166 +1,63 @@
 //! # Undo/Repeat Architecture
 //!
-//! Two patterns coexist on the same undo/redo stacks. They are mutually
-//! exclusive for dot-repeat: `last_change` (Pattern A) and `last_repeat_action`
-//! (Pattern B) clear each other. Dot-repeat checks RepeatAction first.
+//! Two patterns coexist on the same undo/redo stacks and are mutually
+//! exclusive for dot-repeat: pushing a `Change` clears `last_repeat_action`,
+//! and setting a `RepeatAction` clears `last_change`. Dot-repeat checks
+//! `RepeatAction` first.
 //!
-//! ## Pattern A: Insert-mode keystroke batching (`InsertText`, `DeleteText`, `Composite`)
+//! ## Pattern A — `InsertText` / `DeleteText` / `Composite`
 //!
-//! **Now used exclusively for `i`/`a`/`I`/`A` insert-mode sessions.**
+//! Used only for direct insert-mode sessions (`i` / `a` / `I` / `A`).
+//! `ChangeBuilder` collects the session's keystrokes into sub-changes and
+//! `build()` wraps them in a `Composite` (or unwraps a single change when
+//! `entry_mode` is plain `Insert`). The session lands on the undo stack as
+//! one entry only on Esc; there is no per-keystroke undo mid-session —
+//! backspace inside insert mode pushes a `DeleteText` into the builder, it
+//! does not pop the last `InsertText`.
 //!
-//! `ChangeBuilder` accumulates individual `InsertText`/`DeleteText` changes
-//! during an insert session, then `build()` wraps them in a `Composite` (or
-//! unwraps a single change when entry_mode is plain `Insert`). This gives
-//! per-keystroke undo granularity *within* the builder while the session is
-//! active, and a single undo unit once finalized.
+//! Two things that surprise first-time readers:
 //!
-//! Key asymmetry: `InsertText.apply()` uses line/col coordinates (via
-//! `buffer.insert_text_at`), but `InsertText.undo()` converts to absolute
-//! char offsets (via `buffer.delete_char_range`) because line/col clamping
-//! can't address newline positions that were valid at insert time.
+//! - **Apply vs. undo coordinate asymmetry.** `InsertText.apply()` uses
+//!   line/col (`buffer.insert_text_at`), but `InsertText.undo()` converts
+//!   to absolute char offsets (`buffer.delete_char_range`). Line/col
+//!   clamping via `line_len()` excludes newlines, and insertions can
+//!   target the newline position — so undo has to address char offsets
+//!   that apply-time clamping would reject.
 //!
-//! `Composite.repeat(&mut self)` mutates in place — each sub-change's
-//! `repeat()` updates its own position/deleted_text fields so that the
-//! mutated `Composite` becomes a valid undo entry for the repeated edit.
-//! The entry_mode field drives cursor repositioning (I→first non-blank,
-//! A→end of line, a→right by 1) *before* replaying sub-changes.
+//! - **Repeat mutates in place.** `Composite.repeat(&mut self)` rewrites
+//!   each sub-change's `position` / `range` / `deleted_text` to reflect
+//!   where the repeat actually landed, so the mutated `Composite` is a
+//!   valid undo entry for the repeated edit. `entry_mode` repositions the
+//!   cursor (`I`→first non-blank, `A`→end of line, etc.) before replay.
 //!
-//! Note: `o`/`O` sessions start as Pattern A composites but are converted
-//! to `RepeatAction::OpenLine` on insert-mode exit, so their dot-repeat
-//! follows Pattern B. Change operators (`cc`, `cw`, etc.) similarly exit
-//! insert mode with a `RepeatAction::Change`.
+//! `o` / `O` sessions start as Pattern A composites but convert to
+//! `RepeatAction::OpenLine` on insert-mode exit, so their dot-repeat goes
+//! through Pattern B. Change operators (`cc`, `cw`, …) likewise exit insert
+//! mode with a `RepeatAction::Change`.
 //!
-//! ## Pattern B: Recorded Undo + RepeatAction (`record()` + `push_recorded_undo()`)
+//! ## Pattern B — `Recorded`
 //!
-//! **Default for all other operations.** Undo is mechanical (inverse the exact
-//! `Edit`s in reverse). Repeat is semantic via `RepeatAction` at the current
-//! cursor position.
+//! Default for everything outside direct insert mode: `x`, `dd`, `dw`, text-
+//! object deletes, `~`, `J`, `>>`, Ctrl-A/X, `p`, `P`, `cc` / `C` / `s` / `cw`,
+//! `R`, visual-block change, LSP edits, etc. Undo is mechanical (inverse the
+//! recorded `Edit`s in reverse). Repeat is semantic via `RepeatAction` at
+//! the current cursor — `Recorded.repeat()` just replays edits forward,
+//! but dot-repeat reaches it through `last_repeat_action`, not through the
+//! `Change`.
 //!
-//! Operations: x, X, dd, D/d$, dw, dj, dk, d}, d{, dl,
-//! di"/di(/diw/dip/dap/dis/das/dit/dii/dif (all text object deletes),
-//! df/dt/dF/dT, ~, J, gJ, >>, <<, Ctrl-A/X, p, P,
-//! cc/C/s/S/cw/cgn/text-object changes, R, o/O, visual-block change
+//! ## `ResourceOp`
+//!
+//! Filesystem snapshots for LSP workspace operations (create / rename /
+//! delete). Lives on the undo stack but is non-repeatable.
 //!
 //! ## Pattern choice guide
-//! - Does repeat need semantic intent at current cursor? → Pattern B
-//! - Is this a direct insert-mode editing session (`i/a/A/I`) with
-//!   per-keystroke batching? → Pattern A
-//! - Is this an infrastructure push of an already-built change? → Pattern A
-//!   (`add_change`)
 //!
-//! Also on the undo stack but outside the A/B repeat dichotomy:
-//! - `Recorded` — mechanical undo from `buffer.record()` (Pattern B's undo half)
-//! - `ResourceOp` — filesystem snapshots for LSP workspace operations (non-repeatable)
+//! - Direct insert-mode session (`i` / `a` / `I` / `A`) → Pattern A.
+//! - Everything else → Pattern B.
+//! - Infrastructure push of an already-built change → `add_change`.
 //!
-//! ---
-//!
-//! ## Investigation: migrating insert-mode to Pattern B
-//!
-//! Could insert-mode sessions use `buffer.record()` to capture keystrokes as
-//! `Edit`s, store the batch as `Change::Recorded`, and use a new
-//! `RepeatAction::InsertSession { entry_mode, keystrokes }` for repeat?
-//!
-//! **Assessment: feasible, but non-trivial. Not a quick refactor.**
-//!
-//! ### How ChangeBuilder works today
-//!
-//! `ChangeBuilder` accumulates individual `Change::InsertText`/`DeleteText`
-//! entries via `add()`. On `build()`, if there's exactly one change and
-//! entry_mode is plain `Insert`, it unwraps the single change (avoiding a
-//! Composite wrapper). Otherwise it wraps in `Composite` with `entry_mode`
-//! and `cursor_before`/`cursor_after`. The builder is started when entering
-//! insert mode (`start_change_building`) and finalized on exit
-//! (`finalize_change_building`).
-//!
-//! ### How Composite.repeat() works
-//!
-//! `repeat(&mut self)` first repositions the cursor based on `entry_mode`
-//! (I→first non-blank, A→end of line, a→right by 1, etc.), then iterates
-//! `changes.iter_mut()` calling `repeat()` on each sub-change. Each
-//! `InsertText.repeat()` mutates its own `position` field to the current
-//! cursor, then applies. Each `DeleteText.repeat()` recalculates the
-//! deletion range from the current cursor and mutates `range` and
-//! `deleted_text` to match what was actually deleted. This mutation is
-//! critical: the repeated `Composite` becomes a valid undo entry because
-//! its sub-changes now reflect actual positions. Finally, cursor moves
-//! left by 1 to simulate Esc.
-//!
-//! ### How insert mode creates changes
-//!
-//! In `helpers.rs`, `insert_char()`, `insert_newline()`,
-//! `delete_char_before_cursor()`, etc. each create a `Change::InsertText`
-//! or `Change::DeleteText` and call `editor.apply_change_and_record()`.
-//! When a builder is active (insert-mode session), `add_change()` routes
-//! to `builder.add()` instead of pushing directly to the undo stack.
-//!
-//! ### The entry_mode cursor positioning
-//!
-//! `Composite.repeat()` handles cursor repositioning before replay. A
-//! `RepeatAction::InsertSession` could do the same — it just needs the
-//! `InsertEntryMode` enum value and would reposition before replaying
-//! keystrokes. This is straightforward.
-//!
-//! ### Per-keystroke undo within insert mode
-//!
-//! There is NO per-keystroke undo during an active insert session. The
-//! builder accumulates changes, but they're not on the undo stack until
-//! `finalize_building_at()` is called on Esc. Backspace during insert
-//! mode is handled by `delete_char_before_cursor()` adding a
-//! `DeleteText` to the builder — not by popping from undo. So the
-//! builder's per-change granularity is only used for replay ordering,
-//! not for mid-session undo.
-//!
-//! ### Migration path
-//!
-//! 1. Wrap the insert session in `buffer.record()` instead of using
-//!    `ChangeBuilder`. Each `insert_char`/`insert_newline`/`delete_char`
-//!    call would go through `buffer.insert_text_at()`/`buffer.delete_range()`
-//!    directly (they already do — `Change.apply()` calls these).
-//!    The `record()` closure would capture all `Edit`s.
-//!
-//! 2. On exit, push `Change::Recorded { edits, ... }` for undo.
-//!
-//! 3. For repeat, store `RepeatAction::InsertSession { entry_mode,
-//!    keystrokes: Vec<KeyEvent> }`. Repeat would: reposition cursor per
-//!    entry_mode, then replay each keystroke through the insert-mode
-//!    handler (which re-derives indentation, completion, etc.).
-//!
-//! ### Tricky parts
-//!
-//! - **Keystroke replay vs. edit replay**: The current `Composite.repeat()`
-//!   replays *edits* (insert "x" at position, delete range, etc.), not
-//!   keystrokes. This is simpler but loses context (auto-indent on Enter
-//!   bakes in the indent string). A `RepeatAction` replaying keystrokes
-//!   would be more correct (re-derive indent for the new context) but
-//!   requires capturing the raw `KeyEvent` sequence.
-//!
-//! - **buffer.record() scoping**: Currently `record()` takes a closure.
-//!   An insert session spans many event-loop ticks. We'd need
-//!   `buffer.start_recording()` / `buffer.stop_recording()` (a stateful
-//!   recording mode) rather than the current closure-based API.
-//!
-//! - **Completion and snippets**: `accept_completion()` does multi-step
-//!   edits (delete prefix, insert completion text). These currently
-//!   produce `InsertText`/`DeleteText` changes. Under Pattern B they'd
-//!   just be recorded edits, which is fine for undo but means the
-//!   keystroke log needs a "completion accepted" marker for faithful
-//!   replay.
-//!
-//! - **Visual block insert replay**: `exit_insert_mode()` replays the
-//!   first line's changes on subsequent lines. This currently clones
-//!   `Change` objects. Under Pattern B, it could replay the same
-//!   keystrokes or the same edits (offset-adjusted) on each line.
-//!
-//! - **Whitespace cleanup**: `cleanup_whitespace_only_line()` adds a
-//!   `DeleteText` to the builder before finalize. Under Pattern B this
-//!   would just be another recorded edit — simpler.
-//!
-//! **Bottom line**: The migration is feasible and would unify the undo
-//! model. The main prerequisite is a stateful recording API on Buffer
-//! (start/stop instead of closure). The repeat side needs a keystroke
-//! capture mechanism. Neither is architecturally risky, but it touches
-//! insert mode, undo, repeat, completion, and visual block — so it
-//! should be its own focused sprint, not a drive-by refactor.
+//! Migrating Pattern A into Pattern B (so `Change` reduces to `Recorded` +
+//! `ResourceOp`) is tracked in `refactor-roadmap/15-change-enum-simplification.md`.
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;
