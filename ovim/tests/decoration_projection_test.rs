@@ -1,16 +1,13 @@
-//! Phase-05 Step-D dual validation: `project_offset` must agree with the
-//! decoration accumulator (`DecorationMap::adjust_for_edits`) across every
-//! interactive editing scenario we care about — type-before/after, delete,
-//! delete-over, rapid typing, undo, redo.
+//! Phase-05 Step F: projection is the sole source of truth for decoration
+//! positions. This file exercises `project_offset` against real interactive
+//! editing sequences — typing, deleting, undo, redo, newline splits — with
+//! the edit log captured end-to-end, proving that the edit log + projection
+//! yield correct offsets without any accumulator.
 //!
-//! The accumulator mutates decoration char_offsets in place; the projection
-//! is a pure function that replays the edit log onto the original source
-//! offset. Both systems must arrive at the same post-edit offset (or both
-//! drop the decoration, when a delete engulfs the anchor).
-//!
-//! If this test ever fails, the accumulator and the projection disagree, and
-//! we cannot safely cut over to projection in Step E without understanding
-//! why.
+//! Originally this file ran dual validation against the accumulator
+//! (`DecorationMap::adjust_for_edits`). Step F removed the accumulator; what
+//! remains are the scenario-level assertions that projection produces the
+//! expected offsets directly.
 
 mod helpers;
 
@@ -19,19 +16,13 @@ use ovim_core::editor::decoration::{
     project_offset, Decoration, DecorationPlacement, DecorationSource, DecorationStyle,
 };
 
-/// Track the original anchor so we can project it forward through the edit
-/// log. The accumulator rewrites the stored char_offset in place; we keep the
-/// source-version values aside so the parity check has something to project
-/// *from*.
+/// Tracks an original anchor so tests can project it forward through the
+/// edit log. Only `source_offset` + `source_version` are needed: projection
+/// is pure, so we don't need to look the decoration up after the fact.
 #[derive(Debug, Clone, Copy)]
 struct AnchoredDecoration {
-    /// The stable identity of the decoration (text + source) — we match by
-    /// searching the DecorationMap for a decoration with this text, since
-    /// char_offset mutates under adjustment.
     text_marker: &'static str,
-    /// Source-version char offset at placement time.
     source_offset: usize,
-    /// Buffer version the decoration was placed against.
     source_version: u64,
 }
 
@@ -59,9 +50,9 @@ fn eol_decoration(char_offset: usize, text: &'static str, source_version: u64) -
     }
 }
 
-/// Look up the current stored char_offset of the decoration whose text matches
-/// `marker`. Returns None if the decoration has been dropped (e.g. a delete
-/// engulfed its anchor).
+/// Look up a decoration's stored (source-version) offset by its text marker.
+/// With the accumulator gone, this offset is frozen at placement time; we
+/// return it so tests can still reason about decorations by identity.
 fn find_stored_offset(test: &EditorTest, marker: &str) -> Option<usize> {
     test.editor
         .decorations
@@ -70,11 +61,17 @@ fn find_stored_offset(test: &EditorTest, marker: &str) -> Option<usize> {
         .map(|(_, d)| d.placement.char_offset())
 }
 
-/// Assert projection parity for every anchored decoration still in the map,
-/// and also assert that decorations whose anchors were engulfed by a delete
-/// are absent from both.
-fn assert_parity(test: &EditorTest, anchors: &[AnchoredDecoration]) {
-    for anchor in anchors {
+/// Project each anchored decoration through the edit log and assert that
+/// projection lands on a sensible offset (or `None` if its anchor was
+/// engulfed by a delete). Also compares against `find_stored_offset`
+/// to confirm the decoration is either still present with its frozen
+/// source offset (projection will survive) or structurally unaffected
+/// (deletes don't evict — decorations are immutable post-placement).
+fn assert_projection_matches_expected(
+    test: &EditorTest,
+    anchors: &[(AnchoredDecoration, Option<usize>)],
+) {
+    for (anchor, expected) in anchors {
         let edits = test
             .editor
             .buffer()
@@ -87,41 +84,24 @@ fn assert_parity(test: &EditorTest, anchors: &[AnchoredDecoration]) {
                 )
             });
         let projected = project_offset(anchor.source_offset, &edits);
+        assert_eq!(
+            projected, *expected,
+            "projection for {:?}: expected {:?}, got {:?}",
+            anchor.text_marker, expected, projected
+        );
+
+        // The decoration itself is never evicted by projection — its stored
+        // offset is still the source-version offset. Confirm it's in the map.
         let stored = find_stored_offset(test, anchor.text_marker);
-
-        match (projected, stored) {
-            (Some(proj), Some(stored)) => assert_eq!(
-                proj, stored,
-                "projection ({}) disagrees with accumulator ({}) for decoration {:?}",
-                proj, stored, anchor.text_marker
-            ),
-            (None, None) => {
-                // Both agree: the anchor was engulfed. Good.
-            }
-            (Some(proj), None) => panic!(
-                "accumulator dropped decoration {:?} but projection survived with offset {}",
-                anchor.text_marker, proj
-            ),
-            (None, Some(stored)) => panic!(
-                "projection dropped decoration {:?} but accumulator kept it at {}",
-                anchor.text_marker, stored
-            ),
-        }
+        assert_eq!(
+            stored,
+            Some(anchor.source_offset),
+            "decoration {:?} should still hold its source-version offset (immutable post Step F)",
+            anchor.text_marker
+        );
     }
-
-    // The debug-only validation helper should also report zero mismatches
-    // against its own (stored-offset, current-source-version) view.
-    #[cfg(debug_assertions)]
-    assert_eq!(
-        test.editor.validate_decoration_projection(),
-        0,
-        "validate_decoration_projection reported mismatches"
-    );
 }
 
-/// Place an inlay decoration at `(line, col)` in the current buffer, recording
-/// the source version and the absolute source-version offset so the test can
-/// project it forward later.
 fn place_inlay(
     test: &mut EditorTest,
     line: usize,
@@ -180,102 +160,103 @@ fn place_eol(test: &mut EditorTest, line: usize, text: &'static str) -> Anchored
 // ---------------------------------------------------------------------------
 
 #[test]
-fn parity_insert_before_anchor() {
+fn projection_insert_before_anchor_shifts_forward() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
-    // Enter insert mode at col 0 and type 3 chars before the anchor.
     test.keys("gg").press('i').type_text("foo").press_esc();
 
-    assert_parity(&test, &[anchor]);
+    // 3 chars inserted before anchor → projects from 5 to 8.
+    assert_projection_matches_expected(&test, &[(anchor, Some(8))]);
 }
 
 #[test]
-fn parity_insert_after_anchor() {
+fn projection_insert_after_anchor_is_unchanged() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
-    // Append at end of line (after the anchor), type 3 chars.
+    // Append at end of line (after the anchor).
     test.press('A').type_text("bar").press_esc();
 
-    assert_parity(&test, &[anchor]);
+    assert_projection_matches_expected(&test, &[(anchor, Some(5))]);
 }
 
 #[test]
-fn parity_delete_before_anchor() {
+fn projection_delete_before_anchor_shifts_back() {
     let mut test = EditorTest::new("foobar = 1;\n");
-    // Anchor at char 8 (the '1' position).
     let anchor = place_inlay(&mut test, 0, 8, ": i32");
 
     // Delete 3 chars at start of line.
     test.keys("gg").press('3').press('x');
 
-    assert_parity(&test, &[anchor]);
+    assert_projection_matches_expected(&test, &[(anchor, Some(5))]);
 }
 
 #[test]
-fn parity_delete_engulfs_anchor() {
+fn projection_delete_engulfs_anchor_drops_to_none() {
     let mut test = EditorTest::new("let x = 1;\n");
-    // Anchor at char 5 (on the 'x').
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
     // Delete "x = 1" (5 chars from col 4).
     test.keys("gg").keys("llll").press('5').press('x');
 
-    // Both systems should drop the decoration.
-    assert!(
-        find_stored_offset(&test, ": i32").is_none(),
-        "accumulator should drop engulfed decoration"
-    );
-    assert_parity(&test, &[anchor]);
+    assert_projection_matches_expected(&test, &[(anchor, None)]);
 }
 
 #[test]
-fn parity_rapid_typing() {
+fn projection_rapid_typing_accumulates_shift() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
-    // Enter insert mode at start and type 12 chars with interleaved edits.
     test.keys("gg")
         .press('i')
         .type_text("aaaaaaaaaaaa")
         .press_esc();
 
-    assert_parity(&test, &[anchor]);
+    // 12 chars before anchor → 5 + 12 = 17.
+    assert_projection_matches_expected(&test, &[(anchor, Some(17))]);
 }
 
 #[test]
-fn parity_multiple_decorations_mixed_edits() {
+fn projection_multiple_decorations_mixed_edits() {
     let mut test = EditorTest::new("hello world\nlet x = 1;\nend\n");
-    // Place a decoration on each of three lines.
-    let a = place_inlay(&mut test, 0, 6, ": world"); // at col 6 of line 0 (pos 6)
-    let b = place_inlay(&mut test, 1, 5, ": i32"); // at col 5 of line 1
+    // Anchor on line 0 at col 6 → source_offset = 6.
+    let a = place_inlay(&mut test, 0, 6, ": world");
+    // Anchor on line 1 at col 5 → source_offset = 12 + 5 = 17.
+    let b = place_inlay(&mut test, 1, 5, ": i32");
+    // EOL on line 2 → source_offset = 23 (line-2 start).
     let c = place_eol(&mut test, 2, "warn: unused");
 
-    // Make a variety of edits.
+    // "AA" at line 0 start → shifts every anchor forward by 2.
     test.keys("gg").press('i').type_text("AA").press_esc();
+    // Append " // trail" to line 1 → doesn't affect anchors a, b (both <= insertion point),
+    // doesn't affect c (anchors to line-2 start, which is past line 1).
     test.keys("j").press('A').type_text(" // trail").press_esc();
 
-    assert_parity(&test, &[a, b, c]);
+    assert_projection_matches_expected(
+        &test,
+        &[
+            (a, Some(8)),                                    // 6 + 2
+            (b, Some(19)),                                   // 17 + 2
+            (c, Some(23 + 2 + " // trail".chars().count())), /* line-2 start shifts by 2 (from "AA") + 9 (from " // trail") */
+        ],
+    );
 }
 
 #[test]
-fn parity_survives_undo() {
+fn projection_survives_undo() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
-    // Insert, then undo — the accumulator replays the inverse edit through
-    // adjust_for_edits. The edit log records both the forward and inverse
-    // groups, so project_offset(source_offset, edits_since(source_version))
-    // composes them and lands on the original offset.
+    // Insert then undo — net zero, projection returns to original offset.
     test.keys("gg").press('i').type_text("foo").press_esc();
     test.press('u');
 
-    assert_parity(&test, &[anchor]);
+    assert_projection_matches_expected(&test, &[(anchor, Some(5))]);
 }
 
 #[test]
-fn parity_survives_undo_redo() {
+fn projection_survives_undo_redo() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
@@ -283,32 +264,41 @@ fn parity_survives_undo_redo() {
     test.press('u');
     test.press_with(ovim_core::KeyCode::Char('r'), ovim_core::Modifiers::CONTROL);
 
-    assert_parity(&test, &[anchor]);
+    // Redo reapplies +3 → projection to 8 again.
+    assert_projection_matches_expected(&test, &[(anchor, Some(8))]);
 }
 
 #[test]
-fn parity_insert_then_delete_same_region() {
+fn projection_insert_then_delete_same_region() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
-    // Insert, then delete in place. The net edit log contains both groups.
+    // Insert "foo" at 0, then delete "foo" (3 chars) at 0 — net zero.
     test.keys("gg").press('i').type_text("foo").press_esc();
     test.keys("gg").press('3').press('x');
 
-    assert_parity(&test, &[anchor]);
+    assert_projection_matches_expected(&test, &[(anchor, Some(5))]);
 }
 
 #[test]
-fn parity_newline_insert_moves_line() {
+fn projection_newline_insert_moves_line_index() {
     let mut test = EditorTest::new("let x = 1;\n");
     let anchor = place_inlay(&mut test, 0, 5, ": i32");
 
-    // Insert a newline before the 'x' — decoration moves to line 1.
+    // Insert a newline at col 4 — anchor shifts by +1, crosses into line 1.
     test.keys("gg")
         .keys("llll")
         .press('i')
         .press_enter()
         .press_esc();
 
-    assert_parity(&test, &[anchor]);
+    assert_projection_matches_expected(&test, &[(anchor, Some(6))]);
+
+    // Confirm the renderer's line lookup agrees.
+    let line1 = test.editor.decorations.for_line_projected(
+        1,
+        test.editor.buffer().rope(),
+        test.editor.buffer().edit_log(),
+    );
+    assert_eq!(line1.len(), 1, "decoration projects onto line 1");
 }

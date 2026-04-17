@@ -57,17 +57,37 @@ fn diagnostic_eol(line_start_offset: usize, text: &str) -> Decoration {
 /// Build a snapshot in the same shape that `create_snapshot` produces, then
 /// round-trip it through JSON. This mirrors what the HTTP endpoint does and
 /// catches any breakage in the serialize/deserialize contract.
+///
+/// Step F: positions are projected through the edit log, matching the live
+/// behaviour of `create_snapshot` in `event_loop.rs`.
 fn project_snapshot_decorations(test: &EditorTest) -> serde_json::Value {
     use ovim::api::DecorationInfo;
+    use ovim_core::editor::decoration::project_offset;
 
     let rope = test.editor.buffer().rope();
+    let edit_log = test.editor.buffer().edit_log();
     let decs: Vec<DecorationInfo> = test
         .editor
         .decorations
         .iter_all()
-        .map(|(line, dec)| {
-            let char_offset = dec.placement.char_offset();
-            let col = dec.placement.char_idx(rope);
+        .filter_map(|(stored_line, dec)| {
+            let stored_offset = dec.placement.char_offset();
+            let projected_offset = match edit_log.edits_since(dec.source_version) {
+                Some(edits) => match project_offset(stored_offset, &edits) {
+                    Some(off) => off,
+                    None => return None,
+                },
+                None => stored_offset,
+            };
+            let clamped = projected_offset.min(rope.len_chars());
+            let live_line = rope.char_to_line(clamped);
+            let line_start = rope.line_to_char(live_line);
+            let col = clamped - line_start;
+            let line = if projected_offset > rope.len_chars() {
+                stored_line
+            } else {
+                live_line
+            };
             let source = match dec.source {
                 DecorationSource::InlayHint => "inlay_hint",
                 DecorationSource::Diagnostic => "diagnostic",
@@ -78,15 +98,15 @@ fn project_snapshot_decorations(test: &EditorTest) -> serde_json::Value {
                 DecorationPlacement::EndOfLine { .. } => "eol",
             }
             .to_string();
-            DecorationInfo {
+            Some(DecorationInfo {
                 line,
-                char_offset,
+                char_offset: clamped,
                 col,
                 text: dec.text.clone(),
                 source,
                 placement,
                 source_version: dec.source_version,
-            }
+            })
         })
         .collect();
 

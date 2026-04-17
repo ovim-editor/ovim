@@ -5,6 +5,12 @@ use crate::change::ChangeToken;
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 
+// Phase-05 Step F: decoration positions are now projected on demand from
+// `edit_log.edits_since(source_version)` at render time, so the undo/redo
+// and recorded-undo paths no longer need to call `adjust_for_edits` — the
+// edit log already captures the forward/inverse edit groups that projection
+// replays. See `ovim-core/src/editor/decoration.rs` module docs.
+
 impl Editor {
     /// Records a buffer mutation with undo tracking and optional dot-repeat.
     ///
@@ -38,13 +44,7 @@ impl Editor {
 
     /// Undoes the last change
     pub fn undo(&mut self) {
-        let (did_undo, edits) = self.buffer_mut().undo();
-        if did_undo && !edits.is_empty() {
-            let rope = self.buffer().rope().clone();
-            let new_version = self.buffer().version() as u64;
-            self.decorations
-                .adjust_for_edits(&edits, &rope, new_version);
-        }
+        let _ = self.buffer_mut().undo();
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
@@ -52,13 +52,7 @@ impl Editor {
 
     /// Redoes the next change
     pub fn redo(&mut self) {
-        let (did_redo, edits) = self.buffer_mut().redo();
-        if did_redo && !edits.is_empty() {
-            let rope = self.buffer().rope().clone();
-            let new_version = self.buffer().version() as u64;
-            self.decorations
-                .adjust_for_edits(&edits, &rope, new_version);
-        }
+        let _ = self.buffer_mut().redo();
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
@@ -146,13 +140,9 @@ impl Editor {
         cursor_before: CursorPos,
         cursor_after: CursorPos,
     ) {
-        // Adjust decoration char_offsets to follow the edits.
-        // The rope is already in post-edit state; the arithmetic adjustment
-        // uses only the edit offsets/lengths, not line/col, so this is correct.
-        let rope = self.buffer().rope().clone();
-        let new_version = self.buffer().version() as u64;
-        self.decorations
-            .adjust_for_edits(&edits, &rope, new_version);
+        // Decoration positions follow the edits through projection at render
+        // time — the edit log already captured the recorded edits, so no
+        // per-decoration mutation is required here.
 
         let group_id = self
             .ai_state
@@ -260,67 +250,5 @@ impl Editor {
     pub fn fixup_after_bypass_mutation(&mut self) {
         self.buffer_mut().edit_log_mut().clear();
         self.mark_buffer_modified();
-    }
-
-    /// Debug-only cross-check: confirm each stored decoration offset matches
-    /// what [`crate::editor::decoration::project_offset`] would compute by
-    /// replaying `edits_since(decoration.source_version)` on top of the
-    /// decoration's current (stored) offset.
-    ///
-    /// The accumulator ([`DecorationMap::adjust_for_edits`]) mutates
-    /// `char_offset` in place and bumps `source_version` to match the
-    /// post-edit buffer version. In steady state, every decoration's
-    /// `source_version` equals the latest buffer version, so
-    /// `edits_since(source_version)` is empty and projection trivially equals
-    /// the stored offset — this helper catches regressions where that
-    /// invariant breaks (e.g., a code path mutates offsets without bumping
-    /// `source_version`, or vice versa).
-    ///
-    /// Does not panic on mismatch — logs to stderr so tests can observe the
-    /// divergence without tearing down the editor. Skips decorations whose
-    /// source version has been evicted from the edit log (recoverable = false);
-    /// that case is a design consequence, not a bug.
-    #[cfg(debug_assertions)]
-    pub fn validate_decoration_projection(&self) -> usize {
-        use crate::editor::decoration::project_offset;
-
-        let log = self.buffer().edit_log();
-        let mut mismatches = 0usize;
-        for (line, dec) in self.decorations.iter_all() {
-            let stored = dec.placement.char_offset();
-            let Some(edits) = log.edits_since(dec.source_version) else {
-                // History evicted — can't validate. Skip silently.
-                continue;
-            };
-            match project_offset(stored, &edits) {
-                Some(projected) if projected == stored => { /* ok */ }
-                Some(projected) => {
-                    eprintln!(
-                        "decoration projection mismatch: line={} source={:?} \
-                         source_version={} current_version={} stored={} projected={}",
-                        line,
-                        dec.source,
-                        dec.source_version,
-                        self.buffer().version(),
-                        stored,
-                        projected,
-                    );
-                    mismatches += 1;
-                }
-                None => {
-                    eprintln!(
-                        "decoration projection dropped: line={} source={:?} \
-                         source_version={} current_version={} stored={} (projection returned None)",
-                        line,
-                        dec.source,
-                        dec.source_version,
-                        self.buffer().version(),
-                        stored,
-                    );
-                    mismatches += 1;
-                }
-            }
-        }
-        mismatches
     }
 }

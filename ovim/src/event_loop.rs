@@ -2015,17 +2015,44 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         selected_index: p.selected_index(),
     });
 
-    // Project decorations into the snapshot. Each decoration keeps its
-    // rope-absolute offset and also reports line/col so clients can use
-    // whichever is convenient.
+    // Project decorations into the snapshot. Phase-05 Step F: each stored
+    // decoration holds a source-version `char_offset`; we project it through
+    // `edit_log.edits_since(source_version)` so clients see the **live**
+    // position (what the renderer would show), not the stale placement-time
+    // anchor. `line` and `col` are derived from the projected offset against
+    // the current rope. Decorations whose anchors were engulfed by a delete
+    // since placement are dropped from the snapshot.
     let rope = editor.buffer().rope();
+    let edit_log = editor.buffer().edit_log();
     let decorations: Vec<DecorationInfo> = editor
         .decorations
         .iter_all()
-        .map(|(line, dec)| {
-            use ovim_core::editor::decoration::{DecorationPlacement, DecorationSource};
-            let char_offset = dec.placement.char_offset();
-            let col = dec.placement.char_idx(rope);
+        .filter_map(|(stored_line, dec)| {
+            use ovim_core::editor::decoration::{
+                project_offset, DecorationPlacement, DecorationSource,
+            };
+            let stored_offset = dec.placement.char_offset();
+            let projected_offset = match edit_log.edits_since(dec.source_version) {
+                Some(edits) => match project_offset(stored_offset, &edits) {
+                    Some(off) => off,
+                    None => return None, // anchor engulfed by a delete
+                },
+                // History evicted — fall back to the stored offset. Stale is
+                // better than blank; the next LSP refresh will replace it.
+                None => stored_offset,
+            };
+            let clamped = projected_offset.min(rope.len_chars());
+            let live_line = rope.char_to_line(clamped);
+            let line_start = rope.line_to_char(live_line);
+            let col = clamped - line_start;
+
+            // Fall back to `stored_line` only if projection landed past EOF.
+            let line = if projected_offset > rope.len_chars() {
+                stored_line
+            } else {
+                live_line
+            };
+
             let source = match dec.source {
                 DecorationSource::InlayHint => "inlay_hint",
                 DecorationSource::Diagnostic => "diagnostic",
@@ -2036,15 +2063,15 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
                 DecorationPlacement::EndOfLine { .. } => "eol",
             }
             .to_string();
-            DecorationInfo {
+            Some(DecorationInfo {
                 line,
-                char_offset,
+                char_offset: clamped,
                 col,
                 text: dec.text.clone(),
                 source,
                 placement,
                 source_version: dec.source_version,
-            }
+            })
         })
         .collect();
 

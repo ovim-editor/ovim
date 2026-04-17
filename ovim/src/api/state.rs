@@ -118,9 +118,8 @@ pub struct EditorSnapshot {
 /// their mental model.
 ///
 /// `source_version` is the buffer version the decoration was anchored to when
-/// it was created (or bumped by `adjust_for_edits`).  Always populated as of
-/// phase-05 Step C; Step D adds a projection consumer that uses it to align
-/// stale decorations with the current buffer version.
+/// it was created and is **never mutated** — the renderer projects positions
+/// on demand via `project_offset`. Always populated as of phase-05 Step C.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecorationInfo {
     /// 0-indexed line number, derived from `char_offset` via the rope.
@@ -136,8 +135,7 @@ pub struct DecorationInfo {
     /// Where the text is rendered relative to the buffer: `"inline"` or `"eol"`.
     pub placement: String,
     /// Buffer version the decoration is anchored to.  Populated from the
-    /// originating LSP request's `buffer_version`, and kept current by
-    /// `adjust_for_edits` until Step E cuts over to pure projection.
+    /// originating LSP request's `buffer_version` and never mutated.
     pub source_version: u64,
 }
 

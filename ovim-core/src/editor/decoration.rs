@@ -4,6 +4,15 @@ use crate::edit_log::EditLog;
 use ropey::Rope;
 use std::collections::BTreeMap;
 
+// Phase-05 Step F: `adjust_for_edits` has been removed. Decorations are now
+// immutable after placement — `char_offset` and `source_version` are frozen at
+// creation time. The renderer projects positions on demand by calling the
+// `*_projected` accessors, which replay `edit_log.edits_since(source_version)`
+// through `project_offset`. The accumulator was a transitional aid during
+// Steps D-E to validate projection against an authoritative mutation-based
+// source of truth; with projection proven correct, projection is now the only
+// path.
+
 /// Where a decoration appears relative to buffer text.
 ///
 /// Positions are stored as **absolute char offsets** into the rope.
@@ -32,13 +41,6 @@ impl DecorationPlacement {
     pub fn char_offset(&self) -> usize {
         match self {
             Self::Inline { char_offset } | Self::EndOfLine { char_offset } => *char_offset,
-        }
-    }
-
-    /// Mutable reference to the char offset (for edit adjustment).
-    fn char_offset_mut(&mut self) -> &mut usize {
-        match self {
-            Self::Inline { char_offset } | Self::EndOfLine { char_offset } => char_offset,
         }
     }
 
@@ -108,20 +110,20 @@ pub struct Decoration {
     pub priority: u8,
     /// Buffer version that this decoration's `char_offset` was computed
     /// against. Populated from the originating LSP request's `buffer_version`
-    /// at construction, and bumped to match the post-edit version each time
-    /// `adjust_for_edits` shifts the offset.  Phase-05 Step C populates this
-    /// field; Step D adds a projection consumer that uses it.
+    /// at construction and **never mutated** after that — the projection path
+    /// reads `edit_log.edits_since(source_version)` to compute the live offset
+    /// on demand. See module docs for the Step-F invariant.
     pub source_version: u64,
 }
 
 /// Project a decoration's source-version char offset forward through a sequence
 /// of edits, yielding the offset it should occupy after those edits are applied.
 ///
-/// This is the pure, stateless twin of [`DecorationMap::adjust_for_edits`]: same
-/// arithmetic, same semantics, no mutation. The Phase-05 roadmap will eventually
-/// have the renderer call `project_offset` on each frame instead of the caller
-/// mutating `char_offset` in place. Step D introduces the function and validates
-/// it against the accumulator. Step E switches consumers over.
+/// Phase-05 Step F makes this the single source of truth for decoration
+/// positions. Decorations store an immutable `(char_offset, source_version)`
+/// pair at placement time; the renderer calls this function with
+/// `edit_log.edits_since(source_version)` on every frame to compute live
+/// positions.
 ///
 /// # Semantics
 ///
@@ -130,8 +132,7 @@ pub struct Decoration {
 /// - `Edit::Insert { offset: X, text }` of char-length `N`:
 ///   - if `pos >= X`, the anchor was at or after the insertion point — shift forward by `N`.
 ///   - otherwise unchanged.
-///     Note: `pos == X` shifts forward (inclusive-before semantics). This
-///     matches [`DecorationMap::adjust_for_edits`] exactly.
+///     Note: `pos == X` shifts forward (inclusive-before semantics).
 /// - `Edit::Delete { offset: X, text }` of char-length `N`, with `end = X + N`:
 ///   - if `pos >= end`, the anchor was past the deleted region — shift back by `N`.
 ///   - if `X < pos < end`, the anchor sat strictly inside the deleted region — return `None`
@@ -139,14 +140,6 @@ pub struct Decoration {
 ///   - otherwise (`pos <= X`) unchanged.
 ///
 /// An empty edit slice is a no-op: returns `Some(source_offset)`.
-///
-/// # Parity with the accumulator
-///
-/// The transform above is the same one [`DecorationMap::adjust_for_edits`]
-/// applies in-place. The unit tests in this module and the integration test at
-/// `ovim/tests/decoration_projection_test.rs` verify parity across interactive
-/// scenarios (insert-before, insert-after, delete-before, delete-over, undo,
-/// rapid typing). Any divergence is a bug in one of the two paths.
 pub fn project_offset(source_offset: usize, edits: &[&Edit]) -> Option<usize> {
     let mut pos = source_offset;
     for edit in edits {
@@ -175,10 +168,14 @@ pub fn project_offset(source_offset: usize, edits: &[&Edit]) -> Option<usize> {
 
 /// Per-line decoration index for efficient lookup during rendering.
 ///
-/// Decorations are grouped by line and sorted by position within each line.
-/// The `generation` counter increments on every mutation, enabling efficient
-/// cache invalidation in the renderer (the line cache includes the generation
-/// in its key and naturally misses when decorations change).
+/// Decorations are grouped by line (at the **source version**, based on their
+/// frozen `char_offset`) and sorted by position within each line. The
+/// `generation` counter increments whenever the set is replaced or cleared
+/// (via `replace_source` / `clear`) so the renderer's line cache can
+/// invalidate when a fresh LSP response lands. Edits do **not** bump the
+/// generation — they don't mutate decoration state. Render cache
+/// invalidation on buffer edits is handled by the buffer version, which the
+/// line cache already keys on.
 #[derive(Debug, Clone)]
 pub struct DecorationMap {
     lines: BTreeMap<usize, Vec<Decoration>>,
@@ -236,79 +233,6 @@ impl DecorationMap {
         } else {
             false
         }
-    }
-
-    /// Adjust decoration char_offsets after buffer edits, then rebuild
-    /// the line index.  Edits must be in the order they were applied.
-    ///
-    /// The rope must be the **post-edit** rope (edits already applied).
-    /// The arithmetic adjustment is independent of rope state — it only
-    /// uses the edit offsets and lengths.
-    ///
-    /// `new_version` is the buffer version after the edits land; every
-    /// surviving decoration's `source_version` is bumped to match so the
-    /// accumulator and the Step-D projection stay in sync while both
-    /// systems coexist.
-    pub fn adjust_for_edits(&mut self, edits: &[Edit], rope: &Rope, new_version: u64) {
-        if self.lines.is_empty() || edits.is_empty() {
-            return;
-        }
-
-        // Collect all decorations, adjust offsets, then rebuild index.
-        let mut all_decs: Vec<Decoration> =
-            self.lines.values_mut().flat_map(|v| v.drain(..)).collect();
-        self.lines.clear();
-
-        for edit in edits {
-            match edit {
-                Edit::Insert { offset, text } => {
-                    let len = text.chars().count();
-                    for dec in &mut all_decs {
-                        let off = dec.placement.char_offset_mut();
-                        if *off >= *offset {
-                            *off += len;
-                        }
-                    }
-                }
-                Edit::Delete { offset, text } => {
-                    let len = text.chars().count();
-                    let end = offset + len;
-                    all_decs.retain_mut(|dec| {
-                        let off = dec.placement.char_offset_mut();
-                        if *off >= end {
-                            *off -= len;
-                            true
-                        } else if *off > *offset {
-                            // Inside deleted region — remove decoration.
-                            false
-                        } else {
-                            true
-                        }
-                    });
-                }
-            }
-        }
-
-        // Clamp offsets to valid range and rebuild line index.
-        let max_offset = rope.len_chars();
-        for dec in &mut all_decs {
-            let off = dec.placement.char_offset_mut();
-            if *off > max_offset {
-                *off = max_offset;
-            }
-            // Keep the anchor version in lockstep with the accumulator.  When
-            // Step D introduces projection, the projection cache will key on
-            // `(source_version, current_version)`; keeping the field current
-            // means a freshly-adjusted decoration projects as a no-op.
-            dec.source_version = new_version;
-        }
-
-        for dec in all_decs {
-            let line = dec.placement.line(rope);
-            self.lines.entry(line).or_default().push(dec);
-        }
-        Self::sort_all_lines(&mut self.lines);
-        self.generation = self.generation.wrapping_add(1);
     }
 
     /// Get all decorations for a line, sorted by position then priority.
@@ -947,92 +871,6 @@ mod tests {
     }
 
     #[test]
-    fn adjust_for_insert_shifts_decorations_forward() {
-        let mut rope = Rope::from_str("let x = 1;\n");
-        let mut map = DecorationMap::new();
-        // Decoration at char offset 5 (the 'x' position)
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        // Insert "foo" (3 chars) at offset 0
-        rope.insert(0, "foo");
-        map.adjust_for_edits(
-            &[Edit::Insert {
-                offset: 0,
-                text: "foo".to_string(),
-            }],
-            &rope,
-            1,
-        );
-
-        // Decoration should now be at offset 8 (5 + 3)
-        let decs = map.for_line(0);
-        assert_eq!(decs.len(), 1);
-        assert_eq!(decs[0].placement.char_offset(), 8);
-        assert_eq!(
-            decs[0].source_version, 1,
-            "adjust_for_edits should bump source_version to the new buffer version"
-        );
-    }
-
-    #[test]
-    fn adjust_for_delete_shifts_decorations_back() {
-        let mut rope = Rope::from_str("foobar = 1;\n");
-        let mut map = DecorationMap::new();
-        // Decoration at offset 8 (the '1' position)
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(8, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        // Delete "foo" (3 chars) at offset 0
-        rope.remove(0..3);
-        map.adjust_for_edits(
-            &[Edit::Delete {
-                offset: 0,
-                text: "foo".to_string(),
-            }],
-            &rope,
-            1,
-        );
-
-        // Decoration should now be at offset 5 (8 - 3)
-        let decs = map.for_line(0);
-        assert_eq!(decs.len(), 1);
-        assert_eq!(decs[0].placement.char_offset(), 5);
-    }
-
-    #[test]
-    fn adjust_for_delete_removes_decoration_inside_deleted_region() {
-        let mut rope = Rope::from_str("let x = 1;\n");
-        let mut map = DecorationMap::new();
-        // Decoration at offset 5 (inside the region we'll delete)
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        // Delete "x = 1" (5 chars) at offset 4
-        rope.remove(4..9);
-        map.adjust_for_edits(
-            &[Edit::Delete {
-                offset: 4,
-                text: "x = 1".to_string(),
-            }],
-            &rope,
-            1,
-        );
-
-        // Decoration was inside deleted region — should be gone
-        assert!(map.is_empty());
-    }
-
-    #[test]
     fn iter_all_yields_every_decoration_in_line_order() {
         let rope = test_rope();
         let mut map = DecorationMap::new();
@@ -1068,34 +906,6 @@ mod tests {
     fn iter_all_empty_map_is_empty() {
         let map = DecorationMap::new();
         assert_eq!(map.iter_all().count(), 0);
-    }
-
-    #[test]
-    fn adjust_for_newline_insert_moves_decoration_to_new_line() {
-        let mut rope = Rope::from_str("let x = 1;\n");
-        let mut map = DecorationMap::new();
-        // Decoration at offset 5
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        // Insert newline at offset 4 (before "x"), splitting the line
-        rope.insert(4, "\n");
-        map.adjust_for_edits(
-            &[Edit::Insert {
-                offset: 4,
-                text: "\n".to_string(),
-            }],
-            &rope,
-            1,
-        );
-
-        // Decoration should now be on line 1 (offset 6 = 5+1)
-        assert!(map.for_line(0).is_empty());
-        assert_eq!(map.for_line(1).len(), 1);
-        assert_eq!(map.for_line(1)[0].placement.char_offset(), 6);
     }
 
     #[test]
@@ -1141,7 +951,8 @@ mod tests {
     }
 
     // -----------------------------------------------------------------
-    // project_offset — pure projection, parity with adjust_for_edits
+    // project_offset — pure projection tests (single source of truth
+    // for decoration position transforms; see module docs).
     // -----------------------------------------------------------------
 
     fn ins(offset: usize, text: &str) -> Edit {
@@ -1217,8 +1028,8 @@ mod tests {
     #[test]
     fn project_offset_delete_at_start_boundary_unchanged() {
         // Delete [4, 9) — anchor at 4 (equal to start) is treated as "before
-        // the delete" and kept unchanged, matching adjust_for_edits' branch
-        // ordering (pos >= end false, pos > offset false → else branch).
+        // the delete" and kept unchanged (pos >= end false, pos > offset
+        // false → else branch).
         let edits = [del(4, "x = 1")];
         assert_eq!(project_offset(4, &refs(&edits)), Some(4));
     }
@@ -1247,89 +1058,6 @@ mod tests {
         // engulfs it.
         let edits = [ins(20, "tail"), del(3, "abcde")];
         assert_eq!(project_offset(5, &refs(&edits)), None);
-    }
-
-    #[test]
-    fn project_offset_matches_adjust_for_edits_on_insert() {
-        // Build a decoration, run adjust_for_edits, and verify project_offset
-        // produces the same offset starting from the pre-edit source offset.
-        let mut rope = Rope::from_str("let x = 1;\n");
-        let mut map = DecorationMap::new();
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        let source_offset = 5usize;
-        let edits = vec![Edit::Insert {
-            offset: 0,
-            text: "foo".to_string(),
-        }];
-
-        // Apply to the rope and the accumulator.
-        rope.insert(0, "foo");
-        map.adjust_for_edits(&edits, &rope, 1);
-
-        let accumulator_offset = map.for_line(0)[0].placement.char_offset();
-        let projected = project_offset(source_offset, &refs(&edits)).expect("projection survives");
-        assert_eq!(
-            projected, accumulator_offset,
-            "projection must match accumulator for a forward insert"
-        );
-    }
-
-    #[test]
-    fn project_offset_matches_adjust_for_edits_on_delete_before() {
-        let mut rope = Rope::from_str("foobar = 1;\n");
-        let mut map = DecorationMap::new();
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(8, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        let source_offset = 8usize;
-        let edits = vec![Edit::Delete {
-            offset: 0,
-            text: "foo".to_string(),
-        }];
-
-        rope.remove(0..3);
-        map.adjust_for_edits(&edits, &rope, 1);
-
-        let accumulator_offset = map.for_line(0)[0].placement.char_offset();
-        let projected = project_offset(source_offset, &refs(&edits)).expect("projection survives");
-        assert_eq!(projected, accumulator_offset);
-    }
-
-    #[test]
-    fn project_offset_matches_adjust_for_edits_on_delete_over() {
-        // Accumulator drops a decoration whose anchor sits strictly inside the
-        // deleted region; projection should return None for the same offset.
-        let mut rope = Rope::from_str("let x = 1;\n");
-        let mut map = DecorationMap::new();
-        map.replace_source(
-            DecorationSource::InlayHint,
-            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
-            &rope,
-        );
-
-        let source_offset = 5usize;
-        let edits = vec![Edit::Delete {
-            offset: 4,
-            text: "x = 1".to_string(),
-        }];
-
-        rope.remove(4..9);
-        map.adjust_for_edits(&edits, &rope, 1);
-
-        assert!(map.is_empty(), "accumulator dropped the decoration");
-        assert_eq!(
-            project_offset(source_offset, &refs(&edits)),
-            None,
-            "projection agrees: decoration was engulfed"
-        );
     }
 
     #[test]

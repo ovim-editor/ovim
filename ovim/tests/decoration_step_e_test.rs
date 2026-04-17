@@ -1,14 +1,8 @@
-//! Phase-05 Step E: the renderer reads projected decoration offsets rather
-//! than stored ones. The accumulator still runs in parallel as a safety net,
-//! so the two paths must agree. These tests exercise the projected accessors
-//! directly (the paths the renderer routes through) and verify they return
+//! Phase-05 Step E + F: the renderer reads projected decoration offsets.
+//! Step F removed the mutation-based accumulator entirely, making projection
+//! the sole source of truth. These tests exercise the `*_projected` methods
+//! on `DecorationMap` (the paths the renderer calls) and verify they return
 //! correct offsets across interactive editing scenarios.
-//!
-//! In contrast to `decoration_projection_test.rs` — which checks the pure
-//! `project_offset` function against the accumulator — this file checks the
-//! `*_projected` methods on `DecorationMap`, because those are what the
-//! renderer actually calls. Any divergence between "renderer sees projected
-//! offset" and "accumulator stores projected offset" would be caught here.
 
 mod helpers;
 
@@ -218,32 +212,35 @@ fn step_e_projection_follows_anchor_across_lines_after_newline_insert() {
 }
 
 #[test]
-fn step_e_validate_projection_reports_zero_mismatches() {
-    // Dual validation: the accumulator and projection must agree. This is
-    // the invariant Step E depends on — if it ever breaks, we know to stop.
+fn step_f_projection_tracks_mixed_edits_across_multiple_decorations() {
+    // With the accumulator removed, the projected accessors are the sole
+    // source of truth. This exercise places several decorations and runs
+    // mixed inserts to confirm each one ends up on the correct line with
+    // correctly shifted offsets.
     let mut test = EditorTest::new("hello world\nlet x = 1;\nend\n");
+    // Anchor on line 0 at col 6 (the 'w' of "world"), source_offset = 6.
     place_inlay_at_current_version(&mut test, 0, 6, ": world");
+    // Anchor on line 1 at col 5 (the 'x'), source_offset = 11 + 5 = 16.
     place_inlay_at_current_version(&mut test, 1, 5, ": i32");
+    // EOL diagnostic on line 2, source_offset = 22 (line-2 start).
     place_eol_at_current_version(&mut test, 2, "warn: unused");
 
-    // Mix inserts and deletes.
+    // Insert "AA" at the start of line 0 — shifts every anchor forward by 2.
     test.keys("gg").press('i').type_text("AA").press_esc();
+    // Append " // trail" to line 1 — does not affect our anchors (they're
+    // all at or before the append point).
     test.keys("j").press('A').type_text(" // trail").press_esc();
 
-    #[cfg(debug_assertions)]
-    assert_eq!(
-        test.editor.validate_decoration_projection(),
-        0,
-        "accumulator and projection must agree in steady state"
-    );
-
-    // And a sanity check: projected positions still round-trip.
     let line0 = projected_for_line(&test, 0);
     let line1 = projected_for_line(&test, 1);
     let line2 = projected_for_line(&test, 2);
-    assert_eq!(line0.len(), 1);
-    assert_eq!(line1.len(), 1);
-    assert_eq!(line2.len(), 1);
+
+    assert_eq!(line0.len(), 1, "inline hint projected on line 0");
+    assert_eq!(line1.len(), 1, "inline hint projected on line 1");
+    assert_eq!(line2.len(), 1, "EOL diagnostic projected on line 2");
+
+    // Line 0 inlay shifts from offset 6 to 8.
+    assert_eq!(line0[0].placement.char_offset(), 8);
 }
 
 #[test]
