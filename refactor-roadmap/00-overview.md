@@ -14,30 +14,41 @@ This roadmap covers what remains: structural cleanup that reduces cognitive load
 | 02 | `Slot<T>`, `LspSlots`, `LspIntents` | `lsp_slot.rs`, `lsp_subsystem.rs`, `lsp_state.rs` |
 | 03 | Document sync / debouncer fix | `notifications.rs`, `lsp/mod.rs` |
 | 04 | Async save + git ops | `file_io.rs`, `commands.rs` |
-| 05 | Decoration projection (partial) | `decoration.rs`, `change_tracking.rs` |
+| 05 | Decoration projection | `decoration.rs`, `change_tracking.rs` |
 | 06 | LspState decomposition (superseded by 02) | — |
 | 07 | Completion textEdit | completion code |
 | 08 | Column coordinate correctness | buffer ops, LSP conversions |
 
 These docs (00-phase0 through 08) are kept for historical reference. They describe solved problems and should not drive new work.
 
+## Recently shipped
+
+| # | Title | Landed in |
+|---|-------|-----------|
+| [13](./13-dead-change-variants.md) | Remove dead `Change` variants | `0a8af89` |
+| [14](./14-text-object-resolution.md) | Unify `TextObjectType` resolution | `d6a114a` |
+| [15](./15-change-enum-simplification.md) step 1 — document the boundary | `23e6eeb` / `30142fb` |
+| [16](./16-event-loop-grouping.md) | Event loop phase grouping | `443ffb4` |
+
+These docs are kept with `(DONE)` banners so the "what was deleted and why"
+trail stays discoverable. They should not drive new work.
+
 ## Active roadmap
 
 | # | Title | Type | Risk | Effort |
 |---|-------|------|------|--------|
-| [13](./13-dead-change-variants.md) | Remove dead `Change` variants | Dead code removal | **None** | Small |
-| [14](./14-text-object-resolution.md) | Unify `TextObjectType` resolution | Deduplication | **Low** | Small |
-| [15](./15-change-enum-simplification.md) | Simplify the `Change` enum | Architecture | **Low** | Medium |
-| [16](./16-event-loop-grouping.md) | Event loop phase grouping | Readability | **None** | Small |
+| [15](./15-change-enum-simplification.md) steps 2–4 | Collapse Pattern A into `Recorded` | Architecture | **Medium** | Medium-large |
 | [17](./17-multi-server-sync.md) | Multi-server document sync | Bug prevention | **Medium** | Medium |
 
 ### Recommended order
 
-**13 → 14 → 15** form a natural sequence: remove dead code, extract the shared dispatch, then simplify the enum that's left. Each step is independently shippable and makes the next one cleaner.
+**15 steps 2–4** is the only structural refactor still open in the undo
+system. It's a focused sprint — insert-mode recording API, `RepeatAction::InsertSession`, then removal of `InsertText` / `DeleteText` / `Composite`. Medium-large because it touches insert mode, completion, visual-block
+replay, and repeat. Not a drive-by.
 
-**16** is independent — do it whenever you want a quick win.
-
-**17** is the only one with user-facing impact. Prioritize it if you're expanding companion server support (e.g., Tailwind CSS + TypeScript).
+**17** is the only roadmap item with user-facing impact. Prioritize it if
+you're expanding companion server support (e.g., Tailwind CSS +
+TypeScript).
 
 ## What was retired
 
@@ -54,7 +65,7 @@ Old roadmaps 09–12 are replaced by the active roadmap above:
 
 **`Slot<T>` / `TrackedSlot<T>`** — Cancellation is structural (replacing the in-flight request *is* cancelling it). `TrackedSlot`'s generation counter can't lose an invalidation, can't consume it twice, and debounce composes orthogonally. This is the reference abstraction for the codebase.
 
-**`DecorationMap` with char-offset anchoring** — Mutations use flat offsets (pure arithmetic in `adjust_for_edits`), queries use lines (derived from rope at call time). Two-level structure, right boundary between them.
+**`DecorationMap` with versioned projection** — Each decoration stores its `source_version` and a char offset in that version's rope. At render time, `project_offset` replays the edits from `source_version` forward to get the current offset. No accumulated drift, no wrong-baseline errors on undo, and stale decorations from old buffer versions project onto current positions instead of rendering where they were first placed.
 
 **`LspSubsystem` grouping** — State, slots, intents, channels, UI — all one field access away, with a clear boundary.
 
@@ -62,8 +73,15 @@ Old roadmaps 09–12 are replaced by the active roadmap above:
 
 ### Where the tension lives
 
-**`Change` does three jobs** — undo record, repeat template, and semantic description. Pattern B (`Edit`-based undo + `RepeatAction` for semantic repeat) has already won for most operations, but the `Change` enum still carries the weight of its former roles.
+**`Change` Pattern A is the last holdout** — `Recorded` (Pattern B) already
+handles most operations with mechanical undo + `RepeatAction` for semantic
+repeat. `InsertText` / `DeleteText` / `Composite` (Pattern A) still exist
+only because insert-mode sessions batch per-keystroke changes and
+`Composite.repeat(&mut self)` mutates its sub-changes in place to reflect
+actual repeat positions. Roadmap 15 steps 2–4 collapse this into a
+stateful `buffer.record()` + `RepeatAction::InsertSession`.
 
-**`TextObjectType` resolution** — Same 8-arm match block duplicated in three files. Adding a new text object type requires touching all three.
-
-**Event loop readability** — Phases are more independent than they look (each `_impl()` syncs its own document state), but a reader can't know that without deep knowledge. Named groups would make the rhythm visible.
+**Multi-server document versions are shared, not per-server** — If one
+server in a multi-server setup (TypeScript + Tailwind CSS) silently drops
+a `didChange` or restarts, the editor can't detect divergence. Roadmap 17
+addresses this with periodic re-sync.

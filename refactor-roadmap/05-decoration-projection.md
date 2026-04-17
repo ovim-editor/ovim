@@ -1,4 +1,12 @@
-# Phase 5: Decoration Projection
+# Phase 5: Decoration Projection (DONE)
+
+> **Shipped across `1fd2456` → `ee5d3ee`**: `EditLog` on the buffer,
+> per-decoration `source_version`, `project_offset` with parallel validation,
+> renderer switched to projection, accumulator removed. Projection is now the
+> single source of truth for decoration positions. Kept below for the design
+> rationale that guided the rollout.
+
+---
 
 **Goal:** Inlay hints don't drift. Undo doesn't wipe all decorations. Stale hints are displayed at corrected positions, not wrong ones.
 

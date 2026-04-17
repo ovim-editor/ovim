@@ -1,4 +1,11 @@
-# 13: Remove Dead `Change` Variants
+# 13: Remove Dead `Change` Variants (DONE)
+
+> **Shipped in `0a8af89`** — the four dead variants (`ChangeTextObject`,
+> `ChangeWord`, `ChangeSearchMatch`, `ReplaceMode`) and their helper methods
+> are gone from `change.rs`. Kept below for reference on what was deleted and
+> why.
+
+---
 
 **Goal:** Delete four `Change` enum variants that are defined but never constructed, along with their unreachable `apply()`, `undo()`, `repeat()`, and accessor implementations.
 

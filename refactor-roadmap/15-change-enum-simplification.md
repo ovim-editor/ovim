@@ -45,9 +45,13 @@ This would leave `Change` with just `Recorded` and `ResourceOp` — at which poi
 
 Don't do this all at once. The steps:
 
-### Step 1: Document the boundary (immediate)
+### Step 1: Document the boundary (DONE, `23e6eeb` / `30142fb`)
 
-Add a module-level comment to `change.rs` that explains the two patterns and their mutual exclusion. The existing comment at the top is good but could be sharper about *why* both exist (insert-mode keystroke batching is the last holdout).
+The module-level comment at the top of `change.rs` now names both patterns
+explicitly, calls out the apply/undo coordinate asymmetry and the
+`Composite.repeat(&mut self)` in-place mutation, and points readers here
+for the migration work that remains. Future readers should not need to
+re-derive "why does this enum have both shapes?" from the source.
 
 ### Step 2: Audit `Composite.repeat()` mutation (investigation)
 

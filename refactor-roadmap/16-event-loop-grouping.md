@@ -1,4 +1,14 @@
-# 16: Event Loop Phase Grouping
+# 16: Event Loop Phase Grouping (DONE)
+
+> **Shipped in `443ffb4`** — `process_editor_tick()` is now a ~50-line outline
+> that delegates to `process_lsp_notifications`, `process_lsp_init`,
+> `process_lsp_sync_and_inlay_hints`, `process_dap_events`,
+> `process_pending_debug_action`, `spawn_syntax_highlighting`,
+> `drain_syntax_results`, `poll_background_tasks`, and `process_picker_tick`.
+> The 279-line DAP match block is fully extracted. Kept below for the
+> original phase inventory that guided the extraction.
+
+---
 
 **Goal:** Make `process_editor_tick()` scannable by grouping its ~20 phases into named functions, so a reader can understand the loop's rhythm without reading 480 lines.
 

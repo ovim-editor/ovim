@@ -1,4 +1,12 @@
-# 14: Unify `TextObjectType` Resolution
+# 14: Unify `TextObjectType` Resolution (DONE)
+
+> **Shipped in `d6a114a`** — `TextObjectType::resolve()` lives in `change.rs`
+> and replaces the duplicated dispatch that previously existed in
+> `Buffer::delete_text_object()` and `RepeatAction::ChangeCaseTextObject`.
+> The third copy (`Change::find_text_object`) was removed earlier by
+> roadmap 13. Kept below for the audit trail.
+
+---
 
 **Goal:** Replace three identical 8-arm match blocks with a single `TextObjectType::resolve()` method.
 
