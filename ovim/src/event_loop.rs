@@ -9,10 +9,10 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration, Instant};
 
 use ovim::api::{
-    parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DiagnosticCounts,
-    DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo, LineEntry,
-    LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo, PickerResultInfo,
-    RenderInfo, SuccessResponse, VisualSelection,
+    parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DecorationInfo,
+    DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo,
+    LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo,
+    PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
 };
 use ovim::buffer::{BufferId, LineHighlights};
 use ovim::commands;
@@ -2007,6 +2007,40 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         selected_index: p.selected_index(),
     });
 
+    // Project decorations into the snapshot. Each decoration keeps its
+    // rope-absolute offset and also reports line/col so clients can use
+    // whichever is convenient.
+    let rope = editor.buffer().rope();
+    let decorations: Vec<DecorationInfo> = editor
+        .decorations
+        .iter_all()
+        .map(|(line, dec)| {
+            use ovim_core::editor::decoration::{DecorationPlacement, DecorationSource};
+            let char_offset = dec.placement.char_offset();
+            let col = dec.placement.char_idx(rope);
+            let source = match dec.source {
+                DecorationSource::InlayHint => "inlay_hint",
+                DecorationSource::Diagnostic => "diagnostic",
+            }
+            .to_string();
+            let placement = match dec.placement {
+                DecorationPlacement::Inline { .. } => "inline",
+                DecorationPlacement::EndOfLine { .. } => "eol",
+            }
+            .to_string();
+            DecorationInfo {
+                line,
+                char_offset,
+                col,
+                text: dec.text.clone(),
+                source,
+                placement,
+                // Populated in phase-05 Step C.
+                source_version: None,
+            }
+        })
+        .collect();
+
     EditorSnapshot {
         buffer: buffer_info,
         cursor: cursor_pos,
@@ -2016,6 +2050,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         marks,
         picker,
         hover_info: editor.hover_info().map(|s| s.to_string()),
+        decorations,
     }
 }
 
@@ -2041,6 +2076,9 @@ fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
         marks: HashMap::new(),
         picker: None,
         hover_info: editor.hover_info().map(|s| s.to_string()),
+        // Lightweight snapshot deliberately omits decorations to keep polling
+        // cheap; callers that need them should hit the full `/v1/snapshot`.
+        decorations: Vec::new(),
     }
 }
 

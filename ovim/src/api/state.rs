@@ -100,6 +100,43 @@ pub struct EditorSnapshot {
     pub picker: Option<PickerInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hover_info: Option<String>,
+    /// Virtual-text decorations (inlay hints, diagnostic EOL markers) currently
+    /// attached to the buffer. Emitted as a flat, position-sorted list rather
+    /// than a per-line map so consumers can trivially `jq '.decorations'` it.
+    ///
+    /// Empty when no decorations are active (e.g. before LSP inlay hints
+    /// arrive, or for file types without LSP support).
+    #[serde(default)]
+    pub decorations: Vec<DecorationInfo>,
+}
+
+/// A single virtual-text decoration projected for external consumers.
+///
+/// This is a serialization-friendly view of `ovim_core::editor::decoration::Decoration`.
+/// Positions are reported in both rope-absolute (`char_offset`) and
+/// line-relative (`line`, `col`) forms so callers can pick whichever matches
+/// their mental model.
+///
+/// `source_version` is the buffer version the decoration was anchored to when
+/// it was created. `None` today — populated in phase-05 Step C, where it will
+/// enable stale-decoration projection across buffer edits.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DecorationInfo {
+    /// 0-indexed line number, derived from `char_offset` via the rope.
+    pub line: usize,
+    /// Absolute char offset into the rope.
+    pub char_offset: usize,
+    /// 0-indexed char column within the line.
+    pub col: usize,
+    /// The virtual text rendered at this position.
+    pub text: String,
+    /// Producer of this decoration: `"inlay_hint"` or `"diagnostic"`.
+    pub source: String,
+    /// Where the text is rendered relative to the buffer: `"inline"` or `"eol"`.
+    pub placement: String,
+    /// Buffer version the decoration was anchored to. `None` until Step C.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_version: Option<u64>,
 }
 
 /// Picker state information

@@ -240,6 +240,17 @@ impl DecorationMap {
         self.lines.get(&line).map(|v| v.as_slice()).unwrap_or(&[])
     }
 
+    /// Iterate over every decoration in the map, yielding `(line, &Decoration)`
+    /// pairs in line-then-position order.
+    ///
+    /// Useful for callers that need to enumerate the full set — e.g. projecting
+    /// the decoration state into a snapshot for the REST API.
+    pub fn iter_all(&self) -> impl Iterator<Item = (usize, &Decoration)> {
+        self.lines
+            .iter()
+            .flat_map(|(line, decs)| decs.iter().map(move |d| (*line, d)))
+    }
+
     /// Get only inline decorations for a line.
     pub fn inline_for_line(&self, line: usize) -> Vec<&Decoration> {
         self.for_line(line)
@@ -783,6 +794,44 @@ mod tests {
 
         // Decoration was inside deleted region — should be gone
         assert!(map.is_empty());
+    }
+
+    #[test]
+    fn iter_all_yields_every_decoration_in_line_order() {
+        let rope = test_rope();
+        let mut map = DecorationMap::new();
+        // Two inline hints on line 0, one EOL diagnostic on line 1.
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![
+                inline_at(3, "a", DecorationSource::InlayHint),
+                inline_at(7, "b", DecorationSource::InlayHint),
+            ],
+            &rope,
+        );
+        map.replace_source(
+            DecorationSource::Diagnostic,
+            vec![eol_at(11, "err", DecorationSource::Diagnostic)],
+            &rope,
+        );
+
+        let collected: Vec<(usize, String)> = map
+            .iter_all()
+            .map(|(line, d)| (line, d.text.clone()))
+            .collect();
+
+        // BTreeMap walks lines in ascending order; within a line, the sort
+        // order established by `sort_all_lines` is preserved.
+        assert_eq!(collected.len(), 3);
+        assert_eq!(collected[0], (0, "a".to_string()));
+        assert_eq!(collected[1], (0, "b".to_string()));
+        assert_eq!(collected[2], (1, "err".to_string()));
+    }
+
+    #[test]
+    fn iter_all_empty_map_is_empty() {
+        let map = DecorationMap::new();
+        assert_eq!(map.iter_all().count(), 0);
     }
 
     #[test]
