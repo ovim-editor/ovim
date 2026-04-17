@@ -1,7 +1,7 @@
 use super::Buffer;
 use crate::change::TextObjectType;
-use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::edit::Edit;
+use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::unicode::{
     char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col, CharCol,
     GraphemeCol,
@@ -532,9 +532,7 @@ impl Buffer {
         else {
             return;
         };
-        let Ok((mut value, base, prefix_len)) = parse_number(&number_str) else {
-            return;
-        };
+        let (mut value, base, prefix_len) = parse_number(&number_str);
 
         let has_plus_sign = number_str.starts_with('+');
         value += delta;

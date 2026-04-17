@@ -3,8 +3,8 @@
 //! Handles increment/decrement of numbers under/after cursor.
 //! Supports decimal, hexadecimal (0x), binary (0b), and octal (0o) formats.
 
-use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::editor::{CursorPos, Editor};
+use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::repeat_action::RepeatAction;
 use crate::unicode::CharCol;
 use anyhow::Result;
@@ -46,9 +46,7 @@ pub fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> 
             else {
                 continue;
             };
-            let Ok((value, base, prefix_len)) = parse_number(&number_str) else {
-                continue;
-            };
+            let (value, base, prefix_len) = parse_number(&number_str);
 
             let new_value = value.wrapping_add(total_delta);
             let mut new_number_str = format_number(new_value, base, prefix_len);

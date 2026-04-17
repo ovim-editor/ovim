@@ -5,7 +5,6 @@
 //! `change.rs` can focus entirely on the undo/repeat record shape.
 
 use crate::unicode::CharCol;
-use anyhow::Result;
 
 /// Finds a number at or after the given column position.
 /// Returns (start_col, end_col, number_string) as `CharCol` indices.
@@ -189,7 +188,11 @@ pub fn find_number_at_or_after(line: &str, col: CharCol) -> Option<(CharCol, Cha
 
 /// Parses a number string, detecting the base from prefix.
 /// Returns (value, base, prefix_length).
-pub fn parse_number(s: &str) -> Result<(i64, u32, usize)> {
+///
+/// Malformed digits fall back to `0`. Callers are expected to pass strings
+/// already vetted by `find_number_at_or_after`, so in practice the fallback
+/// only protects against i64 overflow (e.g. a 20-digit decimal).
+pub fn parse_number(s: &str) -> (i64, u32, usize) {
     if s.len() >= 3 {
         let prefix = &s[0..2];
         let digits = &s[2..];
@@ -197,15 +200,15 @@ pub fn parse_number(s: &str) -> Result<(i64, u32, usize)> {
         match prefix {
             "0x" | "0X" => {
                 let value = i64::from_str_radix(digits, 16).unwrap_or(0);
-                return Ok((value, 16, 2));
+                return (value, 16, 2);
             }
             "0b" | "0B" => {
                 let value = i64::from_str_radix(digits, 2).unwrap_or(0);
-                return Ok((value, 2, 2));
+                return (value, 2, 2);
             }
             "0o" | "0O" => {
                 let value = i64::from_str_radix(digits, 8).unwrap_or(0);
-                return Ok((value, 8, 2));
+                return (value, 8, 2);
             }
             _ => {}
         }
@@ -213,7 +216,7 @@ pub fn parse_number(s: &str) -> Result<(i64, u32, usize)> {
 
     // Regular decimal
     let value = s.parse::<i64>().unwrap_or(0);
-    Ok((value, 10, 0))
+    (value, 10, 0)
 }
 
 /// Formats a number with the given base.
