@@ -1,121 +1,69 @@
-# LSP Subsystem Refactor Roadmap
+# Refactor Roadmap
 
-## The Problems
+## History
 
-Four user-facing symptoms, three confirmed root causes, plus structural debt:
+Phases 0–8 addressed user-facing bugs: LSP response races, save freezes, undo/LSP content divergence, inlay hint drift, column coordinate mismatches. The LSP subsystem was rebuilt around `Slot<T>` / `TrackedSlot<T>` with intent-based dispatch. All of that is done and working.
 
-1. **LSP stops responding after initial requests.** Race condition in `server.rs`: request sent before registered in pending map. Fast LSP servers respond before registration, response is silently dropped, caller waits 10s for timeout. Compounded by a global gate (`has_pending_lsp_response()`) that blocks all new user-triggered actions while any response slot is occupied.
+This roadmap covers what remains: structural cleanup that reduces cognitive load and prepares the codebase for safe extension.
 
-2. **Save freezes the editor.** Synchronous `block_in_place` for file I/O + synchronous `git2` operations (diff, blame) on the event loop thread. Blocks all input, rendering, and LSP communication for 200ms-3s.
+## Completed (reference only)
 
-3. **Undo sends wrong content to LSP.** The didChange debouncer at `notifications.rs:300` only sets `old_text` on the first change after a sync (`if debouncer.old_text.is_none()`). After undo, the debouncer still holds `old_text` from the pre-undo edit, not from the undone state. When the incremental diff is computed, it diffs against the wrong baseline. The LSP server receives a corrupted edit and its view of the document diverges from the editor's.
+| Phase | Scope | Files |
+|-------|-------|-------|
+| 00–01 | Quick fixes + request pipeline | `server.rs` |
+| 02 | `Slot<T>`, `LspSlots`, `LspIntents` | `lsp_slot.rs`, `lsp_subsystem.rs`, `lsp_state.rs` |
+| 03 | Document sync / debouncer fix | `notifications.rs`, `lsp/mod.rs` |
+| 04 | Async save + git ops | `file_io.rs`, `commands.rs` |
+| 05 | Decoration projection (partial) | `decoration.rs`, `change_tracking.rs` |
+| 06 | LspState decomposition (superseded by 02) | — |
+| 07 | Completion textEdit | completion code |
+| 08 | Column coordinate correctness | buffer ops, LSP conversions |
 
-4. **Inlay hints drift left as you type.** Hints arrive from LSP computed against a stale buffer version. They're applied with positions calculated against the current rope (wrong), then `adjust_for_edits()` shifts them further on each keystroke. Error accumulates linearly until the next refresh.
+These docs (00-phase0 through 08) are kept for historical reference. They describe solved problems and should not drive new work.
 
-## Root Cause Analysis
+## Active roadmap
 
-### The Debouncer Content Bug (Symptoms 3, partially 1)
+| # | Title | Type | Risk | Effort |
+|---|-------|------|------|--------|
+| [13](./13-dead-change-variants.md) | Remove dead `Change` variants | Dead code removal | **None** | Small |
+| [14](./14-text-object-resolution.md) | Unify `TextObjectType` resolution | Deduplication | **Low** | Small |
+| [15](./15-change-enum-simplification.md) | Simplify the `Change` enum | Architecture | **Low** | Medium |
+| [16](./16-event-loop-grouping.md) | Event loop phase grouping | Readability | **None** | Small |
+| [17](./17-multi-server-sync.md) | Multi-server document sync | Bug prevention | **Medium** | Medium |
 
-The `ChangeDebouncer` in `LspManager` holds three things: `pending_text` (new content), `old_text` (baseline for incremental diff), and `pending_version`. On each `did_change()` call:
+### Recommended order
 
-- `pending_text` and `pending_version` are always updated
-- `old_text` is only set when `None` -- first change after a flush
+**13 → 14 → 15** form a natural sequence: remove dead code, extract the shared dispatch, then simplify the enum that's left. Each step is independently shippable and makes the next one cleaner.
 
-This means: edit A sets `old_text` to the pre-A content. Undo (which is edit B) updates `pending_text` to post-undo content but leaves `old_text` pointing to the pre-A content. The diff sent to the LSP is `diff(pre-A, post-undo)` -- which might produce the right full replacement, but when the server supports incremental sync, `compute_simple_diff()` produces a minimal patch between the wrong baseline and the current state. This can produce an edit that, when applied to what the server actually has, yields wrong content.
+**16** is independent — do it whenever you want a quick win.
 
-The existing tests (`lsp_document_sync_undo_test.rs`) only verify that `buffer_modified` is set after undo -- they don't test what content actually reaches the LSP.
+**17** is the only one with user-facing impact. Prioritize it if you're expanding companion server support (e.g., Tailwind CSS + TypeScript).
 
-### The Request-Response Race (Symptom 1)
+## What was retired
 
-`server.rs:1183-1202`: message is sent via `outgoing_tx` before the request is inserted into `pending_requests`. The reader task at line 557 can receive and process the response before `insert` executes, silently dropping it. The comment at line 1190 claims lock ordering prevents this, but the reader acquires its own independent lock.
+Old roadmaps 09–12 are replaced by the active roadmap above:
 
-### The Action Gate Design (Symptom 1, interaction effects)
+- **09 (undo unification)** → Split into 13 (dead code) + 15 (simplification). The "don't unify yet" advice was correct — but the dead code should still go.
+- **10 (editor decomposition)** → Remains background work. `LspSubsystem` is the template; follow the same pattern when touching other areas. No dedicated roadmap needed — the pattern is established.
+- **11 (event loop ordering)** → Replaced by 16 with concrete phase inventory and grouping proposal.
+- **12 (multi-server sync)** → Carried forward as 17 with the same recommendation (Option B: periodic re-sync).
 
-`pending_lsp_action` is a single `Option<LspAction>` -- one slot for all user-initiated actions. It's gated by `has_pending_lsp_response()` which checks four response slots. This creates two problems:
+## Architecture notes
 
-- A stuck/slow response blocks all new actions (hover blocks goto-definition)
-- Rapid user input silently overwrites queued actions with no feedback
+### What's singing
 
-Meanwhile, some `_impl()` methods (format, code actions, rename, references) await the LSP response inline, blocking `process_pending_lsp_actions()` for the full round-trip (100-500ms). Others (goto, hover) spawn a background task and return immediately. This inconsistency means the system's responsiveness depends on which action the user happens to trigger.
+**`Slot<T>` / `TrackedSlot<T>`** — Cancellation is structural (replacing the in-flight request *is* cancelling it). `TrackedSlot`'s generation counter can't lose an invalidation, can't consume it twice, and debounce composes orthogonally. This is the reference abstraction for the codebase.
 
-Completion works correctly because it has its own separate slot with sequence-based stale rejection -- the right design, but not applied to other actions.
+**`DecorationMap` with char-offset anchoring** — Mutations use flat offsets (pure arithmetic in `adjust_for_edits`), queries use lines (derived from rope at call time). Two-level structure, right boundary between them.
 
-### The Save Blocking (Symptom 2)
+**`LspSubsystem` grouping** — State, slots, intents, channels, UI — all one field access away, with a clear boundary.
 
-`save_as()` uses `block_in_place(block_on(save_as_async()))` on the event loop thread. Then `refresh_git_status()` and optionally `load_git_blame()` run synchronous `git2` operations. The entire command dispatch path is `fn execute_command() -> CommandResult` -- synchronous, no way to express "this takes time."
+**`Edit` enum** — Absolute char offsets, mechanically reversible, no ambiguity. The clean core of the undo system.
 
-## Design Principles
+### Where the tension lives
 
-1. **Make invalid states unrepresentable.** A request that has been sent but isn't tracked shouldn't be expressible. The debouncer shouldn't hold stale baselines.
+**`Change` does three jobs** — undo record, repeat template, and semantic description. Pattern B (`Edit`-based undo + `RepeatAction` for semantic repeat) has already won for most operations, but the `Change` enum still carries the weight of its former roles.
 
-2. **One owner per piece of state.** Document content truth lives in the Buffer. The debouncer doesn't independently track "what the server has" -- it receives the content to send and the baseline to diff against, both from the same source.
+**`TextObjectType` resolution** — Same 8-arm match block duplicated in three files. Adding a new text object type requires touching all three.
 
-3. **Acknowledge that some things take time.** Save, formatting, git operations are not instant. The type system distinguishes sync from async results. The UI stays responsive.
-
-4. **One pattern for all LSP features.** The codebase already has the right pattern (fire into a slot, poll for result, cancel on replace) — it's just implemented five different ways. `Slot<T>` unifies goto, hover, completion, inlay hints, diagnostics, format, rename, and every future LSP feature into one generic abstraction.
-
-## Phases
-
-| Phase | Scope | Fixes | Risk |
-|-------|-------|-------|------|
-| Phase | Scope | Fixes | Risk |
-|-------|-------|-------|------|
-| [**00: Quick Fixes**](./00-phase0-quick-fixes.md) | 5 surgical changes | All four symptoms | **Done** |
-| [01: Request Pipeline](./01-request-pipeline.md) | `server.rs` | Response race, silent drops | **Done** (shipped in Phase 0) |
-| [**02: Unified Slot Architecture**](./02-action-dispatch.md) | `Slot<T>`, LspSlots, LspIntents | Action blocking, silent overwrite, inline awaits, ad-hoc polling | Medium -- the next structural step |
-| [03: Document Sync](./03-document-sync.md) | Debouncer, `DocumentSyncState`, content flow | Reconciliation complexity | Medium -- simplify after Phase 0 fix |
-| [04: Async Save](./04-async-save.md) | `file_io.rs`, commands, git | Save freezes | **Done** (git ops shipped in Phase 0) |
-| [05: Decoration Projection](./05-decoration-projection.md) | `decoration.rs`, inlay hints | Hint drift, undo clearing hints | Medium -- changes rendering pipeline |
-| [06: LspState Decomposition](./06-lsp-state-decomposition.md) | `lsp_state.rs` | Maintainability | Low -- largely subsumed by Phase 2 |
-
-## Status (April 2026)
-
-The LSP subsystem refactor is **complete**. All user-facing symptoms are fixed.
-
-| Phase | Status |
-|-------|--------|
-| 00: Quick Fixes | **Done** |
-| 01: Request Pipeline | **Done** (shipped in Phase 0) |
-| 02: Unified Slot Architecture | **Done** — `Slot<T>`/`TrackedSlot<T>`, `LspIntents` replace `LspAction` enum |
-| 03: Document Sync | **Done** — debouncer baseline bug fixed, `DocumentSyncState` reconciliation works |
-| 04: Async Save | **Done** — git ops on `spawn_blocking` |
-| 05: Decoration Projection | **Partial** — undo/redo preserve hints via `adjust_for_edits`; full versioned projection deferred |
-| 06: LspState Decomposition | **Superseded** by Phase 2 cleanup |
-| 07: Completion textEdit | **Done** — `filterText`, `textEdit` range prefix, consolidated apply |
-
-### What remains from Phase 5
-
-The undo/redo flash is fixed (hints preserved through undo). The full projection system (versioned decorations, edit log, render-time position projection) would additionally fix:
-- Accumulated drift when stale hints are applied at wrong positions
-- Correctness when hints arrive from a different buffer version than current
-
-These are low-severity — `TrackedSlot` invalidation handles the common case.
-
-### Next: Cross-cutting issues
-
-The LSP-specific work is done. The remaining risks are broader:
-
-| # | Title | Type | Priority |
-|---|-------|------|----------|
-| [08](./08-column-coordinates.md) | Column coordinate correctness | **Bug** — grapheme/byte cols passed as char cols | High — real corruption with non-ASCII |
-| [09](./09-undo-unification.md) | Undo system boundary | **Risk** — dual Change/Edit representations | Low — document and test, don't unify yet |
-| [10](./10-editor-decomposition.md) | Editor struct decomposition | Maintainability | Background |
-| [11](./11-event-loop-ordering.md) | Event loop clarity | Readability | Low — comments and grouping |
-| [12](./12-multi-server-sync.md) | Multi-server document sync | **Risk** — per-file version tracking, not per-server | Medium — affects Tailwind + TS setups |
-
-## Files Involved
-
-```
-ovim-core/src/lsp/server.rs              -- request/response lifecycle (Phase 1)
-ovim-core/src/lsp/mod.rs                 -- LspManager, ChangeDebouncer (Phases 1, 3)
-ovim-core/src/lsp/notifications.rs       -- didChange, debouncing, old_text bug (Phase 3)
-ovim-core/src/lsp/utils.rs              -- compute_simple_diff (Phase 3)
-ovim-core/src/editor/lsp_state.rs        -- LspState, DocumentSyncState, PendingLspResponses (Phases 2, 3, 6)
-ovim-core/src/editor/lsp_integration.rs  -- sync, reconciliation, actions, ensure_synced (Phases 2, 3)
-ovim-core/src/editor/lsp_modules/*.rs    -- individual _impl methods (Phase 2)
-ovim-core/src/editor/decoration.rs       -- DecorationMap, adjust_for_edits (Phase 5)
-ovim-core/src/editor/change_tracking.rs  -- undo/redo, edit recording (Phases 3, 5)
-ovim-core/src/buffer/file_io.rs          -- save_as, block_in_place (Phase 4)
-ovim-core/src/commands.rs                -- command dispatch (Phase 4)
-ovim/src/event_loop.rs                   -- main loop, tick, gating logic (Phases 2, 4)
-```
+**Event loop readability** — Phases are more independent than they look (each `_impl()` syncs its own document state), but a reader can't know that without deep knowledge. Named groups would make the rhythm visible.

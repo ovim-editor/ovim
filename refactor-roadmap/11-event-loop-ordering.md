@@ -1,4 +1,8 @@
-# 11: Event Loop Clarity
+# 11: Event Loop Clarity (RETIRED)
+
+> **Superseded by** [16-event-loop-grouping.md](./16-event-loop-grouping.md), which includes a full phase inventory with line numbers and concrete grouping proposal.
+
+---
 
 **Goal:** Make the event loop's structure legible so that modifications don't accidentally break implicit invariants.
 

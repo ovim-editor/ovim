@@ -1,4 +1,8 @@
-# 12: Multi-Server Document Sync
+# 12: Multi-Server Document Sync (RETIRED)
+
+> **Carried forward as** [17-multi-server-sync.md](./17-multi-server-sync.md) with the same recommendation (Option B: periodic re-sync).
+
+---
 
 **Goal:** Document versions are tracked per-server so that server crashes, reconnections, or missed notifications are detected and recovered.
 

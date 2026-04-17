@@ -1,4 +1,6 @@
-# 10: Editor Struct Decomposition
+# 10: Editor Struct Decomposition (BACKGROUND)
+
+> **No dedicated roadmap.** `LspSubsystem` established the pattern — follow it when touching other areas. See the overview for context.
 
 **Goal:** Break the `Editor` god struct into focused subsystems so that each concern has a clear owner and adding features doesn't grow a single 3k-line file.
 

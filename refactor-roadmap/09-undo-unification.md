@@ -1,4 +1,8 @@
-# 09: Undo System Unification
+# 09: Undo System Unification (RETIRED)
+
+> **Superseded by** [13-dead-change-variants.md](./13-dead-change-variants.md) and [15-change-enum-simplification.md](./15-change-enum-simplification.md). The "don't unify yet" advice was correct. The dead code removal in 13 and the incremental simplification in 15 replace the monolithic approach proposed here.
+
+---
 
 **Goal:** One undo representation, not two. Eliminate the impedance mismatch between `Change` (line/col positions) and `Edit` (absolute char offsets).
 
