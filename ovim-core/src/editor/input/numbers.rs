@@ -3,7 +3,7 @@
 //! Handles increment/decrement of numbers under/after cursor.
 //! Supports decimal, hexadecimal (0x), binary (0b), and octal (0o) formats.
 
-use crate::change::{find_number_at_or_after, format_number, parse_number};
+use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::editor::{CursorPos, Editor};
 use crate::repeat_action::RepeatAction;
 use crate::unicode::CharCol;

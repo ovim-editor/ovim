@@ -1,5 +1,6 @@
 use super::Buffer;
-use crate::change::{find_number_at_or_after, format_number, parse_number, TextObjectType};
+use crate::change::TextObjectType;
+use crate::number_ops::{find_number_at_or_after, format_number, parse_number};
 use crate::edit::Edit;
 use crate::unicode::{
     char_to_grapheme_col, grapheme_at_index, grapheme_count, grapheme_to_char_col, CharCol,

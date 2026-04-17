@@ -27,6 +27,7 @@ pub mod metrics;
 pub mod mode;
 pub mod modeline;
 pub mod navigation_types;
+pub mod number_ops;
 pub mod rect;
 pub mod repeat_action;
 pub mod search;
