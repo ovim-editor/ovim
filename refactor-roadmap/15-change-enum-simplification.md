@@ -6,9 +6,9 @@
 
 **Risk:** Low if done incrementally. Medium if attempted all at once.
 
-## What remains after roadmap 13
+## What `Change` looks like today
 
-After removing the four dead variants, `Change` has:
+After roadmap 13 removed the four dead variants (`0a8af89`), `Change` has:
 
 | Variant | Undo | Repeat | Used by |
 |---------|------|--------|---------|
