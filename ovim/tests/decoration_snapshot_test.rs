@@ -24,6 +24,19 @@ fn inlay(char_offset: usize, text: &str) -> Decoration {
         display_width: text.chars().count(),
         style: DecorationStyle::new(Color::Gray).with_italic(),
         priority: 10,
+        source_version: 0,
+    }
+}
+
+fn inlay_with_version(char_offset: usize, text: &str, source_version: u64) -> Decoration {
+    Decoration {
+        placement: DecorationPlacement::Inline { char_offset },
+        source: DecorationSource::InlayHint,
+        text: text.to_string(),
+        display_width: text.chars().count(),
+        style: DecorationStyle::new(Color::Gray).with_italic(),
+        priority: 10,
+        source_version,
     }
 }
 
@@ -37,6 +50,7 @@ fn diagnostic_eol(line_start_offset: usize, text: &str) -> Decoration {
         display_width: text.chars().count(),
         style: DecorationStyle::new(Color::Red),
         priority: 0,
+        source_version: 0,
     }
 }
 
@@ -71,7 +85,7 @@ fn project_snapshot_decorations(test: &EditorTest) -> serde_json::Value {
                 text: dec.text.clone(),
                 source,
                 placement,
-                source_version: None,
+                source_version: dec.source_version,
             }
         })
         .collect();
@@ -113,16 +127,36 @@ fn snapshot_projects_inlay_hints_with_line_col_and_source() {
     assert_eq!(arr[0]["text"], ": i32");
     assert_eq!(arr[0]["source"], "inlay_hint");
     assert_eq!(arr[0]["placement"], "inline");
-    // source_version is None today → omitted by `skip_serializing_if`.
-    assert!(
-        arr[0].get("source_version").is_none(),
-        "source_version is None in Step A and should be omitted from JSON"
+    // Step C: source_version is always present, defaulting to 0 for
+    // test-synthesised decorations that didn't specify one.
+    assert_eq!(
+        arr[0]["source_version"], 0,
+        "source_version is always present post-Step-C (0 for test decorations)"
     );
 
     assert_eq!(arr[1]["line"], 1);
     assert_eq!(arr[1]["col"], 5); // 16 - 11 (line 1 starts at offset 11)
     assert_eq!(arr[1]["char_offset"], 16);
     assert_eq!(arr[1]["text"], ": u64");
+}
+
+#[test]
+fn snapshot_carries_source_version_through_to_json() {
+    let mut test = EditorTest::new("let x = 1;\nlet y = 2;\n");
+    let rope = test.editor.buffer().rope().clone();
+    test.editor.decorations.replace_source(
+        DecorationSource::InlayHint,
+        vec![inlay_with_version(5, ": i32", 42)],
+        &rope,
+    );
+
+    let decs = project_snapshot_decorations(&test);
+    let arr = decs.as_array().unwrap();
+    assert_eq!(arr.len(), 1);
+    assert_eq!(
+        arr[0]["source_version"], 42,
+        "decoration's source_version should appear verbatim in the snapshot JSON"
+    );
 }
 
 #[test]

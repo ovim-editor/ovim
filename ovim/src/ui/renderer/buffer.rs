@@ -2652,6 +2652,7 @@ mod tests {
             display_width: 7,
             style: DecorationStyle::new(ovim_core::color::Color::Red).with_italic(),
             priority: 0,
+            source_version: 0,
         };
 
         apply_eol_decorations(&mut first, &[&dec], 30);

@@ -959,8 +959,12 @@ impl Editor {
                 self.lsp.state.current_file_lsp_version = result.request_key.lsp_version;
                 self.lsp.state.current_file_lsp_sent_version = result.request_key.lsp_version;
                 self.lsp.state.inlay_hints = result.hints;
-                // Build unified decorations from the new hints.
+                // Build unified decorations from the new hints.  The source
+                // version is the buffer version the LSP computed against; we
+                // preserve it verbatim so Step-D projection knows how far the
+                // buffer has advanced since the hints were produced.
                 let rope = self.buffer().rope().clone();
+                let hint_source_version = result.buffer_version as u64;
                 let hint_decs = crate::editor::decoration::decorations_from_inlay_hints(
                     &self.lsp.state.inlay_hints,
                     &rope,
@@ -974,6 +978,7 @@ impl Editor {
                             String::new()
                         }
                     },
+                    hint_source_version,
                 );
                 self.decorations.replace_source(
                     crate::editor::decoration::DecorationSource::InlayHint,

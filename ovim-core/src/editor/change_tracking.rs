@@ -41,7 +41,9 @@ impl Editor {
         let (did_undo, edits) = self.buffer_mut().undo();
         if did_undo && !edits.is_empty() {
             let rope = self.buffer().rope().clone();
-            self.decorations.adjust_for_edits(&edits, &rope);
+            let new_version = self.buffer().version() as u64;
+            self.decorations
+                .adjust_for_edits(&edits, &rope, new_version);
         }
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
@@ -53,7 +55,9 @@ impl Editor {
         let (did_redo, edits) = self.buffer_mut().redo();
         if did_redo && !edits.is_empty() {
             let rope = self.buffer().rope().clone();
-            self.decorations.adjust_for_edits(&edits, &rope);
+            let new_version = self.buffer().version() as u64;
+            self.decorations
+                .adjust_for_edits(&edits, &rope, new_version);
         }
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
@@ -146,7 +150,9 @@ impl Editor {
         // The rope is already in post-edit state; the arithmetic adjustment
         // uses only the edit offsets/lengths, not line/col, so this is correct.
         let rope = self.buffer().rope().clone();
-        self.decorations.adjust_for_edits(&edits, &rope);
+        let new_version = self.buffer().version() as u64;
+        self.decorations
+            .adjust_for_edits(&edits, &rope, new_version);
 
         let group_id = self
             .ai_state

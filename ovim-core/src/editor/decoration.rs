@@ -105,6 +105,12 @@ pub struct Decoration {
     pub style: DecorationStyle,
     /// Sort priority within the same position (lower = rendered first).
     pub priority: u8,
+    /// Buffer version that this decoration's `char_offset` was computed
+    /// against. Populated from the originating LSP request's `buffer_version`
+    /// at construction, and bumped to match the post-edit version each time
+    /// `adjust_for_edits` shifts the offset.  Phase-05 Step C populates this
+    /// field; Step D adds a projection consumer that uses it.
+    pub source_version: u64,
 }
 
 /// Per-line decoration index for efficient lookup during rendering.
@@ -178,7 +184,12 @@ impl DecorationMap {
     /// The rope must be the **post-edit** rope (edits already applied).
     /// The arithmetic adjustment is independent of rope state — it only
     /// uses the edit offsets and lengths.
-    pub fn adjust_for_edits(&mut self, edits: &[Edit], rope: &Rope) {
+    ///
+    /// `new_version` is the buffer version after the edits land; every
+    /// surviving decoration's `source_version` is bumped to match so the
+    /// accumulator and the Step-D projection stay in sync while both
+    /// systems coexist.
+    pub fn adjust_for_edits(&mut self, edits: &[Edit], rope: &Rope, new_version: u64) {
         if self.lines.is_empty() || edits.is_empty() {
             return;
         }
@@ -225,6 +236,11 @@ impl DecorationMap {
             if *off > max_offset {
                 *off = max_offset;
             }
+            // Keep the anchor version in lockstep with the accumulator.  When
+            // Step D introduces projection, the projection cache will key on
+            // `(source_version, current_version)`; keeping the field current
+            // means a freshly-adjusted decoration projects as a no-op.
+            dec.source_version = new_version;
         }
 
         for dec in all_decs {
@@ -344,10 +360,14 @@ impl DecorationMap {
 /// `line_text` returns the text of a given line (without trailing newline).
 /// Used to convert LSP UTF-16 offsets to char indices.
 /// The rope is used to compute absolute char offsets from (line, char_idx).
+/// `source_version` is the buffer version the hints were computed against
+/// (from the originating LSP request's `buffer_version`); stored on each
+/// produced decoration for Step-D projection.
 pub fn decorations_from_inlay_hints<F>(
     hints: &[lsp_types::InlayHint],
     rope: &Rope,
     line_text: F,
+    source_version: u64,
 ) -> Vec<Decoration>
 where
     F: Fn(usize) -> String,
@@ -391,6 +411,7 @@ where
                 display_width,
                 style: hint_style.clone(),
                 priority: 10,
+                source_version,
             }
         })
         .collect()
@@ -433,9 +454,13 @@ fn diagnostic_style(
 ///
 /// Only the first (highest-severity) diagnostic per line is converted,
 /// matching the existing renderer behavior.
+/// `source_version` is the buffer version the diagnostics were computed
+/// against (from the originating refresh's `buffer_version`); stored on each
+/// produced decoration for Step-D projection.
 pub fn decorations_from_diagnostics(
     diagnostics: &[lsp_types::Diagnostic],
     rope: &Rope,
+    source_version: u64,
 ) -> Vec<Decoration> {
     use std::collections::HashMap;
 
@@ -489,6 +514,7 @@ pub fn decorations_from_diagnostics(
                 display_width,
                 style,
                 priority,
+                source_version,
             }
         })
         .collect()
@@ -515,6 +541,7 @@ mod tests {
             display_width,
             style: DecorationStyle::new(Color::Gray).with_italic(),
             priority: 0,
+            source_version: 0,
         }
     }
 
@@ -527,6 +554,7 @@ mod tests {
             display_width,
             style: DecorationStyle::new(Color::Red),
             priority: 0,
+            source_version: 0,
         }
     }
 
@@ -736,12 +764,17 @@ mod tests {
                 text: "foo".to_string(),
             }],
             &rope,
+            1,
         );
 
         // Decoration should now be at offset 8 (5 + 3)
         let decs = map.for_line(0);
         assert_eq!(decs.len(), 1);
         assert_eq!(decs[0].placement.char_offset(), 8);
+        assert_eq!(
+            decs[0].source_version, 1,
+            "adjust_for_edits should bump source_version to the new buffer version"
+        );
     }
 
     #[test]
@@ -763,6 +796,7 @@ mod tests {
                 text: "foo".to_string(),
             }],
             &rope,
+            1,
         );
 
         // Decoration should now be at offset 5 (8 - 3)
@@ -790,6 +824,7 @@ mod tests {
                 text: "x = 1".to_string(),
             }],
             &rope,
+            1,
         );
 
         // Decoration was inside deleted region — should be gone
@@ -853,11 +888,80 @@ mod tests {
                 text: "\n".to_string(),
             }],
             &rope,
+            1,
         );
 
         // Decoration should now be on line 1 (offset 6 = 5+1)
         assert!(map.for_line(0).is_empty());
         assert_eq!(map.for_line(1).len(), 1);
         assert_eq!(map.for_line(1)[0].placement.char_offset(), 6);
+    }
+
+    #[test]
+    fn decorations_from_inlay_hints_sets_source_version() {
+        let rope = Rope::from_str("let x = 1;\n");
+        let hints = vec![lsp_types::InlayHint {
+            position: lsp_types::Position::new(0, 5),
+            label: lsp_types::InlayHintLabel::String(": i32".to_string()),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: None,
+            data: None,
+        }];
+
+        let decs = decorations_from_inlay_hints(
+            &hints,
+            &rope,
+            |line_idx| {
+                if line_idx < rope.len_lines() {
+                    rope.line(line_idx)
+                        .to_string()
+                        .trim_end_matches('\n')
+                        .to_string()
+                } else {
+                    String::new()
+                }
+            },
+            42,
+        );
+
+        assert_eq!(decs.len(), 1);
+        assert_eq!(
+            decs[0].source_version, 42,
+            "hints should carry the request's buffer_version forward"
+        );
+        assert_eq!(decs[0].placement.char_offset(), 5);
+        assert!(matches!(
+            decs[0].placement,
+            DecorationPlacement::Inline { .. }
+        ));
+    }
+
+    #[test]
+    fn decorations_from_diagnostics_sets_source_version() {
+        let rope = Rope::from_str("let x = 1;\n");
+        let diags = vec![lsp_types::Diagnostic {
+            range: lsp_types::Range::new(
+                lsp_types::Position::new(0, 4),
+                lsp_types::Position::new(0, 5),
+            ),
+            severity: Some(lsp_types::DiagnosticSeverity::ERROR),
+            message: "bad".to_string(),
+            ..lsp_types::Diagnostic::default()
+        }];
+
+        let decs = decorations_from_diagnostics(&diags, &rope, 7);
+
+        assert_eq!(decs.len(), 1);
+        assert_eq!(
+            decs[0].source_version, 7,
+            "diagnostics should carry the refresh's buffer_version forward"
+        );
+        assert!(matches!(
+            decs[0].placement,
+            DecorationPlacement::EndOfLine { .. }
+        ));
     }
 }

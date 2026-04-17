@@ -148,11 +148,16 @@ impl Editor {
                 self.lsp.state.current_file_diagnostics = result.diagnostics;
                 self.lsp.state.diagnostics_file_path = Some(result.file_path);
 
-                // Build unified decorations from the new diagnostics.
+                // Build unified decorations from the new diagnostics.  The
+                // source version matches the refresh's buffer version so
+                // Step-D projection can align the diagnostic anchor to the
+                // current buffer state.
                 let rope = self.buffer().rope().clone();
+                let diag_source_version = result.buffer_version as u64;
                 let diag_decs = crate::editor::decoration::decorations_from_diagnostics(
                     &self.lsp.state.current_file_diagnostics,
                     &rope,
+                    diag_source_version,
                 );
                 self.decorations.replace_source(
                     crate::editor::decoration::DecorationSource::Diagnostic,
@@ -399,6 +404,7 @@ mod tests {
                 display_width: 9,
                 style: DecorationStyle::new(crate::color::Color::Red),
                 priority: 0,
+                source_version: 0,
             }],
             &rope,
         );

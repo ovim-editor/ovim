@@ -2043,8 +2043,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
                 text: dec.text.clone(),
                 source,
                 placement,
-                // Populated in phase-05 Step C.
-                source_version: None,
+                source_version: dec.source_version,
             }
         })
         .collect();

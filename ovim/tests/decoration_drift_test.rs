@@ -21,6 +21,7 @@ fn inlay_at(offset: usize) -> Decoration {
         display_width: 5,
         style: DecorationStyle::new(ovim_core::color::Color::Gray),
         priority: 0,
+        source_version: 0,
     }
 }
 

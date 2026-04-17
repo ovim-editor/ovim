@@ -18,6 +18,7 @@ fn hint_at(char_offset: usize, text: &str) -> Decoration {
         display_width: text.len(), // ASCII-safe for test hints
         style: DecorationStyle::new(ovim_core::color::Color::Gray).with_italic(),
         priority: 10,
+        source_version: 0,
     }
 }
 

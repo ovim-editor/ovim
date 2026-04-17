@@ -118,8 +118,9 @@ pub struct EditorSnapshot {
 /// their mental model.
 ///
 /// `source_version` is the buffer version the decoration was anchored to when
-/// it was created. `None` today — populated in phase-05 Step C, where it will
-/// enable stale-decoration projection across buffer edits.
+/// it was created (or bumped by `adjust_for_edits`).  Always populated as of
+/// phase-05 Step C; Step D adds a projection consumer that uses it to align
+/// stale decorations with the current buffer version.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DecorationInfo {
     /// 0-indexed line number, derived from `char_offset` via the rope.
@@ -134,9 +135,10 @@ pub struct DecorationInfo {
     pub source: String,
     /// Where the text is rendered relative to the buffer: `"inline"` or `"eol"`.
     pub placement: String,
-    /// Buffer version the decoration was anchored to. `None` until Step C.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source_version: Option<u64>,
+    /// Buffer version the decoration is anchored to.  Populated from the
+    /// originating LSP request's `buffer_version`, and kept current by
+    /// `adjust_for_edits` until Step E cuts over to pure projection.
+    pub source_version: u64,
 }
 
 /// Picker state information

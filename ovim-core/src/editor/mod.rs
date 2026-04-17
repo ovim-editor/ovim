@@ -1896,7 +1896,9 @@ impl Editor {
         }
         if !edits.is_empty() {
             let rope = self.buffer().rope().clone();
-            self.decorations.adjust_for_edits(&edits, &rope);
+            let new_version = self.buffer().version() as u64;
+            self.decorations
+                .adjust_for_edits(&edits, &rope, new_version);
         }
         self.add_change(change);
         true
