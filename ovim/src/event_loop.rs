@@ -142,7 +142,7 @@ async fn process_lsp_sync_and_inlay_hints(editor: &mut Editor) {
             editor.mark_dirty();
         }
         if editor.inlay_hints_refresh_needed() {
-            editor.request_inlay_hints_refresh();
+            editor.request_inlay_hints_refresh().await;
         }
     }
 }

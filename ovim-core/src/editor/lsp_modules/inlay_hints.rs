@@ -19,7 +19,13 @@ impl Editor {
     }
 
     /// Spawn a background inlay hint refresh for the current file.
-    pub fn request_inlay_hints_refresh(&mut self) {
+    ///
+    /// Async because we flush pending didChange notifications to the LSP
+    /// server first, mirroring the hover/goto pattern. Without this flush
+    /// the server may answer against a stale `lsp_sent_version` and the
+    /// reply gets dropped by the version-mismatch guard in
+    /// `poll_pending_inlay_hint_response`, producing visual stalls.
+    pub async fn request_inlay_hints_refresh(&mut self) {
         let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
             return;
         };
@@ -36,14 +42,17 @@ impl Editor {
         else {
             return;
         };
+
+        // Flush any queued didChange notifications so the `lsp_sent_version`
+        // we capture below matches what the server will actually answer
+        // about. See ensure_lsp_document_synced() for the same pattern
+        // used by hover / goto / completion.
+        self.ensure_lsp_document_synced().await;
+
         let buffer_version = self.buffer().version();
         let start_line = 0;
         let end_line = self.buffer().line_count();
         let lsp_sent_version = self.lsp.state.current_file_lsp_sent_version;
-
-        // Document sync is handled by send_lsp_changes_if_modified() earlier
-        // in the tick. The task only makes the LSP request — no debouncer
-        // interaction, avoiding races with the main event loop.
 
         let file_path_for_task = file_path.clone();
         let language_id = language_id.to_string();

@@ -122,16 +122,33 @@ impl<T> Default for Slot<T> {
 /// it can never be "consumed" — calling `invalidate()` ten times while
 /// a request is in flight means `is_stale()` stays true until a new
 /// request fires, no matter how many times you check.
+///
+/// ## Debounce semantics (idle-trigger)
+///
+/// The debounce window measures idleness since the *last invalidation*,
+/// not since the last fire. Every call to `invalidate()` pushes
+/// `last_invalidated` forward to `Instant::now()`, so continuous
+/// typing keeps deferring the next fire. `needs_refresh()` returns
+/// true only once invalidations have gone quiet for the debounce
+/// duration — i.e. the user paused. This replaces the older
+/// "debounce-from-last-fire" semantics where a fire during continuous
+/// typing would queue another fire exactly `debounce` later, even if
+/// the user was still actively editing.
 pub struct TrackedSlot<T> {
     slot: Slot<T>,
     /// Bumped by `invalidate()`. Monotonically increasing.
     pub(crate) generation: u64,
     /// The generation that was current when `fire()` was last called.
     pub(crate) fired_at: u64,
-    /// Optional minimum interval between fires (debounce).
+    /// Optional minimum idle interval since the last invalidation before
+    /// `needs_refresh()` returns true.
     debounce: Option<Duration>,
-    /// When `fire()` was last called.
+    /// When `fire()` was last called. Retained for diagnostics / tests.
     pub(crate) last_fired: Option<Instant>,
+    /// When `invalidate()` was last called. Used by `needs_refresh()` to
+    /// implement idle-trigger semantics: fires happen after typing pauses,
+    /// not during continuous invalidation.
+    pub(crate) last_invalidated: Option<Instant>,
 }
 
 impl<T> TrackedSlot<T> {
@@ -142,10 +159,12 @@ impl<T> TrackedSlot<T> {
             fired_at: 0,
             debounce: None,
             last_fired: None,
+            last_invalidated: None,
         }
     }
 
-    /// Create with a minimum interval between fires.
+    /// Create with a minimum idle interval since the last invalidation
+    /// before `needs_refresh()` returns true.
     pub fn with_debounce(debounce: Duration) -> Self {
         Self {
             debounce: Some(debounce),
@@ -155,8 +174,13 @@ impl<T> TrackedSlot<T> {
 
     /// Mark the current result as stale. Cheap, idempotent-ish, never
     /// loses information — call it as often as you like.
+    ///
+    /// Also bumps `last_invalidated` to now so the debounce window
+    /// restarts. Rapid-fire invalidations therefore stay debounced
+    /// until the caller goes idle for at least `debounce`.
     pub fn invalidate(&mut self) {
         self.generation += 1;
+        self.last_invalidated = Some(Instant::now());
     }
 
     /// Has `invalidate()` been called since the last `fire()`?
@@ -164,12 +188,27 @@ impl<T> TrackedSlot<T> {
         self.generation > self.fired_at
     }
 
-    /// Is stale AND not within the debounce window?
+    /// Is stale AND idle for at least the debounce window since the
+    /// last `invalidate()`?
+    ///
+    /// Under idle-trigger semantics the clock starts at the most
+    /// recent `invalidate()`, not at the last `fire()`. Continuous
+    /// invalidations (e.g. per-keystroke) keep pushing the deadline
+    /// forward so refreshes only fire when the caller actually pauses.
+    ///
+    /// Cold start exception: if we have never fired, debounce is
+    /// bypassed so initial data (e.g. hints on file open) shows up
+    /// without a perceptible delay. The debounce only kicks in once
+    /// there is a prior fire to protect against thrashing.
     pub fn needs_refresh(&self) -> bool {
         if !self.is_stale() {
             return false;
         }
-        if let (Some(debounce), Some(last)) = (self.debounce, self.last_fired) {
+        // Cold start: never fired → no thrashing risk yet, fire now.
+        if self.last_fired.is_none() {
+            return true;
+        }
+        if let (Some(debounce), Some(last)) = (self.debounce, self.last_invalidated) {
             if last.elapsed() < debounce {
                 return false;
             }
@@ -339,6 +378,119 @@ mod tests {
             slot.generation,
             slot.fired_at + 1000,
             "each invalidate bumps generation — no coalescing"
+        );
+    }
+
+    // -------------------------------------------------------------------
+    // Sprint 2 — Idle-trigger semantics.
+    //
+    // The debounce window is anchored to the last `invalidate()` call,
+    // not the last `fire()`. Rapid-fire invalidations therefore keep
+    // pushing the deadline forward: `needs_refresh()` only returns true
+    // once the caller goes quiet for at least `debounce`.
+    // -------------------------------------------------------------------
+
+    /// Signal 4: simulate rapid invalidation during a request's flight.
+    ///
+    /// Before the fix (`needs_refresh` debounced from `last_fired`), a
+    /// refresh would fire `debounce` after the previous fire — even if
+    /// the user was still actively editing and the captured
+    /// `lsp_sent_version` was guaranteed to be behind by the time the
+    /// server answered. That reply then hit the version-mismatch drop
+    /// path in `poll_pending_inlay_hint_response`.
+    ///
+    /// After the fix, `needs_refresh` waits for an idle window after
+    /// the last invalidation. Continuous invalidation keeps the slot
+    /// quiet, so no stale-by-design request is ever spawned.
+    #[test]
+    fn continuous_invalidation_suppresses_refresh_under_idle_semantics() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::with_debounce(Duration::from_millis(100));
+
+        // First invalidate + fire (simulates the initial refresh).
+        slot.invalidate();
+        simulate_fire(&mut slot);
+
+        // Simulate a user typing continuously: five invalidations spread
+        // across ~200ms, with a small gap between each.
+        for _ in 0..5 {
+            slot.invalidate();
+            std::thread::sleep(Duration::from_millis(40));
+            // Each tick of the event loop asks whether we should refresh.
+            // Because the last invalidation is very recent, we must NOT.
+            assert!(
+                !slot.needs_refresh(),
+                "needs_refresh must stay false while invalidations are still landing"
+            );
+        }
+
+        // Now the user pauses. After the debounce window elapses, we
+        // may fire — the server is idle, buffer is quiet, safe to ask.
+        std::thread::sleep(Duration::from_millis(120));
+        assert!(
+            slot.needs_refresh(),
+            "needs_refresh must become true once invalidations go quiet"
+        );
+    }
+
+    /// Direct framing of the idle-trigger invariant:
+    /// invalidate → fire → invalidate-during-flight → the next refresh
+    /// happens `debounce` after the second invalidate, not `debounce`
+    /// after the fire.
+    #[test]
+    fn needs_refresh_measures_from_last_invalidate_not_last_fire() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::with_debounce(Duration::from_millis(100));
+
+        slot.invalidate();
+        simulate_fire(&mut slot);
+
+        // Let the post-fire clock run past the debounce window without
+        // any further invalidation. Because the slot isn't stale, no
+        // refresh is needed — independent of the timer.
+        std::thread::sleep(Duration::from_millis(110));
+        assert!(!slot.is_stale());
+        assert!(!slot.needs_refresh());
+
+        // Invalidate now. We're past the fire debounce, so under the
+        // old "debounce-from-fire" rule this would trip needs_refresh
+        // immediately. Under idle-trigger it should wait for the
+        // debounce window anchored on *this* invalidation.
+        slot.invalidate();
+        assert!(slot.is_stale());
+        assert!(
+            !slot.needs_refresh(),
+            "needs_refresh must debounce from the most recent invalidate"
+        );
+
+        std::thread::sleep(Duration::from_millis(110));
+        assert!(
+            slot.needs_refresh(),
+            "needs_refresh must become true after the idle window since last invalidate"
+        );
+    }
+
+    /// Bonus invariant: the stale-response drop path still exists for
+    /// genuinely stale responses (the one in `lsp_integration.rs` guards
+    /// against `lsp_version < current_file_lsp_sent_version`). What the
+    /// fix changes is that normal typing no longer *produces* stale
+    /// responses, so the drop path should essentially never fire during
+    /// regular editing. Here we simply verify the state machine still
+    /// surfaces staleness after a missed fire window — the drop path's
+    /// invariant (stale responses are re-invalidated for retry) is
+    /// unaffected because `cancel_and_invalidate` still bumps generation.
+    #[test]
+    fn cancel_and_invalidate_still_drives_retry() {
+        let mut slot: TrackedSlot<String> = TrackedSlot::with_debounce(Duration::from_millis(0));
+        slot.invalidate();
+        simulate_fire(&mut slot);
+        assert!(!slot.is_stale());
+
+        // Simulate: server answered but we dropped the result (wrong
+        // version). That path calls `invalidate()` on the slot.
+        slot.cancel_and_invalidate();
+        assert!(slot.is_stale());
+        assert!(
+            slot.needs_refresh(),
+            "with 0ms debounce, a drop-path invalidate must allow an immediate retry"
         );
     }
 
@@ -597,7 +749,10 @@ impl Default for LspSlots {
             goto_type_definition: Slot::new(),
             hover: Slot::new(),
             completion: Slot::new(),
-            inlay_hints: TrackedSlot::with_debounce(Duration::from_millis(500)),
+            // Match CHANGE_DEBOUNCE_MS (150ms) so the first refresh fires
+            // promptly after the last edit lands on the server rather
+            // than waiting 350ms longer than necessary.
+            inlay_hints: TrackedSlot::with_debounce(Duration::from_millis(150)),
             diagnostics: TrackedSlot::new(),
             format: Slot::new(),
             references: Slot::new(),
