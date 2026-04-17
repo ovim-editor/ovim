@@ -69,7 +69,7 @@ regex = "1.10"
 minijinja = "2.0"
 jsonschema = "0.28"
 # lua/
-mlua = { version = "0.9", features = ["luajit", "async", "serialize"], optional = true }
+mlua = { version = "0.9", features = ["lua54", "vendored", "async", "serialize"], optional = true }
 # editor/
 ignore = "0.4"
 arboard = { version = "3.4", features = ["wayland-data-control"] }
