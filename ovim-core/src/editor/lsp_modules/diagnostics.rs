@@ -148,12 +148,16 @@ impl Editor {
                 self.lsp.state.current_file_diagnostics = result.diagnostics;
                 self.lsp.state.diagnostics_file_path = Some(result.file_path);
 
-                // Build unified decorations from the new diagnostics.  The
-                // source version matches the refresh's buffer version so
-                // Step-D projection can align the diagnostic anchor to the
-                // current buffer state.
+                // Build unified decorations from the new diagnostics.  Step E
+                // anchors each decoration to the *current* buffer version at
+                // placement time (Resolution A from the phase-05 plan): the
+                // stored `char_offset` is computed against the current rope,
+                // so `edits_since(current_version)` is empty and projection
+                // trivially yields the stored offset. Edits that land after
+                // placement fill the edit log and the projection replays them
+                // forward at render time.
                 let rope = self.buffer().rope().clone();
-                let diag_source_version = result.buffer_version as u64;
+                let diag_source_version = self.buffer().version() as u64;
                 let diag_decs = crate::editor::decoration::decorations_from_diagnostics(
                     &self.lsp.state.current_file_diagnostics,
                     &rope,

@@ -1,5 +1,6 @@
 use crate::color::Color;
 use crate::edit::Edit;
+use crate::edit_log::EditLog;
 use ropey::Rope;
 use std::collections::BTreeMap;
 
@@ -376,6 +377,147 @@ impl DecorationMap {
                 _ => None,
             })
             .sum()
+    }
+
+    // -----------------------------------------------------------------
+    // Step-E projected accessors
+    //
+    // The renderer routes through these instead of the raw accessors: they
+    // compute each decoration's live char offset by projecting its stored
+    // `char_offset` forward through `edit_log.edits_since(source_version)`
+    // before filtering by line.
+    //
+    // In steady state — with the accumulator still running in parallel —
+    // `source_version` is bumped to the post-edit buffer version every time
+    // the accumulator adjusts `char_offset`, so `edits_since(source_version)`
+    // is empty and the projected offset equals the stored one. The projection
+    // is still the source of truth for rendering: when Step F removes the
+    // accumulator, these methods become the only path and nothing else needs
+    // to change.
+    //
+    // The `rope` argument on `..._projected` methods is always the **current**
+    // rope (post-edit); line indices are derived by calling `char_to_line` on
+    // the projected offset so a decoration whose anchor has crossed a line
+    // boundary shows up on the correct line without mutation.
+    // -----------------------------------------------------------------
+
+    /// Project a single decoration's stored offset through the edit log.
+    ///
+    /// Returns `Some(offset)` if projection succeeds, `None` if a delete
+    /// engulfed the anchor since `source_version`. If the log has evicted the
+    /// history for that version we fall back to the stored offset — the
+    /// decoration will be slightly wrong until a fresh LSP response lands,
+    /// but this matches the existing "stale is better than blank" policy.
+    fn project_decoration(dec: &Decoration, log: &EditLog) -> Option<usize> {
+        let stored = dec.placement.char_offset();
+        match log.edits_since(dec.source_version) {
+            Some(edits) => project_offset(stored, &edits),
+            None => Some(stored),
+        }
+    }
+
+    /// Projected analogue of [`for_line`]. Returns owned `Decoration`s whose
+    /// `placement` has the projected char offset applied; the line lookup is
+    /// done against the **projected** offset using the current rope.
+    ///
+    /// Decorations whose anchors were engulfed by a delete since their
+    /// `source_version` are filtered out.
+    pub fn for_line_projected(&self, line: usize, rope: &Rope, log: &EditLog) -> Vec<Decoration> {
+        let mut out = Vec::new();
+        for (_, dec) in self.iter_all() {
+            let Some(projected) = Self::project_decoration(dec, log) else {
+                continue;
+            };
+            let projected_line = if projected <= rope.len_chars() {
+                rope.char_to_line(projected)
+            } else {
+                rope.char_to_line(rope.len_chars())
+            };
+            if projected_line == line {
+                let mut cloned = dec.clone();
+                match &mut cloned.placement {
+                    DecorationPlacement::Inline { char_offset }
+                    | DecorationPlacement::EndOfLine { char_offset } => {
+                        *char_offset = projected;
+                    }
+                }
+                out.push(cloned);
+            }
+        }
+        // Preserve the same sort order as the stored map.
+        out.sort_by(|a, b| {
+            let pos_a = match &a.placement {
+                DecorationPlacement::Inline { char_offset } => (0, *char_offset),
+                DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
+            };
+            let pos_b = match &b.placement {
+                DecorationPlacement::Inline { char_offset } => (0, *char_offset),
+                DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
+            };
+            pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
+        });
+        out
+    }
+
+    /// Projected analogue of [`inline_decorations_for_line`]. Returns
+    /// `(char_idx_in_line, display_width)` pairs for inline decorations on the
+    /// given line, computed from projected offsets.
+    pub fn inline_decorations_for_line_projected(
+        &self,
+        line: usize,
+        rope: &Rope,
+        log: &EditLog,
+    ) -> Vec<(usize, usize)> {
+        let line_start = rope.line_to_char(line);
+        self.for_line_projected(line, rope, log)
+            .into_iter()
+            .filter_map(|d| match d.placement {
+                DecorationPlacement::Inline { char_offset } => {
+                    Some((char_offset.saturating_sub(line_start), d.display_width))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Projected analogue of [`inline_width_before`]. Sums the display width
+    /// of inline decorations whose projected char_idx is `<= char_idx`.
+    pub fn inline_width_before_projected(
+        &self,
+        line: usize,
+        char_idx: usize,
+        rope: &Rope,
+        log: &EditLog,
+    ) -> usize {
+        let line_start = rope.line_to_char(line);
+        self.for_line_projected(line, rope, log)
+            .into_iter()
+            .filter_map(|d| match d.placement {
+                DecorationPlacement::Inline { char_offset } => {
+                    let idx = char_offset.saturating_sub(line_start);
+                    if idx <= char_idx {
+                        Some(d.display_width)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .sum()
+    }
+
+    /// Projected analogue of [`eol_for_line`]. Returns owned clones so the
+    /// renderer can consume them like the stored slice.
+    pub fn eol_for_line_projected(
+        &self,
+        line: usize,
+        rope: &Rope,
+        log: &EditLog,
+    ) -> Vec<Decoration> {
+        self.for_line_projected(line, rope, log)
+            .into_iter()
+            .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
+            .collect()
     }
 
     /// Clear all decorations (e.g., on buffer switch).

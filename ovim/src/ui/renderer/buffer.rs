@@ -1388,11 +1388,18 @@ pub fn render_buffer(
                     let mut cached_line = cached_line.clone();
                     // Cached line has inline decorations but needs
                     // EOL decorations (diagnostics) applied fresh.
-                    let eol_decs: Vec<&Decoration> = if show_eol_decorations {
-                        editor.decorations.eol_for_line(line_idx)
+                    // Step E: route through projection so diagnostics anchored
+                    // before the current edit still render in the right spot.
+                    let projected_eol_owned: Vec<Decoration> = if show_eol_decorations {
+                        editor.decorations.eol_for_line_projected(
+                            line_idx,
+                            editor.buffer().rope(),
+                            editor.buffer().edit_log(),
+                        )
                     } else {
                         Vec::new()
                     };
+                    let eol_decs: Vec<&Decoration> = projected_eol_owned.iter().collect();
 
                     if has_wrap {
                         let mut visual_rows = split_line_into_rows(cached_line, text_width);
@@ -1890,13 +1897,23 @@ pub fn render_buffer(
                 // decorations change.  Storing the decorated line ensures
                 // cache-hit frames render the same decorations that cursor
                 // positioning (inline_width_before) accounts for.
-                let line_decorations = editor.decorations.for_line(line_idx);
-                let inline_decs: Vec<&Decoration> = line_decorations
+                //
+                // Step E: route through `for_line_projected` so we read the
+                // projected offsets. In steady state (accumulator keeps
+                // `source_version` current) this yields the same result as
+                // the stored offsets; when Step F removes the accumulator the
+                // projection becomes the sole source of truth.
+                let line_decorations_owned = editor.decorations.for_line_projected(
+                    line_idx,
+                    editor.buffer().rope(),
+                    editor.buffer().edit_log(),
+                );
+                let inline_decs: Vec<&Decoration> = line_decorations_owned
                     .iter()
                     .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
                     .collect();
                 let eol_decs: Vec<&Decoration> = if show_eol_decorations {
-                    line_decorations
+                    line_decorations_owned
                         .iter()
                         .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
                         .collect()
@@ -2186,12 +2203,15 @@ pub fn render_diagnostic_virtual_text_overlay(
 
     while line_idx < line_count && visual_rows_used < visible_rows {
         let first_row_screen = visual_rows_used;
-        let eol_decs: Vec<&Decoration> = editor
+        // Step E: read through projection so anchors survive buffer edits
+        // between the LSP refresh and the current render tick.
+        let eol_decs_owned: Vec<Decoration> = editor
             .decorations
-            .for_line(line_idx)
-            .iter()
+            .for_line_projected(line_idx, editor.buffer().rope(), editor.buffer().edit_log())
+            .into_iter()
             .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
             .collect();
+        let eol_decs: Vec<&Decoration> = eol_decs_owned.iter().collect();
 
         let line_text_raw = if line_idx < rope.len_lines() {
             rope.line(line_idx).to_string()

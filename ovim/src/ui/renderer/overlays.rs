@@ -99,14 +99,17 @@ pub fn render_hover_window(
     )
     .0;
     let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
-    let inline_offset = editor
-        .decorations
-        .inline_width_before(cursor_line, char_col, rope);
+    let edit_log = editor.buffer().edit_log();
+    let inline_offset =
+        editor
+            .decorations
+            .inline_width_before_projected(cursor_line, char_col, rope, edit_log);
     let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
-    let inline_widths = editor
-        .decorations
-        .inline_decorations_for_line(cursor_line, rope);
+    let inline_widths =
+        editor
+            .decorations
+            .inline_decorations_for_line_projected(cursor_line, rope, edit_log);
 
     let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
         if let Some(wrap_map) = editor.wrap_map() {
@@ -296,14 +299,17 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
     )
     .0;
     let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
-    let inline_offset = editor
-        .decorations
-        .inline_width_before(cursor_line, char_col, rope);
+    let edit_log = editor.buffer().edit_log();
+    let inline_offset =
+        editor
+            .decorations
+            .inline_width_before_projected(cursor_line, char_col, rope, edit_log);
     let display_col = base_display_col + inline_offset;
     let text_width = layout.text_width;
-    let inline_widths = editor
-        .decorations
-        .inline_decorations_for_line(cursor_line, rope);
+    let inline_widths =
+        editor
+            .decorations
+            .inline_decorations_for_line_projected(cursor_line, rope, edit_log);
 
     let (screen_line, visual_col) = if editor.options.wrap && text_width > 0 {
         if let Some(wrap_map) = editor.wrap_map() {

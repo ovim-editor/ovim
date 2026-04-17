@@ -884,9 +884,15 @@ impl Editor {
             }
         };
 
+        // Step E: wrap width calculation reads projected decoration widths so
+        // wrap points match what the renderer will draw.  The accumulator
+        // still mutates stored offsets in parallel; with `source_version` set
+        // to the current buffer version at placement, projection is a no-op
+        // in steady state and yields identical results.
+        let edit_log = self.buffer().edit_log().clone();
         let inline_widths = |line_idx: usize| -> Vec<(usize, usize)> {
             self.decorations
-                .inline_decorations_for_line(line_idx, &rope)
+                .inline_decorations_for_line_projected(line_idx, &rope, &edit_log)
         };
 
         if let Some(map) = self.viewport.wrap_map.as_mut() {
@@ -1099,10 +1105,11 @@ impl Editor {
             // this, h_offset is set from raw text only, but the renderer adds
             // decoration widths to the cursor, causing it to float right.
             raw_col
-                + self.decorations.inline_width_before(
+                + self.decorations.inline_width_before_projected(
                     cursor_line,
                     cursor_char_col,
                     self.buffer().rope(),
+                    self.buffer().edit_log(),
                 )
         };
         let wrap = self.options.wrap;
@@ -1215,13 +1222,17 @@ impl Editor {
         let cursor_display_col =
             crate::display::char_col_to_display_col(&line_text, cursor_char_col.0, tab_width);
         let rope = self.buffer().rope();
-        let cursor_inline_widths = self
-            .decorations
-            .inline_decorations_for_line(cursor_line, rope);
+        let edit_log = self.buffer().edit_log();
+        let cursor_inline_widths =
+            self.decorations
+                .inline_decorations_for_line_projected(cursor_line, rope, edit_log);
         let cursor_display_col = cursor_display_col
-            + self
-                .decorations
-                .inline_width_before(cursor_line, cursor_char_col.0, rope);
+            + self.decorations.inline_width_before_projected(
+                cursor_line,
+                cursor_char_col.0,
+                rope,
+                edit_log,
+            );
         let cursor_subline = Self::cursor_subline_in_wrapped_line(
             &line_text,
             cursor_display_col,

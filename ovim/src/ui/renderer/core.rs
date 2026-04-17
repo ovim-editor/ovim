@@ -601,10 +601,12 @@ fn set_cursor_position(
         } else {
             char_col
         };
-        let inline_offset =
-            editor
-                .decorations
-                .inline_width_before(cursor_line, char_col, editor.buffer().rope());
+        let inline_offset = editor.decorations.inline_width_before_projected(
+            cursor_line,
+            char_col,
+            editor.buffer().rope(),
+            editor.buffer().edit_log(),
+        );
         let display_col = expanded_col + inline_offset;
 
         let buffer_area = layout.buffer_area;
@@ -616,9 +618,11 @@ fn set_cursor_position(
             // handles wide chars pushed to next row, variable-width tabs at
             // row boundaries, and decorations spanning multiple visual rows.
             let rope = editor.buffer().rope();
-            let inline_widths = editor
-                .decorations
-                .inline_decorations_for_line(cursor_line, rope);
+            let inline_widths = editor.decorations.inline_decorations_for_line_projected(
+                cursor_line,
+                rope,
+                editor.buffer().edit_log(),
+            );
 
             let (abs_visual_row, visual_col) = if let Some(wrap_map) = editor.wrap_map() {
                 wrap_map.cursor_to_visual_with_decorations(

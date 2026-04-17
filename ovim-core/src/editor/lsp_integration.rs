@@ -959,12 +959,16 @@ impl Editor {
                 self.lsp.state.current_file_lsp_version = result.request_key.lsp_version;
                 self.lsp.state.current_file_lsp_sent_version = result.request_key.lsp_version;
                 self.lsp.state.inlay_hints = result.hints;
-                // Build unified decorations from the new hints.  The source
-                // version is the buffer version the LSP computed against; we
-                // preserve it verbatim so Step-D projection knows how far the
-                // buffer has advanced since the hints were produced.
+                // Build unified decorations from the new hints.  Step E
+                // anchors each decoration to the *current* buffer version at
+                // placement time (Resolution A from the phase-05 plan): the
+                // stored `char_offset` is already computed against the current
+                // rope, so `edits_since(current_version)` is empty at
+                // placement and projection yields the stored offset as-is.
+                // Future edits will fill the edit log, and projection will
+                // replay them forward. See `project_decoration` for details.
                 let rope = self.buffer().rope().clone();
-                let hint_source_version = result.buffer_version as u64;
+                let hint_source_version = self.buffer().version() as u64;
                 let hint_decs = crate::editor::decoration::decorations_from_inlay_hints(
                     &self.lsp.state.inlay_hints,
                     &rope,
