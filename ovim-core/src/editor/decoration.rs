@@ -113,6 +113,65 @@ pub struct Decoration {
     pub source_version: u64,
 }
 
+/// Project a decoration's source-version char offset forward through a sequence
+/// of edits, yielding the offset it should occupy after those edits are applied.
+///
+/// This is the pure, stateless twin of [`DecorationMap::adjust_for_edits`]: same
+/// arithmetic, same semantics, no mutation. The Phase-05 roadmap will eventually
+/// have the renderer call `project_offset` on each frame instead of the caller
+/// mutating `char_offset` in place. Step D introduces the function and validates
+/// it against the accumulator. Step E switches consumers over.
+///
+/// # Semantics
+///
+/// For each edit, the offset is transformed as follows:
+///
+/// - `Edit::Insert { offset: X, text }` of char-length `N`:
+///   - if `pos >= X`, the anchor was at or after the insertion point — shift forward by `N`.
+///   - otherwise unchanged.
+///     Note: `pos == X` shifts forward (inclusive-before semantics). This
+///     matches [`DecorationMap::adjust_for_edits`] exactly.
+/// - `Edit::Delete { offset: X, text }` of char-length `N`, with `end = X + N`:
+///   - if `pos >= end`, the anchor was past the deleted region — shift back by `N`.
+///   - if `X < pos < end`, the anchor sat strictly inside the deleted region — return `None`
+///     (the decoration has been eaten by the deletion).
+///   - otherwise (`pos <= X`) unchanged.
+///
+/// An empty edit slice is a no-op: returns `Some(source_offset)`.
+///
+/// # Parity with the accumulator
+///
+/// The transform above is the same one [`DecorationMap::adjust_for_edits`]
+/// applies in-place. The unit tests in this module and the integration test at
+/// `ovim/tests/decoration_projection_test.rs` verify parity across interactive
+/// scenarios (insert-before, insert-after, delete-before, delete-over, undo,
+/// rapid typing). Any divergence is a bug in one of the two paths.
+pub fn project_offset(source_offset: usize, edits: &[&Edit]) -> Option<usize> {
+    let mut pos = source_offset;
+    for edit in edits {
+        match edit {
+            Edit::Insert { offset, text } => {
+                let len = text.chars().count();
+                if pos >= *offset {
+                    pos += len;
+                }
+            }
+            Edit::Delete { offset, text } => {
+                let len = text.chars().count();
+                let end = *offset + len;
+                if pos >= end {
+                    pos -= len;
+                } else if pos > *offset {
+                    // Strictly inside the deleted region — decoration is lost.
+                    return None;
+                }
+                // pos <= offset: unchanged (anchor lived before the delete).
+            }
+        }
+    }
+    Some(pos)
+}
+
 /// Per-line decoration index for efficient lookup during rendering.
 ///
 /// Decorations are grouped by line and sorted by position within each line.
@@ -937,6 +996,198 @@ mod tests {
             decs[0].placement,
             DecorationPlacement::Inline { .. }
         ));
+    }
+
+    // -----------------------------------------------------------------
+    // project_offset — pure projection, parity with adjust_for_edits
+    // -----------------------------------------------------------------
+
+    fn ins(offset: usize, text: &str) -> Edit {
+        Edit::Insert {
+            offset,
+            text: text.to_string(),
+        }
+    }
+
+    fn del(offset: usize, text: &str) -> Edit {
+        Edit::Delete {
+            offset,
+            text: text.to_string(),
+        }
+    }
+
+    fn refs(edits: &[Edit]) -> Vec<&Edit> {
+        edits.iter().collect()
+    }
+
+    #[test]
+    fn project_offset_empty_edits_is_identity() {
+        assert_eq!(project_offset(5, &[]), Some(5));
+        assert_eq!(project_offset(0, &[]), Some(0));
+        assert_eq!(project_offset(usize::MAX / 2, &[]), Some(usize::MAX / 2));
+    }
+
+    #[test]
+    fn project_offset_insert_before_shifts_forward() {
+        let edits = [ins(0, "abc")];
+        // Anchor at 5, insert 3 chars at 0 → anchor moves to 8.
+        assert_eq!(project_offset(5, &refs(&edits)), Some(8));
+    }
+
+    #[test]
+    fn project_offset_insert_after_anchor_unchanged() {
+        let edits = [ins(10, "abc")];
+        // Anchor at 5, insert at 10 (strictly after) → unchanged.
+        assert_eq!(project_offset(5, &refs(&edits)), Some(5));
+    }
+
+    #[test]
+    fn project_offset_insert_at_anchor_shifts_forward() {
+        // Inclusive-before semantics: insertion at the anchor offset shifts
+        // the anchor forward. This matches `adjust_for_edits` (`off >= offset`).
+        let edits = [ins(5, "X")];
+        assert_eq!(project_offset(5, &refs(&edits)), Some(6));
+    }
+
+    #[test]
+    fn project_offset_delete_before_shifts_back() {
+        let edits = [del(0, "abc")];
+        // Anchor at 10, delete 3 chars from [0, 3) → anchor moves to 7.
+        assert_eq!(project_offset(10, &refs(&edits)), Some(7));
+    }
+
+    #[test]
+    fn project_offset_delete_after_anchor_unchanged() {
+        let edits = [del(20, "abc")];
+        // Anchor at 10, delete at 20 → unchanged.
+        assert_eq!(project_offset(10, &refs(&edits)), Some(10));
+    }
+
+    #[test]
+    fn project_offset_delete_strictly_inside_returns_none() {
+        // Delete [4, 9) — anchor at 5, 6, 7, 8 is strictly inside → None.
+        let edits = [del(4, "x = 1")];
+        assert_eq!(project_offset(5, &refs(&edits)), None);
+        assert_eq!(project_offset(6, &refs(&edits)), None);
+        assert_eq!(project_offset(8, &refs(&edits)), None);
+    }
+
+    #[test]
+    fn project_offset_delete_at_start_boundary_unchanged() {
+        // Delete [4, 9) — anchor at 4 (equal to start) is treated as "before
+        // the delete" and kept unchanged, matching adjust_for_edits' branch
+        // ordering (pos >= end false, pos > offset false → else branch).
+        let edits = [del(4, "x = 1")];
+        assert_eq!(project_offset(4, &refs(&edits)), Some(4));
+    }
+
+    #[test]
+    fn project_offset_delete_at_end_boundary_shifts_back() {
+        // Delete [4, 9) — anchor at 9 (equal to end) passes the `>= end`
+        // branch and shifts back by the delete length.
+        let edits = [del(4, "x = 1")];
+        assert_eq!(project_offset(9, &refs(&edits)), Some(4));
+    }
+
+    #[test]
+    fn project_offset_multi_edit_composes_left_to_right() {
+        // Anchor at 10.
+        // 1. Insert "ab" at 0 → anchor at 12.
+        // 2. Delete "xy" at [5, 7) → anchor at 12 (past end, shift back by 2) = 10.
+        // 3. Insert "c" at 10 → anchor at 11 (inclusive-before).
+        let edits = [ins(0, "ab"), del(5, "xy"), ins(10, "c")];
+        assert_eq!(project_offset(10, &refs(&edits)), Some(11));
+    }
+
+    #[test]
+    fn project_offset_multi_edit_drops_when_later_delete_engulfs() {
+        // Anchor at 5. First edit leaves it there; second deletes [3, 8) which
+        // engulfs it.
+        let edits = [ins(20, "tail"), del(3, "abcde")];
+        assert_eq!(project_offset(5, &refs(&edits)), None);
+    }
+
+    #[test]
+    fn project_offset_matches_adjust_for_edits_on_insert() {
+        // Build a decoration, run adjust_for_edits, and verify project_offset
+        // produces the same offset starting from the pre-edit source offset.
+        let mut rope = Rope::from_str("let x = 1;\n");
+        let mut map = DecorationMap::new();
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        let source_offset = 5usize;
+        let edits = vec![Edit::Insert {
+            offset: 0,
+            text: "foo".to_string(),
+        }];
+
+        // Apply to the rope and the accumulator.
+        rope.insert(0, "foo");
+        map.adjust_for_edits(&edits, &rope, 1);
+
+        let accumulator_offset = map.for_line(0)[0].placement.char_offset();
+        let projected = project_offset(source_offset, &refs(&edits)).expect("projection survives");
+        assert_eq!(
+            projected, accumulator_offset,
+            "projection must match accumulator for a forward insert"
+        );
+    }
+
+    #[test]
+    fn project_offset_matches_adjust_for_edits_on_delete_before() {
+        let mut rope = Rope::from_str("foobar = 1;\n");
+        let mut map = DecorationMap::new();
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(8, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        let source_offset = 8usize;
+        let edits = vec![Edit::Delete {
+            offset: 0,
+            text: "foo".to_string(),
+        }];
+
+        rope.remove(0..3);
+        map.adjust_for_edits(&edits, &rope, 1);
+
+        let accumulator_offset = map.for_line(0)[0].placement.char_offset();
+        let projected = project_offset(source_offset, &refs(&edits)).expect("projection survives");
+        assert_eq!(projected, accumulator_offset);
+    }
+
+    #[test]
+    fn project_offset_matches_adjust_for_edits_on_delete_over() {
+        // Accumulator drops a decoration whose anchor sits strictly inside the
+        // deleted region; projection should return None for the same offset.
+        let mut rope = Rope::from_str("let x = 1;\n");
+        let mut map = DecorationMap::new();
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+
+        let source_offset = 5usize;
+        let edits = vec![Edit::Delete {
+            offset: 4,
+            text: "x = 1".to_string(),
+        }];
+
+        rope.remove(4..9);
+        map.adjust_for_edits(&edits, &rope, 1);
+
+        assert!(map.is_empty(), "accumulator dropped the decoration");
+        assert_eq!(
+            project_offset(source_offset, &refs(&edits)),
+            None,
+            "projection agrees: decoration was engulfed"
+        );
     }
 
     #[test]
