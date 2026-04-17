@@ -251,7 +251,10 @@ impl Buffer {
         self.code_block_cache = None;
     }
 
-    /// Replaces the entire buffer content
+    /// Replaces the entire buffer content.
+    ///
+    /// Clears the edit log via `reset_derived_state`: prior entries reference
+    /// offsets into the old rope and must not be replayed.
     pub fn replace_all(&mut self, content: &str) {
         self.rope = ropey::Rope::from_str(content);
         self.modified = true;

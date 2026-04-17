@@ -13,6 +13,7 @@ pub use line_ending::LineEnding;
 use crate::ai::BufferLock;
 use crate::change::ChangeManager;
 use crate::edit::Edit;
+use crate::edit_log::EditLog;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
 use crate::unicode::{CharCol, GraphemeCol};
@@ -78,6 +79,11 @@ pub struct Buffer {
     /// When Some, insert_text_at/delete_range append Edit records here.
     /// Used by `record()` to capture buffer mutations.
     recording: Option<Vec<Edit>>,
+    /// Ring buffer of recent edit groups keyed by post-edit `version`.
+    /// Populated at the close of every `record()` session whose edit list
+    /// is non-empty. Consumers anchor to a specific `version` and call
+    /// `edit_log.edits_since(v)` to replay deltas onto stale positions.
+    edit_log: EditLog,
     /// AI-edit locks in absolute char offsets [start_char, end_char)
     ai_locks: Vec<BufferLock>,
     /// True if the last attempted edit was blocked by an AI lock.
@@ -112,6 +118,7 @@ impl Buffer {
             version: 0,
             code_block_cache: None,
             recording: None,
+            edit_log: EditLog::new(),
             ai_locks: Vec::new(),
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
@@ -208,6 +215,7 @@ impl Buffer {
             version: 0,
             code_block_cache: None,
             recording: None,
+            edit_log: EditLog::new(),
             ai_locks: Vec::new(),
             ai_lock_blocked: false,
             ai_lock_bypass_depth: 0,
@@ -560,6 +568,10 @@ impl Buffer {
     /// Recording is opt-in: existing code that doesn't call `record()` is unaffected.
     /// Nested `record()` calls are not supported — the inner call will overwrite the
     /// outer recording. This is intentional for now; nesting isn't needed yet.
+    ///
+    /// On session close, if any edits were captured, a single
+    /// `(post_version, edits)` entry is appended to `edit_log` so downstream
+    /// projections can replay the delta.
     pub fn record<F, R>(&mut self, f: F) -> (R, Vec<Edit>)
     where
         F: FnOnce(&mut Self) -> R,
@@ -571,12 +583,29 @@ impl Buffer {
         self.recording = Some(Vec::new());
         let result = f(self);
         let edits = self.recording.take().unwrap_or_default();
+        if !edits.is_empty() {
+            // `self.version` has been bumped once per edit inside the closure.
+            // Capture the post-edit version as the entry's key.
+            self.edit_log.push(self.version as u64, edits.clone());
+        }
         (result, edits)
     }
 
     /// Returns whether the buffer is currently recording edits.
     pub fn is_recording(&self) -> bool {
         self.recording.is_some()
+    }
+
+    /// Returns a reference to the ring of recent edit groups.
+    pub fn edit_log(&self) -> &EditLog {
+        &self.edit_log
+    }
+
+    /// Returns a mutable reference to the edit-log ring. Callers that bypass
+    /// `record()` and mutate the buffer directly should `clear()` this to
+    /// signal that projections anchored to prior versions are no longer sound.
+    pub fn edit_log_mut(&mut self) -> &mut EditLog {
+        &mut self.edit_log
     }
 
     /// Returns active AI locks for this buffer.
@@ -749,6 +778,12 @@ impl Buffer {
         self.ai_locks.clear();
         self.ai_lock_blocked = false;
         self.ai_lock_bypass_depth = 0;
+
+        // Edit log: prior entries reference offsets into the previous rope —
+        // replaying them against new content would corrupt projections. Any
+        // decoration slot that was anchored to the pre-replace version must
+        // invalidate itself through its own refresh path.
+        self.edit_log.clear();
 
         // Version: bump so LSP caches know content changed
         self.version += 1;
@@ -1209,6 +1244,79 @@ mod tests {
             }
         );
         assert_eq!(buf.rope().to_string(), "hello\n");
+    }
+
+    #[test]
+    fn test_record_populates_edit_log() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        assert!(buf.edit_log().is_empty(), "fresh buffer has empty log");
+
+        let ((), _edits) = buf.record(|b| {
+            b.insert_text_at(0, CharCol(5), " world");
+        });
+
+        assert_eq!(buf.edit_log().len(), 1);
+        // Version was bumped by insert_text_at inside record().
+        assert_eq!(buf.edit_log().latest_version(), Some(buf.version() as u64));
+    }
+
+    #[test]
+    fn test_record_empty_does_not_push_to_edit_log() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        let ((), _edits) = buf.record(|_b| {
+            // no-op
+        });
+        assert!(
+            buf.edit_log().is_empty(),
+            "empty record() must not consume log capacity"
+        );
+    }
+
+    #[test]
+    fn test_record_multiple_sessions_accumulate_in_log() {
+        let mut buf = Buffer::new_from_str("abc\n");
+        buf.record(|b| {
+            b.insert_text_at(0, CharCol(0), "X");
+        });
+        buf.record(|b| {
+            b.insert_text_at(0, CharCol(1), "Y");
+        });
+
+        assert_eq!(buf.edit_log().len(), 2);
+
+        // Each record() pushes one entry.
+        let v2 = buf.edit_log().latest_version().unwrap();
+        // edits_since(0) should return both insertions.
+        let edits = buf.edit_log().edits_since(0).expect("recoverable");
+        assert_eq!(edits.len(), 2);
+        // edits_since at latest should return none.
+        assert!(buf.edit_log().edits_since(v2).unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_replace_all_clears_edit_log() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        buf.record(|b| {
+            b.insert_text_at(0, CharCol(5), " world");
+        });
+        assert_eq!(buf.edit_log().len(), 1);
+
+        buf.replace_all("new content\n");
+        assert!(buf.edit_log().is_empty(), "replace_all must clear edit_log");
+    }
+
+    #[test]
+    fn test_edit_log_group_with_multiple_ops() {
+        let mut buf = Buffer::new_from_str("hello world\n");
+        buf.record(|b| {
+            b.delete_range(0, CharCol(5), 0, CharCol(11));
+            b.insert_text_at(0, CharCol(5), " rust");
+        });
+
+        // Single log entry holding both edits.
+        assert_eq!(buf.edit_log().len(), 1);
+        let edits = buf.edit_log().edits_since(0).expect("recoverable");
+        assert_eq!(edits.len(), 2);
     }
 
     #[test]

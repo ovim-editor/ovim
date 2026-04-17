@@ -12,6 +12,7 @@ pub mod dashboard;
 pub mod debug_config;
 pub mod display;
 pub mod edit;
+pub mod edit_log;
 pub mod editor;
 pub mod fold;
 pub mod git;

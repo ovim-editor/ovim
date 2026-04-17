@@ -1582,6 +1582,10 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
         ),
     );
     editor.add_change(change);
+    // This API handler mutates the buffer directly (outside a `record()`
+    // session), so the edit_log projection is stale and LSP slots need
+    // invalidation. `fixup_after_bypass_mutation` clears both.
+    editor.fixup_after_bypass_mutation();
 
     ApiResponse::Success(SuccessResponse {
         success: true,
@@ -1643,6 +1647,8 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
         cursor_before,
     );
     editor.add_change(change);
+    // Bypass mutation — clear projection and invalidate decoration slots.
+    editor.fixup_after_bypass_mutation();
 
     ApiResponse::Success(SuccessResponse {
         success: true,
@@ -1718,6 +1724,8 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
             .cursor_mut()
             .set_position(new_total - 1, ovim_core::unicode::GraphemeCol::ZERO);
     }
+    // Bypass mutation — clear projection and invalidate decoration slots.
+    editor.fixup_after_bypass_mutation();
 
     ApiResponse::Success(SuccessResponse {
         success: true,

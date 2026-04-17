@@ -296,7 +296,15 @@ fn exit_insert_mode(editor: &mut Editor) {
 
     // Mark buffer modified for LSP didChange — placed after visual block replay
     // so the server sees ALL changes (first line + replayed lines).
-    editor.mark_buffer_modified();
+    if should_move_to_end_line.is_some() {
+        // The visual-block replay path called `insert_text_at` directly
+        // (outside a `record()` session) to fan the typed text across sibling
+        // lines, so the buffer's `edit_log` projection has a gap. Clear the
+        // log and invalidate decoration slots.
+        editor.fixup_after_bypass_mutation();
+    } else {
+        editor.mark_buffer_modified();
+    }
 
     // Clear insert-normal flag on full exit
     editor.editing.insert_normal_pending = false;

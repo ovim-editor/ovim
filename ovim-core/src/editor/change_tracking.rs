@@ -240,4 +240,19 @@ impl Editor {
         self.buffer_mut().change_manager_mut().mark_saved();
         self.buffer_mut().mark_clean();
     }
+
+    /// Post-mutation fixup for call sites that bypass `record()`.
+    ///
+    /// Clears the buffer's `edit_log` (its projection is no longer sound)
+    /// and invalidates inlay-hint and diagnostic slots so the next event-loop
+    /// tick re-pulls them. Also routes through `mark_buffer_modified` so
+    /// LSP didChange fires.
+    ///
+    /// Use this from bypass sites — direct `insert_text_at`/`delete_range`
+    /// calls outside a `record()` session — to preserve the invariant that
+    /// decoration positions stay aligned with buffer content.
+    pub fn fixup_after_bypass_mutation(&mut self) {
+        self.buffer_mut().edit_log_mut().clear();
+        self.mark_buffer_modified();
+    }
 }
