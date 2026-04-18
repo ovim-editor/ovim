@@ -53,19 +53,80 @@ explicitly, calls out the apply/undo coordinate asymmetry and the
 for the migration work that remains. Future readers should not need to
 re-derive "why does this enum have both shapes?" from the source.
 
-### Step 2: Audit `Composite.repeat()` mutation (investigation)
+### Step 2: Audit `Composite.repeat()` mutation (DONE — findings below)
 
-Map exactly what `repeat()` mutates on `InsertText` and `DeleteText` inside a `Composite`. The key question: can the same repeat behavior be achieved by recording the composite's buffer mutations as `Edit`s and replaying them? If yes, `Composite` can become `Recorded` + `entry_mode`.
+**Conclusion:** feasible. The in-place mutation that made step 2 look
+risky turns out to be vestigial — it was load-bearing before
+`repeat_last_change()` started wrapping the repeat in `buffer.record()`
+and pushing a `Change::Recorded` for mechanical undo. After that change
+the mutated Composite only lives on as the re-repeat template in
+`last_change`, and every `repeat()` method reads fresh cursor state
+rather than the mutated fields.
 
-The tricky part: insert-mode repeat isn't just "replay the same edits" — it positions the cursor based on `entry_mode` (I goes to first non-blank, A goes to end of line, etc.) and then replays the keystrokes. This cursor positioning is semantic, not mechanical. So the repeat side needs `entry_mode`, even if undo becomes mechanical.
+Concrete audit of each `repeat()` in `change.rs`:
 
-### Step 3: Extract `entry_mode` into repeat metadata (if step 2 confirms feasibility)
+1. **`InsertText.repeat()`** writes `*self_pos = new_pos` but the replay
+   itself uses `buffer.cursor_char_col()` + `self.text`. On the second
+   dot-repeat the new `InsertText.repeat()` re-reads the cursor from
+   scratch, so the stored `position` is never consulted in a way that
+   affects behavior. `cursor_before` on the inner change is also stale
+   after repeat, but nothing reads it: `repeat_last_change()` only
+   calls `set_cursor_before` on the outer Composite, and undo goes
+   through the mechanical `Recorded` entry that was pushed alongside.
 
-Add an `InsertSession` variant to `RepeatAction` that carries `entry_mode` + the inserted text (or keystroke sequence). Insert mode finalization would then:
-- Push a `Change::Recorded` (mechanical undo from `buffer.record()`)
-- Set `RepeatAction::InsertSession { entry_mode, keystrokes }` (semantic repeat)
+2. **`DeleteText.repeat()`** writes `*range` and `*deleted_text` but the
+   replay itself only needs `range.end - range.start` (width) and the
+   `backwards` flag. The width is preserved across mutations. Same
+   stale-but-unread story for `cursor_before`.
 
-This fully separates undo from repeat for insert mode, matching how all other operations already work.
+3. **`Composite.repeat()`** iterates sub-changes with `.iter_mut()` to
+   thread those in-place writes. Once (1) and (2) are vestigial, the
+   only semantically load-bearing work is the `entry_mode` cursor
+   reposition at the top and the `move_left(1)` at the bottom — both
+   of which live cleanly on `RepeatAction`.
+
+**What this buys step 3:** the migration doesn't need a "shadow undo"
+or complicated state tracking. The existing `buffer.record()` path
+already captures the session's edits correctly; we just need to stop
+routing them through Pattern A and attach them to a
+`RepeatAction::InsertSession` instead.
+
+**Prerequisite confirmed:** `buffer.record()` is closure-scoped
+(single `recording: Option<Vec<Edit>>` slot, no nesting). An insert
+session spans many event-loop ticks, so we need a stateful
+`begin_recording` / `end_recording` pair. Small, additive: the closure
+form stays; the stateful form manipulates the same slot. Call sites
+that assert `!is_recording()` for nesting detection need a narrow
+exception for the insert-session case, or the check moves to
+`begin_recording`.
+
+### Step 3: Replace `Composite` with `RepeatAction::InsertSession`
+
+Add `InsertSession` to `RepeatAction`. At insert-mode finalize:
+- Push a `Change::Recorded` (mechanical undo from the session's edits)
+- Set `RepeatAction::InsertSession { entry_mode, payload }` (semantic
+  repeat at the current cursor)
+
+The open design decision — surfaced for step 3 — is **what the payload
+is**:
+
+**Option A — relative edit log.** Record the session's `Edit`s, then
+store them with offsets expressed relative to the session origin
+(cursor position after `entry_mode` repositioning). Replay translates
+each offset back into absolute form using the current cursor. Mirrors
+today's Composite behavior exactly, including edge cases like
+backspace-across-origin (`i<BS>` at column 0 joining lines) and
+`accept_completion()` delete-then-insert pairs.
+
+**Option B — net inserted text.** Store only the final inserted string
+(via a richer version of `get_inserted_text()`). Replay re-inserts that
+string at the cursor. Much simpler, but loses fidelity for sessions
+with intra-session deletes that crossed the origin, cursor arrow
+movement inside the session, or completion pop-in/out patterns.
+
+Option A is the like-for-like replacement. Option B is what a
+greenfield design would do if ovim's insert sessions were simpler —
+they are not.
 
 ### Step 4: Remove `InsertText`, `DeleteText`, `Composite` (after step 3)
 
