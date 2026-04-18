@@ -1734,11 +1734,6 @@ fn test_dot_after_visual_change_with_backspace_matches_cw() {
 }
 
 #[test]
-#[ignore = "Blocked on a separate pre-existing bug: VisualLine-c (`Vc<text><Esc>`) \
-            doesn't open a blank line after deleting, so `VcNEW<Esc>` produces \
-            \"NEWline two\\n...\" instead of Vim's \"NEW\\nline two\\n...\". \
-            Tracked as follow-up to Signal A (visual-c dot-repeat). Unignore once \
-            VisualLine-c mirrors normal-mode `cc` (delete + open blank + insert)."]
 fn test_dot_after_visual_line_change_multichar() {
     // `VcNEW<Esc>j.` linewise on a 3-line buffer should produce
     // "NEW\nNEW\nline three\n" — verified against Vim (vim -N -u NONE).

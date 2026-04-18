@@ -622,6 +622,14 @@ fn test_visual_change() {
 
 #[test]
 fn test_visual_line_change() {
+    // VisualLine-c deletes the selected line(s), opens a blank line at the
+    // deletion site, and enters insert mode there — matching normal-mode
+    // `cc`. Verified against Vim (`vim -N -u NONE`): on "line 1\nline 2\n
+    // line 3\n", `Vjcreplaced<Esc>` produces "replaced\nline 3\n" with the
+    // cursor on the trailing 'd' (row 0, col 7). Prior to the VisualLine-c
+    // blank-line fix this test asserted "replacedline 3\n" — that was the
+    // bug (no blank line was being opened, so the inserted text fused with
+    // the surviving line 3).
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
     test.press('V')
@@ -630,7 +638,7 @@ fn test_visual_line_change() {
         .type_text("replaced")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "replacedline 3\n");
+    assert_eq!(test.buffer_content(), "replaced\nline 3\n");
     test.assert_cursor(0, 7);
 }
 

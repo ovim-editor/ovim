@@ -12,7 +12,8 @@ use crate::editor::{
     CursorPos, Editor, Motions, PendingChangeRepeat, RegisterType, TextObjectRange, TextObjects,
 };
 use crate::mode::Mode;
-use crate::unicode::GraphemeCol;
+use crate::repeat_action::RepeatAction;
+use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
@@ -37,6 +38,76 @@ fn apply_text_object(editor: &mut Editor, range: Option<TextObjectRange>, inclus
             .cursor_mut()
             .set_position(range.end_line, GraphemeCol(end_col.0));
     }
+}
+
+/// Mirror of normal-mode `cc` for a VisualLine-c selection: delete all
+/// selected lines as a single recorded edit, open a blank line at the
+/// deletion site preserving the deleted line's indent, and set up
+/// PendingChangeRepeat for dot-repeat via `RepeatAction::Change`.
+///
+/// Vim reference (`vim -N -u NONE`): `VcNEW<Esc>` on
+/// `"line one\nline two\nline three\n"` → `"NEW\nline two\nline three\n"`.
+/// `j.` after that → `"NEW\nNEW\nline three\n"`.
+fn handle_visual_line_change(editor: &mut Editor) -> Result<()> {
+    let Some(((start_line, _), (end_line, _))) = editor.visual_selection() else {
+        // No selection → nothing to delete; fall through to plain insert.
+        return Ok(());
+    };
+    let line_count = end_line.saturating_sub(start_line) + 1;
+    let cursor_before = editor.cursor_position();
+
+    // Capture indent from the first selected line before deleting (matches
+    // normal-mode `cc`: the opened blank line inherits the first line's
+    // indent). Note: ovim preserves indent unconditionally; Vim only does so
+    // with `autoindent`, but this matches the ovim convention established by
+    // `handle_cc` / `substitute_line`.
+    let indent = editor
+        .buffer()
+        .line(start_line)
+        .map(|l| {
+            l.chars()
+                .take_while(|c| c.is_whitespace() && *c != '\n')
+                .collect::<String>()
+        })
+        .unwrap_or_default();
+
+    // Phase 1: delete selected lines + open blank with indent, atomically.
+    let (deleted, edits) = editor.buffer_mut().record(|buf| {
+        let line_count_total = buf.line_count();
+        let delete_end = (end_line + 1).min(line_count_total);
+        let deleted = buf.delete_range(start_line, CharCol::ZERO, delete_end, CharCol::ZERO);
+        let insert_at = start_line.min(buf.line_count());
+        buf.insert_text_at(insert_at, CharCol::ZERO, &format!("{}\n", indent));
+        buf.cursor_mut()
+            .set_position(insert_at, GraphemeCol(indent.len()));
+        deleted
+    });
+
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+
+    if !deleted.is_empty() {
+        editor.delete_to_register_with_type(deleted, RegisterType::Line);
+    }
+
+    // Phase 2: set up dot-repeat + insert-mode change building.
+    let delete_action = RepeatAction::DeleteVisualLine { line_count };
+    // Mirror the install that `delete_visual_selection_with_token` would
+    // have done, so other consumers that read last_repeat_action observe
+    // the same semantic delete.
+    editor.set_repeat_action(delete_action.clone());
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action,
+        linewise: true,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    Ok(())
 }
 
 fn handle_visual_leader_input(
@@ -534,6 +605,24 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Change selection
         KeyCode::Char('c') => {
             let mode_before = editor.mode();
+            editor.set_pending_visual_block_change_repeat(None);
+            editor.editing.pending_visual_block_change_delete_token = None;
+
+            // VisualLine-c must mirror normal-mode `cc`: delete the whole
+            // line(s), open a blank line at the deletion site (preserving the
+            // deleted line's indent), and enter insert mode there. The naive
+            // path of `delete_visual_selection_with_token` deletes the
+            // trailing newline(s) too, which would fuse the inserted text
+            // with the following line. See dot_repeat_test.rs
+            // `test_dot_after_visual_line_change_multichar` and Vim's
+            // behavior (`vim -N -u NONE` on `VcNEW<Esc>`).
+            if mode_before == Mode::VisualLine {
+                handle_visual_line_change(editor)?;
+                helpers::save_and_clear_visual(editor);
+                editor.set_mode(Mode::Insert);
+                return Ok(());
+            }
+
             // For visual block mode, need to track the block for multi-line insert
             let visual_block_state = if mode_before == Mode::VisualBlock {
                 editor
@@ -546,8 +635,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 None
             };
-            editor.set_pending_visual_block_change_repeat(None);
-            editor.editing.pending_visual_block_change_delete_token = None;
 
             let delete_token = helpers::delete_visual_selection_with_token(editor)?;
 
@@ -563,14 +650,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 )));
                 editor.start_change_building(cursor_before);
             } else if delete_token.is_some() {
-                // Regular visual (v) or VisualLine (V) with a non-empty
-                // selection: route the change through PendingChangeRepeat +
-                // RepeatAction::Change so that the full inserted text is
-                // captured for dot-repeat (matching cw/cc/C semantics).
+                // Regular visual (v) with a non-empty selection: route the
+                // change through PendingChangeRepeat + RepeatAction::Change
+                // so that the full inserted text is captured for dot-repeat
+                // (matching cw/cc/C semantics).
                 //
                 // delete_visual_selection_with_token has already installed
-                // DeleteVisualChar / DeleteVisualLine as last_repeat_action;
-                // clone it as the delete template for the Change action.
+                // DeleteVisualChar as last_repeat_action; clone it as the
+                // delete template for the Change action.
                 let delete_action = editor
                     .buffer()
                     .change_manager()
@@ -580,10 +667,9 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         "delete_visual_selection_with_token installs a RepeatAction for \
                          non-empty selections",
                     );
-                let linewise = mode_before == Mode::VisualLine;
                 editor.set_pending_change_repeat(PendingChangeRepeat {
                     delete_action,
-                    linewise,
+                    linewise: false,
                     delete_token,
                 });
                 editor.start_change_building(editor.cursor_position());
