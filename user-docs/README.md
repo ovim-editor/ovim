@@ -1,6 +1,6 @@
 # ovim User Documentation
 
-This folder is the user-facing documentation for running and configuring ovim.
+User-facing documentation for running and configuring ovim (Oxidized Vim).
 
 ## Getting Started
 

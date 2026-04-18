@@ -2,7 +2,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
-#[command(about = "A Neovim clone written in Rust with MCP support", long_about = None)]
+#[command(about = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,

@@ -1,6 +1,6 @@
-# ovim
+# ovim — Oxidized Vim
 
-A batteries-included terminal editor with Vim keybindings, built in Rust.
+A snappy, batteries-included terminal editor with Vim keybindings, built in Rust.
 
 ovim gives you what Neovim distros give you — LSP, tree-sitter highlighting, AI, sane defaults — without the plugin stack. One binary, zero config required. Your Vim muscle memory works.
 
@@ -11,7 +11,7 @@ ovim gives you what Neovim distros give you — LSP, tree-sitter highlighting, A
 - **AI chat and editing** — `Space Space` to chat, visual select + `Space` to edit
 - **Vim keybindings** — operators + motions, text objects, visual mode, macros, marks, registers
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
-- **Headless mode** — run without a terminal, control via REST API or MCP
+- **Headless mode** — run without a terminal, control via REST API
 
 ## Quick Start
 
@@ -115,17 +115,7 @@ Every session exposes an HTTP server:
 | `/v1/lsp/status` | GET | LSP server states |
 | `/v1/mcp` | POST | MCP JSON-RPC 2.0 |
 
-### MCP Server
-
-ovim speaks [MCP](https://modelcontextprotocol.io), so AI agents can control a real editor — not just string-replace files:
-
-```bash
-# Install as MCP server for Claude or Cursor
-ovim install claude
-ovim install cursor
-```
-
-See [MCP docs](user-docs/MCP.md) for the full tool and resource list.
+For AI-agent integration, ovim also speaks [MCP](https://modelcontextprotocol.io) over the same session — `ovim install claude` / `ovim install cursor` wires it up. See [MCP docs](user-docs/MCP.md) if you want it.
 
 ## CLI Reference
 

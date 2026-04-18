@@ -1,6 +1,6 @@
 # ovim
 
-A Neovim inspired editor written in Rust with LSP support and seamless headless mode.
+Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, LSP support, and seamless headless mode.
 
 ## Quick Reference
 

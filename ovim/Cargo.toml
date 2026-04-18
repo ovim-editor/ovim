@@ -2,6 +2,7 @@
 name = "ovim"
 version = "0.1.0"
 edition = "2021"
+description = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, Lua config, LSP, and AI built in."
 
 [dependencies]
 ovim-core = { path = "../ovim-core" }
