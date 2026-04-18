@@ -541,11 +541,20 @@ impl ChangeBuilder {
     }
 }
 
-/// Token returned by `push_change_returning_token`.
+/// Token returned by `push_change_returning_token` / `push_recorded_undo`.
 /// Stores the undo stack index at push time so `pop_by_token` can verify
 /// that the expected change is still at the top of the stack.
 #[derive(Debug, Clone, Copy)]
 pub struct ChangeToken(usize);
+
+impl ChangeToken {
+    /// Constructs a token from a raw undo-stack index. Exposed for the
+    /// editor-level `push_recorded_undo` helper; most callers should get
+    /// their token from `push_recorded_undo` / `push_change_returning_token`.
+    pub fn from_index(index: usize) -> Self {
+        Self(index)
+    }
+}
 
 /// Manages undo/redo history and change tracking
 #[derive(Debug)]

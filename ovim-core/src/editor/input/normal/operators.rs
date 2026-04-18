@@ -815,7 +815,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             });
             let delete_token = if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
-                Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+                Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
             } else {
                 None
             };
@@ -939,7 +939,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             });
             let delete_token = if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
-                Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+                Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
             } else {
                 None
             };
@@ -1201,7 +1201,7 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
     });
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -1245,7 +1245,7 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
     });
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
         Some(token)
@@ -1286,7 +1286,7 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
     });
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
         Some(token)
@@ -1326,8 +1326,7 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
             });
             let delete_token = if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
-                let token =
-                    editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+                let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
                 editor.delete_to_register(deleted);
                 editor.mark_buffer_modified();
                 Some(token)
@@ -1380,7 +1379,7 @@ fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
     });
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -1423,7 +1422,7 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
     });
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -1449,7 +1448,7 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
         .record(|buf| buf.delete_paragraph_forward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -1475,7 +1474,7 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
         .record(|buf| buf.delete_paragraph_backward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2052,7 +2051,7 @@ fn handle_cb(editor: &mut Editor, count: usize) -> Result<()> {
         .record(|buf| buf.delete_word_backward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2078,7 +2077,7 @@ fn handle_ce(editor: &mut Editor, count: usize) -> Result<()> {
     let (deleted, edits) = editor.buffer_mut().record(|buf| buf.delete_word_end(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2106,7 +2105,7 @@ fn handle_c_big_b(editor: &mut Editor, count: usize) -> Result<()> {
         .record(|buf| buf.delete_word_backward_big(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2134,7 +2133,7 @@ fn handle_c_big_e(editor: &mut Editor, count: usize) -> Result<()> {
         .record(|buf| buf.delete_word_end_big(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2162,7 +2161,7 @@ fn handle_ch(editor: &mut Editor, count: usize) -> Result<()> {
         .record(|buf| buf.delete_char_left(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2190,7 +2189,7 @@ fn handle_c0(editor: &mut Editor) -> Result<()> {
         .record(|buf| buf.delete_to_start_of_line());
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2218,7 +2217,7 @@ fn handle_c_caret(editor: &mut Editor) -> Result<()> {
         .record(|buf| buf.delete_to_first_non_blank());
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2246,7 +2245,7 @@ fn handle_c_percent(editor: &mut Editor) -> Result<()> {
         .record(|buf| buf.delete_to_matching_bracket());
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };
@@ -2274,7 +2273,7 @@ fn handle_c_big_w(editor: &mut Editor, count: usize) -> Result<()> {
         .record(|buf| buf.delete_word_forward_big(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };

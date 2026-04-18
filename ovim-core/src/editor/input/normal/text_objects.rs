@@ -263,8 +263,7 @@ fn apply_change_operator(
     }
     editor.delete_to_register(deleted);
     let cursor_after = editor.cursor_position();
-    let delete_token =
-        editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+    let delete_token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
     editor.set_pending_change_repeat(PendingChangeRepeat {
         delete_action: RepeatAction::DeleteTextObject { object_type },
         linewise: false,

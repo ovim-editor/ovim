@@ -85,7 +85,7 @@ fn handle_visual_line_change(editor: &mut Editor) -> Result<()> {
 
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };

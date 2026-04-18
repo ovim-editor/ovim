@@ -170,7 +170,7 @@ fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
     });
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
         Some(token)
@@ -199,7 +199,7 @@ fn substitute_chars(editor: &mut Editor) -> Result<()> {
         .record(|buf| buf.delete_chars_forward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
         editor.delete_to_register(deleted);
         editor.mark_buffer_modified();
         Some(token)
@@ -289,7 +289,7 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
 
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after))
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     } else {
         None
     };

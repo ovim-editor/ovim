@@ -1031,7 +1031,7 @@ pub fn delete_visual_selection_with_token(
     }
 
     let cursor_after = editor.cursor_position();
-    let undo_token = editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+    let undo_token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
 
     // Set dot-repeat template as a semantic RepeatAction for all visual delete modes.
     match mode {

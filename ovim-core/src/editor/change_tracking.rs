@@ -182,14 +182,20 @@ impl Editor {
     /// Use for compound operations (join, case change, indent) where the
     /// dot-repeat change is set separately.
     ///
-    /// If an AI chat undo group is active, the change is stamped with the group ID
-    /// so that `u` undoes the entire agent turn at once.
+    /// If an AI chat undo group is active, the change is stamped with the
+    /// group ID so that `u` undoes the entire agent turn at once.
+    ///
+    /// Returns a `ChangeToken` that can later be redeemed with `pop_by_token`
+    /// to safely retrieve this exact undo entry (used by visual-`c` / `cw`
+    /// delete-then-insert flows that merge the delete into a Recorded on
+    /// insert-mode exit). Callers that don't need the token can ignore the
+    /// return value.
     pub fn push_recorded_undo(
         &mut self,
         edits: Vec<Edit>,
         cursor_before: CursorPos,
         cursor_after: CursorPos,
-    ) {
+    ) -> ChangeToken {
         // Decoration positions follow the edits through projection at render
         // time — the edit log already captured the recorded edits, so no
         // per-decoration mutation is required here.
@@ -206,27 +212,12 @@ impl Editor {
             Change::recorded(edits, cursor_before, cursor_after)
         };
         let cm = self.buffer_mut().change_manager_mut();
+        let index = cm.undo_stack.len();
         cm.push_undo_change_preserving_repeat(change);
         // Ensure LSP is notified of buffer changes — callers that use record()
         // directly instead of record_operation() were previously missing this.
         self.mark_buffer_modified();
-    }
-
-    /// Like `push_recorded_undo` but returns a `ChangeToken` that can later
-    /// be redeemed with `pop_by_token` to safely retrieve this exact entry.
-    pub fn push_recorded_undo_returning_token(
-        &mut self,
-        edits: Vec<Edit>,
-        cursor_before: CursorPos,
-        cursor_after: CursorPos,
-    ) -> ChangeToken {
-        let change = Change::recorded(edits, cursor_before, cursor_after);
-        let token = self
-            .buffer_mut()
-            .change_manager_mut()
-            .push_change_returning_token(change);
-        self.mark_buffer_modified();
-        token
+        ChangeToken::from_index(index)
     }
 
     /// Pops a change only if the token matches the current stack top.

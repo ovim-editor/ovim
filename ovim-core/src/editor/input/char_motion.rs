@@ -321,8 +321,7 @@ fn apply_charwise_operator(
             });
             let delete_token = if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
-                let token =
-                    editor.push_recorded_undo_returning_token(edits, cursor_before, cursor_after);
+                let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
                 if !deleted.is_empty() {
                     editor.delete_to_register_with_type(deleted, RegisterType::Character);
                 }
