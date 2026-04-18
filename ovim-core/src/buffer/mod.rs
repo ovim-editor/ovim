@@ -31,6 +31,17 @@ fn next_buffer_id() -> BufferId {
 }
 
 /// Represents a text buffer using a Rope data structure for efficient editing
+/// State for an active recording session opened via `record()` (closure) or
+/// `begin_recording()` (stateful). `edits` accumulates as the buffer mutates;
+/// `origin` is the absolute char offset against which a dot-repeat
+/// translator will re-anchor the captured edits, and is only set by the
+/// stateful API (via `set_recording_origin`).
+#[derive(Debug, Default)]
+pub struct RecordingSession {
+    pub edits: Vec<Edit>,
+    pub origin: Option<usize>,
+}
+
 pub struct Buffer {
     /// Stable identity for this buffer, preserved across index shifts.
     id: BufferId,
@@ -77,8 +88,10 @@ pub struct Buffer {
     /// Code block cache for markdown files (language-specific highlighting inside fenced code blocks)
     pub(super) code_block_cache: Option<CodeBlockCache>,
     /// When Some, insert_text_at/delete_range append Edit records here.
-    /// Used by `record()` to capture buffer mutations.
-    recording: Option<Vec<Edit>>,
+    /// Used by `record()` and `begin_recording()` to capture buffer
+    /// mutations. `origin` is optional — only the stateful insert-session
+    /// API sets it, via `set_recording_origin`.
+    recording: Option<RecordingSession>,
     /// Ring buffer of recent edit groups keyed by post-edit `version`.
     /// Populated at the close of every `record()` session whose edit list
     /// is non-empty. Consumers anchor to a specific `version` and call
@@ -565,35 +578,102 @@ impl Buffer {
     /// Executes a closure while recording all buffer edits (insert_text_at, delete_range).
     /// Returns the closure's result and the recorded edits.
     ///
-    /// Recording is opt-in: existing code that doesn't call `record()` is unaffected.
-    /// Nested `record()` calls are not supported — the inner call will overwrite the
-    /// outer recording. This is intentional for now; nesting isn't needed yet.
+    /// Recording is opt-in: existing code that doesn't call `record()` is
+    /// unaffected. Nested `record()` calls are not supported — callers that
+    /// need to open an isolated session while an insert-mode stateful
+    /// recording is active must use `pause_recording` / `resume_recording`
+    /// to step out of the outer session first.
     ///
-    /// On session close, if any edits were captured, a single
-    /// `(post_version, edits)` entry is appended to `edit_log` so downstream
-    /// projections can replay the delta.
+    /// Each buffer mutation inside the closure is also published to
+    /// `edit_log` in real time by `insert_text_at` / `delete_range`, so
+    /// decoration projection stays live during the session.
     pub fn record<F, R>(&mut self, f: F) -> (R, Vec<Edit>)
     where
         F: FnOnce(&mut Self) -> R,
     {
         debug_assert!(
             !self.is_recording(),
-            "Nested record() calls are not supported"
+            "Nested record() calls are not supported — pause the outer session first"
         );
-        self.recording = Some(Vec::new());
+        self.recording = Some(RecordingSession::default());
         let result = f(self);
-        let edits = self.recording.take().unwrap_or_default();
-        if !edits.is_empty() {
-            // `self.version` has been bumped once per edit inside the closure.
-            // Capture the post-edit version as the entry's key.
-            self.edit_log.push(self.version as u64, edits.clone());
-        }
+        let edits = self
+            .recording
+            .take()
+            .map(|s| s.edits)
+            .unwrap_or_default();
         (result, edits)
     }
 
     /// Returns whether the buffer is currently recording edits.
     pub fn is_recording(&self) -> bool {
         self.recording.is_some()
+    }
+
+    /// Opens a recording session that spans multiple calls.
+    ///
+    /// Unlike [`record`](Self::record), which closes over a single closure,
+    /// `begin_recording` holds the recording slot open until `end_recording`
+    /// is called. This is required for insert-mode sessions where the edits
+    /// happen across many event-loop ticks.
+    ///
+    /// Nesting is not supported — `begin_recording` must not be called while
+    /// another recording session is active (either closure or stateful).
+    pub fn begin_recording(&mut self) {
+        debug_assert!(
+            !self.is_recording(),
+            "begin_recording called while already recording"
+        );
+        self.recording = Some(RecordingSession::default());
+    }
+
+    /// Sets the session origin used by dot-repeat translators to re-anchor
+    /// the recorded edits at replay time. Callable only during an active
+    /// recording session; no-op otherwise.
+    ///
+    /// For insert-mode sessions this is the cursor's absolute char offset
+    /// at the moment of the first edit (which, for dot-repeat purposes,
+    /// also equals the cursor's offset after entry-mode positioning).
+    pub fn set_recording_origin(&mut self, offset: usize) {
+        if let Some(ref mut session) = self.recording {
+            session.origin = Some(offset);
+        }
+    }
+
+    /// Returns the session origin set by `set_recording_origin`, if any.
+    pub fn recording_origin(&self) -> Option<usize> {
+        self.recording.as_ref().and_then(|s| s.origin)
+    }
+
+    /// Detaches the current recording session without closing it.
+    ///
+    /// Paired with `resume_recording` to let a nested code path (e.g.,
+    /// completion accept) open its own isolated `record()` without tripping
+    /// the nested-session assertion. Edits that occur between `pause` and
+    /// `resume` are NOT captured by either the paused session or the inner
+    /// session — the caller is responsible for scoping its own recording.
+    pub fn pause_recording(&mut self) -> Option<RecordingSession> {
+        self.recording.take()
+    }
+
+    /// Re-attaches a session previously detached with `pause_recording`.
+    pub fn resume_recording(&mut self, session: RecordingSession) {
+        debug_assert!(
+            !self.is_recording(),
+            "resume_recording called while another session is active"
+        );
+        self.recording = Some(session);
+    }
+
+    /// Closes a stateful recording session opened with `begin_recording`.
+    ///
+    /// Returns the edits captured since `begin_recording`. The edit log has
+    /// already been populated per-edit by `insert_text_at` / `delete_range`,
+    /// so there is no session-close log push here.
+    ///
+    /// Safe to call when no session is active: returns an empty vec.
+    pub fn end_recording(&mut self) -> Vec<Edit> {
+        self.recording.take().map(|s| s.edits).unwrap_or_default()
     }
 
     /// Returns a reference to the ring of recent edit groups.
@@ -1306,17 +1386,105 @@ mod tests {
     }
 
     #[test]
-    fn test_edit_log_group_with_multiple_ops() {
+    fn test_edit_log_populated_per_edit() {
         let mut buf = Buffer::new_from_str("hello world\n");
         buf.record(|b| {
             b.delete_range(0, CharCol(5), 0, CharCol(11));
             b.insert_text_at(0, CharCol(5), " rust");
         });
 
-        // Single log entry holding both edits.
-        assert_eq!(buf.edit_log().len(), 1);
+        // Each buffer mutation lands in `edit_log` immediately so decoration
+        // projection stays live mid-session. Two mutations → two entries.
+        assert_eq!(buf.edit_log().len(), 2);
         let edits = buf.edit_log().edits_since(0).expect("recoverable");
         assert_eq!(edits.len(), 2);
+    }
+
+    #[test]
+    fn test_stateful_recording_captures_edits() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        buf.begin_recording();
+        buf.insert_text_at(0, CharCol(5), " world");
+        buf.insert_text_at(0, CharCol(11), "!");
+        let edits = buf.end_recording();
+
+        assert_eq!(edits.len(), 2);
+        assert_eq!(buf.rope().to_string(), "hello world!\n");
+        assert!(!buf.is_recording());
+    }
+
+    #[test]
+    fn test_stateful_recording_pushes_to_edit_log() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        assert!(buf.edit_log().is_empty());
+        buf.begin_recording();
+        buf.insert_text_at(0, CharCol(5), " world");
+        buf.end_recording();
+
+        assert_eq!(buf.edit_log().len(), 1);
+        assert_eq!(buf.edit_log().latest_version(), Some(buf.version() as u64));
+    }
+
+    #[test]
+    fn test_stateful_recording_empty_does_not_push_to_edit_log() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        buf.begin_recording();
+        let edits = buf.end_recording();
+        assert!(edits.is_empty());
+        assert!(buf.edit_log().is_empty());
+    }
+
+    #[test]
+    fn test_end_recording_without_begin_returns_empty() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        let edits = buf.end_recording();
+        assert!(edits.is_empty());
+    }
+
+    #[test]
+    fn test_recording_origin_round_trips() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        assert_eq!(buf.recording_origin(), None);
+
+        buf.begin_recording();
+        assert_eq!(buf.recording_origin(), None, "no origin until set");
+        buf.set_recording_origin(42);
+        assert_eq!(buf.recording_origin(), Some(42));
+
+        buf.end_recording();
+        assert_eq!(
+            buf.recording_origin(),
+            None,
+            "origin cleared once session ends"
+        );
+    }
+
+    #[test]
+    fn test_set_recording_origin_without_session_is_noop() {
+        let mut buf = Buffer::new_from_str("hello\n");
+        buf.set_recording_origin(99);
+        assert_eq!(buf.recording_origin(), None);
+    }
+
+    #[test]
+    fn test_stateful_recording_matches_closure_form() {
+        let text_a = {
+            let mut buf = Buffer::new_from_str("abc\n");
+            let ((), edits) = buf.record(|b| {
+                b.insert_text_at(0, CharCol(1), "X");
+                b.delete_range(0, CharCol(3), 0, CharCol(4));
+            });
+            (buf.rope().to_string(), edits)
+        };
+        let text_b = {
+            let mut buf = Buffer::new_from_str("abc\n");
+            buf.begin_recording();
+            buf.insert_text_at(0, CharCol(1), "X");
+            buf.delete_range(0, CharCol(3), 0, CharCol(4));
+            let edits = buf.end_recording();
+            (buf.rope().to_string(), edits)
+        };
+        assert_eq!(text_a, text_b);
     }
 
     #[test]

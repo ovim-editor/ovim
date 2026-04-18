@@ -46,12 +46,14 @@ impl Buffer {
         self.rope.insert(insert_pos, text);
         self.modified = true;
 
+        let recorded_edit = Edit::Insert {
+            offset: insert_pos,
+            text: text.to_string(),
+        };
+
         // Record the edit if we're in a recording session
-        if let Some(ref mut edits) = self.recording {
-            edits.push(Edit::Insert {
-                offset: insert_pos,
-                text: text.to_string(),
-            });
+        if let Some(ref mut session) = self.recording {
+            session.edits.push(recorded_edit.clone());
         }
 
         // Update buffer size metrics
@@ -70,6 +72,11 @@ impl Buffer {
         // Invalidate code block cache so stale byte offsets don't override
         // the fresh tree-sitter highlights that viewport rehighlight provides
         self.code_block_cache = None;
+
+        // Publish to edit_log so decoration projection sees this edit
+        // immediately, regardless of whether a `record()` / stateful session
+        // is in progress.
+        self.edit_log.push(self.version as u64, vec![recorded_edit]);
     }
 
     /// Deletes text in a range and returns the deleted text.
@@ -157,12 +164,14 @@ impl Buffer {
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
 
+        let recorded_edit = Edit::Delete {
+            offset: start_pos,
+            text: deleted.clone(),
+        };
+
         // Record the edit if we're in a recording session
-        if let Some(ref mut edits) = self.recording {
-            edits.push(Edit::Delete {
-                offset: start_pos,
-                text: deleted.clone(),
-            });
+        if let Some(ref mut session) = self.recording {
+            session.edits.push(recorded_edit.clone());
         }
 
         // Update buffer size metrics
@@ -179,6 +188,10 @@ impl Buffer {
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
         self.code_block_cache = None;
+
+        // Publish to edit_log so decoration projection sees this edit
+        // immediately, regardless of whether a recording session is active.
+        self.edit_log.push(self.version as u64, vec![recorded_edit]);
 
         deleted
     }
@@ -231,12 +244,14 @@ impl Buffer {
         self.rope.remove(start_pos..end_pos);
         self.modified = true;
 
+        let recorded_edit = Edit::Delete {
+            offset: start_pos,
+            text: deleted,
+        };
+
         // Record the edit if we're in a recording session
-        if let Some(ref mut edits) = self.recording {
-            edits.push(Edit::Delete {
-                offset: start_pos,
-                text: deleted,
-            });
+        if let Some(ref mut session) = self.recording {
+            session.edits.push(recorded_edit.clone());
         }
 
         crate::metrics::BUFFER_SIZE_BYTES.set(self.rope.len_bytes() as i64);
@@ -250,6 +265,10 @@ impl Buffer {
         self.highlight_version = self.highlight_version.wrapping_add(1);
         self.pending_rehighlight = true;
         self.code_block_cache = None;
+
+        // Publish to edit_log so decoration projection sees this edit
+        // immediately, regardless of whether a recording session is active.
+        self.edit_log.push(self.version as u64, vec![recorded_edit]);
     }
 
     /// Replaces the entire buffer content.
