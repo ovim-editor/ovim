@@ -21,7 +21,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("find-references").await?;
 
         self.set_lsp_status("Finding references...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -34,7 +33,7 @@ impl Editor {
             );
         });
 
-        self.lsp.slots.references.fire(task, rx, buffer_version);
+        self.lsp.slots.references.fire(task, rx);
         Ok(true)
     }
 
@@ -42,7 +41,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("document-symbols").await?;
 
         self.set_lsp_status("Fetching document symbols...".to_string());
-        let buffer_version = self.buffer().version() as u64;
         let file_path = ctx.file_path.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -59,7 +57,7 @@ impl Editor {
         self.lsp
             .slots
             .document_symbols
-            .fire(task, rx, buffer_version);
+            .fire(task, rx);
         Ok(true)
     }
 
@@ -67,7 +65,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("workspace-symbols").await?;
 
         self.set_lsp_status("Fetching workspace symbols...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -82,7 +79,7 @@ impl Editor {
         self.lsp
             .slots
             .workspace_symbols
-            .fire(task, rx, buffer_version);
+            .fire(task, rx);
         Ok(true)
     }
 
@@ -90,7 +87,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("call-hierarchy").await?;
 
         self.set_lsp_status("Fetching incoming calls...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -138,7 +134,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp.slots.call_hierarchy.fire(task, rx, buffer_version);
+        self.lsp.slots.call_hierarchy.fire(task, rx);
         Ok(true)
     }
 
@@ -146,7 +142,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("call-hierarchy").await?;
 
         self.set_lsp_status("Fetching outgoing calls...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -194,7 +189,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp.slots.call_hierarchy.fire(task, rx, buffer_version);
+        self.lsp.slots.call_hierarchy.fire(task, rx);
         Ok(true)
     }
 
@@ -202,7 +197,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("type-hierarchy").await?;
 
         self.set_lsp_status("Fetching type hierarchy...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -258,7 +252,7 @@ impl Editor {
             }));
         });
 
-        self.lsp.slots.type_hierarchy.fire(task, rx, buffer_version);
+        self.lsp.slots.type_hierarchy.fire(task, rx);
         Ok(true)
     }
 

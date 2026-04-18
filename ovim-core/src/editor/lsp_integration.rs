@@ -2141,11 +2141,10 @@ mod tests {
 
     /// Helper: fire a pre-built `InlayHintResult` into the inlay hints slot.
     fn fire_inlay_hint_result(editor: &mut Editor, result: InlayHintResult) {
-        let buffer_version = result.buffer_version as u64;
         let (tx, rx) = oneshot::channel::<anyhow::Result<InlayHintResult>>();
         tx.send(Ok(result)).unwrap();
         let task = tokio::spawn(async {});
-        editor.lsp.slots.inlay_hints.fire(task, rx, buffer_version);
+        editor.lsp.slots.inlay_hints.fire(task, rx);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2273,11 +2272,10 @@ mod tests {
     /// Helper: fire a pre-built `CompletionResult` into the completion slot so
     /// `poll_pending_completion_response` can pick it up immediately.
     fn fire_completion_result(editor: &mut Editor, result: CompletionResult) {
-        let buffer_version = result.buffer_version as u64;
         let (tx, rx) = oneshot::channel::<anyhow::Result<CompletionResult>>();
         tx.send(Ok(result)).unwrap();
         let task = tokio::spawn(async {});
-        editor.lsp.slots.completion.fire(task, rx, buffer_version);
+        editor.lsp.slots.completion.fire(task, rx);
     }
 
     fn completion_item(label: &str) -> CompletionItem {

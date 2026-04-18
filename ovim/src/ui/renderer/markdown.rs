@@ -377,25 +377,6 @@ pub fn render_markdown(
     lines
 }
 
-/// Calculate the dimensions needed for the hover content
-#[allow(dead_code)]
-pub fn measure_content(elements: &[MarkdownElement], max_width: usize) -> (usize, usize) {
-    let rendered = render_markdown(elements, max_width, None);
-    let height = rendered.len();
-    let width = rendered
-        .iter()
-        .map(|line| {
-            line.spans
-                .iter()
-                .map(|span| span.content.len())
-                .sum::<usize>()
-        })
-        .max()
-        .unwrap_or(0)
-        .min(max_width);
-    (width, height)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

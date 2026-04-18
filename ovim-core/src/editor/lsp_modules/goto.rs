@@ -87,7 +87,6 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
 
         let server_ids = lsp.servers_for_document(language_id, std::path::Path::new(&file_path));
-        let buffer_version = self.buffer().version() as u64;
 
         Some(GotoPrepared {
             lsp,
@@ -96,7 +95,6 @@ impl Editor {
             character,
             language_id,
             server_ids,
-            buffer_version,
         })
     }
 
@@ -139,7 +137,7 @@ impl Editor {
         self.lsp
             .slots
             .goto_definition
-            .fire(task, rx, p.buffer_version);
+            .fire(task, rx);
         self.set_lsp_status("Jumping to definition...".to_string());
 
         Ok(false)
@@ -179,7 +177,7 @@ impl Editor {
         self.lsp
             .slots
             .goto_implementation
-            .fire(task, rx, p.buffer_version);
+            .fire(task, rx);
         self.set_lsp_status("Jumping to implementation...".to_string());
 
         Ok(false)
@@ -221,7 +219,7 @@ impl Editor {
         self.lsp
             .slots
             .goto_type_definition
-            .fire(task, rx, p.buffer_version);
+            .fire(task, rx);
         self.set_lsp_status("Jumping to type definition...".to_string());
 
         Ok(false)
@@ -236,5 +234,4 @@ struct GotoPrepared {
     character: u32,
     language_id: &'static str,
     server_ids: Vec<String>,
-    buffer_version: u64,
 }

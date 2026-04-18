@@ -3,10 +3,10 @@
 //! Handles message framing, serialization, and deserialization for the
 //! Language Server Protocol over stdio.
 
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncWrite, AsyncWriteExt};
 
 /// JSON-RPC request/response/notification identifier
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
@@ -147,59 +147,6 @@ pub async fn write_message<W: AsyncWrite + Unpin>(
     Ok(())
 }
 
-/// Reads a JSON-RPC message with Content-Length header framing
-/// (Reserved for alternative message reading implementation)
-#[allow(dead_code)]
-pub async fn read_message<R: AsyncRead + Unpin>(reader: &mut R) -> Result<JsonRpcMessage> {
-    let mut buf_reader = BufReader::new(reader);
-    let mut headers = Vec::new();
-
-    // Read headers until we find an empty line
-    loop {
-        let mut line = String::new();
-        buf_reader.read_line(&mut line).await?;
-
-        if line.trim().is_empty() {
-            break; // End of headers
-        }
-
-        headers.push(line);
-    }
-
-    // Parse Content-Length header
-    let content_length = headers
-        .iter()
-        .find_map(|line| {
-            if line.starts_with("Content-Length:") {
-                line.split(':')
-                    .nth(1)
-                    .and_then(|s| s.trim().parse::<usize>().ok())
-            } else {
-                None
-            }
-        })
-        .ok_or_else(|| anyhow!("Missing Content-Length header"))?;
-
-    // Validate content_length to prevent buffer overflow
-    const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024; // 50MB
-    if content_length > MAX_MESSAGE_SIZE {
-        return Err(anyhow!(
-            "Message size {} exceeds maximum allowed size {}",
-            content_length,
-            MAX_MESSAGE_SIZE
-        ));
-    }
-
-    // Read exact content_length bytes
-    let mut content = vec![0u8; content_length];
-    buf_reader.read_exact(&mut content).await?;
-
-    // Parse JSON
-    let message: JsonRpcMessage = serde_json::from_slice(&content)?;
-
-    Ok(message)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -284,18 +231,9 @@ mod tests {
         let mut buffer = Vec::new();
         write_message(&mut buffer, &original).await.unwrap();
 
-        // Verify format
-        let output = String::from_utf8(buffer.clone()).unwrap();
+        let output = String::from_utf8(buffer).unwrap();
         assert!(output.starts_with("Content-Length: "));
         assert!(output.contains("\r\n\r\n"));
         assert!(output.contains(r#""jsonrpc":"2.0""#));
-
-        // Read back
-        let mut cursor = std::io::Cursor::new(buffer);
-        let parsed = read_message(&mut cursor).await.unwrap();
-
-        assert_eq!(parsed.id, original.id);
-        assert_eq!(parsed.method, original.method);
-        assert_eq!(parsed.params, original.params);
     }
 }

@@ -178,7 +178,7 @@ impl Editor {
         });
 
         // Fire into the hover slot (cancels any previous in-flight hover)
-        self.lsp.slots.hover.fire(task, rx, buffer_version as u64);
+        self.lsp.slots.hover.fire(task, rx);
 
         self.set_lsp_status("Loading hover...".to_string());
         crate::lsp_debug!("LSP-HOVER", "Spawned hover request, waiting for response");

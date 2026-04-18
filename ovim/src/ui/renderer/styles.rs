@@ -28,27 +28,6 @@ pub fn remap_highlights(
         .collect()
 }
 
-/// Returns the style for a character in the buffer based on highlighting priorities
-/// Priority: visual selection > search match > syntax > normal
-#[allow(dead_code)]
-pub fn get_char_style(
-    is_selected: bool,
-    is_search_match: bool,
-    syntax_group: Option<HighlightGroup>,
-    theme: &Theme,
-) -> Style {
-    if is_selected {
-        Style::default().bg(Color::Blue).fg(Color::White)
-    } else if is_search_match {
-        Style::default().bg(Color::Yellow).fg(Color::Black)
-    } else if let Some(group) = syntax_group {
-        let color = crate::key_convert::convert_core_color(theme.get_color(group));
-        Style::default().fg(color)
-    } else {
-        Style::default()
-    }
-}
-
 /// Returns the style for line numbers in the gutter
 pub fn get_line_number_style(is_current_line: bool, theme: &Theme) -> Style {
     if is_current_line {

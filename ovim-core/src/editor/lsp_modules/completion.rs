@@ -193,7 +193,6 @@ impl Editor {
         }
 
         let buffer_version_usize = self.buffer().version();
-        let buffer_version = buffer_version_usize as u64;
 
         // Spawn completion request in background (non-blocking).
         // Document sync already happened above via ensure_lsp_document_synced().
@@ -230,7 +229,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp.slots.completion.fire(task, rx, buffer_version);
+        self.lsp.slots.completion.fire(task, rx);
 
         self.set_lsp_status("Requesting completions...".to_string());
         Ok(true)

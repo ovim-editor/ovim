@@ -824,9 +824,6 @@ fn render_separator(frame: &mut Frame, area: Rect, direction: SplitDirection) {
 /// Handles rendering the editor state to the terminal
 pub struct Renderer {
     terminal: RatatuiTerminal<CrosstermBackend<io::Stdout>>,
-    /// Reserved for future theme application
-    #[allow(dead_code)]
-    theme: Theme,
     /// Per-line render cache to avoid recomputing unchanged lines
     line_cache: LineRenderCache,
     /// Discriminant of the last emitted cursor style (0=block, 1=bar) to
@@ -849,7 +846,6 @@ impl Renderer {
         let terminal = RatatuiTerminal::new(backend).expect("Failed to create terminal");
         Self {
             terminal,
-            theme: Theme::default(),
             line_cache: LineRenderCache::new(),
             last_cursor_style: None,
             last_title: String::new(),

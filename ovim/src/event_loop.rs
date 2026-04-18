@@ -581,9 +581,6 @@ fn spawn_pending_installs(editor: &mut Editor) {
                 crate::lsp_init::auto_install::InstallResult::PrerequisitesMissing(msg) => {
                     InstallStatus::Failed(msg)
                 }
-                crate::lsp_init::auto_install::InstallResult::Declined => {
-                    InstallStatus::Failed("Declined".to_string())
-                }
             };
 
             let _ = tx.send(InstallProgress {

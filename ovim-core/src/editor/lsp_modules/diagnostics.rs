@@ -113,7 +113,7 @@ impl Editor {
         self.lsp
             .slots
             .diagnostics
-            .fire(task, rx, buffer_version as u64);
+            .fire(task, rx);
     }
 
     /// Poll background diagnostics refresh responses without blocking the UI tick.
@@ -341,11 +341,10 @@ mod tests {
     /// Helper: fire a pre-built `DiagnosticResult` into the diagnostics slot so
     /// that `poll_pending_diagnostic_refresh_response` can pick it up immediately.
     fn fire_diagnostic_result(editor: &mut Editor, result: DiagnosticResult) {
-        let buffer_version = result.buffer_version as u64;
         let (tx, rx) = oneshot::channel::<anyhow::Result<DiagnosticResult>>();
         tx.send(Ok(result)).unwrap();
         let task = tokio::spawn(async {});
-        editor.lsp.slots.diagnostics.fire(task, rx, buffer_version);
+        editor.lsp.slots.diagnostics.fire(task, rx);
     }
 
     #[tokio::test(flavor = "current_thread")]

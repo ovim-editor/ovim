@@ -92,7 +92,7 @@ impl Editor {
         self.lsp
             .slots
             .inlay_hints
-            .fire(task, rx, buffer_version as u64);
+            .fire(task, rx);
     }
 
     /// Get inlay hints for a specific line (0-indexed).

@@ -174,10 +174,6 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                         ovim_core::lsp_warn!("LSP", "Prerequisites missing: {}", msg);
                         return;
                     }
-                    InstallResult::Declined => {
-                        editor.set_lsp_status("LSP: Installation declined".to_string());
-                        return;
-                    }
                 }
             } else {
                 // No auto-install configured - show manual install hint
@@ -327,10 +323,6 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
                                     "Auto-repair prerequisites missing: {}",
                                     msg
                                 );
-                                return;
-                            }
-                            InstallResult::Declined => {
-                                editor.set_lsp_status("LSP: Auto-repair declined".to_string());
                                 return;
                             }
                         }
@@ -540,9 +532,6 @@ async fn initialize_companions(editor: &mut Editor, language_id: &str, abs_path:
                                     companion.name,
                                     e
                                 );
-                                continue;
-                            }
-                            InstallResult::Declined => {
                                 continue;
                             }
                         }
@@ -800,6 +789,5 @@ pub async fn handle_approved_lsp_install(editor: &mut Editor) {
         InstallResult::PrerequisitesMissing(msg) => {
             editor.set_lsp_status(format!("LSP: {}", msg));
         }
-        InstallResult::Declined => {}
     }
 }

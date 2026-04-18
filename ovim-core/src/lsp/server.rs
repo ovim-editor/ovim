@@ -20,7 +20,7 @@ use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::{Child, ChildStdin, Command};
+use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
 /// Maximum LSP message size in bytes (50MB)
@@ -181,10 +181,6 @@ struct LanguageServerInner {
     /// Child process handle
     process: Mutex<Option<Child>>,
 
-    /// Stdin writer (wrapped in Arc to allow cloning for writer task)
-    /// (Reserved for direct stdin communication with server)
-    #[allow(dead_code)]
-    stdin: Arc<Mutex<ChildStdin>>,
 
     /// Current server state (explicit state machine)
     state: Arc<Mutex<ServerState>>,
@@ -291,7 +287,6 @@ impl LanguageServer {
             language: language.to_string(),
             command: command.to_string(),
             process: Mutex::new(Some(child)),
-            stdin: stdin.clone(),
             state: Arc::new(Mutex::new(ServerState::Spawning)),
             capabilities: Mutex::new(None),
             pending_requests: Mutex::new(HashMap::new()),

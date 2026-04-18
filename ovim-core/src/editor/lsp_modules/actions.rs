@@ -106,7 +106,6 @@ impl Editor {
 
         let tab_size = self.options.tab_width as u32;
         let insert_spaces = self.options.expand_tab;
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -117,7 +116,7 @@ impl Editor {
             let _ = tx.send(result.map(|edits| crate::editor::lsp_slot::FormatResult { edits }));
         });
 
-        self.lsp.slots.format.fire(task, rx, buffer_version);
+        self.lsp.slots.format.fire(task, rx);
         Ok(true)
     }
 
@@ -125,7 +124,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("code actions").await?;
 
         self.set_lsp_status("Fetching code actions...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -233,7 +231,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp.slots.code_actions.fire(task, rx, buffer_version);
+        self.lsp.slots.code_actions.fire(task, rx);
         Ok(true)
     }
 
@@ -331,7 +329,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("organize imports").await?;
 
         self.set_lsp_status("Organizing imports...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -378,7 +375,7 @@ impl Editor {
         self.lsp
             .slots
             .organize_imports
-            .fire(task, rx, buffer_version);
+            .fire(task, rx);
         Ok(true)
     }
 
@@ -386,7 +383,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("rename").await?;
 
         self.set_lsp_status(format!("Renaming to '{}'...", new_name));
-        let buffer_version = self.buffer().version() as u64;
         let new_name_clone = new_name.clone();
 
         let (tx, rx) = tokio::sync::oneshot::channel();
@@ -405,7 +401,7 @@ impl Editor {
                 .send(result.map(|edit| crate::editor::lsp_slot::RenameResult { edit, new_name }));
         });
 
-        self.lsp.slots.rename.fire(task, rx, buffer_version);
+        self.lsp.slots.rename.fire(task, rx);
         Ok(true)
     }
 
@@ -413,7 +409,6 @@ impl Editor {
         let ctx = self.prepare_lsp_request("semantic tokens").await?;
 
         self.set_lsp_status("Fetching semantic tokens...".to_string());
-        let buffer_version = self.buffer().version() as u64;
 
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -441,7 +436,7 @@ impl Editor {
         self.lsp
             .slots
             .semantic_tokens
-            .fire(task, rx, buffer_version);
+            .fire(task, rx);
         Ok(true)
     }
 }

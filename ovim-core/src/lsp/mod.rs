@@ -58,12 +58,6 @@ struct StoredDiagnostics {
 /// Protects against OOM when opening/syncing large files
 const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 
-/// Maximum LSP message size in bytes (50MB)
-/// Prevents protocol buffer overflow and server OOM
-/// (Reserved for future message size validation)
-#[allow(dead_code)]
-const MAX_MESSAGE_SIZE: usize = 50 * 1024 * 1024;
-
 /// Unversioned diagnostics can arrive out-of-date during rapid edits/saves.
 /// Keep them suppressed briefly after local edits until LSP has a chance to
 /// compute diagnostics for the latest content.

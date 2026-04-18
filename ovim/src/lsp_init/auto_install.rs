@@ -34,10 +34,6 @@ pub enum InstallResult {
 
     /// Prerequisites not met (e.g., npm not installed)
     PrerequisitesMissing(String),
-
-    /// User declined installation
-    #[allow(dead_code)]
-    Declined,
 }
 
 /// Attempt to auto-install a language server

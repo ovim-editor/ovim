@@ -1,5 +1,4 @@
 use ovim::editor::Editor;
-use ovim::lsp::uri_from_file_path;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, OnceLock};
 use tokio::sync::mpsc;
@@ -12,12 +11,6 @@ fn send_hyperion_status(language_label: &str, msg: String) {
     if let Some(tx) = HYPERION_STATUS_SENDER.get() {
         let _ = tx.try_send(format!("{}: {}", language_label, msg));
     }
-}
-
-/// Helper for Java-specific status (backward compat, used by headless init)
-#[allow(dead_code)]
-fn send_java_status(msg: String) {
-    send_hyperion_status("Java", msg);
 }
 
 /// Initialize the Hyperion status sender (called from main)
@@ -153,50 +146,3 @@ fn capitalize_first(s: &str) -> String {
     }
 }
 
-/// Synchronous version for headless mode
-#[allow(dead_code)]
-pub async fn initialize_java_lsp(editor: &mut Editor, file_path: &Path) {
-    let project_root = find_jvm_project_root(file_path);
-
-    editor.set_lsp_status("Java: Finding Hyperion LSP...".to_string());
-
-    let hyperion_bin = match find_hyperion_binary() {
-        Some(bin) => bin,
-        None => {
-            editor.set_lsp_status("Java: Hyperion LSP not found".to_string());
-            return;
-        }
-    };
-
-    editor.set_lsp_status("Java: Starting Hyperion LSP...".to_string());
-
-    if let Some(lsp_manager) = editor.lsp_manager() {
-        let server_command = hyperion_bin.to_string_lossy().to_string();
-
-        match lsp_manager
-            .start_server("java", &server_command, vec![], project_root)
-            .await
-        {
-            Ok(server_id) => {
-                editor.register_lsp_server("java".to_string(), "hyperion".to_string());
-
-                lsp_manager.start_notification_listener(server_id).await;
-
-                // PRE-WARM: Send didOpen immediately for faster first request
-                if let Some(file_path_str) = editor.buffer().file_path().map(|s| s.to_string()) {
-                    let content = editor.buffer().rope().to_string();
-                    if let Some(uri) = uri_from_file_path(&file_path_str) {
-                        let _ = lsp_manager.did_open(uri, "java", 1, content).await;
-                        editor.mark_document_opened(&file_path_str);
-                        ovim_core::lsp_debug!("Java", "Pre-warmed didOpen for {}", file_path_str);
-                    }
-                }
-
-                editor.set_lsp_status("Java: Ready".to_string());
-            }
-            Err(e) => {
-                editor.set_lsp_status(format!("Java: Failed to start: {}", e));
-            }
-        }
-    }
-}

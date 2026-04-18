@@ -18,8 +18,6 @@ struct Inflight<T> {
     task: JoinHandle<()>,
     rx: oneshot::Receiver<anyhow::Result<T>>,
     started: Instant,
-    #[allow(dead_code)]
-    buffer_version: u64,
 }
 
 impl<T> Slot<T> {
@@ -33,7 +31,6 @@ impl<T> Slot<T> {
         &mut self,
         task: JoinHandle<()>,
         rx: oneshot::Receiver<anyhow::Result<T>>,
-        buffer_version: u64,
     ) {
         if let Some(old) = self.inflight.take() {
             old.task.abort();
@@ -42,19 +39,12 @@ impl<T> Slot<T> {
             task,
             rx,
             started: Instant::now(),
-            buffer_version,
         });
     }
 
     /// Non-blocking poll.  Returns `Some(result)` when the response has
     /// arrived, `None` while still waiting.  Automatically aborts requests
     /// that have been in flight longer than `timeout`.
-    #[allow(dead_code)]
-    pub fn poll(&mut self) -> Option<anyhow::Result<T>> {
-        self.poll_with_timeout(Duration::from_secs(15))
-    }
-
-    /// Like [`poll`] but with a caller-chosen timeout.
     pub fn poll_with_timeout(&mut self, timeout: Duration) -> Option<anyhow::Result<T>> {
         let inflight = self.inflight.as_mut()?;
         match inflight.rx.try_recv() {
@@ -87,17 +77,6 @@ impl<T> Slot<T> {
         }
     }
 
-    /// The buffer version that was current when the request was fired.
-    #[allow(dead_code)]
-    pub fn buffer_version(&self) -> Option<u64> {
-        self.inflight.as_ref().map(|i| i.buffer_version)
-    }
-
-    /// How long the current request has been in flight.
-    #[allow(dead_code)]
-    pub fn elapsed(&self) -> Option<Duration> {
-        self.inflight.as_ref().map(|i| i.started.elapsed())
-    }
 }
 
 impl<T> Default for Slot<T> {
@@ -221,16 +200,10 @@ impl<T> TrackedSlot<T> {
         &mut self,
         task: JoinHandle<()>,
         rx: oneshot::Receiver<anyhow::Result<T>>,
-        buffer_version: u64,
     ) {
         self.fired_at = self.generation;
         self.last_fired = Some(Instant::now());
-        self.slot.fire(task, rx, buffer_version);
-    }
-
-    /// Non-blocking poll. Delegates to inner `Slot`.
-    pub fn poll(&mut self) -> Option<anyhow::Result<T>> {
-        self.slot.poll()
+        self.slot.fire(task, rx);
     }
 
     /// Non-blocking poll with explicit timeout.
@@ -502,9 +475,9 @@ mod tests {
         let (tx, rx) = oneshot::channel();
         tx.send(Ok(42)).ok();
         let task = tokio::spawn(async {});
-        slot.fire(task, rx, 1);
+        slot.fire(task, rx);
 
-        let result = slot.poll();
+        let result = slot.poll_with_timeout(Duration::from_secs(15));
         assert!(result.is_some());
         assert_eq!(result.unwrap().unwrap(), 42);
     }
@@ -516,9 +489,9 @@ mod tests {
 
         let (_tx, rx) = oneshot::channel();
         let task = tokio::spawn(async { std::future::pending::<()>().await });
-        slot.fire(task, rx, 1);
+        slot.fire(task, rx);
 
-        assert!(slot.poll().is_none());
+        assert!(slot.poll_with_timeout(Duration::from_secs(15)).is_none());
         assert!(slot.is_pending());
     }
 
