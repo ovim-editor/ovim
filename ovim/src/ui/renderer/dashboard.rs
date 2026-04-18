@@ -31,24 +31,20 @@ mod colors {
 
     pub const LOGO: Color = Color::Rgb(137, 180, 250); // Blue
     pub const TAGLINE: Color = Color::Rgb(166, 176, 207); // Subtext
-    pub const MENU_KEY: Color = Color::Rgb(166, 227, 161); // Green
+    pub const MENU_KEY: Color = Color::White; // Bold white pairs with the blue logo / muted prefix
     pub const MENU_LABEL: Color = Color::Rgb(205, 214, 244); // Text
-    pub const MENU_HINT: Color = Color::Rgb(127, 132, 156); // Overlay
-    pub const MENU_DESC: Color = Color::Rgb(148, 156, 187); // Subtext
+    pub const KEY_MUTED: Color = Color::Rgb(108, 112, 134); // Overlay0 — for `<Space>` prefix
     pub const SEPARATOR: Color = Color::Rgb(88, 91, 112); // Surface2
     pub const VERSION: Color = Color::Rgb(127, 132, 156); // Overlay
 }
 
-fn prettify_keys(keys: &str) -> String {
-    keys.replace("<Space>", "␣")
-}
 
 /// Renders the dashboard screen
 pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     // Calculate vertical centering
-    // Logo (5) + spacing (1) + tagline (1) + spacing (1) + tips legend (1)
-    // + spacing (1) + separator (1) + spacing (1) + rows + spacing (2) + version (1)
-    let total_height = 5 + 1 + 1 + 1 + 1 + 1 + 1 + 1 + MENU_ITEMS.len() + 2 + 1;
+    // Logo (5) + spacing (1) + tagline (1) + spacing (1) + separator (1)
+    // + spacing (1) + rows + spacing (2) + version (1)
+    let total_height = 5 + 1 + 1 + 1 + 1 + 1 + MENU_ITEMS.len() + 2 + 1;
     let vertical_offset = if area.height as usize > total_height {
         (area.height as usize - total_height) / 2
     } else {
@@ -98,18 +94,7 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
         ),
     ]));
 
-    // Spacing + legend
-    lines.push(Line::from(""));
-    let legend = "Press normal keys.  ␣ means <Space>";
-    let legend_padding = if area.width as usize > legend.len() {
-        " ".repeat((area.width as usize - legend.len()) / 2)
-    } else {
-        String::new()
-    };
-    lines.push(Line::from(vec![
-        Span::raw(legend_padding),
-        Span::styled(legend, Style::default().fg(colors::MENU_HINT)),
-    ]));
+    // Spacing before separator
     lines.push(Line::from(""));
 
     // Separator line
@@ -130,50 +115,53 @@ pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     // Spacing
     lines.push(Line::from(""));
 
-    // Shortcut rows
-    let menu_width = 74usize;
+    // Shortcut rows: keybind on the left (the user is hunting for a key),
+    // single label phrase on the right. Keys use Vim's `<Space>` notation
+    // verbatim — self-documenting, no glyph legend needed.
+    const KEY_GAP: usize = 4;
+
+    let key_col_width = MENU_ITEMS
+        .iter()
+        .map(|(keys, _)| keys.chars().count())
+        .max()
+        .unwrap_or(0);
+    let label_col_width = MENU_ITEMS
+        .iter()
+        .map(|(_, label)| label.chars().count())
+        .max()
+        .unwrap_or(0);
+    let menu_width = key_col_width + KEY_GAP + label_col_width;
     let menu_padding = if area.width as usize > menu_width {
         " ".repeat((area.width as usize - menu_width) / 2)
     } else {
         String::new()
     };
 
-    let action_width = MENU_ITEMS
-        .iter()
-        .map(|(action, _, _)| action.len())
-        .max()
-        .unwrap_or(0)
-        + 2;
-    let desc_width = MENU_ITEMS
-        .iter()
-        .map(|(_, desc, _)| desc.len())
-        .max()
-        .unwrap_or(0)
-        + 2;
+    let bold_key = Style::default()
+        .fg(colors::MENU_KEY)
+        .add_modifier(Modifier::BOLD);
+    let muted_key = Style::default()
+        .fg(colors::KEY_MUTED)
+        .add_modifier(Modifier::BOLD);
 
-    for (action, desc, keys) in MENU_ITEMS.iter().copied() {
-        let key_text = prettify_keys(keys);
+    for (keys, label) in MENU_ITEMS.iter().copied() {
+        let key_pad = " ".repeat(key_col_width - keys.chars().count() + KEY_GAP);
         let mut spans = vec![Span::raw(menu_padding.clone())];
-        spans.push(Span::styled(
-            format!(
-                "{action:<action_width$}",
-                action = action,
-                action_width = action_width
-            ),
-            Style::default()
-                .fg(colors::MENU_LABEL)
-                .add_modifier(Modifier::BOLD),
-        ));
-        spans.push(Span::styled(
-            format!("{desc:<desc_width$}", desc = desc, desc_width = desc_width),
-            Style::default().fg(colors::MENU_DESC),
-        ));
-        spans.push(Span::styled(
-            key_text,
-            Style::default()
-                .fg(colors::MENU_KEY)
-                .add_modifier(Modifier::BOLD),
-        ));
+
+        // Render `<Space>` tokens muted, real command keys in bold white.
+        // The eye scans the white column for the unique letter to press;
+        // `<Space>` itself is the predictable leader and recedes.
+        let mut rest = keys;
+        while let Some(after) = rest.strip_prefix("<Space>") {
+            spans.push(Span::styled("<Space>", muted_key));
+            rest = after;
+        }
+        if !rest.is_empty() {
+            spans.push(Span::styled(rest, bold_key));
+        }
+
+        spans.push(Span::raw(key_pad));
+        spans.push(Span::styled(label, Style::default().fg(colors::MENU_LABEL)));
         lines.push(Line::from(spans));
     }
 
@@ -219,7 +207,8 @@ mod tests {
 
     #[test]
     fn test_menu_items_count() {
-        assert!(MENU_ITEMS.len() >= 8);
+        // Tight, focused list — leader-key cheat sheet, not a feature catalog.
+        assert!(MENU_ITEMS.len() >= 4 && MENU_ITEMS.len() <= 8);
     }
 
     #[test]
@@ -227,8 +216,4 @@ mod tests {
         assert_eq!(LOGO.len(), 5);
     }
 
-    #[test]
-    fn test_prettify_keys() {
-        assert_eq!(prettify_keys("<Space>sf"), "␣sf");
-    }
 }

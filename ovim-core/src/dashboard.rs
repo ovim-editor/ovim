@@ -1,16 +1,17 @@
 //! Dashboard constants and animation trait for the startup screen.
 
-/// Dashboard tips: (action, description, key sequence)
-pub const MENU_ITEMS: &[(&str, &str, &str)] = &[
-    ("Open AI chat", "Agent with edits", "<Space><Space>"),
-    ("Open AI query", "Read-only assistant", "<Space>?"),
-    ("Find files", "Project picker", "<Space>sf"),
-    ("Live grep", "Search text in project", "<Space>sg"),
-    ("Code actions", "LSP quick fixes", "<Space>ca"),
-    ("Go to definition", "Jump to symbol", "gd"),
-    ("Hover docs", "Inspect symbol", "K"),
-    ("Command mode", "Run ex commands", ":"),
-    ("Quit", "Exit editor", ":q"),
+/// Dashboard tips: (key sequence, label)
+///
+/// Ordered by what users actually look up here: ovim-specific leader bindings
+/// first (unguessable across distros), then in-buffer LSP reassurance.
+/// Standard vim (`:`, `:e`, `:q`) is omitted — every vim user already knows it.
+pub const MENU_ITEMS: &[(&str, &str)] = &[
+    ("<Space>sf", "Find a file"),
+    ("<Space>sg", "Search the project"),
+    ("<Space><Space>", "AI chat"),
+    ("<Space>ca", "Code actions"),
+    ("gd", "Jump to definition"),
+    ("K", "Hover docs"),
 ];
 
 /// Trait for dashboard animations (e.g. the idle cat easter egg).
