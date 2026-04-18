@@ -1,12 +1,14 @@
 # 15: Simplify the `Change` Enum
 
-> **Steps 1–3 + 4.1–4.2 DONE.** Insert sessions now push `Change::Recorded`
-> from session-captured edits, with `RepeatAction::InsertSession` carrying
-> the dot-repeat payload. `Change::Composite` and the `ChangeBuilder`
-> accumulator are gone; the builder shrank to `cursor_before` + `entry_mode`.
-> What's left (step 4.3) is removing the transient `InsertText` /
-> `DeleteText` wrappers used by `apply_change_and_record` for cursor
-> positioning. Tracked separately below.
+> **DONE.** After step 4.3 `Change` is just `Recorded` + `ResourceOp`.
+> Every buffer-level edit call site now goes through a buffer helper
+> (`insert_text_at_positioning_cursor` /
+> `delete_range_positioning_cursor`), and `Editor::record_edit` provides
+> the closure-based shim that used to live in `apply_change_and_record`.
+> See the step-4.3 landing note below for the semantics-preserving
+> tricks (`RepeatAction::InsertSession` for non-session direct-path
+> keystrokes, `RepeatAction::PasteAfter` for Normal-mode bracketed
+> paste).
 
 **Goal:** After removing dead variants (roadmap 13), clarify what remains. The `Change` enum should read as a clean description of what it actually does — undo records for two distinct editing patterns.
 
@@ -14,18 +16,19 @@
 
 **Risk:** Low if done incrementally. Medium if attempted all at once.
 
-## Where `Change` is now (post step 4.2)
+## Where `Change` is now (post step 4.3)
 
 | Variant | Role | Used by |
 |---------|------|---------|
-| `InsertText` | Transient cursor-positioning wrapper inside `apply_change_and_record` | Insert/replace-mode helpers (see step 4.3) |
-| `DeleteText` | Transient cursor-positioning wrapper inside `apply_change_and_record` | Insert/replace-mode helpers (see step 4.3) |
-| `Recorded` | Mechanical undo + redo backed by a `Vec<Edit>` | All session and direct edits, LSP edits, API handlers |
+| `Recorded` | Mechanical undo + redo backed by a `Vec<Edit>` | Insert/replace-mode sessions, Normal-mode operators, LSP edits, API handlers, direct-path buffer helpers |
 | `ResourceOp` | Filesystem snapshot pair | LSP workspace create/rename/delete |
 
-`Composite` is gone. Insert sessions and the API edit handler push
-`Recorded` directly. Dot-repeat for insert sessions runs through
-`RepeatAction::InsertSession` (offsets re-anchored by `delta = new_origin - origin_offset`).
+`InsertText`, `DeleteText`, and `Composite` are all gone. Dot-repeat for
+insert sessions runs through `RepeatAction::InsertSession` (offsets
+re-anchored by `delta = new_origin - origin_offset`). Direct-path
+keystrokes (visual-`c` entering insert, Normal-mode bracketed paste)
+also set a `RepeatAction` so `.` still re-anchors to the current cursor
+the way `Change::InsertText::repeat` used to.
 
 ## Step 1: Document the boundary (DONE — `23e6eeb` / `30142fb`)
 
@@ -94,16 +97,44 @@ match arms removed. `ChangeBuilder` shrunk to `cursor_before` +
 `entry_mode`. `ChangeManager::add_change` is a no-op while building;
 `finalize_building_at` removed.
 
-**4.3 — Open.** `Change::insert` / `Change::delete` are still
-constructed by ~15 call sites (insert/replace-mode helpers) for the
-side effect of `change.apply()`: rope mutation + automatic cursor
-positioning. Replacing them requires inlining the cursor logic into
-either each call site or a new buffer-level helper. Mechanical work
-but touches a wide surface — own sprint.
+**4.3 — DONE.** Removed the `InsertText` / `DeleteText` variants, their
+constructors (`Change::insert`, `Change::delete`,
+`Change::delete_backward`), and their arms in `apply`, `undo`, `repeat`,
+`cursor_before`, `cursor_after`, `set_cursor_before`, `set_cursor_after`,
+`get_inserted_text`, `into_edits`. `Change::calculate_end_position`
+also went away (the `helpers::calculate_end_position` copy lives on for
+its other callers). `apply_change_and_record` was replaced by two
+primitives:
 
-When 4.3 lands, `Change` reduces to `Recorded` + `ResourceOp` and
-`apply_change_and_record` collapses. At that point `calculate_end_position()`
-also becomes dead.
+1. `Buffer::insert_text_at_positioning_cursor` and
+   `Buffer::delete_range_positioning_cursor` port the cursor-landing
+   behavior (end of inserted text / start of deleted range) that the
+   old `Change::InsertText/DeleteText::apply` provided.
+2. `Editor::record_edit(cursor_before, |buf| …)` wraps those helpers
+   in the recording-origin / undo-push logic `apply_change_and_record`
+   used to carry. During an active insert session the ambient recording
+   captures edits and the session-level `finalize_change_building`
+   pushes a single `Recorded`. Outside a session it wraps the edit in
+   `buffer.record()`, pushes a `Recorded`, AND sets
+   `RepeatAction::InsertSession { entry_mode: Insert, … }` so `.`
+   re-anchors to the current cursor — the behavior the old
+   `Change::InsertText::repeat` baked into the undo variant itself.
+
+The Normal-mode bracketed paste did NOT route through `record_edit`; it
+needs `RepeatAction::PasteAfter { count: 1 }` to preserve the "paste-at-
+cursor" semantics of `.`. The Insert-mode bracketed paste goes through
+`record_edit` so the ambient insert session captures it.
+
+The API edit handlers in `ovim/src/event_loop.rs` (`handle_insert_lines`,
+`handle_delete_lines`) were converted from direct mutation + `Change::insert`
+/ `Change::delete` to `buffer.record()` + `push_recorded_undo`, matching
+the `handle_edit_line` shape that already existed.
+
+Test surface touched: the `insert_mode.rs` hygiene test that previously
+asserted `Some(Change::InsertText { .. })` now asserts
+`Some(Change::Recorded { .. })` — the direct-path push genuinely
+changed type, so the assertion update reflects real semantics rather
+than weakening the test.
 
 ## Files
 

@@ -27,7 +27,7 @@ These docs (00-phase0 through 08) are kept for historical reference. They descri
 |---|-------|-----------|
 | [13](./13-dead-change-variants.md) | Remove dead `Change` variants | `0a8af89` |
 | [14](./14-text-object-resolution.md) | Unify `TextObjectType` resolution | `d6a114a` |
-| [15](./15-change-enum-simplification.md) step 1 — document the boundary | `23e6eeb` / `30142fb` |
+| [15](./15-change-enum-simplification.md) | Simplify the `Change` enum (all steps) | `23e6eeb` / `30142fb` / `cc813ea` / `beb850d` / `1e5f9b2` / `cb85572` / `31996ca` / `a005cf7` / step-4.3 |
 | [16](./16-event-loop-grouping.md) | Event loop phase grouping | `443ffb4` |
 
 These docs are kept with `(DONE)` banners so the "what was deleted and why"
@@ -37,21 +37,14 @@ trail stays discoverable. They should not drive new work.
 
 | # | Title | Type | Risk | Effort |
 |---|-------|------|------|--------|
-| [15](./15-change-enum-simplification.md) step 4.3 | Remove `InsertText` / `DeleteText` cursor-positioning wrappers | Architecture | Low | Medium |
 | [17](./17-multi-server-sync.md) | Multi-server document sync | Bug prevention | **Medium** | Medium |
 
 ### Recommended order
 
-**15 step 4.3** is the only undo-system cleanup still open. After steps
-3 + 4.1 + 4.2 (insert-mode recording, `RepeatAction::InsertSession`,
-`Composite` removal), `InsertText` / `DeleteText` survive only as
-transient cursor-positioning wrappers used by `apply_change_and_record`.
-Replacing them is mechanical (~15 call sites) but touches a wide
-surface — own sprint.
-
-**17** is the only roadmap item with user-facing impact. Prioritize it if
-you're expanding companion server support (e.g., Tailwind CSS +
-TypeScript).
+With roadmap 15 closed out (step 4.3 landed), **17** is the only
+remaining active item. It's also the only one with user-facing impact —
+prioritize it if you're expanding companion server support
+(e.g., Tailwind CSS + TypeScript).
 
 ## What was retired
 
@@ -75,15 +68,6 @@ Old roadmaps 09–12 are replaced by the active roadmap above:
 **`Edit` enum** — Absolute char offsets, mechanically reversible, no ambiguity. The clean core of the undo system.
 
 ### Where the tension lives
-
-**`InsertText` / `DeleteText` survive as cursor-positioning wrappers** —
-After roadmap 15 steps 3 + 4.1 + 4.2, undo and dot-repeat for insert
-sessions go through `Recorded` + `RepeatAction::InsertSession`.
-`InsertText` / `DeleteText` no longer reach the undo stack from
-sessions, but `apply_change_and_record` still wraps each insert/delete
-keystroke in one of those variants for the cursor-positioning side
-effect of `change.apply()`. Roadmap 15 step 4.3 inlines that into
-buffer-level helpers and lets the variants go.
 
 **Multi-server document versions are shared, not per-server** — If one
 server in a multi-server setup (TypeScript + Tailwind CSS) silently drops
