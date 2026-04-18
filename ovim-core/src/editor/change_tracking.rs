@@ -39,16 +39,27 @@ impl Editor {
     /// Applies a buffer-level edit and records it when it actually mutated.
     ///
     /// This is the low-level helper insert/replace-mode keystroke handlers use
-    /// after the removal of `Change::InsertText` / `DeleteText`. It preserves
-    /// the two behaviors the old `apply_change_and_record` had:
+    /// after the removal of `Change::InsertText` / `DeleteText`. It has two
+    /// branches, but in practice only the first one fires in production code:
     ///
-    /// 1. During an active insert/replace recording session, snapshot the
-    ///    recording origin on the first edit so `RepeatAction::InsertSession`
-    ///    dot-repeat can re-anchor correctly. Edits flow into the ambient
-    ///    session and the undo push happens at `finalize_change_building`.
-    /// 2. Outside a session, wrap the edit in `buffer.record()` and push a
-    ///    `Change::Recorded` onto the undo stack (via `add_change` so
-    ///    `last_change` is populated and `.` can dot-repeat the edit).
+    /// 1. **Session branch (canonical)** — during an active insert/replace
+    ///    recording session, snapshot the recording origin on the first edit
+    ///    so `RepeatAction::InsertSession` dot-repeat can re-anchor correctly.
+    ///    Edits flow into the ambient session and the undo push happens at
+    ///    `finalize_change_building`. `cursor_before` is unused here (the
+    ///    session already owns its own cursor_before).
+    /// 2. **Direct branch (vestigial)** — pre-Signal-A, visual-`c` entered
+    ///    insert mode without a `start_change_building`, and `cursor_before`
+    ///    fed the synthesized `Change::Recorded` here. After Signal A routed
+    ///    visual-`c` through `PendingChangeRepeat`, every production caller
+    ///    is guaranteed to be in session mode. A single unit test
+    ///    (`exit_insert_mode_pending_change_repeat_no_insert_no_delete_keeps_prior_undo`)
+    ///    exercises this branch directly to pin the direct-path shape.
+    ///
+    /// Any new caller landing in the direct branch should probably call
+    /// `start_change_building` first and route through the session branch
+    /// instead — that's where undo merging and dot-repeat live for modern
+    /// change operators.
     ///
     /// `f` must mutate the buffer via `insert_text_at_positioning_cursor` /
     /// `delete_range_positioning_cursor` (or equivalent) — it returns whether
@@ -78,19 +89,21 @@ impl Editor {
             // Outer `record()` caller owns edit capture.
             f(self.buffer_mut())
         } else {
-            // Non-session path: wrap in `record()`, and on a real mutation
-            // push a `Change::Recorded` for mechanical undo PLUS set a
+            // Direct branch — vestigial after Signal A. Pre-fix, visual-`c`
+            // could land here because it entered insert mode without
+            // `start_change_building`; now it uses the session branch like
+            // every other change operator. This branch remains in place as a
+            // safety fallback and to keep the direct-path unit test green.
+            // If a new production caller lands here, consider whether it
+            // should call `start_change_building` first instead — the
+            // session branch is the canonical path.
+            //
+            // Wrap in `record()`, and on a real mutation push a
+            // `Change::Recorded` for mechanical undo PLUS set a
             // `RepeatAction::InsertSession` so `.` re-anchors to the current
             // cursor (matching the pre-4.3 `Change::InsertText::repeat`
             // semantics). Without the RepeatAction, `.` would replay at the
             // original absolute offsets via `Change::Recorded::repeat`.
-            //
-            // `entry_mode` is hardcoded to `Insert` because this branch fires
-            // only for sessionless keystroke edits (e.g., typing in insert
-            // mode after visual-`c`, which does not open a ChangeBuilder).
-            // The single-edit Insert case in `RepeatAction::InsertSession`
-            // skips the trailing Esc cursor-left (see repeat_action.rs), so
-            // the semantics match the old `Change::InsertText::repeat`.
             //
             // Sites that want different dot-repeat semantics (e.g., the
             // Normal-mode bracketed paste, which wants `RepeatAction::PasteAfter`)
