@@ -1,6 +1,21 @@
 use super::{Editor, FindDirection, FindType, Motions, TagEntry};
+use crate::buffer::Buffer;
 use crate::editor::MarkManager;
 use crate::unicode::GraphemeCol;
+
+/// Clamps a stored mark/tag column to the cursor-on-char range of `line`.
+///
+/// Marks (and tag-stack entries) record absolute grapheme columns at set
+/// time; lines edited afterward may shrink, leaving the column past the
+/// last grapheme. Clamping to `len-1` (saturating to 0 on empty lines)
+/// mirrors normal-mode cursor invariants. (OV-00190.)
+fn clamp_grapheme_col(buffer: &Buffer, line_idx: usize, col: usize) -> usize {
+    let line_len = buffer
+        .line(line_idx)
+        .map(|line| crate::unicode::grapheme_count(line.trim_end_matches('\n')))
+        .unwrap_or(0);
+    col.min(line_len.saturating_sub(1))
+}
 
 impl Editor {
     /// Sets a mark at the current cursor position
@@ -56,9 +71,18 @@ impl Editor {
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
             if let Some(mark) = self.nav.marks.get_mark(name) {
+                // OV-00190: clamp to current buffer bounds. The mark may point
+                // past EOF if lines were deleted after it was set; uncapped,
+                // `set_position` would land the cursor outside the rope and
+                // subsequent motions / rendering would panic or display
+                // garbage. Same shape as the global-mark branch below.
+                let max_line = self.buffer().line_count().saturating_sub(1);
+                let clamped_line = mark.line.min(max_line);
+                let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, mark.col);
+
                 self.buffer_mut()
                     .cursor_mut()
-                    .set_position(mark.line, GraphemeCol(mark.col));
+                    .set_position(clamped_line, GraphemeCol(clamped_col));
                 // Center cursor after jump (Vim behavior)
                 self.center_cursor_in_viewport();
                 return true;
@@ -81,14 +105,8 @@ impl Editor {
                 // Validate and clamp mark position to buffer bounds
                 let max_line = self.buffer().line_count().saturating_sub(1);
                 let clamped_line = global_mark.line.min(max_line);
-
-                let line_len = if let Some(line) = self.buffer().line(clamped_line) {
-                    let line_str = line.trim_end_matches('\n');
-                    crate::unicode::grapheme_count(line_str)
-                } else {
-                    0
-                };
-                let clamped_col = global_mark.col.min(line_len.saturating_sub(1));
+                let clamped_col =
+                    clamp_grapheme_col(self.buffer(), clamped_line, global_mark.col);
 
                 // Jump to the validated position
                 self.buffer_mut()
@@ -118,8 +136,14 @@ impl Editor {
         // Try local mark first (a-z)
         if name.is_ascii_lowercase() {
             if let Some(mark) = self.nav.marks.get_mark(name) {
+                // OV-00190: clamp the mark line to current buffer bounds so a
+                // line deleted after the mark was set doesn't land the cursor
+                // past EOF. Mirrors the global-mark branch below.
+                let max_line = self.buffer().line_count().saturating_sub(1);
+                let clamped_line = mark.line.min(max_line);
+
                 // Find first non-blank character on the line (char index → grapheme)
-                let first_non_blank = if let Some(line_text) = self.buffer().line(mark.line) {
+                let first_non_blank = if let Some(line_text) = self.buffer().line(clamped_line) {
                     let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())
@@ -134,7 +158,7 @@ impl Editor {
 
                 self.buffer_mut()
                     .cursor_mut()
-                    .set_position(mark.line, first_non_blank);
+                    .set_position(clamped_line, first_non_blank);
                 // Center cursor after jump (Vim behavior)
                 self.center_cursor_in_viewport();
                 return true;
@@ -332,14 +356,7 @@ impl Editor {
             // Validate and clamp position to buffer bounds
             let max_line = self.buffer().line_count().saturating_sub(1);
             let clamped_line = entry.line.min(max_line);
-
-            let line_len = if let Some(line) = self.buffer().line(clamped_line) {
-                let line_str = line.trim_end_matches('\n');
-                crate::unicode::grapheme_count(line_str)
-            } else {
-                0
-            };
-            let clamped_col = entry.col.min(line_len.saturating_sub(1));
+            let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, entry.col);
 
             // Jump to the position
             self.buffer_mut()

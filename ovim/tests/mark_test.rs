@@ -775,3 +775,104 @@ line 5
     );
     test.assert_cursor(0, 0);
 }
+
+// ============================================================================
+// OV-00190: local mark jump must clamp to current buffer bounds
+// ============================================================================
+
+/// Set a local mark on the last line, delete that line, jump back. Pre-fix
+/// the cursor would land at `mark.line` (past EOF). Post-fix it clamps to
+/// the new last line.
+///
+/// Calls `jump_to_mark` directly so the test isn't masked by the
+/// `handle_key_event` post-input `validate_cursor_position` safety net —
+/// the bug lives in the per-API contract, not just at the input boundary,
+/// and any future caller that bypasses the safety net (e.g. an LSP-driven
+/// jump or scripted automation) would still corrupt the cursor.
+#[test]
+fn test_ov00190_backtick_local_mark_clamps_to_eof_after_delete() {
+    let mut test = EditorTest::new("line 1\nline 2\nline 3");
+
+    // Mark the last line.
+    test.keys("G").press('m').press('a');
+    assert_eq!(
+        test.editor.marks().get_mark('a').expect("mark set").line,
+        2,
+        "test setup: mark recorded on the original line 2"
+    );
+
+    // Now delete the last two lines so the marked line no longer exists.
+    test.keys("gg").keys("dd").keys("dd");
+    let line_count_after = test.editor.buffer().line_count();
+    assert!(
+        line_count_after <= 2,
+        "test setup: dd dd should reduce to <=2 lines, got {line_count_after}"
+    );
+
+    // Direct call — bypasses the input-dispatch safety net so we observe
+    // the contract `jump_to_mark` itself enforces.
+    let did_jump = test.editor.jump_to_mark('a');
+    assert!(did_jump, "mark `a` was set, jump should report success");
+
+    let cursor_line = test.editor.buffer().cursor().line();
+    let max_valid_line = line_count_after.saturating_sub(1);
+    assert!(
+        cursor_line <= max_valid_line,
+        "local mark jump must clamp to a valid line (max {max_valid_line}), got {cursor_line}"
+    );
+    assert!(
+        test.editor.buffer().line(cursor_line).is_some(),
+        "cursor must land on a line that actually exists"
+    );
+}
+
+/// Same shape with the apostrophe (linewise) variant of mark jump. Direct
+/// `jump_to_mark_line` call to bypass the input-handler safety net — see
+/// the rationale on `test_ov00190_backtick_local_mark_clamps_to_eof_after_delete`.
+#[test]
+fn test_ov00190_apostrophe_local_mark_clamps_to_eof_after_delete() {
+    let mut test = EditorTest::new("line 1\n  indented\nlast");
+
+    test.keys("G").press('m').press('a');
+    test.keys("gg").keys("dd").keys("dd");
+    let line_count_after = test.editor.buffer().line_count();
+
+    let did_jump = test.editor.jump_to_mark_line('a');
+    assert!(did_jump, "mark `a` was set, jump should report success");
+
+    let cursor_line = test.editor.buffer().cursor().line();
+    let max_valid_line = line_count_after.saturating_sub(1);
+    assert!(
+        cursor_line <= max_valid_line,
+        "linewise local mark jump must clamp to a valid line (max {max_valid_line}), got {cursor_line}"
+    );
+}
+
+/// Marked column is past the new line's last grapheme. Without clamping, the
+/// cursor would sit past end-of-line; clamping snaps it to the last
+/// grapheme (cursor-on-char semantics). Direct call bypasses the input
+/// safety net — see rationale on the EOF-clamp test above.
+#[test]
+fn test_ov00190_local_mark_clamps_column_when_line_shrinks() {
+    let mut test = EditorTest::new("hello world\nshort");
+
+    // Mark at column 10 ('d' in "world") on line 0.
+    test.keys("$").press('m').press('a');
+    test.assert_cursor(0, 10);
+
+    // Use ex command :1s to deterministically shrink line 0 to "hi" (2 graphemes).
+    test.press(':').type_text("1s/hello world/hi/").press_enter();
+
+    // Move away, then jump back via direct API to observe the contract.
+    test.keys("G");
+    let did_jump = test.editor.jump_to_mark('a');
+    assert!(did_jump, "mark `a` was set, jump should report success");
+
+    let cursor = test.editor.buffer().cursor();
+    assert_eq!(cursor.line(), 0, "jumped to marked line");
+    assert!(
+        cursor.col().0 <= 1,
+        "column must be clamped into 'hi' (last grapheme col 1), got {}",
+        cursor.col().0
+    );
+}
