@@ -36,7 +36,6 @@ pub enum MarkdownElement {
     InlineCode(String),
     /// Code block with optional language
     CodeBlock {
-        #[allow(dead_code)]
         language: Option<String>,
         code: String,
     },
