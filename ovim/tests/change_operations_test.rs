@@ -642,6 +642,50 @@ fn test_visual_line_change() {
     test.assert_cursor(0, 7);
 }
 
+#[test]
+fn test_visual_line_change_produces_blank_line() {
+    // Plain `Vc<text><Esc>` on a linewise selection (no dot-repeat) must
+    // open a blank line at the deletion site before inserting. Verified
+    // against Vim: on "line one\nline two\nline three\n", `VcNEW<Esc>` →
+    // "NEW\nline two\nline three\n".
+    let mut test = EditorTest::new("line one\nline two\nline three\n");
+
+    test.press('V').press('c').type_text("NEW").press_esc();
+
+    assert_eq!(test.buffer_content(), "NEW\nline two\nline three\n");
+}
+
+#[test]
+fn test_visual_line_change_preserves_indent() {
+    // `Vc` on an indented line should preserve the original indent on the
+    // opened blank line (matches normal-mode `cc`). Note: Vim only does
+    // this when `autoindent` is on; ovim does it unconditionally to match
+    // the `cc` / `S` convention already established in `handle_cc` /
+    // `substitute_line`.
+    let mut test = EditorTest::new("    indented\n    line two\n");
+
+    test.press('V').press('c').type_text("new").press_esc();
+
+    assert_eq!(test.buffer_content(), "    new\n    line two\n");
+}
+
+#[test]
+fn test_visual_line_change_undo_restores_fully() {
+    // A single `u` after `Vc<text><Esc>` must restore the pre-change
+    // buffer (undo granularity: delete + open-blank + inserted text all
+    // live in one undo entry). Mirrors `test_dot_after_visual_change_
+    // multichar_preserves_undo_granularity` for the linewise path.
+    let mut test = EditorTest::new("line one\nline two\nline three\n");
+
+    test.press('V').press('c').type_text("NEW").press_esc();
+
+    assert_eq!(test.buffer_content(), "NEW\nline two\nline three\n");
+
+    test.press('u');
+
+    assert_eq!(test.buffer_content(), "line one\nline two\nline three\n");
+}
+
 // ============================================================================
 // Change with indentation
 // ============================================================================
