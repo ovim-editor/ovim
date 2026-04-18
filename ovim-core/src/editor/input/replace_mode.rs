@@ -3,7 +3,7 @@
 //! Handles character replacement, backspace (with undo), and cursor movement.
 
 use super::helpers;
-use crate::editor::{CursorPos, Editor};
+use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{CharCol, GraphemeCol};
@@ -67,8 +67,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                 if col < chars.len() {
                     // Track the original character for undo
                     let old_char = chars[col];
-                    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-                    if !editor.record_edit(cursor_before, |buf| {
+                    if !editor.record_session_edit(|buf| {
                         buf.delete_range_positioning_cursor(
                             line_idx,
                             CharCol(col),
@@ -81,7 +80,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     }
 
                     let new_char = c.to_string();
-                    if !editor.record_edit(cursor_before, |buf| {
+                    if !editor.record_session_edit(|buf| {
                         buf.insert_text_at_positioning_cursor(line_idx, CharCol(col), &new_char)
                     }) {
                         return Ok(());
@@ -94,9 +93,8 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     }
                 } else {
                     // At end of line, just insert (like append)
-                    let cursor_before = CursorPos::new(line_idx, grapheme_col);
                     let new_char = c.to_string();
-                    if !editor.record_edit(cursor_before, |buf| {
+                    if !editor.record_session_edit(|buf| {
                         buf.insert_text_at_positioning_cursor(line_idx, CharCol(col), &new_char)
                     }) {
                         return Ok(());
@@ -137,8 +135,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     // If there's an old character to restore, restore it
                     if let Some(old_char) = state.old_text.pop() {
                         let restore_col = cursor_col - 1;
-                        let cursor_before = CursorPos::new(cursor_line, GraphemeCol(restore_col));
-                        if !editor.record_edit(cursor_before, |buf| {
+                        if !editor.record_session_edit(|buf| {
                             buf.delete_range_positioning_cursor(
                                 cursor_line,
                                 CharCol(restore_col),
@@ -151,7 +148,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                         }
 
                         let old_char_str = old_char.to_string();
-                        if !editor.record_edit(cursor_before, |buf| {
+                        if !editor.record_session_edit(|buf| {
                             buf.insert_text_at_positioning_cursor(
                                 cursor_line,
                                 CharCol(restore_col),
@@ -167,8 +164,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     } else {
                         // No old_text means this was an insertion at end of line, delete it
                         let delete_col = cursor_col - 1;
-                        let cursor_before = CursorPos::new(cursor_line, GraphemeCol(delete_col));
-                        if !editor.record_edit(cursor_before, |buf| {
+                        if !editor.record_session_edit(|buf| {
                             buf.delete_range_positioning_cursor(
                                 cursor_line,
                                 CharCol(delete_col),

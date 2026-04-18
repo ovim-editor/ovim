@@ -9,7 +9,7 @@
 //! - Visual block insert state handling
 //! - Tab/auto-indent
 
-use crate::editor::{Change, CursorPos, Editor, InsertEntryMode};
+use crate::editor::{Change, Editor, InsertEntryMode};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{CharCol, GraphemeCol};
@@ -45,11 +45,10 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
             // Delete the whitespace, leaving just the newline.
             // Whitespace is ASCII, so char count == grapheme count here.
             let whitespace_len = line_without_newline.chars().count();
-            let cursor_before = CursorPos::new(current_line_idx, GraphemeCol(whitespace_len));
 
             // Record the deletion for undo. `delete_range_positioning_cursor`
             // lands the cursor at char col 0 (== grapheme col 0).
-            if !editor.record_edit(cursor_before, |buf| {
+            if !editor.record_session_edit(|buf| {
                 buf.delete_range_positioning_cursor(
                     current_line_idx,
                     CharCol::ZERO,
@@ -503,20 +502,22 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::{ApplyPos, PendingChangeRepeat};
+    use crate::editor::{ApplyPos, CursorPos, PendingChangeRepeat};
 
     #[test]
     fn exit_insert_mode_pending_change_repeat_no_insert_no_delete_keeps_prior_undo() {
         let mut editor = Editor::with_content("line\n");
 
-        // Seed history so an accidental pop/replace is observable.
-        // Direct-path `record_edit` pushes a `Change::Recorded`, so that's what
-        // the undo stack should contain after this seed.
+        // Seed history so an accidental pop/replace is observable. Opens a
+        // throwaway session around the seed edit because `record_session_edit`
+        // requires an active recording session post-Signal-A cleanup.
         let cursor = editor.cursor_position();
         let apply = ApplyPos::new(cursor.line, CharCol(cursor.col.0));
-        assert!(editor.record_edit(cursor, |buf| {
+        editor.start_change_building(cursor);
+        assert!(editor.record_session_edit(|buf| {
             buf.insert_text_at_positioning_cursor(apply.line, apply.col, "X")
         }));
+        editor.finalize_change_building();
         let undo_len_before = editor.buffer().change_manager().undo_stack.len();
 
         // Simulate a no-op change operator (e.g., C at EOL) entering insert mode,

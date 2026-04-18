@@ -1830,12 +1830,11 @@ impl Editor {
                 // session captures the edit; the undo entry is pushed as a
                 // single `Recorded` at `finalize_change_building`.
                 let cursor = self.buffer().cursor();
-                let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 // Convert grapheme col to char col for buffer operations.
                 let char_col = self.buffer().cursor_char_col();
                 let line = cursor.line();
                 let pasted = text.to_string();
-                self.record_edit(cursor_before, |buf| {
+                self.record_session_edit(|buf| {
                     buf.insert_text_at_positioning_cursor(line, char_col, &pasted)
                 });
             }

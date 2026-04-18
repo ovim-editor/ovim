@@ -127,8 +127,6 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     // Convert grapheme col to char col for buffer operations
     let char_col = {
         let line_text = editor.buffer().line(line_idx).unwrap_or_default();
@@ -137,7 +135,7 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
 
     // Insert-mode recording captures the edit; the undo entry is pushed as a
     // single `Recorded` at finalize_change_building time.
-    editor.record_edit(cursor_before, |buf| {
+    editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(line_idx, char_col, &c.to_string())
     });
 
@@ -148,8 +146,6 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     // Snapshot line text and compute char col (drops borrow before mutation)
     let line_text = editor
         .buffer()
@@ -208,7 +204,7 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
 
     // Insert newline + indentation
     let text_to_insert = format!("\n{}{}", indent, extra_indent);
-    let inserted = editor.record_edit(cursor_before, |buf| {
+    let inserted = editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(position.line, position.col, &text_to_insert)
     });
 
@@ -216,7 +212,7 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
         let cur = editor.buffer().cursor();
         let cur_char_col = editor.buffer().cursor_char_col();
         let cursor_after_first = ApplyPos::new(cur.line(), cur_char_col);
-        editor.record_edit(cursor_before, |buf| {
+        editor.record_session_edit(|buf| {
             buf.insert_text_at_positioning_cursor(
                 cursor_after_first.line,
                 cursor_after_first.col,
@@ -236,8 +232,6 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     if grapheme_col.0 == 0 && line_idx == 0 {
         // At start of buffer, nothing to delete
         return Ok(());
@@ -279,7 +273,7 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
     // Record backspace via buffer helper. The insert-session recording
     // captures the edit; dot-repeat replays from the recorded `Edit` list, so
     // no backwards-direction flag is needed.
-    editor.record_edit(cursor_before, |buf| {
+    editor.record_session_edit(|buf| {
         buf.delete_range_positioning_cursor(
             start_pos.line,
             start_pos.col,
@@ -296,8 +290,6 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     if grapheme_col.0 == 0 && line_idx == 0 {
         // At start of buffer, nothing to delete
         return Ok(());
@@ -312,7 +304,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
             .unwrap_or(0);
         let start_pos = ApplyPos::new(line_idx - 1, CharCol(prev_line_len));
         let end_pos = ApplyPos::new(line_idx, CharCol::ZERO);
-        editor.record_edit(cursor_before, |buf| {
+        editor.record_session_edit(|buf| {
             buf.delete_range_positioning_cursor(
                 start_pos.line,
                 start_pos.col,
@@ -364,7 +356,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     // Delete the range (char-space). `delete_range_positioning_cursor`
     // positions the cursor at the start of the deleted range.
     if start_col < col {
-        editor.record_edit(cursor_before, |buf| {
+        editor.record_session_edit(|buf| {
             buf.delete_range_positioning_cursor(
                 line_idx,
                 CharCol(start_col),
@@ -382,8 +374,6 @@ pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     // If already at start of line, do nothing
     if grapheme_col.0 == 0 {
         return Ok(());
@@ -400,7 +390,7 @@ pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
 
     // Delete from start of line to cursor. `delete_range_positioning_cursor`
     // lands the cursor at char col 0 (== grapheme col 0) on the current line.
-    editor.record_edit(cursor_before, |buf| {
+    editor.record_session_edit(|buf| {
         buf.delete_range_positioning_cursor(line_idx, CharCol::ZERO, line_idx, char_col)
             .0
     });
@@ -412,8 +402,6 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     // Use shift_width and expand_tab from options
     let shift_width = editor.options.shift_width;
     let expand_tab = editor.options.expand_tab;
@@ -424,7 +412,7 @@ pub fn indent_line_insert(editor: &mut Editor) -> Result<()> {
     } else {
         "\t".to_string()
     };
-    if !editor.record_edit(cursor_before, |buf| {
+    if !editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(line_idx, CharCol::ZERO, &indent_str)
     }) {
         return Ok(());
@@ -447,8 +435,6 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let cursor_before = CursorPos::new(line_idx, grapheme_col);
-
     // Use shift_width from options
     let shift_width = editor.options.shift_width;
 
@@ -480,7 +466,7 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Delete the leading whitespace (ASCII whitespace, so chars == graphemes).
-    if !editor.record_edit(cursor_before, |buf| {
+    if !editor.record_session_edit(|buf| {
         buf.delete_range_positioning_cursor(
             line_idx,
             CharCol::ZERO,
@@ -506,7 +492,6 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
 
 pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
-    let cursor_before = CursorPos::new(cursor.line(), cursor.col());
     let line_idx = cursor.line();
 
     // Get indentation from current line
@@ -548,7 +533,7 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
 
     // Insert the new line (record for undo). `insert_text_at_positioning_cursor`
     // lands the cursor at end of inserted text; we override below.
-    if !editor.record_edit(cursor_before, |buf| {
+    if !editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(
             insert_position.line,
             insert_position.col,
@@ -568,7 +553,6 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
 
 pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
     let cursor = editor.buffer().cursor();
-    let cursor_before = CursorPos::new(cursor.line(), cursor.col());
     let line_idx = cursor.line();
 
     // Get indentation from current line
@@ -584,7 +568,7 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
 
     // Insert the new line (record for undo). `insert_text_at_positioning_cursor`
     // lands cursor at end of inserted text; we override below.
-    if !editor.record_edit(cursor_before, |buf| {
+    if !editor.record_session_edit(|buf| {
         buf.insert_text_at_positioning_cursor(
             insert_position.line,
             insert_position.col,
@@ -1869,12 +1853,11 @@ pub fn insert_tab(editor: &mut Editor) -> Result<()> {
         let cursor = editor.buffer().cursor();
         let line_idx = cursor.line();
         let grapheme_col = cursor.col();
-        let cursor_before = CursorPos::new(line_idx, grapheme_col);
         let char_col = {
             let line_text = editor.buffer().line(line_idx).unwrap_or_default();
             grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
         };
-        editor.record_edit(cursor_before, |buf| {
+        editor.record_session_edit(|buf| {
             buf.insert_text_at_positioning_cursor(line_idx, char_col, &spaces)
         });
     } else {
