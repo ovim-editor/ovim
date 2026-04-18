@@ -37,14 +37,17 @@ trail stays discoverable. They should not drive new work.
 
 | # | Title | Type | Risk | Effort |
 |---|-------|------|------|--------|
-| [15](./15-change-enum-simplification.md) steps 2–4 | Collapse Pattern A into `Recorded` | Architecture | **Medium** | Medium-large |
+| [15](./15-change-enum-simplification.md) step 4.3 | Remove `InsertText` / `DeleteText` cursor-positioning wrappers | Architecture | Low | Medium |
 | [17](./17-multi-server-sync.md) | Multi-server document sync | Bug prevention | **Medium** | Medium |
 
 ### Recommended order
 
-**15 steps 2–4** is the only structural refactor still open in the undo
-system. It's a focused sprint — insert-mode recording API, `RepeatAction::InsertSession`, then removal of `InsertText` / `DeleteText` / `Composite`. Medium-large because it touches insert mode, completion, visual-block
-replay, and repeat. Not a drive-by.
+**15 step 4.3** is the only undo-system cleanup still open. After steps
+3 + 4.1 + 4.2 (insert-mode recording, `RepeatAction::InsertSession`,
+`Composite` removal), `InsertText` / `DeleteText` survive only as
+transient cursor-positioning wrappers used by `apply_change_and_record`.
+Replacing them is mechanical (~15 call sites) but touches a wide
+surface — own sprint.
 
 **17** is the only roadmap item with user-facing impact. Prioritize it if
 you're expanding companion server support (e.g., Tailwind CSS +
@@ -73,13 +76,14 @@ Old roadmaps 09–12 are replaced by the active roadmap above:
 
 ### Where the tension lives
 
-**`Change` Pattern A is the last holdout** — `Recorded` (Pattern B) already
-handles most operations with mechanical undo + `RepeatAction` for semantic
-repeat. `InsertText` / `DeleteText` / `Composite` (Pattern A) still exist
-only because insert-mode sessions batch per-keystroke changes and
-`Composite.repeat(&mut self)` mutates its sub-changes in place to reflect
-actual repeat positions. Roadmap 15 steps 2–4 collapse this into a
-stateful `buffer.record()` + `RepeatAction::InsertSession`.
+**`InsertText` / `DeleteText` survive as cursor-positioning wrappers** —
+After roadmap 15 steps 3 + 4.1 + 4.2, undo and dot-repeat for insert
+sessions go through `Recorded` + `RepeatAction::InsertSession`.
+`InsertText` / `DeleteText` no longer reach the undo stack from
+sessions, but `apply_change_and_record` still wraps each insert/delete
+keystroke in one of those variants for the cursor-positioning side
+effect of `change.apply()`. Roadmap 15 step 4.3 inlines that into
+buffer-level helpers and lets the variants go.
 
 **Multi-server document versions are shared, not per-server** — If one
 server in a multi-server setup (TypeScript + Tailwind CSS) silently drops
