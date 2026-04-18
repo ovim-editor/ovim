@@ -8,7 +8,9 @@
 //! - Visual mode commands (o to swap cursor, gv to reselect)
 //! - Visual mode search (/ and ?)
 
-use crate::editor::{CursorPos, Editor, Motions, RegisterType, TextObjectRange, TextObjects};
+use crate::editor::{
+    CursorPos, Editor, Motions, PendingChangeRepeat, RegisterType, TextObjectRange, TextObjects,
+};
 use crate::mode::Mode;
 use crate::unicode::GraphemeCol;
 use crate::{KeyCode, KeyEvent, Modifiers};
@@ -531,8 +533,9 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Change selection
         KeyCode::Char('c') => {
+            let mode_before = editor.mode();
             // For visual block mode, need to track the block for multi-line insert
-            let visual_block_state = if editor.mode() == Mode::VisualBlock {
+            let visual_block_state = if mode_before == Mode::VisualBlock {
                 editor
                     .visual_selection()
                     .map(|((start_line, start_col), (end_line, end_col))| {
@@ -559,7 +562,35 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     start_line, end_line, start_col, false, false,
                 )));
                 editor.start_change_building(cursor_before);
+            } else if delete_token.is_some() {
+                // Regular visual (v) or VisualLine (V) with a non-empty
+                // selection: route the change through PendingChangeRepeat +
+                // RepeatAction::Change so that the full inserted text is
+                // captured for dot-repeat (matching cw/cc/C semantics).
+                //
+                // delete_visual_selection_with_token has already installed
+                // DeleteVisualChar / DeleteVisualLine as last_repeat_action;
+                // clone it as the delete template for the Change action.
+                let delete_action = editor
+                    .buffer()
+                    .change_manager()
+                    .last_repeat_action
+                    .clone()
+                    .expect(
+                        "delete_visual_selection_with_token installs a RepeatAction for \
+                         non-empty selections",
+                    );
+                let linewise = mode_before == Mode::VisualLine;
+                editor.set_pending_change_repeat(PendingChangeRepeat {
+                    delete_action,
+                    linewise,
+                    delete_token,
+                });
+                editor.start_change_building(editor.cursor_position());
             }
+            // else: empty selection — fall through to plain insert mode (no
+            // dot-repeat template set; matches the pre-fix behavior for an
+            // empty visual-c).
 
             helpers::save_and_clear_visual(editor);
             editor.set_mode(Mode::Insert);
