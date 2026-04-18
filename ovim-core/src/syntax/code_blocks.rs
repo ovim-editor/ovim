@@ -17,8 +17,10 @@ pub struct CodeBlock {
     pub line_start: usize,
     /// Last line of code content (exclusive)
     pub line_end: usize,
-    /// Language detected from info string (used for debugging/introspection)
-    #[allow(dead_code)]
+    /// Language detected from info string. Production code only consumes the
+    /// `highlights` derived from this language, but tests assert on it directly
+    /// to confirm the info-string-to-language mapping works.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub language: Language,
     /// Syntax highlights for each line within the block
     /// Index 0 = line_start, Index 1 = line_start + 1, etc.

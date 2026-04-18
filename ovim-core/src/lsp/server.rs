@@ -10,8 +10,8 @@ use super::protocol::{write_message, JsonRpcMessage, RequestId};
 use super::supervisor::{RestartPolicy, TaskHealth, TaskSupervisor};
 use anyhow::{anyhow, Context, Result};
 use lsp_types::{
-    InitializeParams, InitializeResult, InitializedParams, ServerCapabilities,
-    TextDocumentContentChangeEvent, Uri, WorkspaceFolder,
+    InitializeParams, InitializeResult, InitializedParams, ServerCapabilities, Uri,
+    WorkspaceFolder,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -89,10 +89,7 @@ pub enum ServerState {
     Spawning,
 
     /// Server is initializing (sent initialize request, waiting for response)
-    Initializing {
-        started_at: Instant,
-        pending_operations: Vec<PendingOperation>,
-    },
+    Initializing { started_at: Instant },
 
     /// Server is ready to accept requests
     Ready {
@@ -108,33 +105,6 @@ pub enum ServerState {
 
     /// Server process has terminated
     Terminated,
-}
-
-/// Operations that can be queued during initialization
-/// (Reserved for request queueing during server initialization)
-#[derive(Debug, Clone)]
-#[allow(dead_code)]
-pub enum PendingOperation {
-    DidOpen {
-        uri: Uri,
-        language_id: String,
-        version: i32,
-        text: String,
-    },
-    DidChange {
-        uri: Uri,
-        language_id: String,
-        changes: Vec<TextDocumentContentChangeEvent>,
-    },
-    DidSave {
-        uri: Uri,
-        language_id: String,
-        text: Option<String>,
-    },
-    Request {
-        method: String,
-        params: Value,
-    },
 }
 
 /// Health information for a language server
@@ -728,7 +698,6 @@ impl LanguageServer {
         // Transition to Initializing state
         self.transition_to(ServerState::Initializing {
             started_at: Instant::now(),
-            pending_operations: Vec::new(),
         })
         .await;
 
@@ -995,113 +964,10 @@ impl LanguageServer {
         Ok(())
     }
 
-    /// Transitions to a new state, handling state-specific logic
-    /// BUG FIX: Extract pending operations before dropping lock to prevent race condition
+    /// Transitions to a new state, atomically updating the server state field.
     async fn transition_to(&self, new_state: ServerState) {
-        let prefix = self.log_prefix();
-
-        // BUG FIX: Extract pending operations while holding lock, then replay after releasing lock
-        // This prevents race condition where state could change during replay
-        let pending_ops_to_replay: Option<Vec<PendingOperation>> = {
-            let mut state = self.inner.state.lock().await;
-
-            // Extract pending operations if transitioning from Initializing to Ready
-            let ops = match (&*state, &new_state) {
-                (
-                    ServerState::Initializing {
-                        pending_operations, ..
-                    },
-                    ServerState::Ready { .. },
-                ) => Some(pending_operations.clone()),
-                _ => None,
-            };
-
-            // Atomically update state while holding lock
-            *state = new_state;
-
-            ops
-        }; // Lock released here
-
-        // Replay operations outside the lock (if any)
-        if let Some(pending_ops) = pending_ops_to_replay {
-            for op in &pending_ops {
-                if let Err(e) = self.replay_operation(op).await {
-                    crate::lsp_error!(&prefix, "Failed to replay operation: {}", e);
-                }
-            }
-        }
-    }
-
-    /// Replays a pending operation after server becomes ready
-    async fn replay_operation(&self, op: &PendingOperation) -> Result<()> {
-        match op {
-            PendingOperation::DidOpen {
-                uri,
-                language_id,
-                version,
-                text,
-            } => {
-                use lsp_types::{DidOpenTextDocumentParams, TextDocumentItem};
-
-                let params = DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem {
-                        uri: uri.clone(),
-                        language_id: language_id.clone(),
-                        version: *version,
-                        text: text.clone(),
-                    },
-                };
-
-                self.notify("textDocument/didOpen", serde_json::to_value(params)?)
-                    .await
-                    .context("Failed to replay didOpen")
-            }
-            PendingOperation::DidChange {
-                uri,
-                language_id: _,
-                changes,
-            } => {
-                use lsp_types::{DidChangeTextDocumentParams, VersionedTextDocumentIdentifier};
-
-                // Note: version might be stale, but better than losing the operation
-                let params = DidChangeTextDocumentParams {
-                    text_document: VersionedTextDocumentIdentifier {
-                        uri: uri.clone(),
-                        version: 1, // Simplified for now
-                    },
-                    content_changes: changes.clone(),
-                };
-
-                self.notify("textDocument/didChange", serde_json::to_value(params)?)
-                    .await
-                    .context("Failed to replay didChange")
-            }
-            PendingOperation::DidSave {
-                uri,
-                language_id: _,
-                text,
-            } => {
-                use lsp_types::{DidSaveTextDocumentParams, TextDocumentIdentifier};
-
-                let params = DidSaveTextDocumentParams {
-                    text_document: TextDocumentIdentifier { uri: uri.clone() },
-                    text: text.clone(),
-                };
-
-                self.notify("textDocument/didSave", serde_json::to_value(params)?)
-                    .await
-                    .context("Failed to replay didSave")
-            }
-            PendingOperation::Request { method, params: _ } => {
-                // Requests are not replayed (they would have timed out already)
-                crate::lsp_debug!(
-                    &self.log_prefix(),
-                    "Skipping replay of request '{}'",
-                    method
-                );
-                Ok(())
-            }
-        }
+        let mut state = self.inner.state.lock().await;
+        *state = new_state;
     }
 
     /// Gets the current server state

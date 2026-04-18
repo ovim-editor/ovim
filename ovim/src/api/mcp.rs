@@ -38,7 +38,6 @@ pub struct JsonRpcError {
 }
 
 /// Standard JSON-RPC error codes
-#[allow(dead_code)]
 impl JsonRpcError {
     pub fn parse_error() -> Self {
         Self {
