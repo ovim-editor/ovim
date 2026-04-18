@@ -1544,48 +1544,27 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
         ovim::editor::CursorPos::new(c.line(), c.col())
     };
 
-    // Perform the edit: delete old text, insert new text
+    // Perform the edit (delete + insert) inside a `record()` session so the
+    // edits land on `edit_log` and feed a single `Change::Recorded` undo
+    // entry. Mark buffer modified so LSP didChange fires.
     let end_col = match_col + old.len();
-    let deleted = editor.buffer_mut().delete_range(
-        match_line,
-        ovim_core::unicode::CharCol(match_col),
-        match_line,
-        ovim_core::unicode::CharCol(end_col),
-    );
-    editor
-        .buffer_mut()
-        .insert_text_at(match_line, ovim_core::unicode::CharCol(match_col), new);
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_range(
+            match_line,
+            ovim_core::unicode::CharCol(match_col),
+            match_line,
+            ovim_core::unicode::CharCol(end_col),
+        );
+        buf.insert_text_at(match_line, ovim_core::unicode::CharCol(match_col), new);
+    });
 
-    // Record composite change for undo (char-space for edit positions,
-    // grapheme-space for cursor snapshots — the legacy ASCII assumption on
-    // cursor_after is preserved).
-    let change = ovim::editor::Change::composite(
-        vec![
-            ovim::editor::Change::delete(
-                ovim::editor::Range::new(
-                    ovim::editor::ApplyPos::new(match_line, ovim_core::unicode::CharCol(match_col)),
-                    ovim::editor::ApplyPos::new(match_line, ovim_core::unicode::CharCol(end_col)),
-                ),
-                deleted,
-                cursor_before,
-            ),
-            ovim::editor::Change::insert(
-                ovim::editor::ApplyPos::new(match_line, ovim_core::unicode::CharCol(match_col)),
-                new.to_string(),
-                cursor_before,
-            ),
-        ],
-        cursor_before,
-        ovim::editor::CursorPos::new(
+    if !edits.is_empty() {
+        let cursor_after = ovim::editor::CursorPos::new(
             match_line,
             ovim_core::unicode::GraphemeCol(match_col + new.len()),
-        ),
-    );
-    editor.add_change(change);
-    // This API handler mutates the buffer directly (outside a `record()`
-    // session), so the edit_log projection is stale and LSP slots need
-    // invalidation. `fixup_after_bypass_mutation` clears both.
-    editor.fixup_after_bypass_mutation();
+        );
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
 
     ApiResponse::Success(SuccessResponse {
         success: true,
