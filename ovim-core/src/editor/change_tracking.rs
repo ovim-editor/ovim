@@ -1,7 +1,7 @@
 //! Change tracking and undo/redo operations
 
-use super::{Change, CursorPos, Editor};
-use crate::change::ChangeToken;
+use super::{Change, CursorPos, Editor, ToastLevel, ToastRequest, ToastSource};
+use crate::change::{ChangeToken, UndoOutcome};
 use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 
@@ -92,20 +92,43 @@ impl Editor {
         self.buffer_mut().change_manager_mut().pop_last_change()
     }
 
-    /// Undoes the last change
+    /// Undoes the last change.
+    ///
+    /// Surfaces an error toast if a `ResourceOp` snapshot restore fails
+    /// (e.g., write to a read-only directory). Pre-OV-00212 the failure was
+    /// silently swallowed and undo appeared to succeed; now the user sees
+    /// the OS error and the offending change stays on the undo stack so a
+    /// retry is possible once they fix the filesystem.
     pub fn undo(&mut self) {
-        let _ = self.buffer_mut().undo();
+        let (outcome, _edits) = self.buffer_mut().undo();
+        self.surface_undo_outcome(&outcome, "Undo");
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
     }
 
-    /// Redoes the next change
+    /// Redoes the next change. See `undo` for the OV-00212 toast rationale.
     pub fn redo(&mut self) {
-        let _ = self.buffer_mut().redo();
+        let (outcome, _edits) = self.buffer_mut().redo();
+        self.surface_undo_outcome(&outcome, "Redo");
         self.invalidate_hover_cache();
         self.mark_buffer_modified();
         self.mark_dirty();
+    }
+
+    /// Pushes an error toast for `UndoOutcome::Failed`. No-op for `Done` /
+    /// `Nothing` — quiet success matches the pre-existing UX where the
+    /// status line is not refreshed on every undo.
+    fn surface_undo_outcome(&mut self, outcome: &UndoOutcome, action: &str) {
+        if let UndoOutcome::Failed(err) = outcome {
+            let request = ToastRequest::new(
+                ToastSource::System,
+                ToastLevel::Error,
+                format!("{action} failed: {err}"),
+            )
+            .with_dedupe_key(format!("{}-resource-op-failure", action.to_lowercase()));
+            self.push_toast(request);
+        }
     }
 
     /// Repeats the last change with proper cursor position tracking.

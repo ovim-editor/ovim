@@ -971,34 +971,42 @@ impl Buffer {
         &mut self.change_manager
     }
 
-    /// Undoes the last change, returning the edits that were applied.
+    /// Undoes the last change, returning the outcome and edits that were applied.
     /// The edits can be used to adjust decoration positions.
-    pub fn undo(&mut self) -> (bool, Vec<crate::edit::Edit>) {
+    ///
+    /// Returns `UndoOutcome::Failed` when a `ResourceOp` filesystem restore
+    /// errors out — callers should surface this to the user rather than
+    /// silently dropping the failure (OV-00212).
+    pub fn undo(&mut self) -> (crate::change::UndoOutcome, Vec<crate::edit::Edit>) {
         // Route through ChangeManager so grouped undo behavior stays centralized.
         // Wrap in record() to capture the inverse edits applied during undo.
         let mut change_manager = std::mem::take(&mut self.change_manager);
-        let (did_undo, edits) = self.record(|buf| change_manager.undo(buf));
+        let (outcome, edits) = self.record(|buf| change_manager.undo(buf));
         self.change_manager = change_manager;
-        if did_undo {
+        if outcome.touched_buffer() {
             self.validate_cursor_position();
         }
-        (did_undo, edits)
+        (outcome, edits)
     }
 
-    /// Redoes the next change, returning the edits that were applied.
+    /// Redoes the next change, returning the outcome and edits that were applied.
     /// The edits can be used to adjust decoration positions.
-    pub fn redo(&mut self) -> (bool, Vec<crate::edit::Edit>) {
+    ///
+    /// Returns `UndoOutcome::Failed` when a `ResourceOp` filesystem write
+    /// errors out — callers should surface this to the user rather than
+    /// silently dropping the failure (OV-00212).
+    pub fn redo(&mut self) -> (crate::change::UndoOutcome, Vec<crate::edit::Edit>) {
         // Route through ChangeManager so grouped redo behavior stays centralized.
         // Wrap in record() to capture the edits applied during redo.
         let mut change_manager = std::mem::take(&mut self.change_manager);
-        let (did_redo, edits) = self.record(|buf| change_manager.redo(buf));
+        let (outcome, edits) = self.record(|buf| change_manager.redo(buf));
         self.change_manager = change_manager;
-        if did_redo {
+        if outcome.touched_buffer() {
             // apply may restore insert-mode cursor_after which can be past end
             // of line in normal mode.
             self.validate_cursor_position();
         }
-        (did_redo, edits)
+        (outcome, edits)
     }
 }
 
@@ -1530,13 +1538,13 @@ mod tests {
         buf.change_manager_mut().undo_stack.push(change2);
 
         // One undo should revert both grouped edits.
-        assert!(buf.undo().0);
+        assert!(buf.undo().0.is_done());
         assert_eq!(buf.rope().to_string(), "abc\n");
         assert_eq!(buf.change_manager().undo_stack.len(), 0);
         assert_eq!(buf.change_manager().redo_stack.len(), 2);
 
         // One redo should restore both grouped edits.
-        assert!(buf.redo().0);
+        assert!(buf.redo().0.is_done());
         assert_eq!(buf.rope().to_string(), "XYabc\n");
         assert_eq!(buf.change_manager().undo_stack.len(), 2);
         assert_eq!(buf.change_manager().redo_stack.len(), 0);

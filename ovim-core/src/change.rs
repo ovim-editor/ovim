@@ -26,6 +26,7 @@ use crate::edit::Edit;
 use crate::repeat_action::RepeatAction;
 use crate::textobjects::{TextObjectRange, TextObjects};
 use crate::unicode::{CharCol, GraphemeCol};
+use std::io;
 use std::path::{Path, PathBuf};
 
 /// A cursor snapshot: where the cursor sits in grapheme-space.
@@ -306,8 +307,13 @@ impl Change {
         }
     }
 
-    /// Applies this change to the buffer
-    pub fn apply(&self, buffer: &mut Buffer) {
+    /// Applies this change to the buffer.
+    ///
+    /// Returns `Err` if a `ResourceOp` filesystem write/remove fails. On
+    /// failure, processing aborts at the offending snapshot — partial undo
+    /// is worse than no undo, and the cursor is not advanced. Callers should
+    /// surface the error to the user (the change has not fully applied).
+    pub fn apply(&self, buffer: &mut Buffer) -> io::Result<()> {
         match self {
             Self::Recorded {
                 edits,
@@ -320,6 +326,7 @@ impl Change {
                 buffer
                     .cursor_mut()
                     .set_position(cursor_after.line, cursor_after.col);
+                Ok(())
             }
             Self::ResourceOp {
                 snapshots,
@@ -327,17 +334,23 @@ impl Change {
                 ..
             } => {
                 for snap in snapshots {
-                    Self::restore_file_snapshot(&snap.path, &snap.after);
+                    Self::restore_file_snapshot(&snap.path, &snap.after)?;
                 }
                 buffer
                     .cursor_mut()
                     .set_position(cursor_after.line, cursor_after.col);
+                Ok(())
             }
         }
     }
 
-    /// Undoes this change on the buffer
-    pub fn undo(&self, buffer: &mut Buffer) {
+    /// Undoes this change on the buffer.
+    ///
+    /// Returns `Err` if a `ResourceOp` filesystem write/remove fails. On
+    /// failure, processing aborts at the offending snapshot and the cursor
+    /// is not advanced. The change should be left on the undo stack so a
+    /// subsequent `u` can retry once the filesystem error is resolved.
+    pub fn undo(&self, buffer: &mut Buffer) -> io::Result<()> {
         match self {
             Self::Recorded {
                 edits,
@@ -352,6 +365,7 @@ impl Change {
                     .cursor_mut()
                     .set_position(cursor_before.line, cursor_before.col);
                 buffer.validate_cursor_position();
+                Ok(())
             }
             Self::ResourceOp {
                 snapshots,
@@ -359,12 +373,13 @@ impl Change {
                 ..
             } => {
                 for snap in snapshots.iter().rev() {
-                    Self::restore_file_snapshot(&snap.path, &snap.before);
+                    Self::restore_file_snapshot(&snap.path, &snap.before)?;
                 }
                 buffer
                     .cursor_mut()
                     .set_position(cursor_before.line, cursor_before.col);
                 buffer.validate_cursor_position();
+                Ok(())
             }
         }
     }
@@ -405,23 +420,35 @@ impl Change {
         std::fs::read(path).ok()
     }
 
-    fn restore_file_snapshot(path: &Path, snapshot: &Option<Vec<u8>>) {
+    /// Restores a file to a snapshot's bytes (or removes it when the snapshot
+    /// is `None`, representing "did not exist before"). Returns `Err` on any
+    /// filesystem failure so callers can surface the error rather than
+    /// silently corrupting undo state.
+    ///
+    /// `create_dir_all` errors are propagated only when they actually prevent
+    /// the subsequent write — a missing-parent path returns `AlreadyExists`
+    /// for the create call, which is folded into Ok by the standard library.
+    fn restore_file_snapshot(path: &Path, snapshot: &Option<Vec<u8>>) -> io::Result<()> {
         match snapshot {
             Some(bytes) => {
                 if let Some(parent) = path.parent() {
-                    let _ = std::fs::create_dir_all(parent);
+                    if !parent.as_os_str().is_empty() {
+                        std::fs::create_dir_all(parent)?;
+                    }
                 }
-                let _ = std::fs::write(path, bytes);
+                std::fs::write(path, bytes)?;
+                Ok(())
             }
             None => {
                 if !path.exists() {
-                    return;
+                    return Ok(());
                 }
                 if path.is_dir() {
-                    let _ = std::fs::remove_dir_all(path);
+                    std::fs::remove_dir_all(path)?;
                 } else {
-                    let _ = std::fs::remove_file(path);
+                    std::fs::remove_file(path)?;
                 }
+                Ok(())
             }
         }
     }
@@ -538,6 +565,38 @@ impl ChangeBuilder {
     /// (via `RepeatAction::InsertSession`) and by the o/O promotion check.
     pub fn entry_mode(&self) -> &InsertEntryMode {
         &self.entry_mode
+    }
+}
+
+/// Outcome of `ChangeManager::undo` / `redo`.
+///
+/// Splits the previous `bool` return into three states so callers can
+/// distinguish "stack was empty" from "filesystem error during a
+/// `ResourceOp` snapshot restore" — silent failure on the latter was
+/// OV-00212.
+#[derive(Debug)]
+pub enum UndoOutcome {
+    /// The undo/redo stack was empty — nothing to do.
+    Nothing,
+    /// The change applied successfully.
+    Done,
+    /// A `ResourceOp` snapshot restore failed. The change has been left on
+    /// the stack it was popped from so the caller can retry once the
+    /// filesystem condition is resolved.
+    Failed(io::Error),
+}
+
+impl UndoOutcome {
+    /// True if anything actually changed (success or partial failure).
+    /// Used by code paths that need to invalidate caches even on failure.
+    pub fn touched_buffer(&self) -> bool {
+        matches!(self, Self::Done | Self::Failed(_))
+    }
+
+    /// True only on full success. Equivalent to the old `bool` semantics
+    /// for callers that don't need to distinguish failure modes.
+    pub fn is_done(&self) -> bool {
+        matches!(self, Self::Done)
     }
 }
 
@@ -681,48 +740,72 @@ impl ChangeManager {
 
     /// Undoes the last change. If the change has an undo_group_id, keeps
     /// popping changes with the same group ID so one `u` undoes the whole group.
-    pub fn undo(&mut self, buffer: &mut Buffer) -> bool {
-        if let Some(change) = self.undo_stack.pop() {
-            let group_id = change.undo_group_id();
-            change.undo(buffer);
-            self.redo_stack.push(change);
+    ///
+    /// On `ResourceOp` filesystem failure the offending change is restored
+    /// to the top of the undo stack (without rotating it onto the redo
+    /// stack), so the user can retry `u` once the filesystem condition is
+    /// fixed. Earlier changes from the same group that already undid
+    /// successfully *do* get rotated to redo — partial failure mid-group is
+    /// represented honestly rather than papered over.
+    pub fn undo(&mut self, buffer: &mut Buffer) -> UndoOutcome {
+        let Some(change) = self.undo_stack.pop() else {
+            return UndoOutcome::Nothing;
+        };
 
-            // If this change was part of a group, undo all remaining changes in the group
-            if let Some(gid) = group_id {
-                while self.undo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
-                    let grouped = self.undo_stack.pop().unwrap();
-                    grouped.undo(buffer);
-                    self.redo_stack.push(grouped);
-                }
-            }
-
-            true
-        } else {
-            false
+        if let Err(err) = change.undo(buffer) {
+            // Put it back so the next `u` can retry.
+            self.undo_stack.push(change);
+            return UndoOutcome::Failed(err);
         }
+        let group_id = change.undo_group_id();
+        self.redo_stack.push(change);
+
+        // If this change was part of a group, undo all remaining changes in the group.
+        if let Some(gid) = group_id {
+            while self.undo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
+                let grouped = self.undo_stack.pop().unwrap();
+                if let Err(err) = grouped.undo(buffer) {
+                    self.undo_stack.push(grouped);
+                    return UndoOutcome::Failed(err);
+                }
+                self.redo_stack.push(grouped);
+            }
+        }
+
+        UndoOutcome::Done
     }
 
     /// Redoes the next change. If the change has an undo_group_id, keeps
     /// replaying changes with the same group ID so one redo restores the group.
-    pub fn redo(&mut self, buffer: &mut Buffer) -> bool {
-        if let Some(change) = self.redo_stack.pop() {
-            let group_id = change.undo_group_id();
-            change.apply(buffer);
-            self.undo_stack.push(change);
+    ///
+    /// On `ResourceOp` filesystem failure the offending change is restored
+    /// to the top of the redo stack (so a retry is possible) and the
+    /// outcome is `Failed`. See `undo` for the symmetric rationale.
+    pub fn redo(&mut self, buffer: &mut Buffer) -> UndoOutcome {
+        let Some(change) = self.redo_stack.pop() else {
+            return UndoOutcome::Nothing;
+        };
 
-            // If this change was part of a group, redo the rest of the group
-            if let Some(gid) = group_id {
-                while self.redo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
-                    let grouped = self.redo_stack.pop().unwrap();
-                    grouped.apply(buffer);
-                    self.undo_stack.push(grouped);
-                }
-            }
-
-            true
-        } else {
-            false
+        if let Err(err) = change.apply(buffer) {
+            self.redo_stack.push(change);
+            return UndoOutcome::Failed(err);
         }
+        let group_id = change.undo_group_id();
+        self.undo_stack.push(change);
+
+        // If this change was part of a group, redo the rest of the group.
+        if let Some(gid) = group_id {
+            while self.redo_stack.last().and_then(|c| c.undo_group_id()) == Some(gid) {
+                let grouped = self.redo_stack.pop().unwrap();
+                if let Err(err) = grouped.apply(buffer) {
+                    self.redo_stack.push(grouped);
+                    return UndoOutcome::Failed(err);
+                }
+                self.undo_stack.push(grouped);
+            }
+        }
+
+        UndoOutcome::Done
     }
 
     /// Returns whether currently building a composite change
