@@ -1,63 +1,25 @@
 //! # Undo/Repeat Architecture
 //!
-//! Two patterns coexist on the same undo/redo stacks and are mutually
-//! exclusive for dot-repeat: pushing a `Change` clears `last_repeat_action`,
-//! and setting a `RepeatAction` clears `last_change`. Dot-repeat checks
-//! `RepeatAction` first.
+//! Undo entries are `Change::Recorded` — a `Vec<Edit>` of mechanical buffer
+//! mutations plus the cursor positions to restore on undo / redo. Insert
+//! sessions, normal-mode operators, LSP edits, and the like all land here.
+//! `ResourceOp` carries filesystem snapshots for workspace LSP operations
+//! and is non-repeatable.
 //!
-//! ## Pattern A — `InsertText` / `DeleteText` / `Composite`
+//! Dot-repeat goes through `RepeatAction` (see `repeat_action.rs`), not
+//! through `Change`. `last_change` and `last_repeat_action` are mutually
+//! exclusive: pushing a `Change` clears `last_repeat_action`, setting a
+//! `RepeatAction` clears `last_change`. Dot-repeat checks `RepeatAction`
+//! first and falls back to replaying the recorded edits forward.
 //!
-//! Used only for direct insert-mode sessions (`i` / `a` / `I` / `A`).
-//! `ChangeBuilder` collects the session's keystrokes into sub-changes and
-//! `build()` wraps them in a `Composite` (or unwraps a single change when
-//! `entry_mode` is plain `Insert`). The session lands on the undo stack as
-//! one entry only on Esc; there is no per-keystroke undo mid-session —
-//! backspace inside insert mode pushes a `DeleteText` into the builder, it
-//! does not pop the last `InsertText`.
-//!
-//! Two things that surprise first-time readers:
-//!
-//! - **Apply vs. undo coordinate asymmetry.** `InsertText.apply()` uses
-//!   line/col (`buffer.insert_text_at`), but `InsertText.undo()` converts
-//!   to absolute char offsets (`buffer.delete_char_range`). Line/col
-//!   clamping via `line_len()` excludes newlines, and insertions can
-//!   target the newline position — so undo has to address char offsets
-//!   that apply-time clamping would reject.
-//!
-//! - **Repeat mutates in place.** `Composite.repeat(&mut self)` rewrites
-//!   each sub-change's `position` / `range` / `deleted_text` to reflect
-//!   where the repeat actually landed, so the mutated `Composite` is a
-//!   valid undo entry for the repeated edit. `entry_mode` repositions the
-//!   cursor (`I`→first non-blank, `A`→end of line, etc.) before replay.
-//!
-//! `o` / `O` sessions start as Pattern A composites but convert to
-//! `RepeatAction::OpenLine` on insert-mode exit, so their dot-repeat goes
-//! through Pattern B. Change operators (`cc`, `cw`, …) likewise exit insert
-//! mode with a `RepeatAction::Change`.
-//!
-//! ## Pattern B — `Recorded`
-//!
-//! Default for everything outside direct insert mode: `x`, `dd`, `dw`, text-
-//! object deletes, `~`, `J`, `>>`, Ctrl-A/X, `p`, `P`, `cc` / `C` / `s` / `cw`,
-//! `R`, visual-block change, LSP edits, etc. Undo is mechanical (inverse the
-//! recorded `Edit`s in reverse). Repeat is semantic via `RepeatAction` at
-//! the current cursor — `Recorded.repeat()` just replays edits forward,
-//! but dot-repeat reaches it through `last_repeat_action`, not through the
-//! `Change`.
-//!
-//! ## `ResourceOp`
-//!
-//! Filesystem snapshots for LSP workspace operations (create / rename /
-//! delete). Lives on the undo stack but is non-repeatable.
-//!
-//! ## Pattern choice guide
-//!
-//! - Direct insert-mode session (`i` / `a` / `I` / `A`) → Pattern A.
-//! - Everything else → Pattern B.
-//! - Infrastructure push of an already-built change → `add_change`.
-//!
-//! Migrating Pattern A into Pattern B (so `Change` reduces to `Recorded` +
-//! `ResourceOp`) is tracked in `refactor-roadmap/15-change-enum-simplification.md`.
+//! Insert-mode sessions (`i` / `a` / `I` / `A` / `o` / `O`) open a
+//! `ChangeBuilder` to remember `entry_mode` + `cursor_before` across event
+//! loop ticks. The actual edits flow into the buffer's stateful recording,
+//! and `finalize_change_building` packages everything into a single
+//! `Recorded` plus a `RepeatAction::InsertSession` for dot-repeat. The
+//! `InsertText` / `DeleteText` variants below survive only as transient
+//! cursor-positioning wrappers used by `apply_change_and_record`; they
+//! never reach the undo stack from insert sessions.
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;
@@ -255,14 +217,6 @@ pub enum Change {
         /// doesn't depend on the value of cursor_before.
         backwards: bool,
     },
-    /// A composite of multiple changes (e.g., all changes during insert mode)
-    Composite {
-        changes: Vec<Change>,
-        cursor_before: CursorPos,
-        cursor_after: CursorPos,
-        /// How insert mode was entered — tells dot repeat how to reposition.
-        entry_mode: InsertEntryMode,
-    },
     /// Undo record backed by raw edits (from buffer recording).
     /// Undo applies inverse edits in reverse; redo replays forward.
     Recorded {
@@ -315,20 +269,6 @@ impl Change {
             deleted_text,
             cursor_before,
             backwards: true,
-        }
-    }
-
-    /// Creates a Composite change
-    pub fn composite(
-        changes: Vec<Change>,
-        cursor_before: CursorPos,
-        cursor_after: CursorPos,
-    ) -> Self {
-        Self::Composite {
-            changes,
-            cursor_before,
-            cursor_after,
-            entry_mode: InsertEntryMode::Insert,
         }
     }
 
@@ -441,19 +381,6 @@ impl Change {
                     buffer.set_cursor_char_col(range.start.line, range.start.col);
                 }
             }
-            Self::Composite {
-                changes,
-                cursor_after,
-                ..
-            } => {
-                for change in changes {
-                    change.apply(buffer);
-                }
-                // Restore cursor to final position after composite operation
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_after.line, cursor_after.col);
-            }
             Self::Recorded {
                 edits,
                 cursor_after,
@@ -524,23 +451,6 @@ impl Change {
                     .cursor_mut()
                     .set_position(cursor_before.line, cursor_before.col);
                 // Validate cursor position in case line no longer exists
-                buffer.validate_cursor_position();
-            }
-            Self::Composite {
-                changes,
-                cursor_before,
-                ..
-            } => {
-                // Undo changes in reverse order
-                for change in changes.iter().rev() {
-                    change.undo(buffer);
-                }
-                // Restore cursor to where it was before the composite change
-                buffer
-                    .cursor_mut()
-                    .set_position(cursor_before.line, cursor_before.col);
-                // Validate cursor position after composite undo - intermediate undos
-                // may have deleted lines that the final cursor position refers to
                 buffer.validate_cursor_position();
             }
             Self::Recorded {
@@ -663,54 +573,6 @@ impl Change {
                 // Position cursor at the start of the deletion
                 buffer.set_cursor_char_col(start_line, start_col);
             }
-            Self::Composite {
-                changes,
-                entry_mode,
-                ..
-            } => {
-                // Position cursor according to how insert mode was originally entered.
-                match entry_mode {
-                    InsertEntryMode::Insert => {
-                        // i — cursor stays where it is
-                    }
-                    InsertEntryMode::Append => {
-                        // a — move cursor right by 1
-                        let cursor = buffer.cursor_mut();
-                        cursor.move_right(1);
-                    }
-                    InsertEntryMode::FirstNonBlank => {
-                        // I — move to first non-blank of current line
-                        let line_idx = buffer.cursor().line();
-                        if let Some(line) = buffer.line(line_idx) {
-                            let content = line.trim_end_matches('\n');
-                            let col = content
-                                .chars()
-                                .position(|c| !c.is_whitespace())
-                                .unwrap_or(0);
-                            buffer.cursor_mut().set_col(GraphemeCol(col));
-                        }
-                    }
-                    InsertEntryMode::EndOfLine => {
-                        // A — move to end of line
-                        let line_idx = buffer.cursor().line();
-                        if let Some(line) = buffer.line(line_idx) {
-                            let line_len = line.trim_end_matches('\n').chars().count();
-                            buffer.cursor_mut().set_col(GraphemeCol(line_len));
-                        }
-                    }
-                    InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove => {}
-                }
-
-                // For open-line sessions (o/O), dot-repeat is handled by
-                // RepeatAction::OpenLine in insert-mode exit.
-                for change in changes.iter_mut() {
-                    change.repeat(buffer);
-                }
-                // Move cursor back by 1 to match Esc behavior
-                if buffer.cursor_char_col() > 0 {
-                    buffer.cursor_mut().move_left(1);
-                }
-            }
             Self::Recorded {
                 edits,
                 cursor_after,
@@ -781,14 +643,6 @@ impl Change {
     pub fn get_inserted_text(&self) -> String {
         match self {
             Self::InsertText { text, .. } => text.clone(),
-            Self::Composite { changes, .. } => {
-                // Concatenate all inserted text from sub-changes
-                let mut result = String::new();
-                for change in changes {
-                    result.push_str(&change.get_inserted_text());
-                }
-                result
-            }
             Self::DeleteText { .. } => String::new(),
             Self::Recorded { edits, .. } => {
                 // Concatenate text from insert edits
@@ -809,18 +663,9 @@ impl Change {
     /// For insert-mode `Recorded` sessions, `cursor_before` is the
     /// pre-entry-mode cursor (so undo lands there). The post-entry-mode
     /// cursor — where editing actually began — is stored in `edit_start`
-    /// and is what `g;` / the changelist should navigate to. For other
-    /// Recorded/Composite/... cases `cursor_before` is the edit position.
+    /// and is what `g;` / the changelist should navigate to.
     pub fn edit_position(&self) -> CursorPos {
         match self {
-            Self::Composite {
-                changes,
-                cursor_before,
-                ..
-            } => changes
-                .first()
-                .map(|c| c.cursor_before())
-                .unwrap_or(*cursor_before),
             Self::Recorded {
                 cursor_before,
                 edit_start,
@@ -835,7 +680,6 @@ impl Change {
         match self {
             Self::InsertText { cursor_before, .. } => *cursor_before,
             Self::DeleteText { cursor_before, .. } => *cursor_before,
-            Self::Composite { cursor_before, .. } => *cursor_before,
             Self::Recorded { cursor_before, .. } => *cursor_before,
             Self::ResourceOp { cursor_before, .. } => *cursor_before,
         }
@@ -843,13 +687,12 @@ impl Change {
 
     /// Gets the cursor position after this change.
     ///
-    /// For `Composite`/`Recorded`/`ResourceOp` this is the stored grapheme-space
-    /// cursor snapshot. For `InsertText`/`DeleteText` the value is derived from
-    /// the char-space `position`/`range` by interpreting char indices as grapheme
-    /// indices — this matches the legacy behavior (correct for ASCII, slightly
-    /// wrong for multi-char graphemes) and is load-bearing for mark `'.` / `'^`.
-    /// A future sprint should either store a real grapheme-space cursor on these
-    /// variants or require `&Buffer` here to do a faithful conversion.
+    /// For `Recorded` / `ResourceOp` this is the stored grapheme-space
+    /// cursor snapshot. For `InsertText` / `DeleteText` the value is derived
+    /// from the char-space `position` / `range` by interpreting char indices
+    /// as grapheme indices — pre-existing legacy behavior (correct for
+    /// ASCII, slightly wrong for multi-char graphemes) that is load-bearing
+    /// for mark `'.` / `'^`.
     pub fn cursor_after(&self) -> CursorPos {
         match self {
             Self::InsertText { position, text, .. } => {
@@ -869,7 +712,6 @@ impl Change {
                 // Char-index repurposed as grapheme-index (legacy behavior).
                 CursorPos::new(range.start.line, GraphemeCol(range.start.col.0))
             }
-            Self::Composite { cursor_after, .. } => *cursor_after,
             Self::Recorded { cursor_after, .. } => *cursor_after,
             Self::ResourceOp { cursor_after, .. } => *cursor_after,
         }
@@ -880,7 +722,6 @@ impl Change {
         match self {
             Self::InsertText { cursor_before, .. } => *cursor_before = pos,
             Self::DeleteText { cursor_before, .. } => *cursor_before = pos,
-            Self::Composite { cursor_before, .. } => *cursor_before = pos,
             Self::Recorded { cursor_before, .. } => *cursor_before = pos,
             Self::ResourceOp { cursor_before, .. } => *cursor_before = pos,
         }
@@ -902,28 +743,26 @@ impl Change {
         match self {
             Self::InsertText { .. } => { /* InsertText has no cursor_after field */ }
             Self::DeleteText { .. } => { /* DeleteText has no cursor_after field */ }
-            Self::Composite { cursor_after, .. } => *cursor_after = pos,
             Self::Recorded { cursor_after, .. } => *cursor_after = pos,
             Self::ResourceOp { cursor_after, .. } => *cursor_after = pos,
         }
     }
 }
 
-/// Builder for accumulating changes during insert mode
+/// Tracks insert-session metadata across the event-loop ticks between
+/// `start_change_building` and `finalize_change_building`. The actual edit
+/// capture lives in `Buffer::recording`; this struct only carries the
+/// pre-entry-mode cursor and how the session was entered.
 #[derive(Debug)]
 pub struct ChangeBuilder {
-    changes: Vec<Change>,
     cursor_before: CursorPos,
-    cursor_after: Option<CursorPos>,
     entry_mode: InsertEntryMode,
 }
 
 impl ChangeBuilder {
     pub fn new(cursor_before: CursorPos) -> Self {
         Self {
-            changes: Vec::new(),
             cursor_before,
-            cursor_after: None,
             entry_mode: InsertEntryMode::Insert,
         }
     }
@@ -931,43 +770,6 @@ impl ChangeBuilder {
     /// Sets how insert mode was entered (for dot repeat cursor positioning).
     pub fn set_entry_mode(&mut self, mode: InsertEntryMode) {
         self.entry_mode = mode;
-    }
-
-    /// Adds a change to the builder
-    pub fn add(&mut self, change: Change) {
-        self.changes.push(change);
-    }
-
-    /// Sets the final cursor position after all changes
-    pub fn set_cursor_after(&mut self, cursor_after: CursorPos) {
-        self.cursor_after = Some(cursor_after);
-    }
-
-    /// Finalizes the builder into a Change
-    pub fn build(self, buffer_cursor: CursorPos) -> Option<Change> {
-        if self.changes.is_empty() {
-            None
-        } else if self.changes.len() == 1 && matches!(self.entry_mode, InsertEntryMode::Insert) {
-            // Only unwrap single changes when entry mode is plain Insert (i),
-            // which doesn't reposition the cursor. All other entry modes (I, a,
-            // A, o, O) need the Composite wrapper to preserve entry_mode so
-            // dot-repeat repositions the cursor correctly.
-            Some(self.changes.into_iter().next().unwrap())
-        } else {
-            // Use explicitly set cursor_after, or fall back to current buffer cursor
-            let cursor_after = self.cursor_after.unwrap_or(buffer_cursor);
-            Some(Change::Composite {
-                changes: self.changes,
-                cursor_before: self.cursor_before,
-                cursor_after,
-                entry_mode: self.entry_mode,
-            })
-        }
-    }
-
-    /// Returns true if the builder has no changes
-    pub fn is_empty(&self) -> bool {
-        self.changes.is_empty()
     }
 
     /// Returns the cursor position captured when the builder was opened —
@@ -1041,23 +843,18 @@ impl ChangeManager {
         }
     }
 
-    /// Adds a change to the current builder, or pushes directly if not building
+    /// Adds a change to the undo stack when no insert session is active.
+    ///
+    /// During an active insert session the buffer's recording captures the
+    /// edits and `finalize_change_building` pushes a single
+    /// `Change::Recorded` covering the whole session — so this method is a
+    /// no-op while building. Direct (non-session) callers still land their
+    /// change on the undo stack as `last_change`.
     pub fn add_change(&mut self, change: Change) {
-        if let Some(builder) = &mut self.current_builder {
-            builder.add(change);
-        } else {
-            // Direct change (not building), push to undo stack
-            self.push_change(change);
+        if self.current_builder.is_some() {
+            return;
         }
-    }
-
-    /// Finalizes the current builder and pushes the composite change
-    pub fn finalize_building_at(&mut self, cursor_pos: CursorPos) {
-        if let Some(builder) = self.current_builder.take() {
-            if let Some(change) = builder.build(cursor_pos) {
-                self.push_change(change);
-            }
-        }
+        self.push_change(change);
     }
 
     /// Pushes a change to the undo stack
