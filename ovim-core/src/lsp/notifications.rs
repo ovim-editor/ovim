@@ -48,9 +48,13 @@ impl LspManager {
             ));
         }
 
-        // Guard against double didOpen
+        // Atomically claim the didOpen: insert into document_versions under the
+        // lock so concurrent callers see the URI as already-claimed and return
+        // early. Without this guard, two concurrent callers could both pass a
+        // contains_key check, drop the lock, and each send a didOpen — a
+        // protocol violation. (OV-00210)
         {
-            let versions = self.document_versions.lock().await;
+            let mut versions = self.document_versions.lock().await;
             if versions.contains_key(&uri) {
                 lsp_debug!(
                     "LSP-NOTIFY",
@@ -59,12 +63,17 @@ impl LspManager {
                 );
                 return Ok(());
             }
+            versions.insert(uri.clone(), version);
         }
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = match self.servers.get(language_id) {
+            Some(s) => s,
+            None => {
+                // Roll back the claim so a future open with a registered server can succeed.
+                self.document_versions.lock().await.remove(&uri);
+                return Err(anyhow::anyhow!("No server for language: {}", language_id));
+            }
+        };
 
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
@@ -75,16 +84,16 @@ impl LspManager {
             },
         };
 
-        server
+        if let Err(e) = server
             .notify("textDocument/didOpen", serde_json::to_value(params)?)
-            .await?;
+            .await
+        {
+            // Roll back so the next attempt isn't silently masked by the claim.
+            self.document_versions.lock().await.remove(&uri);
+            return Err(e);
+        }
 
         lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
-
-        // Initialize version tracking
-        let mut versions = self.document_versions.lock().await;
-        versions.insert(uri.clone(), version);
-        drop(versions);
 
         let mut sent = self.last_sent_versions.lock().await;
         sent.insert(uri, version);
@@ -393,21 +402,41 @@ impl LspManager {
         version: i32,
         text: String,
     ) -> Result<()> {
-        let server_ids = self.servers_for_document_uri(language_id, &uri);
-        if server_ids.is_empty() {
-            return Err(anyhow!(
-                "No servers for language '{}' matched document {}",
-                language_id,
-                uri.as_str()
-            ));
-        }
-
         // Check document size once
         if text.len() > MAX_DOCUMENT_SIZE {
             return Err(anyhow!(
                 "Document too large: {} bytes (max {} bytes)",
                 text.len(),
                 MAX_DOCUMENT_SIZE
+            ));
+        }
+
+        // Atomically claim the didOpen so concurrent callers don't broadcast
+        // duplicate notifications to every server in the group. The claim
+        // is taken before any other check so duplicates short-circuit
+        // regardless of transient server-registry state. (OV-00210)
+        {
+            let mut versions = self.document_versions.lock().await;
+            if versions.contains_key(&uri) {
+                lsp_debug!(
+                    "LSP-BROADCAST",
+                    "textDocument/didOpen: skipping duplicate broadcast for {}",
+                    uri.as_str()
+                );
+                return Ok(());
+            }
+            versions.insert(uri.clone(), version);
+        }
+
+        let server_ids = self.servers_for_document_uri(language_id, &uri);
+        if server_ids.is_empty() {
+            // Roll back the claim so a future broadcast (with servers
+            // registered) is not silently masked.
+            self.document_versions.lock().await.remove(&uri);
+            return Err(anyhow!(
+                "No servers for language '{}' matched document {}",
+                language_id,
+                uri.as_str()
             ));
         }
 
@@ -430,11 +459,7 @@ impl LspManager {
             }
         }
 
-        // Initialize version tracking (once, shared)
-        let mut versions = self.document_versions.lock().await;
-        versions.insert(uri.clone(), version);
-        drop(versions);
-
+        // Initialize version tracking (once, shared) — version was claimed above.
         let mut sent = self.last_sent_versions.lock().await;
         sent.insert(uri, version);
 
@@ -1455,5 +1480,89 @@ mod tests {
             // When pending_text == old_text, compute_simple_diff returns None
             // (no diff to send). This is correct — server already has this content.
         }
+    }
+
+    /// OV-00210: did_open's contains_key check and the subsequent insert
+    /// must be atomic. If a previous caller has already populated
+    /// document_versions for this URI, the second caller must return
+    /// Ok(()) without attempting to send a duplicate didOpen and without
+    /// looking up servers (which would panic in this test fixture).
+    #[tokio::test(flavor = "current_thread")]
+    async fn did_open_skips_when_uri_already_claimed() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-already-open.rs").expect("uri");
+
+        // Pre-populate document_versions to simulate a prior didOpen.
+        manager
+            .document_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 7);
+
+        // Even though no server is registered, this must succeed because
+        // the duplicate guard returns early before touching servers.
+        let result = manager
+            .did_open(uri.clone(), "rust", 1, "fn main() {}".to_string())
+            .await;
+        assert!(
+            result.is_ok(),
+            "second did_open should be a no-op, got {:?}",
+            result
+        );
+
+        // Version must be unchanged (the second call must not overwrite).
+        let versions = manager.document_versions.lock().await;
+        assert_eq!(versions.get(&uri), Some(&7));
+    }
+
+    /// OV-00210: did_open_broadcast must guard against duplicate
+    /// notifications the same way did_open does. Without the guard, two
+    /// concurrent broadcasts would each fan out a didOpen to every server
+    /// in the group — a protocol violation.
+    #[tokio::test(flavor = "current_thread")]
+    async fn did_open_broadcast_skips_when_uri_already_claimed() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-already-broadcast.rs").expect("uri");
+
+        manager
+            .document_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 3);
+
+        // No server group registered. Without the guard this would attempt
+        // to look up servers_for_document_uri and return an error. With the
+        // guard it returns Ok early.
+        let result = manager
+            .did_open_broadcast(uri.clone(), "rust", 1, "fn main() {}".to_string())
+            .await;
+        assert!(
+            result.is_ok(),
+            "second did_open_broadcast should be a no-op, got {:?}",
+            result
+        );
+
+        let versions = manager.document_versions.lock().await;
+        assert_eq!(versions.get(&uri), Some(&3));
+    }
+
+    /// OV-00210: when did_open fails to find a server, it must NOT leave
+    /// a stale entry in document_versions. Otherwise the next attempt
+    /// (with a properly-registered server) would be silently skipped.
+    #[tokio::test(flavor = "current_thread")]
+    async fn did_open_rolls_back_claim_on_missing_server() {
+        let manager = Arc::new(LspManager::new());
+        let uri = Uri::from_str("file:///tmp/ovim-rollback.rs").expect("uri");
+
+        let result = manager
+            .did_open(uri.clone(), "no-such-language", 1, "x".to_string())
+            .await;
+        assert!(result.is_err(), "expected missing-server error");
+
+        let versions = manager.document_versions.lock().await;
+        assert!(
+            !versions.contains_key(&uri),
+            "claim must be rolled back on failure"
+        );
     }
 }
