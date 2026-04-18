@@ -1907,13 +1907,18 @@ impl Editor {
             // If an outer stateful session is still missing its origin (this
             // is the first edit of an insert session), snapshot the cursor's
             // char offset now — that's the reference point `InsertSession`
-            // dot-repeat translates against.
+            // dot-repeat translates against. Also capture the grapheme-space
+            // cursor so `g;` / the changelist can land here rather than at
+            // the pre-entry-mode cursor stored on the Recorded.
             if self.buffer().recording_origin().is_none() {
-                let offset = {
+                let (offset, cursor) = {
                     let buf = self.buffer();
-                    buf.rope().line_to_char(buf.cursor().line()) + buf.cursor_char_col().0
+                    let off =
+                        buf.rope().line_to_char(buf.cursor().line()) + buf.cursor_char_col().0;
+                    let cur = CursorPos::new(buf.cursor().line(), buf.cursor().col());
+                    (off, cur)
                 };
-                self.buffer_mut().set_recording_origin(offset);
+                self.buffer_mut().set_recording_origin(offset, cursor);
             }
             // Outer `record()` caller owns edit capture.
             change.apply(self.buffer_mut());
@@ -1932,42 +1937,66 @@ impl Editor {
         self.buffer_mut().change_manager_mut().add_change(change);
     }
 
-    /// Finalizes the current composite change
+    /// Finalizes the current insert-session change.
+    ///
+    /// Closes the stateful recording session and, if it produced edits,
+    /// pushes a single `Change::Recorded` as the session's undo entry.
+    /// Also installs a `RepeatAction::InsertSession` for dot-repeat. The
+    /// legacy `ChangeBuilder`-built `Composite` is no longer produced here;
+    /// the builder's role is now purely to carry `entry_mode` and
+    /// `cursor_before` across the session.
     pub fn finalize_change_building(&mut self) {
-        let cursor_pos =
+        let cursor_after =
             CursorPos::new(self.buffer().cursor().line(), self.buffer().cursor().col());
 
-        // Build + push the Pattern A composite first. `push_change` inside
-        // `finalize_building_at` clears `last_repeat_action`, so the Pattern B
-        // `InsertSession` must be installed afterward.
-        self.buffer_mut()
+        // Read session metadata from the builder, then drop it — no more
+        // Pattern A Composite.
+        let (cursor_before, entry_mode) = match self
+            .buffer_mut()
             .change_manager_mut()
-            .finalize_building_at(cursor_pos);
-
-        // Close the stateful recording session. If it produced edits, emit a
-        // `RepeatAction::InsertSession` so dot-repeat uses Pattern B while
-        // `last_change` (the composite) stays available for visual-block
-        // replay, o/O promotion, and the `.` register.
-        let origin = self.buffer().recording_origin();
-        let edits = self.buffer_mut().end_recording();
-        if !edits.is_empty() {
-            if let Some(origin_offset) = origin {
-                let entry_mode = match self.buffer().change_manager().last_change() {
-                    Some(Change::Composite { entry_mode, .. }) => entry_mode.clone(),
-                    _ => InsertEntryMode::Insert,
-                };
-                let cm = self.buffer_mut().change_manager_mut();
-                // Set `last_repeat_action` directly to preserve `last_change`
-                // (the composite). The standard `set_repeat_action` would
-                // clear it under the mutual-exclusion invariant, which is
-                // exactly what step 3's dual-track migration needs to
-                // temporarily relax.
-                cm.last_repeat_action = Some(RepeatAction::InsertSession {
-                    entry_mode,
-                    origin_offset,
-                    edits,
-                });
+            .current_builder
+            .take()
+        {
+            Some(builder) => (builder.cursor_before(), builder.entry_mode().clone()),
+            None => {
+                // No active session — still make sure recording is closed so
+                // a leaked `begin_recording` doesn't trip later record() calls.
+                let _ = self.buffer_mut().end_recording();
+                return;
             }
+        };
+
+        let origin = self.buffer().recording_origin();
+        let origin_cursor = self.buffer().recording_origin_cursor();
+        let edits = self.buffer_mut().end_recording();
+        if edits.is_empty() {
+            return;
+        }
+
+        // Push the session as a mechanical-undo `Recorded` entry. The
+        // `edit_start` override makes `g;` land at the first-edit cursor
+        // (post-entry-mode) rather than the pre-entry-mode `cursor_before`
+        // that undo restores to.
+        let change = match origin_cursor {
+            Some(edit_start) => Change::recorded_with_edit_start(
+                edits.clone(),
+                cursor_before,
+                cursor_after,
+                edit_start,
+            ),
+            None => Change::recorded(edits.clone(), cursor_before, cursor_after),
+        };
+        self.buffer_mut().change_manager_mut().push_change(change);
+
+        // Install dot-repeat. push_change above cleared last_repeat_action;
+        // set InsertSession now.
+        if let Some(origin_offset) = origin {
+            let cm = self.buffer_mut().change_manager_mut();
+            cm.last_repeat_action = Some(RepeatAction::InsertSession {
+                entry_mode,
+                origin_offset,
+                edits,
+            });
         }
     }
 

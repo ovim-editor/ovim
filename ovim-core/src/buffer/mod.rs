@@ -34,12 +34,15 @@ fn next_buffer_id() -> BufferId {
 /// State for an active recording session opened via `record()` (closure) or
 /// `begin_recording()` (stateful). `edits` accumulates as the buffer mutates;
 /// `origin` is the absolute char offset against which a dot-repeat
-/// translator will re-anchor the captured edits, and is only set by the
-/// stateful API (via `set_recording_origin`).
+/// translator will re-anchor the captured edits, and `origin_cursor` is the
+/// grapheme-space cursor at that same moment (used by `g;` / changelist).
+/// Both are set by the stateful API, either explicitly or lazily at first
+/// edit.
 #[derive(Debug, Default)]
 pub struct RecordingSession {
     pub edits: Vec<Edit>,
     pub origin: Option<usize>,
+    pub origin_cursor: Option<crate::change::CursorPos>,
 }
 
 pub struct Buffer {
@@ -633,16 +636,25 @@ impl Buffer {
     ///
     /// For insert-mode sessions this is the cursor's absolute char offset
     /// at the moment of the first edit (which, for dot-repeat purposes,
-    /// also equals the cursor's offset after entry-mode positioning).
-    pub fn set_recording_origin(&mut self, offset: usize) {
+    /// also equals the cursor's offset after entry-mode positioning). The
+    /// `cursor` argument captures the same point in grapheme-space so
+    /// consumers like `g;` and the changelist can land on the first-edit
+    /// location rather than the pre-entry-mode cursor.
+    pub fn set_recording_origin(&mut self, offset: usize, cursor: crate::change::CursorPos) {
         if let Some(ref mut session) = self.recording {
             session.origin = Some(offset);
+            session.origin_cursor = Some(cursor);
         }
     }
 
-    /// Returns the session origin set by `set_recording_origin`, if any.
+    /// Returns the session origin char offset set by `set_recording_origin`.
     pub fn recording_origin(&self) -> Option<usize> {
         self.recording.as_ref().and_then(|s| s.origin)
+    }
+
+    /// Returns the grapheme-space cursor captured alongside the origin.
+    pub fn recording_origin_cursor(&self) -> Option<crate::change::CursorPos> {
+        self.recording.as_ref().and_then(|s| s.origin_cursor)
     }
 
     /// Detaches the current recording session without closing it.
@@ -1448,8 +1460,10 @@ mod tests {
 
         buf.begin_recording();
         assert_eq!(buf.recording_origin(), None, "no origin until set");
-        buf.set_recording_origin(42);
+        let cursor = crate::change::CursorPos::new(0, GraphemeCol(3));
+        buf.set_recording_origin(42, cursor);
         assert_eq!(buf.recording_origin(), Some(42));
+        assert_eq!(buf.recording_origin_cursor(), Some(cursor));
 
         buf.end_recording();
         assert_eq!(
@@ -1457,13 +1471,15 @@ mod tests {
             None,
             "origin cleared once session ends"
         );
+        assert_eq!(buf.recording_origin_cursor(), None);
     }
 
     #[test]
     fn test_set_recording_origin_without_session_is_noop() {
         let mut buf = Buffer::new_from_str("hello\n");
-        buf.set_recording_origin(99);
+        buf.set_recording_origin(99, crate::change::CursorPos::ZERO);
         assert_eq!(buf.recording_origin(), None);
+        assert_eq!(buf.recording_origin_cursor(), None);
     }
 
     #[test]

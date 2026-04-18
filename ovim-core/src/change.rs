@@ -272,6 +272,12 @@ pub enum Change {
         /// Optional group ID for undo grouping (e.g., agent turns).
         /// Multiple Recorded changes with the same group_id are undone together.
         undo_group_id: Option<u64>,
+        /// Optional override for `edit_position()`. Used by insert sessions
+        /// where `cursor_before` is the pre-entry-mode cursor (for undo
+        /// restore) but the actual edit landed at the post-entry-mode
+        /// cursor (what `g;` should navigate to). `None` falls back to
+        /// `cursor_before`.
+        edit_start: Option<CursorPos>,
     },
     /// Filesystem snapshots for LSP workspace `ResourceOp` (create/rename/delete).
     /// Undo restores `before` bytes; redo applies `after` bytes.
@@ -333,6 +339,25 @@ impl Change {
             cursor_before,
             cursor_after,
             undo_group_id: None,
+            edit_start: None,
+        }
+    }
+
+    /// Creates a Recorded change with an explicit edit-start override used
+    /// by `edit_position()`. `cursor_before` still governs undo cursor
+    /// restore; `edit_start` is where `g;` / the changelist should land.
+    pub fn recorded_with_edit_start(
+        edits: Vec<Edit>,
+        cursor_before: CursorPos,
+        cursor_after: CursorPos,
+        edit_start: CursorPos,
+    ) -> Self {
+        Self::Recorded {
+            edits,
+            cursor_before,
+            cursor_after,
+            undo_group_id: None,
+            edit_start: Some(edit_start),
         }
     }
 
@@ -348,6 +373,7 @@ impl Change {
             cursor_before,
             cursor_after,
             undo_group_id: Some(group_id),
+            edit_start: None,
         }
     }
 
@@ -779,10 +805,12 @@ impl Change {
     }
 
     /// Gets the position where the actual edit occurred.
-    /// For Composite changes (insert-mode sessions), this returns the first
-    /// inner change's cursor_before — i.e., where the cursor was AFTER
-    /// entry-mode repositioning (A, I, etc.) but before actual editing.
-    /// Used by g; to navigate to the changelist position.
+    ///
+    /// For insert-mode `Recorded` sessions, `cursor_before` is the
+    /// pre-entry-mode cursor (so undo lands there). The post-entry-mode
+    /// cursor — where editing actually began — is stored in `edit_start`
+    /// and is what `g;` / the changelist should navigate to. For other
+    /// Recorded/Composite/... cases `cursor_before` is the edit position.
     pub fn edit_position(&self) -> CursorPos {
         match self {
             Self::Composite {
@@ -793,7 +821,11 @@ impl Change {
                 .first()
                 .map(|c| c.cursor_before())
                 .unwrap_or(*cursor_before),
-            Self::Recorded { cursor_before, .. } => *cursor_before,
+            Self::Recorded {
+                cursor_before,
+                edit_start,
+                ..
+            } => edit_start.unwrap_or(*cursor_before),
             _ => self.cursor_before(),
         }
     }
@@ -851,6 +883,17 @@ impl Change {
             Self::Composite { cursor_before, .. } => *cursor_before = pos,
             Self::Recorded { cursor_before, .. } => *cursor_before = pos,
             Self::ResourceOp { cursor_before, .. } => *cursor_before = pos,
+        }
+    }
+
+    /// Consumes this change and returns its edit list when it is a
+    /// `Recorded`, or `None` otherwise. Used by flows that need to merge a
+    /// popped insert-session change's edits into a new Recorded (e.g.,
+    /// pending_change_repeat, visual-block insert replay).
+    pub fn into_edits(self) -> Option<Vec<Edit>> {
+        match self {
+            Self::Recorded { edits, .. } => Some(edits),
+            _ => None,
         }
     }
 
@@ -925,6 +968,18 @@ impl ChangeBuilder {
     /// Returns true if the builder has no changes
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
+    }
+
+    /// Returns the cursor position captured when the builder was opened —
+    /// i.e., where to restore the cursor on undo of the insert session.
+    pub fn cursor_before(&self) -> CursorPos {
+        self.cursor_before
+    }
+
+    /// Returns how the insert session was entered. Used by dot-repeat
+    /// (via `RepeatAction::InsertSession`) and by the o/O promotion check.
+    pub fn entry_mode(&self) -> &InsertEntryMode {
+        &self.entry_mode
     }
 }
 

@@ -88,7 +88,7 @@ fn exit_insert_mode(editor: &mut Editor) {
 
     // Check for pending change repeat (cc, C, s, S, cj, ck, cw, cgn, etc.)
     if let Some(pending) = editor.take_pending_change_repeat() {
-        // Pop insert composite only if this insert session actually pushed one.
+        // Pop the insert session's `Recorded` only if it pushed one.
         let insert_undo = if insert_change_pushed {
             editor.pop_last_change()
         } else {
@@ -98,31 +98,29 @@ fn exit_insert_mode(editor: &mut Editor) {
             .as_ref()
             .map(|c| c.get_inserted_text())
             .unwrap_or_default();
-        // Pop delete undo only if the delete phase actually produced edits
+        let insert_cursor_before = insert_undo.as_ref().map(|c| c.cursor_before());
+        let insert_edits = insert_undo.and_then(|c| c.into_edits()).unwrap_or_default();
+
+        // Pop delete undo only if the delete phase actually produced edits.
         let delete_undo = pending
             .delete_token
             .and_then(|token| editor.pop_by_token(token));
 
-        // Merge into single undo unit
         let cursor_before = delete_undo
             .as_ref()
             .map(|c| c.cursor_before())
-            .or_else(|| insert_undo.as_ref().map(|c| c.cursor_before()))
+            .or(insert_cursor_before)
             .unwrap_or_else(|| editor.cursor_position());
         let cursor_after = editor.cursor_position();
 
-        let mut merged = vec![];
-        if let Some(d) = delete_undo {
-            merged.push(d);
-        }
-        if let Some(i) = insert_undo {
-            merged.push(i);
-        }
+        let delete_edits = delete_undo.and_then(|c| c.into_edits()).unwrap_or_default();
+        let mut merged = delete_edits;
+        merged.extend(insert_edits);
         if !merged.is_empty() {
             editor
                 .buffer_mut()
                 .change_manager_mut()
-                .push_change(Change::composite(merged, cursor_before, cursor_after));
+                .push_change(Change::recorded(merged, cursor_before, cursor_after));
         }
 
         // Set semantic repeat action
@@ -133,43 +131,36 @@ fn exit_insert_mode(editor: &mut Editor) {
         });
     }
 
-    // For o/O insert sessions, use RepeatAction instead of Composite::repeat
-    // special-casing so dot-repeat follows Pattern B semantics.
-    let open_line_repeat = editor.last_change().and_then(|change| match change {
-        Change::Composite {
-            changes,
-            entry_mode: InsertEntryMode::OpenBelow,
-            ..
-        } => {
-            let mut inserted_text = String::new();
-            for ch in changes.iter().skip(1) {
-                inserted_text.push_str(&ch.get_inserted_text());
+    // For o/O insert sessions, promote dot-repeat to RepeatAction::OpenLine
+    // so the replay opens a new line at the current cursor instead of
+    // replaying the original session's newline-insert edit verbatim.
+    let open_line_repeat =
+        match editor.buffer().change_manager().last_repeat_action.as_ref() {
+            Some(RepeatAction::InsertSession {
+                entry_mode: mode @ (InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove),
+                edits,
+                ..
+            }) => {
+                // Skip the first edit — that's the synthetic newline created by
+                // `insert_line_below` / `insert_line_above` before the user's
+                // keystrokes. `RepeatAction::OpenLine` will recreate its own.
+                let inserted_text: String = edits
+                    .iter()
+                    .skip(1)
+                    .filter_map(|e| match e {
+                        crate::edit::Edit::Insert { text, .. } => Some(text.as_str()),
+                        crate::edit::Edit::Delete { .. } => None,
+                    })
+                    .collect();
+                Some(RepeatAction::OpenLine {
+                    above: matches!(mode, InsertEntryMode::OpenAbove),
+                    inserted_text,
+                    shift_width: editor.options.shift_width,
+                    expand_tab: editor.options.expand_tab,
+                })
             }
-            Some(RepeatAction::OpenLine {
-                above: false,
-                inserted_text,
-                shift_width: editor.options.shift_width,
-                expand_tab: editor.options.expand_tab,
-            })
-        }
-        Change::Composite {
-            changes,
-            entry_mode: InsertEntryMode::OpenAbove,
-            ..
-        } => {
-            let mut inserted_text = String::new();
-            for ch in changes.iter().skip(1) {
-                inserted_text.push_str(&ch.get_inserted_text());
-            }
-            Some(RepeatAction::OpenLine {
-                above: true,
-                inserted_text,
-                shift_width: editor.options.shift_width,
-                expand_tab: editor.options.expand_tab,
-            })
-        }
-        _ => None,
-    });
+            _ => None,
+        };
 
     // Update the . register with the last inserted text
     editor.update_last_inserted_register();
@@ -188,91 +179,65 @@ fn exit_insert_mode(editor: &mut Editor) {
     let should_move_to_end_line = if let Some((start_line, end_line, col, is_append, move_to_end)) =
         editor.visual_block_insert_state()
     {
-        // Get the text that was inserted and the first line's change
-        if let Some(last_change) = editor.last_change() {
+        // Pull the first-line session's `Recorded` so we can extend its
+        // edits with the replays on sibling lines and push the combined
+        // result as a single undo entry.
+        if let Some(last_change) = editor.last_change().cloned() {
             let inserted_text = last_change.get_inserted_text();
             if !is_append && !move_to_end {
                 visual_block_change_inserted_text = Some(inserted_text.clone());
             }
-            let mut all_changes = vec![last_change.clone()];
-
-            // Get cursor_before from first change
             let cursor_before = last_change.cursor_before();
+            let mut all_edits: Vec<crate::edit::Edit> =
+                last_change.into_edits().unwrap_or_default();
 
-            // Replay on lines start_line+1 through end_line
-            for line_idx in (start_line + 1)..=end_line {
-                if is_append {
-                    // Append mode: insert at end of line
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        let line_len = line_text.chars().count();
-                        let version_before = editor.buffer().version();
-                        editor.buffer_mut().insert_text_at(
-                            line_idx,
-                            CharCol(line_len),
-                            &inserted_text,
-                        );
-                        if editor.buffer().version() != version_before {
-                            // Track this insertion as a change (char-space position).
-                            let change = Change::insert(
-                                ApplyPos::new(line_idx, CharCol(line_len)),
-                                inserted_text.clone(),
-                                cursor_before,
-                            );
-                            all_changes.push(change);
+            // Replay the typed text on each sibling line inside a record()
+            // session so the edits are captured (and the edit_log populated)
+            // without the caller having to track each insert_text_at manually.
+            let ((), sibling_edits) = editor.buffer_mut().record(|buf| {
+                for line_idx in (start_line + 1)..=end_line {
+                    if is_append {
+                        // Append mode: insert at end of line.
+                        if let Some(line) = buf.line(line_idx) {
+                            let line_len = line.trim_end_matches('\n').chars().count();
+                            buf.insert_text_at(line_idx, CharCol(line_len), &inserted_text);
                         }
-                    }
-                } else {
-                    // Insert mode: insert at column (`col` is grapheme from visual-block
-                    // state — pre-existing Class-2 assumption that equals char).
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        let insert_col = col.min(line_text.chars().count());
-                        let version_before = editor.buffer().version();
-                        editor.buffer_mut().insert_text_at(
-                            line_idx,
-                            CharCol(insert_col),
-                            &inserted_text,
-                        );
-                        if editor.buffer().version() != version_before {
-                            let change = Change::insert(
-                                ApplyPos::new(line_idx, CharCol(insert_col)),
-                                inserted_text.clone(),
-                                cursor_before,
-                            );
-                            all_changes.push(change);
+                    } else {
+                        // Insert mode: insert at the block column (`col` is
+                        // grapheme-space from visual-block state — pre-existing
+                        // Class-2 assumption that equals char-space for ASCII).
+                        if let Some(line) = buf.line(line_idx) {
+                            let line_text = line.trim_end_matches('\n');
+                            let insert_col = col.min(line_text.chars().count());
+                            buf.insert_text_at(line_idx, CharCol(insert_col), &inserted_text);
                         }
                     }
                 }
-            }
+            });
 
-            // If multiple lines were affected, wrap in composite for proper undo
-            if all_changes.len() > 1 {
-                // Remove the last change (first line's change) from undo stack
+            // If sibling lines produced edits, rewrite the undo entry to
+            // contain all of them. The first-line Recorded we popped above
+            // stands in for the whole visual-block insert/append.
+            if !sibling_edits.is_empty() {
                 editor.pop_last_change();
+                all_edits.extend(sibling_edits);
 
-                // Create composite for all insert changes
-                let insert_composite = Change::composite(all_changes, cursor_before, cursor_before);
-
-                // Only visual-block change (`c`) has a preceding delete entry.
+                // Visual-block change (`c`) has a preceding delete Recorded.
                 // Redeem it by token so we never pop unrelated history.
-                let final_change = if let Some(token) = pending_visual_block_delete_token {
+                if let Some(token) = pending_visual_block_delete_token {
                     if let Some(prev_change) = editor.pop_by_token(token) {
-                        Change::composite(
-                            vec![prev_change, insert_composite],
-                            cursor_before,
-                            cursor_before,
-                        )
-                    } else {
-                        insert_composite
+                        let mut merged =
+                            prev_change.into_edits().unwrap_or_default();
+                        merged.extend(all_edits);
+                        all_edits = merged;
                     }
-                } else {
-                    insert_composite
-                };
+                }
+
+                let cursor_after = editor.cursor_position();
                 editor
                     .buffer_mut()
                     .change_manager_mut()
-                    .push_change(final_change);
+                    .push_change(Change::recorded(all_edits, cursor_before, cursor_after));
             }
         }
 
@@ -295,16 +260,10 @@ fn exit_insert_mode(editor: &mut Editor) {
     }
 
     // Mark buffer modified for LSP didChange — placed after visual block replay
-    // so the server sees ALL changes (first line + replayed lines).
-    if should_move_to_end_line.is_some() {
-        // The visual-block replay path called `insert_text_at` directly
-        // (outside a `record()` session) to fan the typed text across sibling
-        // lines, so the buffer's `edit_log` projection has a gap. Clear the
-        // log and invalidate decoration slots.
-        editor.fixup_after_bypass_mutation();
-    } else {
-        editor.mark_buffer_modified();
-    }
+    // so the server sees ALL changes (first line + replayed lines). The
+    // sibling replay is wrapped in `buffer.record()` so `edit_log` already
+    // includes its edits — no fixup needed.
+    editor.mark_buffer_modified();
 
     // Clear insert-normal flag on full exit
     editor.editing.insert_normal_pending = false;
