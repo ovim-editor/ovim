@@ -382,10 +382,16 @@ impl Editor {
             cm.push_undo_change_preserving_repeat(change);
         }
 
-        // Ensure the edited document is re-synced to LSP.
+        // Ensure the edited document is re-synced to LSP. We do NOT set
+        // `did_open_sent = true` here unconditionally — workspace edits may
+        // touch files we've never opened (find_or_load_buffer_index_by_uri
+        // can load a fresh buffer), and claiming "already opened" would skip
+        // the required didOpen. Leaving the flag untouched lets the sync
+        // planner route through DocumentSyncRequestAction::DidOpen for
+        // never-opened files while still firing didChange for opened ones.
+        // (OV-00231)
         if let Some(file_path) = file_path {
             let state = self.lsp.state.document_sync.entry(file_path).or_default();
-            state.did_open_sent = true;
             state.mark_modified();
         }
 
@@ -452,6 +458,7 @@ impl Editor {
 mod tests {
     use super::*;
     use std::fs;
+    use std::str::FromStr;
 
     #[test]
     fn is_scratch_path_detects_bracket_names() {
@@ -532,6 +539,72 @@ mod tests {
         // Switching from scratch to real file should NOT set # to scratch path
         editor.switch_to_buffer(0);
         assert_eq!(editor.registers().get(Some('#')), expected_path);
+    }
+
+    /// OV-00231: When a workspace edit modifies a file the user has not
+    /// opened, `find_or_load_buffer_index_by_uri` loads it from disk and
+    /// `apply_lsp_edits_to_buffer_index` records the change. The sync state
+    /// for that file must NOT be marked `did_open_sent = true` — no didOpen
+    /// has actually been sent. Otherwise the next sync tick fires didChange
+    /// without a preceding didOpen (LSP protocol violation).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn workspace_edit_on_unopened_file_does_not_claim_did_open_sent() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let opened = dir.path().join("opened.rs");
+        let untouched = dir.path().join("untouched.rs");
+        fs::write(&opened, "fn main() {}\n").expect("write opened");
+        fs::write(&untouched, "fn helper() {}\n").expect("write untouched");
+
+        let mut editor = Editor::default();
+        editor.open_file(&opened).expect("open opened.rs");
+
+        // Simulate the workspace_edits.rs path: locate-or-load, then apply.
+        let untouched_uri = lsp_types::Uri::from_str(&format!(
+            "file://{}",
+            untouched.canonicalize().unwrap().to_string_lossy()
+        ))
+        .expect("uri");
+
+        let buffer_index = editor
+            .find_or_load_buffer_index_by_uri(&untouched_uri)
+            .expect("load untouched buffer");
+
+        let edit = lsp_types::TextEdit {
+            range: lsp_types::Range {
+                start: lsp_types::Position {
+                    line: 0,
+                    character: 3,
+                },
+                end: lsp_types::Position {
+                    line: 0,
+                    character: 9,
+                },
+            },
+            new_text: "renamed".to_string(),
+        };
+
+        let applied = editor.apply_lsp_edits_to_buffer_index(buffer_index, vec![edit]);
+        assert!(applied, "apply should succeed");
+
+        let untouched_path = untouched
+            .canonicalize()
+            .unwrap()
+            .to_string_lossy()
+            .to_string();
+        let state = editor
+            .lsp
+            .state
+            .document_sync
+            .get(&untouched_path)
+            .expect("sync state for edited file should exist");
+        assert!(
+            !state.did_open_sent,
+            "did_open_sent must remain false for files we never sent didOpen for"
+        );
+        assert!(
+            state.is_modified(),
+            "the edit must still be queued for sync"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
