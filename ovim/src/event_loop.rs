@@ -646,11 +646,14 @@ pub async fn run_headless_loop(
         tokio::sync::mpsc::channel::<(BufferId, Language, Option<LineHighlights>, u64)>(16);
     let mut lsp_interval = interval(Duration::from_millis(50));
     lsp_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Reused across `GetRender` requests so identical-dimension polls
+    // skip the full ratatui+highlight pipeline (OV-00181).
+    let mut render_cache = ovim::ui::AnsiRenderCache::new();
 
     loop {
         tokio::select! {
             Some(request) = api_rx.recv() => {
-                handle_api_request(editor, request, start_time, &session_info).await;
+                handle_api_request(editor, request, start_time, &session_info, &mut render_cache).await;
                 if editor.should_quit() { break; }
             }
             Some((path, cache)) = preview_rx.recv() => {
@@ -912,6 +915,11 @@ pub async fn run_event_loop(
     let mut event_stream = EventStream::new();
     let mut tick_interval = interval(Duration::from_millis(16));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Reused across `GetRender` requests so identical-dimension polls
+    // skip the full ratatui+highlight pipeline (OV-00181). Live for the
+    // entire TUI session even when `api_rx` is `None` — cheap and keeps
+    // the call sites uniform.
+    let mut render_cache = ovim::ui::AnsiRenderCache::new();
 
     while !editor.should_quit() {
         // Wait for input, API request, or tick — input has priority via `biased`
@@ -960,11 +968,11 @@ pub async fn run_event_loop(
             } => {
                 let dummy_start = SystemTime::now();
                 let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".into())));
-                handle_api_request(editor, request, dummy_start, &dummy_session).await;
+                handle_api_request(editor, request, dummy_start, &dummy_session, &mut render_cache).await;
                 // Drain remaining queued API requests
                 if let Some(ref mut rx) = api_rx {
                     while let Ok(req) = rx.try_recv() {
-                        handle_api_request(editor, req, dummy_start, &dummy_session).await;
+                        handle_api_request(editor, req, dummy_start, &dummy_session, &mut render_cache).await;
                     }
                 }
             }
@@ -1020,6 +1028,7 @@ async fn handle_api_request(
     request: ApiRequest,
     start_time: SystemTime,
     session_info: &Arc<Mutex<SessionInfo>>,
+    render_cache: &mut ovim::ui::AnsiRenderCache,
 ) {
     match request {
         ApiRequest::GetSnapshot(tx) => {
@@ -1166,13 +1175,8 @@ async fn handle_api_request(
             height,
             plain,
             tx,
-        } => match ovim::ui::render_editor_to_ansi(editor, width, height) {
-            Ok(ansi) => {
-                let output = if plain {
-                    ovim::ui::strip_ansi(&ansi)
-                } else {
-                    ansi
-                };
+        } => match render_cache.render(editor, width, height, plain) {
+            Ok(output) => {
                 let render_info = RenderInfo {
                     width,
                     height,

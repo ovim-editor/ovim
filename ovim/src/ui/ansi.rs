@@ -23,6 +23,91 @@ pub fn render_editor_to_ansi(editor: &mut Editor, width: u16, height: u16) -> Re
     Ok(buffer_to_ansi(buffer))
 }
 
+/// Single-slot cache for the headless `GetRender` API path.
+///
+/// Re-rendering the editor to ANSI is expensive (full layout, syntax
+/// highlighting, theme resolution, ratatui draw, ANSI encoding) and runs
+/// synchronously on the main event loop — so each call stalls every other
+/// API request, LSP poll, and tick handler until it completes
+/// (OV-00181). To keep the loop responsive when external clients poll
+/// `/v1/render` while the editor is idle, we cache the most recent
+/// rendering and reuse it whenever:
+///
+/// 1. the requested `(width, height, plain)` tuple matches, AND
+/// 2. the editor's `render_input_version` hasn't changed.
+///
+/// The cache holds at most one entry; differently sized requests evict
+/// the previous one. Memory is bounded to roughly one ANSI screen.
+#[derive(Default)]
+pub struct AnsiRenderCache {
+    last: Option<CacheEntry>,
+}
+
+struct CacheEntry {
+    width: u16,
+    height: u16,
+    plain: bool,
+    version: u64,
+    output: String,
+}
+
+impl AnsiRenderCache {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Returns a rendered ANSI (or plain) string for the requested
+    /// dimensions, hitting the in-memory cache when the editor hasn't
+    /// changed since the last render at the same dimensions.
+    ///
+    /// The `plain` flag selects between escape-stripped and raw ANSI
+    /// output — both are cached independently because clients can ask
+    /// for either form at any time.
+    pub fn render(
+        &mut self,
+        editor: &mut Editor,
+        width: u16,
+        height: u16,
+        plain: bool,
+    ) -> Result<String> {
+        let version = editor.render_input_version();
+
+        if let Some(entry) = &self.last {
+            if entry.width == width
+                && entry.height == height
+                && entry.plain == plain
+                && entry.version == version
+            {
+                return Ok(entry.output.clone());
+            }
+        }
+
+        let ansi = render_editor_to_ansi(editor, width, height)?;
+        let output = if plain { strip_ansi(&ansi) } else { ansi };
+
+        self.last = Some(CacheEntry {
+            width,
+            height,
+            plain,
+            version,
+            output: output.clone(),
+        });
+
+        Ok(output)
+    }
+
+    /// Returns true when a `render` call with the given parameters
+    /// would be served from cache (no full re-render). Exposed for
+    /// tests and instrumentation; production code paths should just
+    /// call `render` and let it decide.
+    pub fn would_hit(&self, editor: &Editor, width: u16, height: u16, plain: bool) -> bool {
+        let version = editor.render_input_version();
+        self.last.as_ref().is_some_and(|e| {
+            e.width == width && e.height == height && e.plain == plain && e.version == version
+        })
+    }
+}
+
 /// Converts a ratatui Buffer to an ANSI-escaped string
 /// This allows headless mode to export pixel-perfect terminal output
 pub fn buffer_to_ansi(buffer: &Buffer) -> String {

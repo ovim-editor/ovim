@@ -14,6 +14,20 @@ pub struct PerformanceMetrics {
     pub last_syntax_duration_micros: Option<u64>,
     /// Render dirty flag - set when UI needs redraw
     pub render_dirty: bool,
+    /// Monotonically increasing counter of render-input invalidations.
+    ///
+    /// Bumped every time `mark_dirty()` is called (cursor moves, buffer
+    /// edits, mode changes, LSP updates, etc.). External consumers — most
+    /// importantly the headless `GetRender` API path — use this as a cache
+    /// key: if the counter hasn't changed, the rendered output cannot have
+    /// changed either, so a previously cached ANSI string can be returned
+    /// without re-running the (expensive) render pipeline.
+    ///
+    /// Using a counter rather than mutating an Option-cache from
+    /// `mark_dirty()` keeps the hot edit path allocation-free and lets
+    /// any number of independent caches share the same invalidation
+    /// signal.
+    pub render_input_version: u64,
     /// Input latency samples in microseconds (circular buffer, max 1000 samples)
     pub input_latency_samples: Vec<u64>,
     /// Last LSP serialize (rope->string) duration in microseconds
@@ -34,6 +48,7 @@ impl PerformanceMetrics {
             last_render_duration_micros: None,
             last_syntax_duration_micros: None,
             render_dirty: true, // Start dirty to trigger initial render
+            render_input_version: 0,
             input_latency_samples: Vec::new(),
             last_lsp_serialize_micros: None,
             last_git_status_micros: None,
@@ -155,6 +170,7 @@ impl PerformanceMetrics {
     /// Marks the editor as needing a redraw
     pub fn mark_dirty(&mut self) {
         self.render_dirty = true;
+        self.render_input_version = self.render_input_version.wrapping_add(1);
     }
 
     /// Checks if the editor needs a redraw
@@ -165,6 +181,12 @@ impl PerformanceMetrics {
     /// Marks the editor as clean (just rendered)
     pub fn mark_clean(&mut self) {
         self.render_dirty = false;
+    }
+
+    /// Current render-input version. Increases monotonically (with
+    /// wraparound) each time `mark_dirty()` is called. See the field doc.
+    pub fn render_input_version(&self) -> u64 {
+        self.render_input_version
     }
 }
 
@@ -284,5 +306,12 @@ impl Editor {
     /// Marks the editor as clean (just rendered)
     pub fn mark_clean(&mut self) {
         self.metrics.mark_clean();
+    }
+
+    /// Current render-input version, monotonically bumped on every
+    /// `mark_dirty()`. Stable while the editor is idle, so cheap to use as
+    /// a cache key for derived render artifacts (e.g. headless ANSI).
+    pub fn render_input_version(&self) -> u64 {
+        self.metrics.render_input_version()
     }
 }
