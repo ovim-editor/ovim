@@ -204,7 +204,17 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 .await;
             let _ = mode_rx.await;
 
-            // Send K to trigger hover
+            // Send K to trigger hover. SendKeys already blocks on
+            // `has_pending_hover()` for up to 5s in the event loop
+            // (see `ApiRequest::SendKeys` in event_loop.rs), so by the
+            // time this returns the hover slot has either resolved
+            // (mode=HoverPreview, hover_info populated) or timed out.
+            //
+            // Historically (OV-00183) we then polled GetSnapshotLight 10×
+            // with a 100ms sleep between each — adding up to 1s of dead
+            // wait and 10 channel round-trips on top of the work the
+            // event loop had already done. A single snapshot read is
+            // sufficient.
             let (tx, rx) = oneshot::channel();
             state
                 .tx
@@ -213,28 +223,23 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
             let _ = rx.await;
 
-            // Poll snapshot: wait for mode to become HOVER (LSP response arrived).
-            // Uses GetSnapshotLight to avoid serializing the entire buffer on each poll.
-            let mut hover_text = None;
-            for _ in 0..10 {
-                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-
-                let (snap_tx, snap_rx) = oneshot::channel();
-                if state
-                    .tx
-                    .send(ApiRequest::GetSnapshotLight(snap_tx))
-                    .await
-                    .is_err()
+            let (snap_tx, snap_rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::GetSnapshotLight(snap_tx))
+                .await
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+            // Only treat hover_info as fresh when mode actually switched
+            // to HoverPreview. Otherwise hover_info may be stale from a
+            // previous K, or the LSP returned no hover at this position.
+            let hover_text = match snap_rx.await {
+                Ok(super::state::ApiResponse::Snapshot(snapshot))
+                    if snapshot.mode.contains("HOVER") =>
                 {
-                    break;
+                    snapshot.hover_info
                 }
-                if let Ok(super::state::ApiResponse::Snapshot(snapshot)) = snap_rx.await {
-                    if snapshot.mode.contains("HOVER") {
-                        hover_text = snapshot.hover_info;
-                        break;
-                    }
-                }
-            }
+                _ => None,
+            };
 
             // Dismiss hover popup, return to NORMAL mode
             let (esc_tx, esc_rx) = oneshot::channel();
@@ -664,5 +669,164 @@ async fn get_current_file_path(state: &ApiState) -> Option<String> {
     match rx.await {
         Ok(super::state::ApiResponse::Buffer(buffer)) => buffer.file_path,
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    //! Tests that exercise `handle_tool_call` against a fake event-loop
+    //! receiver. The fake receiver records every `ApiRequest` it sees and
+    //! responds inline so we can assert on the handler's channel traffic
+    //! without needing a real `Editor` or LSP server.
+    use super::*;
+    use crate::api::state::{
+        ApiRequest, ApiResponse, ApiState, BufferInfo, CursorPosition, EditorSnapshot,
+        SendKeysResult, SuccessResponse,
+    };
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use std::sync::Mutex;
+    use tokio::sync::mpsc;
+
+    fn snapshot_with(mode: &str, hover: Option<&str>) -> EditorSnapshot {
+        EditorSnapshot {
+            buffer: BufferInfo::default(),
+            cursor: CursorPosition::default(),
+            mode: mode.to_string(),
+            visual_selection: None,
+            registers: HashMap::new(),
+            marks: HashMap::new(),
+            picker: None,
+            hover_info: hover.map(|s| s.to_string()),
+            decorations: Vec::new(),
+        }
+    }
+
+    /// Spawn a fake event loop that responds to a fixed set of requests
+    /// and records the request kinds it observed (in order).
+    fn spawn_fake_loop(
+        snapshot: EditorSnapshot,
+    ) -> (
+        ApiState,
+        Arc<Mutex<Vec<&'static str>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let (tx, mut rx) = mpsc::channel::<ApiRequest>(32);
+        let log: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+        let log_in_task = log.clone();
+
+        let handle = tokio::spawn(async move {
+            while let Some(req) = rx.recv().await {
+                match req {
+                    ApiRequest::SetMode(_, reply) => {
+                        log_in_task.lock().unwrap().push("SetMode");
+                        let _ = reply.send(ApiResponse::Success(SuccessResponse {
+                            success: true,
+                            message: None,
+                            line_count: None,
+                        }));
+                    }
+                    ApiRequest::SendKeys(_, reply) => {
+                        log_in_task.lock().unwrap().push("SendKeys");
+                        // Real event loop blocks here on hover; we model the
+                        // post-resolution state by simply replying success.
+                        let _ = reply.send(ApiResponse::SendKeysResult(SendKeysResult {
+                            success: true,
+                            message: None,
+                            context: crate::api::state::ContextWindowInfo {
+                                context: String::new(),
+                                file: None,
+                                mode: snapshot.mode.clone(),
+                                line: 0,
+                                column: 0,
+                            },
+                        }));
+                    }
+                    ApiRequest::GetSnapshotLight(reply) => {
+                        log_in_task.lock().unwrap().push("GetSnapshotLight");
+                        let _ = reply.send(ApiResponse::Snapshot(snapshot.clone()));
+                    }
+                    ApiRequest::GetSnapshot(reply) => {
+                        log_in_task.lock().unwrap().push("GetSnapshot");
+                        let _ = reply.send(ApiResponse::Snapshot(snapshot.clone()));
+                    }
+                    _ => {
+                        // The lsp_hover path should never reach any other request.
+                        log_in_task.lock().unwrap().push("UNEXPECTED");
+                    }
+                }
+            }
+        });
+
+        (ApiState::new(tx), log, handle)
+    }
+
+    /// Happy-path shape check for the post-OV-00183 lsp_hover handler:
+    /// returns the hover text straight from a single snapshot read.
+    /// (The old polling loop *would* also have stopped at iteration 1
+    /// in this case because mode=HOVER triggered the break — the harder
+    /// regression is caught by `lsp_hover_reports_no_hover_when_mode_did_not_switch`
+    /// below, where the old code burned all 10 polls.)
+    #[tokio::test]
+    async fn lsp_hover_issues_single_snapshot_request() {
+        let snapshot = snapshot_with("HOVER", Some("u32"));
+        let (state, log, _handle) = spawn_fake_loop(snapshot);
+
+        let params = json!({ "name": "lsp_hover" });
+        let result = handle_tool_call(state, params).await.expect("tool call");
+
+        // Result should expose the hover text.
+        let text = result
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .expect("text content");
+        assert_eq!(text, "u32");
+
+        // Channel traffic: the handler should fire SetMode (pre-K),
+        // SendKeys, exactly one GetSnapshotLight, then SetMode (cleanup).
+        // Crucially, GetSnapshotLight must appear at most once — the old
+        // polling loop fired it up to 10× per call.
+        let log = log.lock().unwrap().clone();
+        assert_eq!(
+            log,
+            vec!["SetMode", "SendKeys", "GetSnapshotLight", "SetMode"],
+            "lsp_hover should not poll GetSnapshotLight (OV-00183)"
+        );
+    }
+
+    /// Regression for OV-00183: when the LSP returns no hover at this
+    /// position, the editor stays in NORMAL mode (`poll_hover_slot`
+    /// only switches to HoverPreview on a non-empty result). The pre-fix
+    /// handler would then poll `GetSnapshotLight` all 10 times waiting
+    /// for `mode.contains("HOVER")` to become true — burning ~1s of
+    /// dead time and 10 channel round-trips on every miss. The fix is
+    /// to take a single snapshot post-`SendKeys` and rely on the event
+    /// loop having already awaited the hover response.
+    #[tokio::test]
+    async fn lsp_hover_reports_no_hover_when_mode_did_not_switch() {
+        // hover_info is Some — simulating leftover state from an earlier
+        // K — but mode is still NORMAL because the new request returned
+        // no hover. The handler must NOT surface the stale text.
+        let snapshot = snapshot_with("NORMAL", Some("stale leftover"));
+        let (state, log, _handle) = spawn_fake_loop(snapshot);
+
+        let params = json!({ "name": "lsp_hover" });
+        let result = handle_tool_call(state, params).await.expect("tool call");
+
+        let text = result
+            .get("content")
+            .and_then(|c| c.get(0))
+            .and_then(|c| c.get("text"))
+            .and_then(|t| t.as_str())
+            .expect("text content");
+        assert_eq!(text, "No hover information available at cursor position");
+
+        let log = log.lock().unwrap().clone();
+        assert_eq!(
+            log,
+            vec!["SetMode", "SendKeys", "GetSnapshotLight", "SetMode"]
+        );
     }
 }
