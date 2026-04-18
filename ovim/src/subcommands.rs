@@ -921,7 +921,12 @@ fn cmd_goto_definition(session_name: &str) -> Result<()> {
     Ok(())
 }
 
-/// Trigger find-references and return list from picker
+/// Trigger find-references and return list from picker.
+///
+/// Sends `grr` (the actual `request_find_references` binding — `gr` alone
+/// only sets the LSP `gr*` prefix) and polls the snapshot until the LSP
+/// picker opens. Earlier this sent `gr` and slept a single 500 ms, which
+/// produced an empty list every call — see OV-00007.
 fn cmd_find_references(session_name: &str) -> Result<()> {
     use serde_json::json;
     use std::thread;
@@ -931,11 +936,27 @@ fn cmd_find_references(session_name: &str) -> Result<()> {
     let client = OvimClient::new(&session);
 
     client
-        .send_keys("gr")
+        .send_keys("grr")
         .context("Failed to send find-references keys")?;
-    thread::sleep(Duration::from_millis(500));
-    let snapshot = client
-        .get_snapshot()
+
+    // Poll for the LSP-locations picker to appear. Mirrors the cmd_hover
+    // poll loop — total ceiling 6 s, matching other LSP requests that wait
+    // on a tokio task to fill a slot. We close the picker on the way out so
+    // a follow-up CLI call lands in NORMAL mode.
+    let mut snapshot = None;
+    for _ in 0..30 {
+        thread::sleep(Duration::from_millis(200));
+        let snap = client
+            .get_snapshot()
+            .context("Failed to get snapshot after find-references")?;
+        if snap.picker.is_some() {
+            snapshot = Some(snap);
+            break;
+        }
+    }
+    let snapshot = snapshot
+        .map(Ok)
+        .unwrap_or_else(|| client.get_snapshot())
         .context("Failed to get snapshot after find-references")?;
 
     let references = if let Some(picker) = &snapshot.picker {
@@ -954,6 +975,9 @@ fn cmd_find_references(session_name: &str) -> Result<()> {
     } else {
         Vec::new()
     };
+
+    // Dismiss the picker so the session is left in NORMAL mode.
+    let _ = client.send_keys("<Esc>");
 
     println!(
         "{}",
