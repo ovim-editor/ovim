@@ -600,11 +600,7 @@ impl Buffer {
         );
         self.recording = Some(RecordingSession::default());
         let result = f(self);
-        let edits = self
-            .recording
-            .take()
-            .map(|s| s.edits)
-            .unwrap_or_default();
+        let edits = self.recording.take().map(|s| s.edits).unwrap_or_default();
         (result, edits)
     }
 

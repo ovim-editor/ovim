@@ -36,6 +36,84 @@ impl Editor {
         result
     }
 
+    /// Applies a buffer-level edit and records it when it actually mutated.
+    ///
+    /// This is the low-level helper insert/replace-mode keystroke handlers use
+    /// after the removal of `Change::InsertText` / `DeleteText`. It preserves
+    /// the two behaviors the old `apply_change_and_record` had:
+    ///
+    /// 1. During an active insert/replace recording session, snapshot the
+    ///    recording origin on the first edit so `RepeatAction::InsertSession`
+    ///    dot-repeat can re-anchor correctly. Edits flow into the ambient
+    ///    session and the undo push happens at `finalize_change_building`.
+    /// 2. Outside a session, wrap the edit in `buffer.record()` and push a
+    ///    `Change::Recorded` onto the undo stack (via `add_change` so
+    ///    `last_change` is populated and `.` can dot-repeat the edit).
+    ///
+    /// `f` must mutate the buffer via `insert_text_at_positioning_cursor` /
+    /// `delete_range_positioning_cursor` (or equivalent) — it returns whether
+    /// the buffer version changed, which this function propagates to the
+    /// caller so they can early-return on no-op.
+    pub fn record_edit<F>(&mut self, cursor_before: CursorPos, f: F) -> bool
+    where
+        F: FnOnce(&mut crate::buffer::Buffer) -> bool,
+    {
+        if self.buffer().is_recording() {
+            // If an outer stateful session is still missing its origin (this
+            // is the first edit of an insert session), snapshot the cursor's
+            // char offset now — that's the reference point `InsertSession`
+            // dot-repeat translates against. Also capture the grapheme-space
+            // cursor so `g;` / the changelist can land here rather than at
+            // the pre-entry-mode cursor stored on the Recorded.
+            if self.buffer().recording_origin().is_none() {
+                let (offset, cursor) = {
+                    let buf = self.buffer();
+                    let off =
+                        buf.rope().line_to_char(buf.cursor().line()) + buf.cursor_char_col().0;
+                    let cur = CursorPos::new(buf.cursor().line(), buf.cursor().col());
+                    (off, cur)
+                };
+                self.buffer_mut().set_recording_origin(offset, cursor);
+            }
+            // Outer `record()` caller owns edit capture.
+            f(self.buffer_mut())
+        } else {
+            // Non-session path: wrap in `record()`, and on a real mutation
+            // push a `Change::Recorded` for mechanical undo PLUS set a
+            // `RepeatAction::InsertSession` so `.` re-anchors to the current
+            // cursor (matching the pre-4.3 `Change::InsertText::repeat`
+            // semantics). Without the RepeatAction, `.` would replay at the
+            // original absolute offsets via `Change::Recorded::repeat`.
+            //
+            // Sites that want different dot-repeat semantics (e.g., the
+            // Normal-mode bracketed paste, which wants `RepeatAction::PasteAfter`)
+            // call `buffer.record()` + `push_recorded_undo` + `set_repeat_action`
+            // directly rather than routing through `record_edit`.
+            let origin_offset = {
+                let buf = self.buffer();
+                buf.rope().line_to_char(buf.cursor().line()) + buf.cursor_char_col().0
+            };
+            let (mutated, edits) = self.buffer_mut().record(f);
+            if mutated {
+                let cursor_after = self.cursor_position();
+                let change = Change::recorded(edits.clone(), cursor_before, cursor_after);
+                // Push the undo entry first, then set the RepeatAction.
+                // `push_undo_change_preserving_repeat` avoids stomping on the
+                // RepeatAction we're about to set.
+                self.buffer_mut()
+                    .change_manager_mut()
+                    .push_undo_change_preserving_repeat(change);
+                self.mark_buffer_modified();
+                self.set_repeat_action(RepeatAction::InsertSession {
+                    entry_mode: crate::change::InsertEntryMode::Insert,
+                    origin_offset,
+                    edits,
+                });
+            }
+            mutated
+        }
+    }
+
     /// Pops the last change from the undo stack (without undoing it)
     /// Used when replacing a change with a composite version
     pub fn pop_last_change(&mut self) -> Option<Change> {

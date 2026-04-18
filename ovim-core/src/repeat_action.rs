@@ -697,12 +697,14 @@ impl RepeatAction {
                 // current rope without assuming anything about the content
                 // between origin and edit.
                 //
-                // After each edit we also advance the cursor to match what
-                // `Change::InsertText/DeleteText.apply()` do today: insert
-                // lands cursor at end of inserted text, delete lands cursor
-                // at start of range. Session-internal cursor state matters
-                // because future edits in the same session target offsets
-                // that assume the cursor moved this way.
+                // After each edit we also advance the cursor the same way
+                // `Buffer::insert_text_at_positioning_cursor` /
+                // `Buffer::delete_range_positioning_cursor` do during live
+                // editing: insert lands cursor at end of inserted text,
+                // delete lands cursor at start of range. Session-internal
+                // cursor state matters because future edits in the same
+                // session target offsets that assume the cursor moved this
+                // way.
                 let new_origin_offset = {
                     let line = buffer.cursor().line();
                     let char_col = buffer.cursor_char_col();
@@ -742,10 +744,12 @@ impl RepeatAction {
                 // Step 3: Esc moves cursor left by 1 unless already at col 0.
                 //
                 // Skip this for single-edit plain-`Insert` sessions so dot
-                // repeat matches the ChangeBuilder behavior it replaces:
-                // those sessions unwrap to a bare `Change::InsertText` /
-                // `DeleteText` at finalize time, and those `.repeat()`
-                // implementations do not simulate Esc's cursor-left.
+                // repeat matches the direct-path `record_edit` flow: those
+                // single-keystroke inserts (visual-`c` → type one char →
+                // `<Esc>`, etc.) were pre-4.3 `Change::InsertText::repeat`
+                // which did NOT simulate Esc's cursor-left, and the
+                // InsertSession RepeatAction `record_edit` now sets must
+                // preserve that behavior.
                 let skip_esc_move =
                     edits.len() == 1 && matches!(entry_mode, InsertEntryMode::Insert);
                 if !skip_esc_move && buffer.cursor_char_col() > 0 {
@@ -785,9 +789,18 @@ mod insert_session_tests {
             InsertEntryMode::Insert,
             0,
             vec![
-                Edit::Insert { offset: 0, text: "f".into() },
-                Edit::Insert { offset: 1, text: "o".into() },
-                Edit::Insert { offset: 2, text: "o".into() },
+                Edit::Insert {
+                    offset: 0,
+                    text: "f".into(),
+                },
+                Edit::Insert {
+                    offset: 1,
+                    text: "o".into(),
+                },
+                Edit::Insert {
+                    offset: 2,
+                    text: "o".into(),
+                },
             ],
         );
 
@@ -807,9 +820,18 @@ mod insert_session_tests {
             InsertEntryMode::Insert,
             100,
             vec![
-                Edit::Insert { offset: 100, text: "a".into() },
-                Edit::Insert { offset: 101, text: "b".into() },
-                Edit::Insert { offset: 102, text: "c".into() },
+                Edit::Insert {
+                    offset: 100,
+                    text: "a".into(),
+                },
+                Edit::Insert {
+                    offset: 101,
+                    text: "b".into(),
+                },
+                Edit::Insert {
+                    offset: 102,
+                    text: "c".into(),
+                },
             ],
         );
 
@@ -827,7 +849,10 @@ mod insert_session_tests {
         let action = insert_session(
             InsertEntryMode::Insert,
             4,
-            vec![Edit::Delete { offset: 3, text: "\n".into() }],
+            vec![Edit::Delete {
+                offset: 3,
+                text: "\n".into(),
+            }],
         );
 
         let mut buf = Buffer::new_from_str("aaa\nbbb\n");
@@ -848,10 +873,22 @@ mod insert_session_tests {
             InsertEntryMode::Insert,
             0,
             vec![
-                Edit::Insert { offset: 0, text: "f".into() },
-                Edit::Insert { offset: 1, text: "o".into() },
-                Edit::Insert { offset: 2, text: "o".into() },
-                Edit::Insert { offset: 1, text: "x".into() },
+                Edit::Insert {
+                    offset: 0,
+                    text: "f".into(),
+                },
+                Edit::Insert {
+                    offset: 1,
+                    text: "o".into(),
+                },
+                Edit::Insert {
+                    offset: 2,
+                    text: "o".into(),
+                },
+                Edit::Insert {
+                    offset: 1,
+                    text: "x".into(),
+                },
             ],
         );
 
@@ -869,10 +906,22 @@ mod insert_session_tests {
             InsertEntryMode::Insert,
             0,
             vec![
-                Edit::Insert { offset: 0, text: "a".into() },
-                Edit::Insert { offset: 1, text: "b".into() },
-                Edit::Delete { offset: 1, text: "b".into() },
-                Edit::Delete { offset: 0, text: "a".into() },
+                Edit::Insert {
+                    offset: 0,
+                    text: "a".into(),
+                },
+                Edit::Insert {
+                    offset: 1,
+                    text: "b".into(),
+                },
+                Edit::Delete {
+                    offset: 1,
+                    text: "b".into(),
+                },
+                Edit::Delete {
+                    offset: 0,
+                    text: "a".into(),
+                },
             ],
         );
 
@@ -891,7 +940,10 @@ mod insert_session_tests {
         let action = insert_session(
             InsertEntryMode::Append,
             3,
-            vec![Edit::Insert { offset: 3, text: "X".into() }],
+            vec![Edit::Insert {
+                offset: 3,
+                text: "X".into(),
+            }],
         );
 
         let mut buf = Buffer::new_from_str("abcde\n");
@@ -906,7 +958,10 @@ mod insert_session_tests {
         let action = insert_session(
             InsertEntryMode::FirstNonBlank,
             2,
-            vec![Edit::Insert { offset: 2, text: "!".into() }],
+            vec![Edit::Insert {
+                offset: 2,
+                text: "!".into(),
+            }],
         );
 
         let mut buf = Buffer::new_from_str("    hello\n");
@@ -922,7 +977,10 @@ mod insert_session_tests {
         let action = insert_session(
             InsertEntryMode::EndOfLine,
             3,
-            vec![Edit::Insert { offset: 3, text: "!".into() }],
+            vec![Edit::Insert {
+                offset: 3,
+                text: "!".into(),
+            }],
         );
 
         let mut buf = Buffer::new_from_str("abc\n");
@@ -940,9 +998,18 @@ mod insert_session_tests {
             InsertEntryMode::Insert,
             0,
             vec![
-                Edit::Insert { offset: 0, text: "a".into() },
-                Edit::Insert { offset: 1, text: "\n".into() },
-                Edit::Insert { offset: 2, text: "b".into() },
+                Edit::Insert {
+                    offset: 0,
+                    text: "a".into(),
+                },
+                Edit::Insert {
+                    offset: 1,
+                    text: "\n".into(),
+                },
+                Edit::Insert {
+                    offset: 2,
+                    text: "b".into(),
+                },
             ],
         );
 

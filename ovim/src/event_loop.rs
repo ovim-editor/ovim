@@ -1613,21 +1613,23 @@ fn handle_insert_lines(editor: &mut Editor, line: usize, _before: bool, text: &s
     let ins_line = rope.char_to_line(char_idx);
     let ins_col = char_idx - rope.line_to_char(ins_line);
 
-    editor.buffer_mut().insert_text_at(
-        ins_line,
-        ovim_core::unicode::CharCol(ins_col),
-        &text_with_nl,
-    );
+    // Record change for undo via `buffer.record()` + `push_recorded_undo`.
+    // Replaces the old pattern of direct mutation + `Change::insert` constructor.
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        buf.insert_text_at(
+            ins_line,
+            ovim_core::unicode::CharCol(ins_col),
+            &text_with_nl,
+        );
+    });
 
-    // Record change for undo
-    let change = ovim::editor::Change::insert(
-        ovim::editor::ApplyPos::new(ins_line, ovim_core::unicode::CharCol(ins_col)),
-        text_with_nl,
-        cursor_before,
-    );
-    editor.add_change(change);
-    // Bypass mutation — clear projection and invalidate decoration slots.
-    editor.fixup_after_bypass_mutation();
+    if !edits.is_empty() {
+        let cursor_after = {
+            let c = editor.buffer().cursor();
+            ovim::editor::CursorPos::new(c.line(), c.col())
+        };
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
 
     ApiResponse::Success(SuccessResponse {
         success: true,
@@ -1676,23 +1678,16 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
         0
     };
 
-    let deleted = editor.buffer_mut().delete_range(
-        from,
-        ovim_core::unicode::CharCol::ZERO,
-        end_line,
-        ovim_core::unicode::CharCol(end_col),
-    );
-
-    // Record change for undo (char-space range)
-    let change = ovim::editor::Change::delete(
-        ovim::editor::Range::new(
-            ovim::editor::ApplyPos::new(from, ovim_core::unicode::CharCol::ZERO),
-            ovim::editor::ApplyPos::new(end_line, ovim_core::unicode::CharCol(end_col)),
-        ),
-        deleted,
-        cursor_before,
-    );
-    editor.add_change(change);
+    // Record delete via `buffer.record()` + `push_recorded_undo`.
+    // Replaces the old pattern of direct mutation + `Change::delete` constructor.
+    let (_deleted, edits) = editor.buffer_mut().record(|buf| {
+        buf.delete_range(
+            from,
+            ovim_core::unicode::CharCol::ZERO,
+            end_line,
+            ovim_core::unicode::CharCol(end_col),
+        )
+    });
 
     // Adjust cursor if it was in deleted range
     let new_total = editor.buffer().rope().len_lines();
@@ -1703,8 +1698,14 @@ fn handle_delete_lines(editor: &mut Editor, from: usize, to: usize) -> ApiRespon
             .cursor_mut()
             .set_position(new_total - 1, ovim_core::unicode::GraphemeCol::ZERO);
     }
-    // Bypass mutation — clear projection and invalidate decoration slots.
-    editor.fixup_after_bypass_mutation();
+
+    if !edits.is_empty() {
+        let cursor_after = {
+            let c = editor.buffer().cursor();
+            ovim::editor::CursorPos::new(c.line(), c.col())
+        };
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
 
     ApiResponse::Success(SuccessResponse {
         success: true,

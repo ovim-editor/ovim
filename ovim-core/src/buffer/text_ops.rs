@@ -79,6 +79,67 @@ impl Buffer {
         self.edit_log.push(self.version as u64, vec![recorded_edit]);
     }
 
+    /// Inserts text at `(line, col)` and, if the buffer actually mutated,
+    /// positions the cursor at the end of the inserted text (char-space
+    /// position converted to grapheme via `set_cursor_char_col`).
+    ///
+    /// Returns `true` when the buffer version changed (i.e. the insertion
+    /// was not blocked or clamped to a no-op). This mirrors the historical
+    /// `Change::InsertText::apply` behavior that callers in insert/replace
+    /// mode relied on for cursor landing.
+    pub fn insert_text_at_positioning_cursor(
+        &mut self,
+        line: usize,
+        col: CharCol,
+        text: &str,
+    ) -> bool {
+        let version_before = self.version();
+        self.insert_text_at(line, col, text);
+        if self.version() == version_before {
+            return false;
+        }
+        // Position cursor at end of inserted text. The counting iterates
+        // chars (not graphemes), matching the legacy `calculate_end_position`
+        // on `Change`; `set_cursor_char_col` converts to grapheme space.
+        let mut end_line = line;
+        let mut end_col = col.0;
+        for ch in text.chars() {
+            if ch == '\n' {
+                end_line += 1;
+                end_col = 0;
+            } else {
+                end_col += 1;
+            }
+        }
+        self.set_cursor_char_col(end_line, CharCol(end_col));
+        true
+    }
+
+    /// Deletes the char-space range `[start..end)` and, if the buffer
+    /// actually mutated, positions the cursor at the start of the deleted
+    /// range.
+    ///
+    /// Returns `(mutated, deleted_text)` — `mutated` is `true` when the
+    /// buffer version changed. Mirrors the historical `Change::DeleteText::apply`
+    /// behavior.
+    pub fn delete_range_positioning_cursor(
+        &mut self,
+        start_line: usize,
+        start_col: CharCol,
+        end_line: usize,
+        end_col: CharCol,
+    ) -> (bool, String) {
+        let version_before = self.version();
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
+        if self.version() == version_before {
+            return (false, deleted);
+        }
+        // Position cursor at deletion start (char-space → grapheme via
+        // set_cursor_char_col).
+        self.set_cursor_char_col(start_line, start_col);
+        (true, deleted)
+    }
+
     /// Deletes text in a range and returns the deleted text.
     ///
     /// Columns are char indices (`CharCol`) — what rope operations use. The

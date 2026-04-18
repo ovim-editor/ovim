@@ -239,10 +239,10 @@ impl Default for EditorOptions {
 }
 
 use crate::buffer::Buffer;
-use crate::repeat_action::RepeatAction;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
+use crate::repeat_action::RepeatAction;
 use crate::unicode::{grapheme_to_char_col, GraphemeCol};
 use anyhow::Result;
 use std::collections::HashMap;
@@ -1826,14 +1826,18 @@ impl Editor {
 
         match self.mode() {
             Mode::Insert => {
-                // Insert pasted text at cursor position as a single change
+                // Insert pasted text at cursor position. The ambient insert
+                // session captures the edit; the undo entry is pushed as a
+                // single `Recorded` at `finalize_change_building`.
                 let cursor = self.buffer().cursor();
                 let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 // Convert grapheme col to char col for buffer operations.
                 let char_col = self.buffer().cursor_char_col();
-                let position = ApplyPos::new(cursor.line(), char_col);
-                let change = Change::insert(position, text.to_string(), cursor_before);
-                self.apply_change_and_record(change);
+                let line = cursor.line();
+                let pasted = text.to_string();
+                self.record_edit(cursor_before, |buf| {
+                    buf.insert_text_at_positioning_cursor(line, char_col, &pasted)
+                });
             }
             Mode::AiChat => {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -1844,15 +1848,28 @@ impl Editor {
                 }
             }
             Mode::Normal => {
-                // Set unnamed register and paste after cursor
+                // Set unnamed register and paste after cursor as a recorded
+                // undo entry. `.`-repeat runs through `RepeatAction::PasteAfter`
+                // so the re-paste re-anchors to the current cursor (same
+                // semantics the old `Change::InsertText::repeat` provided).
                 self.registers.set(None, text.to_string());
                 let cursor = self.buffer().cursor();
                 let cursor_before = CursorPos::new(cursor.line(), cursor.col());
                 // Convert grapheme col to char col for buffer operations.
                 let char_col = self.buffer().cursor_char_col();
-                let position = ApplyPos::new(cursor.line(), char_col + 1);
-                let change = Change::insert(position, text.to_string(), cursor_before);
-                self.apply_change_and_record(change);
+                let line = cursor.line();
+                let paste_col = char_col + 1;
+                let pasted = text.to_string();
+                let (_mutated, edits) = self
+                    .buffer_mut()
+                    .record(|buf| buf.insert_text_at_positioning_cursor(line, paste_col, &pasted));
+                if !edits.is_empty() {
+                    let cursor_after = self.cursor_position();
+                    self.push_recorded_undo(edits, cursor_before, cursor_after);
+                    self.set_repeat_action(crate::repeat_action::RepeatAction::PasteAfter {
+                        count: 1,
+                    });
+                }
             }
             Mode::Command => {
                 // Insert text into command buffer
@@ -1883,8 +1900,8 @@ impl Editor {
             .start_building(cursor_before);
         // Open the stateful recording session that `finalize_change_building`
         // will close — this feeds `RepeatAction::InsertSession` alongside the
-        // Pattern A composite. Session origin is captured lazily on the first
-        // edit via `apply_change_and_record`.
+        // `Recorded` undo entry. Session origin is captured lazily on the first
+        // edit via `record_edit`.
         if !self.buffer().is_recording() {
             self.buffer_mut().begin_recording();
         }
@@ -1893,43 +1910,6 @@ impl Editor {
     /// Sets how insert mode was entered on the current change builder (for dot repeat).
     pub fn set_change_entry_mode(&mut self, mode: InsertEntryMode) {
         self.buffer_mut().change_manager_mut().set_entry_mode(mode);
-    }
-
-    /// Applies a change and records it only when it mutated the buffer.
-    ///
-    /// The underlying `Edit`s are captured via `buffer.record()` so the edit
-    /// log has the history projection needs to shift decoration positions at
-    /// render time. Without routing through `record()`, inlay hints and
-    /// diagnostics anchored past the edit point would drift.
-    pub fn apply_change_and_record(&mut self, change: Change) -> bool {
-        let version_before = self.buffer().version();
-        if self.buffer().is_recording() {
-            // If an outer stateful session is still missing its origin (this
-            // is the first edit of an insert session), snapshot the cursor's
-            // char offset now — that's the reference point `InsertSession`
-            // dot-repeat translates against. Also capture the grapheme-space
-            // cursor so `g;` / the changelist can land here rather than at
-            // the pre-entry-mode cursor stored on the Recorded.
-            if self.buffer().recording_origin().is_none() {
-                let (offset, cursor) = {
-                    let buf = self.buffer();
-                    let off =
-                        buf.rope().line_to_char(buf.cursor().line()) + buf.cursor_char_col().0;
-                    let cur = CursorPos::new(buf.cursor().line(), buf.cursor().col());
-                    (off, cur)
-                };
-                self.buffer_mut().set_recording_origin(offset, cursor);
-            }
-            // Outer `record()` caller owns edit capture.
-            change.apply(self.buffer_mut());
-        } else {
-            let ((), _edits) = self.buffer_mut().record(|b| change.apply(b));
-        }
-        if self.buffer().version() == version_before {
-            return false;
-        }
-        self.add_change(change);
-        true
     }
 
     /// Adds a change to the change manager

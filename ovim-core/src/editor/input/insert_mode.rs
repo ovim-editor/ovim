@@ -9,7 +9,7 @@
 //! - Visual block insert state handling
 //! - Tab/auto-indent
 
-use crate::editor::{ApplyPos, Change, CursorPos, Editor, InsertEntryMode, Range};
+use crate::editor::{Change, CursorPos, Editor, InsertEntryMode};
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{CharCol, GraphemeCol};
@@ -46,23 +46,20 @@ fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
             // Whitespace is ASCII, so char count == grapheme count here.
             let whitespace_len = line_without_newline.chars().count();
             let cursor_before = CursorPos::new(current_line_idx, GraphemeCol(whitespace_len));
-            let deleted_text = line_without_newline.to_string();
-            let range = Range::new(
-                ApplyPos::new(current_line_idx, CharCol::ZERO),
-                ApplyPos::new(current_line_idx, CharCol(whitespace_len)),
-            );
 
-            // Create and apply the delete change (records for undo)
-            let change = Change::delete(range, deleted_text, cursor_before);
-            if !editor.apply_change_and_record(change) {
+            // Record the deletion for undo. `delete_range_positioning_cursor`
+            // lands the cursor at char col 0 (== grapheme col 0).
+            if !editor.record_edit(cursor_before, |buf| {
+                buf.delete_range_positioning_cursor(
+                    current_line_idx,
+                    CharCol::ZERO,
+                    current_line_idx,
+                    CharCol(whitespace_len),
+                )
+                .0
+            }) {
                 return false;
             }
-
-            // Move cursor to column 0 since we removed the whitespace
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(current_line_idx, GraphemeCol::ZERO);
             return true;
         }
     }
@@ -134,33 +131,32 @@ fn exit_insert_mode(editor: &mut Editor) {
     // For o/O insert sessions, promote dot-repeat to RepeatAction::OpenLine
     // so the replay opens a new line at the current cursor instead of
     // replaying the original session's newline-insert edit verbatim.
-    let open_line_repeat =
-        match editor.buffer().change_manager().last_repeat_action.as_ref() {
-            Some(RepeatAction::InsertSession {
-                entry_mode: mode @ (InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove),
-                edits,
-                ..
-            }) => {
-                // Skip the first edit — that's the synthetic newline created by
-                // `insert_line_below` / `insert_line_above` before the user's
-                // keystrokes. `RepeatAction::OpenLine` will recreate its own.
-                let inserted_text: String = edits
-                    .iter()
-                    .skip(1)
-                    .filter_map(|e| match e {
-                        crate::edit::Edit::Insert { text, .. } => Some(text.as_str()),
-                        crate::edit::Edit::Delete { .. } => None,
-                    })
-                    .collect();
-                Some(RepeatAction::OpenLine {
-                    above: matches!(mode, InsertEntryMode::OpenAbove),
-                    inserted_text,
-                    shift_width: editor.options.shift_width,
-                    expand_tab: editor.options.expand_tab,
+    let open_line_repeat = match editor.buffer().change_manager().last_repeat_action.as_ref() {
+        Some(RepeatAction::InsertSession {
+            entry_mode: mode @ (InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove),
+            edits,
+            ..
+        }) => {
+            // Skip the first edit — that's the synthetic newline created by
+            // `insert_line_below` / `insert_line_above` before the user's
+            // keystrokes. `RepeatAction::OpenLine` will recreate its own.
+            let inserted_text: String = edits
+                .iter()
+                .skip(1)
+                .filter_map(|e| match e {
+                    crate::edit::Edit::Insert { text, .. } => Some(text.as_str()),
+                    crate::edit::Edit::Delete { .. } => None,
                 })
-            }
-            _ => None,
-        };
+                .collect();
+            Some(RepeatAction::OpenLine {
+                above: matches!(mode, InsertEntryMode::OpenAbove),
+                inserted_text,
+                shift_width: editor.options.shift_width,
+                expand_tab: editor.options.expand_tab,
+            })
+        }
+        _ => None,
+    };
 
     // Update the . register with the last inserted text
     editor.update_last_inserted_register();
@@ -226,8 +222,7 @@ fn exit_insert_mode(editor: &mut Editor) {
                 // Redeem it by token so we never pop unrelated history.
                 if let Some(token) = pending_visual_block_delete_token {
                     if let Some(prev_change) = editor.pop_by_token(token) {
-                        let mut merged =
-                            prev_change.into_edits().unwrap_or_default();
+                        let mut merged = prev_change.into_edits().unwrap_or_default();
                         merged.extend(all_edits);
                         all_edits = merged;
                     }
@@ -508,16 +503,20 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::editor::PendingChangeRepeat;
+    use crate::editor::{ApplyPos, PendingChangeRepeat};
 
     #[test]
     fn exit_insert_mode_pending_change_repeat_no_insert_no_delete_keeps_prior_undo() {
         let mut editor = Editor::with_content("line\n");
 
         // Seed history so an accidental pop/replace is observable.
+        // Direct-path `record_edit` pushes a `Change::Recorded`, so that's what
+        // the undo stack should contain after this seed.
         let cursor = editor.cursor_position();
         let apply = ApplyPos::new(cursor.line, CharCol(cursor.col.0));
-        assert!(editor.apply_change_and_record(Change::insert(apply, "X".to_string(), cursor)));
+        assert!(editor.record_edit(cursor, |buf| {
+            buf.insert_text_at_positioning_cursor(apply.line, apply.col, "X")
+        }));
         let undo_len_before = editor.buffer().change_manager().undo_stack.len();
 
         // Simulate a no-op change operator (e.g., C at EOL) entering insert mode,
@@ -534,6 +533,7 @@ mod tests {
 
         let undo_stack = &editor.buffer().change_manager().undo_stack;
         assert_eq!(undo_stack.len(), undo_len_before);
-        assert!(matches!(undo_stack.last(), Some(Change::InsertText { .. })));
+        // After step 4.3 the direct-path push is a `Recorded`, not `InsertText`.
+        assert!(matches!(undo_stack.last(), Some(Change::Recorded { .. })));
     }
 }
