@@ -239,6 +239,7 @@ impl Default for EditorOptions {
 }
 
 use crate::buffer::Buffer;
+use crate::repeat_action::RepeatAction;
 #[cfg(feature = "lua")]
 use crate::lua::LuaContext;
 use crate::mode::Mode;
@@ -1880,6 +1881,13 @@ impl Editor {
         self.buffer_mut()
             .change_manager_mut()
             .start_building(cursor_before);
+        // Open the stateful recording session that `finalize_change_building`
+        // will close — this feeds `RepeatAction::InsertSession` alongside the
+        // Pattern A composite. Session origin is captured lazily on the first
+        // edit via `apply_change_and_record`.
+        if !self.buffer().is_recording() {
+            self.buffer_mut().begin_recording();
+        }
     }
 
     /// Sets how insert mode was entered on the current change builder (for dot repeat).
@@ -1896,6 +1904,17 @@ impl Editor {
     pub fn apply_change_and_record(&mut self, change: Change) -> bool {
         let version_before = self.buffer().version();
         if self.buffer().is_recording() {
+            // If an outer stateful session is still missing its origin (this
+            // is the first edit of an insert session), snapshot the cursor's
+            // char offset now — that's the reference point `InsertSession`
+            // dot-repeat translates against.
+            if self.buffer().recording_origin().is_none() {
+                let offset = {
+                    let buf = self.buffer();
+                    buf.rope().line_to_char(buf.cursor().line()) + buf.cursor_char_col().0
+                };
+                self.buffer_mut().set_recording_origin(offset);
+            }
             // Outer `record()` caller owns edit capture.
             change.apply(self.buffer_mut());
         } else {
@@ -1917,9 +1936,39 @@ impl Editor {
     pub fn finalize_change_building(&mut self) {
         let cursor_pos =
             CursorPos::new(self.buffer().cursor().line(), self.buffer().cursor().col());
+
+        // Build + push the Pattern A composite first. `push_change` inside
+        // `finalize_building_at` clears `last_repeat_action`, so the Pattern B
+        // `InsertSession` must be installed afterward.
         self.buffer_mut()
             .change_manager_mut()
             .finalize_building_at(cursor_pos);
+
+        // Close the stateful recording session. If it produced edits, emit a
+        // `RepeatAction::InsertSession` so dot-repeat uses Pattern B while
+        // `last_change` (the composite) stays available for visual-block
+        // replay, o/O promotion, and the `.` register.
+        let origin = self.buffer().recording_origin();
+        let edits = self.buffer_mut().end_recording();
+        if !edits.is_empty() {
+            if let Some(origin_offset) = origin {
+                let entry_mode = match self.buffer().change_manager().last_change() {
+                    Some(Change::Composite { entry_mode, .. }) => entry_mode.clone(),
+                    _ => InsertEntryMode::Insert,
+                };
+                let cm = self.buffer_mut().change_manager_mut();
+                // Set `last_repeat_action` directly to preserve `last_change`
+                // (the composite). The standard `set_repeat_action` would
+                // clear it under the mutual-exclusion invariant, which is
+                // exactly what step 3's dual-track migration needs to
+                // temporarily relax.
+                cm.last_repeat_action = Some(RepeatAction::InsertSession {
+                    entry_mode,
+                    origin_offset,
+                    edits,
+                });
+            }
+        }
     }
 
     /// Sets a pending change repeat (for cc, C, s, cj, etc. dot-repeat)

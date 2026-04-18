@@ -31,10 +31,15 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     });
                 } else {
                     // Typed/backspaced back to original: discard accumulated no-op edits.
+                    // Close the stateful recording session alongside the builder,
+                    // otherwise subsequent record() calls (undo, redo) trip the
+                    // nested-session assertion.
                     editor.buffer_mut().change_manager_mut().current_builder = None;
+                    let _ = editor.buffer_mut().end_recording();
                 }
             } else {
                 editor.buffer_mut().change_manager_mut().current_builder = None;
+                let _ = editor.buffer_mut().end_recording();
             }
 
             editor.mark_buffer_modified();

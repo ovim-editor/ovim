@@ -107,6 +107,11 @@ impl Editor {
         let cursor_col = self.buffer().cursor().col().0;
         let cursor_before = CursorPos::new(cursor_line, GraphemeCol(cursor_col));
 
+        // Pause any active insert-mode recording session so completion's own
+        // `record()` can open an isolated window and keep its own undo entry
+        // separate from the insert session's composite. Resume at end.
+        let paused_session = self.buffer_mut().pause_recording();
+
         let ((), edits) = self.buffer_mut().record(|buf| {
             // Apply main completion edit
             if replace_start_line != replace_end_line || replace_start_col != replace_end_col {
@@ -173,6 +178,11 @@ impl Editor {
                 let cursor_after = self.cursor_position();
                 self.push_recorded_undo(edits, cursor_before, cursor_after);
             }
+        }
+
+        // Resume the outer insert-mode session, if any.
+        if let Some(session) = paused_session {
+            self.buffer_mut().resume_recording(session);
         }
     }
 
