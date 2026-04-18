@@ -1,5 +1,6 @@
 use crate::buffer::Buffer;
-use crate::change::TextObjectType;
+use crate::change::{InsertEntryMode, TextObjectType};
+use crate::edit::Edit;
 use crate::textobjects::TextObjects;
 use crate::unicode::{CharCol, GraphemeCol};
 
@@ -155,6 +156,20 @@ pub enum RepeatAction {
         delete: Box<RepeatAction>,
         inserted_text: String,
         linewise: bool,
+    },
+    /// Direct insert-mode session (`i` / `a` / `I` / `A`) dot-repeat.
+    ///
+    /// `origin_offset` is the absolute char offset where the original session
+    /// began, after `entry_mode` repositioned the cursor. `edits` are the raw
+    /// `Edit`s captured by `buffer.record()` during the session, still with
+    /// their original absolute offsets. Replay subtracts `origin_offset` from
+    /// each edit's offset and adds the new origin — a single translation per
+    /// edit that preserves intra-session geometry, including edits that went
+    /// below the origin (e.g., `<BS>` at column 0 joining lines).
+    InsertSession {
+        entry_mode: InsertEntryMode,
+        origin_offset: usize,
+        edits: Vec<Edit>,
     },
 }
 
@@ -642,6 +657,299 @@ impl RepeatAction {
                     }
                 }
             }
+            Self::InsertSession {
+                entry_mode,
+                origin_offset,
+                edits,
+            } => {
+                // Step 1: reposition cursor per entry_mode, matching the
+                // semantics that `Composite.repeat()` has today.
+                match entry_mode {
+                    InsertEntryMode::Insert => {}
+                    InsertEntryMode::Append => {
+                        buffer.cursor_mut().move_right(1);
+                    }
+                    InsertEntryMode::FirstNonBlank => {
+                        let line_idx = buffer.cursor().line();
+                        if let Some(line) = buffer.line(line_idx) {
+                            let content = line.trim_end_matches('\n');
+                            let col = content
+                                .chars()
+                                .position(|c| !c.is_whitespace())
+                                .unwrap_or(0);
+                            buffer.cursor_mut().set_col(GraphemeCol(col));
+                        }
+                    }
+                    InsertEntryMode::EndOfLine => {
+                        let line_idx = buffer.cursor().line();
+                        if let Some(line) = buffer.line(line_idx) {
+                            let line_len = line.trim_end_matches('\n').chars().count();
+                            buffer.cursor_mut().set_col(GraphemeCol(line_len));
+                        }
+                    }
+                    // o/O use RepeatAction::OpenLine, not InsertSession.
+                    InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove => {}
+                }
+
+                // Step 2: translate each edit by (new_origin - origin_offset).
+                // Absolute offsets in `edits` were captured against the
+                // original session's rope — the delta re-anchors them to the
+                // current rope without assuming anything about the content
+                // between origin and edit.
+                //
+                // After each edit we also advance the cursor to match what
+                // `Change::InsertText/DeleteText.apply()` do today: insert
+                // lands cursor at end of inserted text, delete lands cursor
+                // at start of range. Session-internal cursor state matters
+                // because future edits in the same session target offsets
+                // that assume the cursor moved this way.
+                let new_origin_offset = {
+                    let line = buffer.cursor().line();
+                    let char_col = buffer.cursor_char_col();
+                    buffer.rope().line_to_char(line) + char_col.0
+                };
+                let delta = new_origin_offset as i64 - *origin_offset as i64;
+
+                for edit in edits {
+                    let new_offset = (edit.offset() as i64 + delta).max(0) as usize;
+                    match edit {
+                        Edit::Insert { text, .. } => {
+                            Edit::Insert {
+                                offset: new_offset,
+                                text: text.clone(),
+                            }
+                            .apply(buffer);
+                            let end = new_offset + text.chars().count();
+                            let end = end.min(buffer.rope().len_chars());
+                            let line = buffer.rope().char_to_line(end);
+                            let col = end - buffer.rope().line_to_char(line);
+                            buffer.set_cursor_char_col(line, CharCol(col));
+                        }
+                        Edit::Delete { text, .. } => {
+                            Edit::Delete {
+                                offset: new_offset,
+                                text: text.clone(),
+                            }
+                            .apply(buffer);
+                            let anchor = new_offset.min(buffer.rope().len_chars());
+                            let line = buffer.rope().char_to_line(anchor);
+                            let col = anchor - buffer.rope().line_to_char(line);
+                            buffer.set_cursor_char_col(line, CharCol(col));
+                        }
+                    }
+                }
+
+                // Step 3: Esc moves cursor left by 1 unless already at col 0.
+                //
+                // Skip this for single-edit plain-`Insert` sessions so dot
+                // repeat matches the ChangeBuilder behavior it replaces:
+                // those sessions unwrap to a bare `Change::InsertText` /
+                // `DeleteText` at finalize time, and those `.repeat()`
+                // implementations do not simulate Esc's cursor-left.
+                let skip_esc_move =
+                    edits.len() == 1 && matches!(entry_mode, InsertEntryMode::Insert);
+                if !skip_esc_move && buffer.cursor_char_col() > 0 {
+                    buffer.cursor_mut().move_left(1);
+                }
+            }
         }
+    }
+}
+
+#[cfg(test)]
+mod insert_session_tests {
+    use super::*;
+    use crate::buffer::Buffer;
+    use crate::unicode::GraphemeCol;
+
+    fn set_cursor(buf: &mut Buffer, line: usize, col: usize) {
+        buf.cursor_mut().set_position(line, GraphemeCol(col));
+    }
+
+    fn insert_session(
+        entry_mode: InsertEntryMode,
+        origin_offset: usize,
+        edits: Vec<Edit>,
+    ) -> RepeatAction {
+        RepeatAction::InsertSession {
+            entry_mode,
+            origin_offset,
+            edits,
+        }
+    }
+
+    #[test]
+    fn replay_translates_offsets_by_delta() {
+        // Session ran at origin 0 with "foo" typed as three single-char inserts.
+        let action = insert_session(
+            InsertEntryMode::Insert,
+            0,
+            vec![
+                Edit::Insert { offset: 0, text: "f".into() },
+                Edit::Insert { offset: 1, text: "o".into() },
+                Edit::Insert { offset: 2, text: "o".into() },
+            ],
+        );
+
+        let mut buf = Buffer::new_from_str("abcde\n");
+        set_cursor(&mut buf, 0, 2);
+        action.execute(&mut buf);
+
+        assert_eq!(buf.rope().to_string(), "abfoocde\n");
+    }
+
+    #[test]
+    fn replay_preserves_session_internal_geometry() {
+        // Session ran at origin 100 in some large buffer. Replay at 3 in a
+        // small buffer: behavior must depend only on the session's internal
+        // offsets, not on what was between origin and the edits originally.
+        let action = insert_session(
+            InsertEntryMode::Insert,
+            100,
+            vec![
+                Edit::Insert { offset: 100, text: "a".into() },
+                Edit::Insert { offset: 101, text: "b".into() },
+                Edit::Insert { offset: 102, text: "c".into() },
+            ],
+        );
+
+        let mut buf = Buffer::new_from_str("xxxxxx\n");
+        set_cursor(&mut buf, 0, 3);
+        action.execute(&mut buf);
+
+        assert_eq!(buf.rope().to_string(), "xxxabcxxx\n");
+    }
+
+    #[test]
+    fn replay_handles_backspace_across_origin() {
+        // Session origin is at start of line 1 (offset 4 in "aaa\nbbb\n").
+        // User hit BS, recorded as Delete @ offset 3 (one before origin) of "\n".
+        let action = insert_session(
+            InsertEntryMode::Insert,
+            4,
+            vec![Edit::Delete { offset: 3, text: "\n".into() }],
+        );
+
+        let mut buf = Buffer::new_from_str("aaa\nbbb\n");
+        set_cursor(&mut buf, 1, 0);
+        action.execute(&mut buf);
+
+        // Lines joined.
+        assert_eq!(buf.rope().to_string(), "aaabbb\n");
+    }
+
+    #[test]
+    fn replay_intra_session_cursor_movement_is_correct() {
+        // Session: typed "foo", arrow-left twice, typed "x".
+        // Recorded edits: Insert@N "f", Insert@N+1 "o", Insert@N+2 "o",
+        // Insert@N+1 "x" (after cursor moved back into the word).
+        // Net text inserted: "fxoo".
+        let action = insert_session(
+            InsertEntryMode::Insert,
+            0,
+            vec![
+                Edit::Insert { offset: 0, text: "f".into() },
+                Edit::Insert { offset: 1, text: "o".into() },
+                Edit::Insert { offset: 2, text: "o".into() },
+                Edit::Insert { offset: 1, text: "x".into() },
+            ],
+        );
+
+        let mut buf = Buffer::new_from_str("[]\n");
+        set_cursor(&mut buf, 0, 1);
+        action.execute(&mut buf);
+
+        assert_eq!(buf.rope().to_string(), "[fxoo]\n");
+    }
+
+    #[test]
+    fn replay_insert_then_delete_net_zero() {
+        // Session: typed "ab", then BS twice.
+        let action = insert_session(
+            InsertEntryMode::Insert,
+            0,
+            vec![
+                Edit::Insert { offset: 0, text: "a".into() },
+                Edit::Insert { offset: 1, text: "b".into() },
+                Edit::Delete { offset: 1, text: "b".into() },
+                Edit::Delete { offset: 0, text: "a".into() },
+            ],
+        );
+
+        let mut buf = Buffer::new_from_str("xyz\n");
+        set_cursor(&mut buf, 0, 2);
+        action.execute(&mut buf);
+
+        // Net effect: nothing inserted, but cursor positioned as if at origin.
+        assert_eq!(buf.rope().to_string(), "xyz\n");
+    }
+
+    #[test]
+    fn append_entry_mode_moves_cursor_right_before_replay() {
+        // Append mode shifts cursor right by 1 before the insert, matching
+        // how `a` starts insert mode one character past the cursor.
+        let action = insert_session(
+            InsertEntryMode::Append,
+            3,
+            vec![Edit::Insert { offset: 3, text: "X".into() }],
+        );
+
+        let mut buf = Buffer::new_from_str("abcde\n");
+        set_cursor(&mut buf, 0, 1); // on 'b'; Append moves to col 2 ('c').
+        action.execute(&mut buf);
+
+        assert_eq!(buf.rope().to_string(), "abXcde\n");
+    }
+
+    #[test]
+    fn first_non_blank_entry_mode_jumps_before_replay() {
+        let action = insert_session(
+            InsertEntryMode::FirstNonBlank,
+            2,
+            vec![Edit::Insert { offset: 2, text: "!".into() }],
+        );
+
+        let mut buf = Buffer::new_from_str("    hello\n");
+        set_cursor(&mut buf, 0, 7);
+        action.execute(&mut buf);
+
+        // FirstNonBlank: cursor jumps to col 4 ('h'). Insert "!" at 4.
+        assert_eq!(buf.rope().to_string(), "    !hello\n");
+    }
+
+    #[test]
+    fn end_of_line_entry_mode_jumps_to_end_before_replay() {
+        let action = insert_session(
+            InsertEntryMode::EndOfLine,
+            3,
+            vec![Edit::Insert { offset: 3, text: "!".into() }],
+        );
+
+        let mut buf = Buffer::new_from_str("abc\n");
+        set_cursor(&mut buf, 0, 0);
+        action.execute(&mut buf);
+
+        // EndOfLine: cursor jumps to col 3 (past 'c'). Insert "!".
+        assert_eq!(buf.rope().to_string(), "abc!\n");
+    }
+
+    #[test]
+    fn multiline_insert_preserves_shape() {
+        // Session: typed "a", Enter, "b" — each as a separate edit.
+        let action = insert_session(
+            InsertEntryMode::Insert,
+            0,
+            vec![
+                Edit::Insert { offset: 0, text: "a".into() },
+                Edit::Insert { offset: 1, text: "\n".into() },
+                Edit::Insert { offset: 2, text: "b".into() },
+            ],
+        );
+
+        let mut buf = Buffer::new_from_str("xx\n");
+        set_cursor(&mut buf, 0, 1);
+        action.execute(&mut buf);
+
+        assert_eq!(buf.rope().to_string(), "xa\nbx\n");
     }
 }
