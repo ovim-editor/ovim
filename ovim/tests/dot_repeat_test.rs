@@ -1803,6 +1803,35 @@ fn test_dot_after_visual_change_multichar_preserves_undo_granularity() {
 }
 
 #[test]
+fn test_visual_change_with_emoji_does_not_panic() {
+    // Signal D coverage: visual-c across a buffer containing a multi-char
+    // grapheme (ZWJ emoji family) should not panic. The session branch of
+    // record_edit and the char_col/grapheme_col conversions downstream must
+    // tolerate non-trivial graphemes. We don't pin exact cursor positions
+    // here — that's Phase-15 debt (visual_start stores grapheme cols; the
+    // delete path treats them as char cols).
+    let mut test = EditorTest::new("ab\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}cd");
+
+    test.press('v').press('c').type_text("X").press_esc();
+
+    // Expect buffer to still be well-formed (ends with newline, is UTF-8).
+    let content = test.buffer_content();
+    assert!(
+        content.ends_with('\n'),
+        "buffer must stay newline-terminated"
+    );
+    assert!(
+        content.starts_with('X'),
+        "inserted X should be at the start"
+    );
+
+    // Dot-repeat must not panic either.
+    test.press('l').press('.');
+    let content = test.buffer_content();
+    assert!(content.ends_with('\n'));
+}
+
+#[test]
 fn test_dot_repeat_o_uses_current_line_indent() {
     // Dot-repeat of 'o' should use the CURRENT line's indent, not the
     // indent from the original 'o' command.
