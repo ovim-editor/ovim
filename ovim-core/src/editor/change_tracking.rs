@@ -85,6 +85,13 @@ impl Editor {
             // semantics). Without the RepeatAction, `.` would replay at the
             // original absolute offsets via `Change::Recorded::repeat`.
             //
+            // `entry_mode` is hardcoded to `Insert` because this branch fires
+            // only for sessionless keystroke edits (e.g., typing in insert
+            // mode after visual-`c`, which does not open a ChangeBuilder).
+            // The single-edit Insert case in `RepeatAction::InsertSession`
+            // skips the trailing Esc cursor-left (see repeat_action.rs), so
+            // the semantics match the old `Change::InsertText::repeat`.
+            //
             // Sites that want different dot-repeat semantics (e.g., the
             // Normal-mode bracketed paste, which wants `RepeatAction::PasteAfter`)
             // call `buffer.record()` + `push_recorded_undo` + `set_repeat_action`

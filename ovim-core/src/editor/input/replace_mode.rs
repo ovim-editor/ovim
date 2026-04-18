@@ -129,11 +129,10 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
                     && cursor_col > start_col
                     && !state.replacements.is_empty()
                 {
-                    // Pop the last replacement (the char value itself is no
-                    // longer needed — it previously fed the delete `Change`'s
-                    // deleted_text; the buffer now captures deleted text via
-                    // `record()` internally).
-                    let _ = state.replacements.pop().unwrap();
+                    // Shrink the replacements stack to match old_text. The
+                    // char value isn't needed — buffer.record() captures the
+                    // deleted text.
+                    state.replacements.pop();
 
                     // If there's an old character to restore, restore it
                     if let Some(old_char) = state.old_text.pop() {
