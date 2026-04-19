@@ -9,7 +9,7 @@ bitflags = "2"
 
 # mode/ - no extra deps
 # unicode/
-unicode-segmentation = "1.10"
+unicode-segmentation = "1.12"
 # display.rs
 unicode-width = "0.1"
 # modeline.rs - no extra deps (only std)
