@@ -1,6 +1,6 @@
 [package]
 name = "ovim"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2021"
 description = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, Lua config, LSP, and AI built in."
 
