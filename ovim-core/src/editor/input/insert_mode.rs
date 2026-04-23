@@ -400,6 +400,7 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::insert_tab(editor)?;
         }
         KeyCode::Char(c) => {
+            helpers::electric_dedent_close_bracket(editor, c)?;
             helpers::insert_char(editor, c)?;
             // Basic autocomplete:
             // - Trigger on '.' (member access) immediately

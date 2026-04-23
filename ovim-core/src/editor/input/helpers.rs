@@ -256,8 +256,34 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
             let line_text = editor.buffer().line(line_idx).unwrap_or_default();
             grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
         };
-        // Compute char col of the previous grapheme
-        let prev_char_col = {
+
+        // Smart backspace (Vim softtabstop semantics): when the cursor sits
+        // in pure space-leading-whitespace and we're using `expand_tab`,
+        // collapse back to the previous `shift_width` boundary in one press.
+        // This makes `<CR>` auto-indent feel like a tab unit rather than N
+        // individual spaces, and is a no-op when tabs are in use (tabs are
+        // already one char per indent).
+        let smart_target = if editor.options.expand_tab {
+            let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+            let before: String = line_text
+                .trim_end_matches('\n')
+                .chars()
+                .take(char_col.0)
+                .collect();
+            if !before.is_empty() && before.chars().all(|c| c == ' ') {
+                let sw = editor.options.shift_width.max(1);
+                Some((char_col.0 - 1) / sw * sw)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let prev_char_col = if let Some(target) = smart_target {
+            CharCol(target)
+        } else {
+            // Normal single-grapheme delete.
             let line_text = editor.buffer().line(line_idx).unwrap_or_default();
             grapheme_to_char_col(
                 line_text.trim_end_matches('\n'),
@@ -488,6 +514,40 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
         .set_col(GraphemeCol(new_col));
 
     Ok(())
+}
+
+/// Electric dedent for closing brackets typed in insert mode.
+///
+/// When the user types `}`, `)`, or `]` on a line whose content up to the
+/// cursor (and beyond) is purely whitespace, remove one indent level before
+/// the bracket is inserted. This lets `{`, `<CR>`, `}` produce aligned
+/// braces without manual dedent, matching how `==` would reindent the line.
+pub fn electric_dedent_close_bracket(editor: &mut Editor, c: char) -> Result<()> {
+    if !matches!(c, '}' | ')' | ']') {
+        return Ok(());
+    }
+    let cursor = editor.buffer().cursor();
+    let line_idx = cursor.line();
+    let grapheme_col = cursor.col();
+    let Some(line) = editor.buffer().line(line_idx) else {
+        return Ok(());
+    };
+    let line_text = line.trim_end_matches('\n').to_string();
+    let char_col = grapheme_to_char_col(&line_text, grapheme_col);
+
+    // Only trigger when the line is blank-prefixed up to the cursor AND the
+    // rest of the line is also whitespace — i.e. the bracket is being typed
+    // on an otherwise-empty indented line (the common `{<CR>}` shape).
+    let text_before: String = line_text.chars().take(char_col.0).collect();
+    if text_before.is_empty() || !text_before.chars().all(|c| c.is_whitespace()) {
+        return Ok(());
+    }
+    let text_after: String = line_text.chars().skip(char_col.0).collect();
+    if !text_after.chars().all(|c| c.is_whitespace()) {
+        return Ok(());
+    }
+
+    dedent_line_insert(editor)
 }
 
 pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {

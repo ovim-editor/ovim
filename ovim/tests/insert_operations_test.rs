@@ -420,3 +420,124 @@ fn test_A_and_undo() {
     assert_eq!(test.buffer_content(), "hello\n");
     test.assert_cursor(0, 0);
 }
+
+// ============================================================================
+// Electric dedent — typing a closing bracket on an otherwise-blank indented
+// line removes one level of indent before the bracket is inserted. This makes
+// the common `{` + <CR> + `}` flow produce aligned output without the user
+// having to dedent manually.
+// ============================================================================
+
+#[test]
+fn test_electric_dedent_close_brace_on_blank_line() {
+    let mut test = EditorTest::new("");
+
+    test.keys("i{<CR>}").press_esc();
+
+    assert_eq!(test.buffer_content(), "{\n}\n");
+}
+
+#[test]
+fn test_electric_dedent_close_brace_with_body() {
+    let mut test = EditorTest::new("");
+
+    test.keys(r#"i{<CR>println!("Hello world!");<CR>}"#)
+        .press_esc();
+
+    assert_eq!(
+        test.buffer_content(),
+        "{\n    println!(\"Hello world!\");\n}\n"
+    );
+}
+
+#[test]
+fn test_electric_dedent_close_paren() {
+    let mut test = EditorTest::new("");
+
+    test.keys("i(<CR>)").press_esc();
+
+    assert_eq!(test.buffer_content(), "(\n)\n");
+}
+
+#[test]
+fn test_electric_dedent_close_bracket() {
+    let mut test = EditorTest::new("");
+
+    test.keys("i[<CR>]").press_esc();
+
+    assert_eq!(test.buffer_content(), "[\n]\n");
+}
+
+#[test]
+fn test_electric_dedent_nested_braces() {
+    let mut test = EditorTest::new("");
+
+    test.keys("i{<CR>{<CR>}<CR>}").press_esc();
+
+    // Nested braces: each level adds 4 spaces, each closer removes 4.
+    assert_eq!(test.buffer_content(), "{\n    {\n    }\n}\n");
+}
+
+#[test]
+fn test_smart_backspace_removes_whole_indent() {
+    // After `<CR>` auto-indents 4 spaces, a single `<BS>` should remove the
+    // whole indent (Vim softtabstop semantics), not a single space — so the
+    // next typed character lands at col 0.
+    let mut test = EditorTest::new("");
+
+    test.keys("i{<CR>Hello world<CR><BS>.<CR>}").press_esc();
+
+    assert_eq!(test.buffer_content(), "{\n    Hello world\n.\n}\n");
+}
+
+#[test]
+fn test_smart_backspace_to_col_zero() {
+    // `<BS>` directly after auto-indent returns cursor to col 0 in one press.
+    let mut test = EditorTest::new("");
+
+    test.keys("i{<CR><BS>x").press_esc();
+
+    assert_eq!(test.buffer_content(), "{\nx\n");
+}
+
+#[test]
+fn test_smart_backspace_jumps_one_level() {
+    // With 8 spaces of leading whitespace, `<BS>` removes back to col 4, not
+    // col 0 — one shift_width boundary at a time.
+    let mut test = EditorTest::new("");
+
+    test.keys("i        <BS>x").press_esc();
+
+    assert_eq!(test.buffer_content(), "    x\n");
+}
+
+#[test]
+fn test_smart_backspace_partial_indent_stops_at_zero() {
+    // Only 2 leading spaces (less than shift_width); `<BS>` removes them all.
+    let mut test = EditorTest::new("");
+
+    test.keys("i  <BS>x").press_esc();
+
+    assert_eq!(test.buffer_content(), "x\n");
+}
+
+#[test]
+fn test_smart_backspace_outside_leading_whitespace_is_single_char() {
+    // Backspace after non-whitespace content still deletes a single char.
+    let mut test = EditorTest::new("");
+
+    test.keys("ifoo<BS>").press_esc();
+
+    assert_eq!(test.buffer_content(), "fo\n");
+}
+
+#[test]
+fn test_electric_dedent_only_on_blank_prefix() {
+    // If there's non-whitespace before the cursor on the current line, typing
+    // `}` must NOT trigger electric dedent — this is a literal character.
+    let mut test = EditorTest::new("");
+
+    test.keys("ifoo }").press_esc();
+
+    assert_eq!(test.buffer_content(), "foo }\n");
+}

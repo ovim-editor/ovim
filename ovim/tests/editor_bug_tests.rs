@@ -34,9 +34,8 @@ fn test_dot_repeat_i_backspace_indented_lines() {
 
     test.press('j') // line 1 ("  bbb")
         .press('I') // cursor to col 2 (first non-blank)
-        .press_backspace() // delete char before cursor — this deletes space, NOT newline
-        .press_backspace() // delete another space
-        .press_backspace() // NOW delete newline, joining with line 0
+        .press_backspace() // smart backspace collapses leading 2 spaces in one press
+        .press_backspace() // now delete newline, joining with line 0
         .press_esc();
 
     assert_eq!(test.buffer_content(), "  aaabbb\n  ccc\n");
