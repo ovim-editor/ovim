@@ -1281,7 +1281,6 @@ pub fn render_buffer(
     theme: &Theme,
     layout: &BufferLayout,
     line_cache: &mut super::line_cache::LineRenderCache,
-    show_eol_decorations: bool,
     window_context: Option<&WindowRenderContext>,
 ) -> usize {
     let area = layout.buffer_area;
@@ -1492,15 +1491,12 @@ pub fn render_buffer(
                     // EOL decorations (diagnostics) applied fresh.
                     // Step E: route through projection so diagnostics anchored
                     // before the current edit still render in the right spot.
-                    let projected_eol_owned: Vec<Decoration> = if show_eol_decorations {
+                    let projected_eol_owned: Vec<Decoration> =
                         editor.decorations.eol_for_line_projected(
                             line_idx,
                             editor.buffer().rope(),
                             editor.buffer().edit_log(),
-                        )
-                    } else {
-                        Vec::new()
-                    };
+                        );
                     let eol_decs: Vec<&Decoration> = projected_eol_owned.iter().collect();
 
                     if has_wrap {
@@ -2005,14 +2001,10 @@ pub fn render_buffer(
                     .iter()
                     .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
                     .collect();
-                let eol_decs: Vec<&Decoration> = if show_eol_decorations {
-                    line_decorations_owned
-                        .iter()
-                        .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
-                        .collect()
-                } else {
-                    Vec::new()
-                };
+                let eol_decs: Vec<&Decoration> = line_decorations_owned
+                    .iter()
+                    .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
+                    .collect();
 
                 if !inline_decs.is_empty() {
                     let line_start_offset = editor.buffer().rope().line_to_char(line_idx);

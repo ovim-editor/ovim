@@ -252,7 +252,6 @@ fn render_buffer_area(
                     theme,
                     &fallback_layout,
                     line_cache,
-                    true,
                     None,
                 );
                 (viewport_start, fallback_layout)
@@ -265,7 +264,6 @@ fn render_buffer_area(
                 theme,
                 &fallback_layout,
                 line_cache,
-                true,
                 None,
             );
             (viewport_start, fallback_layout)
@@ -342,7 +340,6 @@ fn render_buffer_area(
             theme,
             &single_layout,
             line_cache,
-            true,
             None,
         );
         if centered {
@@ -712,7 +709,6 @@ fn render_window_tree(
                 ctx.theme,
                 &layout,
                 ctx.line_cache,
-                true,
                 window_context.as_ref(),
             );
 
