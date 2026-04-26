@@ -11,13 +11,26 @@ pub const GUTTER_SPACING: usize = 1;
 /// Computed once per frame from editor options and the allocated area,
 /// then passed by reference to all rendering functions that need gutter
 /// or text-area measurements.
+///
+/// The split between `buffer_area` and `render_area` matters in centered
+/// (textwidth) mode: document content lives in `buffer_area` (the centered
+/// code-box), but EOL decorations (diagnostics) render in the right margin
+/// up to `render_area`'s right edge. In all other modes the two are equal.
 #[derive(Debug, Clone, Copy)]
 pub struct BufferLayout {
-    /// The full area allocated to this buffer (after textwidth narrowing).
+    /// The area where document content lives — the centered code-box in
+    /// textwidth mode, or the full allocation otherwise. `text_width` and
+    /// `gutter_width` are derived from this rect, and the cursor is
+    /// positioned in its coordinate space.
     pub buffer_area: Rect,
+    /// The area lines are actually drawn into. Equal to `buffer_area` in
+    /// the common case; wider than `buffer_area` in centered mode so EOL
+    /// decorations can extend into the right margin.
+    pub render_area: Rect,
     /// Total gutter width in columns (sign + line number + spacing).
     pub gutter_width: usize,
-    /// Width available for text content (buffer_area.width - gutter_width).
+    /// Width available for document text inside the code-box
+    /// (buffer_area.width - gutter_width).
     pub text_width: usize,
     /// Width of the line-number column alone (0 when numbers are off).
     pub line_num_width: usize,
@@ -26,8 +39,16 @@ pub struct BufferLayout {
 }
 
 impl BufferLayout {
-    /// Computes the layout dimensions from the editor state and allocated area.
+    /// Computes the layout from the editor state and allocated area.
+    /// `render_area` defaults to `area` (no diagnostic margin).
     pub fn compute(editor: &Editor, area: Rect) -> Self {
+        Self::compute_with_render_area(editor, area, area)
+    }
+
+    /// Computes the layout for centered mode where lines render into a
+    /// rect wider than the centered code-box. `area` is the centered band;
+    /// `render_area` is the rect that includes the right diagnostic margin.
+    pub fn compute_with_render_area(editor: &Editor, area: Rect, render_area: Rect) -> Self {
         let show_numbers = editor.options.number || editor.options.relative_number;
         let line_count = editor.buffer().line_count();
         let line_num_width = if show_numbers {
@@ -55,11 +76,29 @@ impl BufferLayout {
 
         Self {
             buffer_area: area,
+            render_area,
             gutter_width,
             text_width,
             line_num_width,
             blame_width,
         }
+    }
+
+    /// Total render width inside the gutter — the column count available
+    /// to the text + EOL diagnostic, measured from the right edge of the
+    /// gutter to the right edge of `render_area`. Equals `text_width`
+    /// when `render_area == buffer_area`.
+    pub fn render_width(&self) -> usize {
+        let buffer_left = self.buffer_area.x as usize + self.gutter_width;
+        let render_right = self.render_area.x as usize + self.render_area.width as usize;
+        render_right.saturating_sub(buffer_left)
+    }
+
+    /// Width of the diagnostic margin past the code-box
+    /// (`render_width - text_width`). Zero unless centered mode set up a
+    /// wider render area.
+    pub fn diag_margin_width(&self) -> usize {
+        self.render_width().saturating_sub(self.text_width)
     }
 }
 

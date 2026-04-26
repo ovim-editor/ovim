@@ -1,7 +1,7 @@
 use crate::editor::{AiRegionStatus, Editor};
 use crate::syntax::{Theme, UiGroup};
 use ratatui::{
-    layout::{Constraint, Direction, Layout},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Paragraph},
@@ -1210,15 +1210,29 @@ pub fn render_buffer(
     let line_num_width = layout.line_num_width;
     let gutter_width_u16 = layout.gutter_width as u16;
 
-    // Split area into gutter and text
-    let (gutter_area, text_area) = if layout.gutter_width > 0 {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(gutter_width_u16), Constraint::Min(1)])
-            .split(area);
-        (Some(chunks[0]), chunks[1])
+    // Split layout into gutter (left of buffer_area) and text_area (from
+    // end of gutter to right edge of render_area). When render_area equals
+    // buffer_area (the common case), text_area is exactly buffer_area
+    // minus the gutter — same as before. In centered mode render_area
+    // extends past buffer_area, giving text_area a wider rect that
+    // includes the diagnostic margin.
+    let render_area = layout.render_area;
+    let render_right = render_area.x + render_area.width;
+    let gutter_area = if layout.gutter_width > 0 {
+        Some(Rect {
+            x: area.x,
+            y: area.y,
+            width: gutter_width_u16,
+            height: area.height,
+        })
     } else {
-        (None, area)
+        None
+    };
+    let text_area = Rect {
+        x: area.x + gutter_width_u16,
+        y: area.y,
+        width: render_right.saturating_sub(area.x + gutter_width_u16),
+        height: area.height,
     };
 
     // Get visual selection if in visual mode
