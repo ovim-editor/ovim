@@ -863,16 +863,55 @@ fn apply_inline_decorations(
     }
 }
 
+/// Width of the gap (in columns) between rendered code and an EOL diagnostic.
+const EOL_DIAG_GAP: usize = 2;
+
+/// Truncate `text` to at most `max_chars` characters, appending `...` when
+/// truncation happens. If `max_chars` is too small to fit even the ellipsis,
+/// returns whatever prefix fits with no marker.
+///
+/// Note: char count, not display width — a wide-char (CJK, emoji) message
+/// can render up to 2x the budget. Pre-existing behavior; sharpening this
+/// is a separate concern.
+fn fit_with_ellipsis(text: &str, max_chars: usize) -> String {
+    if text.chars().count() <= max_chars {
+        return text.to_string();
+    }
+    if max_chars < 3 {
+        return text.chars().take(max_chars).collect();
+    }
+    let prefix: String = text.chars().take(max_chars - 3).collect();
+    format!("{prefix}...")
+}
+
+/// Total display width of all spans in a Line.
+fn line_display_width(line: &Line<'_>) -> usize {
+    line.spans
+        .iter()
+        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
+        .sum()
+}
+
+/// Pad the line with trailing space spans until it reaches `target_width`.
+/// No-op if the line already meets or exceeds `target_width`.
+fn pad_line_to(line: &mut Line<'static>, target_width: usize) {
+    let width = line_display_width(line);
+    if width < target_width {
+        line.spans
+            .push(Span::raw(" ".repeat(target_width - width)));
+    }
+}
+
 /// Apply end-of-line decorations to a rendered row.
 ///
-/// Strips trailing padding, appends each decoration's styled text (with a 2-space gap),
-/// truncates to fit `text_width`, and re-pads.
+/// Strips trailing padding, appends each decoration's styled text (with a
+/// `EOL_DIAG_GAP`-column gap), truncates to fit `text_width`, and re-pads.
 fn apply_eol_decorations(row: &mut Line<'static>, decorations: &[&Decoration], text_width: usize) {
     if decorations.is_empty() {
         return;
     }
 
-    // Remove trailing padding spans
+    // Remove trailing padding spans so we know where the code actually ends.
     while let Some(last) = row.spans.last() {
         if last.content.chars().all(|c| c == ' ') && last.style == Style::default() {
             row.spans.pop();
@@ -881,114 +920,53 @@ fn apply_eol_decorations(row: &mut Line<'static>, decorations: &[&Decoration], t
         }
     }
 
-    let row_width: usize = row
-        .spans
-        .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-        .sum();
-
+    let row_width = line_display_width(row);
     let remaining = text_width.saturating_sub(row_width);
-    if remaining < 6 {
-        // Re-pad
-        if row_width < text_width {
-            row.spans
-                .push(Span::raw(" ".repeat(text_width - row_width)));
-        }
+    // Need at least gap + 1 char of message; below that, re-pad and bail.
+    if remaining < EOL_DIAG_GAP + 4 {
+        pad_line_to(row, text_width);
         return;
     }
 
-    // Use first decoration (highest priority — already sorted)
+    // First decoration wins (already priority-sorted).
     let dec = &decorations[0];
+    let msg = fit_with_ellipsis(&dec.text, remaining - EOL_DIAG_GAP);
     let style = decoration_to_ratatui_style(&dec.style);
 
-    let max_msg_len = remaining.saturating_sub(2); // "  " prefix
-    let msg = if dec.text.chars().count() > max_msg_len {
-        format!(
-            "{}...",
-            dec.text
-                .chars()
-                .take(max_msg_len.saturating_sub(3))
-                .collect::<String>()
-        )
-    } else {
-        dec.text.clone()
-    };
-
-    row.spans.push(Span::raw("  "));
+    row.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
     row.spans.push(Span::styled(msg, style));
-
-    // Re-pad to text_width
-    let new_width: usize = row
-        .spans
-        .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-        .sum();
-    if new_width < text_width {
-        row.spans
-            .push(Span::raw(" ".repeat(text_width - new_width)));
-    }
+    pad_line_to(row, text_width);
 }
 
 /// Overlay an EOL decoration at the right edge of a line that already exceeds
 /// `text_width` (typically because inline decorations pushed it beyond the
-/// viewport).  The diagnostic replaces the rightmost columns of the rendered
+/// viewport). The diagnostic replaces the rightmost columns of the rendered
 /// line so it's always visible without affecting cursor positioning.
 fn overlay_eol_decoration_at_edge(
     line: &mut Line<'static>,
     decorations: &[&Decoration],
     text_width: usize,
 ) {
-    if decorations.is_empty() || text_width < 8 {
+    if decorations.is_empty() || text_width < EOL_DIAG_GAP + 6 {
         return;
     }
 
     let dec = &decorations[0];
     let style = decoration_to_ratatui_style(&dec.style);
 
-    // Budget: "  MSG" at the right edge, capped at 1/3 of viewport.
-    let max_msg_chars = text_width / 3;
-    let msg = if dec.text.chars().count() > max_msg_chars {
-        format!(
-            "{}...",
-            dec.text
-                .chars()
-                .take(max_msg_chars.saturating_sub(3))
-                .collect::<String>()
-        )
-    } else {
-        dec.text.clone()
-    };
-    let gap = "  ";
-    let overlay_width = gap.len() + msg.chars().map(char_display_width).sum::<usize>();
+    // Budget: gap + message at the right edge, message capped at 1/3 of viewport.
+    let msg = fit_with_ellipsis(&dec.text, text_width / 3);
+    let overlay_width =
+        EOL_DIAG_GAP + msg.chars().map(char_display_width).sum::<usize>();
 
-    // Truncate to make room for the overlay at the right edge.
+    // Truncate code to make room, pad up to the truncation point, then push
+    // gap + styled message + final padding.
     let truncate_to = text_width.saturating_sub(overlay_width);
     truncate_line_to_width(line, truncate_to);
-
-    // Pad if needed to reach the truncation point.
-    let current_width: usize = line
-        .spans
-        .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-        .sum();
-    if current_width < truncate_to {
-        line.spans
-            .push(Span::raw(" ".repeat(truncate_to - current_width)));
-    }
-
-    line.spans.push(Span::raw(gap.to_string()));
+    pad_line_to(line, truncate_to);
+    line.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
     line.spans.push(Span::styled(msg, style));
-
-    // Pad to fill text_width.
-    let final_width: usize = line
-        .spans
-        .iter()
-        .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-        .sum();
-    if final_width < text_width {
-        line.spans
-            .push(Span::raw(" ".repeat(text_width - final_width)));
-    }
+    pad_line_to(line, text_width);
 }
 
 /// Per-line viewport context shared between `lock_ranges_for_line` and `ai_region_ranges_for_line`.
@@ -2267,23 +2245,16 @@ pub fn render_diagnostic_virtual_text_overlay(
                 continue;
             }
 
+            // Need at least gap + 4 chars of message room before bothering.
             let available = full_right.saturating_sub(x) as usize;
-            if available >= 6 {
+            if available >= EOL_DIAG_GAP + 4 {
                 let buf = frame.buffer_mut();
-                let (nx, _) = buf.set_stringn(x, y, "  ", available, Style::default());
+                let gap = " ".repeat(EOL_DIAG_GAP);
+                let (nx, _) = buf.set_stringn(x, y, gap, available, Style::default());
                 x = nx;
                 let available_after_gap = full_right.saturating_sub(x) as usize;
                 if available_after_gap > 0 {
-                    let mut render_msg = dec.text.clone();
-                    if render_msg.chars().count() > available_after_gap {
-                        render_msg = format!(
-                            "{}...",
-                            render_msg
-                                .chars()
-                                .take(available_after_gap.saturating_sub(3))
-                                .collect::<String>()
-                        );
-                    }
+                    let render_msg = fit_with_ellipsis(&dec.text, available_after_gap);
                     let (nx, _) =
                         buf.set_stringn(x, y, render_msg, available_after_gap, vtext_style);
                     // Clear remaining cells so stale characters from prior frames
