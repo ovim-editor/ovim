@@ -61,12 +61,6 @@ fn centered(content: &str, wrap: bool) -> EditorTest {
     test.editor.options.relative_number = false;
     test.editor.options.wrap = wrap;
     test.editor.options.scrolloff = 0;
-    // Force the detailed render path so inline decorations actually get
-    // spliced into the rendered line. In real usage syntax highlighting
-    // triggers this; tests have no language attached, so we use cursorline
-    // as the trigger. It only adds a background style — `strip_ansi` drops
-    // styles, so plain-text assertions are unaffected.
-    test.editor.options.cursorline = true;
     test
 }
 

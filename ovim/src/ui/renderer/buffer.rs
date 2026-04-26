@@ -1794,6 +1794,17 @@ pub fn render_buffer(
                 }
             });
 
+            // Inline decorations (inlay hints) need the detailed path so
+            // `apply_inline_decorations` runs and splices their spans into
+            // the rendered line. The simple path bypasses span manipulation
+            // entirely. Use the unprojected `for_line` here for a cheap
+            // BTreeMap lookup; the detailed block does the projection.
+            let has_inline_decoration = editor
+                .decorations
+                .for_line(line_idx)
+                .iter()
+                .any(|d| matches!(d.placement, DecorationPlacement::Inline { .. }));
+
             // Always use character-by-character rendering if we have any highlighting
             let needs_detailed_rendering = has_visual_selection
                 || !search_matches.is_empty()
@@ -1806,7 +1817,8 @@ pub fn render_buffer(
                 || !ai_lock_ranges.is_empty()
                 || !ai_generated_ranges.is_empty()
                 || !ai_selected_ranges.is_empty()
-                || !concealed_links.is_empty();
+                || !concealed_links.is_empty()
+                || has_inline_decoration;
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
