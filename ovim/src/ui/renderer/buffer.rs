@@ -2186,7 +2186,6 @@ pub fn render_diagnostic_virtual_text_overlay(
     let buffer = editor.buffer();
     let rope = buffer.rope();
     let wrap = editor.options.wrap;
-    let h_offset = editor.horizontal_offset();
     let tab_width = editor.options.tab_width;
 
     let visible_rows = buffer_area.height as usize;
@@ -2213,43 +2212,34 @@ pub fn render_diagnostic_virtual_text_overlay(
             .collect();
         let eol_decs: Vec<&Decoration> = eol_decs_owned.iter().collect();
 
-        let line_text_raw = if line_idx < rope.len_lines() {
-            rope.line(line_idx).to_string()
-        } else {
-            String::new()
-        };
-        let line_text_original = line_text_raw.trim_end_matches('\n');
-        let expanded = expand_tabs_with_mapping(line_text_original, tab_width).text;
-
-        let display_source = if !wrap {
-            slice_horizontal_viewport(&expanded, h_offset, wrap_width).0
-        } else {
-            expanded
-        };
-
-        // Determine the first visual row's code width (excluding padding).
-        let mut first_row_text = if wrap {
-            let rows = split_line_into_rows(Line::from(display_source.to_string()), wrap_width);
-            let first = rows.first().cloned().unwrap_or_else(|| Line::from(""));
-            let text: String = first.spans.iter().map(|s| s.content.as_ref()).collect();
+        // Count visual rows the line occupies so the loop terminates correctly.
+        // Diagnostic placement itself doesn't depend on rendered code width —
+        // see the anchor rule below.
+        if wrap {
+            let line_text_raw = if line_idx < rope.len_lines() {
+                rope.line(line_idx).to_string()
+            } else {
+                String::new()
+            };
+            let line_text_original = line_text_raw.trim_end_matches('\n');
+            let expanded = expand_tabs_with_mapping(line_text_original, tab_width).text;
+            let rows = split_line_into_rows(Line::from(expanded), wrap_width);
             visual_rows_used += rows.len().max(1);
-            text
         } else {
             visual_rows_used += 1;
-            display_source.to_string()
-        };
-
-        // Strip trailing padding spaces.
-        while first_row_text.ends_with(' ') {
-            first_row_text.pop();
         }
-        let code_width: usize = first_row_text.chars().map(char_display_width).sum();
 
         if let Some(dec) = eol_decs.first() {
             let vtext_style = decoration_to_ratatui_style(&dec.style);
 
-            // Place virtual text right after the code, in the right margin.
-            let mut x = text_area_x.saturating_add(code_width as u16);
+            // Anchor the diagnostic at the right edge of the centered code
+            // box (`text_area_right`). The code box has fixed width
+            // `text_width`; document content + inline decorations live
+            // inside it, diagnostics live in the right margin past it.
+            // This keeps the diagnostic column consistent across lines and
+            // guarantees no overlap with inline decorations (inlay hints)
+            // regardless of how wide they make the rendered line.
+            let mut x = text_area_x.saturating_add(wrap_width as u16);
             let y = buffer_area.y + first_row_screen as u16;
 
             if y < full_area.y || y >= full_area.y + full_area.height {
