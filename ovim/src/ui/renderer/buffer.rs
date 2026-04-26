@@ -2224,10 +2224,10 @@ pub fn render_diagnostic_virtual_text_overlay(
             .collect();
         let eol_decs: Vec<&Decoration> = eol_decs_owned.iter().collect();
 
-        // Count visual rows the line occupies so the loop terminates correctly.
-        // Diagnostic placement itself doesn't depend on rendered code width —
-        // see the anchor rule below.
-        if wrap {
+        // Count visual rows the line occupies so the loop terminates and
+        // the diagnostic can attach to the *last* row (where the line
+        // actually ends), not the first.
+        let row_count = if wrap {
             let line_text_raw = if line_idx < rope.len_lines() {
                 rope.line(line_idx).to_string()
             } else {
@@ -2236,10 +2236,12 @@ pub fn render_diagnostic_virtual_text_overlay(
             let line_text_original = line_text_raw.trim_end_matches('\n');
             let expanded = expand_tabs_with_mapping(line_text_original, tab_width).text;
             let rows = split_line_into_rows(Line::from(expanded), wrap_width);
-            visual_rows_used += rows.len().max(1);
+            rows.len().max(1)
         } else {
-            visual_rows_used += 1;
-        }
+            1
+        };
+        let last_row_screen = first_row_screen + row_count - 1;
+        visual_rows_used += row_count;
 
         if let Some(dec) = eol_decs.first() {
             let vtext_style = decoration_to_ratatui_style(&dec.style);
@@ -2250,9 +2252,11 @@ pub fn render_diagnostic_virtual_text_overlay(
             // inside it, diagnostics live in the right margin past it.
             // This keeps the diagnostic column consistent across lines and
             // guarantees no overlap with inline decorations (inlay hints)
-            // regardless of how wide they make the rendered line.
+            // regardless of how wide they make the rendered line. For
+            // wrapped lines the diagnostic attaches to the *last* visual
+            // row so it lines up with the actual end of the code.
             let mut x = text_area_x.saturating_add(wrap_width as u16);
-            let y = buffer_area.y + first_row_screen as u16;
+            let y = buffer_area.y + last_row_screen as u16;
 
             if y < full_area.y || y >= full_area.y + full_area.height {
                 line_idx += 1;

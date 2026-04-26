@@ -226,6 +226,44 @@ fn centered_longer_line_with_hint_diag_still_at_box_edge() {
     );
 }
 
+/// Multi-row wrapped line: the diagnostic must attach to the LAST visual
+/// row of the wrapped line, not the first. A 60-char line in text_width=27
+/// wraps to three visual rows (27 + 27 + 6 chars). Today's overlay puts
+/// the diagnostic on the *first* row instead, which visually associates it
+/// with the wrong piece of code.
+#[test]
+fn centered_wrap_diag_attaches_to_last_visual_row() {
+    let line: String = (0..60).map(|i| char::from_digit((i % 10) as u32, 10).unwrap()).collect();
+    let mut test = centered(&format!("{line}\n"), true);
+    replace_diags(&mut test, vec![diag(0, "unused")]);
+
+    let rows = render_rows(&mut test);
+
+    // Row 0: chars 0..27 of the line, no diagnostic.
+    let row0_diag_col = cols(&rows[0], EXPECTED_DIAG_START, 6);
+    assert!(
+        row0_diag_col.chars().all(|c| c == ' '),
+        "first wrapped row should NOT have diagnostic; saw {row0_diag_col:?} at row 0: {row:?}",
+        row = &rows[0]
+    );
+
+    // Row 1: chars 27..54, no diagnostic either.
+    let row1_diag_col = cols(&rows[1], EXPECTED_DIAG_START, 6);
+    assert!(
+        row1_diag_col.chars().all(|c| c == ' '),
+        "middle wrapped row should NOT have diagnostic; saw {row1_diag_col:?} at row 1: {row:?}",
+        row = &rows[1]
+    );
+
+    // Row 2: chars 54..60 + diagnostic in margin.
+    assert_eq!(
+        cols(&rows[2], EXPECTED_DIAG_START, 6),
+        "unused",
+        "last wrapped row SHOULD have diagnostic at TEXT_AREA_RIGHT + 2; row 2 was {row:?}",
+        row = &rows[2]
+    );
+}
+
 /// Wrap mode counterpart of the short-line-with-hint case. With wrap on,
 /// the line + hint still fits on a single visual row (15 cols < text_width=27),
 /// so the diagnostic should land on row 0 at the box edge — same rule.
