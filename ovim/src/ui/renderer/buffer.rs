@@ -919,26 +919,23 @@ enum EolPlacement {
     },
 }
 
-impl EolPlacement {
-    fn final_width(self) -> usize {
-        match self {
-            Self::Append { text_width } => text_width,
-            Self::AtBoxEdge { render_width, .. } => render_width,
-        }
-    }
-}
-
 /// Apply end-of-line decorations to a rendered row.
 ///
 /// Strips trailing padding, appends each decoration's styled text (with a
 /// `EOL_DIAG_GAP`-column gap), truncates to fit, and re-pads. The exact
 /// anchor and final width depend on `placement` — see [`EolPlacement`].
+///
+/// `AtBoxEdge` performs its clip + anchor + pad work even when there are
+/// no decorations, so callers can use it to enforce no-bleed geometry on
+/// every row of a wrapped line in centered mode. `Append` short-circuits
+/// when there's nothing to do (caller has already padded to text_width).
 fn apply_eol_decorations(
     row: &mut Line<'static>,
     decorations: &[&Decoration],
     placement: EolPlacement,
 ) {
-    if decorations.is_empty() {
+    // Append with no decorations: caller's padding already handles this.
+    if decorations.is_empty() && matches!(placement, EolPlacement::Append { .. }) {
         return;
     }
 
@@ -968,21 +965,82 @@ fn apply_eol_decorations(
     // Pad the row up to the anchor (extends short lines to a consistent column).
     pad_line_to(row, diag_start);
 
+    // Append the diagnostic if we have one and there's room for gap + ≥1 char.
     let remaining = final_width.saturating_sub(diag_start);
-    // Need at least gap + 1 char of message; below that, just re-pad and bail.
-    if remaining < EOL_DIAG_GAP + 4 {
-        pad_line_to(row, final_width);
-        return;
+    if !decorations.is_empty() && remaining >= EOL_DIAG_GAP + 4 {
+        // First decoration wins (already priority-sorted).
+        let dec = &decorations[0];
+        let msg = fit_with_ellipsis(&dec.text, remaining - EOL_DIAG_GAP);
+        let style = decoration_to_ratatui_style(&dec.style);
+        row.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
+        row.spans.push(Span::styled(msg, style));
     }
 
-    // First decoration wins (already priority-sorted).
-    let dec = &decorations[0];
-    let msg = fit_with_ellipsis(&dec.text, remaining - EOL_DIAG_GAP);
-    let style = decoration_to_ratatui_style(&dec.style);
-
-    row.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
-    row.spans.push(Span::styled(msg, style));
     pad_line_to(row, final_width);
+}
+
+/// Place an EOL decoration on a single rendered line, choosing the right
+/// strategy from `(text_width, render_width, line_width, has_decs)`:
+///
+/// - **Centered (render_width > text_width)** → `AtBoxEdge`, which clips the
+///   line at the code-box edge (no bleed into the margin) and anchors the
+///   diagnostic at the box edge regardless of how short or long the code is.
+/// - **Non-centered, line + hints overflow text_width with decs present**
+///   → `overlay_eol_decoration_at_edge`, which steals the rightmost columns
+///   so the diagnostic stays visible.
+/// - **Non-centered, line fits or no decs** → `Append`, the default
+///   "diagnostic floats after code" behavior.
+fn place_eol_on_line(
+    line: &mut Line<'static>,
+    eol_decs: &[&Decoration],
+    text_width: usize,
+    render_width: usize,
+) {
+    if render_width > text_width {
+        apply_eol_decorations(
+            line,
+            eol_decs,
+            EolPlacement::AtBoxEdge {
+                code_box_width: text_width,
+                render_width,
+            },
+        );
+    } else if !eol_decs.is_empty() && line_display_width(line) >= text_width {
+        overlay_eol_decoration_at_edge(line, eol_decs, text_width);
+    } else {
+        apply_eol_decorations(line, eol_decs, EolPlacement::Append { text_width });
+    }
+}
+
+/// Place EOL decorations across the visual rows of a wrapped line. The
+/// last row gets the diagnostic via [`place_eol_on_line`]; in centered
+/// mode every other row is clipped + padded to `render_width` so they
+/// don't bleed into the diagnostic margin.
+fn place_eol_on_visual_rows(
+    rows: &mut [Line<'static>],
+    eol_decs: &[&Decoration],
+    text_width: usize,
+    render_width: usize,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    let centered = render_width > text_width;
+    let last = rows.len() - 1;
+    for (i, row) in rows.iter_mut().enumerate() {
+        if i == last {
+            place_eol_on_line(row, eol_decs, text_width, render_width);
+        } else if centered {
+            apply_eol_decorations(
+                row,
+                &[],
+                EolPlacement::AtBoxEdge {
+                    code_box_width: text_width,
+                    render_width,
+                },
+            );
+        }
+    }
 }
 
 /// Overlay an EOL decoration at the right edge of a line that already exceeds
@@ -1309,11 +1367,16 @@ pub fn render_buffer(
     // Gutter lines are built inline to match wrap continuation rows
     let mut lines = Vec::new();
     let mut gutter_lines: Vec<Line<'static>> = Vec::new();
-    let blank_line = " ".repeat(text_area.width as usize);
     let tab_width = editor.options.tab_width;
     let cursorline = editor.options.cursorline;
     let cursor_line_idx = cursor.line();
-    let text_width = text_area.width as usize;
+    // `text_width` is the document code-box (fixed at the layout's setting,
+    // i.e. textwidth in centered mode); `render_width` is how wide the line
+    // actually renders into. They differ in centered mode by exactly the
+    // diagnostic margin width.
+    let text_width = layout.text_width;
+    let render_width = layout.render_width();
+    let blank_line = " ".repeat(render_width);
     let wrap_map = editor.wrap_map();
     let has_wrap = wrap && wrap_map.is_some();
     let mut visual_rows_used = 0;
@@ -1442,11 +1505,12 @@ pub fn render_buffer(
 
                     if has_wrap {
                         let mut visual_rows = split_line_into_rows(cached_line, text_width);
-                        if !eol_decs.is_empty() {
-                            if let Some(last_row) = visual_rows.last_mut() {
-                                apply_eol_decorations(last_row, &eol_decs, EolPlacement::Append { text_width });
-                            }
-                        }
+                        place_eol_on_visual_rows(
+                            &mut visual_rows,
+                            &eol_decs,
+                            text_width,
+                            render_width,
+                        );
                         for (row_idx, row) in visual_rows.into_iter().enumerate() {
                             if visual_rows_used >= visible_lines {
                                 break;
@@ -1466,33 +1530,13 @@ pub fn render_buffer(
                             visual_rows_used += 1;
                         }
                     } else {
-                        // Apply EOL decorations (same logic as cache-miss path).
-                        if !eol_decs.is_empty() {
-                            let line_width: usize = cached_line
-                                .spans
-                                .iter()
-                                .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-                                .sum();
-                            if line_width >= text_width {
-                                overlay_eol_decoration_at_edge(
-                                    &mut cached_line,
-                                    &eol_decs,
-                                    text_width,
-                                );
-                            } else {
-                                apply_eol_decorations(&mut cached_line, &eol_decs, EolPlacement::Append { text_width });
-                            }
-                        }
-                        let line_len: usize = cached_line
-                            .spans
-                            .iter()
-                            .map(|s| s.content.chars().count())
-                            .sum();
-                        if line_len < text_width {
-                            cached_line
-                                .spans
-                                .push(Span::raw(" ".repeat(text_width - line_len)));
-                        }
+                        place_eol_on_line(
+                            &mut cached_line,
+                            &eol_decs,
+                            text_width,
+                            render_width,
+                        );
+                        pad_line_to(&mut cached_line, render_width);
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
                                 &gutter_ctx,
@@ -1833,16 +1877,14 @@ pub fn render_buffer(
                 }
             });
 
-            // Inline decorations (inlay hints) need the detailed path so
-            // `apply_inline_decorations` runs and splices their spans into
-            // the rendered line. The simple path bypasses span manipulation
-            // entirely. Use the unprojected `for_line` here for a cheap
-            // BTreeMap lookup; the detailed block does the projection.
-            let has_inline_decoration = editor
-                .decorations
-                .for_line(line_idx)
-                .iter()
-                .any(|d| matches!(d.placement, DecorationPlacement::Inline { .. }));
+            // Inline decorations (inlay hints) and EOL decorations (LSP
+            // diagnostics rendered as virtual text) both need the detailed
+            // path: inline decs require `apply_inline_decorations` to splice
+            // their spans into the rendered line, and EOL decs require the
+            // EOL placement step that the simple path doesn't run. Use the
+            // unprojected `for_line` here for a cheap BTreeMap lookup; the
+            // detailed block does the projection.
+            let any_decoration = !editor.decorations.for_line(line_idx).is_empty();
 
             // Always use character-by-character rendering if we have any highlighting
             let needs_detailed_rendering = has_visual_selection
@@ -1857,7 +1899,7 @@ pub fn render_buffer(
                 || !ai_generated_ranges.is_empty()
                 || !ai_selected_ranges.is_empty()
                 || !concealed_links.is_empty()
-                || has_inline_decoration;
+                || any_decoration;
 
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
@@ -2003,15 +2045,12 @@ pub fn render_buffer(
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
                     let mut visual_rows = split_line_into_rows(line, text_width);
-                    if !eol_decs.is_empty() {
-                        // Apply EOL decorations (diagnostics) to the last visual
-                        // row — it has the line ending and typically the most
-                        // available space.  Inline decorations (inlay hints) on
-                        // earlier rows won't crowd out the diagnostic.
-                        if let Some(last_row) = visual_rows.last_mut() {
-                            apply_eol_decorations(last_row, &eol_decs, EolPlacement::Append { text_width });
-                        }
-                    }
+                    place_eol_on_visual_rows(
+                        &mut visual_rows,
+                        &eol_decs,
+                        text_width,
+                        render_width,
+                    );
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
                         if visual_rows_used >= visible_lines {
                             break;
@@ -2031,34 +2070,14 @@ pub fn render_buffer(
                         visual_rows_used += 1;
                     }
                 } else {
-                    // No wrap: DON'T truncate — inline decorations shift
-                    // cursor position, and truncation would desync the
-                    // cursor from what's visible.  Ratatui clips overflow.
-                    //
-                    // When inline decorations pushed the line beyond
-                    // text_width, overlay the diagnostic at the right edge
-                    // instead of appending (which would be clipped away).
-                    if !eol_decs.is_empty() {
-                        let line_width: usize = line
-                            .spans
-                            .iter()
-                            .map(|s| s.content.chars().map(char_display_width).sum::<usize>())
-                            .sum();
-                        if line_width >= text_width {
-                            overlay_eol_decoration_at_edge(&mut line, &eol_decs, text_width);
-                        } else {
-                            apply_eol_decorations(&mut line, &eol_decs, EolPlacement::Append { text_width });
-                        }
-                    }
-                    let line_len: usize = line
-                        .spans
-                        .iter()
-                        .map(|s| unicode_width::UnicodeWidthStr::width(s.content.as_ref()))
-                        .sum();
-                    if line_len < text_width {
-                        line.spans
-                            .push(Span::raw(" ".repeat(text_width - line_len)));
-                    }
+                    // No wrap: in non-centered mode, ratatui clips overflow
+                    // at text_area's right edge, so we don't truncate (cursor
+                    // tracking would desync). In centered mode, AtBoxEdge
+                    // explicitly clips at the code-box and pads into the
+                    // diagnostic margin — `place_eol_on_line` picks the
+                    // right strategy.
+                    place_eol_on_line(&mut line, &eol_decs, text_width, render_width);
+                    pad_line_to(&mut line, render_width);
                     if gutter_area.is_some() {
                         gutter_lines.push(build_gutter_line(
                             &gutter_ctx,
@@ -2103,7 +2122,7 @@ pub fn render_buffer(
                                     .and_then(|b| b.get(line_idx - start_line)),
                             ));
                         }
-                        lines.push(Line::from(" ".repeat(text_width)));
+                        lines.push(Line::from(" ".repeat(render_width)));
                         visual_rows_used += 1;
                     } else {
                         // Split by display width, not char count — CJK/emoji
@@ -2132,7 +2151,7 @@ pub fn render_buffer(
                                             .and_then(|b| b.get(line_idx - start_line)),
                                     ));
                                 }
-                                let pad = text_width.saturating_sub(row_width);
+                                let pad = render_width.saturating_sub(row_width);
                                 if pad > 0 {
                                     row_text.push_str(&" ".repeat(pad));
                                 }
@@ -2159,7 +2178,7 @@ pub fn render_buffer(
                                         .and_then(|b| b.get(line_idx - start_line)),
                                 ));
                             }
-                            let pad = text_width.saturating_sub(row_width);
+                            let pad = render_width.saturating_sub(row_width);
                             if pad > 0 {
                                 row_text.push_str(&" ".repeat(pad));
                             }
@@ -2181,8 +2200,8 @@ pub fn render_buffer(
                         ));
                     }
                     let line_display_len = unicode_width::UnicodeWidthStr::width(&*line_text);
-                    let line_text = if line_display_len < text_width {
-                        format!("{}{}", line_text, " ".repeat(text_width - line_display_len))
+                    let line_text = if line_display_len < render_width {
+                        format!("{}{}", line_text, " ".repeat(render_width - line_display_len))
                     } else {
                         line_text.to_string()
                     };
@@ -2216,126 +2235,6 @@ pub fn render_buffer(
     frame.render_widget(paragraph, text_area);
 
     start_line
-}
-
-/// Render diagnostic virtual text as an overlay using the full available terminal width.
-///
-/// This is primarily used when `textwidth` centering is enabled. In that mode, the main buffer
-/// rendering is intentionally constrained to `layout.buffer_area.width`, but users still expect
-/// diagnostic virtual text to use the extra right-side margin space.
-pub fn render_diagnostic_virtual_text_overlay(
-    frame: &mut Frame,
-    editor: &Editor,
-    layout: &BufferLayout,
-    full_area: ratatui::layout::Rect,
-) {
-    let buffer_area = layout.buffer_area;
-    if full_area.width <= buffer_area.width {
-        return;
-    }
-
-    let buffer = editor.buffer();
-    let rope = buffer.rope();
-    let wrap = editor.options.wrap;
-    let tab_width = editor.options.tab_width;
-
-    let visible_rows = buffer_area.height as usize;
-    let start_line = editor.scroll_offset();
-    let line_count = buffer.line_count();
-
-    let gutter_width_u16 = layout.gutter_width as u16;
-    let text_area_x = buffer_area.x + gutter_width_u16;
-    let wrap_width = layout.text_width.max(1);
-    let full_right = full_area.x + full_area.width;
-
-    let mut visual_rows_used = 0usize;
-    let mut line_idx = start_line;
-
-    while line_idx < line_count && visual_rows_used < visible_rows {
-        let first_row_screen = visual_rows_used;
-        // Step E: read through projection so anchors survive buffer edits
-        // between the LSP refresh and the current render tick.
-        let eol_decs_owned: Vec<Decoration> = editor
-            .decorations
-            .for_line_projected(line_idx, editor.buffer().rope(), editor.buffer().edit_log())
-            .into_iter()
-            .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
-            .collect();
-        let eol_decs: Vec<&Decoration> = eol_decs_owned.iter().collect();
-
-        // Count visual rows the line occupies so the loop terminates and
-        // the diagnostic can attach to the *last* row (where the line
-        // actually ends), not the first.
-        let row_count = if wrap {
-            let line_text_raw = if line_idx < rope.len_lines() {
-                rope.line(line_idx).to_string()
-            } else {
-                String::new()
-            };
-            let line_text_original = line_text_raw.trim_end_matches('\n');
-            let expanded = expand_tabs_with_mapping(line_text_original, tab_width).text;
-            let rows = split_line_into_rows(Line::from(expanded), wrap_width);
-            rows.len().max(1)
-        } else {
-            1
-        };
-        let last_row_screen = first_row_screen + row_count - 1;
-        visual_rows_used += row_count;
-
-        if let Some(dec) = eol_decs.first() {
-            let vtext_style = decoration_to_ratatui_style(&dec.style);
-
-            // Anchor the diagnostic at the right edge of the centered code
-            // box (`text_area_right`). The code box has fixed width
-            // `text_width`; document content + inline decorations live
-            // inside it, diagnostics live in the right margin past it.
-            // This keeps the diagnostic column consistent across lines and
-            // guarantees no overlap with inline decorations (inlay hints)
-            // regardless of how wide they make the rendered line. For
-            // wrapped lines the diagnostic attaches to the *last* visual
-            // row so it lines up with the actual end of the code.
-            let mut x = text_area_x.saturating_add(wrap_width as u16);
-            let y = buffer_area.y + last_row_screen as u16;
-
-            if y < full_area.y || y >= full_area.y + full_area.height {
-                line_idx += 1;
-                continue;
-            }
-            if x >= full_right {
-                line_idx += 1;
-                continue;
-            }
-
-            // Need at least gap + 4 chars of message room before bothering.
-            let available = full_right.saturating_sub(x) as usize;
-            if available >= EOL_DIAG_GAP + 4 {
-                let buf = frame.buffer_mut();
-                let gap = " ".repeat(EOL_DIAG_GAP);
-                let (nx, _) = buf.set_stringn(x, y, gap, available, Style::default());
-                x = nx;
-                let available_after_gap = full_right.saturating_sub(x) as usize;
-                if available_after_gap > 0 {
-                    let render_msg = fit_with_ellipsis(&dec.text, available_after_gap);
-                    let (nx, _) =
-                        buf.set_stringn(x, y, render_msg, available_after_gap, vtext_style);
-                    // Clear remaining cells so stale characters from prior frames
-                    // don't bleed through after the diagnostic text.
-                    let clear_from = nx;
-                    if clear_from < full_right {
-                        buf.set_stringn(
-                            clear_from,
-                            y,
-                            " ".repeat((full_right - clear_from) as usize),
-                            (full_right - clear_from) as usize,
-                            Style::default(),
-                        );
-                    }
-                }
-            }
-        }
-
-        line_idx += 1;
-    }
 }
 
 /// A diagnostic range remapped to expanded char indices for rendering

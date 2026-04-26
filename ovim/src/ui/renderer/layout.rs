@@ -85,20 +85,14 @@ impl BufferLayout {
     }
 
     /// Total render width inside the gutter — the column count available
-    /// to the text + EOL diagnostic, measured from the right edge of the
+    /// to text + EOL diagnostic, measured from the right edge of the
     /// gutter to the right edge of `render_area`. Equals `text_width`
-    /// when `render_area == buffer_area`.
+    /// when `render_area == buffer_area`; in centered mode it equals
+    /// `text_width + diag_margin_width`.
     pub fn render_width(&self) -> usize {
         let buffer_left = self.buffer_area.x as usize + self.gutter_width;
         let render_right = self.render_area.x as usize + self.render_area.width as usize;
         render_right.saturating_sub(buffer_left)
-    }
-
-    /// Width of the diagnostic margin past the code-box
-    /// (`render_width - text_width`). Zero unless centered mode set up a
-    /// wider render area.
-    pub fn diag_margin_width(&self) -> usize {
-        self.render_width().saturating_sub(self.text_width)
     }
 }
 

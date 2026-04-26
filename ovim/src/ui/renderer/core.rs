@@ -320,30 +320,32 @@ fn render_buffer_area(
             areas.buffer_chunk
         };
 
-        let single_layout = BufferLayout::compute(editor, buffer_area);
+        let full_area = areas.buffer_chunk;
+        let centered = buffer_area.width < full_area.width;
+        // In centered mode, lines render into the full pane (so EOL
+        // diagnostics can extend into the right margin); the code-box
+        // (text_width / wrap target / cursor coords) stays anchored to
+        // buffer_area.
+        let single_layout = if centered {
+            BufferLayout::compute_with_render_area(editor, buffer_area, full_area)
+        } else {
+            BufferLayout::compute(editor, buffer_area)
+        };
 
         if editor.options.wrap {
             editor.ensure_wrap_map(single_layout.text_width);
         }
 
-        let full_area = areas.buffer_chunk;
-        let centered = buffer_area.width < full_area.width;
         let viewport_start = render_buffer(
             frame,
             editor,
             theme,
             &single_layout,
             line_cache,
-            !centered, // EOL decorations shown inline when not centered; overlay handles centered case
+            true,
             None,
         );
         if centered {
-            crate::ui::renderer::buffer::render_diagnostic_virtual_text_overlay(
-                frame,
-                editor,
-                &single_layout,
-                full_area,
-            );
             render_margin_widgets(frame, editor, theme, full_area, buffer_area);
         }
         (viewport_start, single_layout)
