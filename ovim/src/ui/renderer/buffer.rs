@@ -902,11 +902,42 @@ fn pad_line_to(line: &mut Line<'static>, target_width: usize) {
     }
 }
 
+/// Where an EOL decoration should be placed within a rendered row.
+#[derive(Debug, Clone, Copy)]
+enum EolPlacement {
+    /// Append the diagnostic right after the row's existing content,
+    /// pad the row to `text_width`. Used when the line lives inside a
+    /// single budget: non-centered mode, single-row no-overflow case.
+    Append { text_width: usize },
+    /// Clip the row at `code_box_width` (no bleed past the box), anchor
+    /// the diagnostic at that column, and pad to `render_width`. Used in
+    /// centered (textwidth) mode where lines render into a wider rect
+    /// than the code-box.
+    AtBoxEdge {
+        code_box_width: usize,
+        render_width: usize,
+    },
+}
+
+impl EolPlacement {
+    fn final_width(self) -> usize {
+        match self {
+            Self::Append { text_width } => text_width,
+            Self::AtBoxEdge { render_width, .. } => render_width,
+        }
+    }
+}
+
 /// Apply end-of-line decorations to a rendered row.
 ///
 /// Strips trailing padding, appends each decoration's styled text (with a
-/// `EOL_DIAG_GAP`-column gap), truncates to fit `text_width`, and re-pads.
-fn apply_eol_decorations(row: &mut Line<'static>, decorations: &[&Decoration], text_width: usize) {
+/// `EOL_DIAG_GAP`-column gap), truncates to fit, and re-pads. The exact
+/// anchor and final width depend on `placement` — see [`EolPlacement`].
+fn apply_eol_decorations(
+    row: &mut Line<'static>,
+    decorations: &[&Decoration],
+    placement: EolPlacement,
+) {
     if decorations.is_empty() {
         return;
     }
@@ -920,11 +951,27 @@ fn apply_eol_decorations(row: &mut Line<'static>, decorations: &[&Decoration], t
         }
     }
 
-    let row_width = line_display_width(row);
-    let remaining = text_width.saturating_sub(row_width);
-    // Need at least gap + 1 char of message; below that, re-pad and bail.
+    // Resolve where the diagnostic anchors and what we pad to. AtBoxEdge
+    // also clips any content past the code-box edge so hints/code don't
+    // bleed into the diagnostic margin.
+    let (diag_start, final_width) = match placement {
+        EolPlacement::Append { text_width } => (line_display_width(row), text_width),
+        EolPlacement::AtBoxEdge {
+            code_box_width,
+            render_width,
+        } => {
+            truncate_line_to_width(row, code_box_width);
+            (code_box_width, render_width)
+        }
+    };
+
+    // Pad the row up to the anchor (extends short lines to a consistent column).
+    pad_line_to(row, diag_start);
+
+    let remaining = final_width.saturating_sub(diag_start);
+    // Need at least gap + 1 char of message; below that, just re-pad and bail.
     if remaining < EOL_DIAG_GAP + 4 {
-        pad_line_to(row, text_width);
+        pad_line_to(row, final_width);
         return;
     }
 
@@ -935,7 +982,7 @@ fn apply_eol_decorations(row: &mut Line<'static>, decorations: &[&Decoration], t
 
     row.spans.push(Span::raw(" ".repeat(EOL_DIAG_GAP)));
     row.spans.push(Span::styled(msg, style));
-    pad_line_to(row, text_width);
+    pad_line_to(row, final_width);
 }
 
 /// Overlay an EOL decoration at the right edge of a line that already exceeds
@@ -1397,7 +1444,7 @@ pub fn render_buffer(
                         let mut visual_rows = split_line_into_rows(cached_line, text_width);
                         if !eol_decs.is_empty() {
                             if let Some(last_row) = visual_rows.last_mut() {
-                                apply_eol_decorations(last_row, &eol_decs, text_width);
+                                apply_eol_decorations(last_row, &eol_decs, EolPlacement::Append { text_width });
                             }
                         }
                         for (row_idx, row) in visual_rows.into_iter().enumerate() {
@@ -1433,7 +1480,7 @@ pub fn render_buffer(
                                     text_width,
                                 );
                             } else {
-                                apply_eol_decorations(&mut cached_line, &eol_decs, text_width);
+                                apply_eol_decorations(&mut cached_line, &eol_decs, EolPlacement::Append { text_width });
                             }
                         }
                         let line_len: usize = cached_line
@@ -1962,7 +2009,7 @@ pub fn render_buffer(
                         // available space.  Inline decorations (inlay hints) on
                         // earlier rows won't crowd out the diagnostic.
                         if let Some(last_row) = visual_rows.last_mut() {
-                            apply_eol_decorations(last_row, &eol_decs, text_width);
+                            apply_eol_decorations(last_row, &eol_decs, EolPlacement::Append { text_width });
                         }
                     }
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
@@ -2000,7 +2047,7 @@ pub fn render_buffer(
                         if line_width >= text_width {
                             overlay_eol_decoration_at_edge(&mut line, &eol_decs, text_width);
                         } else {
-                            apply_eol_decorations(&mut line, &eol_decs, text_width);
+                            apply_eol_decorations(&mut line, &eol_decs, EolPlacement::Append { text_width });
                         }
                     }
                     let line_len: usize = line
@@ -2666,7 +2713,7 @@ mod tests {
             source_version: 0,
         };
 
-        apply_eol_decorations(&mut first, &[&dec], 30);
+        apply_eol_decorations(&mut first, &[&dec], EolPlacement::Append { text_width: 30 });
 
         let mut rendered = String::new();
         for span in &first.spans {
