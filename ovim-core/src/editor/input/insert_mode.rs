@@ -22,8 +22,12 @@ fn is_completion_trigger_char(c: char) -> bool {
     matches!(c, '.')
 }
 
+// Looser than the motion-word rule on purpose: hyphens count so Tailwind
+// classes like `w-1/2` stay as one prefix and the menu doesn't collapse
+// mid-token. Keep in sync with `is_completion_keyword_char` in
+// `ovim-core/src/editor/lsp_modules/completion.rs`.
 fn is_completion_ident_char(c: char) -> bool {
-    c == '_' || c.is_alphanumeric()
+    c.is_alphanumeric() || c == '_' || c == '-'
 }
 
 /// Cleans up whitespace-only lines before exiting insert mode.
