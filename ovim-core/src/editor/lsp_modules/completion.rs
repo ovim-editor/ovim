@@ -245,6 +245,17 @@ fn filter_supported_trigger(trigger: Option<char>, supported: &HashSet<char>) ->
     }
 }
 
+/// Whether `c` is part of a completion-prefix keyword.
+///
+/// Looser than the Vim motion-word definition: hyphens count, so a Tailwind
+/// class like `w-1/2` is treated as one prefix when filtering completions and
+/// the menu doesn't collapse mid-token. Motion code (`dw`, `ciw`, etc.) keeps
+/// the strict alnum+`_` rule. Mirrored in `is_completion_ident_char` in
+/// `ovim-core/src/editor/input/insert_mode.rs`.
+fn is_completion_keyword_char(c: char) -> bool {
+    c.is_alphanumeric() || c == '_' || c == '-'
+}
+
 fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (usize, String) {
     let cursor_byte = byte_offset_for_grapheme(line_text, cursor_col).unwrap_or(line_text.len());
     let before_cursor = &line_text[..cursor_byte.min(line_text.len())];
@@ -252,7 +263,7 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
     let mut start_byte = before_cursor.len();
     let graphemes: Vec<(usize, &str)> = grapheme_indices(before_cursor).collect();
     for (byte_offset, grapheme) in graphemes.into_iter().rev() {
-        let is_ident = grapheme.chars().all(|c| c == '_' || c.is_alphanumeric());
+        let is_ident = grapheme.chars().all(is_completion_keyword_char);
         if !is_ident {
             break;
         }
@@ -324,6 +335,22 @@ mod tests {
         let (col, prefix) = completion_trigger_context_from_line("__x1", 4);
         assert_eq!(col, 0);
         assert_eq!(prefix, "__x1");
+    }
+
+    // Tailwind classes contain hyphens; the fallback scanner must keep them
+    // as part of the prefix so filtering matches the LSP's view of the token.
+    #[test]
+    fn completion_trigger_context_hyphenated_prefix() {
+        let (col, prefix) = completion_trigger_context_from_line("class=\"bg-wh", 12);
+        assert_eq!(col, 7);
+        assert_eq!(prefix, "bg-wh");
+    }
+
+    #[test]
+    fn completion_trigger_context_trailing_hyphen() {
+        let (col, prefix) = completion_trigger_context_from_line("w-", 2);
+        assert_eq!(col, 0);
+        assert_eq!(prefix, "w-");
     }
 
     #[test]
