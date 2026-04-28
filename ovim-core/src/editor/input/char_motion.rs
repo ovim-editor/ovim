@@ -273,8 +273,8 @@ fn apply_charwise_operator(
     let (end_line, end_col_raw) = range.end_col_exclusive;
 
     // Clamp end_col to the line length to avoid overflow/past-EOL issues.
-    let end_col = if let Some(line) = editor.buffer().line(end_line) {
-        let line_len = line.trim_end_matches('\n').chars().count();
+    let end_col = if let Some(line) = editor.buffer().line_text(end_line) {
+        let line_len = line.chars().count();
         end_col_raw.min(line_len)
     } else {
         end_col_raw
@@ -393,7 +393,7 @@ fn apply_linewise_operator(
         Operator::Yank => {
             let mut yanked = String::new();
             for line_idx in start_line..=end_line {
-                if let Some(line) = editor.buffer().line(line_idx) {
+                if let Some(line) = editor.buffer().line_text(line_idx) {
                     yanked.push_str(&line);
                 }
             }
@@ -408,7 +408,7 @@ fn apply_linewise_operator(
 
             let indent = editor
                 .buffer()
-                .line(start_line)
+                .line_text(start_line)
                 .map(|l| {
                     l.chars()
                         .take_while(|c| c.is_whitespace() && *c != '\n')

@@ -8,7 +8,7 @@ mod text_ops;
 pub use cursor::Cursor;
 pub use encoding::FileEncoding;
 pub use highlighting::LineHighlights;
-pub use line_ending::LineEnding;
+pub use line_ending::{normalize_for_buffer, LineEnding};
 
 use crate::ai::BufferLock;
 use crate::change::ChangeManager;
@@ -16,9 +16,10 @@ use crate::edit::Edit;
 use crate::edit_log::EditLog;
 use crate::git::GitBlame;
 use crate::syntax::{CodeBlockCache, SyntaxHighlighter};
-use crate::unicode::{CharCol, GraphemeCol};
+use crate::unicode::{grapheme_count, CharCol, GraphemeCol};
 use crate::GitStatus;
 use ropey::Rope;
+use std::borrow::Cow;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -327,13 +328,10 @@ impl Buffer {
 
         // Clamp column to valid range for current line
         let current_line = self.cursor.line();
-        if let Some(line_content) = self.line(current_line) {
-            // Use grapheme clusters for proper multi-codepoint emoji handling
-            let line_len = crate::unicode::grapheme_count(line_content.trim_end_matches('\n'));
-            if col > 0 && col >= line_len {
-                let new_col = if line_len > 0 { line_len - 1 } else { 0 };
-                self.cursor.set_col(GraphemeCol(new_col));
-            }
+        let line_len = self.line_grapheme_count(current_line);
+        if col > 0 && col >= line_len {
+            let new_col = if line_len > 0 { line_len - 1 } else { 0 };
+            self.cursor.set_col(GraphemeCol(new_col));
         }
     }
 
@@ -407,13 +405,64 @@ impl Buffer {
         self.rope.len_lines()
     }
 
-    /// Gets a specific line as a String
-    pub fn line(&self, idx: usize) -> Option<String> {
-        if idx < self.line_count() {
-            Some(self.rope.line(idx).to_string())
-        } else {
-            None
-        }
+    /// Visible content of line `idx` with the trailing line terminator
+    /// (`\r?\n` or bare `\n`) removed.
+    ///
+    /// This is the canonical accessor for "the text the user sees on this
+    /// line". The internal rope is LF-only by convention, but external
+    /// content (paste, LSP edits, mixed-ending files) can route a `\r`
+    /// past the input seams; reading through this accessor guarantees
+    /// callers never see a stray `\r` in a line terminator regardless.
+    ///
+    /// Returns `Cow::Borrowed` for short / contiguous LF-only lines (the
+    /// common case, zero allocation). Allocates only when the slice spans
+    /// chunk boundaries or trailing `\r\n` strip requires owning the
+    /// truncated string.
+    ///
+    /// Use `line_slice()` instead when you need the raw rope slice
+    /// including the terminator (e.g., for char-offset arithmetic against
+    /// the full rope length).
+    pub fn line_text(&self, idx: usize) -> Option<Cow<'_, str>> {
+        let slice = self.line_slice(idx)?;
+        let cow: Cow<'_, str> = slice.into();
+        Some(match cow {
+            Cow::Borrowed(b) => {
+                // Strip in priority order: `\r\n` first, then either lone
+                // terminator. Lone `\r` matters because ropey treats it as
+                // a line break (Mac-classic content from OV-00252).
+                let stripped = b
+                    .strip_suffix("\r\n")
+                    .or_else(|| b.strip_suffix('\n'))
+                    .or_else(|| b.strip_suffix('\r'))
+                    .unwrap_or(b);
+                Cow::Borrowed(stripped)
+            }
+            Cow::Owned(mut o) => {
+                if o.ends_with("\r\n") {
+                    o.truncate(o.len() - 2);
+                } else if o.ends_with('\n') || o.ends_with('\r') {
+                    o.truncate(o.len() - 1);
+                }
+                Cow::Owned(o)
+            }
+        })
+    }
+
+    /// Grapheme count of the visible content on line `idx`.
+    ///
+    /// Equivalent to `grapheme_count(line_text(idx)?.as_ref())` for valid
+    /// indices, but reads directly from the rope slice when contiguous.
+    /// Returns 0 for out-of-range indices.
+    ///
+    /// Prefer this over `line_text(idx).map(|l| l.chars().count())` —
+    /// `chars().count()` is in Unicode-scalar-value space, not grapheme
+    /// space, and produces wrong values for emoji / ZWJ / flag content
+    /// (the OV-00202 / OV-00246 bug class).
+    pub fn line_grapheme_count(&self, idx: usize) -> usize {
+        self.line_text(idx)
+            .as_deref()
+            .map(grapheme_count)
+            .unwrap_or(0)
     }
 
     /// Gets a specific line as a RopeSlice (zero-allocation)
@@ -1037,8 +1086,8 @@ mod tests {
         );
         assert_eq!(buf.line_count(), 1, "Empty buffer should report 1 line");
         assert_eq!(
-            buf.line(0),
-            Some("".to_string()),
+            buf.line_text(0).as_deref(),
+            Some(""),
             "First line should be empty string"
         );
         assert_eq!(buf.cursor().line(), 0, "Cursor should be at line 0");
@@ -1086,9 +1135,9 @@ mod tests {
         );
         assert_eq!(buf.line_count(), 1, "Vim semantics: 1 line for 'hello\\n'");
         assert_eq!(
-            buf.line(0),
-            Some("hello\n".to_string()),
-            "First line should include newline"
+            buf.line_text(0).as_deref(),
+            Some("hello"),
+            "line_text strips the trailing terminator"
         );
     }
 
@@ -1117,9 +1166,9 @@ mod tests {
             "Content should be unchanged"
         );
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
-        assert_eq!(buf.line(0), Some("line1\n".to_string()));
-        assert_eq!(buf.line(1), Some("line2\n".to_string()));
-        assert_eq!(buf.line(2), Some("line3\n".to_string()));
+        assert_eq!(buf.line_text(0).as_deref(), Some("line1"));
+        assert_eq!(buf.line_text(1).as_deref(), Some("line2"));
+        assert_eq!(buf.line_text(2).as_deref(), Some("line3"));
     }
 
     #[test]
@@ -1134,9 +1183,9 @@ mod tests {
         );
         assert_eq!(buf.line_count(), 3, "Vim semantics: 3 lines");
         assert_eq!(
-            buf.line(2),
-            Some("line3\n".to_string()),
-            "Last line should have newline added"
+            buf.line_text(2).as_deref(),
+            Some("line3"),
+            "Last line content (terminator stripped by line_text)"
         );
     }
 
@@ -1151,13 +1200,13 @@ mod tests {
             3,
             "Vim semantics: 3 lines (line1, empty, line3)"
         );
-        assert_eq!(buf.line(0), Some("line1\n".to_string()));
+        assert_eq!(buf.line_text(0).as_deref(), Some("line1"));
         assert_eq!(
-            buf.line(1),
-            Some("\n".to_string()),
-            "Middle line should be just newline"
+            buf.line_text(1).as_deref(),
+            Some(""),
+            "Middle line should be empty after terminator strip"
         );
-        assert_eq!(buf.line(2), Some("line3\n".to_string()));
+        assert_eq!(buf.line_text(2).as_deref(), Some("line3"));
     }
 
     #[test]
@@ -1548,5 +1597,127 @@ mod tests {
         assert_eq!(buf.rope().to_string(), "XYabc\n");
         assert_eq!(buf.change_manager().undo_stack.len(), 2);
         assert_eq!(buf.change_manager().redo_stack.len(), 0);
+    }
+
+    // ==================== line_text + line_grapheme_count ====================
+
+    #[test]
+    fn line_text_strips_lf_terminator() {
+        let buf = Buffer::new_from_str("hello\nworld\n");
+        assert_eq!(buf.line_text(0).as_deref(), Some("hello"));
+        assert_eq!(buf.line_text(1).as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn line_text_strips_crlf_terminator() {
+        // Inject CRLF directly via the rope to verify line_text strips it.
+        // (The buffer's load path normalizes CRLF, but this exercises the
+        // accessor's safety net for any CR that slipped past.)
+        let mut buf = Buffer::new_from_str("");
+        buf.rope = ropey::Rope::from_str("hello\r\nworld\r\n");
+        assert_eq!(buf.line_text(0).as_deref(), Some("hello"));
+        assert_eq!(buf.line_text(1).as_deref(), Some("world"));
+    }
+
+    #[test]
+    fn line_text_strips_bare_cr_terminator() {
+        // ropey 1.6 treats bare `\r` as a line break (Mac-classic). The
+        // accessor must strip a lone trailing `\r` too, otherwise rope
+        // content from a Mac-classic file (OV-00252) would render as `^M`.
+        let mut buf = Buffer::new_from_str("");
+        buf.rope = ropey::Rope::from_str("hello\rworld\r");
+        assert_eq!(
+            buf.line_text(0).as_deref(),
+            Some("hello"),
+            "lone trailing \\r should be stripped"
+        );
+        assert_eq!(
+            buf.line_text(1).as_deref(),
+            Some("world"),
+            "lone trailing \\r should be stripped"
+        );
+    }
+
+    #[test]
+    fn line_text_returns_borrowed_for_lf_only_short_line() {
+        // Short LF-only line should not allocate — verify via Cow variant.
+        let buf = Buffer::new_from_str("hello\n");
+        let line = buf.line_text(0).unwrap();
+        assert!(matches!(line, std::borrow::Cow::Borrowed(_)));
+        assert_eq!(line, "hello");
+    }
+
+    #[test]
+    fn line_text_empty_line_is_empty_str() {
+        let buf = Buffer::new_from_str("a\n\nb\n");
+        assert_eq!(buf.line_text(1).as_deref(), Some(""));
+    }
+
+    #[test]
+    fn line_text_out_of_range_is_none() {
+        let buf = Buffer::new_from_str("hello\n");
+        assert_eq!(buf.line_text(99), None);
+    }
+
+    #[test]
+    fn line_grapheme_count_handles_multi_codepoint_graphemes() {
+        // Family emoji is 1 grapheme but 7 chars / 25 bytes.
+        let buf = Buffer::new_from_str("👨‍👩‍👧‍👦x\n");
+        assert_eq!(buf.line_grapheme_count(0), 2);
+    }
+
+    #[test]
+    fn line_grapheme_count_zero_for_out_of_range() {
+        let buf = Buffer::new_from_str("hello\n");
+        assert_eq!(buf.line_grapheme_count(99), 0);
+    }
+
+    #[test]
+    fn line_grapheme_count_zero_for_empty_line() {
+        let buf = Buffer::new_from_str("a\n\nb\n");
+        assert_eq!(buf.line_grapheme_count(1), 0);
+    }
+
+    /// Bug-class regression guard: even if a `\r` slips into the rope
+    /// through some future external-text seam (a new paste source, an AI
+    /// tool, a Mac-classic file load), it must NEVER be visible to the
+    /// canonical line read. This pins the contract roadmap 18 closed.
+    #[test]
+    fn line_text_never_returns_cr_in_terminator_position() {
+        for terminator in ["\n", "\r\n", "\r"] {
+            let mut buf = Buffer::new_from_str("");
+            buf.rope = ropey::Rope::from_str(&format!("alpha{}beta{}", terminator, terminator));
+            for line_idx in 0..buf.line_count() {
+                let text = buf.line_text(line_idx).unwrap_or_default();
+                assert!(
+                    !text.contains('\r'),
+                    "line_text returned `\\r` in line {} for terminator {:?}: {:?}",
+                    line_idx,
+                    terminator,
+                    text
+                );
+            }
+        }
+    }
+
+    /// Bug-class regression guard: `line_grapheme_count` agrees with
+    /// `line_text` for visible content. If they ever diverge, the count
+    /// is wrong somewhere — and length-based clamping (cursor positions,
+    /// motion bounds) silently corrupts.
+    #[test]
+    fn line_grapheme_count_matches_line_text() {
+        let buf = Buffer::new_from_str("hello\n👨‍👩‍👧‍👦x\n\ncafé\n");
+        for i in 0..buf.line_count() {
+            let text_count = buf
+                .line_text(i)
+                .map(|t| crate::unicode::grapheme_count(&t))
+                .unwrap_or(0);
+            assert_eq!(
+                buf.line_grapheme_count(i),
+                text_count,
+                "line {} mismatch",
+                i
+            );
+        }
     }
 }

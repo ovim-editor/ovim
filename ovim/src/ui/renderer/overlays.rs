@@ -116,7 +116,7 @@ pub fn render_hover_window(
             let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
                 cursor_line,
                 display_col,
-                line_text,
+                &line_text,
                 &inline_widths,
             );
             let viewport_row = wrap_map.logical_to_visual(viewport_start);
@@ -316,7 +316,7 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
             let (abs_row, vcol) = wrap_map.cursor_to_visual_with_decorations(
                 cursor_line,
                 display_col,
-                line_text,
+                &line_text,
                 &inline_widths,
             );
             let viewport_row = wrap_map.logical_to_visual(viewport_start);

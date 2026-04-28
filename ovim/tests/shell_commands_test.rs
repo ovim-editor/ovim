@@ -66,7 +66,7 @@ fn test_filter_current_line() {
     InputHandler::execute_command_string(&mut test.editor, ".!tr 'a-z' 'A-Z'").unwrap();
 
     // Line 1 should be uppercased
-    let line = test.editor.buffer().line(1).unwrap();
+    let line = test.editor.buffer().line_text(1).unwrap();
     assert_eq!(
         line.trim(),
         "FOO BAR",

@@ -281,8 +281,8 @@ impl RepeatAction {
 
                 let end_line = buffer.cursor().line();
                 let line_len = buffer
-                    .line(end_line)
-                    .map(|l| l.trim_end_matches('\n').chars().count())
+                    .line_text(end_line)
+                    .map(|l| l.chars().count())
                     .unwrap_or(0);
                 let end_col = (buffer.cursor_char_col() + 1).min_usize(line_len);
 
@@ -309,10 +309,10 @@ impl RepeatAction {
                     // find_next returns grapheme col; delete_range needs char col.
                     // Convert via the matched line's text.
                     let match_col = buffer
-                        .line(match_line)
+                        .line_text(match_line)
                         .map(|line_text| {
                             crate::unicode::grapheme_to_char_col(
-                                line_text.trim_end_matches('\n'),
+                                &line_text,
                                 GraphemeCol(match_grapheme_col),
                             )
                         })
@@ -376,8 +376,8 @@ impl RepeatAction {
                 let col = buffer.cursor_char_col();
                 let replacement_len = replacements.chars().count();
 
-                if let Some(line) = buffer.line(line_idx) {
-                    let line_len = line.trim_end_matches('\n').chars().count();
+                if let Some(line) = buffer.line_text(line_idx) {
+                    let line_len = line.chars().count();
                     let delete_len = replacement_len.min(line_len.saturating_sub(col.0));
                     let end_col = col + delete_len;
 
@@ -401,7 +401,7 @@ impl RepeatAction {
                 expand_tab,
             } => {
                 let line_idx = buffer.cursor().line();
-                let line_text = buffer.line(line_idx).unwrap_or_default();
+                let line_text = buffer.line_text(line_idx).unwrap_or_default();
 
                 let mut indent: String = line_text
                     .chars()
@@ -428,7 +428,12 @@ impl RepeatAction {
                         .cursor_mut()
                         .set_position(line_idx, GraphemeCol(indent.chars().count()));
                 } else {
-                    let (insert_pos, text) = if line_text.ends_with('\n') {
+                    // `line_text` strips terminators by design — use the raw
+                    // vs content length asymmetry to detect one. Mirrors
+                    // `insert_line_below` after the line_text migration.
+                    let has_terminator =
+                        buffer.line_raw_len(line_idx) > buffer.line_content_len(line_idx);
+                    let (insert_pos, text) = if has_terminator {
                         ((line_idx + 1, CharCol::ZERO), format!("{}\n", indent))
                     } else {
                         let line_len = line_text.chars().count();
@@ -443,8 +448,8 @@ impl RepeatAction {
                 if inserted_text.is_empty() {
                     // Match insert-mode exit cleanup for `o/O<Esc>` on whitespace-only lines.
                     let current_line = buffer.cursor().line();
-                    if let Some(line) = buffer.line(current_line) {
-                        let line_wo_nl = line.trim_end_matches('\n');
+                    if let Some(line) = buffer.line_text(current_line) {
+                        let line_wo_nl = line;
                         if !line_wo_nl.is_empty() && line_wo_nl.chars().all(|c| c.is_whitespace()) {
                             let whitespace_len = line_wo_nl.chars().count();
                             buffer.delete_range(
@@ -510,8 +515,8 @@ impl RepeatAction {
                     if line_idx >= buffer.line_count() {
                         break;
                     }
-                    if let Some(line_text) = buffer.line(line_idx) {
-                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                    if let Some(line_text) = buffer.line_text(line_idx) {
+                        let line_len = line_text.chars().count();
                         if start_col < line_len {
                             let end_col = (start_col + *width).min_usize(line_len);
                             buffer.delete_range(line_idx, start_col, line_idx, end_col);
@@ -520,8 +525,8 @@ impl RepeatAction {
                 }
 
                 let line_len = buffer
-                    .line(start_line)
-                    .map(|l| l.trim_end_matches('\n').chars().count())
+                    .line_text(start_line)
+                    .map(|l| l.chars().count())
                     .unwrap_or(0);
                 let clamped_col = if line_len > 0 {
                     start_col.min_usize(line_len - 1)
@@ -544,8 +549,8 @@ impl RepeatAction {
                     if line_idx >= buffer.line_count() {
                         break;
                     }
-                    if let Some(line_text) = buffer.line(line_idx) {
-                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                    if let Some(line_text) = buffer.line_text(line_idx) {
+                        let line_len = line_text.chars().count();
                         if start_col < line_len {
                             let end_col = (start_col + *width).min_usize(line_len);
                             buffer.delete_range(line_idx, start_col, line_idx, end_col);
@@ -561,8 +566,8 @@ impl RepeatAction {
                         if line_idx >= initial_line_count {
                             break;
                         }
-                        if let Some(line_text) = buffer.line(line_idx) {
-                            let line_len = line_text.trim_end_matches('\n').chars().count();
+                        if let Some(line_text) = buffer.line_text(line_idx) {
+                            let line_len = line_text.chars().count();
                             let insert_col = start_col.min_usize(line_len);
                             buffer.insert_text_at(line_idx, insert_col, inserted_text);
                         }
@@ -582,8 +587,8 @@ impl RepeatAction {
                     buffer.set_cursor_char_col(final_line, final_col);
                 } else {
                     let line_len = buffer
-                        .line(start_line)
-                        .map(|l| l.trim_end_matches('\n').chars().count())
+                        .line_text(start_line)
+                        .map(|l| l.chars().count())
                         .unwrap_or(0);
                     let clamped_col = if line_len > 0 {
                         start_col.min_usize(line_len - 1)
@@ -671,8 +676,8 @@ impl RepeatAction {
                     }
                     InsertEntryMode::FirstNonBlank => {
                         let line_idx = buffer.cursor().line();
-                        if let Some(line) = buffer.line(line_idx) {
-                            let content = line.trim_end_matches('\n');
+                        if let Some(line) = buffer.line_text(line_idx) {
+                            let content = line;
                             let col = content
                                 .chars()
                                 .position(|c| !c.is_whitespace())
@@ -682,8 +687,8 @@ impl RepeatAction {
                     }
                     InsertEntryMode::EndOfLine => {
                         let line_idx = buffer.cursor().line();
-                        if let Some(line) = buffer.line(line_idx) {
-                            let line_len = line.trim_end_matches('\n').chars().count();
+                        if let Some(line) = buffer.line_text(line_idx) {
+                            let line_len = line.chars().count();
                             buffer.cursor_mut().set_col(GraphemeCol(line_len));
                         }
                     }

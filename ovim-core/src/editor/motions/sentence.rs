@@ -24,9 +24,9 @@ impl Motions {
         let total_lines = buffer.line_count();
 
         // Convert grapheme col to char col for char-based iteration
-        let char_col = if let Some(line) = buffer.line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            crate::unicode::grapheme_to_char_col(line_text, grapheme_col).0
+        let char_col = if let Some(line) = buffer.line_text(line_idx) {
+            let line_text = line;
+            crate::unicode::grapheme_to_char_col(&line_text, grapheme_col).0
         } else {
             0
         };
@@ -37,7 +37,7 @@ impl Motions {
 
         // Look for sentence-ending punctuation (.!?) followed by space/newline
         while current_line < total_lines {
-            if let Some(line) = buffer.line(current_line) {
+            if let Some(line) = buffer.line_text(current_line) {
                 let chars: Vec<char> = line.chars().collect();
 
                 while current_col < chars.len() {
@@ -59,7 +59,7 @@ impl Motions {
                                         .cursor_mut()
                                         .set_position(current_line + 1, GraphemeCol::ZERO);
                                 } else {
-                                    let line_str: String = line.trim_end_matches('\n').to_string();
+                                    let line_str: String = line.to_string();
                                     let end_grapheme = crate::unicode::char_to_grapheme_col(
                                         &line_str,
                                         crate::unicode::CharCol(
@@ -69,7 +69,7 @@ impl Motions {
                                     buffer.cursor_mut().set_position(current_line, end_grapheme);
                                 }
                             } else {
-                                let line_str: String = line.trim_end_matches('\n').to_string();
+                                let line_str: String = line.to_string();
                                 let grapheme = crate::unicode::char_to_grapheme_col(
                                     &line_str,
                                     crate::unicode::CharCol(current_col),
@@ -107,9 +107,9 @@ impl Motions {
         let grapheme_col = cursor.col();
 
         // Convert grapheme to char col for char-based iteration
-        let mut col = if let Some(line) = buffer.line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            crate::unicode::grapheme_to_char_col(line_text, grapheme_col).0
+        let mut col = if let Some(line) = buffer.line_text(line_idx) {
+            let line_text = line;
+            crate::unicode::grapheme_to_char_col(&line_text, grapheme_col).0
         } else {
             0
         };
@@ -123,9 +123,9 @@ impl Motions {
             col -= 1;
         } else if line_idx > 0 {
             line_idx -= 1;
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 col = line
-                    .trim_end_matches('\n')
+                    
                     .chars()
                     .count()
                     .saturating_sub(1);
@@ -134,7 +134,7 @@ impl Motions {
 
         // Look for sentence-ending punctuation (.!?) followed by space/newline
         loop {
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 let chars: Vec<char> = line.chars().collect();
 
                 if chars.is_empty() {
@@ -144,9 +144,9 @@ impl Motions {
                         return;
                     }
                     line_idx -= 1;
-                    if let Some(prev_line) = buffer.line(line_idx) {
+                    if let Some(prev_line) = buffer.line_text(line_idx) {
                         col = prev_line
-                            .trim_end_matches('\n')
+                            
                             .chars()
                             .count()
                             .saturating_sub(1);
@@ -174,7 +174,7 @@ impl Motions {
                                 .set_position(line_idx + 1, GraphemeCol::ZERO);
                         } else {
                             let clamped = col.min(chars.len().saturating_sub(1));
-                            let line_str: String = line.trim_end_matches('\n').to_string();
+                            let line_str: String = line.to_string();
                             buffer.cursor_mut().set_position(
                                 line_idx,
                                 crate::unicode::char_to_grapheme_col(
@@ -195,9 +195,9 @@ impl Motions {
             }
 
             line_idx -= 1;
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 col = line
-                    .trim_end_matches('\n')
+                    
                     .chars()
                     .count()
                     .saturating_sub(1);

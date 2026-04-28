@@ -99,6 +99,15 @@ impl Editor {
             (cursor_line, trigger_col, cursor_line, cursor_col, text)
         };
 
+        // Normalize CR variants in the LSP-supplied insertion text so the
+        // rope stays LF-only and the cursor-positioning logic below (which
+        // splits on `\n`) sees the canonical form (OV-00251).
+        let text_to_insert = if text_to_insert.contains('\r') {
+            crate::buffer::normalize_for_buffer(&text_to_insert).into_owned()
+        } else {
+            text_to_insert
+        };
+
         // Collect additional text edits (e.g., auto-imports) before mutating
         let additional_edits: Vec<lsp_types::TextEdit> =
             item.additional_text_edits.clone().unwrap_or_default();
@@ -170,7 +179,8 @@ impl Editor {
                         buf.delete_range(*sl, *sc, *el, *ec);
                     }
                     if !new_text.is_empty() {
-                        buf.insert_text_at(*sl, *sc, new_text);
+                        let normalized = crate::buffer::normalize_for_buffer(new_text);
+                        buf.insert_text_at(*sl, *sc, normalized.as_ref());
                     }
                 }
             });

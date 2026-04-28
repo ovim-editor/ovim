@@ -10,8 +10,8 @@ impl Motions {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
 
-        if let Some(line) = buffer.line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
+        if let Some(line) = buffer.line_text(line_idx) {
+            let line_text = line;
 
             // Find first non-whitespace character (char index → grapheme)
             let char_col = line_text
@@ -19,7 +19,7 @@ impl Motions {
                 .position(|c| !c.is_whitespace())
                 .unwrap_or(0);
             let grapheme_col =
-                crate::unicode::char_to_grapheme_col(line_text, crate::unicode::CharCol(char_col));
+                crate::unicode::char_to_grapheme_col(&line_text, crate::unicode::CharCol(char_col));
 
             buffer.cursor_mut().set_col(grapheme_col);
         }
@@ -59,8 +59,8 @@ impl Motions {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
 
-        if let Some(line) = buffer.line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
+        if let Some(line) = buffer.line_text(line_idx) {
+            let line_text = line;
 
             // Find last non-whitespace character (char index → grapheme)
             let mut last_char_col = 0;
@@ -70,7 +70,7 @@ impl Motions {
                 }
             }
             let grapheme_col = crate::unicode::char_to_grapheme_col(
-                line_text,
+                &line_text,
                 crate::unicode::CharCol(last_char_col),
             );
 

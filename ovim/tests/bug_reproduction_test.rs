@@ -235,15 +235,15 @@ fn test_o_esc_leaves_empty_line() {
     test.assert_mode(Mode::Insert);
 
     // Line 1 should now have the auto-indent "    \n"
-    // assert_eq!(test.line(1), Some("    \n".to_string())); // Before Esc
+    // assert_eq!(test.line_text(1), Some("    \n".to_string())); // Before Esc
 
     test.keys("<Esc>");
     test.assert_mode(Mode::Normal);
 
     // Vim behavior: After Esc without typing, line should be just "\n"
     assert_eq!(
-        test.line(1),
-        Some("\n".to_string()),
+        test.line_text(1),
+        Some("".to_string()),
         "After o<Esc> without typing, line should be empty (no indent)"
     );
 }
@@ -257,9 +257,9 @@ fn test_o_esc_removes_whitespace_only_line() {
     test.keys("<Esc>"); // Exit without typing
 
     // Correct behavior: line should be empty (no auto-indent whitespace)
-    let line1 = test.line(1).unwrap_or_default();
+    let line1 = test.line_text(1).unwrap_or_default();
     assert_eq!(
-        line1, "\n",
+        line1, "",
         "o<Esc> should leave empty line, not indented. Line 1 = {:?}",
         line1
     );
@@ -270,12 +270,12 @@ fn test_i_esc_should_not_alter_whitespace() {
     // `i<Esc>` should NOT change anything about the current line
     let mut test = EditorTest::new("  some text  \nother");
 
-    let original_line = test.line(0).unwrap();
+    let original_line = test.line_text(0).unwrap();
 
     test.keys("i"); // Enter insert mode
     test.keys("<Esc>"); // Exit immediately
 
-    let after_line = test.line(0).unwrap();
+    let after_line = test.line_text(0).unwrap();
 
     assert_eq!(
         original_line, after_line,
@@ -293,7 +293,7 @@ fn test_o_with_typing_keeps_content() {
     test.keys("<Esc>");
 
     // The line should have indent + "hello"
-    let line1 = test.line(1).unwrap();
+    let line1 = test.line_text(1).unwrap();
     assert!(
         line1.contains("hello"),
         "o with typing should keep the typed content. Line 1 = {:?}",
@@ -312,8 +312,8 @@ fn test_O_esc_leaves_empty_line() {
 
     // Line 1 should be empty after Esc without typing
     assert_eq!(
-        test.line(1),
-        Some("\n".to_string()),
+        test.line_text(1),
+        Some("".to_string()),
         "After O<Esc> without typing, line should be empty"
     );
 }
@@ -328,7 +328,7 @@ fn test_cc_esc_behavior() {
     test.keys("<Esc>"); // Exit without typing
 
     // Document current behavior
-    let line0 = test.line(0).unwrap();
+    let line0 = test.line_text(0).unwrap();
     eprintln!("After cc<Esc>, line 0 = {:?}", line0);
     // Note: Vim's cc keeps indent and Esc keeps it - this is intentional
     // cc is different from o in that the line existed before
@@ -395,17 +395,17 @@ fn test_o_esc_undo_on_indented_line() {
 
     // After o<Esc>, we should have 3 lines (original 2 + 1 new empty line)
     eprintln!("After o<Esc>:");
-    eprintln!("  Line 0: {:?}", test.line(0));
-    eprintln!("  Line 1: {:?}", test.line(1));
-    eprintln!("  Line 2: {:?}", test.line(2));
+    eprintln!("  Line 0: {:?}", test.line_text(0));
+    eprintln!("  Line 1: {:?}", test.line_text(1));
+    eprintln!("  Line 2: {:?}", test.line_text(2));
     eprintln!("  Buffer: {:?}", test.buffer_content());
 
     test.keys("u"); // Undo
 
     // After undo, should be back to original 2 lines
     eprintln!("After undo:");
-    eprintln!("  Line 0: {:?}", test.line(0));
-    eprintln!("  Line 1: {:?}", test.line(1));
+    eprintln!("  Line 0: {:?}", test.line_text(0));
+    eprintln!("  Line 1: {:?}", test.line_text(1));
     eprintln!("  Buffer: {:?}", test.buffer_content());
 
     // The bug: undo deletes too much - should only remove the new line

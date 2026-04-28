@@ -29,6 +29,7 @@ These docs (00-phase0 through 08) are kept for historical reference. They descri
 | [14](./14-text-object-resolution.md) | Unify `TextObjectType` resolution | `d6a114a` |
 | [15](./15-change-enum-simplification.md) | Simplify the `Change` enum (all steps) | `23e6eeb` / `30142fb` / `cc813ea` / `beb850d` / `1e5f9b2` / `cb85572` / `31996ca` / `a005cf7` / step-4.3 |
 | [16](./16-event-loop-grouping.md) | Event loop phase grouping | `443ffb4` |
+| [18](./18-line-text-accessor.md) | Unified `Buffer::line_text` accessor | 2026-04-28 |
 
 These docs are kept with `(DONE)` banners so the "what was deleted and why"
 trail stays discoverable. They should not drive new work.
@@ -41,10 +42,17 @@ trail stays discoverable. They should not drive new work.
 
 ### Recommended order
 
-With roadmap 15 closed out (step 4.3 landed), **17** is the only
-remaining active item. It's also the only one with user-facing impact —
-prioritize it if you're expanding companion server support
-(e.g., Tailwind CSS + TypeScript).
+**17** is the only remaining active item. It has user-facing impact —
+prioritize it if you're expanding companion server support (Tailwind CSS
++ TypeScript).
+
+Roadmap **18** (unified `Buffer::line_text` accessor) shipped 2026-04-28
+including the cosmetic sweep. 186 dead `trim_end_matches('\n')` calls
+were removed; the 10 that remain are all genuinely live (raw `Rope::line()`
+results in renderer / motion / event_loop, AI extraction, `&mut String`
+patterns) and pinned by a regression guard in
+`buffer::line_ending::tests::trim_end_matches_n_count_is_bounded`. The
+line-ending bug class is structurally closed.
 
 ## What was retired
 

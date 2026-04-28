@@ -12,8 +12,8 @@ impl Motions {
         let target_line = (viewport_start + offset).min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
-        if let Some(line) = buffer.line(target_line) {
-            let line_text = line.trim_end_matches('\n');
+        if let Some(line) = buffer.line_text(target_line) {
+            let line_text = line;
             let first_non_blank = line_text
                 .chars()
                 .position(|c| !c.is_whitespace())
@@ -37,8 +37,8 @@ impl Motions {
             (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
-        if let Some(line) = buffer.line(target_line) {
-            let line_text = line.trim_end_matches('\n');
+        if let Some(line) = buffer.line_text(target_line) {
+            let line_text = line;
             let first_non_blank = line_text
                 .chars()
                 .position(|c| !c.is_whitespace())
@@ -65,8 +65,8 @@ impl Motions {
             .min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
-        if let Some(line) = buffer.line(target_line) {
-            let line_text = line.trim_end_matches('\n');
+        if let Some(line) = buffer.line_text(target_line) {
+            let line_text = line;
             let first_non_blank = line_text
                 .chars()
                 .position(|c| !c.is_whitespace())
@@ -133,8 +133,8 @@ impl Motions {
         buffer.cursor_mut().set_position(new_cursor_line, col);
 
         // Adjust column to be within line bounds
-        if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = grapheme_count(line.trim_end_matches('\n'));
+        if let Some(line) = buffer.line_text(new_cursor_line) {
+            let line_len = grapheme_count(&line);
             if line_len > 0 {
                 let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
@@ -165,8 +165,8 @@ impl Motions {
         buffer.cursor_mut().set_position(new_cursor_line, col);
 
         // Adjust column to be within line bounds
-        if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = grapheme_count(line.trim_end_matches('\n'));
+        if let Some(line) = buffer.line_text(new_cursor_line) {
+            let line_len = grapheme_count(&line);
             if line_len > 0 {
                 let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
@@ -199,8 +199,8 @@ impl Motions {
         buffer.cursor_mut().set_position(new_cursor_line, col);
 
         // Adjust column to be within line bounds
-        if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = grapheme_count(line.trim_end_matches('\n'));
+        if let Some(line) = buffer.line_text(new_cursor_line) {
+            let line_len = grapheme_count(&line);
             if line_len > 0 {
                 let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);
@@ -232,8 +232,8 @@ impl Motions {
         buffer.cursor_mut().set_position(new_cursor_line, col);
 
         // Adjust column to be within line bounds
-        if let Some(line) = buffer.line(new_cursor_line) {
-            let line_len = grapheme_count(line.trim_end_matches('\n'));
+        if let Some(line) = buffer.line_text(new_cursor_line) {
+            let line_len = grapheme_count(&line);
             if line_len > 0 {
                 let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
                 buffer.cursor_mut().set_col(clamped_col);

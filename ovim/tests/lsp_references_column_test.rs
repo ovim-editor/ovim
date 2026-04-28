@@ -34,7 +34,7 @@ async fn test_utf16_to_col_returns_zero_for_nonexistent_line() {
     // We can't directly test utf16_to_col since it's private to Editor,
     // but we can test the underlying behavior of Buffer::line()
     assert!(
-        buffer.line(10).is_none(),
+        buffer.line_text(10).is_none(),
         "Line 10 should not exist in a 2-line buffer"
     );
 
@@ -63,10 +63,10 @@ async fn test_column_preserved_when_jumping_to_longer_file() {
     let buffer = Buffer::load_file_async(&file_path).await.unwrap();
 
     // Verify the file has line 3
-    assert!(buffer.line(3).is_some());
+    assert!(buffer.line_text(3).is_some());
 
     // Verify line 3 has enough characters for column 20
-    let line3 = buffer.line(3).unwrap();
+    let line3 = buffer.line_text(3).unwrap();
     let line3_str: String = line3.chars().collect();
     assert!(
         line3_str.chars().count() > 20,
@@ -90,7 +90,7 @@ async fn test_utf16_offset_conversion_with_ascii() {
     fs::write(&file_path, "fn main() { let x = 42; }\n").unwrap();
 
     let buffer = Buffer::load_file_async(&file_path).await.unwrap();
-    let line = buffer.line(0).unwrap();
+    let line = buffer.line_text(0).unwrap();
 
     // Count characters to verify 'let' is at position 12
     let line_str: String = line.chars().collect();
@@ -110,7 +110,7 @@ async fn test_utf16_offset_conversion_with_multibyte() {
     fs::write(&file_path, "fn test() { 🦀 let x = 42; }\n").unwrap();
 
     let buffer = Buffer::load_file_async(&file_path).await.unwrap();
-    let line = buffer.line(0).unwrap();
+    let line = buffer.line_text(0).unwrap();
     let line_str: String = line.chars().collect();
 
     // Find where 'let' is (character position)

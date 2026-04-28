@@ -90,7 +90,7 @@ fn clamp_cursor(buffer: &mut Buffer) {
         buffer.cursor_mut().set_line(safe_line);
     }
     let line = buffer.cursor().line();
-    let line_text = buffer.line(line).unwrap_or_default();
+    let line_text = buffer.line_text(line).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
     let cur_col = buffer.cursor().col().0;
     if line_len == 0 {
@@ -117,7 +117,7 @@ fn assert_cursor_in_bounds(buffer: &Buffer, context: &str) -> Result<(), TestCas
         cursor.line(),
         line_count
     );
-    let line_text = buffer.line(cursor.line()).unwrap_or_default();
+    let line_text = buffer.line_text(cursor.line()).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
     prop_assert!(
         cursor.col().0 <= line_len,
@@ -677,7 +677,7 @@ proptest! {
         clamp_cursor(&mut buffer);
 
         // Check if cursor is directly on a bracket character
-        let line_text = buffer.line(buffer.cursor().line()).unwrap_or_default();
+        let line_text = buffer.line_text(buffer.cursor().line()).unwrap_or_default();
         let chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
         let col = buffer.cursor().col().0;
         let on_bracket = col < chars.len()
@@ -853,7 +853,7 @@ proptest! {
 
         let col = buffer.cursor().col().0;
         let line_text = buffer
-            .line(safe_line)
+            .line_text(safe_line)
             .unwrap_or_default();
         let trimmed = line_text.trim_end_matches('\n');
 
@@ -890,7 +890,7 @@ proptest! {
 
         let col = buffer.cursor().col().0;
         let line_text = buffer
-            .line(safe_line)
+            .line_text(safe_line)
             .unwrap_or_default();
         let trimmed = line_text.trim_end_matches('\n');
         let chars: Vec<char> = trimmed.chars().collect();

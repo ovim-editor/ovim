@@ -821,7 +821,7 @@ fn test_ov00190_backtick_local_mark_clamps_to_eof_after_delete() {
         "local mark jump must clamp to a valid line (max {max_valid_line}), got {cursor_line}"
     );
     assert!(
-        test.editor.buffer().line(cursor_line).is_some(),
+        test.editor.buffer().line_text(cursor_line).is_some(),
         "cursor must land on a line that actually exists"
     );
 }

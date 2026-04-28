@@ -98,8 +98,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_mode(Mode::Insert);
             // Move to end of line
             let line_idx = editor.buffer().cursor().line();
-            if let Some(line) = editor.buffer().line(line_idx) {
-                let line_len = line.trim_end_matches('\n').chars().count();
+            if let Some(line) = editor.buffer().line_text(line_idx) {
+                let line_len = line.chars().count();
                 editor
                     .buffer_mut()
                     .cursor_mut()

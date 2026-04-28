@@ -260,12 +260,12 @@ fn macro_dd_with_hints_causing_wrap() {
     // Record: qa dd q  (delete current line)
     test.keys("qaddq");
     test.assert_cursor(0, 0);
-    assert_eq!(test.line(0).unwrap().trim_end(), "let y = 10;");
+    assert_eq!(test.line_text(0).unwrap().trim_end(), "let y = 10;");
 
     // Replay
     test.keys("@a");
     test.assert_cursor(0, 0);
-    assert_eq!(test.line(0).unwrap().trim_end(), "let z = 15;");
+    assert_eq!(test.line_text(0).unwrap().trim_end(), "let z = 15;");
 }
 
 // ============================================================================
@@ -374,7 +374,7 @@ fn x_delete_char_with_hints() {
 
     test.set_cursor(0, 4); // on 'x'
     test.keys("x");
-    assert_eq!(test.line(0).unwrap().trim_end(), "let  = 5;");
+    assert_eq!(test.line_text(0).unwrap().trim_end(), "let  = 5;");
     test.assert_cursor(0, 4);
 }
 
@@ -385,7 +385,7 @@ fn ciw_with_hints() {
 
     test.set_cursor(0, 4); // on 'x'
     test.keys("ciwy<Esc>");
-    assert_eq!(test.line(0).unwrap().trim_end(), "let y = 5;");
+    assert_eq!(test.line_text(0).unwrap().trim_end(), "let y = 5;");
     test.assert_cursor(0, 4);
 }
 
@@ -396,8 +396,8 @@ fn yy_p_with_hints_causing_wrap() {
     add_hints(&mut test, vec![hint_at(5, ": i32")], 12);
 
     test.keys("yyp");
-    assert_eq!(test.line(0).unwrap().trim_end(), "let x = 5;");
-    assert_eq!(test.line(1).unwrap().trim_end(), "let x = 5;");
-    assert_eq!(test.line(2).unwrap().trim_end(), "let y = 10;");
+    assert_eq!(test.line_text(0).unwrap().trim_end(), "let x = 5;");
+    assert_eq!(test.line_text(1).unwrap().trim_end(), "let x = 5;");
+    assert_eq!(test.line_text(2).unwrap().trim_end(), "let y = 10;");
     test.assert_cursor(1, 0);
 }

@@ -356,9 +356,11 @@ impl Editor {
                         buf.delete_range(start_line, start_col, end_line, end_col);
                     }
 
-                    // Insert new text
+                    // Insert new text. Normalize CR variants so LSP-supplied
+                    // CRLF/CR doesn't survive in the rope (OV-00251).
                     if !edit.new_text.is_empty() {
-                        buf.insert_text_at(start_line, start_col, &edit.new_text);
+                        let new_text = crate::buffer::normalize_for_buffer(&edit.new_text);
+                        buf.insert_text_at(start_line, start_col, new_text.as_ref());
                     }
                 }
             });
@@ -409,7 +411,7 @@ impl Editor {
         line: usize,
         utf16_offset: u32,
     ) -> crate::unicode::CharCol {
-        if let Some(line_text) = buffer.line(line) {
+        if let Some(line_text) = buffer.line_text(line) {
             let line_str = line_text.to_string();
             let mut col = 0;
             let mut utf16_pos = 0u32;

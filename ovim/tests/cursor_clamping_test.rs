@@ -67,7 +67,7 @@ fn test_x_at_end_of_line() {
     press(&mut editor, KeyCode::Char('x'));
 
     // Buffer should be "hell\n" (with trailing newline from normalization)
-    assert_eq!(editor.buffer().line(0).unwrap(), "hell\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "hell");
 
     // Cursor should be at col 3 (last char)
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(3));
@@ -84,7 +84,7 @@ fn test_x_delete_all_chars_on_line() {
     press(&mut editor, KeyCode::Char('x'));
 
     // Buffer should just have newline (from normalization)
-    assert_eq!(editor.buffer().line(0).unwrap(), "\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "");
 
     // Cursor should be at col 0
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
@@ -105,7 +105,7 @@ fn test_dw_at_end_of_line() {
     press(&mut editor, KeyCode::Char('w'));
 
     // Should have deleted "world" but not crossed newline
-    let line = editor.buffer().line(0).unwrap();
+    let line = editor.buffer().line_text(0).unwrap();
     assert!(line.starts_with("hello "));
     assert!(!line.contains("world"));
 
@@ -129,7 +129,7 @@ fn test_empty_file() {
 
     // Should still have empty buffer
     assert_eq!(editor.buffer().line_count(), 1);
-    assert_eq!(editor.buffer().line(0).unwrap(), "");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "");
 
     // Cursor should be at 0,0
     assert_eq!(editor.buffer().cursor().line(), 0);
@@ -147,7 +147,7 @@ fn test_single_line_delete() {
 
     // Should have empty buffer
     assert_eq!(editor.buffer().line_count(), 1);
-    assert_eq!(editor.buffer().line(0).unwrap(), "");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "");
 
     // Cursor should be at 0,0
     assert_eq!(editor.buffer().cursor().line(), 0);
@@ -166,7 +166,7 @@ fn test_d_at_end_of_line() {
     press(&mut editor, KeyCode::Char('D'));
 
     // Buffer should have "hello worl\n" (last char deleted, with trailing newline from normalization)
-    assert_eq!(editor.buffer().line(0).unwrap(), "hello worl\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "hello worl");
 
     // Cursor should be clamped to the new last character
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(9));
@@ -183,7 +183,7 @@ fn test_diw_deletes_word() {
     press(&mut editor, KeyCode::Char('w'));
 
     // "hello" should be deleted, leaving " world" or something similar
-    let line = editor.buffer().line(0).unwrap();
+    let line = editor.buffer().line_text(0).unwrap();
     assert!(
         !line.contains("hello"),
         "Expected 'hello' to be deleted, got: {}",
@@ -212,7 +212,7 @@ fn test_cw_at_end_of_line() {
     assert_eq!(editor.mode(), ovim::mode::Mode::Insert);
 
     // Buffer should have "hello " (word deleted)
-    let line = editor.buffer().line(0).unwrap();
+    let line = editor.buffer().line_text(0).unwrap();
     assert!(line.starts_with("hello "));
     assert!(!line.contains("world"));
 }
@@ -308,7 +308,7 @@ fn test_dedent_clamps_cursor_with_emoji() {
     press(&mut editor, KeyCode::Char('<'));
 
     // Line should now be "a👨‍👩‍👧‍👦b\n"
-    let line = editor.buffer().line(0).unwrap();
+    let line = editor.buffer().line_text(0).unwrap();
     assert_eq!(
         line.trim_end_matches('\n'),
         "a👨\u{200d}👩\u{200d}👧\u{200d}👦b"

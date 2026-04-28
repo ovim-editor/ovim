@@ -1559,28 +1559,28 @@ pub fn render_buffer(
             // Optional markdown conceal (skip on cursor line so editing isn't blind)
             let (exp, concealed_links) =
                 if is_md_file && editor.options.markdown_conceal && !is_cursor_line_for_conceal {
-                    let spans = scan_markdown_conceal(line_text_original);
+                    let spans = scan_markdown_conceal(&line_text_original);
                     if spans.is_empty() {
                         (
-                            expand_tabs_with_mapping(line_text_original, tab_width),
+                            expand_tabs_with_mapping(&line_text_original, tab_width),
                             Vec::new(),
                         )
                     } else {
                         let transform = crate::ui::renderer::markdown_conceal::apply_conceal(
-                            line_text_original,
+                            &line_text_original,
                             &spans,
                         );
                         let links = crate::ui::renderer::markdown_conceal::extract_concealed_links(
                             &spans, &transform,
                         );
                         (
-                            compose_conceal_and_tabs(line_text_original, &transform, tab_width),
+                            compose_conceal_and_tabs(&line_text_original, &transform, tab_width),
                             links,
                         )
                     }
                 } else {
                     (
-                        expand_tabs_with_mapping(line_text_original, tab_width),
+                        expand_tabs_with_mapping(&line_text_original, tab_width),
                         Vec::new(),
                     )
                 };
@@ -1714,14 +1714,14 @@ pub fn render_buffer(
 
                     // Convert UTF-16 offsets to char indices, then remap through expansion
                     let start_char = utf16_offset_to_char_idx(
-                        line_text_original,
+                        &line_text_original,
                         d.range.start.character as usize,
                     );
                     let line_char_count_for_diag = line_text_original.chars().count();
                     let end_char = if d.range.end.line as usize > line_idx {
                         line_char_count_for_diag
                     } else {
-                        utf16_offset_to_char_idx(line_text_original, d.range.end.character as usize)
+                        utf16_offset_to_char_idx(&line_text_original, d.range.end.character as usize)
                             .min(line_char_count_for_diag)
                     };
                     let color = match d.severity {

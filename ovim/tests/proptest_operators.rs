@@ -150,7 +150,7 @@ fn assert_editor_cursor_in_bounds(t: &EditorTest, context: &str) -> Result<(), T
 fn setup_cursor(t: &mut EditorTest, line: usize, col: usize) {
     let lc = t.editor.buffer().line_count();
     let safe_line = if lc > 0 { line % lc } else { 0 };
-    let line_text = t.editor.buffer().line(safe_line).unwrap_or_default();
+    let line_text = t.editor.buffer().line_text(safe_line).unwrap_or_default();
     let line_len = line_text.trim_end_matches('\n').chars().count();
     let safe_col = if line_len > 0 { col % line_len } else { 0 };
     t.set_cursor(safe_line, safe_col);

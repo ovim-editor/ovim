@@ -878,7 +878,7 @@ impl Editor {
             if line_idx < rope_for_text.len_lines() {
                 let line = rope_for_text.line(line_idx);
                 let text = line.to_string();
-                let trimmed = text.trim_end_matches('\n');
+                let trimmed = text;
                 trimmed.to_string()
             } else {
                 String::new()
@@ -921,16 +921,16 @@ impl Editor {
     }
 
     fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: GraphemeCol) -> usize {
-        let line = self.buffer().line(line_idx).unwrap_or_default();
-        let line_text = line.trim_end_matches('\n');
-        grapheme_to_char_col(line_text, grapheme_col).0
+        let line = self.buffer().line_text(line_idx).unwrap_or_default();
+        let line_text = line;
+        grapheme_to_char_col(&line_text, grapheme_col).0
     }
 
     fn cursor_line_text(&self, line_idx: usize) -> String {
         self.buffer()
-            .line(line_idx)
+            .line_text(line_idx)
             .unwrap_or_default()
-            .trim_end_matches('\n')
+            
             .to_string()
     }
 
@@ -1098,7 +1098,7 @@ impl Editor {
         let cursor_char_col =
             self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
         let cursor_display_col = {
-            let line_text = self.buffer().line(cursor_line).unwrap_or_default();
+            let line_text = self.buffer().line_text(cursor_line).unwrap_or_default();
             let raw_col =
                 crate::display::char_col_to_display_col(&line_text, cursor_char_col, tab_width);
             // Include inline decoration widths (inlay hints) so horizontal
@@ -1215,9 +1215,9 @@ impl Editor {
         // Compute cursor sub-line within its logical line.
         let line_text = self
             .buffer()
-            .line(cursor_line)
+            .line_text(cursor_line)
             .unwrap_or_default()
-            .trim_end_matches('\n')
+            
             .to_string();
         let cursor_char_col = grapheme_to_char_col(&line_text, self.buffer().cursor().col());
         let cursor_display_col =
@@ -1263,9 +1263,9 @@ impl Editor {
         for line in current_offset..cursor_line {
             let text = self
                 .buffer()
-                .line(line)
+                .line_text(line)
                 .unwrap_or_default()
-                .trim_end_matches('\n')
+                
                 .to_string();
             rows_from_top += crate::wrap::visual_line_count(&text, wrap_width, tab_width);
             if rows_from_top > visible_rows + scrolloff + 5 {
@@ -1374,9 +1374,9 @@ impl Editor {
             line -= 1;
             let text = self
                 .buffer()
-                .line(line)
+                .line_text(line)
                 .unwrap_or_default()
-                .trim_end_matches('\n')
+                
                 .to_string();
             let count = crate::wrap::visual_line_count(&text, wrap_width, tab_width);
 
@@ -1823,6 +1823,11 @@ impl Editor {
         if text.is_empty() {
             return Ok(());
         }
+
+        // Strip CR variants so pasted CRLF/CR content doesn't leave `^M`
+        // artifacts in the rope (OV-00250). Cheap when there are no CRs.
+        let normalized = crate::buffer::normalize_for_buffer(text);
+        let text = normalized.as_ref();
 
         match self.mode() {
             Mode::Insert => {

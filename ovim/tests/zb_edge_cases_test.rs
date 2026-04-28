@@ -112,7 +112,7 @@ fn test_zb_then_j_at_end() {
     );
     println!(
         "Line content: {:?}",
-        test.editor.buffer().line(cursor_after_48g.line())
+        test.editor.buffer().line_text(cursor_after_48g.line())
     );
     println!("At line {}, before zb:", cursor_after_48g.line());
     println!("{}", ViewportAssertion::new(&test.editor).debug_display());
@@ -380,7 +380,7 @@ fn test_g_command_line_numbering() {
     println!("After 48G: cursor at line {} (0-indexed)", cursor.line());
     println!(
         "Buffer line content: {:?}",
-        test.editor.buffer().line(cursor.line())
+        test.editor.buffer().line_text(cursor.line())
     );
 
     // Move to last line with G
@@ -390,7 +390,7 @@ fn test_g_command_line_numbering() {
     println!("After G: cursor at line {} (0-indexed)", cursor.line());
     println!(
         "Buffer line content: {:?}",
-        test.editor.buffer().line(cursor.line())
+        test.editor.buffer().line_text(cursor.line())
     );
     println!("Expected: line 49 (0-indexed)");
 

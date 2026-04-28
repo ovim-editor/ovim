@@ -63,7 +63,7 @@ fn handle_visual_line_change(editor: &mut Editor) -> Result<()> {
     // `handle_cc` / `substitute_line`.
     let indent = editor
         .buffer()
-        .line(start_line)
+        .line_text(start_line)
         .map(|l| {
             l.chars()
                 .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -419,8 +419,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // is deleted/yanked to its own end, not to a fixed column.
                 editor.set_visual_block_dollar(true);
                 let line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    let line_len = line.trim_end_matches('\n').chars().count();
+                if let Some(line) = editor.buffer().line_text(line_idx) {
+                    let line_len = line.chars().count();
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
                     let cursor = editor.buffer_mut().cursor_mut();
                     cursor.set_col(GraphemeCol(col));
@@ -429,8 +429,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 // Normal visual mode: move to end of current line
                 let line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    let line_len = line.trim_end_matches('\n').chars().count();
+                if let Some(line) = editor.buffer().line_text(line_idx) {
+                    let line_len = line.chars().count();
                     let col = if line_len > 0 { line_len - 1 } else { 0 };
                     let cursor = editor.buffer_mut().cursor_mut();
                     cursor.set_col(GraphemeCol(col));
@@ -689,8 +689,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let mut cursor_col = 0;
                 for line_idx in start_line..end_line {
                     // Note: end_line not included
-                    if let Some(line) = editor.buffer().line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
+                    if let Some(line) = editor.buffer().line_text(line_idx) {
+                        let line_text = line;
                         cursor_col += line_text.chars().count();
                         if line_idx < end_line - 1 {
                             cursor_col += 1; // Space after this line
@@ -829,8 +829,8 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     // Get actual end column - clamp to line length to avoid overflow
                     let line_len = editor
                         .buffer()
-                        .line(start_line)
-                        .map(|l| l.trim_end_matches('\n').chars().count())
+                        .line_text(start_line)
+                        .map(|l| l.chars().count())
                         .unwrap_or(0);
                     let actual_end_col = end_col.min(line_len.saturating_sub(1));
                     let append_col = actual_end_col.saturating_add(1);

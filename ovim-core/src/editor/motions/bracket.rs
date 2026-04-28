@@ -25,7 +25,7 @@ impl Motions {
         let current_line_str: String = rope
             .line(line_idx)
             .to_string()
-            .trim_end_matches('\n')
+            
             .to_string();
         let char_col = crate::unicode::grapheme_to_char_col(&current_line_str, grapheme_col).0;
 
@@ -52,7 +52,7 @@ impl Motions {
         } else {
             // Search forward on current line for nearest bracket
             let line_text = rope.line(line_idx).to_string();
-            let line_chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
+            let line_chars: Vec<char> = line_text.chars().collect();
             let mut found = None;
             for (search_col, &ch) in line_chars.iter().enumerate().skip(char_col + 1) {
                 if is_bracket(ch) {
@@ -90,7 +90,7 @@ impl Motions {
             let target_line_str: String = rope
                 .line(new_line)
                 .to_string()
-                .trim_end_matches('\n')
+                
                 .to_string();
             let new_grapheme_col =
                 crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
@@ -158,7 +158,7 @@ impl Motions {
 
         let mut abs_pos = 0;
         for i in 0..line_idx {
-            if let Some(line) = buffer.line(i) {
+            if let Some(line) = buffer.line_text(i) {
                 abs_pos += line.chars().count();
             }
         }
@@ -183,7 +183,7 @@ impl Motions {
                         let target_line_str: String = rope
                             .line(new_line)
                             .to_string()
-                            .trim_end_matches('\n')
+                            
                             .to_string();
                         let new_grapheme_col =
                             crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
@@ -219,7 +219,7 @@ impl Motions {
 
         let mut abs_pos = 0;
         for i in 0..line_idx {
-            if let Some(line) = buffer.line(i) {
+            if let Some(line) = buffer.line_text(i) {
                 abs_pos += line.chars().count();
             }
         }
@@ -243,7 +243,7 @@ impl Motions {
                         let target_line_str: String = rope
                             .line(new_line)
                             .to_string()
-                            .trim_end_matches('\n')
+                            
                             .to_string();
                         let new_grapheme_col =
                             crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
@@ -319,7 +319,7 @@ impl Motions {
 
         let mut abs_pos = 0;
         for i in 0..line_idx {
-            if let Some(line) = buffer.line(i) {
+            if let Some(line) = buffer.line_text(i) {
                 abs_pos += line.chars().count();
             }
         }
@@ -345,7 +345,7 @@ impl Motions {
                             let target_line_str: String = rope
                                 .line(new_line)
                                 .to_string()
-                                .trim_end_matches('\n')
+                                
                                 .to_string();
                             let new_grapheme_col = crate::unicode::char_to_grapheme_col(
                                 &target_line_str,
@@ -380,7 +380,7 @@ impl Motions {
                             let target_line_str: String = rope
                                 .line(new_line)
                                 .to_string()
-                                .trim_end_matches('\n')
+                                
                                 .to_string();
                             let new_grapheme_col = crate::unicode::char_to_grapheme_col(
                                 &target_line_str,

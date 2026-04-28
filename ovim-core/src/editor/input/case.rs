@@ -39,9 +39,9 @@ pub fn change_case_line(editor: &mut Editor, count: usize, case_change: CaseChan
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
         for line_idx in start_line..end_line {
-            if let Some(line) = buf.line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
-                let transformed = apply_case_change(line_text, &case_change);
+            if let Some(line) = buf.line_text(line_idx) {
+                let line_text = line;
+                let transformed = apply_case_change(&line_text, &case_change);
 
                 if transformed != line_text {
                     let line_len = line_text.chars().count();
@@ -88,13 +88,13 @@ where
     // Convert grapheme cols → char cols for rope operations
     let start_char_col = editor
         .buffer()
-        .line(start_line)
-        .map(|l| grapheme_to_char_col(l.trim_end_matches('\n'), start_grapheme_col))
+        .line_text(start_line)
+        .map(|l| grapheme_to_char_col(&l, start_grapheme_col))
         .unwrap_or(CharCol(start_grapheme_col.0));
     let end_char_col = editor
         .buffer()
-        .line(end_line)
-        .map(|l| grapheme_to_char_col(l.trim_end_matches('\n'), end_grapheme_col))
+        .line_text(end_line)
+        .map(|l| grapheme_to_char_col(&l, end_grapheme_col))
         .unwrap_or(CharCol(end_grapheme_col.0));
 
     // Get the text in the range using char-based offsets
@@ -135,18 +135,18 @@ pub fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) 
     let line_idx = cursor_before.line;
     let grapheme_col = cursor_before.col; // grapheme index
 
-    let Some(line) = editor.buffer().line(line_idx) else {
+    let Some(line) = editor.buffer().line_text(line_idx) else {
         return Ok(());
     };
-    let line_text = line.trim_end_matches('\n');
-    let line_grapheme_len = grapheme_count(line_text);
+    let line_text = line;
+    let line_grapheme_len = grapheme_count(&line_text);
 
     if grapheme_col.0 >= line_grapheme_len {
         return Ok(());
     }
 
     // Convert grapheme col → char col for rope operations
-    let char_col = grapheme_to_char_col(line_text, grapheme_col);
+    let char_col = grapheme_to_char_col(&line_text, grapheme_col);
     let line_char_len = line_text.chars().count();
 
     let text_to_end: String = line_text.chars().skip(char_col.0).collect();

@@ -36,8 +36,8 @@ fn is_completion_ident_char(c: char) -> bool {
 /// Returns true if cleanup was performed (which means cursor shouldn't move left).
 fn cleanup_whitespace_only_line(editor: &mut Editor) -> bool {
     let current_line_idx = editor.buffer().cursor().line();
-    if let Some(line) = editor.buffer().line(current_line_idx) {
-        let line_without_newline = line.trim_end_matches('\n');
+    if let Some(line) = editor.buffer().line_text(current_line_idx) {
+        let line_without_newline = line;
         // Check if line is non-empty but only whitespace
         if !line_without_newline.is_empty()
             && line_without_newline.chars().all(|c| c.is_whitespace())
@@ -193,16 +193,16 @@ fn exit_insert_mode(editor: &mut Editor) {
                 for line_idx in (start_line + 1)..=end_line {
                     if is_append {
                         // Append mode: insert at end of line.
-                        if let Some(line) = buf.line(line_idx) {
-                            let line_len = line.trim_end_matches('\n').chars().count();
+                        if let Some(line) = buf.line_text(line_idx) {
+                            let line_len = line.chars().count();
                             buf.insert_text_at(line_idx, CharCol(line_len), &inserted_text);
                         }
                     } else {
                         // Insert mode: insert at the block column (`col` is
                         // grapheme-space from visual-block state — pre-existing
                         // Class-2 assumption that equals char-space for ASCII).
-                        if let Some(line) = buf.line(line_idx) {
-                            let line_text = line.trim_end_matches('\n');
+                        if let Some(line) = buf.line_text(line_idx) {
+                            let line_text = line;
                             let insert_col = col.min(line_text.chars().count());
                             buf.insert_text_at(line_idx, CharCol(insert_col), &inserted_text);
                         }
@@ -273,8 +273,8 @@ fn exit_insert_mode(editor: &mut Editor) {
 
         if is_append {
             // For append mode, position cursor on the last character of target line
-            if let Some(line) = editor.buffer().line(target_line) {
-                let line_text = line.trim_end_matches('\n');
+            if let Some(line) = editor.buffer().line_text(target_line) {
+                let line_text = line;
                 let line_len = line_text.chars().count();
                 let final_col = if line_len > 0 { line_len - 1 } else { 0 };
                 editor
@@ -422,9 +422,9 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 if cursor.col().0 >= 2 {
                     let line_text = editor
                         .buffer()
-                        .line(cursor.line())
+                        .line_text(cursor.line())
                         .unwrap_or_default()
-                        .trim_end_matches('\n')
+                        
                         .to_string();
                     if crate::unicode::grapheme_at_index(
                         &line_text,

@@ -32,7 +32,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -115,7 +115,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -201,7 +201,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -256,7 +256,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -332,7 +332,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if chars.is_empty() {
@@ -854,7 +854,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if chars.is_empty() {
@@ -905,7 +905,7 @@ impl TextObjects {
         }
 
         let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         if chars.is_empty() {
@@ -975,25 +975,25 @@ impl TextObjects {
             return None;
         }
 
-        let current_line = buffer.line(line_idx)?;
-        let current_line_trimmed = current_line.trim_end_matches('\n');
+        let current_line = buffer.line_text(line_idx)?;
+        let current_line_trimmed = current_line;
 
         // Skip blank lines for indent calculation
         if current_line_trimmed.trim().is_empty() {
             return None;
         }
 
-        let base_indent = Self::get_indent_level(current_line_trimmed, tab_width);
+        let base_indent = Self::get_indent_level(&current_line_trimmed, tab_width);
 
         // Find start of indent block (going up)
         let mut start_line = line_idx;
         while start_line > 0 {
-            let prev_line = buffer.line(start_line - 1)?;
-            let prev_trimmed = prev_line.trim_end_matches('\n');
+            let prev_line = buffer.line_text(start_line - 1)?;
+            let prev_trimmed = prev_line;
 
             // Stop at blank lines or lines with less indentation
             if prev_trimmed.trim().is_empty()
-                || Self::get_indent_level(prev_trimmed, tab_width) < base_indent
+                || Self::get_indent_level(&prev_trimmed, tab_width) < base_indent
             {
                 break;
             }
@@ -1003,12 +1003,12 @@ impl TextObjects {
         // Find end of indent block (going down)
         let mut end_line = line_idx;
         while end_line < line_count - 1 {
-            let next_line = buffer.line(end_line + 1)?;
-            let next_trimmed = next_line.trim_end_matches('\n');
+            let next_line = buffer.line_text(end_line + 1)?;
+            let next_trimmed = next_line;
 
             // Stop at blank lines or lines with less indentation
             if next_trimmed.trim().is_empty()
-                || Self::get_indent_level(next_trimmed, tab_width) < base_indent
+                || Self::get_indent_level(&next_trimmed, tab_width) < base_indent
             {
                 break;
             }
@@ -1016,8 +1016,8 @@ impl TextObjects {
         }
 
         // Get the length of the last line for end_col
-        let last_line = buffer.line(end_line)?;
-        let end_col = last_line.trim_end_matches('\n').chars().count();
+        let last_line = buffer.line_text(end_line)?;
+        let end_col = last_line.chars().count();
 
         Some(TextObjectRange {
             start_line,
@@ -1034,7 +1034,7 @@ impl TextObjects {
 
         // Extend upward to include blank lines
         while range.start_line > 0 {
-            let prev_line = buffer.line(range.start_line - 1)?;
+            let prev_line = buffer.line_text(range.start_line - 1)?;
             if prev_line.trim().is_empty() {
                 range.start_line -= 1;
             } else {
@@ -1044,12 +1044,12 @@ impl TextObjects {
 
         // Extend downward to include blank lines
         while range.end_line < line_count - 1 {
-            let next_line = buffer.line(range.end_line + 1)?;
+            let next_line = buffer.line_text(range.end_line + 1)?;
             if next_line.trim().is_empty() {
                 range.end_line += 1;
                 // Update end_col for the new last line
-                let last_line = buffer.line(range.end_line)?;
-                range.end_col = CharCol(last_line.trim_end_matches('\n').chars().count());
+                let last_line = buffer.line_text(range.end_line)?;
+                range.end_col = CharCol(last_line.chars().count());
             } else {
                 break;
             }
@@ -1074,8 +1074,8 @@ impl TextObjects {
         // If } is at start of line, end at previous line end
         let (start_line, start_col) = if open_col + 1
             < buffer
-                .line(open_line)?
-                .trim_end_matches('\n')
+                .line_text(open_line)?
+                
                 .chars()
                 .count()
         {
@@ -1087,10 +1087,10 @@ impl TextObjects {
         let (end_line, end_col) = if close_col > 0 {
             (close_line, close_col)
         } else if close_line > 0 {
-            let prev_line = buffer.line(close_line - 1)?;
+            let prev_line = buffer.line_text(close_line - 1)?;
             (
                 close_line - 1,
-                prev_line.trim_end_matches('\n').chars().count(),
+                prev_line.chars().count(),
             )
         } else {
             (close_line, close_col)
@@ -1128,8 +1128,8 @@ impl TextObjects {
         let end_col = close_col + 1;
 
         // Include trailing newline if present
-        let line = buffer.line(end_line)?;
-        let end_col = if end_col >= line.trim_end_matches('\n').chars().count() {
+        let line = buffer.line_text(end_line)?;
+        let end_col = if end_col >= line.chars().count() {
             line.chars().count()
         } else {
             end_col
@@ -1151,7 +1151,7 @@ impl TextObjects {
         let mut search_line = cursor_line;
 
         loop {
-            let line = buffer.line(search_line)?;
+            let line = buffer.line_text(search_line)?;
             let chars: Vec<char> = line.chars().collect();
 
             // Search from end of line (or cursor col if on cursor line)
@@ -1189,7 +1189,7 @@ impl TextObjects {
         // Go backward to find where the function definition starts
         // Look for common function keywords or the start of attributes/decorators
         while start > 0 {
-            let prev_line = buffer.line(start - 1)?;
+            let prev_line = buffer.line_text(start - 1)?;
             let trimmed = prev_line.trim();
 
             // Stop if we hit a blank line or a closing brace
@@ -1231,7 +1231,7 @@ impl TextObjects {
         let mut search_line = open_line;
 
         // Start searching after the opening brace
-        let first_line = buffer.line(open_line)?;
+        let first_line = buffer.line_text(open_line)?;
         let chars: Vec<char> = first_line.chars().collect();
         for (col, &ch) in chars.iter().enumerate().skip(open_col + 1) {
             if ch == '{' {
@@ -1246,7 +1246,7 @@ impl TextObjects {
 
         search_line += 1;
         while search_line < line_count {
-            let line = buffer.line(search_line)?;
+            let line = buffer.line_text(search_line)?;
             for (col, ch) in line.chars().enumerate() {
                 if ch == '{' {
                     depth += 1;

@@ -150,8 +150,8 @@ fn change_to_end_of_line(editor: &mut Editor) -> Result<()> {
 
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         let line_len = buf
-            .line(line_idx)
-            .map(|l| l.trim_end_matches('\n').chars().count())
+            .line_text(line_idx)
+            .map(|l| l.chars().count())
             .unwrap_or(0);
         if col.0 < line_len {
             // Phase-15 debt: col is grapheme-space; delete_range needs char.
@@ -226,7 +226,7 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
     let end_line = (start_line + count).min(editor.buffer().line_count());
 
     // Get indentation from the current line before deleting
-    let indent = if let Some(line) = editor.buffer().line(start_line) {
+    let indent = if let Some(line) = editor.buffer().line_text(start_line) {
         let trimmed = line.trim_start_matches([' ', '\t']);
         line[..line.len() - trimmed.len()].to_string()
     } else {
@@ -237,8 +237,8 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
     let (deleted_text, edits) = editor.buffer_mut().record(|buf| {
         if count == 1 {
             // Single line: clear content but preserve the line itself
-            let deleted = if let Some(line) = buf.line(start_line) {
-                let content_len = line.trim_end_matches('\n').chars().count();
+            let deleted = if let Some(line) = buf.line_text(start_line) {
+                let content_len = line.chars().count();
                 if content_len > 0 {
                     buf.delete_range(
                         start_line,

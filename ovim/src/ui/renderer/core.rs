@@ -585,7 +585,7 @@ fn set_cursor_position(
         } else {
             String::new()
         };
-        let line_text = line_text.trim_end_matches('\n').to_string();
+        let line_text = line_text.to_string();
 
         let tab_width = editor.options.tab_width;
 

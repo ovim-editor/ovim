@@ -12,7 +12,7 @@ fn test_lowercase_inner_word() {
     test.keys("guiw");
 
     // Should convert "HELLO" to "hello"
-    let line = test.line(0).unwrap();
+    let line = test.line_text(0).unwrap();
     println!("After guiw: '{}'", line);
     assert!(
         line.contains("hello"),
@@ -30,7 +30,7 @@ fn test_uppercase_inner_word() {
     test.keys("gUiw");
 
     // Should convert "hello" to "HELLO"
-    let line = test.line(0).unwrap();
+    let line = test.line_text(0).unwrap();
     println!("After gUiw: '{}'", line);
     assert!(
         line.contains("HELLO WORLD"),
@@ -47,7 +47,7 @@ fn test_lowercase_with_motion() {
     // Apply gu with word motion
     test.keys("guw");
 
-    let line = test.line(0).unwrap();
+    let line = test.line_text(0).unwrap();
     println!("After guw: '{}'", line);
     assert!(
         line.starts_with("hello"),
@@ -64,7 +64,7 @@ fn test_uppercase_line() {
     // Apply gU to entire line
     test.keys("gU$");
 
-    let line = test.line(0).unwrap();
+    let line = test.line_text(0).unwrap();
     println!("After gU$: '{}'", line);
     assert!(
         line.contains("HELLO WORLD"),
@@ -87,7 +87,7 @@ fn test_case_toggle() {
     let pos2 = test.cursor();
     println!("After second ~, cursor: {:?}", pos2);
 
-    let line = test.line(0).unwrap();
+    let line = test.line_text(0).unwrap();
     println!("After ~~: '{}'", line);
     // ~ toggles case and moves cursor forward
 }

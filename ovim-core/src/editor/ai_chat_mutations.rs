@@ -100,7 +100,7 @@ fn snippet_around(
         let line_content = rope.line(i);
         // Trim trailing newline from ropey line slice
         let s = line_content.to_string();
-        let s = s.trim_end_matches('\n');
+        let s = s;
         out.push_str(&format!("{:>4} | {}\n", i + 1, s));
     }
     out
@@ -364,8 +364,8 @@ impl Editor {
                 // Default to end of the end_line
                 let rope = self.buffer().rope();
                 let line_str = rope.line(end_line_0).to_string();
-                let trimmed = line_str.trim_end_matches('\n');
-                crate::unicode::grapheme_count(trimmed)
+                let trimmed = line_str;
+                crate::unicode::grapheme_count(&trimmed)
             }
         };
 

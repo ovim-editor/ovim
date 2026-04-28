@@ -487,7 +487,7 @@ impl Editor {
             for line_idx in render_start..render_end {
                 let line_content = rope.line(line_idx).to_string();
                 // Trim trailing newline from ropey line
-                let line_content = line_content.trim_end_matches('\n');
+                let line_content = line_content;
                 let formatted = format!(
                     "{:>width$} | {}\n",
                     line_idx + 1,

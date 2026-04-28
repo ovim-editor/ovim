@@ -26,17 +26,17 @@ fn completion_tab_accepts_and_undo_redo_macro_flow() {
             );
         }
         step "<Tab>" => |test| {
-            assert_eq!(test.editor.buffer().line(0).unwrap(), "let x = foo\n");
+            assert_eq!(test.editor.buffer().line_text(0).unwrap(), "let x = foo");
             test.assert_mode(Mode::Insert);
         }
         step "<Esc>" => |test| {
             test.assert_mode(Mode::Normal);
         }
         step "u" => |test| {
-            assert_eq!(test.editor.buffer().line(0).unwrap(), "let x = fo\n");
+            assert_eq!(test.editor.buffer().line_text(0).unwrap(), "let x = fo");
         }
         step "<C-r>" => |test| {
-            assert_eq!(test.editor.buffer().line(0).unwrap(), "let x = foo\n");
+            assert_eq!(test.editor.buffer().line_text(0).unwrap(), "let x = foo");
         }
     }
 }
@@ -54,7 +54,7 @@ fn completion_ctrl_y_accepts() {
     );
 
     t.keys("<C-y>");
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "let x = foo\n");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "let x = foo");
 }
 
 #[test]

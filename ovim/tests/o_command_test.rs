@@ -21,7 +21,7 @@ fn press_char(editor: &mut Editor, c: char) {
 fn buffer_content(editor: &Editor) -> String {
     let mut content = String::new();
     for i in 0..editor.buffer().line_count() {
-        if let Some(line) = editor.buffer().line(i) {
+        if let Some(line) = editor.buffer().line_text(i) {
             content.push_str(&line);
         }
     }
@@ -50,10 +50,10 @@ fn test_o_middle_of_file() {
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Lines should be correct
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(3).unwrap(), "line 3\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(3).unwrap(), "line 3");
 }
 
 #[test]
@@ -81,9 +81,9 @@ fn test_o_last_line_no_newline() {
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Verify content
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "");
 }
 
 #[test]
@@ -106,7 +106,7 @@ fn test_o_with_indentation() {
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
 
     // New line should have indentation
-    assert_eq!(editor.buffer().line(2).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "    ");
 }
 
 #[test]
@@ -137,9 +137,9 @@ fn test_o_type_text() {
 
     // Should have 3 lines (2 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 3);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "new\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "new");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 2");
 }
 
 #[test]
@@ -163,16 +163,16 @@ fn test_o_and_undo() {
 
     // Should have 4 lines (3 original + 1 new)
     assert_eq!(editor.buffer().line_count(), 4);
-    assert_eq!(editor.buffer().line(1).unwrap(), "test\n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "test");
 
     // Undo
     press_char(&mut editor, 'u');
 
     // Should be back to original 3 lines
     assert_eq!(editor.buffer().line_count(), 3);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 3\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 3");
 }
 
 #[test]
@@ -215,8 +215,8 @@ fn test_o_single_line_no_newline() {
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol::ZERO);
 
     // Line content
-    assert_eq!(editor.buffer().line(0).unwrap(), "hello\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "hello");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "");
 }
 
 #[test]
@@ -239,9 +239,9 @@ fn test_o_multiple_times() {
 
     // Should have 3 lines (1 original + 2 new)
     assert_eq!(editor.buffer().line_count(), 3);
-    assert_eq!(editor.buffer().line(0).unwrap(), "start\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "l1\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "l2\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "start");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "l1");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "l2");
 }
 
 #[test]
@@ -256,7 +256,7 @@ fn test_o_preserves_tab_indentation() {
     press_char(&mut editor, 'o');
 
     // New line should have tab indentation
-    assert_eq!(editor.buffer().line(2).unwrap(), "\t\n");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "\t");
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1)); // After the tab
 }
 
@@ -272,7 +272,7 @@ fn test_o_mixed_indentation() {
     press_char(&mut editor, 'o');
 
     // New line should have the mixed indentation
-    let new_line = editor.buffer().line(2).unwrap();
+    let new_line = editor.buffer().line_text(2).unwrap();
     assert!(
         new_line.starts_with("  \t"),
         "Line should start with '  \\t': {:?}",
@@ -319,7 +319,7 @@ fn test_o_then_dd_no_phantom_line() {
     assert_eq!(editor.buffer().line_count(), 5);
     // Cursor should now be on line 5 (0-indexed: 4) = "Hello"
     assert_eq!(editor.buffer().cursor().line(), 4);
-    assert!(editor.buffer().line(4).unwrap().starts_with("Hello"));
+    assert!(editor.buffer().line_text(4).unwrap().starts_with("Hello"));
 
     // dd - delete "Hello"
     press_char(&mut editor, 'd');
@@ -331,7 +331,7 @@ fn test_o_then_dd_no_phantom_line() {
         3,
         "After two dd's from end, cursor should be on line 4 (0-indexed: 3)"
     );
-    assert_eq!(editor.buffer().line(3).unwrap(), "\n");
+    assert_eq!(editor.buffer().line_text(3).unwrap(), "");
 }
 
 // ============================================================================
@@ -365,7 +365,7 @@ fn test_o_undo_redo_cursor_valid() {
     // After redo, cursor should be within valid line bounds (normal mode)
     let cursor_line = editor.buffer().cursor().line();
     let cursor_col = editor.buffer().cursor().col().0;
-    let line = editor.buffer().line(cursor_line).unwrap();
+    let line = editor.buffer().line_text(cursor_line).unwrap();
     let line_len = line.trim_end_matches('\n').chars().count();
     assert!(
         cursor_col < line_len || line_len == 0,
@@ -416,7 +416,7 @@ fn test_o_after_opening_brace_adds_indent() {
     // Should add shiftwidth (4 spaces) indent
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
-    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
 }
 
 #[test]
@@ -427,7 +427,7 @@ fn test_o_after_opening_paren_adds_indent() {
 
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
-    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn test_o_after_opening_bracket_adds_indent() {
 
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
-    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
 }
 
 #[test]
@@ -450,7 +450,7 @@ fn test_o_after_brace_with_trailing_spaces() {
 
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
-    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
 }
 
 #[test]
@@ -462,7 +462,7 @@ fn test_o_no_extra_indent_on_normal_line() {
     // Should copy indent (4 spaces) but not add extra
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
-    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
 }
 
 #[test]
@@ -480,5 +480,5 @@ fn test_big_o_on_line_after_brace_no_extra_indent() {
     // Should copy indent from "    body" (4 spaces), no extra
     assert_eq!(editor.buffer().cursor().line(), 1);
     assert_eq!(editor.buffer().cursor().col(), GraphemeCol(4));
-    assert_eq!(editor.buffer().line(1).unwrap(), "    \n");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "    ");
 }

@@ -1449,10 +1449,10 @@ fn test_dot_repeat_o_on_indented_line() {
     test.keys(".");
 
     // Should have: "    hello", "    new", "    world", "    new"
-    assert_eq!(test.line(0).unwrap(), "    hello\n");
-    assert_eq!(test.line(1).unwrap(), "    new\n");
-    assert_eq!(test.line(2).unwrap(), "    world\n");
-    assert_eq!(test.line(3).unwrap(), "    new\n");
+    assert_eq!(test.line_text(0).unwrap(), "    hello");
+    assert_eq!(test.line_text(1).unwrap(), "    new");
+    assert_eq!(test.line_text(2).unwrap(), "    world");
+    assert_eq!(test.line_text(3).unwrap(), "    new");
     assert_eq!(test.line_count(), 4);
 }
 
@@ -1498,10 +1498,10 @@ fn test_dot_repeat_o_esc_no_text() {
 
     // Both lines should have gotten new empty lines below them
     assert_eq!(test.line_count(), 4);
-    assert_eq!(test.line(0).unwrap(), "line 1\n");
-    assert_eq!(test.line(1).unwrap(), "\n");
-    assert_eq!(test.line(2).unwrap(), "line 2\n");
-    assert_eq!(test.line(3).unwrap(), "\n");
+    assert_eq!(test.line_text(0).unwrap(), "line 1");
+    assert_eq!(test.line_text(1).unwrap(), "");
+    assert_eq!(test.line_text(2).unwrap(), "line 2");
+    assert_eq!(test.line_text(3).unwrap(), "");
 }
 
 #[test]

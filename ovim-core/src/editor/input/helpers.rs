@@ -41,8 +41,8 @@ pub fn move_right(editor: &mut Editor) {
     let count = editor.effective_count();
     let line_idx = editor.buffer().cursor().line();
     let mode = editor.mode();
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_len = grapheme_count(line.trim_end_matches('\n'));
+    if let Some(line) = editor.buffer().line_text(line_idx) {
+        let line_len = grapheme_count(&line);
         let cursor = editor.buffer_mut().cursor_mut();
 
         // In VisualBlock mode, allow cursor beyond line end for rectangular selection
@@ -90,8 +90,8 @@ pub fn move_down(editor: &mut Editor) {
 
 pub fn clamp_cursor_to_line(editor: &mut Editor) {
     let line_idx = editor.buffer().cursor().line();
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_len = grapheme_count(line.trim_end_matches('\n'));
+    if let Some(line) = editor.buffer().line_text(line_idx) {
+        let line_len = grapheme_count(&line);
         let cursor = editor.buffer_mut().cursor_mut();
         if cursor.col().0 >= line_len {
             let new_col = if line_len > 0 { line_len - 1 } else { 0 };
@@ -103,8 +103,8 @@ pub fn clamp_cursor_to_line(editor: &mut Editor) {
 pub fn clamp_cursor_with_goal_column(editor: &mut Editor) {
     let line_idx = editor.buffer().cursor().line();
     let mode = editor.mode();
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_len = grapheme_count(line.trim_end_matches('\n'));
+    if let Some(line) = editor.buffer().line_text(line_idx) {
+        let line_len = grapheme_count(&line);
         let max_col = if line_len > 0 { line_len - 1 } else { 0 };
         let cursor = editor.buffer_mut().cursor_mut();
         let desired = cursor.desired_col();
@@ -129,8 +129,8 @@ pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
     let grapheme_col = cursor.col();
     // Convert grapheme col to char col for buffer operations
     let char_col = {
-        let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-        grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
+        let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
+        grapheme_to_char_col(&line_text, grapheme_col)
     };
 
     // Insert-mode recording captures the edit; the undo entry is pushed as a
@@ -149,11 +149,10 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     // Snapshot line text and compute char col (drops borrow before mutation)
     let line_text = editor
         .buffer()
-        .line(line_idx)
+        .line_text(line_idx)
         .unwrap_or_default()
         .to_string();
-    let line_text_trimmed = line_text.trim_end_matches('\n');
-    let char_col = grapheme_to_char_col(line_text_trimmed, grapheme_col);
+    let char_col = grapheme_to_char_col(&line_text, grapheme_col);
     let position = ApplyPos::new(line_idx, char_col);
 
     // Special case: when the buffer does not end with a newline and the cursor
@@ -242,8 +241,8 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         // Use char count for the position (delete_range expects char indices)
         let prev_line_char_len = editor
             .buffer()
-            .line(line_idx - 1)
-            .map(|s| s.trim_end_matches('\n').chars().count())
+            .line_text(line_idx - 1)
+            .map(|s| s.chars().count())
             .unwrap_or(0);
         (
             ApplyPos::new(line_idx - 1, CharCol(prev_line_char_len)),
@@ -253,8 +252,8 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         // Delete character before cursor on same line.
         // Convert grapheme col to char col for rope operations.
         let char_col = {
-            let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-            grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
+            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
+            grapheme_to_char_col(&line_text, grapheme_col)
         };
 
         // Smart backspace (Vim softtabstop semantics): when the cursor sits
@@ -264,9 +263,9 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         // individual spaces, and is a no-op when tabs are in use (tabs are
         // already one char per indent).
         let smart_target = if editor.options.expand_tab {
-            let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
             let before: String = line_text
-                .trim_end_matches('\n')
+                
                 .chars()
                 .take(char_col.0)
                 .collect();
@@ -284,9 +283,9 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
             CharCol(target)
         } else {
             // Normal single-grapheme delete.
-            let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
             grapheme_to_char_col(
-                line_text.trim_end_matches('\n'),
+                &line_text,
                 GraphemeCol(grapheme_col.0 - 1),
             )
         };
@@ -325,8 +324,8 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     if grapheme_col.0 == 0 {
         let prev_line_len = editor
             .buffer()
-            .line(line_idx - 1)
-            .map(|s| s.trim_end_matches('\n').chars().count())
+            .line_text(line_idx - 1)
+            .map(|s| s.chars().count())
             .unwrap_or(0);
         let start_pos = ApplyPos::new(line_idx - 1, CharCol(prev_line_len));
         let end_pos = ApplyPos::new(line_idx, CharCol::ZERO);
@@ -343,11 +342,11 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Get the line text (borrow ends when we collect)
-    let line = editor.buffer().line(line_idx).unwrap_or_default();
-    let line_text = line.trim_end_matches('\n');
+    let line = editor.buffer().line_text(line_idx).unwrap_or_default();
+    let line_text = line;
     let chars: Vec<char> = line_text.chars().collect();
     // Word-boundary scanning uses chars directly, so convert the cursor to char-space.
-    let char_col = grapheme_to_char_col(line_text, grapheme_col);
+    let char_col = grapheme_to_char_col(&line_text, grapheme_col);
     let col = char_col.0;
 
     // Find the start of the word to delete
@@ -408,11 +407,11 @@ pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
     // Convert grapheme col to char col for rope ops (delete_range / Range).
     let line_text_owned = editor
         .buffer()
-        .line(line_idx)
+        .line_text(line_idx)
         .unwrap_or_default()
         .to_string();
-    let line_text = line_text_owned.trim_end_matches('\n');
-    let char_col = grapheme_to_char_col(line_text, grapheme_col);
+    let line_text = line_text_owned;
+    let char_col = grapheme_to_char_col(&line_text, grapheme_col);
 
     // Delete from start of line to cursor. `delete_range_positioning_cursor`
     // lands the cursor at char col 0 (== grapheme col 0) on the current line.
@@ -465,11 +464,11 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     let shift_width = editor.options.shift_width;
 
     // Get current line
-    let line = match editor.buffer().line(line_idx) {
+    let line = match editor.buffer().line_text(line_idx) {
         Some(l) => l,
         None => return Ok(()),
     };
-    let line_text = line.trim_end_matches('\n');
+    let line_text = line;
 
     // Count leading whitespace to remove (up to shift_width)
     let chars: Vec<char> = line_text.chars().collect();
@@ -529,10 +528,10 @@ pub fn electric_dedent_close_bracket(editor: &mut Editor, c: char) -> Result<()>
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
     let grapheme_col = cursor.col();
-    let Some(line) = editor.buffer().line(line_idx) else {
+    let Some(line) = editor.buffer().line_text(line_idx) else {
         return Ok(());
     };
-    let line_text = line.trim_end_matches('\n').to_string();
+    let line_text = line.to_string();
     let char_col = grapheme_to_char_col(&line_text, grapheme_col);
 
     // Only trigger when the line is blank-prefixed up to the cursor AND the
@@ -555,7 +554,7 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     let line_idx = cursor.line();
 
     // Get indentation from current line
-    let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+    let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
     let indent: String = line_text
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -575,8 +574,12 @@ pub fn insert_line_below(editor: &mut Editor) -> Result<bool> {
     };
     let indent = format!("{}{}", indent, extra_indent);
 
-    // Determine insert position (char-space) and text
-    let (insert_position, text_to_insert) = if line_text.ends_with('\n') {
+    // Determine insert position (char-space) and text. `line_text` strips
+    // the terminator by design, so use the raw vs content length asymmetry
+    // to test for one — true when the rope stores `…\n` for this line.
+    let has_terminator =
+        editor.buffer().line_raw_len(line_idx) > editor.buffer().line_content_len(line_idx);
+    let (insert_position, text_to_insert) = if has_terminator {
         // Line ends with newline, insert at start of next line
         (
             ApplyPos::new(line_idx + 1, CharCol::ZERO),
@@ -616,7 +619,7 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
     let line_idx = cursor.line();
 
     // Get indentation from current line
-    let line_text = editor.buffer().line(line_idx).unwrap_or_default();
+    let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
     let indent: String = line_text
         .chars()
         .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -678,8 +681,8 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                         break;
                     }
 
-                    if let Some(line_text) = buf.line(target_line) {
-                        let line_content = line_text.trim_end_matches('\n');
+                    if let Some(line_text) = buf.line_text(target_line) {
+                        let line_content = line_text;
 
                         if line_content.is_empty() && target_line == buf.line_count() - 1 {
                             break;
@@ -736,8 +739,8 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
             let is_empty_buffer = editor.buffer().line_count() == 1
                 && editor
                     .buffer()
-                    .line(0)
-                    .map(|l| l.trim_end_matches('\n').is_empty())
+                    .line_text(0)
+                    .map(|l| l.is_empty())
                     .unwrap_or(true);
 
             if is_empty_buffer {
@@ -749,7 +752,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
 
                 let first_non_blank = editor
                     .buffer()
-                    .line(0)
+                    .line_text(0)
                     .map(|l| {
                         l.chars()
                             .take_while(|ch| ch.is_whitespace() && *ch != '\n')
@@ -779,7 +782,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                         buf.insert_text_at(line_idx, CharCol(line_char_len), &text_clone);
                     } else {
                         // No trailing newline on current line — prepend \n
-                        let insert_text = format!("\n{}", text_clone.trim_end_matches('\n'));
+                        let insert_text = format!("\n{}", text_clone);
                         buf.insert_text_at(line_idx, CharCol(line_char_len), &insert_text);
                     }
                 });
@@ -788,7 +791,7 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
                 let new_line = line_idx + 1;
                 let first_non_blank = editor
                     .buffer()
-                    .line(new_line)
+                    .line_text(new_line)
                     .map(|l| {
                         l.chars()
                             .take_while(|ch| ch.is_whitespace() && *ch != '\n')
@@ -813,8 +816,8 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
             // to avoid inserting past the newline into the next line
             let line_content_len = editor
                 .buffer()
-                .line(line_idx)
-                .map(|l| l.trim_end_matches('\n').chars().count())
+                .line_text(line_idx)
+                .map(|l| l.chars().count())
                 .unwrap_or(0);
             let paste_col = (col + 1).min(line_content_len);
 
@@ -881,8 +884,8 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
                         break;
                     }
 
-                    if let Some(line_text) = buf.line(target_line) {
-                        let line_content = line_text.trim_end_matches('\n');
+                    if let Some(line_text) = buf.line_text(target_line) {
+                        let line_content = line_text;
                         if line_content.is_empty() && target_line == buf.line_count() - 1 {
                             break;
                         }
@@ -939,7 +942,7 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
             let pasted_line = line_idx; // Text was inserted before current line
             let first_non_blank = editor
                 .buffer()
-                .line(pasted_line)
+                .line_text(pasted_line)
                 .map(|l| {
                     l.chars()
                         .take_while(|ch| ch.is_whitespace() && *ch != '\n')
@@ -1020,8 +1023,8 @@ pub fn delete_visual_selection_with_token(
                 let mut deleted_lines = Vec::new();
                 // Delete from bottom to top to avoid offset shifting
                 for line_idx in (start_line..=end_line).rev() {
-                    if let Some(line_text) = buf.line(line_idx) {
-                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                    if let Some(line_text) = buf.line_text(line_idx) {
+                        let line_len = line_text.chars().count();
                         if start_col < line_len {
                             let actual_end_col = (end_col + 1).min(line_len);
                             let deleted = buf.delete_range(
@@ -1067,8 +1070,8 @@ pub fn delete_visual_selection_with_token(
                 .set_position(new_line, GraphemeCol(0));
         }
         Mode::VisualBlock => {
-            let line_len = if let Some(line) = editor.buffer().line(start_line) {
-                line.trim_end_matches('\n').chars().count()
+            let line_len = if let Some(line) = editor.buffer().line_text(start_line) {
+                line.chars().count()
             } else {
                 0
             };
@@ -1154,8 +1157,8 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
                 let mut yanked_lines = Vec::new();
 
                 for line_idx in start_line..=end_line {
-                    if let Some(line_text) = editor.buffer().line(line_idx) {
-                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                    if let Some(line_text) = editor.buffer().line_text(line_idx) {
+                        let line_len = line_text.chars().count();
                         if start_col < line_len {
                             let actual_end_col = (end_col + 1).min(line_len);
                             let start_char =
@@ -1334,9 +1337,9 @@ fn transform_visual_selection(
         match mode {
             Mode::VisualLine => {
                 for line_idx in start_line..=end_line {
-                    if let Some(line) = buf.line(line_idx) {
-                        let line_text = line.trim_end_matches('\n');
-                        let transformed = transform(line_text);
+                    if let Some(line) = buf.line_text(line_idx) {
+                        let line_text = line;
+                        let transformed = transform(&line_text);
                         let char_count = line_text.chars().count();
                         buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(char_count));
                         buf.insert_text_at(line_idx, CharCol::ZERO, &transformed);
@@ -1345,8 +1348,8 @@ fn transform_visual_selection(
             }
             Mode::VisualBlock => {
                 for line_idx in start_line..=end_line {
-                    if let Some(line) = buf.line(line_idx) {
-                        let chars_len = line.trim_end_matches('\n').chars().count();
+                    if let Some(line) = buf.line_text(line_idx) {
+                        let chars_len = line.chars().count();
                         let line_start = start_col.min(chars_len);
                         let line_end = (end_col + 1).min(chars_len);
                         if line_start < line_end {
@@ -1427,8 +1430,8 @@ fn extract_word_at_cursor(editor: &Editor) -> Option<String> {
     let line_idx = cursor.line();
     let col = cursor.col().0;
 
-    let line = editor.buffer().line(line_idx)?;
-    let line_text = line.trim_end_matches('\n');
+    let line = editor.buffer().line_text(line_idx)?;
+    let line_text = line;
     let chars: Vec<char> = line_text.chars().collect();
 
     if col >= chars.len() {
@@ -1526,8 +1529,8 @@ pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
             // Line-wise selection (include entire lines)
             let mut text = String::new();
             for line_idx in start_line..=end_line {
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    text.push_str(line.trim_end_matches('\n'));
+                if let Some(line) = editor.buffer().line_text(line_idx) {
+                    text.push_str(&line);
                     if line_idx < end_line {
                         text.push('\n');
                     }
@@ -1539,8 +1542,8 @@ pub fn get_visual_selection_text(editor: &Editor) -> Option<String> {
             // Rectangular block selection
             let mut lines = Vec::new();
             for line_idx in start_line..=end_line {
-                if let Some(line_text) = editor.buffer().line(line_idx) {
-                    let chars: Vec<char> = line_text.trim_end_matches('\n').chars().collect();
+                if let Some(line_text) = editor.buffer().line_text(line_idx) {
+                    let chars: Vec<char> = line_text.chars().collect();
                     let line_start = start_col.min(chars.len());
                     let line_end = (end_col + 1).min(chars.len());
 
@@ -1675,8 +1678,8 @@ pub fn yank_word(buffer: &mut crate::buffer::Buffer, count: usize) -> anyhow::Re
 
     // When the motion didn't move (last word on last line), yank to end of line
     if end_line == start_line && end_col == start_col {
-        if let Some(line) = buffer.line(end_line) {
-            let line_len = line.trim_end_matches('\n').chars().count();
+        if let Some(line) = buffer.line_text(end_line) {
+            let line_len = line.chars().count();
             if end_line + 1 >= buffer.line_count() {
                 end_col = line_len;
             }
@@ -1716,9 +1719,9 @@ pub fn auto_indent_lines(
 
     // Determine base indent from the line before start_line (or 0 if first line)
     let mut current_indent = if start_line > 0 {
-        if let Some(prev_line) = buffer.line(start_line - 1) {
-            let prev_text = prev_line.trim_end_matches('\n');
-            count_leading_spaces(prev_text, tab_width)
+        if let Some(prev_line) = buffer.line_text(start_line - 1) {
+            let prev_text = prev_line;
+            count_leading_spaces(&prev_text, tab_width)
                 + if prev_text.trim_end().ends_with('{')
                     || prev_text.trim_end().ends_with('(')
                     || prev_text.trim_end().ends_with('[')
@@ -1737,8 +1740,9 @@ pub fn auto_indent_lines(
     let mut lines_indented = 0;
 
     for line_idx in start_line..end_line {
-        if let Some(line) = buffer.line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
+        if let Some(line) = buffer.line_text(line_idx).map(|c| c.into_owned()) {
+            // Owned String: drops borrow on `buffer` so the loop body can mutate.
+            let line_text = line;
             let trimmed = line_text.trim_start();
 
             // Decrease indent if line starts with closing bracket
@@ -1747,7 +1751,7 @@ pub fn auto_indent_lines(
             }
 
             // Calculate current leading spaces
-            let current_spaces = count_leading_spaces(line_text, tab_width);
+            let current_spaces = count_leading_spaces(&line_text, tab_width);
 
             // Apply new indentation if different
             if current_spaces != current_indent && !trimmed.is_empty() {
@@ -1801,7 +1805,7 @@ pub fn auto_indent_lines_with_tracking(
     // lines are currently indented.
     let mut depth: isize = 0;
     for line_idx in 0..start_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
+        if let Some(line) = editor.buffer().line_text(line_idx) {
             for ch in line.chars() {
                 match ch {
                     '{' | '(' | '[' => depth += 1,
@@ -1818,10 +1822,10 @@ pub fn auto_indent_lines_with_tracking(
         let mut last_cursor_after = cursor_before;
 
         for line_idx in start_line..end_line {
-            let Some(line) = buf.line(line_idx) else {
+            let Some(line) = buf.line_text(line_idx) else {
                 continue;
             };
-            let line_text = line.trim_end_matches('\n');
+            let line_text = line;
             let trimmed = line_text.trim_start();
 
             // Count leading close brackets — they reduce this line's indent
@@ -1848,7 +1852,7 @@ pub fn auto_indent_lines_with_tracking(
             }
 
             // Calculate current leading spaces
-            let current_spaces = count_leading_spaces(line_text, tab_width);
+            let current_spaces = count_leading_spaces(&line_text, tab_width);
 
             // Apply new indentation if different
             if current_spaces != line_indent && !trimmed.is_empty() {
@@ -1914,8 +1918,8 @@ pub fn insert_tab(editor: &mut Editor) -> Result<()> {
         let line_idx = cursor.line();
         let grapheme_col = cursor.col();
         let char_col = {
-            let line_text = editor.buffer().line(line_idx).unwrap_or_default();
-            grapheme_to_char_col(line_text.trim_end_matches('\n'), grapheme_col)
+            let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
+            grapheme_to_char_col(&line_text, grapheme_col)
         };
         editor.record_session_edit(|buf| {
             buf.insert_text_at_positioning_cursor(line_idx, char_col, &spaces)

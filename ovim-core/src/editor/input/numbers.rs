@@ -36,13 +36,13 @@ pub fn sequential_modify_numbers(editor: &mut Editor, delta: i64) -> Result<()> 
             let line_offset = (line_idx - start_line) as i64;
             let total_delta = delta * line_offset;
 
-            let Some(line) = buf.line(line_idx) else {
+            let Some(line) = buf.line_text(line_idx) else {
                 continue;
             };
-            let line_text = line.trim_end_matches('\n');
+            let line_text = line;
 
             let Some((start_col, end_col, number_str)) =
-                find_number_at_or_after(line_text, CharCol::ZERO)
+                find_number_at_or_after(&line_text, CharCol::ZERO)
             else {
                 continue;
             };

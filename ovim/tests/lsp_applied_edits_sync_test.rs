@@ -67,7 +67,7 @@ fn apply_workspace_edit_marks_buffer_modified_and_requests_diagnostics_refresh()
 
     t.editor.apply_workspace_edit(we).unwrap();
 
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "world\n");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "world");
     assert_eq!(
         t.editor.lsp_document_is_modified(),
         Some(true),
@@ -97,7 +97,7 @@ fn apply_workspace_edit_current_buffer_is_undoable() {
             let uri = ovim::lsp::uri_from_file_path(&tmp).expect("uri_from_file_path failed");
             let we = workspace_edit_for_uri(uri, text_edit_replace_hello_with_world());
             test.editor.apply_workspace_edit(we).unwrap();
-            assert_eq!(test.editor.buffer().line(0).unwrap(), "world\n");
+            assert_eq!(test.editor.buffer().line_text(0).unwrap(), "world");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "hello\n");
@@ -163,12 +163,12 @@ fn apply_workspace_edit_non_current_buffer_is_undoable() {
         .position(|name| name == &tmp_other)
         .expect("other file buffer should be loaded");
     t.editor.switch_to_buffer(other_idx);
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "beta\n");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "beta");
 
     t.keys("u");
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "alpha\n");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "alpha");
     t.keys("<C-r>");
-    assert_eq!(t.editor.buffer().line(0).unwrap(), "beta\n");
+    assert_eq!(t.editor.buffer().line_text(0).unwrap(), "beta");
 }
 
 #[test]

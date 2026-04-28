@@ -74,8 +74,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let line_idx = editor.buffer().cursor().line();
             let max_line = editor.buffer().line_count().saturating_sub(1);
             let target_line = (line_idx + count - 1).min(max_line);
-            if let Some(line) = editor.buffer().line(target_line) {
-                let line_len = line.trim_end_matches('\n').chars().count();
+            if let Some(line) = editor.buffer().line_text(target_line) {
+                let line_len = line.chars().count();
                 let col = if line_len > 0 { line_len - 1 } else { 0 };
                 let cursor = editor.buffer_mut().cursor_mut();
                 cursor.set_position(target_line, GraphemeCol(col));

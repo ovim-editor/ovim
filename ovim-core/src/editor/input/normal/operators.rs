@@ -771,11 +771,15 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             }
         }
         Operator::Yank => {
-            // Yank from start_line to end_line (inclusive, line-wise)
+            // Yank from start_line to end_line (inclusive, line-wise).
+            // `line_text` strips terminators; re-add `\n` per line so the
+            // register stores linewise content with the standard one-`\n`-
+            // per-line shape.
             let mut yanked = String::new();
             for line_idx in start_line..=end_line {
-                if let Some(line) = editor.buffer().line(line_idx) {
+                if let Some(line) = editor.buffer().line_text(line_idx) {
                     yanked.push_str(&line);
+                    yanked.push('\n');
                 }
             }
             editor.yank_to_register_with_type(yanked, RegisterType::Line);
@@ -792,7 +796,7 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
             // Get indent from the cursor's line (top of the range we're changing)
             let indent = editor
                 .buffer()
-                .line(start_line)
+                .line_text(start_line)
                 .map(|l| {
                     l.chars()
                         .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -866,11 +870,15 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
             }
         }
         Operator::Yank => {
-            // Yank from start_line to end_line (inclusive, line-wise)
+            // Yank from start_line to end_line (inclusive, line-wise).
+            // `line_text` strips terminators; re-add `\n` per line so the
+            // register stores linewise content with the standard one-`\n`-
+            // per-line shape.
             let mut yanked = String::new();
             for line_idx in start_line..=end_line {
-                if let Some(line) = editor.buffer().line(line_idx) {
+                if let Some(line) = editor.buffer().line_text(line_idx) {
                     yanked.push_str(&line);
+                    yanked.push('\n');
                 }
             }
             editor.yank_to_register_with_type(yanked, RegisterType::Line);
@@ -916,7 +924,7 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
         Operator::Change => {
             let indent = editor
                 .buffer()
-                .line(start_line)
+                .line_text(start_line)
                 .map(|l| {
                     l.chars()
                         .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -1079,7 +1087,7 @@ fn handle_yj(editor: &mut Editor, count: usize) -> Result<()> {
 
     let mut yanked = String::new();
     for line_idx in start_line..end_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
+        if let Some(line) = editor.buffer().line_text(line_idx) {
             yanked.push_str(&line);
         }
     }
@@ -1095,7 +1103,7 @@ fn handle_yk(editor: &mut Editor, count: usize) -> Result<()> {
 
     let mut yanked = String::new();
     for line_idx in start_line..end_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
+        if let Some(line) = editor.buffer().line_text(line_idx) {
             yanked.push_str(&line);
         }
     }
@@ -1114,13 +1122,13 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
 
     let mut yanked = String::new();
     if start_line == end_line {
-        if let Some(line) = editor.buffer().line(start_line) {
+        if let Some(line) = editor.buffer().line_text(start_line) {
             let chars: Vec<char> = line.chars().collect();
             yanked = chars[start_col..].iter().collect();
         }
     } else {
         for line_idx in start_line..=end_line {
-            if let Some(line) = editor.buffer().line(line_idx) {
+            if let Some(line) = editor.buffer().line_text(line_idx) {
                 if line_idx == start_line {
                     let chars: Vec<char> = line.chars().collect();
                     yanked.push_str(&chars[start_col..].iter().collect::<String>());
@@ -1150,7 +1158,7 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 
     let mut yanked = String::new();
     for line_idx in start_line..=end_line {
-        if let Some(line) = editor.buffer().line(line_idx) {
+        if let Some(line) = editor.buffer().line_text(line_idx) {
             if line_idx == end_line {
                 let chars: Vec<char> = line.chars().collect();
                 yanked.push_str(
@@ -1182,7 +1190,7 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
     // Capture indentation BEFORE deleting
     let indent = editor
         .buffer()
-        .line(start_line)
+        .line_text(start_line)
         .map(|l| {
             l.chars()
                 .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -1232,8 +1240,8 @@ fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
 
         let end_line = buf.cursor().line();
         let line_len = buf
-            .line(end_line)
-            .map(|line| line.trim_end_matches('\n').chars().count())
+            .line_text(end_line)
+            .map(|line| line.chars().count())
             .unwrap_or(0);
         let end_col = (buf.cursor().col().0 + 1).min(line_len);
 
@@ -1272,8 +1280,8 @@ fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
 
     let (deleted, edits) = editor.buffer_mut().record(|buf| {
         let line_len = buf
-            .line(line_idx)
-            .map(|l| l.trim_end_matches('\n').chars().count())
+            .line_text(line_idx)
+            .map(|l| l.chars().count())
             .unwrap_or(0);
         if col < line_len {
             // Phase-15 debt: cursor cols are grapheme, delete_range needs char.
@@ -1311,8 +1319,8 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
     let line_idx = cursor.line();
     let start_col = cursor.col().0;
 
-    if let Some(line) = editor.buffer().line(line_idx) {
-        let line_text = line.trim_end_matches('\n');
+    if let Some(line) = editor.buffer().line_text(line_idx) {
+        let line_text = line;
         let line_len = line_text.chars().count();
         let end_col = (start_col + count).min(line_len);
 
@@ -1361,7 +1369,7 @@ fn handle_cj(editor: &mut Editor, count: usize) -> Result<()> {
 
     let indent = editor
         .buffer()
-        .line(start_line)
+        .line_text(start_line)
         .map(|l| {
             l.chars()
                 .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -1404,7 +1412,7 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
 
     let indent = editor
         .buffer()
-        .line(start_line)
+        .line_text(start_line)
         .map(|l| {
             l.chars()
                 .take_while(|c| c.is_whitespace() && *c != '\n')
@@ -1869,8 +1877,8 @@ fn handle_yl(editor: &mut Editor, count: usize) -> Result<()> {
     let col = editor.buffer().cursor().col().0;
     let line_len = editor
         .buffer()
-        .line(line_idx)
-        .map(|l| l.trim_end_matches('\n').chars().count())
+        .line_text(line_idx)
+        .map(|l| l.chars().count())
         .unwrap_or(0);
     if col >= line_len.saturating_sub(1) {
         // At or past last char — yank single char if on last char
@@ -2019,7 +2027,7 @@ fn yank_range(
     let buf = editor.buffer();
     let mut result = String::new();
     for line_idx in start_line..=end_line {
-        if let Some(line) = buf.line(line_idx) {
+        if let Some(line) = buf.line_text(line_idx) {
             let chars: Vec<char> = line.chars().collect();
             let from = if line_idx == start_line {
                 start_col.0

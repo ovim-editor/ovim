@@ -14,7 +14,7 @@ impl Motions {
         for _ in 0..count {
             current_line += 1;
             while current_line < total_lines {
-                if let Some(line) = buffer.line(current_line) {
+                if let Some(line) = buffer.line_text(current_line) {
                     if line.starts_with('{') {
                         break;
                     }
@@ -43,7 +43,7 @@ impl Motions {
             }
             current_line -= 1;
             while current_line > 0 {
-                if let Some(line) = buffer.line(current_line) {
+                if let Some(line) = buffer.line_text(current_line) {
                     if line.starts_with('{') {
                         break;
                     }
@@ -52,7 +52,7 @@ impl Motions {
             }
             // Check if line 0 is a match
             if current_line == 0 {
-                if let Some(line) = buffer.line(0) {
+                if let Some(line) = buffer.line_text(0) {
                     if !line.starts_with('{') {
                         // No match found, stay at line 0
                     }
@@ -74,7 +74,7 @@ impl Motions {
         for _ in 0..count {
             current_line += 1;
             while current_line < total_lines {
-                if let Some(line) = buffer.line(current_line) {
+                if let Some(line) = buffer.line_text(current_line) {
                     if line.starts_with('}') {
                         break;
                     }
@@ -103,7 +103,7 @@ impl Motions {
             }
             current_line -= 1;
             while current_line > 0 {
-                if let Some(line) = buffer.line(current_line) {
+                if let Some(line) = buffer.line_text(current_line) {
                     if line.starts_with('}') {
                         break;
                     }

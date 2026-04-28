@@ -457,12 +457,12 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         let mut matches = Vec::new();
 
         for line_idx in start_line..=end_line.min(editor.buffer().line_count().saturating_sub(1)) {
-            if let Some(line) = editor.buffer().line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
+            if let Some(line) = editor.buffer().line_text(line_idx) {
+                let line_text = line;
 
                 // Find all matches in this line
                 if global {
-                    for mat in regex.find_iter(line_text) {
+                    for mat in regex.find_iter(&line_text) {
                         let replacement_text = regex
                             .replace(mat.as_str(), replacement.as_str())
                             .to_string();
@@ -473,7 +473,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
                     }
                 } else {
                     // Only first match per line
-                    if let Some(mat) = regex.find(line_text) {
+                    if let Some(mat) = regex.find(&line_text) {
                         let replacement_text = regex
                             .replace(mat.as_str(), replacement.as_str())
                             .to_string();
@@ -505,15 +505,15 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
         for line_idx in start_line..=end_line.min(buf.line_count().saturating_sub(1)) {
-            if let Some(line) = buf.line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
+            if let Some(line) = buf.line_text(line_idx) {
+                let line_text = line;
 
                 let new_text = if global {
                     regex
-                        .replace_all(line_text, replacement.as_str())
+                        .replace_all(&line_text, replacement.as_str())
                         .to_string()
                 } else {
-                    regex.replace(line_text, replacement.as_str()).to_string()
+                    regex.replace(&line_text, replacement.as_str()).to_string()
                 };
 
                 if new_text != line_text {
@@ -615,9 +615,9 @@ fn handle_global_command(
     let mut matching_lines = Vec::new();
 
     for line_idx in scan_start..=scan_end {
-        if let Some(line) = editor.buffer().line(line_idx) {
-            let line_text = line.trim_end_matches('\n');
-            let matches = regex.is_match(line_text);
+        if let Some(line) = editor.buffer().line_text(line_idx) {
+            let line_text = line;
+            let matches = regex.is_match(&line_text);
 
             // Include line if: (matches && !invert) || (!matches && invert)
             if matches != invert {
@@ -672,8 +672,8 @@ fn handle_global_command(
             // Print all matching lines to status
             let mut output = Vec::new();
             for &line_idx in &matching_lines {
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    let line_text = line.trim_end_matches('\n');
+                if let Some(line) = editor.buffer().line_text(line_idx) {
+                    let line_text = line;
                     output.push(format!("{}: {}", line_idx + 1, line_text));
                 }
             }
@@ -690,14 +690,17 @@ fn handle_global_command(
             editor.set_lsp_status(result);
         }
         "y" | "yank" => {
-            // Yank all matching lines
-            let mut yanked_lines = Vec::new();
+            // Yank all matching lines. Each yanked line must include its
+            // trailing `\n` so the register stores linewise content the
+            // same way `:y` and `Y` do — so re-add the terminator that
+            // `line_text` strips by design.
+            let mut yanked_text = String::new();
             for &line_idx in &matching_lines {
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    yanked_lines.push(line.to_string());
+                if let Some(line) = editor.buffer().line_text(line_idx) {
+                    yanked_text.push_str(&line);
+                    yanked_text.push('\n');
                 }
             }
-            let yanked_text = yanked_lines.join("");
             editor.yank_to_register(yanked_text);
 
             editor.set_lsp_status(format!("Yanked {} line(s)", matching_lines.len()));
@@ -723,16 +726,16 @@ fn handle_global_command(
 
                     let ((), edits) = editor.buffer_mut().record(|buf| {
                         for &line_idx in &matching_lines {
-                            if let Some(line) = buf.line(line_idx) {
-                                let line_text = line.trim_end_matches('\n');
+                            if let Some(line) = buf.line_text(line_idx) {
+                                let line_text = line;
 
                                 let new_text = if global {
                                     sub_regex
-                                        .replace_all(line_text, replacement.as_str())
+                                        .replace_all(&line_text, replacement.as_str())
                                         .to_string()
                                 } else {
                                     sub_regex
-                                        .replace(line_text, replacement.as_str())
+                                        .replace(&line_text, replacement.as_str())
                                         .to_string()
                                 };
 
@@ -944,11 +947,14 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                 None => return Ok(()),
             };
 
-        // Get the text from the range
+        // Get the text from the range. Re-add the line terminators
+        // `line_text` strips so the spawned filter sees the same input it
+        // would have seen via `cat`.
         let mut input_text = String::new();
         for line_idx in start_line..=end_line {
-            if let Some(line) = editor.buffer().line(line_idx) {
+            if let Some(line) = editor.buffer().line_text(line_idx) {
                 input_text.push_str(&line);
+                input_text.push('\n');
             }
         }
 
@@ -972,7 +978,7 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
             Ok(output) => {
                 if output.status.success() {
                     let stdout = String::from_utf8_lossy(&output.stdout);
-                    let output_text = stdout.trim_end_matches('\n');
+                    let output_text = stdout;
 
                     // Insert the command output (with trailing newline if needed)
                     let insert_text = if output_text.is_empty() {
@@ -1091,7 +1097,7 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
 
                 // Add newline prefix if inserting at end of file
                 let text = if insert_line >= editor.buffer().line_count() && insert_char > 0 {
-                    format!("\n{}", text.trim_end_matches('\n'))
+                    format!("\n{}", text)
                 } else {
                     text
                 };
@@ -1160,7 +1166,7 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
         // Write specified range
         let mut text = String::new();
         for line_idx in start_line..=end_line {
-            if let Some(line) = editor.buffer().line(line_idx) {
+            if let Some(line) = editor.buffer().line_text(line_idx) {
                 text.push_str(&line);
             }
         }
@@ -1459,13 +1465,15 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Handle ranged yank command (:y or :yank)
     if cmd_part == "y" || cmd_part == "yank" {
         if let Some((start_line, end_line)) = parse_range_with_status(editor, range_str, None) {
-            let mut yanked_lines = Vec::new();
+            // Re-add the terminator `line_text` strips so register content
+            // is linewise, matching `Y`/`yy`.
+            let mut yanked_text = String::new();
             for line_idx in start_line..=end_line {
-                if let Some(line) = editor.buffer().line(line_idx) {
-                    yanked_lines.push(line.to_string());
+                if let Some(line) = editor.buffer().line_text(line_idx) {
+                    yanked_text.push_str(&line);
+                    yanked_text.push('\n');
                 }
             }
-            let yanked_text = yanked_lines.join("");
 
             // Store in register (use yank, which updates " and 0)
             editor.yank_to_register(yanked_text);
@@ -1482,9 +1490,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             let unique = cmd_part.contains(" u");
             let ignore_case = cmd_part.contains(" i");
 
-            // Collect lines
+            // Collect lines (terminator-stripped — we'll re-add `\n` when
+            // we serialize back to a single block below).
             let mut lines: Vec<String> = (start_line..=end_line)
-                .filter_map(|idx| editor.buffer().line(idx).map(|l| l.to_string()))
+                .filter_map(|idx| editor.buffer().line_text(idx).map(|l| l.into_owned()))
                 .collect();
 
             // Bug 3 fix: Use stable sort (Vim's :sort is stable)
@@ -1543,8 +1552,12 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             // Remove old lines
             editor.buffer_mut().rope_mut().remove(start_char..end_char);
 
-            // Insert sorted lines
-            let new_text = lines.join("");
+            // Insert sorted lines, re-adding the terminators we stripped.
+            let mut new_text = String::new();
+            for line in &lines {
+                new_text.push_str(line);
+                new_text.push('\n');
+            }
             editor.buffer_mut().rope_mut().insert(start_char, &new_text);
 
             let mut edits = Vec::new();
@@ -1593,14 +1606,18 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             if let Some(dest_line) =
                 parse_range_endpoint_with_status(editor, dest_str, Some("E14: Invalid address"))
             {
-                // Collect lines to copy
-                let mut lines_to_copy: Vec<String> = Vec::new();
+                // Collect lines to copy. `line_text` strips terminators by
+                // design — re-add `\n` so the inserted block keeps its
+                // line breaks.
+                let mut text_to_insert = String::new();
+                let mut lines_copied = 0usize;
                 for idx in start_line..=end_line {
-                    if let Some(line) = editor.buffer().line(idx) {
-                        lines_to_copy.push(line.to_string());
+                    if let Some(line) = editor.buffer().line_text(idx) {
+                        text_to_insert.push_str(&line);
+                        text_to_insert.push('\n');
+                        lines_copied += 1;
                     }
                 }
-                let text_to_insert = lines_to_copy.join("");
 
                 // Insert after destination line
                 let insert_line = dest_line + 1;
@@ -1618,7 +1635,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 // Add newline if we're at end of file
                 let text =
                     if insert_line >= editor.buffer().line_count() && !text_to_insert.is_empty() {
-                        format!("\n{}", text_to_insert.trim_end_matches('\n'))
+                        format!("\n{}", text_to_insert)
                     } else {
                         text_to_insert.clone()
                     };
@@ -1640,7 +1657,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     cursor_after,
                 );
 
-                let count = lines_to_copy.len();
+                let count = lines_copied;
                 editor.set_lsp_status(format!(
                     "{} line{} copied",
                     count,
@@ -1686,15 +1703,18 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     editor.buffer().cursor().col(),
                 );
 
-                // Collect lines to move
-                let mut lines_to_move: Vec<String> = Vec::new();
+                // Collect lines to move. `line_text` strips terminators by
+                // design — re-add `\n` so the moved block keeps its line
+                // breaks.
+                let mut text_to_move = String::new();
+                let mut line_count = 0usize;
                 for idx in start_line..=end_line {
-                    if let Some(line) = editor.buffer().line(idx) {
-                        lines_to_move.push(line.to_string());
+                    if let Some(line) = editor.buffer().line_text(idx) {
+                        text_to_move.push_str(&line);
+                        text_to_move.push('\n');
+                        line_count += 1;
                     }
                 }
-                let text_to_move = lines_to_move.join("");
-                let line_count = lines_to_move.len();
 
                 // Delete the source lines
                 let start_char = editor.buffer().rope().line_to_char(start_line);
@@ -1721,7 +1741,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 // Add newline if we're at end of file
                 let text =
                     if insert_line >= editor.buffer().line_count() && !text_to_move.is_empty() {
-                        format!("\n{}", text_to_move.trim_end_matches('\n'))
+                        format!("\n{}", text_to_move)
                     } else {
                         text_to_move.clone()
                     };

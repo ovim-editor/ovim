@@ -219,8 +219,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let char_col = grapheme_to_char_col(
                     &editor
                         .buffer()
-                        .line(line)
-                        .map(|l| l.trim_end_matches('\n').to_string())
+                        .line_text(line)
+                        .map(|l| l.to_string())
                         .unwrap_or_default(),
                     cursor.col(),
                 );
@@ -229,8 +229,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 // Convert char col to display col for wrap map operations
                 let line_text = editor
                     .buffer()
-                    .line(line)
-                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .line_text(line)
+                    .map(|l| l.to_string())
                     .unwrap_or_default();
                 let disp_col =
                     crate::display::char_col_to_display_col(&line_text, char_col.0, tab_width);
@@ -243,8 +243,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 );
                 let new_line_text = editor
                     .buffer()
-                    .line(new_line)
-                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .line_text(new_line)
+                    .map(|l| l.to_string())
                     .unwrap_or_default();
                 // Compute target display col and convert back to char col
                 let (target_row_start, target_row_end) = wrap_map
@@ -290,8 +290,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let char_col = grapheme_to_char_col(
                     &editor
                         .buffer()
-                        .line(line)
-                        .map(|l| l.trim_end_matches('\n').to_string())
+                        .line_text(line)
+                        .map(|l| l.to_string())
                         .unwrap_or_default(),
                     cursor.col(),
                 );
@@ -299,8 +299,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
                 let line_text = editor
                     .buffer()
-                    .line(line)
-                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .line_text(line)
+                    .map(|l| l.to_string())
                     .unwrap_or_default();
                 let disp_col =
                     crate::display::char_col_to_display_col(&line_text, char_col.0, tab_width);
@@ -311,8 +311,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 let (new_line, sub_line) = wrap_map.visual_to_logical(target_row);
                 let new_line_text = editor
                     .buffer()
-                    .line(new_line)
-                    .map(|l| l.trim_end_matches('\n').to_string())
+                    .line_text(new_line)
+                    .map(|l| l.to_string())
                     .unwrap_or_default();
                 let (target_row_start, target_row_end) = wrap_map
                     .sub_line_display_range(&new_line_text, sub_line)
@@ -742,8 +742,8 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
     if !editor.options.wrap || editor.wrap_map().is_none() {
         let line_text = editor
             .buffer()
-            .line(line_idx)
-            .map(|l| l.trim_end_matches('\n').to_string())
+            .line_text(line_idx)
+            .map(|l| l.to_string())
             .unwrap_or_default();
         let len = grapheme_count(&line_text);
         let target_col = match target {
@@ -770,8 +770,8 @@ fn move_to_screen_line_boundary(editor: &mut Editor, target: ScreenLineTarget) -
 
     let line_text = editor
         .buffer()
-        .line(line_idx)
-        .map(|l| l.trim_end_matches('\n').to_string())
+        .line_text(line_idx)
+        .map(|l| l.to_string())
         .unwrap_or_default();
     let line_len = grapheme_count(&line_text);
     let char_col = grapheme_to_char_col(&line_text, cursor_char_col);

@@ -458,7 +458,7 @@ proptest! {
         }
 
         // Get the specific line
-        let line_text = buffer.line(line_idx).unwrap_or_default();
+        let line_text = buffer.line_text(line_idx).unwrap_or_default();
         let char_count = line_text.chars().take_while(|&c| c != '\n').count();
         let safe_col = col.min(char_count);
 

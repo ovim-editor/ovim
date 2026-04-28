@@ -976,7 +976,7 @@ impl Editor {
                         if line_idx < rope.len_lines() {
                             rope.line(line_idx)
                                 .to_string()
-                                .trim_end_matches('\n')
+                                
                                 .to_string()
                         } else {
                             String::new()

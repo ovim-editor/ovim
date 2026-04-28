@@ -159,7 +159,7 @@ fn test_vim_keymap_set_normal_mode_mapping() {
     )
     .expect("Failed to handle key");
 
-    let line = editor.buffer().line(0).unwrap_or_default();
+    let line = editor.buffer().line_text(0).unwrap_or_default();
     assert_eq!(line.trim_end_matches('\n'), "bc");
 }
 
@@ -192,6 +192,6 @@ fn test_vim_keymap_set_insert_mode_mapping() {
     .expect("Failed to handle second mapped key");
 
     assert_eq!(editor.mode(), Mode::Normal);
-    let line = editor.buffer().line(0).unwrap_or_default();
+    let line = editor.buffer().line_text(0).unwrap_or_default();
     assert_eq!(line.trim_end_matches('\n'), "abc");
 }

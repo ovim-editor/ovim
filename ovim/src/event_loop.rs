@@ -1405,7 +1405,10 @@ async fn handle_api_request(
 mod tests {
     use super::apply_java_status;
     use super::compute_text_width;
+    use super::find_char_positions;
+    use super::handle_edit_line;
     use super::handle_terminal_resize;
+    use super::ApiResponse;
     use ovim::editor::Editor;
 
     #[test]
@@ -1478,16 +1481,114 @@ mod tests {
         assert_eq!(editor.lsp_status(), "Java: Starting Hyperion LSP...");
         assert!(!editor.take_diagnostics_refresh_request());
     }
+
+    // ==================== OV-00243: byte/char mix in handle_edit_line ====================
+
+    #[test]
+    fn find_char_positions_returns_char_offsets_not_bytes() {
+        // `é` is 2 bytes in UTF-8 but 1 char. `str::find` returns byte offsets;
+        // this helper must convert them to char offsets so they're safe to feed
+        // into CharCol.
+        assert_eq!(find_char_positions("é bar", "bar"), vec![2]);
+        assert_eq!(find_char_positions("café bar baz", "ba"), vec![5, 9]);
+        assert_eq!(find_char_positions("ascii only", "only"), vec![6]);
+        assert_eq!(find_char_positions("nope", "missing"), Vec::<usize>::new());
+        assert_eq!(find_char_positions("anything", ""), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn find_char_positions_handles_multi_byte_grapheme_prefix() {
+        // Family emoji is 1 grapheme but 25 bytes / 7 chars. The byte offset
+        // of "x" is 25; the char offset is 7.
+        let s = "👨‍👩‍👧‍👦x";
+        let positions = find_char_positions(s, "x");
+        assert_eq!(positions, vec![7]);
+    }
+
+    #[test]
+    fn handle_edit_line_replaces_match_after_non_ascii_prefix() {
+        // Pre-OV-00243: `find()` returned byte offset 3 for "bar" after "é ",
+        // and `CharCol(3)` pointed past the "b" — corrupting the substitution.
+        // Post-fix: char offset 2 is correct.
+        let mut editor = Editor::with_content("é bar baz\n");
+        let resp = handle_edit_line(&mut editor, Some(0), "bar", "qux");
+        assert!(matches!(resp, ApiResponse::Success(_)));
+        let line = editor.buffer().rope().line(0).to_string();
+        assert_eq!(line.trim_end_matches('\n'), "é qux baz");
+    }
+
+    #[test]
+    fn handle_edit_line_redo_lands_cursor_in_grapheme_space() {
+        // The recorded `cursor_after` on the undo entry is what redo restores.
+        // Pre-OV-00243: cursor_after was `GraphemeCol(byte_offset + byte_len)`
+        // — a byte-quantity smuggled into a grapheme newtype. After substituting
+        // "old" → "NEW" on a line prefixed with a 25-byte / 7-char / 1-grapheme
+        // family emoji, redo must place the cursor at grapheme col 1 + 3 = 4,
+        // not at byte 25 + 3 = 28 (off the end of the line).
+        let mut editor = Editor::with_content("👨‍👩‍👧‍👦old after\n");
+        let resp = handle_edit_line(&mut editor, Some(0), "old", "NEW");
+        assert!(matches!(resp, ApiResponse::Success(_)));
+        editor.undo();
+        editor.redo();
+        let cursor = editor.buffer().cursor();
+        assert_eq!(cursor.line(), 0);
+        assert_eq!(
+            cursor.col().0,
+            4,
+            "redo should place cursor at grapheme col 4 (1 emoji + 3 letters of 'NEW')"
+        );
+    }
+
+    #[test]
+    fn handle_edit_line_undo_restores_non_ascii_line() {
+        // Round-trip undo through a non-ASCII substitution: pre-OV-00243 this
+        // would corrupt the line because the recorded edit positions were
+        // wrong, so undo couldn't restore the original bytes correctly.
+        let original = "café déjà vu\n";
+        let mut editor = Editor::with_content(original);
+        let resp = handle_edit_line(&mut editor, Some(0), "déjà", "now");
+        assert!(matches!(resp, ApiResponse::Success(_)));
+        assert_eq!(
+            editor.buffer().rope().line(0).to_string().trim_end_matches('\n'),
+            "café now vu"
+        );
+        editor.undo();
+        assert_eq!(
+            editor.buffer().rope().line(0).to_string(),
+            original
+        );
+    }
 }
 
 /// Handle edit-line API request: find and replace text on a specific line or whole buffer
+/// Scan `haystack` for every occurrence of `needle` and return char-offset
+/// positions of each match.
+///
+/// `str::find` returns byte offsets, but rope ops (`CharCol`) and cursor
+/// state (`GraphemeCol`) are char/grapheme-indexed. Feeding a byte offset
+/// into `CharCol(...)` silently corrupts non-ASCII content — see OV-00243.
+fn find_char_positions(haystack: &str, needle: &str) -> Vec<usize> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let mut out = Vec::new();
+    let mut byte_start = 0;
+    while let Some(rel) = haystack[byte_start..].find(needle) {
+        let abs_byte = byte_start + rel;
+        out.push(haystack[..abs_byte].chars().count());
+        byte_start = abs_byte + needle.len();
+    }
+    out
+}
+
 fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &str) -> ApiResponse {
     let rope = editor.buffer().rope();
     let total_lines = rope.len_lines();
 
-    // Find the match
+    // Match positions are char offsets — never byte offsets. CharCol/GraphemeCol
+    // are usize-wrapping newtypes, so the type system can't catch byte-offset
+    // smuggling.
     let matches: Vec<(usize, usize)> = if let Some(line_idx) = line {
-        // Search within a specific line (0-indexed)
         if line_idx >= total_lines {
             return ApiResponse::Error(ErrorResponse {
                 error: format!(
@@ -1498,25 +1599,18 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
             });
         }
         let line_text = rope.line(line_idx).to_string();
-        // Trim trailing newline for matching
         let line_content = line_text.trim_end_matches('\n');
-        let mut found = Vec::new();
-        let mut search_start = 0;
-        while let Some(pos) = line_content[search_start..].find(old) {
-            found.push((line_idx, search_start + pos));
-            search_start += pos + old.len();
-        }
-        found
+        find_char_positions(line_content, old)
+            .into_iter()
+            .map(|c| (line_idx, c))
+            .collect()
     } else {
-        // Search whole buffer
         let mut found = Vec::new();
         for line_idx in 0..total_lines {
             let line_text = rope.line(line_idx).to_string();
             let line_content = line_text.trim_end_matches('\n');
-            let mut search_start = 0;
-            while let Some(pos) = line_content[search_start..].find(old) {
-                found.push((line_idx, search_start + pos));
-                search_start += pos + old.len();
+            for c in find_char_positions(line_content, old) {
+                found.push((line_idx, c));
             }
         }
         found
@@ -1537,7 +1631,14 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
         });
     }
 
-    let (match_line, match_col) = matches[0];
+    let (match_line, match_col_chars) = matches[0];
+
+    // Capture grapheme prefix length on the *pre-edit* line so cursor_after
+    // can be computed in grapheme-space without re-scanning the post-edit rope.
+    let pre_edit_line = rope.line(match_line).to_string();
+    let pre_edit_content = pre_edit_line;
+    let prefix_text: String = pre_edit_content.chars().take(match_col_chars).collect();
+    let prefix_graphemes = ovim_core::unicode::grapheme_count(&prefix_text);
 
     // Record cursor position before change (grapheme-space)
     let cursor_before = {
@@ -1548,21 +1649,27 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
     // Perform the edit (delete + insert) inside a `record()` session so the
     // edits land on `edit_log` and feed a single `Change::Recorded` undo
     // entry. Mark buffer modified so LSP didChange fires.
-    let end_col = match_col + old.len();
+    let old_chars = old.chars().count();
+    let end_col_chars = match_col_chars + old_chars;
     let ((), edits) = editor.buffer_mut().record(|buf| {
         buf.delete_range(
             match_line,
-            ovim_core::unicode::CharCol(match_col),
+            ovim_core::unicode::CharCol(match_col_chars),
             match_line,
-            ovim_core::unicode::CharCol(end_col),
+            ovim_core::unicode::CharCol(end_col_chars),
         );
-        buf.insert_text_at(match_line, ovim_core::unicode::CharCol(match_col), new);
+        buf.insert_text_at(
+            match_line,
+            ovim_core::unicode::CharCol(match_col_chars),
+            new,
+        );
     });
 
     if !edits.is_empty() {
+        let cursor_grapheme_col = prefix_graphemes + ovim_core::unicode::grapheme_count(new);
         let cursor_after = ovim::editor::CursorPos::new(
             match_line,
-            ovim_core::unicode::GraphemeCol(match_col + new.len()),
+            ovim_core::unicode::GraphemeCol(cursor_grapheme_col),
         );
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
@@ -1736,7 +1843,7 @@ fn handle_read_lines(editor: &Editor, from: usize, to: usize) -> ApiResponse {
     for idx in from..=to {
         let line_text = rope.line(idx).to_string();
         // Strip trailing newline
-        let text = line_text.trim_end_matches('\n').to_string();
+        let text = line_text.to_string();
         lines.push(LineEntry {
             number: idx + 1, // 1-indexed for display
             text,

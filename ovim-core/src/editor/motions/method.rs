@@ -28,9 +28,9 @@ impl Motions {
 
         // Position cursor at first non-whitespace (strip trailing newline so it
         // isn't counted as whitespace — buffer.line() includes the '\n')
-        if let Some(line) = buffer.line(current_line) {
+        if let Some(line) = buffer.line_text(current_line) {
             let col = line
-                .trim_end_matches('\n')
+                
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .count();
@@ -68,9 +68,9 @@ impl Motions {
 
         // Position cursor at first non-whitespace (strip trailing newline so it
         // isn't counted as whitespace — buffer.line() includes the '\n')
-        if let Some(line) = buffer.line(current_line) {
+        if let Some(line) = buffer.line_text(current_line) {
             let col = line
-                .trim_end_matches('\n')
+                
                 .chars()
                 .take_while(|c| c.is_whitespace())
                 .count();
@@ -107,7 +107,7 @@ impl Motions {
         // Position at the closing brace.
         // Use char_to_grapheme_col because set_position expects a grapheme index,
         // and chars().position() gives a char index (not byte offset like str::find).
-        if let Some(line) = buffer.line(current_line) {
+        if let Some(line) = buffer.line_text(current_line) {
             let char_col = line.chars().position(|c| c == '}').unwrap_or(0);
             let grapheme_col =
                 crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(char_col));
@@ -138,7 +138,7 @@ impl Motions {
         }
 
         // Position at the closing brace (same conversion as method_end_forward)
-        if let Some(line) = buffer.line(current_line) {
+        if let Some(line) = buffer.line_text(current_line) {
             let char_col = line.chars().position(|c| c == '}').unwrap_or(0);
             let grapheme_col =
                 crate::unicode::char_to_grapheme_col(&line, crate::unicode::CharCol(char_col));
@@ -152,7 +152,7 @@ impl Motions {
 
     /// Check if a line is the start of a method/function
     fn is_method_start(buffer: &Buffer, line_idx: usize) -> bool {
-        if let Some(line) = buffer.line(line_idx) {
+        if let Some(line) = buffer.line_text(line_idx) {
             let trimmed = line.trim();
             // Common function definition patterns
             // Rust: fn name(, pub fn name(, async fn name(
@@ -192,7 +192,7 @@ impl Motions {
                     return true;
                 }
                 // Check if next line starts with {
-                if let Some(next_line) = buffer.line(line_idx + 1) {
+                if let Some(next_line) = buffer.line_text(line_idx + 1) {
                     if next_line.trim().starts_with('{') {
                         return true;
                     }
@@ -205,7 +205,7 @@ impl Motions {
     /// Check if a line is the end of a method/function
     /// A method end is a closing } at low indentation
     fn is_method_end(buffer: &Buffer, line_idx: usize) -> bool {
-        if let Some(line) = buffer.line(line_idx) {
+        if let Some(line) = buffer.line_text(line_idx) {
             let trimmed = line.trim();
             let indent = line.len() - line.trim_start().len();
             // A method end is typically a } at indentation <= 4 (or 8 for nested classes)

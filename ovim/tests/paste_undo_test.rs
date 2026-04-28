@@ -38,18 +38,18 @@ fn test_line_paste_after_undo() {
 
     // Buffer should have 4 lines now with "line 1" duplicated
     assert_eq!(editor.buffer().line_count(), 4);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 2");
 
     // Undo the paste
     press(&mut editor, KeyCode::Char('u'));
 
     // Buffer should be restored to original 3 lines
     assert_eq!(editor.buffer().line_count(), 3);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 3\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 3");
 
     // Cursor should be back to original position
     assert_eq!(editor.buffer().cursor().line(), 0);
@@ -72,19 +72,19 @@ fn test_line_paste_before_undo() {
 
     // Buffer should have 4 lines with "line 2" duplicated before current position
     assert_eq!(editor.buffer().line_count(), 4);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(3).unwrap(), "line 3\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(3).unwrap(), "line 3");
 
     // Undo the paste
     press(&mut editor, KeyCode::Char('u'));
 
     // Buffer should be restored to original 3 lines
     assert_eq!(editor.buffer().line_count(), 3);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 3\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 2");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 3");
 
     // Cursor should be back to line 1 (0-indexed)
     assert_eq!(editor.buffer().cursor().line(), 1);
@@ -110,7 +110,7 @@ fn test_character_paste_after_undo() {
 
     // Buffer should now have "hello" pasted after 'd' in "world"
     // yiw yanks "hello" (no trailing space for inner word)
-    let line = editor.buffer().line(0).unwrap();
+    let line = editor.buffer().line_text(0).unwrap();
     assert!(
         line.contains("worldhello"),
         "Expected 'worldhello' in: {}",
@@ -121,7 +121,7 @@ fn test_character_paste_after_undo() {
     press(&mut editor, KeyCode::Char('u'));
 
     // Buffer should be back to "hello world test\n" (with trailing newline)
-    assert_eq!(editor.buffer().line(0).unwrap(), "hello world test\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "hello world test");
 }
 
 #[test]
@@ -148,7 +148,7 @@ fn test_character_paste_before_undo() {
     press(&mut editor, KeyCode::Char('P'));
 
     // Buffer should now have "world" pasted before 't' in "test"
-    let line = editor.buffer().line(0).unwrap();
+    let line = editor.buffer().line_text(0).unwrap();
     assert!(
         line.contains("worldtest") || line.contains("world test"),
         "Expected 'worldtest' or 'world test' in: {}",
@@ -159,7 +159,7 @@ fn test_character_paste_before_undo() {
     press(&mut editor, KeyCode::Char('u'));
 
     // Buffer should be back to "hello world test\n" (with trailing newline)
-    assert_eq!(editor.buffer().line(0).unwrap(), "hello world test\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "hello world test");
 }
 
 #[test]
@@ -178,15 +178,15 @@ fn test_paste_redo() {
     // Undo - should be back to 2 lines
     press(&mut editor, KeyCode::Char('u'));
     assert_eq!(editor.buffer().line_count(), 2);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 2\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 2");
 
     // Redo - should be back to 3 lines
     press_with(&mut editor, KeyCode::Char('r'), Modifiers::CONTROL);
     assert_eq!(editor.buffer().line_count(), 3);
-    assert_eq!(editor.buffer().line(0).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(1).unwrap(), "line 1\n");
-    assert_eq!(editor.buffer().line(2).unwrap(), "line 2\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(1).unwrap(), "line 1");
+    assert_eq!(editor.buffer().line_text(2).unwrap(), "line 2");
 }
 
 #[test]
@@ -217,5 +217,5 @@ fn test_multiple_paste_undo() {
     // Undo again - should have 1 line (original)
     press(&mut editor, KeyCode::Char('u'));
     assert_eq!(editor.buffer().line_count(), 1);
-    assert_eq!(editor.buffer().line(0).unwrap(), "x\n");
+    assert_eq!(editor.buffer().line_text(0).unwrap(), "x");
 }

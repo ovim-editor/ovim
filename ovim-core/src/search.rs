@@ -79,8 +79,8 @@ impl Search {
         let forward = self.forward;
 
         // Convert from_col from grapheme to char for internal search
-        let from_col_char = if let Some(line_text) = buffer.line(from_line) {
-            grapheme_to_char_col(line_text.trim_end_matches('\n'), from_col)
+        let from_col_char = if let Some(line_text) = buffer.line_text(from_line) {
+            grapheme_to_char_col(&line_text, from_col)
         } else {
             CharCol(from_col.0)
         };
@@ -93,8 +93,8 @@ impl Search {
 
         // Convert returned col from char to grapheme
         let result = result.map(|(line, char_col, match_text)| {
-            let grapheme_col = if let Some(line_text) = buffer.line(line) {
-                char_to_grapheme_col(line_text.trim_end_matches('\n'), char_col).0
+            let grapheme_col = if let Some(line_text) = buffer.line_text(line) {
+                char_to_grapheme_col(&line_text, char_col).0
             } else {
                 char_col.0
             };
@@ -120,7 +120,7 @@ impl Search {
 
         // Start from the current position
         for line_idx in from_line..line_count {
-            if let Some(line_text) = buffer.line(line_idx) {
+            if let Some(line_text) = buffer.line_text(line_idx) {
                 let search_from = if line_idx == from_line { from_col.0 } else { 0 };
 
                 // Convert character index to byte offset for regex.find_at()
@@ -141,7 +141,7 @@ impl Search {
 
         // Wrap around to beginning
         for line_idx in 0..from_line {
-            if let Some(line_text) = buffer.line(line_idx) {
+            if let Some(line_text) = buffer.line_text(line_idx) {
                 if let Some(mat) = regex.find(&line_text) {
                     let col = line_text[..mat.start()].chars().count();
                     let match_text = mat.as_str().to_string();
@@ -163,7 +163,7 @@ impl Search {
     ) -> Option<(usize, CharCol, String)> {
         // Search backward from current position
         // First, search the current line up to from_col
-        if let Some(line_text) = buffer.line(from_line) {
+        if let Some(line_text) = buffer.line_text(from_line) {
             // Use character-based slicing to avoid UTF-8 boundary panics
             let search_text: String = line_text.chars().take(from_col.0).collect();
             if let Some(mat) = regex.find_iter(&search_text).last() {
@@ -176,7 +176,7 @@ impl Search {
         // Search previous lines
         if from_line > 0 {
             for line_idx in (0..from_line).rev() {
-                if let Some(line_text) = buffer.line(line_idx) {
+                if let Some(line_text) = buffer.line_text(line_idx) {
                     if let Some(mat) = regex.find_iter(&line_text).last() {
                         let col = line_text[..mat.start()].chars().count();
                         let match_text = mat.as_str().to_string();
@@ -189,7 +189,7 @@ impl Search {
         // Wrap around to end
         let line_count = buffer.line_count();
         for line_idx in (from_line + 1..line_count).rev() {
-            if let Some(line_text) = buffer.line(line_idx) {
+            if let Some(line_text) = buffer.line_text(line_idx) {
                 if let Some(mat) = regex.find_iter(&line_text).last() {
                     let col = line_text[..mat.start()].chars().count();
                     let match_text = mat.as_str().to_string();

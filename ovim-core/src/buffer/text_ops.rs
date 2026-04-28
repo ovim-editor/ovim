@@ -368,13 +368,13 @@ impl Buffer {
             }
 
             // Get the current line and next line
-            let current_line_text = match self.line(start_line) {
-                Some(text) => text.trim_end_matches('\n').to_string(),
+            let current_line_text = match self.line_text(start_line) {
+                Some(text) => text.to_string(),
                 None => break,
             };
 
-            let next_line_text = match self.line(start_line + 1) {
-                Some(text) => text.trim_end_matches('\n').to_string(),
+            let next_line_text = match self.line_text(start_line + 1) {
+                Some(text) => text.to_string(),
                 None => break,
             };
 
@@ -420,8 +420,8 @@ impl Buffer {
     pub fn dedent_lines_at(&mut self, start: usize, end: usize, shift_width: usize) {
         let actual_end = end.min(self.line_count());
         for line_idx in start..actual_end {
-            if let Some(line) = self.line(line_idx) {
-                let line_text = line.trim_end_matches('\n');
+            if let Some(line) = self.line_text(line_idx) {
+                let line_text = line;
                 let chars: Vec<char> = line_text.chars().collect();
                 let mut remove = 0;
                 for &ch in chars.iter().take(shift_width) {
@@ -445,8 +445,8 @@ impl Buffer {
     pub fn clamp_cursor_col(&mut self) {
         let line = self.cursor().line();
         let col = self.cursor().col().0;
-        if let Some(line_text) = self.line(line) {
-            let line_len = grapheme_count(line_text.trim_end_matches('\n'));
+        if let Some(line_text) = self.line_text(line) {
+            let line_len = grapheme_count(&line_text);
             if col > 0 && col >= line_len {
                 self.cursor_mut()
                     .set_col(GraphemeCol(if line_len > 0 { line_len - 1 } else { 0 }));
@@ -471,8 +471,8 @@ impl Buffer {
         };
         for line_idx in start..actual_end {
             // Skip empty/whitespace-only lines
-            if let Some(line) = self.line(line_idx) {
-                let trimmed = line.trim_end_matches('\n');
+            if let Some(line) = self.line_text(line_idx) {
+                let trimmed = line;
                 if trimmed.trim().is_empty() {
                     continue;
                 }
@@ -489,17 +489,17 @@ impl Buffer {
     pub fn toggle_char_at_cursor(&mut self) -> bool {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col(); // GraphemeCol
-        let Some(line) = self.line(line_idx) else {
+        let Some(line) = self.line_text(line_idx) else {
             return false;
         };
-        let line_text = line.trim_end_matches('\n');
-        let line_grapheme_len = grapheme_count(line_text);
+        let line_text = line;
+        let line_grapheme_len = grapheme_count(&line_text);
         if grapheme_col.0 >= line_grapheme_len {
             return false;
         }
 
         // Get the grapheme cluster at cursor (not a single char)
-        let grapheme = grapheme_at_index(line_text, grapheme_col.0).unwrap();
+        let grapheme = grapheme_at_index(&line_text, grapheme_col.0).unwrap();
 
         // Toggle case of all chars in the grapheme (handles combining marks, etc.)
         let toggled: String = grapheme
@@ -516,7 +516,7 @@ impl Buffer {
             .collect();
 
         // Convert grapheme col → char col for rope operations
-        let char_col = grapheme_to_char_col(line_text, grapheme_col);
+        let char_col = grapheme_to_char_col(&line_text, grapheme_col);
         let grapheme_char_len = grapheme.chars().count();
         self.delete_range(
             line_idx,
@@ -528,8 +528,8 @@ impl Buffer {
 
         // Re-read line: toggling may change grapheme count (e.g. ß → SS)
         let new_line_grapheme_len = self
-            .line(line_idx)
-            .map(|l| grapheme_count(l.trim_end_matches('\n')))
+            .line_text(line_idx)
+            .map(|l| grapheme_count(&l))
             .unwrap_or(0);
         let toggled_grapheme_count = grapheme_count(&toggled);
         let new_grapheme_col = grapheme_col.0 + toggled_grapheme_count;
@@ -600,15 +600,15 @@ impl Buffer {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col(); // grapheme index
 
-        let Some(line) = self.line(line_idx) else {
+        let Some(line) = self.line_text(line_idx) else {
             return;
         };
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
 
         // Convert grapheme col → char col for find_number_at_or_after (char-based)
-        let char_col = grapheme_to_char_col(line_text, grapheme_col);
+        let char_col = grapheme_to_char_col(&line_text, grapheme_col);
 
-        let Some((start_col, end_col, number_str)) = find_number_at_or_after(line_text, char_col)
+        let Some((start_col, end_col, number_str)) = find_number_at_or_after(&line_text, char_col)
         else {
             return;
         };
@@ -630,9 +630,9 @@ impl Buffer {
         // Convert the char-based end position → grapheme for cursor
         let new_char_end_col =
             start_col.saturating_add(new_number_str.chars().count().saturating_sub(1));
-        let new_line = self.line(line_idx).unwrap_or_default();
-        let new_line_text = new_line.trim_end_matches('\n');
-        let new_grapheme_col = char_to_grapheme_col(new_line_text, new_char_end_col);
+        let new_line = self.line_text(line_idx).unwrap_or_default();
+        let new_line_text = new_line;
+        let new_grapheme_col = char_to_grapheme_col(&new_line_text, new_char_end_col);
         self.cursor_mut().set_position(line_idx, new_grapheme_col);
     }
 
@@ -662,10 +662,10 @@ impl Buffer {
         let line_idx = self.cursor().line();
         let col = self.cursor_char_col();
 
-        let Some(line) = self.line(line_idx) else {
+        let Some(line) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         let found = if forward {
@@ -724,10 +724,10 @@ impl Buffer {
     pub fn delete_chars_forward(&mut self, count: usize) -> String {
         let line_idx = self.cursor().line();
         let col = self.cursor_char_col();
-        let Some(line) = self.line(line_idx) else {
+        let Some(line) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_len = line.trim_end_matches('\n').chars().count();
+        let line_len = line.chars().count();
         if col >= line_len {
             return String::new();
         }
@@ -773,10 +773,10 @@ impl Buffer {
     pub fn delete_to_end_of_line(&mut self) -> String {
         let line_idx = self.cursor().line();
         let col = self.cursor_char_col();
-        let Some(line) = self.line(line_idx) else {
+        let Some(line) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_len = line.trim_end_matches('\n').chars().count();
+        let line_len = line.chars().count();
         if col >= line_len {
             return String::new();
         }
@@ -801,8 +801,8 @@ impl Buffer {
 
         // dw should stop at end of line, not cross newlines
         if end_line > start_line {
-            if let Some(line) = self.line(start_line) {
-                let line_len = line.trim_end_matches('\n').chars().count();
+            if let Some(line) = self.line_text(start_line) {
+                let line_len = line.chars().count();
                 self.cursor_mut().set_position(start_line, start_grapheme);
                 let deleted =
                     self.delete_range(start_line, start_col, start_line, CharCol(line_len));
@@ -815,8 +815,8 @@ impl Buffer {
             && end_line + 1 >= self.line_count()
         {
             // Motion didn't move — last word on last line. Delete to end of line.
-            if let Some(line) = self.line(end_line) {
-                end_col = CharCol(line.trim_end_matches('\n').chars().count());
+            if let Some(line) = self.line_text(end_line) {
+                end_col = CharCol(line.chars().count());
             }
         }
 
@@ -974,10 +974,10 @@ impl Buffer {
         let grapheme_col = self.cursor().col();
         let col = self.cursor_char_col();
 
-        let Some(line) = self.line(line_idx) else {
+        let Some(line) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_text = line.trim_end_matches('\n');
+        let line_text = line;
         let chars_count = line_text.chars().count();
 
         if col >= chars_count {
@@ -1136,8 +1136,8 @@ impl Buffer {
 
         // dW should stop at end of line, not cross newlines (same as dw)
         if end_line > start_line {
-            if let Some(line) = self.line(start_line) {
-                let line_len = line.trim_end_matches('\n').chars().count();
+            if let Some(line) = self.line_text(start_line) {
+                let line_len = line.chars().count();
                 self.set_cursor_char_col(start_line, start_col);
                 let deleted =
                     self.delete_range(start_line, start_col, start_line, CharCol(line_len));
@@ -1150,8 +1150,8 @@ impl Buffer {
             && end_line + 1 >= self.line_count()
         {
             // Motion didn't move — last WORD on last line. Delete to end of line.
-            if let Some(line) = self.line(end_line) {
-                end_col = CharCol(line.trim_end_matches('\n').chars().count());
+            if let Some(line) = self.line_text(end_line) {
+                end_col = CharCol(line.chars().count());
             }
         }
 

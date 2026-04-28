@@ -22,9 +22,9 @@ impl Editor {
 
         let line_text = self
             .buffer()
-            .line(line_idx)
+            .line_text(line_idx)
             .unwrap_or_default()
-            .trim_end_matches('\n')
+            
             .to_string();
 
         completion_trigger_context_from_line(&line_text, cursor_col.0)
@@ -55,9 +55,9 @@ impl Editor {
             if trigger_col <= cursor_col {
                 let line_text = self
                     .buffer()
-                    .line(line_idx)
+                    .line_text(line_idx)
                     .unwrap_or_default()
-                    .trim_end_matches('\n')
+                    
                     .to_string();
 
                 // Extract prefix using char indices
@@ -87,9 +87,9 @@ impl Editor {
 
         let line_text = self
             .buffer()
-            .line(self.buffer().cursor().line())
+            .line_text(self.buffer().cursor().line())
             .unwrap_or_default()
-            .trim_end_matches('\n')
+            
             .to_string();
 
         // Extract prefix using char indices
@@ -136,9 +136,9 @@ impl Editor {
         let raw_trigger_char = {
             let line_text = self
                 .buffer()
-                .line(cursor.line())
+                .line_text(cursor.line())
                 .unwrap_or_default()
-                .trim_end_matches('\n')
+                
                 .to_string();
             if col > 0 {
                 if col >= 2 {

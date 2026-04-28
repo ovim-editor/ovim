@@ -48,7 +48,12 @@ impl Editor {
                     buf.delete_range(start_line, start_col, end_line, end_col);
                 }
                 if !edit.new_text.is_empty() {
-                    buf.insert_text_at(start_line, start_col, &edit.new_text);
+                    // LSP servers running on Windows (or returning text from
+                    // CRLF source files) ship `\r\n` in TextEdit.newText.
+                    // The rope is LF-only by convention — normalize at the
+                    // seam (OV-00251).
+                    let new_text = crate::buffer::normalize_for_buffer(&edit.new_text);
+                    buf.insert_text_at(start_line, start_col, new_text.as_ref());
                 }
             }
         });

@@ -368,7 +368,7 @@ impl Editor {
             let content = self.buffers[scratch.scratch_buffer_index]
                 .rope()
                 .to_string();
-            let trimmed = content.trim_end_matches('\n').to_string();
+            let trimmed = content.to_string();
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.input = trimmed;
                 chat.input_cursor = chat.input.len();

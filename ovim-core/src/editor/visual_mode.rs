@@ -1,6 +1,6 @@
 use super::Editor;
 use crate::mode::Mode;
-use crate::unicode::GraphemeCol;
+use crate::unicode::{grapheme_count, GraphemeCol};
 
 impl Editor {
     /// Gets the visual selection start position
@@ -31,13 +31,16 @@ impl Editor {
             // Set the mode first
             self.mode = mode;
 
-            // Clamp start position to buffer bounds
+            // Clamp start position to buffer bounds. start.1/end.1 are
+            // grapheme cols (sourced from `cursor.col()`), so clamp against
+            // grapheme count — not `chars().count()` which double-counts
+            // multi-codepoint graphemes (emoji, ZWJ, flags). OV-00246.
             let line_count = self.buffer().line_count();
             let clamped_start_line = start.0.min(line_count.saturating_sub(1));
             let start_line_len = self
                 .buffer()
-                .line(clamped_start_line)
-                .map(|l| l.trim_end_matches('\n').chars().count())
+                .line_text(clamped_start_line)
+                .map(|l| grapheme_count(&l))
                 .unwrap_or(0);
             let clamped_start_col = if mode == crate::mode::Mode::VisualLine {
                 // For VisualLine, always use column 0
@@ -50,8 +53,8 @@ impl Editor {
             let clamped_end_line = end.0.min(line_count.saturating_sub(1));
             let end_line_len = self
                 .buffer()
-                .line(clamped_end_line)
-                .map(|l| l.trim_end_matches('\n').chars().count())
+                .line_text(clamped_end_line)
+                .map(|l| grapheme_count(&l))
                 .unwrap_or(0);
             let clamped_end_col = if mode == crate::mode::Mode::VisualLine {
                 // For VisualLine, always use column 0
@@ -67,6 +70,16 @@ impl Editor {
                 .cursor_mut()
                 .set_position(clamped_end_line, GraphemeCol(clamped_end_col));
         }
+    }
+
+    #[cfg(test)]
+    fn set_last_visual_selection_for_test(
+        &mut self,
+        start: (usize, usize),
+        end: (usize, usize),
+        mode: Mode,
+    ) {
+        self.visual.last_visual_selection = Some((start, end, mode));
     }
 
     /// Sets visual block insert/append state for replay on insert mode exit
@@ -102,8 +115,8 @@ impl Editor {
             match self.mode {
                 Mode::VisualLine => {
                     // Get the length of the end line (excluding newline)
-                    if let Some(line_text) = self.buffer().line(end.0) {
-                        let line_len = line_text.trim_end_matches('\n').chars().count();
+                    if let Some(line_text) = self.buffer().line_text(end.0) {
+                        let line_len = line_text.chars().count();
                         end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                     }
 
@@ -119,8 +132,8 @@ impl Editor {
                         let mut new_start = end;
                         new_start.1 = 0;
                         let mut new_end = start;
-                        if let Some(line_text) = self.buffer().line(new_end.0) {
-                            let line_len = line_text.trim_end_matches('\n').chars().count();
+                        if let Some(line_text) = self.buffer().line_text(new_end.0) {
+                            let line_len = line_text.chars().count();
                             new_end.1 = if line_len > 0 { line_len - 1 } else { 0 };
                         }
                         (new_start, new_end)
@@ -159,5 +172,70 @@ impl Editor {
                 }
             }
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// OV-00246: `restore_last_visual_selection` clamped grapheme cols
+    /// against `chars().count()`. On lines with multi-codepoint graphemes
+    /// (emoji, ZWJ, flags) the char count exceeds the grapheme count, so
+    /// the clamp let through values that were out of grapheme range —
+    /// landing the cursor past the end of the line on `gv`.
+    #[test]
+    fn restore_clamps_against_grapheme_count_not_chars() {
+        // Line: "👨‍👩‍👧‍👦\n" — 1 grapheme, 7 chars.
+        // Saved end col = 6 (e.g., from a prior, longer line that got
+        // truncated since save).
+        // Pre-fix clamp: 6.min(chars - 1) = 6.min(6) = 6 → out of range.
+        // Post-fix clamp: 6.min(graphemes - 1) = 6.min(0) = 0 → valid.
+        let mut editor = Editor::with_content("👨‍👩‍👧‍👦\n");
+        editor.set_last_visual_selection_for_test((0, 0), (0, 6), Mode::Visual);
+
+        editor.restore_last_visual_selection();
+
+        let cursor = editor.buffer().cursor();
+        assert_eq!(cursor.line(), 0);
+        assert_eq!(
+            cursor.col().0,
+            0,
+            "cursor should clamp to last grapheme col (0), not last char col"
+        );
+    }
+
+    #[test]
+    fn restore_clamps_within_mixed_grapheme_line() {
+        // Line: "x👨‍👩‍👧‍👦y\n" — 3 graphemes, 9 chars.
+        // Saved end col = 8 (out of grapheme range, in char range).
+        // Post-fix clamp: 8.min(2) = 2 → valid grapheme col on the 'y'.
+        let mut editor = Editor::with_content("x👨‍👩‍👧‍👦y\n");
+        editor.set_last_visual_selection_for_test((0, 0), (0, 8), Mode::Visual);
+
+        editor.restore_last_visual_selection();
+
+        let cursor = editor.buffer().cursor();
+        assert_eq!(cursor.line(), 0);
+        assert_eq!(
+            cursor.col().0,
+            2,
+            "cursor should clamp to last grapheme col (2), not last char col (8)"
+        );
+    }
+
+    #[test]
+    fn restore_preserves_in_range_col_on_ascii_line() {
+        // Sanity check: ASCII-only behavior unchanged. chars().count() ==
+        // grapheme_count for ASCII so the fix shouldn't shift the cursor.
+        let mut editor = Editor::with_content("hello world\n");
+        editor.set_last_visual_selection_for_test((0, 2), (0, 7), Mode::Visual);
+
+        editor.restore_last_visual_selection();
+
+        let cursor = editor.buffer().cursor();
+        assert_eq!(cursor.line(), 0);
+        assert_eq!(cursor.col().0, 7);
+        assert_eq!(editor.visual_start(), Some((0, 2)));
     }
 }

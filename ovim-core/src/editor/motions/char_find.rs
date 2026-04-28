@@ -17,9 +17,9 @@ impl Motions {
         }
 
         let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
+        let line = line;
         let chars: Vec<char> = line.chars().collect();
-        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
+        let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
         let mut found_count = 0;
         for (i, &c) in chars.iter().enumerate().skip(char_col + 1) {
@@ -29,7 +29,7 @@ impl Motions {
                     buffer
                         .cursor_mut()
                         .set_col(crate::unicode::char_to_grapheme_col(
-                            line,
+                            &line,
                             crate::unicode::CharCol(i),
                         ));
                     return true;
@@ -52,9 +52,9 @@ impl Motions {
         }
 
         let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
+        let line = line;
         let chars: Vec<char> = line.chars().collect();
-        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
+        let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
         if char_col == 0 {
             return false;
@@ -68,7 +68,7 @@ impl Motions {
                     buffer
                         .cursor_mut()
                         .set_col(crate::unicode::char_to_grapheme_col(
-                            line,
+                            &line,
                             crate::unicode::CharCol(i),
                         ));
                     return true;
@@ -91,9 +91,9 @@ impl Motions {
         }
 
         let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
+        let line = line;
         let chars: Vec<char> = line.chars().collect();
-        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
+        let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
         let mut found_count = 0;
         for (i, &c) in chars.iter().enumerate().skip(char_col + 1) {
@@ -106,7 +106,7 @@ impl Motions {
                         buffer
                             .cursor_mut()
                             .set_col(crate::unicode::char_to_grapheme_col(
-                                line,
+                                &line,
                                 crate::unicode::CharCol(i - 1),
                             ));
                         return true;
@@ -131,9 +131,9 @@ impl Motions {
         }
 
         let line = rope.line(line_idx).to_string();
-        let line = line.trim_end_matches('\n');
+        let line = line;
         let chars: Vec<char> = line.chars().collect();
-        let char_col = crate::unicode::grapheme_to_char_col(line, grapheme_col).0;
+        let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
         if char_col == 0 {
             return false;
@@ -151,7 +151,7 @@ impl Motions {
                         buffer
                             .cursor_mut()
                             .set_col(crate::unicode::char_to_grapheme_col(
-                                line,
+                                &line,
                                 crate::unicode::CharCol(i + 1),
                             ));
                         return true;

@@ -179,13 +179,9 @@ impl EditorTest {
 
     /// Get the full buffer content as a string (including newlines)
     pub fn buffer_content(&self) -> String {
-        let mut content = String::new();
-        for i in 0..self.editor.buffer().line_count() {
-            if let Some(line) = self.editor.buffer().line(i) {
-                content.push_str(&line);
-            }
-        }
-        // Ensure content always ends with a newline (Vim behavior)
+        // Read straight from the rope — `line_text` strips terminators by
+        // design, so per-line concatenation would lose the line breaks.
+        let mut content = self.editor.buffer().rope().to_string();
         if !content.ends_with('\n') {
             content.push('\n');
         }
@@ -201,8 +197,8 @@ impl EditorTest {
         // Build visual representation with cursor indicator
         let mut lines = Vec::new();
         for i in 0..self.editor.buffer().line_count() {
-            if let Some(line) = self.editor.buffer().line(i) {
-                let line_display = line.trim_end_matches('\n');
+            if let Some(line) = self.editor.buffer().line_text(i) {
+                let line_display = line.as_ref();
                 if i == cursor.line() {
                     // Show cursor position with a marker
                     let col = cursor.col().0;
@@ -278,9 +274,9 @@ impl EditorTest {
         self.editor.buffer().line_count()
     }
 
-    /// Get line content
-    pub fn line(&self, idx: usize) -> Option<String> {
-        self.editor.buffer().line(idx)
+    /// Get line content (terminator stripped — matches `Buffer::line_text`).
+    pub fn line_text(&self, idx: usize) -> Option<String> {
+        self.editor.buffer().line_text(idx).map(|c| c.into_owned())
     }
 
     /// Get current mode

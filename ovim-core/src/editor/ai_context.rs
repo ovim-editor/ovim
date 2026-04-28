@@ -101,7 +101,7 @@ impl Editor {
 fn collect_lines(editor: &Editor, start_line: usize, end_line: usize) -> String {
     let mut content = String::new();
     for line in start_line..=end_line {
-        if let Some(text) = editor.buffer().line(line) {
+        if let Some(text) = editor.buffer().line_text(line) {
             content.push_str(&text);
         }
     }

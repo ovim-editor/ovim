@@ -19,7 +19,7 @@ impl Motions {
 
         // First skip any blank lines at/after cursor
         while line_idx < total_lines {
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 if !line.trim().is_empty() {
                     break;
                 }
@@ -29,7 +29,7 @@ impl Motions {
 
         // Then skip non-blank lines to find the next blank line boundary
         while line_idx < total_lines {
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 if line.trim().is_empty() {
                     break;
                 }
@@ -63,7 +63,7 @@ impl Motions {
 
         // Fix: Skip blank lines backward - check line 0 explicitly
         while line_idx > 0 {
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     break;
@@ -73,7 +73,7 @@ impl Motions {
         }
         // Check line 0 after loop (loop condition skips it)
         if line_idx == 0 {
-            if let Some(line) = buffer.line(0) {
+            if let Some(line) = buffer.line_text(0) {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     // Line 0 is non-blank, continue to next phase
@@ -87,7 +87,7 @@ impl Motions {
 
         // Fix: Skip non-blank lines backward until we find a blank line
         while line_idx > 0 {
-            if let Some(line) = buffer.line(line_idx) {
+            if let Some(line) = buffer.line_text(line_idx) {
                 let trimmed = line.trim();
                 if trimmed.is_empty() {
                     break; // Stop at the blank line
@@ -97,7 +97,7 @@ impl Motions {
         }
         // Check line 0 after loop - if we're here, check if it's blank
         if line_idx == 0 {
-            if let Some(line) = buffer.line(0) {
+            if let Some(line) = buffer.line_text(0) {
                 let trimmed = line.trim();
                 if !trimmed.is_empty() {
                     // Line 0 is non-blank, we've gone as far back as we can

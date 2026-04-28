@@ -154,7 +154,7 @@ impl Editor {
             if line_idx >= line_count {
                 continue;
             }
-            let line_text = self.buffer().line(line_idx)?;
+            let line_text = self.buffer().line_text(line_idx)?;
             let trimmed = line_text.trim();
 
             if trimmed == "#[test]" || trimmed == "#[tokio::test]" {
@@ -167,7 +167,7 @@ impl Editor {
 
         // The fn definition should be on the next non-attribute, non-empty line
         for line_idx in (attr_line + 1)..line_count.min(attr_line + 5) {
-            let line_text = self.buffer().line(line_idx)?;
+            let line_text = self.buffer().line_text(line_idx)?;
             let trimmed = line_text.trim();
 
             // Skip other attributes

@@ -11,8 +11,8 @@ use crate::unicode::GraphemeCol;
 /// mirrors normal-mode cursor invariants. (OV-00190.)
 fn clamp_grapheme_col(buffer: &Buffer, line_idx: usize, col: usize) -> usize {
     let line_len = buffer
-        .line(line_idx)
-        .map(|line| crate::unicode::grapheme_count(line.trim_end_matches('\n')))
+        .line_text(line_idx)
+        .map(|line| crate::unicode::grapheme_count(&line))
         .unwrap_or(0);
     col.min(line_len.saturating_sub(1))
 }
@@ -143,7 +143,7 @@ impl Editor {
                 let clamped_line = mark.line.min(max_line);
 
                 // Find first non-blank character on the line (char index → grapheme)
-                let first_non_blank = if let Some(line_text) = self.buffer().line(clamped_line) {
+                let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line) {
                     let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())
@@ -183,7 +183,7 @@ impl Editor {
                 let clamped_line = global_mark.line.min(max_line);
 
                 // Find first non-blank character on the line (char index → grapheme)
-                let first_non_blank = if let Some(line_text) = self.buffer().line(clamped_line) {
+                let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line) {
                     let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())

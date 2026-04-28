@@ -61,8 +61,8 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     let line_text = |line: usize| {
         editor
             .buffer()
-            .line(line)
-            .map(|l| l.trim_end_matches('\n').to_string())
+            .line_text(line)
+            .map(|l| l.to_string())
             .unwrap_or_default()
     };
 
@@ -175,8 +175,8 @@ fn check_concealed_link_click(editor: &Editor, screen_col: u16, screen_row: u16)
     // Get the line text and scan for concealed links
     let line_text = editor
         .buffer()
-        .line(buffer_line)
-        .map(|l| l.trim_end_matches('\n').to_string())
+        .line_text(buffer_line)
+        .map(|l| l.to_string())
         .unwrap_or_default();
 
     let spans = scan_markdown_conceal(&line_text);
