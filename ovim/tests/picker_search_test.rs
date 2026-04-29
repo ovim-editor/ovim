@@ -228,7 +228,10 @@ fn match_positions_populated_on_fuzzy() {
 // ============================================================================
 
 #[test]
-fn move_down_and_up_cycles_selection() {
+fn move_down_and_up_wraps_selection() {
+    // OV-00255: picker selection wraps around at both ends, matching the
+    // inline completion popup. Pressing Down at the bottom jumps to the
+    // top; pressing Up at the top jumps to the bottom.
     let mut picker = file_picker(&["a.rs", "b.rs", "c.rs"]);
 
     assert_eq!(picker.selected_index(), 0);
@@ -236,17 +239,31 @@ fn move_down_and_up_cycles_selection() {
     assert_eq!(picker.selected_index(), 1);
     picker.move_down();
     assert_eq!(picker.selected_index(), 2);
-    // Clamp at end
+    // Wrap from last to first
     picker.move_down();
-    assert_eq!(picker.selected_index(), 2);
+    assert_eq!(picker.selected_index(), 0);
 
+    // Wrap from first to last
+    picker.move_up();
+    assert_eq!(picker.selected_index(), 2);
     picker.move_up();
     assert_eq!(picker.selected_index(), 1);
     picker.move_up();
     assert_eq!(picker.selected_index(), 0);
-    // Clamp at start
-    picker.move_up();
-    assert_eq!(picker.selected_index(), 0);
+}
+
+#[test]
+fn move_n_clamps_does_not_wrap() {
+    // Page-wise motion (move_down_n / move_up_n driven by Ctrl-D / Ctrl-U)
+    // intentionally clamps rather than wrapping. Wrapping a half-page
+    // jump from the bottom of the list back to the middle of the list
+    // would be disorienting.
+    let mut picker = file_picker(&["a.rs", "b.rs", "c.rs"]);
+
+    picker.move_down_n(10);
+    assert_eq!(picker.selected_index(), 2, "down_n clamps at end");
+    picker.move_up_n(10);
+    assert_eq!(picker.selected_index(), 0, "up_n clamps at start");
 }
 
 #[test]

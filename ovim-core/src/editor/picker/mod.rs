@@ -257,15 +257,19 @@ impl Picker {
         }
     }
 
-    /// Moves selection down
+    /// Moves selection down with wraparound (last → first). Mirrors the
+    /// inline completion popup (`completion.rs::select_next`) so picker
+    /// navigation is consistent with the rest of the editor (OV-00255).
     pub fn move_down(&mut self) {
         let count = self.filtered_result_count();
         if count > 0 {
-            self.selected_index = (self.selected_index + 1).min(count - 1);
+            self.selected_index = (self.selected_index + 1) % count;
         }
     }
 
-    /// Moves selection down by n items
+    /// Moves selection down by n items. Page-wise motion clamps at the
+    /// bottom rather than wrapping — vim's PageDown / Ctrl-D never wrap
+    /// and users don't expect them to.
     pub fn move_down_n(&mut self, n: usize) {
         let count = self.filtered_result_count();
         if count > 0 {
@@ -273,14 +277,21 @@ impl Picker {
         }
     }
 
-    /// Moves selection up
+    /// Moves selection up with wraparound (first → last). See
+    /// [`Self::move_down`] for rationale (OV-00255).
     pub fn move_up(&mut self) {
-        if self.selected_index > 0 {
-            self.selected_index -= 1;
+        let count = self.filtered_result_count();
+        if count > 0 {
+            self.selected_index = if self.selected_index == 0 {
+                count - 1
+            } else {
+                self.selected_index - 1
+            };
         }
     }
 
-    /// Moves selection up by n items
+    /// Moves selection up by n items. Like [`Self::move_down_n`], page-wise
+    /// motion does not wrap.
     pub fn move_up_n(&mut self, n: usize) {
         self.selected_index = self.selected_index.saturating_sub(n);
     }
