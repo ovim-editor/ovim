@@ -1,6 +1,7 @@
+#![allow(non_snake_case)]
+
 mod helpers;
 use helpers::EditorTest;
-use ovim::mode::Mode;
 
 // ============================================================================
 // 'i' command - Insert before cursor

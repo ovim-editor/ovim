@@ -1,3 +1,5 @@
+#![allow(non_snake_case)]
+
 //! Comprehensive tests for the input state machine.
 //!
 //! This test file defines the expected behavior for all input handling in ovim,

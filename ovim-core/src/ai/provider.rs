@@ -85,7 +85,7 @@ pub async fn request_ai_edit(
         };
 
         match extract_and_check_elision(&current_format, &response_text) {
-            Ok((extracted, elision)) if !elision.is_empty() && attempt < retry_max => {
+            Ok((_extracted, elision)) if !elision.is_empty() && attempt < retry_max => {
                 // Elision detected, still have retries — re-prompt with anti-elision instructions.
                 let feedback = format!(
                     "Your response contained placeholders that omit code: {}. \

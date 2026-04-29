@@ -7,6 +7,8 @@
 //! - rust-analyzer installed and working
 //! - Tests spawn actual headless ovim processes
 
+#![allow(dead_code)]
+
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::process::{Child, Command, Stdio};
@@ -15,7 +17,6 @@ use tokio::time::sleep;
 
 /// Editor snapshot from API
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct EditorSnapshot {
     pub buffer: BufferInfo,
     pub cursor: CursorPosition,
@@ -24,7 +25,6 @@ pub struct EditorSnapshot {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct BufferInfo {
     pub content: String,
     pub line_count: usize,
@@ -49,7 +49,6 @@ pub struct LspStatus {
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct RenderInfo {
     pub width: u16,
     pub height: u16,

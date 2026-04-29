@@ -1,5 +1,3 @@
-use ovim::mode::Mode;
-
 mod helpers;
 use helpers::EditorTest;
 

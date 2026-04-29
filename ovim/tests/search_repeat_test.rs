@@ -1,4 +1,4 @@
-use ovim::mode::Mode;
+#![allow(non_snake_case)]
 
 mod helpers;
 use helpers::EditorTest;

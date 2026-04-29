@@ -1045,7 +1045,6 @@ impl Editor {
     fn handle_location_result(
         &mut self,
         result: anyhow::Result<Option<lsp_types::Location>>,
-        _pending: crate::editor::lsp_state::PendingLspRequest<Option<lsp_types::Location>>,
         label: &str,
         log_tag: &str,
         new_tab: bool,
@@ -2024,7 +2023,7 @@ impl Editor {
 mod tests {
     use super::*;
     use crate::editor::lsp_slot::{CompletionResult, InlayHintResult};
-    use crate::editor::lsp_state::{InlayHintRequestKey, PendingLspRequest};
+    use crate::editor::lsp_state::InlayHintRequestKey;
     use crate::lsp::uri_from_file_path;
     use lsp_types::{CompletionItem, InlayHint, InlayHintLabel, Location, Position, Range};
     use tokio::sync::oneshot;
@@ -2054,16 +2053,8 @@ mod tests {
         let uri = uri_from_file_path(&target).unwrap();
         let location = Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0)));
 
-        let (_, receiver) = oneshot::channel::<anyhow::Result<Option<Location>>>();
-        let pending = PendingLspRequest {
-            task: tokio::spawn(async { Ok(None) }),
-            receiver,
-            started: std::time::Instant::now(),
-        };
-
         let handled = editor.handle_location_result(
             Ok(Some(location)),
-            pending,
             "Definition",
             "LSP-DEFINITION",
             true,

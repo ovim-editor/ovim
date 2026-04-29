@@ -142,15 +142,6 @@ impl HoverCache {
     }
 }
 
-/// Pending LSP request with task handle for cancellation.
-/// Only used in legacy test code; new code uses `Slot<T>`.
-#[cfg(test)]
-pub struct PendingLspRequest<T> {
-    pub task: tokio::task::JoinHandle<anyhow::Result<T>>,
-    pub receiver: tokio::sync::oneshot::Receiver<anyhow::Result<T>>,
-    pub started: std::time::Instant,
-}
-
 #[derive(Debug, Clone)]
 pub struct AvailableCodeAction {
     /// LSP server ID that produced this action (language ID for primary server).

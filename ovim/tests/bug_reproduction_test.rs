@@ -4,6 +4,8 @@
 //! Bug 2: `p` paste behavior inconsistency
 //! Bug 3: `o<esc>` leaves spaces instead of empty line
 
+#![allow(non_snake_case)]
+
 mod helpers;
 use helpers::EditorTest;
 use ovim::editor::Editor;

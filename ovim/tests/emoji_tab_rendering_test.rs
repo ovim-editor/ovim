@@ -5,7 +5,7 @@ use ovim::unicode::GraphemeCol;
 #[test]
 fn test_expand_tabs_basic() {
     // Test basic tab expansion with tab_width = 4
-    let mut editor = Editor::with_content("hello\tworld");
+    let editor = Editor::with_content("hello\tworld");
     let _renderer = Renderer::new();
 
     // Buffer adds trailing newline (Vim behavior)
@@ -15,7 +15,7 @@ fn test_expand_tabs_basic() {
 #[test]
 fn test_expand_tabs_at_tab_stop() {
     // Tab at column 4 should expand to 4 spaces (next tab stop at 8)
-    let mut editor = Editor::with_content("1234\tx");
+    let editor = Editor::with_content("1234\tx");
     assert!(editor.buffer().rope().to_string().contains('\t'));
 }
 
@@ -23,7 +23,7 @@ fn test_expand_tabs_at_tab_stop() {
 fn test_expand_tabs_with_emoji() {
     // Emoji takes 2 columns, so tab position should account for that
     let content = "😀\ttest";
-    let mut editor = Editor::with_content(content);
+    let editor = Editor::with_content(content);
 
     // Should have emoji and tab
     assert!(editor.buffer().rope().to_string().contains("😀"));
@@ -33,7 +33,7 @@ fn test_expand_tabs_with_emoji() {
 #[test]
 fn test_expand_tabs_multiple() {
     let content = "a\tb\tc\td";
-    let mut editor = Editor::with_content(content);
+    let editor = Editor::with_content(content);
 
     let rope = editor.buffer().rope();
     // Buffer adds trailing newline
@@ -75,7 +75,7 @@ fn test_mixed_width_rendering() {
 fn test_tabs_with_wide_chars() {
     // Chinese character (width 2) followed by tab
     let content = "你\tworld";
-    let mut editor = Editor::with_content(content);
+    let editor = Editor::with_content(content);
 
     // Buffer adds trailing newline
     assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
@@ -84,7 +84,7 @@ fn test_tabs_with_wide_chars() {
 #[test]
 fn test_emoji_with_tabs_in_code() {
     let content = "function test() {\n\t// Say hello 👋\n\tconsole.log(\"Hi 😀\");\n}";
-    let mut editor = Editor::with_content(content);
+    let editor = Editor::with_content(content);
 
     // Verify content preserved
     assert!(editor.buffer().rope().to_string().contains("👋"));
@@ -136,7 +136,7 @@ fn test_multiple_tabs_with_emojis() {
 fn test_zero_width_characters() {
     // Zero-width joiner (invisible)
     let content = "a\u{200D}b";
-    let mut editor = Editor::with_content(content);
+    let editor = Editor::with_content(content);
 
     // Buffer adds trailing newline
     assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
@@ -251,7 +251,7 @@ fn test_render_with_emojis_no_panic() {
 fn test_complex_unicode_graphemes() {
     // Regional indicator symbols (flags)
     let content = "🇺🇸";
-    let mut editor = Editor::with_content(content);
+    let editor = Editor::with_content(content);
 
     // Buffer adds trailing newline
     assert_eq!(editor.buffer().rope().to_string(), format!("{}\n", content));
