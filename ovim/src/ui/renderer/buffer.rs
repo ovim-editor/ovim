@@ -897,8 +897,7 @@ fn line_display_width(line: &Line<'_>) -> usize {
 fn pad_line_to(line: &mut Line<'static>, target_width: usize) {
     let width = line_display_width(line);
     if width < target_width {
-        line.spans
-            .push(Span::raw(" ".repeat(target_width - width)));
+        line.spans.push(Span::raw(" ".repeat(target_width - width)));
     }
 }
 
@@ -1061,8 +1060,7 @@ fn overlay_eol_decoration_at_edge(
 
     // Budget: gap + message at the right edge, message capped at 1/3 of viewport.
     let msg = fit_with_ellipsis(&dec.text, text_width / 3);
-    let overlay_width =
-        EOL_DIAG_GAP + msg.chars().map(char_display_width).sum::<usize>();
+    let overlay_width = EOL_DIAG_GAP + msg.chars().map(char_display_width).sum::<usize>();
 
     // Truncate code to make room, pad up to the truncation point, then push
     // gap + styled message + final padding.
@@ -1526,12 +1524,7 @@ pub fn render_buffer(
                             visual_rows_used += 1;
                         }
                     } else {
-                        place_eol_on_line(
-                            &mut cached_line,
-                            &eol_decs,
-                            text_width,
-                            render_width,
-                        );
+                        place_eol_on_line(&mut cached_line, &eol_decs, text_width, render_width);
                         pad_line_to(&mut cached_line, render_width);
                         if gutter_area.is_some() {
                             gutter_lines.push(build_gutter_line(
@@ -1721,8 +1714,11 @@ pub fn render_buffer(
                     let end_char = if d.range.end.line as usize > line_idx {
                         line_char_count_for_diag
                     } else {
-                        utf16_offset_to_char_idx(&line_text_original, d.range.end.character as usize)
-                            .min(line_char_count_for_diag)
+                        utf16_offset_to_char_idx(
+                            &line_text_original,
+                            d.range.end.character as usize,
+                        )
+                        .min(line_char_count_for_diag)
                     };
                     let color = match d.severity {
                         Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
@@ -2037,12 +2033,7 @@ pub fn render_buffer(
                 // Soft wrap: split into visual rows if needed
                 if has_wrap {
                     let mut visual_rows = split_line_into_rows(line, text_width);
-                    place_eol_on_visual_rows(
-                        &mut visual_rows,
-                        &eol_decs,
-                        text_width,
-                        render_width,
-                    );
+                    place_eol_on_visual_rows(&mut visual_rows, &eol_decs, text_width, render_width);
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
                         if visual_rows_used >= visible_lines {
                             break;
@@ -2193,7 +2184,11 @@ pub fn render_buffer(
                     }
                     let line_display_len = unicode_width::UnicodeWidthStr::width(&*line_text);
                     let line_text = if line_display_len < render_width {
-                        format!("{}{}", line_text, " ".repeat(render_width - line_display_len))
+                        format!(
+                            "{}{}",
+                            line_text,
+                            " ".repeat(render_width - line_display_len)
+                        )
                     } else {
                         line_text.to_string()
                     };

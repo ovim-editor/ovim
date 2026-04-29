@@ -131,6 +131,16 @@ fn query_option(name: &str, editor: &Editor) -> Option<CommandResult> {
         }
     }
 
+    // Special-case boolean: inlay_hints (kept out of BOOL_OPTIONS because
+    // its setter has side effects). See try_set_bool for the toggle path.
+    if name == "inlay_hints" || name == "inlayhints" {
+        let val = editor.options.inlay_hints;
+        return Some(ok(Some(format!(
+            "  {}inlay_hints",
+            if val { "" } else { "no" }
+        ))));
+    }
+
     // Value options
     let opts = &editor.options;
     let msg = match name {
@@ -209,6 +219,22 @@ fn try_set_bool(opt_name: &str, editor: &mut Editor) -> Option<CommandResult> {
     // Special case: "noclipboard" / "nocb"
     if opt_name == "noclipboard" || opt_name == "nocb" {
         editor.options.clipboard = String::new();
+        return Some(ok(None));
+    }
+
+    // Special case: inlay hints — toggling has side effects beyond a flag flip.
+    // Toggling off must clear cached hints + decorations immediately so they
+    // disappear without waiting for the next buffer mutation. Toggling on must
+    // invalidate the slot so the next event-loop tick re-requests hints.
+    // (OV-00259)
+    if opt_name == "inlay_hints" || opt_name == "inlayhints" {
+        editor.options.inlay_hints = true;
+        editor.invalidate_inlay_hints_slot();
+        return Some(ok(None));
+    }
+    if opt_name == "noinlay_hints" || opt_name == "noinlayhints" {
+        editor.options.inlay_hints = false;
+        editor.clear_inlay_hints_state();
         return Some(ok(None));
     }
 
@@ -568,6 +594,51 @@ mod tests {
         let result = handle_set_command(&mut ed, "tw=0");
         assert!(matches!(result, CommandResult::Success(_)));
         assert_eq!(ed.options.textwidth, None);
+    }
+
+    #[test]
+    fn set_inlay_hints_toggles_option_and_marks_slot_stale() {
+        let mut ed = make_editor();
+        assert!(!ed.options.inlay_hints, "default is off (OV-00259)");
+        let result = handle_set_command(&mut ed, "inlay_hints");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(ed.options.inlay_hints);
+        // Toggling on must invalidate the slot so the next tick re-requests.
+        assert!(ed.lsp.slots.inlay_hints.is_stale());
+    }
+
+    #[test]
+    fn set_noinlay_hints_clears_state() {
+        let mut ed = make_editor();
+        ed.options.inlay_hints = true;
+        ed.lsp.state.inlay_hints.push(lsp_types::InlayHint {
+            position: lsp_types::Position::new(0, 0),
+            label: lsp_types::InlayHintLabel::String(": x".to_string()),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: None,
+            data: None,
+        });
+        assert_eq!(ed.lsp.state.inlay_hints.len(), 1);
+        let result = handle_set_command(&mut ed, "noinlay_hints");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.inlay_hints);
+        // Decorations / cached hints must be wiped immediately.
+        assert!(ed.lsp.state.inlay_hints.is_empty());
+    }
+
+    #[test]
+    fn query_inlay_hints_default_is_no() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "inlay_hints?");
+        match result {
+            CommandResult::Success(s) => {
+                assert_eq!(s.message.as_deref(), Some("  noinlay_hints"));
+            }
+            _ => panic!("expected success"),
+        }
     }
 
     #[test]

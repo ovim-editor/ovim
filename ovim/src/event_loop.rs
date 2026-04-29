@@ -1549,14 +1549,16 @@ mod tests {
         let resp = handle_edit_line(&mut editor, Some(0), "déjà", "now");
         assert!(matches!(resp, ApiResponse::Success(_)));
         assert_eq!(
-            editor.buffer().rope().line(0).to_string().trim_end_matches('\n'),
+            editor
+                .buffer()
+                .rope()
+                .line(0)
+                .to_string()
+                .trim_end_matches('\n'),
             "café now vu"
         );
         editor.undo();
-        assert_eq!(
-            editor.buffer().rope().line(0).to_string(),
-            original
-        );
+        assert_eq!(editor.buffer().rope().line(0).to_string(), original);
     }
 }
 

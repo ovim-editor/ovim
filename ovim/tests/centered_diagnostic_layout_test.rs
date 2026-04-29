@@ -233,7 +233,9 @@ fn centered_longer_line_with_hint_diag_still_at_box_edge() {
 /// with the wrong piece of code.
 #[test]
 fn centered_wrap_diag_attaches_to_last_visual_row() {
-    let line: String = (0..60).map(|i| char::from_digit((i % 10) as u32, 10).unwrap()).collect();
+    let line: String = (0..60)
+        .map(|i| char::from_digit((i % 10) as u32, 10).unwrap())
+        .collect();
     let mut test = centered(&format!("{line}\n"), true);
     replace_diags(&mut test, vec![diag(0, "unused")]);
 

@@ -477,17 +477,10 @@ impl Motions {
         }
 
         // Helper to get line string (without trailing newline)
-        let get_line_str =
-            |l: usize| -> String { rope.line(l).to_string().to_string() };
+        let get_line_str = |l: usize| -> String { rope.line(l).to_string().to_string() };
 
         // Helper to get line chars
-        let get_chars = |l: usize| -> Vec<char> {
-            rope.line(l)
-                .to_string()
-                
-                .chars()
-                .collect()
-        };
+        let get_chars = |l: usize| -> Vec<char> { rope.line(l).to_string().chars().collect() };
 
         let orig_line_str = get_line_str(orig_line);
         let orig_chars = get_chars(orig_line);

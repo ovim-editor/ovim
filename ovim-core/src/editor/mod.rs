@@ -203,6 +203,10 @@ pub struct EditorOptions {
     pub makeprg: String,
     /// LSP auto-install behavior: Prompt (default), Auto, or Off
     pub lsp_auto_install: AutoInstallMode,
+    /// Request and render LSP inlay hints (default: false).
+    /// Off by default while OV-00257 (wrap math) and OV-00258 (stale
+    /// placement) are open. Toggle on with `:set inlay_hints` to opt in.
+    pub inlay_hints: bool,
 }
 
 impl Default for EditorOptions {
@@ -234,6 +238,7 @@ impl Default for EditorOptions {
             margin_padding: 0,
             makeprg: "cargo build".to_string(),
             lsp_auto_install: AutoInstallMode::default(),
+            inlay_hints: false,
         }
     }
 }
@@ -930,7 +935,6 @@ impl Editor {
         self.buffer()
             .line_text(line_idx)
             .unwrap_or_default()
-            
             .to_string()
     }
 
@@ -1217,7 +1221,6 @@ impl Editor {
             .buffer()
             .line_text(cursor_line)
             .unwrap_or_default()
-            
             .to_string();
         let cursor_char_col = grapheme_to_char_col(&line_text, self.buffer().cursor().col());
         let cursor_display_col =
@@ -1265,7 +1268,6 @@ impl Editor {
                 .buffer()
                 .line_text(line)
                 .unwrap_or_default()
-                
                 .to_string();
             rows_from_top += crate::wrap::visual_line_count(&text, wrap_width, tab_width);
             if rows_from_top > visible_rows + scrolloff + 5 {
@@ -1376,7 +1378,6 @@ impl Editor {
                 .buffer()
                 .line_text(line)
                 .unwrap_or_default()
-                
                 .to_string();
             let count = crate::wrap::visual_line_count(&text, wrap_width, tab_width);
 

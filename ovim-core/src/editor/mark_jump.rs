@@ -105,8 +105,7 @@ impl Editor {
                 // Validate and clamp mark position to buffer bounds
                 let max_line = self.buffer().line_count().saturating_sub(1);
                 let clamped_line = global_mark.line.min(max_line);
-                let clamped_col =
-                    clamp_grapheme_col(self.buffer(), clamped_line, global_mark.col);
+                let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, global_mark.col);
 
                 // Jump to the validated position
                 self.buffer_mut()
@@ -143,7 +142,8 @@ impl Editor {
                 let clamped_line = mark.line.min(max_line);
 
                 // Find first non-blank character on the line (char index → grapheme)
-                let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line) {
+                let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line)
+                {
                     let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())
@@ -183,7 +183,8 @@ impl Editor {
                 let clamped_line = global_mark.line.min(max_line);
 
                 // Find first non-blank character on the line (char index → grapheme)
-                let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line) {
+                let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line)
+                {
                     let char_col = line_text
                         .chars()
                         .position(|c| !c.is_whitespace())

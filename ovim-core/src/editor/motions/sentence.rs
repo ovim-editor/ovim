@@ -124,11 +124,7 @@ impl Motions {
         } else if line_idx > 0 {
             line_idx -= 1;
             if let Some(line) = buffer.line_text(line_idx) {
-                col = line
-                    
-                    .chars()
-                    .count()
-                    .saturating_sub(1);
+                col = line.chars().count().saturating_sub(1);
             }
         }
 
@@ -145,11 +141,7 @@ impl Motions {
                     }
                     line_idx -= 1;
                     if let Some(prev_line) = buffer.line_text(line_idx) {
-                        col = prev_line
-                            
-                            .chars()
-                            .count()
-                            .saturating_sub(1);
+                        col = prev_line.chars().count().saturating_sub(1);
                     }
                     continue;
                 }
@@ -196,11 +188,7 @@ impl Motions {
 
             line_idx -= 1;
             if let Some(line) = buffer.line_text(line_idx) {
-                col = line
-                    
-                    .chars()
-                    .count()
-                    .saturating_sub(1);
+                col = line.chars().count().saturating_sub(1);
             }
         }
     }

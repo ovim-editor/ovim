@@ -1072,12 +1072,7 @@ impl TextObjects {
         // For "inner function", we want the content between { and }
         // If { is at end of line, start from next line col 0
         // If } is at start of line, end at previous line end
-        let (start_line, start_col) = if open_col + 1
-            < buffer
-                .line_text(open_line)?
-                
-                .chars()
-                .count()
+        let (start_line, start_col) = if open_col + 1 < buffer.line_text(open_line)?.chars().count()
         {
             (open_line, open_col + 1)
         } else {
@@ -1088,10 +1083,7 @@ impl TextObjects {
             (close_line, close_col)
         } else if close_line > 0 {
             let prev_line = buffer.line_text(close_line - 1)?;
-            (
-                close_line - 1,
-                prev_line.chars().count(),
-            )
+            (close_line - 1, prev_line.chars().count())
         } else {
             (close_line, close_col)
         };

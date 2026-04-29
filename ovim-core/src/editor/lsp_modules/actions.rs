@@ -372,10 +372,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp
-            .slots
-            .organize_imports
-            .fire(task, rx);
+        self.lsp.slots.organize_imports.fire(task, rx);
         Ok(true)
     }
 
@@ -433,10 +430,7 @@ impl Editor {
             let _ = tx.send(task_result);
         });
 
-        self.lsp
-            .slots
-            .semantic_tokens
-            .fire(task, rx);
+        self.lsp.slots.semantic_tokens.fire(task, rx);
         Ok(true)
     }
 }

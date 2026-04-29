@@ -146,11 +146,9 @@ fn editor_undo_failure_keeps_change_on_stack_and_toasts() {
     // Toast was pushed; user sees the failure rather than silent corruption.
     let toasts = test.editor.visible_toasts_newest_first(8);
     assert!(
-        toasts
-            .iter()
-            .any(|t| matches!(t.level, ToastLevel::Error)
-                && matches!(t.source, ToastSource::System)
-                && t.message.starts_with("Undo failed:")),
+        toasts.iter().any(|t| matches!(t.level, ToastLevel::Error)
+            && matches!(t.source, ToastSource::System)
+            && t.message.starts_with("Undo failed:")),
         "expected a System Error toast starting with 'Undo failed:', got {:?}",
         toasts
             .iter()
@@ -172,7 +170,11 @@ fn editor_undo_success_path_stays_silent() {
     let path = dir.join("file.txt");
     std::fs::write(&path, b"after").unwrap();
 
-    let snap = Change::resource_snapshot(path.clone(), Some(b"before".to_vec()), Some(b"after".to_vec()));
+    let snap = Change::resource_snapshot(
+        path.clone(),
+        Some(b"before".to_vec()),
+        Some(b"after".to_vec()),
+    );
     let change = Change::resource_op(vec![snap], CursorPos::ZERO, CursorPos::ZERO);
 
     let mut test = EditorTest::new("dummy\n");
@@ -195,7 +197,10 @@ fn editor_undo_success_path_stays_silent() {
     );
 
     let on_disk = std::fs::read(&path).unwrap();
-    assert_eq!(on_disk, b"before", "successful undo restored snapshot bytes");
+    assert_eq!(
+        on_disk, b"before",
+        "successful undo restored snapshot bytes"
+    );
 
     let toasts = test.editor.visible_toasts_newest_first(8);
     assert!(
@@ -216,7 +221,10 @@ fn undo_outcome_helpers_distinguish_states() {
     assert!(done.touched_buffer());
     assert!(done.is_done());
 
-    let failed = UndoOutcome::Failed(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "x"));
+    let failed = UndoOutcome::Failed(std::io::Error::new(
+        std::io::ErrorKind::PermissionDenied,
+        "x",
+    ));
     assert!(
         failed.touched_buffer(),
         "Failed must invalidate caches — partial state may exist on disk"

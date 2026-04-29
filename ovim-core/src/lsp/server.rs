@@ -10,8 +10,7 @@ use super::protocol::{write_message, JsonRpcMessage, RequestId};
 use super::supervisor::{RestartPolicy, TaskHealth, TaskSupervisor};
 use anyhow::{anyhow, Context, Result};
 use lsp_types::{
-    InitializeParams, InitializeResult, InitializedParams, ServerCapabilities, Uri,
-    WorkspaceFolder,
+    InitializeParams, InitializeResult, InitializedParams, ServerCapabilities, Uri, WorkspaceFolder,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -150,7 +149,6 @@ struct LanguageServerInner {
 
     /// Child process handle
     process: Mutex<Option<Child>>,
-
 
     /// Current server state (explicit state machine)
     state: Arc<Mutex<ServerState>>,

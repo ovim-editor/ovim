@@ -110,10 +110,7 @@ impl Editor {
             let _ = tx.send(Ok(task_result));
         });
 
-        self.lsp
-            .slots
-            .diagnostics
-            .fire(task, rx);
+        self.lsp.slots.diagnostics.fire(task, rx);
     }
 
     /// Poll background diagnostics refresh responses without blocking the UI tick.

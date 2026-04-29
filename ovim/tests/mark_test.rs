@@ -861,7 +861,9 @@ fn test_ov00190_local_mark_clamps_column_when_line_shrinks() {
     test.assert_cursor(0, 10);
 
     // Use ex command :1s to deterministically shrink line 0 to "hi" (2 graphemes).
-    test.press(':').type_text("1s/hello world/hi/").press_enter();
+    test.press(':')
+        .type_text("1s/hello world/hi/")
+        .press_enter();
 
     // Move away, then jump back via direct API to observe the contract.
     test.keys("G");

@@ -264,11 +264,7 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         // already one char per indent).
         let smart_target = if editor.options.expand_tab {
             let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-            let before: String = line_text
-                
-                .chars()
-                .take(char_col.0)
-                .collect();
+            let before: String = line_text.chars().take(char_col.0).collect();
             if !before.is_empty() && before.chars().all(|c| c == ' ') {
                 let sw = editor.options.shift_width.max(1);
                 Some((char_col.0 - 1) / sw * sw)
@@ -284,10 +280,7 @@ pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
         } else {
             // Normal single-grapheme delete.
             let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
-            grapheme_to_char_col(
-                &line_text,
-                GraphemeCol(grapheme_col.0 - 1),
-            )
+            grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 - 1))
         };
         (
             ApplyPos::new(line_idx, prev_char_col),

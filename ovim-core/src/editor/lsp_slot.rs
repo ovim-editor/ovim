@@ -27,11 +27,7 @@ impl<T> Slot<T> {
     }
 
     /// Fire a new request.  If one is already in flight, abort it first.
-    pub fn fire(
-        &mut self,
-        task: JoinHandle<()>,
-        rx: oneshot::Receiver<anyhow::Result<T>>,
-    ) {
+    pub fn fire(&mut self, task: JoinHandle<()>, rx: oneshot::Receiver<anyhow::Result<T>>) {
         if let Some(old) = self.inflight.take() {
             old.task.abort();
         }
@@ -76,7 +72,6 @@ impl<T> Slot<T> {
             old.task.abort();
         }
     }
-
 }
 
 impl<T> Default for Slot<T> {
@@ -196,11 +191,7 @@ impl<T> TrackedSlot<T> {
     }
 
     /// Fire a new request, marking this generation as covered.
-    pub fn fire(
-        &mut self,
-        task: JoinHandle<()>,
-        rx: oneshot::Receiver<anyhow::Result<T>>,
-    ) {
+    pub fn fire(&mut self, task: JoinHandle<()>, rx: oneshot::Receiver<anyhow::Result<T>>) {
         self.fired_at = self.generation;
         self.last_fired = Some(Instant::now());
         self.slot.fire(task, rx);

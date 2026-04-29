@@ -145,4 +145,3 @@ fn capitalize_first(s: &str) -> String {
         Some(c) => c.to_uppercase().to_string() + chars.as_str(),
     }
 }
-

@@ -29,11 +29,7 @@ impl Motions {
         // Position cursor at first non-whitespace (strip trailing newline so it
         // isn't counted as whitespace — buffer.line() includes the '\n')
         if let Some(line) = buffer.line_text(current_line) {
-            let col = line
-                
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .count();
+            let col = line.chars().take_while(|c| c.is_whitespace()).count();
             buffer
                 .cursor_mut()
                 .set_position(current_line, GraphemeCol(col));
@@ -69,11 +65,7 @@ impl Motions {
         // Position cursor at first non-whitespace (strip trailing newline so it
         // isn't counted as whitespace — buffer.line() includes the '\n')
         if let Some(line) = buffer.line_text(current_line) {
-            let col = line
-                
-                .chars()
-                .take_while(|c| c.is_whitespace())
-                .count();
+            let col = line.chars().take_while(|c| c.is_whitespace()).count();
             buffer
                 .cursor_mut()
                 .set_position(current_line, GraphemeCol(col));

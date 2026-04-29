@@ -134,10 +134,7 @@ impl Editor {
             }));
         });
 
-        self.lsp
-            .slots
-            .goto_definition
-            .fire(task, rx);
+        self.lsp.slots.goto_definition.fire(task, rx);
         self.set_lsp_status("Jumping to definition...".to_string());
 
         Ok(false)
@@ -174,10 +171,7 @@ impl Editor {
             }));
         });
 
-        self.lsp
-            .slots
-            .goto_implementation
-            .fire(task, rx);
+        self.lsp.slots.goto_implementation.fire(task, rx);
         self.set_lsp_status("Jumping to implementation...".to_string());
 
         Ok(false)
@@ -216,10 +210,7 @@ impl Editor {
             }));
         });
 
-        self.lsp
-            .slots
-            .goto_type_definition
-            .fire(task, rx);
+        self.lsp.slots.goto_type_definition.fire(task, rx);
         self.set_lsp_status("Jumping to type definition...".to_string());
 
         Ok(false)

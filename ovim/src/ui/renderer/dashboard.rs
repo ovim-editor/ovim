@@ -38,7 +38,6 @@ mod colors {
     pub const VERSION: Color = Color::Rgb(127, 132, 156); // Overlay
 }
 
-
 /// Renders the dashboard screen
 pub fn render_dashboard(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     // Calculate vertical centering
@@ -215,5 +214,4 @@ mod tests {
     fn test_logo_lines() {
         assert_eq!(LOGO.len(), 5);
     }
-
 }

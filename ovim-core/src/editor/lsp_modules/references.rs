@@ -54,10 +54,7 @@ impl Editor {
             );
         });
 
-        self.lsp
-            .slots
-            .document_symbols
-            .fire(task, rx);
+        self.lsp.slots.document_symbols.fire(task, rx);
         Ok(true)
     }
 
@@ -76,10 +73,7 @@ impl Editor {
             );
         });
 
-        self.lsp
-            .slots
-            .workspace_symbols
-            .fire(task, rx);
+        self.lsp.slots.workspace_symbols.fire(task, rx);
         Ok(true)
     }
 

@@ -246,26 +246,14 @@ fn render_buffer_area(
                 (vs, ly)
             } else {
                 let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-                let viewport_start = render_buffer(
-                    frame,
-                    editor,
-                    theme,
-                    &fallback_layout,
-                    line_cache,
-                    None,
-                );
+                let viewport_start =
+                    render_buffer(frame, editor, theme, &fallback_layout, line_cache, None);
                 (viewport_start, fallback_layout)
             }
         } else {
             let fallback_layout = BufferLayout::compute(editor, areas.buffer_chunk);
-            let viewport_start = render_buffer(
-                frame,
-                editor,
-                theme,
-                &fallback_layout,
-                line_cache,
-                None,
-            );
+            let viewport_start =
+                render_buffer(frame, editor, theme, &fallback_layout, line_cache, None);
             (viewport_start, fallback_layout)
         }
     } else {
@@ -334,14 +322,7 @@ fn render_buffer_area(
             editor.ensure_wrap_map(single_layout.text_width);
         }
 
-        let viewport_start = render_buffer(
-            frame,
-            editor,
-            theme,
-            &single_layout,
-            line_cache,
-            None,
-        );
+        let viewport_start = render_buffer(frame, editor, theme, &single_layout, line_cache, None);
         if centered {
             render_margin_widgets(frame, editor, theme, full_area, buffer_area);
         }

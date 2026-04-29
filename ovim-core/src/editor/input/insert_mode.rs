@@ -428,7 +428,6 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         .buffer()
                         .line_text(cursor.line())
                         .unwrap_or_default()
-                        
                         .to_string();
                     if crate::unicode::grapheme_at_index(
                         &line_text,

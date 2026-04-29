@@ -974,10 +974,7 @@ impl Editor {
                     &rope,
                     |line_idx| {
                         if line_idx < rope.len_lines() {
-                            rope.line(line_idx)
-                                .to_string()
-                                
-                                .to_string()
+                            rope.line(line_idx).to_string().to_string()
                         } else {
                             String::new()
                         }
