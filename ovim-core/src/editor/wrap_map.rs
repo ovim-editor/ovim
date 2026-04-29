@@ -263,7 +263,7 @@ impl WrapMap {
         for (_char_idx, ch) in line_text.chars().enumerate() {
             // Decoration widths at this char position, added column-by-column
             // to match compute_wrap_points_with_decorations.
-            while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 == _char_idx {
+            while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 <= _char_idx {
                 let dec_w = inline_widths[dec_idx].1;
                 for _ in 0..dec_w {
                     if flat_col == col {
@@ -306,7 +306,37 @@ impl WrapMap {
             }
         }
 
-        // Col is at or past the end of the line content.
+        // Post-loop drain: any decoration anchored at or beyond the end of
+        // the line text is appended after content (mirroring the renderer's
+        // append-after-content fallthrough in `apply_inline_decorations`).
+        // Without this drain, end-of-line inlay hints (e.g. type-after-
+        // identifier) would not be counted in the visual row math here,
+        // and the cursor would land one row above where the renderer
+        // actually drew it. (OV-00257)
+        //
+        // The `remaining > 0` guard mirrors the one in
+        // `compute_wrap_points_with_decorations`: an exact-fill at the very
+        // last column must not advance the visual row, so the cursor stays
+        // on the same row the renderer drew the content on.
+        let mut remaining: usize = inline_widths[dec_idx..].iter().map(|&(_, w)| w).sum();
+        while dec_idx < inline_widths.len() {
+            let dec_w = inline_widths[dec_idx].1;
+            for _ in 0..dec_w {
+                if flat_col == col {
+                    return (base_row + sub_line, row_col);
+                }
+                flat_col += 1;
+                row_col += 1;
+                remaining -= 1;
+                if row_col >= max_width && remaining > 0 {
+                    sub_line += 1;
+                    row_col = 0;
+                }
+            }
+            dec_idx += 1;
+        }
+
+        // Col is at or past the end of the line content (and decorations).
         if col <= flat_col {
             return (base_row + sub_line, row_col);
         }

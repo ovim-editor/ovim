@@ -71,6 +71,15 @@ pub fn visual_line_count(line: &str, max_width: usize, tab_width: usize) -> usiz
 /// Each decoration's width is added to the running total just before the
 /// character at `char_idx`, matching how the renderer inserts decoration
 /// text before splitting into rows.
+///
+/// **End-of-line decorations** (decorations whose `char_idx` is greater than
+/// or equal to the line's character count) are processed in a post-loop
+/// drain. The renderer's `apply_inline_decorations` appends such
+/// decorations to the line via the trailing
+/// `if !found { line.spans.push(...) }` branch, then `split_line_into_rows`
+/// wraps the whole thing — so the wrap math here must do the same. Without
+/// the drain, `WrapMap` undercounts visual rows for type-after-trailing-
+/// identifier hints (OV-00257).
 pub fn compute_wrap_points_with_decorations(
     line: &str,
     max_width: usize,
@@ -85,8 +94,10 @@ pub fn compute_wrap_points_with_decorations(
     let mut wrap_points = Vec::new();
     let mut current_width: usize = 0;
     let mut dec_idx = 0;
+    let mut last_char_idx = 0usize;
 
     for (char_idx, ch) in line.chars().enumerate() {
+        last_char_idx = char_idx + 1;
         // Add decoration width at this character position.  Decoration text
         // is inserted before the character by the renderer, so its width is
         // accumulated before the character's own width check.
@@ -96,7 +107,7 @@ pub fn compute_wrap_points_with_decorations(
         // decoration width one column at a time, flushing a row each time
         // we fill max_width.  All such mid-decoration wraps are recorded at
         // char_idx (the next real character), matching the renderer's layout.
-        while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 == char_idx {
+        while dec_idx < inline_widths.len() && inline_widths[dec_idx].0 <= char_idx {
             let dec_w = inline_widths[dec_idx].1;
             for _ in 0..dec_w {
                 current_width += 1;
@@ -120,6 +131,33 @@ pub fn compute_wrap_points_with_decorations(
         } else {
             current_width += ch_width;
         }
+    }
+
+    // Post-loop drain: any decoration anchored at or beyond the end of the
+    // line text is appended after content (mirroring the renderer's
+    // append-after-content fallthrough). All such wrap points are recorded
+    // at `last_char_idx` — i.e., the position one-past the last character —
+    // so callers asking "where does this row break?" get a stable answer.
+    //
+    // We track `remaining` columns ahead so an exact-fill at the very last
+    // column does NOT push a spurious wrap point. The renderer's
+    // `split_line_into_rows` agrees: when content exactly fills a row and
+    // nothing more follows, no extra row is emitted (the trailing-row
+    // branch only fires when there's more content or no rows yet). Without
+    // this guard, "ab" + a 3-col EOL hint at width 5 would report 2 rows
+    // while the renderer reports 1.
+    let mut remaining: usize = inline_widths[dec_idx..].iter().map(|&(_, w)| w).sum();
+    while dec_idx < inline_widths.len() {
+        let dec_w = inline_widths[dec_idx].1;
+        for _ in 0..dec_w {
+            current_width += 1;
+            remaining -= 1;
+            if current_width >= max_width && remaining > 0 {
+                wrap_points.push(last_char_idx);
+                current_width = 0;
+            }
+        }
+        dec_idx += 1;
     }
 
     wrap_points

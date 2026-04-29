@@ -879,12 +879,22 @@ impl Editor {
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let rope = self.buffer().rope().clone();
         let rope_for_text = rope.clone();
+        // Strip the trailing line terminator so the wrap walker sees the same
+        // text the renderer does. The renderer's `apply_inline_decorations`
+        // operates on lines with the trailing newline already stripped
+        // (renderer-side callers strip the LF before splitting into rows);
+        // without matching that here the walker treats `\n` as a 1-col
+        // character and disagrees with the renderer about row counts at width
+        // boundaries. (OV-00257)
         let make_line_text = move |line_idx: usize| -> String {
             if line_idx < rope_for_text.len_lines() {
                 let line = rope_for_text.line(line_idx);
                 let text = line.to_string();
-                let trimmed = text;
-                trimmed.to_string()
+                text.strip_suffix("\r\n")
+                    .or_else(|| text.strip_suffix('\n'))
+                    .or_else(|| text.strip_suffix('\r'))
+                    .map(str::to_string)
+                    .unwrap_or(text)
             } else {
                 String::new()
             }

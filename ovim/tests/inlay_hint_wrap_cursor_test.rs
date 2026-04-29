@@ -283,6 +283,122 @@ fn hint_at_end_of_line_does_not_affect_dollar() {
     test.assert_cursor(0, 9);
 }
 
+// ============================================================================
+// OV-00257: WrapMap row count must agree with the renderer's row count even
+// when a decoration is anchored at end-of-line (char_idx == line.chars().count()).
+//
+// Before the fix, `compute_wrap_points_with_decorations` and
+// `cursor_to_visual_with_decorations` iterated the line's characters and only
+// drained decorations matched at `char_idx == _char_idx` inside the loop.
+// Decorations at `char_idx == line.chars().count()` (the typical position for
+// a return-type or trailing inferred-type hint) were never processed, so the
+// WrapMap reported one row while the renderer (via the trailing
+// `if !found { line.spans.push(...) }` branch in `apply_inline_decorations`,
+// then `split_line_into_rows`) reported two. The cursor placement and
+// cursorline highlight then disagreed by one row. These tests pin the
+// renderer-vs-WrapMap row-count contract.
+// ============================================================================
+
+#[test]
+fn end_of_line_hint_pushes_visual_row_count() {
+    // Line is 2 chars ("ab"); the hint adds 10 display cols at end-of-line.
+    // Total content width = 2 + 10 = 12 cols. At textwidth=10 the renderer
+    // wraps into 2 rows. WrapMap must agree.
+    let mut test = setup_wrapped("ab", 10);
+    add_hints(&mut test, vec![hint_at(2, ": LongType")], 10);
+
+    let visual = test
+        .editor
+        .wrap_map()
+        .expect("wrap map exists")
+        .visual_lines_for(0);
+    assert_eq!(
+        visual, 2,
+        "WrapMap should count 2 rows for a 2-char line + 10-col EOL hint at width 10"
+    );
+}
+
+#[test]
+fn end_of_line_hint_within_width_stays_one_row() {
+    // Sanity check: when hint width does NOT push past textwidth, row count
+    // should stay at 1. Pins that the fix doesn't over-count.
+    let mut test = setup_wrapped("ab", 20);
+    add_hints(&mut test, vec![hint_at(2, ": i32")], 20);
+
+    let visual = test
+        .editor
+        .wrap_map()
+        .expect("wrap map exists")
+        .visual_lines_for(0);
+    assert_eq!(
+        visual, 1,
+        "WrapMap should count 1 row when content + hint fit within textwidth"
+    );
+}
+
+#[test]
+fn end_of_line_hint_exactly_at_width_stays_one_row() {
+    // "ab" + ": i" (3 cols) = 5 cols at textwidth=5 — exactly fills one row.
+    // Wrap only kicks in when content exceeds the row.
+    let mut test = setup_wrapped("ab", 5);
+    add_hints(&mut test, vec![hint_at(2, ": i")], 5);
+
+    let visual = test
+        .editor
+        .wrap_map()
+        .expect("wrap map exists")
+        .visual_lines_for(0);
+    assert_eq!(
+        visual, 1,
+        "WrapMap should count 1 row when content + hint exactly fill the row"
+    );
+}
+
+#[test]
+fn end_of_line_hint_doubles_wrap() {
+    // Long EOL hint forces multiple wraps after the content.
+    // "ab" (2 cols) + ": SomeVeryLongTypeName" (22 cols) = 24 cols total.
+    // At textwidth=5: ab+": " (4) -> "Some" (4) -> "Very" (4) -> "Long" (4)
+    //   -> "Type" (4) -> "Name" (4) — 5 wrap boundaries → 6 rows.
+    let mut test = setup_wrapped("ab", 5);
+    add_hints(&mut test, vec![hint_at(2, ": SomeVeryLongTypeName")], 5);
+
+    let visual = test
+        .editor
+        .wrap_map()
+        .expect("wrap map exists")
+        .visual_lines_for(0);
+    // The renderer drives the contract: split_line_into_rows on a Line of
+    // 24 display cols at width 5 yields ceil(24/5) = 5 rows. So WrapMap must
+    // return 5. (The decoration walker simulates renderer wraps mid-decoration.)
+    assert_eq!(
+        visual, 5,
+        "WrapMap row count must equal the renderer's row count for long EOL hints"
+    );
+}
+
+#[test]
+fn cursor_to_visual_after_eol_hint_lands_on_first_row() {
+    // The cursor at col 0 of a line with an EOL hint must land on visual
+    // row 0, not row 1. (The bug: the walker silently drops the EOL
+    // decoration, but cursor_to_visual gets the *flat* column right; it's
+    // the wrap-point disagreement that misplaces the cursorline highlight.)
+    // We pin the cursor_to_visual contract directly so any future
+    // regression in the column accounting is caught.
+    let mut test = setup_wrapped("ab", 10);
+    add_hints(&mut test, vec![hint_at(2, ": LongType")], 10);
+
+    let wrap_map = test.editor.wrap_map().expect("wrap map exists");
+    // Cursor at the start of line 0 (col 0).
+    let (visual_row, visual_col) =
+        wrap_map.cursor_to_visual_with_decorations(0, 0, "ab", &[(2, 10)]);
+    assert_eq!(
+        (visual_row, visual_col),
+        (0, 0),
+        "cursor at col 0 must be on visual row 0 col 0 — not pushed below by the EOL hint"
+    );
+}
+
 #[test]
 fn hint_wider_than_textwidth() {
     // A hint so wide it alone exceeds textwidth.  Cursor motions must
