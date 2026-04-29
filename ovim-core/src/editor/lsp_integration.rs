@@ -946,6 +946,41 @@ impl Editor {
                     return false;
                 }
 
+                // OV-00258: drop stale-buffer hints rather than placing them
+                // mis-aligned. The LSP returned `Position {line, character}`
+                // pairs computed against `result.buffer_version`. If the
+                // buffer has advanced since (the user kept typing), those
+                // positions index into a different rope's content — a
+                // `line_to_char(line) + char_idx` lookup against the current
+                // rope can land in the middle of a completely different
+                // identifier or even a comment line that has no hints at all
+                // (the user reported `r:string|undefined` sliced into
+                // `awEmbedParam` and `s:boolean` injected into a `// SSR`
+                // comment).
+                //
+                // Why drop instead of project:
+                // - Option (2): tag decorations with `source_version =
+                //   result.buffer_version` and project forward via
+                //   `edit_log.edits_since(...)`. Requires either rope
+                //   snapshots at request boundaries or backward edit-log
+                //   replay to derive historical line→char mappings. Larger
+                //   lift; not justified while inlay hints are off-by-default
+                //   per OV-00259.
+                // - Option (3): project the LSP `Position`s through the
+                //   edit log before converting to char offsets. Same
+                //   complexity; same gating.
+                //
+                // Dropping is correct (zero mis-aligned placements) and
+                // cheap; the trailing `invalidate_inlay_hint_debounce()`
+                // ensures the next tick fires a fresh request against the
+                // current buffer. When OV-00257 is closed and inlay hints
+                // are re-enabled by default, revisit (2)/(3) as a quality
+                // bump.
+                if result.buffer_version != self.buffer().version() {
+                    self.invalidate_inlay_hint_debounce();
+                    return false;
+                }
+
                 if let (Some(synced), Some(flushed_version)) =
                     (result.synced_content, result.synced_lsp_version)
                 {
@@ -986,14 +1021,6 @@ impl Editor {
                     hint_decs,
                     &rope,
                 );
-
-                // If the buffer was edited since we spawned the request,
-                // keep the hints visible (stale is better than blank) but
-                // invalidate so a fresh set is requested on the next tick.
-                // This is the same pattern diagnostics use.
-                if result.buffer_version != self.buffer().version() {
-                    self.invalidate_inlay_hint_debounce();
-                }
 
                 self.mark_dirty();
                 true
@@ -2202,7 +2229,11 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn poll_pending_inlay_hint_response_keeps_stale_hints_and_requests_refresh() {
+    async fn poll_pending_inlay_hint_response_drops_stale_buffer_result() {
+        // OV-00258: when the buffer version has advanced since the LSP
+        // request was spawned, the hint positions index into the wrong
+        // rope. Render-skip is correct; the next tick re-requests against
+        // the current version.
         let mut editor = Editor::with_content("class Test {}\n");
         let file_path = "/tmp/Test.java".to_string();
         editor.set_file_path(file_path.clone());
@@ -2215,21 +2246,49 @@ mod tests {
             lsp_version: 4,
         };
 
-        let bv = editor.buffer().version() + 1;
+        // Reply was prepared against a buffer version one ahead of the
+        // current version — i.e., the user typed something between
+        // request-spawn and reply-arrival.
+        let stale_buffer_version = editor.buffer().version() + 1;
+        let stale_hint = InlayHint {
+            position: Position::new(0, 5),
+            label: InlayHintLabel::String(": Stale".to_string()),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: Some(true),
+            padding_right: None,
+            data: None,
+        };
         fire_inlay_hint_result(
             &mut editor,
             InlayHintResult {
                 request_key: request_key.clone(),
-                buffer_version: bv,
+                buffer_version: stale_buffer_version,
                 synced_content: None,
                 synced_lsp_version: None,
-                hints: Vec::new(),
+                hints: vec![stale_hint],
             },
         );
 
-        // Stale hints are still applied (better than flashing).
-        assert!(editor.poll_pending_inlay_hint_response());
-        // But the slot is marked stale so a fresh request fires next tick.
+        // Drop the response — return value is `false` (no UI mutation).
+        assert!(!editor.poll_pending_inlay_hint_response());
+
+        // Cached hints and InlayHint decorations must remain empty —
+        // we did not commit a mis-aligned render.
+        assert!(
+            editor.lsp.state.inlay_hints.is_empty(),
+            "stale hints must not enter `lsp.state.inlay_hints`"
+        );
+        assert!(
+            !editor
+                .decorations
+                .iter_all()
+                .any(|(_, d)| d.source == crate::editor::decoration::DecorationSource::InlayHint),
+            "no InlayHint decoration may be placed when the reply is stale"
+        );
+
+        // Slot is invalidated so the next event-loop tick re-requests.
         assert!(editor.lsp.slots.inlay_hints.is_stale());
     }
 
