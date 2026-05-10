@@ -652,7 +652,9 @@ fn set_cursor_position(
 /// Invariant context for recursive window tree rendering.
 struct RenderTreeContext<'a, 'b> {
     frame: &'a mut Frame<'b>,
-    editor: &'a Editor,
+    /// Mutable so each leaf can `ensure_wrap_map_for_window` before it renders
+    /// (roadmap 19); `render_buffer` reborrows it shared.
+    editor: &'a mut Editor,
     theme: &'a Theme,
     focused_index: usize,
     current_index: &'a mut usize,
@@ -668,17 +670,32 @@ fn render_window_tree(
 ) -> Option<(usize, BufferLayout)> {
     match node {
         WindowNode::Leaf(window) => {
-            let is_focused = *ctx.current_index == ctx.focused_index;
+            let window_idx = *ctx.current_index;
+            let is_focused = window_idx == ctx.focused_index;
             *ctx.current_index += 1;
 
-            let layout = BufferLayout::compute(ctx.editor, area);
+            let layout = BufferLayout::compute(&*ctx.editor, area);
 
-            // For non-focused windows, use the window's own cursor and scroll state
+            // Build this pane's wrap map at *its own* content width. The focused
+            // pane also drives the editor-global slot (`viewport.wrap_map`) — the
+            // cursor overlay still reads that — so its content and cursor agree.
+            // (roadmap 19 / OV-00209)
+            if ctx.editor.options.wrap {
+                ctx.editor
+                    .ensure_wrap_map_for_window(window_idx, layout.text_width);
+                if is_focused {
+                    ctx.editor.ensure_wrap_map(layout.text_width);
+                }
+            }
+
+            // For non-focused windows, override cursor / scroll / wrap-map with
+            // the window's own state; the focused window *is* the editor.
             let window_context = if !is_focused {
                 Some(WindowRenderContext {
                     cursor: Some(*window.cursor()),
                     scroll_offset: Some(window.scroll_offset()),
                     horizontal_offset: Some(window.horizontal_offset()),
+                    wrap_map_window_index: Some(window_idx),
                 })
             } else {
                 None
@@ -686,7 +703,7 @@ fn render_window_tree(
 
             let viewport_start = render_buffer(
                 ctx.frame,
-                ctx.editor,
+                &*ctx.editor,
                 ctx.theme,
                 &layout,
                 ctx.line_cache,

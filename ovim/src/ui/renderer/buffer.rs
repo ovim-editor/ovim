@@ -31,6 +31,10 @@ pub struct WindowRenderContext {
     pub scroll_offset: Option<usize>,
     /// Override horizontal scroll offset (for non-focused windows)
     pub horizontal_offset: Option<usize>,
+    /// Use this window's own soft-wrap map (built at *this* window's content
+    /// width) instead of the editor-global one. `None` ⇒ use `editor.wrap_map()`
+    /// (single-window / focused-window path). (roadmap 19 / OV-00209)
+    pub wrap_map_window_index: Option<usize>,
 }
 
 /// Converts an expanded char index to a display column.
@@ -1374,7 +1378,15 @@ pub fn render_buffer(
     let text_width = layout.text_width;
     let render_width = layout.render_width();
     let blank_line = " ".repeat(render_width);
-    let wrap_map = editor.wrap_map();
+    // Non-focused split panes carry the index of their own wrap map (built at
+    // their own width); the single-window / focused path uses the global one.
+    let wrap_map = match window_context.and_then(|ctx| ctx.wrap_map_window_index) {
+        Some(window_idx) => editor
+            .window_manager()
+            .and_then(|wm| wm.get_window(window_idx))
+            .and_then(|w| w.wrap_map()),
+        None => editor.wrap_map(),
+    };
     let has_wrap = wrap && wrap_map.is_some();
     let mut visual_rows_used = 0;
     let buffer_version = buffer.version();
