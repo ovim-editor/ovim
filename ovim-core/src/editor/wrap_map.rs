@@ -141,30 +141,13 @@ impl WrapMap {
         self.visual_counts.len()
     }
 
-    /// Recompute a single line after its content changed.
-    ///
-    /// `line_text` returns the text of a given line index (without trailing newline).
-    pub fn invalidate_line<F>(&mut self, line: usize, line_text: F)
-    where
-        F: Fn(usize) -> String,
-    {
-        if line >= self.visual_counts.len() {
-            return;
-        }
-        let old_count = self.visual_counts[line] as usize;
-        let text = line_text(line);
-        let new_count = crate::wrap::visual_line_count(&text, self.wrap_width, self.tab_width);
-        if old_count == new_count {
-            return;
-        }
-        let diff = new_count as isize - old_count as isize;
-        self.visual_counts[line] = new_count as u16;
-        self.total_visual_lines = (self.total_visual_lines as isize + diff) as usize;
-        // Rebuild offsets from changed line onwards
-        for i in (line + 1)..self.visual_offsets.len() {
-            self.visual_offsets[i] = (self.visual_offsets[i] as isize + diff) as usize;
-        }
-    }
+    // NOTE: there used to be an `invalidate_line` here for incremental
+    // single-line recomputation. It was removed (OV-00263 / OV-00191) — it had
+    // no production callers (the renderer always full-rebuilds via
+    // `ensure_wrap_map` → `rebuild_with_decorations`), it ignored inline
+    // decoration widths, and its `isize` offset arithmetic could theoretically
+    // underflow. Incremental invalidation (OV-00015) should be (re)built
+    // decoration-aware from scratch when it's actually wired up.
 
     /// Rebuild the entire map (e.g., after resize or wrap toggle).
     ///
@@ -530,21 +513,6 @@ mod tests {
             assert_eq!(got_line, line);
             assert_eq!(got_sub, 0);
         }
-    }
-
-    #[test]
-    fn test_invalidate_line() {
-        let l0 = "a".repeat(40);
-        let l1 = "a".repeat(160);
-        let mut map = WrapMap::new(3, 80, 4, 0, make_text(&[l0.as_str(), l1.as_str(), ""]));
-        assert_eq!(map.total_visual_lines(), 4);
-
-        // Line 1 changed from 160 to 40 chars (2 -> 1 visual)
-        let new_l1 = "a".repeat(40);
-        map.invalidate_line(1, |_| new_l1.clone());
-        assert_eq!(map.visual_lines_for(1), 1);
-        assert_eq!(map.total_visual_lines(), 3);
-        assert_eq!(map.logical_to_visual(2), 2);
     }
 
     #[test]

@@ -283,16 +283,28 @@ impl DecorationMap {
             .collect()
     }
 
-    /// Total display width of inline decorations on a line
-    /// at or before the given char index.
+    /// Total display width of inline decorations on a line that render to the
+    /// **left** of the given char index.
+    ///
+    /// A decoration is "to the left" when its anchor `idx < char_idx`, or when
+    /// `idx == char_idx` *and there is a buffer character at that position*
+    /// (`idx < line_content_len`). The renderer inserts the decoration between
+    /// the buffer spans at `idx`, so when `idx` lands on a real character the
+    /// decoration sits before that character (and thus before a cursor sitting
+    /// on it). But an end-of-line hint anchored at `idx == line_content_len`
+    /// renders *after* all content via the renderer's append-after-content
+    /// fallthrough — so an insert-mode cursor at `char_idx == line_content_len`
+    /// (the position `A` lands on) is to the *left* of that hint, and its width
+    /// must not be counted. (OV-00260)
     pub fn inline_width_before(&self, line: usize, char_idx: usize, rope: &Rope) -> usize {
         let line_start = rope.line_to_char(line);
+        let line_len = line_content_char_len(rope, line);
         self.for_line(line)
             .iter()
             .filter_map(|d| match &d.placement {
                 DecorationPlacement::Inline { char_offset } => {
                     let idx = char_offset.saturating_sub(line_start);
-                    if idx <= char_idx {
+                    if idx < char_idx || (idx == char_idx && idx < line_len) {
                         Some(d.display_width)
                     } else {
                         None
@@ -414,12 +426,13 @@ impl DecorationMap {
         log: &EditLog,
     ) -> usize {
         let line_start = rope.line_to_char(line);
+        let line_len = line_content_char_len(rope, line);
         self.for_line_projected(line, rope, log)
             .into_iter()
             .filter_map(|d| match d.placement {
                 DecorationPlacement::Inline { char_offset } => {
                     let idx = char_offset.saturating_sub(line_start);
-                    if idx <= char_idx {
+                    if idx < char_idx || (idx == char_idx && idx < line_len) {
                         Some(d.display_width)
                     } else {
                         None
@@ -476,6 +489,29 @@ impl DecorationMap {
     }
 }
 
+/// Number of characters on `line` in `rope`, excluding the trailing line
+/// terminator (`\n`, `\r\n`, or a bare `\r`). Returns 0 for out-of-range lines.
+///
+/// This is the "is there a buffer character here?" boundary used by
+/// [`DecorationMap::inline_width_before`] — an anchor at exactly this value is
+/// past the last real character, so the renderer appends the decoration after
+/// all content rather than slotting it between spans.
+fn line_content_char_len(rope: &Rope, line: usize) -> usize {
+    if line >= rope.len_lines() {
+        return 0;
+    }
+    let slice = rope.line(line);
+    let n = slice.len_chars();
+    if n == 0 {
+        return 0;
+    }
+    match slice.char(n - 1) {
+        '\n' if n >= 2 && slice.char(n - 2) == '\r' => n - 2,
+        '\n' | '\r' => n - 1,
+        _ => n,
+    }
+}
+
 // ---------------------------------------------------------------------------
 // LSP → Decoration conversion helpers
 // ---------------------------------------------------------------------------
@@ -527,7 +563,8 @@ where
                 label
             };
 
-            let display_width = text.chars().count(); // ASCII-safe for typical hints
+            // Hint labels never contain tabs, so tab_width is irrelevant; pass 1.
+            let display_width = crate::display::display_width(&text, 1);
 
             Decoration {
                 placement: DecorationPlacement::Inline { char_offset },
@@ -616,7 +653,8 @@ pub fn decorations_from_diagnostics(
             let (icon, style) = diagnostic_style(diag.severity);
             let msg = diag.message.lines().next().unwrap_or("");
             let text = format!("{} {}", icon, msg);
-            let display_width = text.chars().count();
+            // Diagnostic messages never contain tabs; pass tab_width = 1.
+            let display_width = crate::display::display_width(&text, 1);
 
             let priority = match diag.severity {
                 Some(lsp_types::DiagnosticSeverity::ERROR) => 0,
@@ -774,26 +812,54 @@ mod tests {
     fn inline_width_before() {
         let rope = test_rope();
         let mut map = DecorationMap::new();
-        // line 0 starts at offset 0: char_idx 3 = offset 3, char_idx 10 = offset 10
+        // line 0 content is "let x = 1;" (10 chars). char_idx 3 = offset 3 (a
+        // real character: 'x'); char_idx 10 = offset 10 (== line content length,
+        // i.e. an end-of-line hint, like a trailing return-type annotation).
         map.replace_source(
             DecorationSource::InlayHint,
             vec![
                 inline_at(3, ": i32", DecorationSource::InlayHint), // 5 cols at char 3
-                inline_at(10, ": String", DecorationSource::InlayHint), // 8 cols at char 10
+                inline_at(10, ": String", DecorationSource::InlayHint), // 8 cols at char 10 (EOL)
             ],
             &rope,
         );
 
         // Before any hint
         assert_eq!(map.inline_width_before(0, 2, &rope), 0);
-        // At the first hint
+        // Cursor sits on 'x' (char 3): the hint inserted at char 3 renders to
+        // its left, so it counts.
         assert_eq!(map.inline_width_before(0, 3, &rope), 5);
         // Between hints
         assert_eq!(map.inline_width_before(0, 7, &rope), 5);
-        // At the second hint
-        assert_eq!(map.inline_width_before(0, 10, &rope), 13); // 5 + 8
-                                                               // Different line
+        // Cursor at char 10 == end of line (where insert-mode `A` lands): the
+        // EOL hint renders *after* the cursor, so only the inline hint at char 3
+        // counts. (OV-00260 — the old `<=` wrongly returned 13 here.)
+        assert_eq!(map.inline_width_before(0, 10, &rope), 5);
+        // Different line
         assert_eq!(map.inline_width_before(1, 10, &rope), 0);
+    }
+
+    #[test]
+    fn eol_hint_not_counted_for_cursor_at_eol() {
+        // Regression for OV-00260: an inlay hint anchored at the end of a line
+        // (the common return-type / inferred-type position) must not shift the
+        // insert-mode cursor that sits at the same char index — the hint
+        // renders to the right of that cursor.
+        let rope = test_rope(); // line 0 content "let x = 1;" → 10 chars
+        let mut map = DecorationMap::new();
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(10, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+        let log = crate::edit_log::EditLog::new();
+
+        // Cursor at the last real char (normal-mode `$`): unaffected.
+        assert_eq!(map.inline_width_before(0, 9, &rope), 0);
+        assert_eq!(map.inline_width_before_projected(0, 9, &rope, &log), 0);
+        // Cursor one past the last char (insert-mode `A`): still unaffected.
+        assert_eq!(map.inline_width_before(0, 10, &rope), 0);
+        assert_eq!(map.inline_width_before_projected(0, 10, &rope, &log), 0);
     }
 
     #[test]
@@ -927,7 +993,7 @@ mod tests {
             &rope,
             |line_idx| {
                 if line_idx < rope.len_lines() {
-                    rope.line(line_idx).to_string().to_string()
+                    rope.line(line_idx).to_string()
                 } else {
                     String::new()
                 }

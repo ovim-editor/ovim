@@ -274,10 +274,17 @@ fn completion_trigger_context_from_line(line_text: &str, cursor_col: usize) -> (
 
 /// Returns the most common `textEdit.range.start.character` (UTF-16) across
 /// completion items. Uses majority vote to handle multi-server scenarios.
+///
+/// The tally is a `BTreeMap` (not a `HashMap`) and the tie-break is explicit:
+/// `HashMap` iteration order is randomized per process, so a popularity tie —
+/// common when two servers both contribute (e.g. Java + JDTLS extensions) —
+/// otherwise produced a non-deterministic trigger column across runs. On a tie
+/// we prefer the *lower* start column (the longer replacement range), which is
+/// what a single server's edits would do. (OV-00267)
 fn text_edit_majority_start(items: &[lsp_types::CompletionItem]) -> Option<u32> {
-    use std::collections::HashMap;
+    use std::collections::BTreeMap;
 
-    let mut counts: HashMap<u32, usize> = HashMap::new();
+    let mut counts: BTreeMap<u32, usize> = BTreeMap::new();
     for item in items {
         let start = match &item.text_edit {
             Some(lsp_types::CompletionTextEdit::Edit(edit)) => edit.range.start.character,
@@ -289,7 +296,10 @@ fn text_edit_majority_start(items: &[lsp_types::CompletionItem]) -> Option<u32> 
 
     counts
         .into_iter()
-        .max_by_key(|(_, count)| *count)
+        .max_by(|(start_a, count_a), (start_b, count_b)| {
+            // Higher count wins; on a tie, the lower start column wins.
+            count_a.cmp(count_b).then_with(|| start_b.cmp(start_a))
+        })
         .map(|(start, _)| start)
 }
 
@@ -399,6 +409,23 @@ mod tests {
             item_with_text_edit("white", 14, 16),
         ];
         assert_eq!(text_edit_majority_start(&items), Some(11));
+    }
+
+    #[test]
+    fn majority_start_tie_prefers_lower_column_deterministically() {
+        // Two servers, equal popularity (2 items each) at start=8 and start=11.
+        // The result must be stable across runs (no HashMap order dependence)
+        // and pick the lower column. (OV-00267)
+        let items = vec![
+            item_with_text_edit("alpha", 11, 16),
+            item_with_text_edit("beta", 8, 16),
+            item_with_text_edit("gamma", 11, 16),
+            item_with_text_edit("delta", 8, 16),
+        ];
+        assert_eq!(text_edit_majority_start(&items), Some(8));
+        // Reversed input order — same answer.
+        let items_rev: Vec<_> = items.into_iter().rev().collect();
+        assert_eq!(text_edit_majority_start(&items_rev), Some(8));
     }
 
     #[test]

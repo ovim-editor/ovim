@@ -1007,12 +1007,15 @@ impl Editor {
                 let hint_decs = crate::editor::decoration::decorations_from_inlay_hints(
                     &self.lsp.state.inlay_hints,
                     &rope,
+                    // Canonical "text the user sees on this line" — strips the
+                    // line terminator (`\n` / `\r\n` / bare `\r`), so UTF-16
+                    // → char-index conversion never miscounts a terminator and
+                    // anchors a hint onto the next line. (OV-00265)
                     |line_idx| {
-                        if line_idx < rope.len_lines() {
-                            rope.line(line_idx).to_string().to_string()
-                        } else {
-                            String::new()
-                        }
+                        self.buffer()
+                            .line_text(line_idx)
+                            .map(|c| c.into_owned())
+                            .unwrap_or_default()
                     },
                     hint_source_version,
                 );
@@ -1084,6 +1087,11 @@ impl Editor {
         self.lsp.state.available_code_actions.clear();
         self.lsp.state.available_completions.clear();
         self.lsp.state.inlay_hints.clear();
+        // Drop the cached diagnostic vector too — it belongs to the file we're
+        // leaving. The decorations get wiped below regardless, but leaving the
+        // raw vector populated is an inconsistency with how inlay_hints is
+        // treated. (OV-00269)
+        self.lsp.state.current_file_diagnostics.clear();
         self.lsp.slots.inlay_hints.cancel_and_invalidate();
         self.lsp.intents.clear();
         self.lsp.slots.cancel_all();
@@ -1893,8 +1901,15 @@ impl Editor {
 
         let line_text = rope.line(line);
 
-        // rope.line() includes the trailing newline — strip it for LSP
-        let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
+        // rope.line() includes the trailing line terminator — strip it for LSP.
+        // We strip `\r` too: the rope is LF-only by convention, but a stray `\r`
+        // can slip past the input seams (mixed line endings), and the server
+        // never saw it (we strip on send), so it must not count toward the
+        // UTF-16 offset. (OV-00268)
+        let line_str: String = line_text
+            .chars()
+            .take_while(|&c| c != '\n' && c != '\r')
+            .collect();
 
         // Step 1: grapheme index → char index
         let char_col = crate::unicode::grapheme_to_char_col(
@@ -1930,6 +1945,12 @@ impl Editor {
             if utf16_offset >= utf16_col {
                 break;
             }
+            // Stop at the line terminator: a server-supplied offset past the
+            // end of the line content must not advance into `\n` / `\r`
+            // (mirrors the `\r`-strip in `col_to_utf16`). (OV-00268)
+            if ch == '\n' || ch == '\r' {
+                break;
+            }
             utf16_offset += ch.len_utf16() as u32;
             char_position += 1;
         }
@@ -1950,7 +1971,10 @@ impl Editor {
             return 0;
         }
         let line_text = rope.line(line);
-        let line_str: String = line_text.chars().take_while(|&c| c != '\n').collect();
+        let line_str: String = line_text
+            .chars()
+            .take_while(|&c| c != '\n' && c != '\r')
+            .collect();
 
         crate::unicode::char_to_grapheme_col(&line_str, char_col).0
     }
@@ -2053,12 +2077,8 @@ mod tests {
         let uri = uri_from_file_path(&target).unwrap();
         let location = Location::new(uri, Range::new(Position::new(0, 0), Position::new(0, 0)));
 
-        let handled = editor.handle_location_result(
-            Ok(Some(location)),
-            "Definition",
-            "LSP-DEFINITION",
-            true,
-        );
+        let handled =
+            editor.handle_location_result(Ok(Some(location)), "Definition", "LSP-DEFINITION", true);
         assert!(handled);
         assert_eq!(editor.registers().get(Some('%')), target_path);
     }

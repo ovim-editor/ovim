@@ -241,6 +241,28 @@ fn try_set_bool(opt_name: &str, editor: &mut Editor) -> Option<CommandResult> {
     None
 }
 
+/// Try to toggle a boolean option (`:set option!`), flipping its current value.
+/// Handles the option table by name/alias plus the side-effecting `inlay_hints`.
+fn try_toggle_bool(opt_name: &str, editor: &mut Editor) -> Option<CommandResult> {
+    for opt in BOOL_OPTIONS {
+        if opt_name == opt.name || (!opt.alias.is_empty() && opt_name == opt.alias) {
+            let new_val = !(opt.get)(editor);
+            (opt.set)(editor, new_val);
+            return Some(ok(None));
+        }
+    }
+    // inlay_hints has side-effecting set/unset paths — route through try_set_bool
+    // so the toggle keeps the same cache-clear / slot-invalidate semantics.
+    if opt_name == "inlay_hints" || opt_name == "inlayhints" {
+        return if editor.options.inlay_hints {
+            try_set_bool("noinlay_hints", editor)
+        } else {
+            try_set_bool("inlay_hints", editor)
+        };
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Value options (`:set option=value`)
 // ---------------------------------------------------------------------------
@@ -433,6 +455,18 @@ pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
         return match query_option(query_opt, editor) {
             Some(result) => result,
             None => err(format!("Unknown option: {}", query_opt)),
+        };
+    }
+
+    // Check for toggle (option!) — flip a boolean option's current value.
+    if let Some(toggle_opt) = opt_name.strip_suffix('!') {
+        if opt_value.is_some() {
+            return err(format!("Trailing characters: {}", args));
+        }
+        let toggle_opt = toggle_opt.trim();
+        return match try_toggle_bool(toggle_opt, editor) {
+            Some(result) => result,
+            None => err(format!("Not a boolean option: {}", toggle_opt)),
         };
     }
 
@@ -653,5 +687,64 @@ mod tests {
             }
             _ => panic!("expected success"),
         }
+    }
+
+    #[test]
+    fn toggle_bool_option() {
+        let mut ed = make_editor();
+        ed.options.number = false;
+        let result = handle_set_command(&mut ed, "number!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(ed.options.number);
+        let result = handle_set_command(&mut ed, "number!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.number);
+    }
+
+    #[test]
+    fn toggle_bool_alias() {
+        let mut ed = make_editor();
+        ed.options.wrap = true;
+        let result = handle_set_command(&mut ed, "wrap!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.wrap);
+    }
+
+    #[test]
+    fn toggle_inlay_hints_runs_side_effects() {
+        let mut ed = make_editor();
+        assert!(!ed.options.inlay_hints, "default off (OV-00259)");
+        // off -> on must mark the slot stale (same as `:set inlay_hints`).
+        let result = handle_set_command(&mut ed, "inlay_hints!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(ed.options.inlay_hints);
+        assert!(ed.lsp.slots.inlay_hints.is_stale());
+        // on -> off must clear cached hints (same as `:set noinlay_hints`).
+        ed.lsp.state.inlay_hints.push(lsp_types::InlayHint {
+            position: lsp_types::Position::new(0, 0),
+            label: lsp_types::InlayHintLabel::String(": x".to_string()),
+            kind: None,
+            text_edits: None,
+            tooltip: None,
+            padding_left: None,
+            padding_right: None,
+            data: None,
+        });
+        let result = handle_set_command(&mut ed, "inlay_hints!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert!(!ed.options.inlay_hints);
+        assert!(ed.lsp.state.inlay_hints.is_empty());
+    }
+
+    #[test]
+    fn toggle_unknown_option_is_error() {
+        let mut ed = make_editor();
+        let result = handle_set_command(&mut ed, "tabstop!");
+        assert!(
+            matches!(result, CommandResult::Error(_)),
+            "tabstop is not a boolean"
+        );
+        let result = handle_set_command(&mut ed, "foobar!");
+        assert!(matches!(result, CommandResult::Error(_)));
     }
 }

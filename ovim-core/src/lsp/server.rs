@@ -789,6 +789,13 @@ impl LanguageServer {
                     version_support: Some(true),
                     ..Default::default()
                 }),
+                // LSP 3.17 servers that gate on this capability (same pattern
+                // that bit publish_diagnostics for typescript-language-server)
+                // won't emit hints unless we advertise it.
+                inlay_hint: Some(lsp_types::InlayHintClientCapabilities {
+                    dynamic_registration: Some(true),
+                    resolve_support: None,
+                }),
                 ..Default::default()
             }),
 

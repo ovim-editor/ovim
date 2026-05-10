@@ -17,7 +17,11 @@ fn diagnostic_counts(diagnostics: &[lsp_types::Diagnostic]) -> (usize, usize, us
             Some(lsp_types::DiagnosticSeverity::WARNING) => warnings += 1,
             Some(lsp_types::DiagnosticSeverity::INFORMATION) => info += 1,
             Some(lsp_types::DiagnosticSeverity::HINT) => hints += 1,
-            None => warnings += 1,
+            // LSP 3.17 leaves missing severity "implementation-defined"; VS Code
+            // treats it as an error, so we do too — counting it as a warning
+            // under-reported the error count for servers that omit severity
+            // (some Java/Scala tooling). (OV-00270)
+            None => errors += 1,
             _ => {}
         }
     }
@@ -334,6 +338,36 @@ mod tests {
     use crate::editor::lsp_slot::DiagnosticResult;
     use lsp_types::{Diagnostic, DiagnosticSeverity, Position, Range};
     use tokio::sync::oneshot;
+
+    fn diag(severity: Option<DiagnosticSeverity>) -> Diagnostic {
+        Diagnostic {
+            range: Range::new(Position::new(0, 0), Position::new(0, 1)),
+            severity,
+            message: "x".to_string(),
+            ..Diagnostic::default()
+        }
+    }
+
+    #[test]
+    fn diagnostic_counts_by_severity() {
+        let diags = vec![
+            diag(Some(DiagnosticSeverity::ERROR)),
+            diag(Some(DiagnosticSeverity::WARNING)),
+            diag(Some(DiagnosticSeverity::WARNING)),
+            diag(Some(DiagnosticSeverity::INFORMATION)),
+            diag(Some(DiagnosticSeverity::HINT)),
+        ];
+        assert_eq!(diagnostic_counts(&diags), (1, 2, 1, 1));
+    }
+
+    #[test]
+    fn diagnostic_counts_missing_severity_is_error() {
+        // OV-00270: a diagnostic with no severity counts as an error (matching
+        // VS Code), not a warning — so the status line doesn't under-report
+        // errors for servers that omit `severity`.
+        let diags = vec![diag(None), diag(Some(DiagnosticSeverity::WARNING))];
+        assert_eq!(diagnostic_counts(&diags), (1, 1, 0, 0));
+    }
 
     /// Helper: fire a pre-built `DiagnosticResult` into the diagnostics slot so
     /// that `poll_pending_diagnostic_refresh_response` can pick it up immediately.
