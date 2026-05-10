@@ -11,9 +11,13 @@ pub struct ViewportState {
     pub scroll_offset: usize,
     /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
     pub skip_scroll_update: bool,
-    /// Wrap map for soft wrap rendering (computed lazily when wrap=true)
+    /// Wrap map for soft wrap rendering — the **no-window-manager fallback**
+    /// slot (headless mode, the test harness). When a `WindowManager` exists,
+    /// each `Window` owns its wrap map and `Editor::wrap_map()` /
+    /// `Editor::ensure_wrap_map` route through the focused window instead.
+    /// (roadmap 19)
     pub wrap_map: Option<WrapMap>,
-    /// Decoration generation when wrap map was last built.  When decorations
+    /// Decoration generation when `wrap_map` was last built. When decorations
     /// change (e.g. inlay hints arrive), the wrap map must be rebuilt to
     /// account for new inline widths.
     pub wrap_decoration_generation: u64,

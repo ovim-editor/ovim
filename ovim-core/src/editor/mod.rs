@@ -856,22 +856,33 @@ impl Editor {
         self.viewport.scroll_offset
     }
 
-    /// Gets a reference to the wrap map (if available).
+    /// Gets a reference to the wrap map for the active viewport (the focused
+    /// window when there's a window manager, otherwise the editor-global slot
+    /// used in headless / no-window-manager contexts).
     ///
-    /// Today this is `self.viewport.wrap_map` — the editor-global slot the
-    /// renderer's single/focused-layout path and the cursor overlay use.
-    /// Roadmap 19 (in progress) is moving per-window content rendering onto
-    /// each `Window`'s own map; this accessor will then resolve to the focused
-    /// window's map.
+    /// This is the map the cursor overlay and focused-pane content render
+    /// against; non-focused split panes use their own via `Window::wrap_map`.
     pub fn wrap_map(&self) -> Option<&WrapMap> {
-        self.viewport.wrap_map.as_ref()
+        match self.window_manager.as_ref().and_then(|wm| wm.focused_window()) {
+            Some(window) => window.wrap_map(),
+            None => self.viewport.wrap_map.as_ref(),
+        }
     }
 
-    /// Ensures the editor-global wrap map (`self.viewport.wrap_map`) is built
-    /// and up-to-date for a viewport of `text_width` columns. Called from the
-    /// rendering layer before drawing wrapped lines in the single-window /
-    /// focused-window layout.
+    /// Ensures the active viewport's wrap map is built and up-to-date for
+    /// `text_width` columns — the focused window's map when there's a window
+    /// manager, otherwise the editor-global `ViewportState::wrap_map`. Called
+    /// from the rendering layer before drawing wrapped lines.
     pub fn ensure_wrap_map(&mut self, text_width: usize) {
+        if let Some(focused_idx) = self
+            .window_manager
+            .as_ref()
+            .map(|wm| wm.focused_window_index())
+        {
+            self.ensure_wrap_map_for_window(focused_idx, text_width);
+            return;
+        }
+        // No window manager (headless / test harness) — editor-global slot.
         match self.refresh_wrap_map(
             text_width,
             self.viewport.wrap_map.as_ref(),

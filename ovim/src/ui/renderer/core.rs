@@ -676,16 +676,13 @@ fn render_window_tree(
 
             let layout = BufferLayout::compute(&*ctx.editor, area);
 
-            // Build this pane's wrap map at *its own* content width. The focused
-            // pane also drives the editor-global slot (`viewport.wrap_map`) — the
-            // cursor overlay still reads that — so its content and cursor agree.
-            // (roadmap 19 / OV-00209)
+            // Build this pane's wrap map at *its own* content width.
+            // `editor.wrap_map()` resolves to the focused window's map, so the
+            // cursor overlay agrees with the focused pane's content. (roadmap 19
+            // / OV-00209)
             if ctx.editor.options.wrap {
                 ctx.editor
                     .ensure_wrap_map_for_window(window_idx, layout.text_width);
-                if is_focused {
-                    ctx.editor.ensure_wrap_map(layout.text_width);
-                }
             }
 
             // For non-focused windows, override cursor / scroll / wrap-map with
