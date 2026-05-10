@@ -1,4 +1,14 @@
-# 19: Per-Window Wrap Map
+# 19: Per-Window Wrap Map (DONE)
+
+> **Shipped** as `2c38903` (19.1+19.2 foundation), `70c7f9c` (19.3 renderer),
+> `2db5684` (19.4 `wrap_map()`/`ensure_wrap_map()` → focused window), plus 19.5
+> tests (`per_window_wrap_tests` in `ovim-core`, `ovim/tests/per_window_wrap_test.rs`).
+> The wrap map now lives on `Window`; `ViewportState::wrap_map` is the headless /
+> no-`WindowManager` fallback only. OV-00209 closed. The plan below is kept for
+> the "why" trail; the only open follow-on noted (the doubled `scroll_offset`)
+> is the unrelated ex-roadmap-10 editor decomposition.
+
+---
 
 **Goal:** Move the soft-wrap map from a single editor-global slot to per-window
 state, so each split window wraps at its own width and reports its own visual

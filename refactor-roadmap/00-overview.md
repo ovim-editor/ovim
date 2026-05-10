@@ -30,6 +30,7 @@ These docs (00-phase0 through 08) are kept for historical reference. They descri
 | [15](./15-change-enum-simplification.md) | Simplify the `Change` enum (all steps) | `23e6eeb` / `30142fb` / `cc813ea` / `beb850d` / `1e5f9b2` / `cb85572` / `31996ca` / `a005cf7` / step-4.3 |
 | [16](./16-event-loop-grouping.md) | Event loop phase grouping | `443ffb4` |
 | [18](./18-line-text-accessor.md) | Unified `Buffer::line_text` accessor | 2026-04-28 |
+| [19](./19-per-window-wrap-map.md) | Per-window wrap map (OV-00209) | `2c38903` / `70c7f9c` / `2db5684` (+ 19.5 tests) |
 
 These docs are kept with `(DONE)` banners so the "what was deleted and why"
 trail stays discoverable. They should not drive new work.
@@ -39,17 +40,12 @@ trail stays discoverable. They should not drive new work.
 | # | Title | Type | Risk | Effort |
 |---|-------|------|------|--------|
 | [17](./17-multi-server-sync.md) | Multi-server document sync | Bug prevention | **Medium** | Medium |
-| [19](./19-per-window-wrap-map.md) | Per-window wrap map (OV-00209) | Bug fix | **Medium** | Medium |
 
 ### Recommended order
 
-**17** and **19** both have user-facing impact. Prioritize **17** if you're
-expanding companion server support (Tailwind CSS + TypeScript); prioritize
-**19** if split-window usage in wrap mode is common — today every non-focused
-split pane wraps at the *focused* pane's width, so its gutter/content row counts
-and cursor position are wrong until you switch focus. **19** is bigger than a
-Goldilocks branch (wide reader blast radius) but each of its 5 tasks is its own
-commit and the first two are no-op until the third lands.
+**17** is the only remaining active item. It has user-facing impact —
+prioritize it if you're expanding companion server support (Tailwind CSS
++ TypeScript).
 
 Roadmap **18** (unified `Buffer::line_text` accessor) shipped 2026-04-28
 including the cosmetic sweep. 186 dead `trim_end_matches('\n')` calls
@@ -87,16 +83,11 @@ server in a multi-server setup (TypeScript + Tailwind CSS) silently drops
 a `didChange` or restarts, the editor can't detect divergence. Roadmap 17
 addresses this with periodic re-sync.
 
-**The wrap map is editor-global, not per-window** — `ViewportState::wrap_map`
-is a single map keyed implicitly on the focused window's width. Split panes at
-different widths get the focused pane's break points; the per-window viewport
-state (`cursor`, `scroll_offset` already on `Window`) should include the wrap
-map too. Roadmap 19. Same family as the doubled `scroll_offset` (window vs
-editor) — both are symptoms of the unfinished window/editor viewport split
-(ex-roadmap 10).
-
 **`scroll_offset` lives in two places** — `Window::scroll_offset` and
-`ViewportState::scroll_offset`, resynced on focus change. Works, but it's the
-"focused window's state is the editor's state" pattern showing its seams.
-Unifying it is the `editor/mod.rs` decomposition (ex-roadmap 10) — background
-work, no dedicated roadmap.
+`ViewportState::scroll_offset`, resynced on focus change. (The wrap map used to
+have the same problem; roadmap 19 moved it onto `Window`, with
+`ViewportState::wrap_map` kept only as the headless fallback. `scroll_offset`
+hasn't had the same treatment.) Works, but it's the "focused window's state is
+the editor's state" pattern showing its seams. Unifying it is the
+`editor/mod.rs` decomposition (ex-roadmap 10) — background work, no dedicated
+roadmap.
