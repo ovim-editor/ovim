@@ -118,6 +118,18 @@ pub use visual_context::{VisualContext, VisualSelection};
 pub use window::{SplitDirection, Window, WindowManager, WindowNode};
 pub use wrap_map::WrapMap;
 
+/// Outcome of [`Editor::refresh_wrap_map`] — what the caller should do with the
+/// wrap-map slot it owns (editor-global or per-`Window`).
+enum WrapMapRefresh {
+    /// Wrap is off — the slot should be cleared.
+    Disable,
+    /// The existing map (if any) is still valid — leave it as-is.
+    UpToDate,
+    /// A freshly built map, plus the `DecorationMap::generation` it reflects
+    /// (the caller stores both).
+    Rebuilt(WrapMap, u64),
+}
+
 /// Margin background color for textwidth shading
 #[derive(Debug, Clone, PartialEq)]
 pub enum MarginColor {
@@ -844,83 +856,142 @@ impl Editor {
         self.viewport.scroll_offset
     }
 
-    /// Gets a reference to the wrap map (if available)
+    /// Gets a reference to the wrap map (if available).
+    ///
+    /// Today this is `self.viewport.wrap_map` — the editor-global slot the
+    /// renderer's single/focused-layout path and the cursor overlay use.
+    /// Roadmap 19 (in progress) is moving per-window content rendering onto
+    /// each `Window`'s own map; this accessor will then resolve to the focused
+    /// window's map.
     pub fn wrap_map(&self) -> Option<&WrapMap> {
         self.viewport.wrap_map.as_ref()
     }
 
-    /// Ensures the wrap map is built and up-to-date for the current buffer.
-    /// Called from the rendering layer before drawing wrapped lines.
+    /// Ensures the editor-global wrap map (`self.viewport.wrap_map`) is built
+    /// and up-to-date for a viewport of `text_width` columns. Called from the
+    /// rendering layer before drawing wrapped lines in the single-window /
+    /// focused-window layout.
     pub fn ensure_wrap_map(&mut self, text_width: usize) {
-        if !self.options.wrap {
-            self.viewport.wrap_map = None;
+        match self.refresh_wrap_map(
+            text_width,
+            self.viewport.wrap_map.as_ref(),
+            self.viewport.wrap_decoration_generation,
+        ) {
+            WrapMapRefresh::Disable => self.viewport.wrap_map = None,
+            WrapMapRefresh::UpToDate => {}
+            WrapMapRefresh::Rebuilt(map, dec_gen) => {
+                self.viewport.wrap_map = Some(map);
+                self.viewport.wrap_decoration_generation = dec_gen;
+            }
+        }
+    }
+
+    /// Ensures window `window_idx`'s own wrap map is built and up-to-date for a
+    /// viewport of `text_width` columns. No-op if there is no window manager or
+    /// no such window. (roadmap 19 — split panes wrap at their own width.)
+    pub fn ensure_wrap_map_for_window(&mut self, window_idx: usize, text_width: usize) {
+        // The window must exist.
+        if self
+            .window_manager
+            .as_ref()
+            .and_then(|wm| wm.get_window(window_idx))
+            .is_none()
+        {
             return;
+        }
+        let existing_dec_gen = self
+            .window_manager
+            .as_ref()
+            .and_then(|wm| wm.get_window(window_idx))
+            .map(|w| w.wrap_decoration_generation())
+            .unwrap_or(0);
+        // `refresh_wrap_map` only reads `self` (shared) — passing it a `&WrapMap`
+        // borrowed from `self.window_manager` is fine: both are shared borrows.
+        let refresh = self.refresh_wrap_map(
+            text_width,
+            self.window_manager
+                .as_ref()
+                .and_then(|wm| wm.get_window(window_idx))
+                .and_then(|w| w.wrap_map()),
+            existing_dec_gen,
+        );
+        if let Some(window) = self
+            .window_manager
+            .as_mut()
+            .and_then(|wm| wm.get_window_mut(window_idx))
+        {
+            match refresh {
+                WrapMapRefresh::Disable => {
+                    window.invalidate_wrap_map();
+                }
+                WrapMapRefresh::UpToDate => {}
+                WrapMapRefresh::Rebuilt(map, dec_gen) => {
+                    *window.wrap_map_mut() = Some(map);
+                    window.set_wrap_decoration_generation(dec_gen);
+                }
+            }
+        }
+    }
+
+    /// Recompute a wrap map for a viewport of `text_width` columns against the
+    /// current buffer + decorations, given the caller's existing map (if any)
+    /// and the decoration generation it was built at. Pure w.r.t. `self`
+    /// (shared borrow only) — the caller decides which slot to store the
+    /// result in. Shared by `ensure_wrap_map` (editor-global slot) and
+    /// `ensure_wrap_map_for_window` (per-`Window` slot).
+    fn refresh_wrap_map(
+        &self,
+        text_width: usize,
+        existing: Option<&WrapMap>,
+        existing_dec_gen: u64,
+    ) -> WrapMapRefresh {
+        if !self.options.wrap {
+            return WrapMapRefresh::Disable;
         }
         let width = text_width.max(1);
         let tab_width = self.options.tab_width;
-        // Use rope's raw line count (includes trailing empty line after final \n)
-        // so the wrap map covers all valid cursor positions.
+        // Use the rope's raw line count (includes the trailing empty line after
+        // a final `\n`) so the wrap map covers every valid cursor position.
         let line_count = self.buffer().rope().len_lines();
         let buf_version = self.buffer().version();
         let dec_gen = self.decorations.generation;
-        if let Some(ref map) = self.viewport.wrap_map {
+        if let Some(map) = existing {
             if map.buffer_version() == buf_version
                 && map.wrap_width() == width
                 && map.line_count() == line_count
-                && self.viewport.wrap_decoration_generation == dec_gen
+                && existing_dec_gen == dec_gen
             {
-                // Already up to date
-                return;
+                return WrapMapRefresh::UpToDate;
             }
         }
 
-        self.viewport.wrap_decoration_generation = dec_gen;
-
-        // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
-        let rope = self.buffer().rope().clone();
-        let rope_for_text = rope.clone();
+        let rope = self.buffer().rope();
+        let edit_log = self.buffer().edit_log();
         // Feed the wrap walker the *visible* line content (terminator stripped),
         // matching what the renderer's `apply_inline_decorations` sees — without
         // this the walker treats a trailing `\n` as a 1-col character and
         // disagrees with the renderer about row counts at width boundaries.
         // (OV-00257) `display::line_content` is the shared "line content for a
         // `&Rope` holder" helper (mirrors `Buffer::line_text`).
-        let make_line_text = move |line_idx: usize| -> String {
-            crate::display::line_content(&rope_for_text, line_idx)
-        };
-
+        let make_line_text = |line_idx: usize| crate::display::line_content(rope, line_idx);
         // Wrap-width calculation reads *projected* decoration widths so wrap
         // points match what the renderer will draw (decorations are immutable
         // after placement; the projection replays `edit_log` since each
         // decoration's `source_version` — see `decoration.rs`).
-        let edit_log = self.buffer().edit_log().clone();
-        let inline_widths = |line_idx: usize| -> Vec<(usize, usize)> {
+        let inline_widths = |line_idx: usize| {
             self.decorations
-                .inline_decorations_for_line_projected(line_idx, &rope, &edit_log)
+                .inline_decorations_for_line_projected(line_idx, rope, edit_log)
         };
 
-        if let Some(map) = self.viewport.wrap_map.as_mut() {
-            // On any version mismatch, full rebuild to avoid stale wrap rows.
-            map.rebuild_with_decorations(
-                line_count,
-                width,
-                tab_width,
-                buf_version,
-                make_line_text,
-                inline_widths,
-            );
-        } else {
-            // Build from scratch
-            let map = WrapMap::new_with_decorations(
-                line_count,
-                width,
-                tab_width,
-                buf_version,
-                make_line_text,
-                inline_widths,
-            );
-            self.viewport.wrap_map = Some(map);
-        }
+        let map = WrapMap::new_with_decorations(
+            line_count,
+            width,
+            tab_width,
+            buf_version,
+            make_line_text,
+            inline_widths,
+        );
+        WrapMapRefresh::Rebuilt(map, dec_gen)
     }
 
     fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: GraphemeCol) -> usize {

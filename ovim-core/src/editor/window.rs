@@ -1,3 +1,4 @@
+use super::WrapMap;
 use crate::buffer::Buffer;
 use crate::buffer::Cursor;
 use crate::coordinates::DisplayCol;
@@ -17,6 +18,15 @@ pub struct Window {
     width: u16,
     /// Window height (rows)
     height: u16,
+    /// Soft-wrap map for *this* window, computed lazily at *this* window's
+    /// content width. `None` when wrap is off or not yet built. Per-window so a
+    /// split pane wraps at its own width rather than the focused pane's.
+    /// (roadmap 19 / OV-00209)
+    wrap_map: Option<WrapMap>,
+    /// `DecorationMap::generation` at the time `wrap_map` was built — decorations
+    /// belong to the buffer, not the window, so inlay-hint arrivals must rebuild
+    /// every window's wrap map.
+    wrap_decoration_generation: u64,
 }
 
 impl Window {
@@ -29,7 +39,37 @@ impl Window {
             horizontal_offset: DisplayCol::ZERO,
             width,
             height,
+            wrap_map: None,
+            wrap_decoration_generation: 0,
         }
+    }
+
+    /// This window's soft-wrap map (if built).
+    pub fn wrap_map(&self) -> Option<&WrapMap> {
+        self.wrap_map.as_ref()
+    }
+
+    /// Mutable access to this window's soft-wrap map slot.
+    pub fn wrap_map_mut(&mut self) -> &mut Option<WrapMap> {
+        &mut self.wrap_map
+    }
+
+    /// The `DecorationMap::generation` the current `wrap_map` was built against.
+    pub fn wrap_decoration_generation(&self) -> u64 {
+        self.wrap_decoration_generation
+    }
+
+    /// Record which decoration generation the (just-built) `wrap_map` reflects.
+    pub fn set_wrap_decoration_generation(&mut self, generation: u64) {
+        self.wrap_decoration_generation = generation;
+    }
+
+    /// Drop this window's wrap map and reset its decoration generation so the
+    /// next `ensure_wrap_map_for_window` rebuilds from scratch (e.g. on resize
+    /// or wrap toggle).
+    pub fn invalidate_wrap_map(&mut self) {
+        self.wrap_map = None;
+        self.wrap_decoration_generation = 0;
     }
 
     /// Gets the buffer ID
