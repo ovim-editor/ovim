@@ -39,12 +39,17 @@ trail stays discoverable. They should not drive new work.
 | # | Title | Type | Risk | Effort |
 |---|-------|------|------|--------|
 | [17](./17-multi-server-sync.md) | Multi-server document sync | Bug prevention | **Medium** | Medium |
+| [19](./19-per-window-wrap-map.md) | Per-window wrap map (OV-00209) | Bug fix | **Medium** | Medium |
 
 ### Recommended order
 
-**17** is the only remaining active item. It has user-facing impact —
-prioritize it if you're expanding companion server support (Tailwind CSS
-+ TypeScript).
+**17** and **19** both have user-facing impact. Prioritize **17** if you're
+expanding companion server support (Tailwind CSS + TypeScript); prioritize
+**19** if split-window usage in wrap mode is common — today every non-focused
+split pane wraps at the *focused* pane's width, so its gutter/content row counts
+and cursor position are wrong until you switch focus. **19** is bigger than a
+Goldilocks branch (wide reader blast radius) but each of its 5 tasks is its own
+commit and the first two are no-op until the third lands.
 
 Roadmap **18** (unified `Buffer::line_text` accessor) shipped 2026-04-28
 including the cosmetic sweep. 186 dead `trim_end_matches('\n')` calls
@@ -81,3 +86,17 @@ Old roadmaps 09–12 are replaced by the active roadmap above:
 server in a multi-server setup (TypeScript + Tailwind CSS) silently drops
 a `didChange` or restarts, the editor can't detect divergence. Roadmap 17
 addresses this with periodic re-sync.
+
+**The wrap map is editor-global, not per-window** — `ViewportState::wrap_map`
+is a single map keyed implicitly on the focused window's width. Split panes at
+different widths get the focused pane's break points; the per-window viewport
+state (`cursor`, `scroll_offset` already on `Window`) should include the wrap
+map too. Roadmap 19. Same family as the doubled `scroll_offset` (window vs
+editor) — both are symptoms of the unfinished window/editor viewport split
+(ex-roadmap 10).
+
+**`scroll_offset` lives in two places** — `Window::scroll_offset` and
+`ViewportState::scroll_offset`, resynced on focus change. Works, but it's the
+"focused window's state is the editor's state" pattern showing its seams.
+Unifying it is the `editor/mod.rs` decomposition (ex-roadmap 10) — background
+work, no dedicated roadmap.
