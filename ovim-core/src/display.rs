@@ -1,3 +1,4 @@
+use ropey::{Rope, RopeSlice};
 use unicode_width::UnicodeWidthChar;
 
 /// Returns true for control characters that should be displayed as caret notation.
@@ -88,6 +89,54 @@ pub fn display_width(text: &str, tab_width: usize) -> usize {
         }
     }
     width
+}
+
+// ---------------------------------------------------------------------------
+// Rope line-content helpers
+//
+// Single home for "what's the visible text on this line" when stripping the
+// trailing terminator — `Buffer::line_text` is the canonical accessor for
+// callers holding a `&Buffer`; these are for callers holding only a `&Rope`
+// (closures that can't borrow the owning buffer, free functions, etc.).
+// ---------------------------------------------------------------------------
+
+/// Trim a single trailing line terminator (`\r\n`, `\n`, or a bare `\r`) from a
+/// rope line slice, returning the content slice. No allocation.
+///
+/// The rope is LF-only by convention, but a stray `\r` can slip past the input
+/// seams (mixed line endings — see `Buffer::line_text`), so a bare `\r` is
+/// handled too.
+pub fn trim_line_terminator(slice: RopeSlice<'_>) -> RopeSlice<'_> {
+    let n = slice.len_chars();
+    if n == 0 {
+        return slice;
+    }
+    let end = match slice.char(n - 1) {
+        '\n' if n >= 2 && slice.char(n - 2) == '\r' => n - 2,
+        '\n' | '\r' => n - 1,
+        _ => return slice,
+    };
+    slice.slice(..end)
+}
+
+/// Number of characters on `line` in `rope`, excluding the trailing line
+/// terminator. Returns 0 for out-of-range lines.
+pub fn line_content_len(rope: &Rope, line: usize) -> usize {
+    if line >= rope.len_lines() {
+        return 0;
+    }
+    trim_line_terminator(rope.line(line)).len_chars()
+}
+
+/// The visible content of `line` in `rope` as an owned `String`, with the
+/// trailing line terminator stripped. Empty for out-of-range lines.
+///
+/// Mirrors `Buffer::line_text` for `&Rope`-only callers.
+pub fn line_content(rope: &Rope, line: usize) -> String {
+    if line >= rope.len_lines() {
+        return String::new();
+    }
+    trim_line_terminator(rope.line(line)).to_string()
 }
 
 #[cfg(test)]
@@ -197,5 +246,40 @@ mod tests {
         assert_eq!(display_col_to_char_col(text, 1, 4), 1);
         assert_eq!(display_col_to_char_col(text, 2, 4), 1); // mid-control → char 1
         assert_eq!(display_col_to_char_col(text, 3, 4), 2);
+    }
+
+    #[test]
+    fn line_content_strips_terminators() {
+        let rope = Rope::from_str("lf\ncrlf\r\nbare\rlast");
+        // line 0: "lf\n"   → "lf"
+        assert_eq!(line_content(&rope, 0), "lf");
+        assert_eq!(line_content_len(&rope, 0), 2);
+        // line 1: "crlf\r\n" → "crlf"
+        assert_eq!(line_content(&rope, 1), "crlf");
+        assert_eq!(line_content_len(&rope, 1), 4);
+        // line 2: "bare\r" (bare CR is a line break in ropey) → "bare"
+        assert_eq!(line_content(&rope, 2), "bare");
+        assert_eq!(line_content_len(&rope, 2), 4);
+        // line 3: "last" (no terminator) → "last"
+        assert_eq!(line_content(&rope, 3), "last");
+        assert_eq!(line_content_len(&rope, 3), 4);
+    }
+
+    #[test]
+    fn line_content_out_of_range_is_empty() {
+        let rope = Rope::from_str("only\n");
+        // "only\n" → lines: 0 = "only\n", 1 = "" (trailing). Index 2 is OOB.
+        assert_eq!(line_content(&rope, 2), "");
+        assert_eq!(line_content_len(&rope, 2), 0);
+        // The trailing empty line is in range and empty.
+        assert_eq!(line_content(&rope, 1), "");
+        assert_eq!(line_content_len(&rope, 1), 0);
+    }
+
+    #[test]
+    fn line_content_empty_rope() {
+        let rope = Rope::from_str("");
+        assert_eq!(line_content(&rope, 0), "");
+        assert_eq!(line_content_len(&rope, 0), 0);
     }
 }

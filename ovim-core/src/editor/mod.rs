@@ -879,32 +879,20 @@ impl Editor {
         // Extract data needed for closures before mutably borrowing self.viewport.wrap_map
         let rope = self.buffer().rope().clone();
         let rope_for_text = rope.clone();
-        // Strip the trailing line terminator so the wrap walker sees the same
-        // text the renderer does. The renderer's `apply_inline_decorations`
-        // operates on lines with the trailing newline already stripped
-        // (renderer-side callers strip the LF before splitting into rows);
-        // without matching that here the walker treats `\n` as a 1-col
-        // character and disagrees with the renderer about row counts at width
-        // boundaries. (OV-00257)
+        // Feed the wrap walker the *visible* line content (terminator stripped),
+        // matching what the renderer's `apply_inline_decorations` sees — without
+        // this the walker treats a trailing `\n` as a 1-col character and
+        // disagrees with the renderer about row counts at width boundaries.
+        // (OV-00257) `display::line_content` is the shared "line content for a
+        // `&Rope` holder" helper (mirrors `Buffer::line_text`).
         let make_line_text = move |line_idx: usize| -> String {
-            if line_idx < rope_for_text.len_lines() {
-                let line = rope_for_text.line(line_idx);
-                let text = line.to_string();
-                text.strip_suffix("\r\n")
-                    .or_else(|| text.strip_suffix('\n'))
-                    .or_else(|| text.strip_suffix('\r'))
-                    .map(str::to_string)
-                    .unwrap_or(text)
-            } else {
-                String::new()
-            }
+            crate::display::line_content(&rope_for_text, line_idx)
         };
 
-        // Step E: wrap width calculation reads projected decoration widths so
-        // wrap points match what the renderer will draw.  The accumulator
-        // still mutates stored offsets in parallel; with `source_version` set
-        // to the current buffer version at placement, projection is a no-op
-        // in steady state and yields identical results.
+        // Wrap-width calculation reads *projected* decoration widths so wrap
+        // points match what the renderer will draw (decorations are immutable
+        // after placement; the projection replays `edit_log` since each
+        // decoration's `source_version` — see `decoration.rs`).
         let edit_log = self.buffer().edit_log().clone();
         let inline_widths = |line_idx: usize| -> Vec<(usize, usize)> {
             self.decorations

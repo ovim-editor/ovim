@@ -298,7 +298,7 @@ impl DecorationMap {
     /// must not be counted. (OV-00260)
     pub fn inline_width_before(&self, line: usize, char_idx: usize, rope: &Rope) -> usize {
         let line_start = rope.line_to_char(line);
-        let line_len = line_content_char_len(rope, line);
+        let line_len = crate::display::line_content_len(rope, line);
         self.for_line(line)
             .iter()
             .filter_map(|d| match &d.placement {
@@ -316,20 +316,21 @@ impl DecorationMap {
     }
 
     // -----------------------------------------------------------------
-    // Step-E projected accessors
+    // Projected accessors
     //
-    // The renderer routes through these instead of the raw accessors: they
-    // compute each decoration's live char offset by projecting its stored
+    // These are the *only* path the renderer / wrap map / cursor math use.
+    // Decorations are immutable after placement (see the module header — the
+    // old `adjust_for_edits` accumulator was removed in Phase-05 Step F):
+    // `char_offset` and `source_version` are frozen at creation. To find a
+    // decoration's *live* position, these methods project its stored
     // `char_offset` forward through `edit_log.edits_since(source_version)`
     // before filtering by line.
     //
-    // In steady state — with the accumulator still running in parallel —
-    // `source_version` is bumped to the post-edit buffer version every time
-    // the accumulator adjusts `char_offset`, so `edits_since(source_version)`
-    // is empty and the projected offset equals the stored one. The projection
-    // is still the source of truth for rendering: when Step F removes the
-    // accumulator, these methods become the only path and nothing else needs
-    // to change.
+    // When a decoration was just placed against the current buffer version,
+    // `edits_since(source_version)` is empty and the projected offset equals
+    // the stored one (the steady-state, no-edits-yet case). After subsequent
+    // edits, projection replays them; a decoration whose anchor was engulfed
+    // by a delete is dropped.
     //
     // The `rope` argument on `..._projected` methods is always the **current**
     // rope (post-edit); line indices are derived by calling `char_to_line` on
@@ -426,7 +427,7 @@ impl DecorationMap {
         log: &EditLog,
     ) -> usize {
         let line_start = rope.line_to_char(line);
-        let line_len = line_content_char_len(rope, line);
+        let line_len = crate::display::line_content_len(rope, line);
         self.for_line_projected(line, rope, log)
             .into_iter()
             .filter_map(|d| match d.placement {
@@ -489,29 +490,6 @@ impl DecorationMap {
     }
 }
 
-/// Number of characters on `line` in `rope`, excluding the trailing line
-/// terminator (`\n`, `\r\n`, or a bare `\r`). Returns 0 for out-of-range lines.
-///
-/// This is the "is there a buffer character here?" boundary used by
-/// [`DecorationMap::inline_width_before`] — an anchor at exactly this value is
-/// past the last real character, so the renderer appends the decoration after
-/// all content rather than slotting it between spans.
-fn line_content_char_len(rope: &Rope, line: usize) -> usize {
-    if line >= rope.len_lines() {
-        return 0;
-    }
-    let slice = rope.line(line);
-    let n = slice.len_chars();
-    if n == 0 {
-        return 0;
-    }
-    match slice.char(n - 1) {
-        '\n' if n >= 2 && slice.char(n - 2) == '\r' => n - 2,
-        '\n' | '\r' => n - 1,
-        _ => n,
-    }
-}
-
 // ---------------------------------------------------------------------------
 // LSP → Decoration conversion helpers
 // ---------------------------------------------------------------------------
@@ -523,7 +501,7 @@ fn line_content_char_len(rope: &Rope, line: usize) -> usize {
 /// The rope is used to compute absolute char offsets from (line, char_idx).
 /// `source_version` is the buffer version the hints were computed against
 /// (from the originating LSP request's `buffer_version`); stored on each
-/// produced decoration for Step-D projection.
+/// produced decoration so the projected accessors can replay later edits.
 pub fn decorations_from_inlay_hints<F>(
     hints: &[lsp_types::InlayHint],
     rope: &Rope,
@@ -580,17 +558,22 @@ where
 }
 
 /// Diagnostic severity icon and colors, matching the existing renderer style.
+///
+/// Missing or out-of-range severity is treated as `ERROR` — consistent with
+/// `diagnostic_counts` and VS Code's behavior. (OV-00270)
 fn diagnostic_style(
     severity: Option<lsp_types::DiagnosticSeverity>,
 ) -> (&'static str, DecorationStyle) {
     use lsp_types::DiagnosticSeverity;
-    match severity {
-        Some(DiagnosticSeverity::ERROR) => (
+    let error_style = || {
+        (
             "",
             DecorationStyle::new(Color::Red)
                 .with_bg(Color::Rgb(60, 20, 20))
                 .with_italic(),
-        ),
+        )
+    };
+    match severity {
         Some(DiagnosticSeverity::WARNING) => (
             "",
             DecorationStyle::new(Color::Yellow)
@@ -603,12 +586,14 @@ fn diagnostic_style(
                 .with_bg(Color::Rgb(20, 40, 60))
                 .with_italic(),
         ),
-        Some(DiagnosticSeverity::HINT) | _ => (
+        Some(DiagnosticSeverity::HINT) => (
             "",
             DecorationStyle::new(Color::Gray)
                 .with_bg(Color::Rgb(40, 40, 40))
                 .with_italic(),
         ),
+        // ERROR, missing severity, or any unknown value.
+        _ => error_style(),
     }
 }
 
@@ -618,7 +603,7 @@ fn diagnostic_style(
 /// matching the existing renderer behavior.
 /// `source_version` is the buffer version the diagnostics were computed
 /// against (from the originating refresh's `buffer_version`); stored on each
-/// produced decoration for Step-D projection.
+/// produced decoration so the projected accessors can replay later edits.
 pub fn decorations_from_diagnostics(
     diagnostics: &[lsp_types::Diagnostic],
     rope: &Rope,
@@ -633,11 +618,11 @@ pub fn decorations_from_diagnostics(
         let entry = best_per_line.entry(line).or_insert(diag);
         let severity_ord = |s: Option<lsp_types::DiagnosticSeverity>| -> u32 {
             match s {
-                Some(lsp_types::DiagnosticSeverity::ERROR) => 1,
                 Some(lsp_types::DiagnosticSeverity::WARNING) => 2,
                 Some(lsp_types::DiagnosticSeverity::INFORMATION) => 3,
                 Some(lsp_types::DiagnosticSeverity::HINT) => 4,
-                _ => 5,
+                // ERROR, missing, or unknown severity → ranked as ERROR. (OV-00270)
+                _ => 1,
             }
         };
         let entry_sev = severity_ord(entry.severity);
@@ -657,10 +642,10 @@ pub fn decorations_from_diagnostics(
             let display_width = crate::display::display_width(&text, 1);
 
             let priority = match diag.severity {
-                Some(lsp_types::DiagnosticSeverity::ERROR) => 0,
                 Some(lsp_types::DiagnosticSeverity::WARNING) => 1,
                 Some(lsp_types::DiagnosticSeverity::INFORMATION) => 2,
-                _ => 3,
+                // ERROR, missing, or unknown severity → highest priority. (OV-00270)
+                _ => 0,
             };
 
             // Anchor to the start of the line in the rope.
@@ -1059,8 +1044,9 @@ mod tests {
 
     #[test]
     fn project_offset_insert_at_anchor_shifts_forward() {
-        // Inclusive-before semantics: insertion at the anchor offset shifts
-        // the anchor forward. This matches `adjust_for_edits` (`off >= offset`).
+        // Inclusive-before semantics: an insertion *at* the anchor offset shifts
+        // the anchor forward (`off >= offset`), so a hint stays to the right of
+        // text typed at its anchor position.
         let edits = [ins(5, "X")];
         assert_eq!(project_offset(5, &refs(&edits)), Some(6));
     }
@@ -1147,5 +1133,79 @@ mod tests {
             decs[0].placement,
             DecorationPlacement::EndOfLine { .. }
         ));
+    }
+
+    #[test]
+    fn diagnostics_missing_severity_treated_as_error() {
+        // OV-00270: a diagnostic with no severity is styled, prioritized, and
+        // ranked like an ERROR (matching VS Code / `diagnostic_counts`).
+        let rope = Rope::from_str("let x = 1;\nlet y = 2;\n");
+        let diags = vec![
+            lsp_types::Diagnostic {
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(0, 0),
+                    lsp_types::Position::new(0, 1),
+                ),
+                severity: None,
+                message: "no severity".to_string(),
+                ..lsp_types::Diagnostic::default()
+            },
+            // On line 1: a WARNING plus a no-severity item — the no-severity
+            // one must win the "highest severity per line" pick.
+            lsp_types::Diagnostic {
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(1, 0),
+                    lsp_types::Position::new(1, 1),
+                ),
+                severity: Some(lsp_types::DiagnosticSeverity::WARNING),
+                message: "just a warning".to_string(),
+                ..lsp_types::Diagnostic::default()
+            },
+            lsp_types::Diagnostic {
+                range: lsp_types::Range::new(
+                    lsp_types::Position::new(1, 2),
+                    lsp_types::Position::new(1, 3),
+                ),
+                severity: None,
+                message: "outranks the warning".to_string(),
+                ..lsp_types::Diagnostic::default()
+            },
+        ];
+
+        // `diagnostic_style(None)` must match `diagnostic_style(ERROR)` exactly.
+        assert_eq!(
+            diagnostic_style(None),
+            diagnostic_style(Some(lsp_types::DiagnosticSeverity::ERROR)),
+            "missing severity must be styled as ERROR"
+        );
+        assert_ne!(
+            diagnostic_style(None).1.fg,
+            diagnostic_style(Some(lsp_types::DiagnosticSeverity::WARNING))
+                .1
+                .fg,
+            "and not as WARNING"
+        );
+
+        let decs = decorations_from_diagnostics(&diags, &rope, 0);
+        assert_eq!(decs.len(), 2, "one EOL decoration per line");
+        for d in &decs {
+            assert_eq!(d.priority, 0, "missing-severity diags get ERROR priority");
+            assert_eq!(
+                d.style.fg,
+                Some(Color::Red),
+                "missing-severity diags get the ERROR color"
+            );
+        }
+        // The line-1 winner is the no-severity item, not the WARNING.
+        // Line 1 of "let x = 1;\nlet y = 2;\n" starts at char 11.
+        let line1 = decs
+            .iter()
+            .find(|d| d.placement.char_offset() == 11)
+            .expect("a line-1 decoration");
+        assert!(
+            line1.text.contains("outranks the warning"),
+            "no-severity item should outrank the WARNING on line 1, got: {:?}",
+            line1.text
+        );
     }
 }
