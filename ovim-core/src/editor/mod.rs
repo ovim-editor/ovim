@@ -115,7 +115,7 @@ pub use ui_panels::UiPanels;
 pub use undo::UndoManager;
 pub use viewport_state::ViewportState;
 pub use visual_context::{VisualContext, VisualSelection};
-pub use window::{SplitDirection, Window, WindowManager, WindowNode};
+pub use window::{SplitDirection, Window, WindowManager, WindowNode, WindowView, WindowViewNode};
 pub use wrap_map::WrapMap;
 
 /// Outcome of [`Editor::refresh_wrap_map`] — what the caller should do with the

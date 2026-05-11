@@ -1,4 +1,4 @@
-use crate::editor::{Editor, SplitDirection, WindowNode};
+use crate::editor::{Editor, SplitDirection, WindowViewNode};
 use crate::syntax::Theme;
 use anyhow::Result;
 use crossterm::cursor::SetCursorStyle;
@@ -208,31 +208,19 @@ fn render_buffer_area(
         .unwrap_or(false);
 
     if has_splits {
-        // For splits, apply textwidth narrowing before computing wrap map width,
-        // matching the single-window path. Without this, the wrap map gets the
-        // full buffer_chunk width and wraps at the wrong column. (OV-00019)
-        if editor.options.wrap {
-            let est_area = if let Some(tw) = editor.options.textwidth {
-                let max_w = tw as u16;
-                if areas.buffer_chunk.width > max_w {
-                    Rect {
-                        width: max_w,
-                        ..areas.buffer_chunk
-                    }
-                } else {
-                    areas.buffer_chunk
-                }
-            } else {
-                areas.buffer_chunk
-            };
-            let est_layout = BufferLayout::compute(editor, est_area);
-            editor.ensure_wrap_map(est_layout.text_width);
-        }
-
+        // Each split pane builds its *own* wrap map at its *own* content width
+        // inside `render_window_tree`'s leaf handler (roadmap 19 / OV-00209), so
+        // there's no global pre-pass here: a `ensure_wrap_map(estimated_width)`
+        // call would only be overwritten the moment the focused leaf rebuilds at
+        // its real pane width.
+        //
         // Render split windows recursively
         if let Some(wm) = editor.window_manager() {
             let focused_index = wm.focused_window_index();
-            let root = wm.root().clone();
+            // Structure-only snapshot: drops the `&WindowManager` borrow so the
+            // walk can take `&mut editor` (to (re)build each pane's wrap map),
+            // without `clone()`-ing every pane's wrap map vectors. (OV-00015)
+            let root = wm.root().view_tree();
             let mut current_index = 0;
             let mut tree_ctx = RenderTreeContext {
                 frame,
@@ -659,11 +647,11 @@ struct RenderTreeContext<'a, 'b> {
 /// Returns (viewport_start, layout) for the focused window (for cursor positioning)
 fn render_window_tree(
     ctx: &mut RenderTreeContext,
-    node: &WindowNode,
+    node: &WindowViewNode,
     area: Rect,
 ) -> Option<(usize, BufferLayout)> {
     match node {
-        WindowNode::Leaf(window) => {
+        WindowViewNode::Leaf(view) => {
             let window_idx = *ctx.current_index;
             let is_focused = window_idx == ctx.focused_index;
             *ctx.current_index += 1;
@@ -683,9 +671,9 @@ fn render_window_tree(
             // the window's own state; the focused window *is* the editor.
             let window_context = if !is_focused {
                 Some(WindowRenderContext {
-                    cursor: Some(*window.cursor()),
-                    scroll_offset: Some(window.scroll_offset()),
-                    horizontal_offset: Some(window.horizontal_offset()),
+                    cursor: Some(view.cursor),
+                    scroll_offset: Some(view.scroll_offset),
+                    horizontal_offset: Some(view.horizontal_offset),
                     wrap_map_window_index: Some(window_idx),
                 })
             } else {
@@ -707,7 +695,7 @@ fn render_window_tree(
                 None
             }
         }
-        WindowNode::Split {
+        WindowViewNode::Split {
             direction,
             ratio,
             first,

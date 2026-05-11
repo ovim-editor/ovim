@@ -312,10 +312,67 @@ pub enum WindowNode {
     },
 }
 
+/// A structure-only view of one window for the render walk: just the per-leaf
+/// view state the renderer reads (cursor, scroll, horizontal offset) — never
+/// the (potentially large) `wrap_map`.
+#[derive(Debug, Clone, Copy)]
+pub struct WindowView {
+    /// Window-local cursor position.
+    pub cursor: Cursor,
+    /// Top visible line.
+    pub scroll_offset: usize,
+    /// Leftmost visible display column.
+    pub horizontal_offset: usize,
+}
+
+/// Render-time mirror of [`WindowNode`] that carries only the tree *shape* plus
+/// each leaf's [`WindowView`].
+///
+/// `WindowNode::clone()` deep-copies every leaf's `wrap_map` (a `Vec<u16>` plus
+/// a `Vec<usize>`, one entry per logical line) — wasted work, since the render
+/// walk never reads the snapshot's wrap map: it (re)builds each pane's map into
+/// the *live* `Window` (`Editor::ensure_wrap_map_for_window`) as it descends.
+/// [`WindowNode::view_tree`] produces this cheap copy instead.
+#[derive(Debug, Clone)]
+pub enum WindowViewNode {
+    /// A leaf node with the window's view state.
+    Leaf(WindowView),
+    /// A split node containing two children.
+    Split {
+        direction: SplitDirection,
+        ratio: f32,
+        first: Box<WindowViewNode>,
+        second: Box<WindowViewNode>,
+    },
+}
+
 impl WindowNode {
     /// Creates a new leaf node
     pub fn new_leaf(window: Window) -> Self {
         WindowNode::Leaf(window)
+    }
+
+    /// Cheap, structure-only snapshot of this subtree for the render walk — see
+    /// [`WindowViewNode`]. Unlike `clone()`, it never copies the wrap maps.
+    pub fn view_tree(&self) -> WindowViewNode {
+        match self {
+            WindowNode::Leaf(window) => WindowViewNode::Leaf(WindowView {
+                cursor: *window.cursor(),
+                scroll_offset: window.scroll_offset(),
+                horizontal_offset: window.horizontal_offset(),
+            }),
+            WindowNode::Split {
+                direction,
+                ratio,
+                first,
+                second,
+            } => WindowViewNode::Split {
+                direction: *direction,
+                ratio: *ratio,
+                first: Box::new(first.view_tree()),
+                second: Box::new(second.view_tree()),
+            },
+        }
     }
 
     /// Creates a new split node
