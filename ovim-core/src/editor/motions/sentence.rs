@@ -61,9 +61,7 @@ impl Motions {
                                     let line_str: String = line.to_string();
                                     let end_grapheme = crate::unicode::char_to_grapheme_col(
                                         &line_str,
-                                        crate::unicode::CharCol(
-                                            chars.len().saturating_sub(1).max(0),
-                                        ),
+                                        crate::unicode::CharCol(chars.len().saturating_sub(1)),
                                     );
                                     buffer.cursor_mut().set_position(current_line, end_grapheme);
                                 }

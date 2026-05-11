@@ -46,7 +46,7 @@ impl Editor {
                 // For VisualLine, always use column 0
                 0
             } else {
-                start.1.min(start_line_len.saturating_sub(1).max(0))
+                start.1.min(start_line_len.saturating_sub(1))
             };
 
             // Clamp end position to buffer bounds
@@ -60,7 +60,7 @@ impl Editor {
                 // For VisualLine, always use column 0
                 0
             } else {
-                end.1.min(end_line_len.saturating_sub(1).max(0))
+                end.1.min(end_line_len.saturating_sub(1))
             };
 
             // Set visual start

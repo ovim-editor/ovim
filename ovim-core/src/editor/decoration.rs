@@ -541,7 +541,10 @@ where
                 label
             };
 
-            // Hint labels never contain tabs, so tab_width is irrelevant; pass 1.
+            // Inlay-hint labels are rendered verbatim (no tab expansion), so the
+            // tab_width passed here is immaterial — pass 1. A server that put a
+            // literal `\t` in a label would desync this width from what the
+            // terminal advances; vanishingly rare and not handled.
             let display_width = crate::display::display_width(&text, 1);
 
             Decoration {
@@ -636,9 +639,12 @@ pub fn decorations_from_diagnostics(
         .into_iter()
         .map(|(line, diag)| {
             let (icon, style) = diagnostic_style(diag.severity);
-            let msg = diag.message.lines().next().unwrap_or("");
+            // First line only, with any tabs flattened to a space: this text is
+            // appended to the rendered line verbatim (no tab expansion), so a
+            // stray `\t` would desync `display_width` / the wrap map from where
+            // the terminal's tab stop actually lands.
+            let msg = diag.message.lines().next().unwrap_or("").replace('\t', " ");
             let text = format!("{} {}", icon, msg);
-            // Diagnostic messages never contain tabs; pass tab_width = 1.
             let display_width = crate::display::display_width(&text, 1);
 
             let priority = match diag.severity {
