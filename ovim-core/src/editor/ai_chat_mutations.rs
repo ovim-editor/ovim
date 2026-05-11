@@ -97,10 +97,9 @@ fn snippet_around(
 
     let mut out = String::new();
     for i in first..last {
-        let line_content = rope.line(i);
-        // Trim trailing newline from ropey line slice
-        let s = line_content.to_string();
-        let s = s;
+        // Visible line content, terminator stripped (`display::line_content`
+        // mirrors `Buffer::line_text` for `&Rope`-only callers).
+        let s = crate::display::line_content(rope, i);
         out.push_str(&format!("{:>4} | {}\n", i + 1, s));
     }
     out
@@ -361,11 +360,11 @@ impl Editor {
         let end_col = match args.end_column {
             Some(n) => n.saturating_sub(1),
             None => {
-                // Default to end of the end_line
+                // Default to end of the end_line — grapheme count of the
+                // line *content* (terminator excluded), so the selection
+                // doesn't run past the `\n` into the next line.
                 let rope = self.buffer().rope();
-                let line_str = rope.line(end_line_0).to_string();
-                let trimmed = line_str;
-                crate::unicode::grapheme_count(&trimmed)
+                crate::unicode::grapheme_count(&crate::display::line_content(rope, end_line_0))
             }
         };
 

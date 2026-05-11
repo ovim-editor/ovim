@@ -485,9 +485,9 @@ impl Editor {
             let mut truncated_after = 0usize;
 
             for line_idx in render_start..render_end {
-                let line_content = rope.line(line_idx).to_string();
-                // Trim trailing newline from ropey line
-                let line_content = line_content;
+                // Visible line content, terminator stripped (`display::line_content`
+                // mirrors `Buffer::line_text` for `&Rope`-only callers).
+                let line_content = crate::display::line_content(rope, line_idx);
                 let formatted = format!(
                     "{:>width$} | {}\n",
                     line_idx + 1,
