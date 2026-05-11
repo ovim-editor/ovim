@@ -31,8 +31,7 @@ impl Motions {
             return;
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line;
+        let line = crate::display::line_content(rope, line_idx);
         let chars: Vec<char> = line.chars().collect();
         let col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
@@ -98,7 +97,7 @@ impl Motions {
             }
             // else: end of buffer, don't move
         } else {
-            let clamped = new_col.min(chars.len().saturating_sub(1).max(0));
+            let clamped = new_col.min(chars.len().saturating_sub(1));
             buffer
                 .cursor_mut()
                 .set_col(crate::unicode::char_to_grapheme_col(
@@ -130,8 +129,7 @@ impl Motions {
             }
         };
         for line_idx in start_line..total_lines {
-            let line = rope.line(line_idx).to_string();
-            let content = line.trim_end_matches('\n');
+            let content = crate::display::line_content(rope, line_idx);
 
             if content.is_empty() {
                 // Truly empty line — word boundary, stop here.
@@ -184,9 +182,9 @@ impl Motions {
             // At start of line, move to end of previous line and continue
             if line_idx > 0 {
                 line_idx -= 1;
-                let prev_line = rope.line(line_idx).to_string();
-                let prev_line_trimmed = prev_line;
-                grapheme_col = GraphemeCol(grapheme_count(&prev_line_trimmed));
+                grapheme_col = GraphemeCol(grapheme_count(&crate::display::line_content(
+                    rope, line_idx,
+                )));
                 // If previous line is empty, just land at col 0
                 if grapheme_col == GraphemeCol::ZERO {
                     buffer
@@ -200,8 +198,7 @@ impl Motions {
             }
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line;
+        let line = crate::display::line_content(rope, line_idx);
         let chars: Vec<char> = line.chars().collect();
         // Convert grapheme col to char col for char-based iteration
         let mut new_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
@@ -287,15 +284,14 @@ impl Motions {
     }
 
     fn word_end_forward_once(buffer: &mut Buffer, big_word: bool, prefer_current: bool) {
-        let (line_idx, grapheme_col, total_lines, line_string) = {
+        let (line_idx, grapheme_col, total_lines, line) = {
             let cursor = buffer.cursor();
-            let total_lines = buffer.line_count();
-
+            let line_idx = cursor.line();
             (
-                cursor.line(),
+                line_idx,
                 cursor.col(),
-                total_lines,
-                buffer.rope().line(cursor.line()).to_string(),
+                buffer.line_count(),
+                crate::display::line_content(buffer.rope(), line_idx),
             )
         };
 
@@ -303,7 +299,6 @@ impl Motions {
             return;
         }
 
-        let line = line_string;
         let chars: Vec<char> = line.chars().collect();
         let col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
@@ -311,8 +306,7 @@ impl Motions {
             // Skip consecutive blank lines to find next non-empty line
             let mut next_line = line_idx + 1;
             while next_line < total_lines {
-                let next = buffer.rope().line(next_line).to_string();
-                let next_trimmed = next;
+                let next_trimmed = crate::display::line_content(buffer.rope(), next_line);
                 if !next_trimmed.is_empty() {
                     // Start at first non-ws, then move to end of that word
                     let Some(char_col) =
@@ -476,11 +470,11 @@ impl Motions {
             return;
         }
 
-        // Helper to get line string (raw rope line, terminator included)
-        let get_line_str = |l: usize| -> String { rope.line(l).to_string() };
+        // Helper to get visible line content (trailing terminator stripped).
+        let get_line_str = |l: usize| -> String { crate::display::line_content(rope, l) };
 
-        // Helper to get line chars
-        let get_chars = |l: usize| -> Vec<char> { rope.line(l).to_string().chars().collect() };
+        // Helper to get the line's characters (terminator excluded).
+        let get_chars = |l: usize| -> Vec<char> { get_line_str(l).chars().collect() };
 
         let orig_line_str = get_line_str(orig_line);
         let orig_chars = get_chars(orig_line);

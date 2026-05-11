@@ -1557,9 +1557,8 @@ pub fn render_buffer(
                 }
             }
 
-            let line_text_raw = rope.line(line_idx).to_string();
-            // Remove trailing newline if present
-            let line_text_original = line_text_raw.trim_end_matches('\n');
+            // Visible content of the line (trailing terminator stripped).
+            let line_text_original = ovim_core::display::line_content(rope, line_idx);
 
             // Optional markdown conceal (skip on cursor line so editing isn't blind)
             let (exp, concealed_links) =

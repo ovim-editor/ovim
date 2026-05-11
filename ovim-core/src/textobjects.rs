@@ -31,8 +31,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -114,8 +113,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -200,8 +198,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -255,8 +252,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if col >= chars.len() {
@@ -331,8 +327,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if chars.is_empty() {
@@ -722,8 +717,9 @@ impl TextObjects {
             if line_idx >= line_count {
                 return true;
             }
-            let line = buffer.rope().line(line_idx).to_string();
-            line.trim().is_empty()
+            crate::display::line_content(buffer.rope(), line_idx)
+                .trim()
+                .is_empty()
         };
 
         // If we're on a blank line, return None for inner paragraph
@@ -754,8 +750,7 @@ impl TextObjects {
             })
         } else {
             // Last line of file - use the actual end
-            let end_line_text = buffer.rope().line(end_line).to_string();
-            let end_col = end_line_text.chars().count();
+            let end_col = crate::display::line_content_len(buffer.rope(), end_line);
             Some(TextObjectRange {
                 start_line,
                 start_col: CharCol::ZERO,
@@ -781,8 +776,9 @@ impl TextObjects {
             if line_idx >= line_count {
                 return true;
             }
-            let line = buffer.rope().line(line_idx).to_string();
-            line.trim().is_empty()
+            crate::display::line_content(buffer.rope(), line_idx)
+                .trim()
+                .is_empty()
         };
 
         let mut start_line = current_line;
@@ -832,8 +828,7 @@ impl TextObjects {
             })
         } else {
             // Last line of file - use the actual end
-            let end_line_text = buffer.rope().line(end_line).to_string();
-            let end_col = end_line_text.chars().count();
+            let end_col = crate::display::line_content_len(buffer.rope(), end_line);
             Some(TextObjectRange {
                 start_line,
                 start_col: CharCol::ZERO,
@@ -853,8 +848,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if chars.is_empty() {
@@ -904,8 +898,7 @@ impl TextObjects {
             return None;
         }
 
-        let line = buffer.rope().line(line_idx).to_string();
-        let line_text = line;
+        let line_text = crate::display::line_content(buffer.rope(), line_idx);
         let chars: Vec<char> = line_text.chars().collect();
 
         if chars.is_empty() {
@@ -976,24 +969,22 @@ impl TextObjects {
         }
 
         let current_line = buffer.line_text(line_idx)?;
-        let current_line_trimmed = current_line;
 
         // Skip blank lines for indent calculation
-        if current_line_trimmed.trim().is_empty() {
+        if current_line.trim().is_empty() {
             return None;
         }
 
-        let base_indent = Self::get_indent_level(&current_line_trimmed, tab_width);
+        let base_indent = Self::get_indent_level(&current_line, tab_width);
 
         // Find start of indent block (going up)
         let mut start_line = line_idx;
         while start_line > 0 {
             let prev_line = buffer.line_text(start_line - 1)?;
-            let prev_trimmed = prev_line;
 
             // Stop at blank lines or lines with less indentation
-            if prev_trimmed.trim().is_empty()
-                || Self::get_indent_level(&prev_trimmed, tab_width) < base_indent
+            if prev_line.trim().is_empty()
+                || Self::get_indent_level(&prev_line, tab_width) < base_indent
             {
                 break;
             }
@@ -1004,11 +995,10 @@ impl TextObjects {
         let mut end_line = line_idx;
         while end_line < line_count - 1 {
             let next_line = buffer.line_text(end_line + 1)?;
-            let next_trimmed = next_line;
 
             // Stop at blank lines or lines with less indentation
-            if next_trimmed.trim().is_empty()
-                || Self::get_indent_level(&next_trimmed, tab_width) < base_indent
+            if next_line.trim().is_empty()
+                || Self::get_indent_level(&next_line, tab_width) < base_indent
             {
                 break;
             }

@@ -21,18 +21,10 @@ impl Motions {
         let text = rope.to_string();
         let chars: Vec<char> = text.chars().collect();
 
-        // Convert grapheme col to char col for absolute position calculation
-        let current_line_str: String = rope.line(line_idx).to_string().to_string();
+        // Absolute char position of the cursor in the full buffer text.
+        let current_line_str = crate::display::line_content(rope, line_idx);
         let char_col = crate::unicode::grapheme_to_char_col(&current_line_str, grapheme_col).0;
-
-        // Convert line+col to absolute position
-        let mut abs_pos = 0;
-        for i in 0..line_idx {
-            if i < rope.len_lines() {
-                abs_pos += rope.line(i).len_chars();
-            }
-        }
-        abs_pos += char_col;
+        let abs_pos = rope.line_to_char(line_idx) + char_col;
 
         if abs_pos >= chars.len() {
             return false;
@@ -47,8 +39,7 @@ impl Motions {
             (abs_pos, chars[abs_pos])
         } else {
             // Search forward on current line for nearest bracket
-            let line_text = rope.line(line_idx).to_string();
-            let line_chars: Vec<char> = line_text.chars().collect();
+            let line_chars: Vec<char> = current_line_str.chars().collect();
             let mut found = None;
             for (search_col, &ch) in line_chars.iter().enumerate().skip(char_col + 1) {
                 if is_bracket(ch) {
@@ -83,7 +74,7 @@ impl Motions {
         if let Some(pos) = match_pos {
             // Convert absolute position back to line+col (char-based)
             let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, pos);
-            let target_line_str: String = rope.line(new_line).to_string().to_string();
+            let target_line_str = crate::display::line_content(rope, new_line);
             let new_grapheme_col =
                 crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
             buffer.cursor_mut().set_position(new_line, new_grapheme_col);
@@ -144,17 +135,16 @@ impl Motions {
         let line_idx = cursor.line();
         let col = cursor.col();
 
-        // Convert to absolute position
         let text = rope.to_string();
         let chars: Vec<char> = text.chars().collect();
 
-        let mut abs_pos = 0;
-        for i in 0..line_idx {
-            if let Some(line) = buffer.line_text(i) {
-                abs_pos += line.chars().count();
-            }
-        }
-        abs_pos += col.0;
+        // Absolute char position of the cursor in the full buffer text.
+        let abs_pos = rope.line_to_char(line_idx)
+            + crate::unicode::grapheme_to_char_col(
+                &crate::display::line_content(rope, line_idx),
+                col,
+            )
+            .0;
 
         if abs_pos >= chars.len() {
             return false;
@@ -172,7 +162,7 @@ impl Motions {
                     if depth == 0 {
                         // Found unmatched opening brace
                         let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, search_pos);
-                        let target_line_str: String = rope.line(new_line).to_string().to_string();
+                        let target_line_str = crate::display::line_content(rope, new_line);
                         let new_grapheme_col =
                             crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
                         buffer.cursor_mut().set_position(new_line, new_grapheme_col);
@@ -201,17 +191,16 @@ impl Motions {
         let line_idx = cursor.line();
         let col = cursor.col();
 
-        // Convert to absolute position
         let text = rope.to_string();
         let chars: Vec<char> = text.chars().collect();
 
-        let mut abs_pos = 0;
-        for i in 0..line_idx {
-            if let Some(line) = buffer.line_text(i) {
-                abs_pos += line.chars().count();
-            }
-        }
-        abs_pos += col.0;
+        // Absolute char position of the cursor in the full buffer text.
+        let abs_pos = rope.line_to_char(line_idx)
+            + crate::unicode::grapheme_to_char_col(
+                &crate::display::line_content(rope, line_idx),
+                col,
+            )
+            .0;
 
         if abs_pos >= chars.len() {
             return false;
@@ -228,7 +217,7 @@ impl Motions {
                     if depth == 0 {
                         // Found unmatched closing brace
                         let (new_line, new_char_col) = Self::abs_pos_to_line_col(rope, search_pos);
-                        let target_line_str: String = rope.line(new_line).to_string().to_string();
+                        let target_line_str = crate::display::line_content(rope, new_line);
                         let new_grapheme_col =
                             crate::unicode::char_to_grapheme_col(&target_line_str, new_char_col);
                         buffer.cursor_mut().set_position(new_line, new_grapheme_col);
@@ -297,17 +286,16 @@ impl Motions {
         let line_idx = cursor.line();
         let col = cursor.col();
 
-        // Convert to absolute position
         let text = rope.to_string();
         let chars: Vec<char> = text.chars().collect();
 
-        let mut abs_pos = 0;
-        for i in 0..line_idx {
-            if let Some(line) = buffer.line_text(i) {
-                abs_pos += line.chars().count();
-            }
-        }
-        abs_pos += col.0;
+        // Absolute char position of the cursor in the full buffer text.
+        let abs_pos = rope.line_to_char(line_idx)
+            + crate::unicode::grapheme_to_char_col(
+                &crate::display::line_content(rope, line_idx),
+                col,
+            )
+            .0;
 
         if abs_pos >= chars.len() {
             return false;
@@ -326,8 +314,7 @@ impl Motions {
                         if depth == 0 {
                             let (new_line, new_char_col) =
                                 Self::abs_pos_to_line_col(rope, search_pos);
-                            let target_line_str: String =
-                                rope.line(new_line).to_string().to_string();
+                            let target_line_str = crate::display::line_content(rope, new_line);
                             let new_grapheme_col = crate::unicode::char_to_grapheme_col(
                                 &target_line_str,
                                 new_char_col,
@@ -358,8 +345,7 @@ impl Motions {
                         if depth == 0 {
                             let (new_line, new_char_col) =
                                 Self::abs_pos_to_line_col(rope, search_pos);
-                            let target_line_str: String =
-                                rope.line(new_line).to_string().to_string();
+                            let target_line_str = crate::display::line_content(rope, new_line);
                             let new_grapheme_col = crate::unicode::char_to_grapheme_col(
                                 &target_line_str,
                                 new_char_col,

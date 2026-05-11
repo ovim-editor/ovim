@@ -560,13 +560,7 @@ fn set_cursor_position(
         }
     } else {
         let rope = editor.buffer().rope();
-        let line_count = editor.buffer().line_count();
-        let line_text = if cursor_line < line_count {
-            rope.line(cursor_line).to_string()
-        } else {
-            String::new()
-        };
-        let line_text = line_text.to_string();
+        let line_text = ovim_core::display::line_content(rope, cursor_line);
 
         let tab_width = editor.options.tab_width;
 

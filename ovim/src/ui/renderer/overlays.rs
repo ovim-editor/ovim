@@ -86,19 +86,14 @@ pub fn render_hover_window(
 
     // Convert cursor to screen coordinates
     let rope = editor.buffer().rope();
-    let line_text = if cursor_line < editor.buffer().line_count() {
-        rope.line(cursor_line).to_string()
-    } else {
-        String::new()
-    };
-    let line_text = line_text.trim_end_matches('\n');
+    let line_text = ovim_core::display::line_content(rope, cursor_line);
     let tab_width = editor.options.tab_width;
     let char_col = ovim_core::unicode::grapheme_to_char_col(
-        line_text,
+        &line_text,
         ovim_core::unicode::GraphemeCol(cursor_col),
     )
     .0;
-    let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+    let base_display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
     let edit_log = editor.buffer().edit_log();
     let inline_offset =
         editor
@@ -283,22 +278,16 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
 
     // Get the line text and convert character column to display column
     let rope = editor.buffer().rope();
-    let line_count = editor.buffer().line_count();
-    let line_text = if cursor_line < line_count {
-        rope.line(cursor_line).to_string()
-    } else {
-        String::new()
-    };
-    let line_text = line_text.trim_end_matches('\n');
+    let line_text = ovim_core::display::line_content(rope, cursor_line);
 
     // Convert character column to display column (accounting for tabs, emojis, and inline decorations)
     let tab_width = editor.options.tab_width;
     let char_col = ovim_core::unicode::grapheme_to_char_col(
-        line_text,
+        &line_text,
         ovim_core::unicode::GraphemeCol(cursor_col),
     )
     .0;
-    let base_display_col = grapheme_col_to_display_col(line_text, cursor_col, tab_width);
+    let base_display_col = grapheme_col_to_display_col(&line_text, cursor_col, tab_width);
     let edit_log = editor.buffer().edit_log();
     let inline_offset =
         editor

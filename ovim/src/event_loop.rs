@@ -1600,18 +1600,16 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
                 ),
             });
         }
-        let line_text = rope.line(line_idx).to_string();
-        let line_content = line_text.trim_end_matches('\n');
-        find_char_positions(line_content, old)
+        let line_content = ovim_core::display::line_content(rope, line_idx);
+        find_char_positions(&line_content, old)
             .into_iter()
             .map(|c| (line_idx, c))
             .collect()
     } else {
         let mut found = Vec::new();
         for line_idx in 0..total_lines {
-            let line_text = rope.line(line_idx).to_string();
-            let line_content = line_text.trim_end_matches('\n');
-            for c in find_char_positions(line_content, old) {
+            let line_content = ovim_core::display::line_content(rope, line_idx);
+            for c in find_char_positions(&line_content, old) {
                 found.push((line_idx, c));
             }
         }
@@ -1637,8 +1635,7 @@ fn handle_edit_line(editor: &mut Editor, line: Option<usize>, old: &str, new: &s
 
     // Capture grapheme prefix length on the *pre-edit* line so cursor_after
     // can be computed in grapheme-space without re-scanning the post-edit rope.
-    let pre_edit_line = rope.line(match_line).to_string();
-    let pre_edit_content = pre_edit_line;
+    let pre_edit_content = ovim_core::display::line_content(rope, match_line);
     let prefix_text: String = pre_edit_content.chars().take(match_col_chars).collect();
     let prefix_graphemes = ovim_core::unicode::grapheme_count(&prefix_text);
 
@@ -1843,12 +1840,9 @@ fn handle_read_lines(editor: &Editor, from: usize, to: usize) -> ApiResponse {
 
     let mut lines = Vec::new();
     for idx in from..=to {
-        let line_text = rope.line(idx).to_string();
-        // Strip trailing newline
-        let text = line_text.to_string();
         lines.push(LineEntry {
             number: idx + 1, // 1-indexed for display
-            text,
+            text: ovim_core::display::line_content(rope, idx),
         });
     }
 

@@ -976,13 +976,7 @@ mod tests {
         let decs = decorations_from_inlay_hints(
             &hints,
             &rope,
-            |line_idx| {
-                if line_idx < rope.len_lines() {
-                    rope.line(line_idx).to_string()
-                } else {
-                    String::new()
-                }
-            },
+            |line_idx| crate::display::line_content(&rope, line_idx),
             42,
         );
 

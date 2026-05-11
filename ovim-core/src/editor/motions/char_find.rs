@@ -16,8 +16,7 @@ impl Motions {
             return false;
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line;
+        let line = crate::display::line_content(rope, line_idx);
         let chars: Vec<char> = line.chars().collect();
         let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
@@ -51,8 +50,7 @@ impl Motions {
             return false;
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line;
+        let line = crate::display::line_content(rope, line_idx);
         let chars: Vec<char> = line.chars().collect();
         let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
@@ -90,8 +88,7 @@ impl Motions {
             return false;
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line;
+        let line = crate::display::line_content(rope, line_idx);
         let chars: Vec<char> = line.chars().collect();
         let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
@@ -130,8 +127,7 @@ impl Motions {
             return false;
         }
 
-        let line = rope.line(line_idx).to_string();
-        let line = line;
+        let line = crate::display::line_content(rope, line_idx);
         let chars: Vec<char> = line.chars().collect();
         let char_col = crate::unicode::grapheme_to_char_col(&line, grapheme_col).0;
 
