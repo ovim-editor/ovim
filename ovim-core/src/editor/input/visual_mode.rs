@@ -689,8 +689,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let mut cursor_col = 0;
                 for line_idx in start_line..end_line {
                     // Note: end_line not included
-                    if let Some(line) = editor.buffer().line_text(line_idx) {
-                        let line_text = line;
+                    if let Some(line_text) = editor.buffer().line_text(line_idx) {
                         cursor_col += line_text.chars().count();
                         if line_idx < end_line - 1 {
                             cursor_col += 1; // Space after this line

@@ -457,9 +457,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         let mut matches = Vec::new();
 
         for line_idx in start_line..=end_line.min(editor.buffer().line_count().saturating_sub(1)) {
-            if let Some(line) = editor.buffer().line_text(line_idx) {
-                let line_text = line;
-
+            if let Some(line_text) = editor.buffer().line_text(line_idx) {
                 // Find all matches in this line
                 if global {
                     for mat in regex.find_iter(&line_text) {
@@ -505,9 +503,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
         for line_idx in start_line..=end_line.min(buf.line_count().saturating_sub(1)) {
-            if let Some(line) = buf.line_text(line_idx) {
-                let line_text = line;
-
+            if let Some(line_text) = buf.line_text(line_idx) {
                 let new_text = if global {
                     regex
                         .replace_all(&line_text, replacement.as_str())
@@ -615,8 +611,7 @@ fn handle_global_command(
     let mut matching_lines = Vec::new();
 
     for line_idx in scan_start..=scan_end {
-        if let Some(line) = editor.buffer().line_text(line_idx) {
-            let line_text = line;
+        if let Some(line_text) = editor.buffer().line_text(line_idx) {
             let matches = regex.is_match(&line_text);
 
             // Include line if: (matches && !invert) || (!matches && invert)
@@ -672,8 +667,7 @@ fn handle_global_command(
             // Print all matching lines to status
             let mut output = Vec::new();
             for &line_idx in &matching_lines {
-                if let Some(line) = editor.buffer().line_text(line_idx) {
-                    let line_text = line;
+                if let Some(line_text) = editor.buffer().line_text(line_idx) {
                     output.push(format!("{}: {}", line_idx + 1, line_text));
                 }
             }
@@ -726,9 +720,7 @@ fn handle_global_command(
 
                     let ((), edits) = editor.buffer_mut().record(|buf| {
                         for &line_idx in &matching_lines {
-                            if let Some(line) = buf.line_text(line_idx) {
-                                let line_text = line;
-
+                            if let Some(line_text) = buf.line_text(line_idx) {
                                 let new_text = if global {
                                     sub_regex
                                         .replace_all(&line_text, replacement.as_str())

@@ -12,8 +12,7 @@ impl Motions {
         let target_line = (viewport_start + offset).min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
-        if let Some(line) = buffer.line_text(target_line) {
-            let line_text = line;
+        if let Some(line_text) = buffer.line_text(target_line) {
             let first_non_blank = line_text
                 .chars()
                 .position(|c| !c.is_whitespace())
@@ -37,8 +36,7 @@ impl Motions {
             (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
-        if let Some(line) = buffer.line_text(target_line) {
-            let line_text = line;
+        if let Some(line_text) = buffer.line_text(target_line) {
             let first_non_blank = line_text
                 .chars()
                 .position(|c| !c.is_whitespace())
@@ -65,8 +63,7 @@ impl Motions {
             .min(buffer.line_count().saturating_sub(1));
 
         // Move to first non-blank character on the line
-        if let Some(line) = buffer.line_text(target_line) {
-            let line_text = line;
+        if let Some(line_text) = buffer.line_text(target_line) {
             let first_non_blank = line_text
                 .chars()
                 .position(|c| !c.is_whitespace())

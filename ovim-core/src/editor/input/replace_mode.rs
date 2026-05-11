@@ -60,8 +60,7 @@ pub fn handle_replace_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             let grapheme_col = editor.buffer().cursor().col();
             let col = grapheme_col.0;
 
-            if let Some(line) = editor.buffer().line_text(line_idx) {
-                let line_text = line;
+            if let Some(line_text) = editor.buffer().line_text(line_idx) {
                 let chars: Vec<char> = line_text.chars().collect();
 
                 if col < chars.len() {

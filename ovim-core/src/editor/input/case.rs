@@ -39,8 +39,7 @@ pub fn change_case_line(editor: &mut Editor, count: usize, case_change: CaseChan
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
         for line_idx in start_line..end_line {
-            if let Some(line) = buf.line_text(line_idx) {
-                let line_text = line;
+            if let Some(line_text) = buf.line_text(line_idx) {
                 let transformed = apply_case_change(&line_text, &case_change);
 
                 if transformed != line_text {
@@ -135,10 +134,9 @@ pub fn change_case_to_end_of_line(editor: &mut Editor, case_change: CaseChange) 
     let line_idx = cursor_before.line;
     let grapheme_col = cursor_before.col; // grapheme index
 
-    let Some(line) = editor.buffer().line_text(line_idx) else {
+    let Some(line_text) = editor.buffer().line_text(line_idx) else {
         return Ok(());
     };
-    let line_text = line;
     let line_grapheme_len = grapheme_count(&line_text);
 
     if grapheme_col.0 >= line_grapheme_len {

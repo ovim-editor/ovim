@@ -1319,8 +1319,7 @@ fn handle_cl(editor: &mut Editor, count: usize) -> Result<()> {
     let line_idx = cursor.line();
     let start_col = cursor.col().0;
 
-    if let Some(line) = editor.buffer().line_text(line_idx) {
-        let line_text = line;
+    if let Some(line_text) = editor.buffer().line_text(line_idx) {
         let line_len = line_text.chars().count();
         let end_col = (start_col + count).min(line_len);
 

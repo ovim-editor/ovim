@@ -420,8 +420,7 @@ impl Buffer {
     pub fn dedent_lines_at(&mut self, start: usize, end: usize, shift_width: usize) {
         let actual_end = end.min(self.line_count());
         for line_idx in start..actual_end {
-            if let Some(line) = self.line_text(line_idx) {
-                let line_text = line;
+            if let Some(line_text) = self.line_text(line_idx) {
                 let chars: Vec<char> = line_text.chars().collect();
                 let mut remove = 0;
                 for &ch in chars.iter().take(shift_width) {
@@ -489,10 +488,9 @@ impl Buffer {
     pub fn toggle_char_at_cursor(&mut self) -> bool {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col(); // GraphemeCol
-        let Some(line) = self.line_text(line_idx) else {
+        let Some(line_text) = self.line_text(line_idx) else {
             return false;
         };
-        let line_text = line;
         let line_grapheme_len = grapheme_count(&line_text);
         if grapheme_col.0 >= line_grapheme_len {
             return false;
@@ -600,10 +598,9 @@ impl Buffer {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col(); // grapheme index
 
-        let Some(line) = self.line_text(line_idx) else {
+        let Some(line_text) = self.line_text(line_idx) else {
             return;
         };
-        let line_text = line;
 
         // Convert grapheme col → char col for find_number_at_or_after (char-based)
         let char_col = grapheme_to_char_col(&line_text, grapheme_col);
@@ -662,10 +659,9 @@ impl Buffer {
         let line_idx = self.cursor().line();
         let col = self.cursor_char_col();
 
-        let Some(line) = self.line_text(line_idx) else {
+        let Some(line_text) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_text = line;
         let chars: Vec<char> = line_text.chars().collect();
 
         let found = if forward {
@@ -974,10 +970,9 @@ impl Buffer {
         let grapheme_col = self.cursor().col();
         let col = self.cursor_char_col();
 
-        let Some(line) = self.line_text(line_idx) else {
+        let Some(line_text) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_text = line;
         let chars_count = line_text.chars().count();
 
         if col >= chars_count {

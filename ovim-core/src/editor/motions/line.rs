@@ -10,9 +10,7 @@ impl Motions {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
 
-        if let Some(line) = buffer.line_text(line_idx) {
-            let line_text = line;
-
+        if let Some(line_text) = buffer.line_text(line_idx) {
             // Find first non-whitespace character (char index → grapheme)
             let char_col = line_text
                 .chars()
@@ -59,9 +57,7 @@ impl Motions {
         let cursor = buffer.cursor();
         let line_idx = cursor.line();
 
-        if let Some(line) = buffer.line_text(line_idx) {
-            let line_text = line;
-
+        if let Some(line_text) = buffer.line_text(line_idx) {
             // Find last non-whitespace character (char index → grapheme)
             let mut last_char_col = 0;
             for (i, c) in line_text.chars().enumerate() {

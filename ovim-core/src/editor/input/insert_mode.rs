@@ -205,8 +205,7 @@ fn exit_insert_mode(editor: &mut Editor) {
                         // Insert mode: insert at the block column (`col` is
                         // grapheme-space from visual-block state — pre-existing
                         // Class-2 assumption that equals char-space for ASCII).
-                        if let Some(line) = buf.line_text(line_idx) {
-                            let line_text = line;
+                        if let Some(line_text) = buf.line_text(line_idx) {
                             let insert_col = col.min(line_text.chars().count());
                             buf.insert_text_at(line_idx, CharCol(insert_col), &inserted_text);
                         }
@@ -277,8 +276,7 @@ fn exit_insert_mode(editor: &mut Editor) {
 
         if is_append {
             // For append mode, position cursor on the last character of target line
-            if let Some(line) = editor.buffer().line_text(target_line) {
-                let line_text = line;
+            if let Some(line_text) = editor.buffer().line_text(target_line) {
                 let line_len = line_text.chars().count();
                 let final_col = if line_len > 0 { line_len - 1 } else { 0 };
                 editor

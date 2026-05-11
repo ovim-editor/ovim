@@ -1010,8 +1010,7 @@ impl Editor {
     }
 
     fn cursor_grapheme_to_char_col(&self, line_idx: usize, grapheme_col: GraphemeCol) -> usize {
-        let line = self.buffer().line_text(line_idx).unwrap_or_default();
-        let line_text = line;
+        let line_text = self.buffer().line_text(line_idx).unwrap_or_default();
         grapheme_to_char_col(&line_text, grapheme_col).0
     }
 

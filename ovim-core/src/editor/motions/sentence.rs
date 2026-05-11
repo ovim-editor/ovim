@@ -24,8 +24,7 @@ impl Motions {
         let total_lines = buffer.line_count();
 
         // Convert grapheme col to char col for char-based iteration
-        let char_col = if let Some(line) = buffer.line_text(line_idx) {
-            let line_text = line;
+        let char_col = if let Some(line_text) = buffer.line_text(line_idx) {
             crate::unicode::grapheme_to_char_col(&line_text, grapheme_col).0
         } else {
             0
@@ -107,8 +106,7 @@ impl Motions {
         let grapheme_col = cursor.col();
 
         // Convert grapheme to char col for char-based iteration
-        let mut col = if let Some(line) = buffer.line_text(line_idx) {
-            let line_text = line;
+        let mut col = if let Some(line_text) = buffer.line_text(line_idx) {
             crate::unicode::grapheme_to_char_col(&line_text, grapheme_col).0
         } else {
             0

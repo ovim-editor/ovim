@@ -335,8 +335,7 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     }
 
     // Get the line text (borrow ends when we collect)
-    let line = editor.buffer().line_text(line_idx).unwrap_or_default();
-    let line_text = line;
+    let line_text = editor.buffer().line_text(line_idx).unwrap_or_default();
     let chars: Vec<char> = line_text.chars().collect();
     // Word-boundary scanning uses chars directly, so convert the cursor to char-space.
     let char_col = grapheme_to_char_col(&line_text, grapheme_col);
@@ -457,11 +456,10 @@ pub fn dedent_line_insert(editor: &mut Editor) -> Result<()> {
     let shift_width = editor.options.shift_width;
 
     // Get current line
-    let line = match editor.buffer().line_text(line_idx) {
+    let line_text = match editor.buffer().line_text(line_idx) {
         Some(l) => l,
         None => return Ok(()),
     };
-    let line_text = line;
 
     // Count leading whitespace to remove (up to shift_width)
     let chars: Vec<char> = line_text.chars().collect();
@@ -1330,8 +1328,7 @@ fn transform_visual_selection(
         match mode {
             Mode::VisualLine => {
                 for line_idx in start_line..=end_line {
-                    if let Some(line) = buf.line_text(line_idx) {
-                        let line_text = line;
+                    if let Some(line_text) = buf.line_text(line_idx) {
                         let transformed = transform(&line_text);
                         let char_count = line_text.chars().count();
                         buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(char_count));
@@ -1423,8 +1420,7 @@ fn extract_word_at_cursor(editor: &Editor) -> Option<String> {
     let line_idx = cursor.line();
     let col = cursor.col().0;
 
-    let line = editor.buffer().line_text(line_idx)?;
-    let line_text = line;
+    let line_text = editor.buffer().line_text(line_idx)?;
     let chars: Vec<char> = line_text.chars().collect();
 
     if col >= chars.len() {
@@ -1733,9 +1729,8 @@ pub fn auto_indent_lines(
     let mut lines_indented = 0;
 
     for line_idx in start_line..end_line {
-        if let Some(line) = buffer.line_text(line_idx).map(|c| c.into_owned()) {
-            // Owned String: drops borrow on `buffer` so the loop body can mutate.
-            let line_text = line;
+        // Owned String: drops the borrow on `buffer` so the loop body can mutate.
+        if let Some(line_text) = buffer.line_text(line_idx).map(|c| c.into_owned()) {
             let trimmed = line_text.trim_start();
 
             // Decrease indent if line starts with closing bracket
@@ -1815,10 +1810,9 @@ pub fn auto_indent_lines_with_tracking(
         let mut last_cursor_after = cursor_before;
 
         for line_idx in start_line..end_line {
-            let Some(line) = buf.line_text(line_idx) else {
+            let Some(line_text) = buf.line_text(line_idx) else {
                 continue;
             };
-            let line_text = line;
             let trimmed = line_text.trim_start();
 
             // Count leading close brackets — they reduce this line's indent
