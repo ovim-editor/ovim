@@ -913,9 +913,11 @@ enum EolPlacement {
     /// single budget: non-centered mode, single-row no-overflow case.
     Append { text_width: usize },
     /// Clip the row at `code_box_width` (no bleed past the box), anchor
-    /// the diagnostic at that column, and pad to `render_width`. Used in
-    /// centered (textwidth) mode where lines render into a wider rect
-    /// than the code-box.
+    /// the diagnostic immediately after the rendered code (so it sits
+    /// close to the line, not at the far edge), and pad to `render_width`.
+    /// Used in centered (textwidth) mode where lines render into a wider
+    /// rect than the code-box: code stays inside the code-box, but the
+    /// diagnostic is free to extend into the right margin.
     AtBoxEdge {
         code_box_width: usize,
         render_width: usize,
@@ -953,7 +955,9 @@ fn apply_eol_decorations(
 
     // Resolve where the diagnostic anchors and what we pad to. AtBoxEdge
     // also clips any content past the code-box edge so hints/code don't
-    // bleed into the diagnostic margin.
+    // bleed into the diagnostic margin, then anchors the diagnostic right
+    // after the (clipped) rendered code — short lines get the diagnostic
+    // close, long lines (clipped at code_box_width) get it at the box edge.
     let (diag_start, final_width) = match placement {
         EolPlacement::Append { text_width } => (line_display_width(row), text_width),
         EolPlacement::AtBoxEdge {
@@ -961,7 +965,7 @@ fn apply_eol_decorations(
             render_width,
         } => {
             truncate_line_to_width(row, code_box_width);
-            (code_box_width, render_width)
+            (line_display_width(row), render_width)
         }
     };
 
@@ -987,7 +991,10 @@ fn apply_eol_decorations(
 ///
 /// - **Centered (render_width > text_width)** → `AtBoxEdge`, which clips the
 ///   line at the code-box edge (no bleed into the margin) and anchors the
-///   diagnostic at the box edge regardless of how short or long the code is.
+///   diagnostic immediately after the rendered code. Short lines get the
+///   diagnostic close; lines that reach (or exceed) the box edge get the
+///   diagnostic at the box edge — the message is free to extend into the
+///   right margin in both cases.
 /// - **Non-centered, line + hints overflow text_width with decs present**
 ///   → `overlay_eol_decoration_at_edge`, which steals the rightmost columns
 ///   so the diagnostic stays visible.

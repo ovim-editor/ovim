@@ -763,14 +763,23 @@ pub fn render_margin_widgets(
     }
 
     // ── Right margin: diagnostic counts + LSP status ──
+    //
+    // Note: this widget renders on row 0 of the right margin. Buffer EOL
+    // diagnostics are free to extend into the right margin too, so on a
+    // file whose first visible line carries a long diagnostic the two
+    // would overlap. To minimize that collision we only render this
+    // widget when there's something useful to show (errors, warnings, or
+    // an active LSP) — otherwise the leading 1-col gap would clobber the
+    // last char of any EOL diagnostic that ends at the box edge.
     let right_margin_start = buffer_area.x + buffer_area.width;
     let right_margin_width =
         (full_area.x + full_area.width).saturating_sub(right_margin_start) as usize;
-    if right_margin_width >= 12 {
+    let (errors, warnings, _, _) = editor.cached_diagnostic_count();
+    let has_lsp = !editor.active_lsp_servers().is_empty();
+    if right_margin_width >= 12 && (errors > 0 || warnings > 0 || has_lsp) {
         let mut spans: Vec<Span> = Vec::new();
         spans.push(Span::raw(" ")); // 1 col gap after buffer
 
-        let (errors, warnings, _, _) = editor.cached_diagnostic_count();
         if errors > 0 {
             spans.push(Span::styled(
                 format!("E:{}", errors),
@@ -787,7 +796,7 @@ pub fn render_margin_widgets(
         }
 
         // LSP status badge
-        if !editor.active_lsp_servers().is_empty() {
+        if has_lsp {
             let status_text = if !editor.lsp_status().is_empty() {
                 editor.lsp_status().to_string()
             } else {

@@ -1,16 +1,17 @@
 //! Diagnostic vtext placement in centered (textwidth) mode.
 //!
-//! When `textwidth` centering is enabled, all EOL diagnostic rendering goes
-//! through `render_diagnostic_virtual_text_overlay`. The desired model: the
-//! centered code-box (width = `text_width`) holds document content + inline
-//! decorations (inlay hints); diagnostics live in the right margin, always
-//! anchored at `text_area_right + 2`, regardless of how long the actual
-//! line of code is.
+//! When `textwidth` centering is enabled, the desired model: the centered
+//! code-box (width = `text_width`) holds document content + inline
+//! decorations (inlay hints) — code never bleeds past the code-box edge.
+//! The diagnostic sits immediately after the rendered code (incl. hints)
+//! with a 2-column gap, and is free to extend into the right margin all
+//! the way to `render_width`. Short lines get the diagnostic close to the
+//! code; lines that fill (or would exceed) the code-box get the diagnostic
+//! at the box edge.
 //!
-//! These tests pin that model. They fail on `main` because today the
-//! overlay places diagnostics at `text_area_x + raw_code_width + 2`, which
-//! (a) puts the diagnostic mid-band on short lines and (b) overlaps any
-//! inlay hint widening the line beyond raw char count.
+//! The "fair game" is the space between the end of rendered code and the
+//! right edge of the screen — never the visual reading column to the left
+//! of where the code ends.
 mod helpers;
 
 use helpers::EditorTest;
@@ -67,7 +68,6 @@ fn centered(content: &str, wrap: bool) -> EditorTest {
 const TEXT_AREA_X: usize = 28;
 const TEXT_AREA_RIGHT: usize = 55;
 const DIAG_GAP: usize = 2;
-const EXPECTED_DIAG_START: usize = TEXT_AREA_RIGHT + DIAG_GAP; // 57
 
 fn render_rows(test: &mut EditorTest) -> Vec<String> {
     let ansi = ovim::ui::render_editor_to_ansi(&mut test.editor, 80, 10).unwrap();
@@ -98,139 +98,142 @@ fn cols(row: &str, start: usize, len: usize) -> String {
 // Tests — desired behavior
 // ============================================================================
 
-/// Short line, no hint: diagnostic must sit at the right edge of the centered
-/// box (text_area_right + 2), NOT float mid-band right after the code.
+/// Short line, no hint: diagnostic should sit right after the code with a
+/// 2-column gap — close to the line, not pinned to the far box edge.
 ///
-/// Today: diagnostic appears at `text_area_x + 10 ("let x = 1;") + 2 = 40`,
-/// inside the centered band — visually intrudes into the reading column.
+/// `let x = 1;` is 10 cols at cols 28..38; gap at 38..40; diag at col 40.
 #[test]
-fn centered_short_line_no_hint_diag_in_right_margin() {
+fn centered_short_line_no_hint_diag_close_to_code() {
     let mut test = centered("let x = 1;\n", false);
     replace_diags(&mut test, vec![diag(0, "unused")]);
 
     let rows = render_rows(&mut test);
     let row = &rows[0];
 
-    // Code rendered inside the box at text_area_x.
+    let code_end = TEXT_AREA_X + 10; // 38
+    let diag_start = code_end + DIAG_GAP; // 40
+
     assert_eq!(
         cols(row, TEXT_AREA_X, 10),
         "let x = 1;",
         "code should render at TEXT_AREA_X; row was {row:?}"
     );
-
-    // Diagnostic in the right margin at text_area_right + 2.
     assert_eq!(
-        cols(row, EXPECTED_DIAG_START, 6),
-        "unused",
-        "diagnostic should start at TEXT_AREA_RIGHT + 2 (col {EXPECTED_DIAG_START}); row was {row:?}"
-    );
-
-    // Two-space gap between box edge and diagnostic.
-    assert_eq!(
-        cols(row, TEXT_AREA_RIGHT, DIAG_GAP),
+        cols(row, code_end, DIAG_GAP),
         "  ",
-        "expected blank gap between code-box and diagnostic; row was {row:?}"
+        "expected 2-column gap between code and diagnostic; row was {row:?}"
     );
-
-    // Nothing diagnostic-shaped should bleed into the centered band.
-    let band_after_code = cols(row, TEXT_AREA_X + 10, TEXT_AREA_RIGHT - (TEXT_AREA_X + 10));
-    assert!(
-        band_after_code.chars().all(|c| c == ' '),
-        "no diagnostic chars should appear inside the code-box past line end; saw {band_after_code:?}"
+    assert_eq!(
+        cols(row, diag_start, 6),
+        "unused",
+        "diagnostic should start at code_end + gap (col {diag_start}); row was {row:?}"
     );
 }
 
-/// Short line WITH inlay hint: hint widens the visible line, diagnostic must
-/// still land at text_area_right + 2 — never overlapping the hint or code.
+/// Short line WITH inlay hint: diagnostic anchors after the *rendered*
+/// line (code + hint) — never overlapping the hint or code.
 ///
-/// Today: diagnostic placed at `text_area_x + raw_code_width("let x = 1;") + 2 = 40`,
-/// which sits *inside* the rendered "let x: i32 = 1;" (cols 28..43). The
-/// overlay's 2-space style then overwrites code that came after the hint.
+/// Rendered: `let x: i32 = 1;` = 15 cols. Diag at col 28 + 15 + 2 = 45.
 #[test]
-fn centered_short_line_with_hint_diag_does_not_overlap() {
+fn centered_short_line_with_hint_diag_after_rendered_line() {
     let mut test = centered("let x = 1;\n", false);
-    // Hint at offset 5 ("let x" then ": i32" then " = 1;") widens display to 15.
     replace_hints(&mut test, vec![hint(5, ": i32")]);
     replace_diags(&mut test, vec![diag(0, "unused")]);
 
     let rows = render_rows(&mut test);
     let row = &rows[0];
 
-    // Rendered code with hint inline:
-    //   "let x" (5) + ": i32" (5) + " = 1;" (5) = 15 chars at cols 28..43.
+    let rendered_end = TEXT_AREA_X + 15; // 43
+    let diag_start = rendered_end + DIAG_GAP; // 45
+
     assert_eq!(
         cols(row, TEXT_AREA_X, 15),
         "let x: i32 = 1;",
         "rendered line with hint should be intact; row was {row:?}"
     );
-
-    // Diagnostic still at margin, NOT eating the hint or code.
     assert_eq!(
-        cols(row, EXPECTED_DIAG_START, 6),
-        "unused",
-        "diagnostic should be at TEXT_AREA_RIGHT + 2; row was {row:?}"
+        cols(row, rendered_end, DIAG_GAP),
+        "  ",
+        "expected 2-column gap after rendered line; row was {row:?}"
     );
-
-    // Everything between the rendered line end and the diagnostic gap is
-    // padding spaces — no diagnostic chars bleeding back into the box.
-    let between = cols(row, TEXT_AREA_X + 15, TEXT_AREA_RIGHT - (TEXT_AREA_X + 15));
-    assert!(
-        between.chars().all(|c| c == ' '),
-        "expected only spaces between hint-end and box-edge, got {between:?}"
+    assert_eq!(
+        cols(row, diag_start, 6),
+        "unused",
+        "diagnostic should anchor at rendered_end + gap (col {diag_start}); row was {row:?}"
     );
 }
 
-/// Longer line plus hint: ensure the diagnostic still anchors at the box
-/// edge and doesn't drift further right just because the rendered line is
-/// wider.
+/// Longer line plus hint that still fits inside the code-box: diagnostic
+/// anchors right after the rendered line (NOT at the box edge — the box
+/// edge is the *limit*, not the anchor).
 ///
-/// Today: diagnostic at `text_area_x + clipped_code_width + 2`, which lands
-/// somewhere mid-box because the overlay slices to wrap_width but uses raw
-/// chars for code_width — landing inside the rendered hint span.
+/// `let xs = vec![1];` (17) with `: Vec` hint at offset 7 → 22 cols
+/// rendered. Still < text_width=27. Diag at col 28 + 22 + 2 = 52.
 #[test]
-fn centered_longer_line_with_hint_diag_still_at_box_edge() {
-    // 16-char line + 5-char hint at offset 5 → rendered 21 chars (still fits in text_width=27).
-    //   "let xs = vec![1];"  is 17 chars; we use a 16-char variant for tidy math.
+fn centered_longer_line_with_hint_diag_after_rendered_line() {
     let mut test = centered("let xs = vec![1];\n", false);
-    replace_hints(&mut test, vec![hint(7, ": Vec")]); // after "let xs "
+    replace_hints(&mut test, vec![hint(7, ": Vec")]);
     replace_diags(&mut test, vec![diag(0, "warn")]);
 
     let rows = render_rows(&mut test);
     let row = &rows[0];
 
-    // Rendered line: "let xs : Vec= vec![1];" — 22 chars at cols 28..50.
     let rendered = "let xs : Vec= vec![1];";
+    let rendered_end = TEXT_AREA_X + rendered.len(); // 50
+    let diag_start = rendered_end + DIAG_GAP; // 52
+
     assert_eq!(
         cols(row, TEXT_AREA_X, rendered.len()),
         rendered,
         "rendered line with hint should be intact; row was {row:?}"
     );
-
-    // Diagnostic at margin regardless of rendered line width.
     assert_eq!(
-        cols(row, EXPECTED_DIAG_START, 4),
+        cols(row, rendered_end, DIAG_GAP),
+        "  ",
+        "expected 2-column gap after rendered line; row was {row:?}"
+    );
+    assert_eq!(
+        cols(row, diag_start, 4),
         "warn",
-        "diagnostic should be at TEXT_AREA_RIGHT + 2; row was {row:?}"
-    );
-
-    // Gap between rendered-line-end (col 50) and diagnostic start (col 57)
-    // is all spaces — no overlay leakage.
-    let between = cols(
-        row,
-        TEXT_AREA_X + rendered.len(),
-        EXPECTED_DIAG_START - (TEXT_AREA_X + rendered.len()),
-    );
-    assert!(
-        between.chars().all(|c| c == ' '),
-        "expected only spaces between rendered line and diagnostic, got {between:?}"
+        "diagnostic should anchor at rendered_end + gap (col {diag_start}); row was {row:?}"
     );
 }
 
-/// Multi-row wrapped line: the diagnostic must attach to the LAST visual
-/// row of the wrapped line, not the first. A 60-char line in text_width=27
-/// wraps to three visual rows (27 + 27 + 6 chars). Today's overlay puts
-/// the diagnostic on the *first* row instead, which visually associates it
-/// with the wrong piece of code.
+/// Line that fills the entire code-box: diagnostic lands at the box edge
+/// (still right after the code, because the code happens to end there).
+/// The diagnostic message is free to spill into the right margin.
+#[test]
+fn centered_full_width_line_diag_at_box_edge() {
+    // 27-char line exactly fills text_width.
+    let line: String = (0..27)
+        .map(|i| char::from_digit(i % 10, 10).unwrap())
+        .collect();
+    let mut test = centered(&format!("{line}\n"), false);
+    replace_diags(&mut test, vec![diag(0, "warn")]);
+
+    let rows = render_rows(&mut test);
+    let row = &rows[0];
+
+    let diag_start = TEXT_AREA_RIGHT + DIAG_GAP; // 57
+
+    assert_eq!(
+        cols(row, TEXT_AREA_X, 27),
+        line,
+        "full-width line should render unclipped; row was {row:?}"
+    );
+    assert_eq!(
+        cols(row, diag_start, 4),
+        "warn",
+        "diagnostic should anchor at the box edge + gap (col {diag_start}); row was {row:?}"
+    );
+}
+
+/// Multi-row wrapped line: diagnostic attaches to the LAST visual row,
+/// anchored after the last row's rendered text (NOT at the box edge —
+/// the last row is short).
+///
+/// A 60-char line in text_width=27 wraps to 27 + 27 + 6 chars. Last row
+/// is 6 cols; diag at col 28 + 6 + 2 = 36.
 #[test]
 fn centered_wrap_diag_attaches_to_last_visual_row() {
     let line: String = (0..60)
@@ -241,36 +244,35 @@ fn centered_wrap_diag_attaches_to_last_visual_row() {
 
     let rows = render_rows(&mut test);
 
-    // Row 0: chars 0..27 of the line, no diagnostic.
-    let row0_diag_col = cols(&rows[0], EXPECTED_DIAG_START, 6);
-    assert!(
-        row0_diag_col.chars().all(|c| c == ' '),
-        "first wrapped row should NOT have diagnostic; saw {row0_diag_col:?} at row 0: {row:?}",
-        row = &rows[0]
-    );
+    // Earlier wrapped rows: no diagnostic anywhere in or past the code-box.
+    for (i, row) in rows.iter().take(2).enumerate() {
+        let tail = cols(row, TEXT_AREA_X, 80 - TEXT_AREA_X);
+        assert!(
+            !tail.contains("unused"),
+            "wrapped row {i} should not carry the diagnostic; saw {tail:?}"
+        );
+    }
 
-    // Row 1: chars 27..54, no diagnostic either.
-    let row1_diag_col = cols(&rows[1], EXPECTED_DIAG_START, 6);
-    assert!(
-        row1_diag_col.chars().all(|c| c == ' '),
-        "middle wrapped row should NOT have diagnostic; saw {row1_diag_col:?} at row 1: {row:?}",
-        row = &rows[1]
-    );
-
-    // Row 2: chars 54..60 + diagnostic in margin.
+    // Last wrapped row: 6 chars of code (chars 54..60 → "456789"), gap + diag.
+    let last = &rows[2];
+    let diag_start = TEXT_AREA_X + 6 + DIAG_GAP; // 36
     assert_eq!(
-        cols(&rows[2], EXPECTED_DIAG_START, 6),
+        cols(last, TEXT_AREA_X, 6),
+        "456789",
+        "last wrapped row should render its 6 chars; row was {last:?}"
+    );
+    assert_eq!(
+        cols(last, diag_start, 6),
         "unused",
-        "last wrapped row SHOULD have diagnostic at TEXT_AREA_RIGHT + 2; row 2 was {row:?}",
-        row = &rows[2]
+        "diagnostic on last row should anchor at code_end + gap (col {diag_start}); row was {last:?}"
     );
 }
 
 /// Wrap mode counterpart of the short-line-with-hint case. With wrap on,
 /// the line + hint still fits on a single visual row (15 cols < text_width=27),
-/// so the diagnostic should land on row 0 at the box edge — same rule.
+/// so the diagnostic should land on row 0 right after the rendered line.
 #[test]
-fn centered_wrap_short_line_with_hint_diag_at_box_edge() {
+fn centered_wrap_short_line_with_hint_diag_after_rendered_line() {
     let mut test = centered("let x = 1;\n", true);
     replace_hints(&mut test, vec![hint(5, ": i32")]);
     replace_diags(&mut test, vec![diag(0, "unused")]);
@@ -278,14 +280,44 @@ fn centered_wrap_short_line_with_hint_diag_at_box_edge() {
     let rows = render_rows(&mut test);
     let row = &rows[0];
 
+    let diag_start = TEXT_AREA_X + 15 + DIAG_GAP; // 45
+
     assert_eq!(
         cols(row, TEXT_AREA_X, 15),
         "let x: i32 = 1;",
         "wrap-mode rendered line should be intact; row was {row:?}"
     );
     assert_eq!(
-        cols(row, EXPECTED_DIAG_START, 6),
+        cols(row, diag_start, 6),
         "unused",
-        "wrap-mode diagnostic should be at TEXT_AREA_RIGHT + 2; row was {row:?}"
+        "wrap-mode diagnostic should anchor at rendered_end + gap (col {diag_start}); row was {row:?}"
+    );
+}
+
+/// Sanity: the diagnostic is allowed to extend past the code-box right
+/// edge into the right margin (up to render_width). Verifies a long
+/// diagnostic on a short line spans across the box edge.
+#[test]
+fn centered_diag_extends_into_right_margin() {
+    let mut test = centered("x = 1\n", false);
+    replace_diags(&mut test, vec![diag(0, "this message is rather long")]);
+
+    let rows = render_rows(&mut test);
+    let row = &rows[0];
+
+    let code_end = TEXT_AREA_X + 5; // 33
+    let diag_start = code_end + DIAG_GAP; // 35
+
+    // Diagnostic begins inside the box (col 35 < TEXT_AREA_RIGHT=55)...
+    assert_eq!(
+        cols(row, diag_start, 4),
+        "this",
+        "diagnostic should start right after the code; row was {row:?}"
+    );
+    // ...and continues across the box edge into the right margin.
+    let past_edge = cols(row, TEXT_AREA_RIGHT, 4);
+    assert!(
+        past_edge.chars().any(|c| !c.is_whitespace()),
+        "expected the long diagnostic to continue past the box edge into the margin; saw {past_edge:?}"
     );
 }
