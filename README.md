@@ -1,8 +1,11 @@
 # ovim — Oxidized Vim
 
-A snappy, batteries-included terminal editor with Vim keybindings, built in Rust.
+A fast, batteries-included terminal editor with Vim keybindings, built in Rust.
 
-ovim gives you what Neovim distros give you — LSP, tree-sitter highlighting, AI, sane defaults — without the plugin stack. One binary, zero config required. Your Vim muscle memory works.
+ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI chat, sane defaults.
+
+<img width="1470" height="956" alt="Ovim - start screen" src="https://github.com/user-attachments/assets/683cc32c-4553-4900-a014-8d5bd970e00e" />
+<img width="1470" height="956" alt="Ovim - fuzzy finder" src="https://github.com/user-attachments/assets/9f4fc346-50ea-4733-9386-eeb4b0082822" />
 
 ## What You Get Out of the Box
 
