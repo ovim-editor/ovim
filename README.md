@@ -188,12 +188,9 @@ Key modules:
 
 ## Contributing
 
-```bash
-cargo fmt
-cargo clippy
-cargo test
-```
+Contributions are welcome!
 
 ## License
 
 [MIT](LICENSE)
+
