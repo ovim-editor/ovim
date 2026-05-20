@@ -1,8 +1,8 @@
 //! UI features: completion menu, file tree, quickfix, location list, substitute confirmation
 
 use super::{
-    CompletionMenu, CursorPos, Editor, FileTree, LocationList, Mode, PathCompletionState,
-    QuickfixEntry, QuickfixList,
+    CompletionMenu, CursorPos, Editor, FileTree, InsertEntryMode, LocationList, Mode,
+    PathCompletionState, QuickfixEntry, QuickfixList,
 };
 use crate::unicode::{CharCol, GraphemeCol};
 
@@ -116,10 +116,25 @@ impl Editor {
         let cursor_col = self.buffer().cursor().col().0;
         let cursor_before = CursorPos::new(cursor_line, GraphemeCol(cursor_col));
 
-        // Pause any active insert-mode recording session so completion's own
-        // `record()` can open an isolated window and keep its own undo entry
-        // separate from the insert session's composite. Resume at end.
-        let paused_session = self.buffer_mut().pause_recording();
+        // Break the insert-mode undo here, Vim-style: finalize whatever the
+        // user typed before accepting completion as its own `Recorded` entry,
+        // then restart the session after completion edits land. Pause/resume
+        // would retain pre-completion edits whose absolute char offsets no
+        // longer match the rope once the completion text is inserted, and
+        // concatenating them with post-completion edits in a single Recorded
+        // corrupts the buffer on undo (and again on redo).
+        let restart_entry_mode: Option<InsertEntryMode> = if self.buffer().is_recording() {
+            let entry_mode = self
+                .buffer()
+                .change_manager()
+                .current_builder
+                .as_ref()
+                .map(|b| b.entry_mode().clone());
+            self.finalize_change_building();
+            entry_mode
+        } else {
+            None
+        };
 
         let ((), edits) = self.buffer_mut().record(|buf| {
             // Apply main completion edit
@@ -190,9 +205,13 @@ impl Editor {
             }
         }
 
-        // Resume the outer insert-mode session, if any.
-        if let Some(session) = paused_session {
-            self.buffer_mut().resume_recording(session);
+        // Restart the insert-mode session so any further typing forms a fresh
+        // Recorded entry at post-completion offsets, decoupled from anything
+        // that was finalized above.
+        if let Some(entry_mode) = restart_entry_mode {
+            let cursor_after = self.cursor_position();
+            self.start_change_building(cursor_after);
+            self.set_change_entry_mode(entry_mode);
         }
     }
 

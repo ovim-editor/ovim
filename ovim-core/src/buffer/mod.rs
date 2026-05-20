@@ -633,8 +633,11 @@ impl Buffer {
     /// Recording is opt-in: existing code that doesn't call `record()` is
     /// unaffected. Nested `record()` calls are not supported — callers that
     /// need to open an isolated session while an insert-mode stateful
-    /// recording is active must use `pause_recording` / `resume_recording`
-    /// to step out of the outer session first.
+    /// recording is active must finalize the outer session first (e.g.
+    /// `finalize_change_building`) so its captured edits land as their own
+    /// Recorded entry before the inner work runs. Holding pre-mutation edits
+    /// across positional buffer changes corrupts undo because their absolute
+    /// char offsets no longer match the rope.
     ///
     /// Each buffer mutation inside the closure is also published to
     /// `edit_log` in real time by `insert_text_at` / `delete_range`, so
@@ -700,26 +703,6 @@ impl Buffer {
     /// Returns the grapheme-space cursor captured alongside the origin.
     pub fn recording_origin_cursor(&self) -> Option<crate::change::CursorPos> {
         self.recording.as_ref().and_then(|s| s.origin_cursor)
-    }
-
-    /// Detaches the current recording session without closing it.
-    ///
-    /// Paired with `resume_recording` to let a nested code path (e.g.,
-    /// completion accept) open its own isolated `record()` without tripping
-    /// the nested-session assertion. Edits that occur between `pause` and
-    /// `resume` are NOT captured by either the paused session or the inner
-    /// session — the caller is responsible for scoping its own recording.
-    pub fn pause_recording(&mut self) -> Option<RecordingSession> {
-        self.recording.take()
-    }
-
-    /// Re-attaches a session previously detached with `pause_recording`.
-    pub fn resume_recording(&mut self, session: RecordingSession) {
-        debug_assert!(
-            !self.is_recording(),
-            "resume_recording called while another session is active"
-        );
-        self.recording = Some(session);
     }
 
     /// Closes a stateful recording session opened with `begin_recording`.
