@@ -232,11 +232,17 @@ pub fn compute_simple_diff(
     ))
 }
 
-/// Converts a MarkedString to plain text
+/// Converts a MarkedString to markdown text suitable for the hover renderer.
+///
+/// `LanguageString` is wrapped in a fenced code block so the hover renderer
+/// can apply syntax highlighting — dropping the language tag (the previous
+/// behavior) collapses every section into plain text.
 pub(crate) fn marked_string_to_text(marked: lsp_types::MarkedString) -> String {
     match marked {
         lsp_types::MarkedString::String(s) => s,
-        lsp_types::MarkedString::LanguageString(ls) => ls.value,
+        lsp_types::MarkedString::LanguageString(ls) => {
+            format!("```{}\n{}\n```", ls.language, ls.value)
+        }
     }
 }
 
@@ -446,5 +452,24 @@ mod tests {
     #[test]
     fn test_crlf_insert_line() {
         assert_diff_correct("line1\r\nline3\r\n", "line1\r\nline2\r\nline3\r\n");
+    }
+
+    #[test]
+    fn marked_language_string_wraps_in_fence() {
+        // Servers that still use the deprecated MarkedString::LanguageString
+        // form must round-trip into a fenced code block so the hover renderer
+        // can syntax-highlight the snippet.
+        let marked = lsp_types::MarkedString::LanguageString(lsp_types::LanguageString {
+            language: "rust".to_string(),
+            value: "pub fn foo() -> u32 { 0 }".to_string(),
+        });
+        let text = marked_string_to_text(marked);
+        assert_eq!(text, "```rust\npub fn foo() -> u32 { 0 }\n```");
+    }
+
+    #[test]
+    fn marked_plain_string_passes_through() {
+        let marked = lsp_types::MarkedString::String("docs".to_string());
+        assert_eq!(marked_string_to_text(marked), "docs");
     }
 }

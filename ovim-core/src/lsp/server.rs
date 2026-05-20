@@ -734,7 +734,7 @@ impl LanguageServer {
             // Text document capabilities - advertise support for common LSP features
             text_document: Some(lsp_types::TextDocumentClientCapabilities {
                 completion: Some(Default::default()),
-                hover: Some(Default::default()),
+                hover: Some(hover_client_capabilities()),
                 signature_help: Some(Default::default()),
                 declaration: Some(Default::default()),
                 definition: Some(Default::default()),
@@ -1829,6 +1829,21 @@ impl LanguageServer {
     }
 }
 
+/// Hover client capabilities advertised at `initialize`.
+///
+/// Listing `Markdown` first asks servers (e.g. rust-analyzer) to emit
+/// fenced code blocks instead of plaintext, which the hover renderer
+/// uses to drive syntax highlighting.
+fn hover_client_capabilities() -> lsp_types::HoverClientCapabilities {
+    lsp_types::HoverClientCapabilities {
+        dynamic_registration: Some(true),
+        content_format: Some(vec![
+            lsp_types::MarkupKind::Markdown,
+            lsp_types::MarkupKind::PlainText,
+        ]),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1839,5 +1854,15 @@ mod tests {
 
         assert_eq!(next_request_id.fetch_add(1, Ordering::SeqCst), 1);
         assert_eq!(next_request_id.fetch_add(1, Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn hover_capabilities_advertise_markdown_first() {
+        // Without advertising Markdown, servers like rust-analyzer fall back
+        // to plaintext and the hover renderer has no code fences to highlight.
+        let caps = hover_client_capabilities();
+        let formats = caps.content_format.expect("content_format set");
+        assert_eq!(formats.first(), Some(&lsp_types::MarkupKind::Markdown));
+        assert!(formats.contains(&lsp_types::MarkupKind::PlainText));
     }
 }
