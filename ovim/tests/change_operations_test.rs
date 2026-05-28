@@ -58,6 +58,166 @@ fn test_cw_single_char() {
     test.assert_cursor(0, 4);
 }
 
+// ----------------------------------------------------------------------------
+// cw/cW blank vs non-blank special case (`:help cw`).
+//
+// `cw`/`cW` act like `ce`/`cE` ONLY when the cursor is on a non-blank: they
+// change up to the word end and leave trailing whitespace. When the cursor is
+// on a blank, they act like `dw`/`dW`: change only the whitespace run, leaving
+// the following word intact. (Regression: `cw` used to swallow the next word on
+// a blank; `cW` used to swallow the trailing whitespace on a non-blank.)
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_cw_on_blank_changes_only_whitespace() {
+    let mut test = EditorTest::new("hello world");
+    test.keys("lllll"); // cursor on the space (col 5)
+    test.keys("cw").type_text("X").press_esc();
+    // Only the single space is changed; "world" survives.
+    assert_eq!(test.buffer_content(), "helloXworld\n");
+    test.assert_cursor(0, 5);
+}
+
+#[test]
+fn test_cw_on_multiple_blanks_changes_only_whitespace() {
+    let mut test = EditorTest::new("foo   bar");
+    test.keys("lll"); // cursor on first of three spaces (col 3)
+    test.keys("cw").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "fooXbar\n");
+    test.assert_cursor(0, 3);
+}
+
+#[test]
+fn test_cw_on_nonblank_leaves_trailing_space() {
+    // Regression guard: the non-blank ce-like case must be unchanged.
+    let mut test = EditorTest::new("hello world");
+    test.keys("cw").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "X world\n");
+    // Esc steps the cursor back onto the inserted "X" at col 0.
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_cW_on_nonblank_leaves_trailing_space() {
+    let mut test = EditorTest::new("hello world");
+    test.keys("cW").type_text("X").press_esc();
+    // cW changes the WORD only, leaving the space (was: "Xworld").
+    assert_eq!(test.buffer_content(), "X world\n");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_cW_on_nonblank_with_multiple_spaces() {
+    let mut test = EditorTest::new("hello   world");
+    test.keys("cW").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "X   world\n");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_cW_spans_punctuation_in_word() {
+    // A big-WORD includes punctuation: cW on "foo.bar" changes all of it.
+    let mut test = EditorTest::new("foo.bar baz");
+    test.keys("cW").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "X baz\n");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_cW_on_blank_changes_only_whitespace() {
+    let mut test = EditorTest::new("hello world");
+    test.keys("lllll"); // cursor on the space (col 5)
+    test.keys("cW").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "helloXworld\n");
+    test.assert_cursor(0, 5);
+}
+
+#[test]
+fn test_cw_on_blank_run_to_eol_appends() {
+    // Trailing whitespace that reaches end of line: the insert point must land
+    // at EOL (append), not be clamped back one char. (Was: "worXd".)
+    let mut test = EditorTest::new("word   ");
+    test.keys("llll"); // cursor on the first trailing space (col 4)
+    test.keys("cw").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "wordX\n");
+}
+
+#[test]
+fn test_cW_on_blank_run_to_eol_appends() {
+    let mut test = EditorTest::new("word   ");
+    test.keys("llll");
+    test.keys("cW").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "wordX\n");
+}
+
+// ----------------------------------------------------------------------------
+// ce/cE/c% at end of line: the insert point must land at the append position
+// (col == line_len), not be clamped back one char. Same root cause as the cw
+// EOL fix — change operators reuse delete methods that clamp for normal mode.
+// ----------------------------------------------------------------------------
+
+#[test]
+fn test_ce_at_eol_appends() {
+    let mut test = EditorTest::new("ab cd");
+    test.keys("lll"); // cursor on 'c' (col 3), last word
+    test.keys("ce").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "ab X\n"); // was "abX "
+    test.assert_cursor(0, 3);
+}
+
+#[test]
+fn test_cE_at_eol_appends() {
+    let mut test = EditorTest::new("ab cd");
+    test.keys("lll");
+    test.keys("cE").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "ab X\n");
+    test.assert_cursor(0, 3);
+}
+
+#[test]
+fn test_ce_not_at_eol_unchanged() {
+    // Guard: ce on a non-final word still leaves the trailing space.
+    let mut test = EditorTest::new("ab cd ef");
+    test.keys("ce").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "X cd ef\n");
+    test.assert_cursor(0, 0);
+}
+
+#[test]
+fn test_c_percent_at_eol_appends() {
+    // Bracket pair that ends at end of line.
+    let mut test = EditorTest::new("x=(foo)");
+    test.keys("ll"); // cursor on '(' (col 2)
+    test.keys("c%").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "x=X\n"); // was "xX=" — clamp pulled the insert point back to col 1
+    test.assert_cursor(0, 2);
+}
+
+#[test]
+fn test_ce_dot_repeat_at_eol() {
+    // `.` must replay the un-clamped change_word_end, matching the live edit.
+    let mut test = EditorTest::new("ab cd\nef gh");
+    test.keys("lll"); // line 0, 'c'
+    test.keys("ce").type_text("X").press_esc();
+    assert_eq!(test.buffer_content(), "ab X\nef gh\n");
+    test.keys("j"); // line 1, col 3 = 'g'
+    test.keys(".");
+    assert_eq!(test.buffer_content(), "ab X\nef X\n");
+}
+
+#[test]
+fn test_cw_dot_repeat_on_blank() {
+    // `.` must replay the corrected blank-case semantics, not the live edit's.
+    let mut test = EditorTest::new("a b c d");
+    test.keys("l"); // cursor on first space (col 1)
+    test.keys("cw").type_text("-").press_esc(); // "a-b c d", cursor on '-'
+    assert_eq!(test.buffer_content(), "a-b c d\n");
+    // Move onto the next space and repeat.
+    test.keys("ll"); // onto the space before 'c'
+    test.keys(".");
+    assert_eq!(test.buffer_content(), "a-b-c d\n");
+}
+
 // ============================================================================
 // 'cc' command - Change entire line
 // ============================================================================

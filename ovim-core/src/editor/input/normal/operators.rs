@@ -1182,6 +1182,45 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     Ok(())
 }
 
+/// Shared ceremony for a **charwise** change operator (`cw`, `ce`, `cb`, `c%`,
+/// …): record the deletion, push an undo token, yank the deleted text to the
+/// register, register the dot-repeat action, and drop into insert mode.
+///
+/// The `delete` closure performs the deletion and must leave the cursor at the
+/// insert point. Change deletes must NOT clamp the cursor to the normal-mode
+/// bound — in insert mode `col == line_len` (append at EOL) is valid. Use the
+/// `Buffer::change_*` methods (un-clamped), not the `delete_*` ones used by the
+/// `d` operators. Linewise changes (`cc`, `cj`, `ck`) don't use this.
+fn change_with(
+    editor: &mut Editor,
+    delete_action: RepeatAction,
+    delete: impl FnOnce(&mut crate::buffer::Buffer) -> String,
+) -> Result<()> {
+    let cursor_before = editor.cursor_position();
+
+    let (deleted, edits) = editor.buffer_mut().record(delete);
+    let delete_token = if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
+    } else {
+        None
+    };
+    if !deleted.is_empty() {
+        editor.delete_to_register(deleted);
+        editor.mark_buffer_modified();
+    }
+
+    editor.set_pending_change_repeat(PendingChangeRepeat {
+        delete_action,
+        linewise: false,
+        delete_token,
+    });
+    editor.start_change_building(editor.cursor_position());
+    editor.clear_count();
+    editor.set_mode(Mode::Insert);
+    Ok(())
+}
+
 fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
     let cursor_before = editor.cursor_position();
     let start_line = editor.buffer().cursor().line();
@@ -1229,48 +1268,11 @@ fn handle_cc(editor: &mut Editor, count: usize) -> Result<()> {
 }
 
 fn handle_cw(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    // cw delete phase: ce-like behavior (prefer current word end).
-    let (deleted, edits) = editor.buffer_mut().record(|buf| {
-        let start_line = buf.cursor().line();
-        let start_col = buf.cursor().col().0;
-
-        Motions::word_end_forward_prefer_current(buf, count);
-
-        let end_line = buf.cursor().line();
-        let line_len = buf
-            .line_text(end_line)
-            .map(|line| line.chars().count())
-            .unwrap_or(0);
-        let end_col = (buf.cursor().col().0 + 1).min(line_len);
-
-        // Phase-15 debt: cursor cols are grapheme, delete_range needs char.
-        let deleted = buf.delete_range(start_line, CharCol(start_col), end_line, CharCol(end_col));
-        buf.cursor_mut()
-            .set_position(start_line, GraphemeCol(start_col));
-        deleted
-    });
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        let token = editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-        Some(token)
-    } else {
-        None
-    };
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteWordChange { count },
-        linewise: false,
-        delete_token,
-    });
-
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    // cw delete phase: vim special-cases this — ce-like on a non-blank,
+    // dw-like on a blank. See Buffer::change_word_forward.
+    change_with(editor, RepeatAction::DeleteWordChange { count }, |buf| {
+        buf.change_word_forward(count)
+    })
 }
 
 fn handle_c_dollar(editor: &mut Editor) -> Result<()> {
@@ -2051,251 +2053,57 @@ fn yank_range(
 // =====================================================================
 
 fn handle_cb(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_word_backward(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteWordBackward { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::DeleteWordBackward { count }, |buf| {
+        buf.delete_word_backward(count)
+    })
 }
 
 fn handle_ce(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor.buffer_mut().record(|buf| buf.delete_word_end(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteWordEnd { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::ChangeWordEnd { count }, |buf| {
+        buf.change_word_end(count)
+    })
 }
 
 fn handle_c_big_b(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_word_backward_big(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteWordBackwardBig { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(
+        editor,
+        RepeatAction::DeleteWordBackwardBig { count },
+        |buf| buf.delete_word_backward_big(count),
+    )
 }
 
 fn handle_c_big_e(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_word_end_big(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteWordEndBig { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::ChangeWordEndBig { count }, |buf| {
+        buf.change_word_end_big(count)
+    })
 }
 
 fn handle_ch(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_char_left(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteCharLeft { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::DeleteCharLeft { count }, |buf| {
+        buf.delete_char_left(count)
+    })
 }
 
 fn handle_c0(editor: &mut Editor) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_to_start_of_line());
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteToStartOfLine,
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::DeleteToStartOfLine, |buf| {
+        buf.delete_to_start_of_line()
+    })
 }
 
 fn handle_c_caret(editor: &mut Editor) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_to_first_non_blank());
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteToFirstNonBlank,
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::DeleteToFirstNonBlank, |buf| {
+        buf.delete_to_first_non_blank()
+    })
 }
 
 fn handle_c_percent(editor: &mut Editor) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_to_matching_bracket());
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteToMatchingBracket,
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::ChangeToMatchingBracket, |buf| {
+        buf.change_to_matching_bracket()
+    })
 }
 
 fn handle_c_big_w(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let (deleted, edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.delete_word_forward_big(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-        editor.mark_buffer_modified();
-    }
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteWordForwardBig { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
+    change_with(editor, RepeatAction::DeleteWordChangeBig { count }, |buf| {
+        buf.change_word_forward_big(count)
+    })
 }

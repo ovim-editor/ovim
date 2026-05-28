@@ -84,8 +84,16 @@ pub enum RepeatAction {
     DeleteToEndOfLine,
     /// dw — delete word forward
     DeleteWordForward { count: usize },
-    /// cw delete phase — word-end semantics that prefer current word (like ce)
+    /// cw delete phase — ce-like on a non-blank, dw-like on a blank
     DeleteWordChange { count: usize },
+    /// cW delete phase — cE-like on a non-blank, dW-like on a blank
+    DeleteWordChangeBig { count: usize },
+    /// ce delete phase — like DeleteWordEnd but leaves the insert point un-clamped
+    ChangeWordEnd { count: usize },
+    /// cE delete phase — like DeleteWordEndBig but leaves the insert point un-clamped
+    ChangeWordEndBig { count: usize },
+    /// c% delete phase — like DeleteToMatchingBracket but leaves the insert point un-clamped
+    ChangeToMatchingBracket,
     /// cgn/cgN delete phase — delete the next/previous search match
     DeleteSearchMatch {
         search_pattern: String,
@@ -274,20 +282,19 @@ impl RepeatAction {
                 buffer.delete_word_forward(*count);
             }
             Self::DeleteWordChange { count } => {
-                let start_line = buffer.cursor().line();
-                let start_col = buffer.cursor_char_col();
-
-                crate::editor::Motions::word_end_forward_prefer_current(buffer, *count);
-
-                let end_line = buffer.cursor().line();
-                let line_len = buffer
-                    .line_text(end_line)
-                    .map(|l| l.chars().count())
-                    .unwrap_or(0);
-                let end_col = (buffer.cursor_char_col() + 1).min_usize(line_len);
-
-                buffer.delete_range(start_line, start_col, end_line, end_col);
-                buffer.set_cursor_char_col(start_line, start_col);
+                buffer.change_word_forward(*count);
+            }
+            Self::DeleteWordChangeBig { count } => {
+                buffer.change_word_forward_big(*count);
+            }
+            Self::ChangeWordEnd { count } => {
+                buffer.change_word_end(*count);
+            }
+            Self::ChangeWordEndBig { count } => {
+                buffer.change_word_end_big(*count);
+            }
+            Self::ChangeToMatchingBracket => {
+                buffer.change_to_matching_bracket();
             }
             Self::DeleteSearchMatch {
                 search_pattern,

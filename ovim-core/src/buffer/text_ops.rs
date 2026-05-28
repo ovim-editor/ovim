@@ -901,6 +901,17 @@ impl Buffer {
     /// Deletes from cursor to matching bracket (d% command).
     /// Returns the deleted text, or empty string if no bracket at cursor.
     pub fn delete_to_matching_bracket(&mut self) -> String {
+        self.delete_to_matching_bracket_inner(true)
+    }
+
+    /// `c%` delete phase — like [`delete_to_matching_bracket`] but leaves the
+    /// insert point un-clamped (the bracket span may end at EOL; the change
+    /// then appends there). See [`delete_to_word_end`].
+    pub fn change_to_matching_bracket(&mut self) -> String {
+        self.delete_to_matching_bracket_inner(false)
+    }
+
+    fn delete_to_matching_bracket_inner(&mut self, clamp: bool) -> String {
         use crate::editor::Motions;
 
         let start_line = self.cursor().line();
@@ -959,7 +970,9 @@ impl Buffer {
 
         let deleted = self.delete_range(del_start_line, del_start_col, del_end_line, del_end_col);
         self.set_cursor_char_col(del_start_line, del_start_col);
-        self.clamp_cursor_col();
+        if clamp {
+            self.clamp_cursor_col();
+        }
         deleted
     }
 
@@ -1069,6 +1082,98 @@ impl Buffer {
         let deleted = self.delete_range(start_line, start_col, end_line, delete_end_col);
         self.set_cursor_char_col(start_line, start_col);
         self.clamp_cursor_col();
+        deleted
+    }
+
+    /// Whether the character under the cursor is whitespace (or there is no
+    /// character there — past end of line / empty line). Used to pick the
+    /// `cw`/`cW` change semantics.
+    fn cursor_on_blank(&self) -> bool {
+        let col = self.cursor_char_col().0;
+        self.line_text(self.cursor().line())
+            .and_then(|line| line.chars().nth(col))
+            .is_none_or(|c| c.is_whitespace())
+    }
+
+    /// Inclusive delete to the end of the current/next word, for the change
+    /// operators (`cw`/`cW`/`ce`/`cE`). Unlike the `delete_word_end*` methods
+    /// used by `de`/`dE`, this does **not** clamp the cursor afterwards: a
+    /// change re-enters insert mode, where `col == line_len` (append at EOL) is
+    /// a valid position — clamping to the normal-mode bound would pull the
+    /// insert point back one char when the delete reached end of line.
+    ///
+    /// `prefer_current` selects the `cw`/`cW` motion (change the current word
+    /// even when the cursor already sits at its end) versus the `ce`/`cE`
+    /// motion (advance to the next word's end in that case).
+    fn delete_to_word_end(&mut self, count: usize, big_word: bool, prefer_current: bool) -> String {
+        use crate::editor::Motions;
+
+        let start_line = self.cursor().line();
+        let start_col = self.cursor_char_col();
+
+        match (big_word, prefer_current) {
+            (false, false) => Motions::word_end_forward(self, count),
+            (false, true) => Motions::word_end_forward_prefer_current(self, count),
+            (true, false) => Motions::word_end_forward_big(self, count),
+            (true, true) => Motions::word_end_forward_big_prefer_current(self, count),
+        }
+
+        let end_line = self.cursor().line();
+        let end_col = self.cursor_char_col();
+
+        // Inclusive: delete through the character the motion lands on.
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col + 1);
+        self.set_cursor_char_col(start_line, start_col);
+        deleted
+    }
+
+    /// `cw` delete phase. Vim special-cases `cw`/`cW` (`:help cw`): on a
+    /// **non-blank** they behave like `ce`/`cE` (change to the word end,
+    /// leaving trailing whitespace), but on a **blank** they behave like
+    /// `dw`/`dW` (change only the whitespace run up to the next word, leaving
+    /// the following word intact). Returns the deleted text.
+    pub fn change_word_forward(&mut self, count: usize) -> String {
+        if self.cursor_on_blank() {
+            self.change_via_word_motion(count, false)
+        } else {
+            self.delete_to_word_end(count, false, true)
+        }
+    }
+
+    /// `cW` delete phase. WORD-wise counterpart of [`change_word_forward`].
+    pub fn change_word_forward_big(&mut self, count: usize) -> String {
+        if self.cursor_on_blank() {
+            self.change_via_word_motion(count, true)
+        } else {
+            self.delete_to_word_end(count, true, true)
+        }
+    }
+
+    /// `ce` delete phase — like [`delete_word_end`] but leaves the insert point
+    /// un-clamped for the change (see [`delete_to_word_end`]).
+    pub fn change_word_end(&mut self, count: usize) -> String {
+        self.delete_to_word_end(count, false, false)
+    }
+
+    /// `cE` delete phase — WORD-wise counterpart of [`change_word_end`].
+    pub fn change_word_end_big(&mut self, count: usize) -> String {
+        self.delete_to_word_end(count, true, false)
+    }
+
+    /// `cw`/`cW` blank case: reuse the `dw`/`dW` delete, then restore the
+    /// un-clamped insert point. `delete_word_forward*` clamps the cursor to the
+    /// normal-mode bound (correct for `dw`), but the change re-enters insert
+    /// mode where `col == line_len` is valid — without this the insert point is
+    /// pulled back one char when the blank run runs to end of line.
+    fn change_via_word_motion(&mut self, count: usize, big_word: bool) -> String {
+        let line = self.cursor().line();
+        let col = self.cursor_char_col();
+        let deleted = if big_word {
+            self.delete_word_forward_big(count)
+        } else {
+            self.delete_word_forward(count)
+        };
+        self.set_cursor_char_col(line, col);
         deleted
     }
 
