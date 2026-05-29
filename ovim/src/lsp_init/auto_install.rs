@@ -47,7 +47,7 @@ pub enum InstallResult {
 /// Making it async allows the editor to remain responsive during installation.
 pub async fn attempt_auto_install(
     language_name: &str,
-    _package_name: &str,
+    package_name: &str,
     config: &AutoInstallConfig,
 ) -> InstallResult {
     match &config.method {
@@ -76,7 +76,9 @@ pub async fn attempt_auto_install(
             )
             .await
         }
-        InstallMethod::Shell { command } => install_via_shell(language_name, command).await,
+        InstallMethod::Shell { command } => {
+            install_via_shell(language_name, package_name, command).await
+        }
     }
 }
 
@@ -726,7 +728,16 @@ fn asset_matches_pattern(asset_name: &str, pattern: &str) -> bool {
 }
 
 /// Install via custom shell command
-async fn install_via_shell(_language_name: &str, command: &str) -> InstallResult {
+///
+/// Educational Note: Why verify after a shell install?
+/// Shell installers (`go install`, `dotnet tool install`, `gem install`, ...)
+/// each drop their binary in a tool-specific directory that is often NOT in
+/// PATH (e.g. `~/go/bin`, `~/.dotnet/tools`). If we returned a placeholder
+/// "success" path without locating the real binary, the caller's post-install
+/// re-detection (`find_lsp_command`) would fail and re-trigger the install
+/// consent prompt forever. So we resolve the actual binary here and report a
+/// clear failure if it can't be found, rather than a bogus success.
+async fn install_via_shell(_language_name: &str, verify_bin: &str, command: &str) -> InstallResult {
     ovim_core::lsp_info!("AutoInstall", "Running custom install command: {}", command);
 
     // Parse command (simple split on spaces - doesn't handle quotes)
@@ -754,15 +765,53 @@ async fn install_via_shell(_language_name: &str, command: &str) -> InstallResult
         }
     };
 
-    if output.status.success() {
-        InstallResult::Success(PathBuf::from("(custom install succeeded)"))
-    } else {
+    if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        InstallResult::Failed(format!(
+        return InstallResult::Failed(format!(
             "Install command failed:\n{}",
             stderr.lines().take(10).collect::<Vec<_>>().join("\n")
-        ))
+        ));
     }
+
+    // The command exited 0 — now locate the binary it was supposed to install.
+    match verify_shell_installation(verify_bin) {
+        Some(path) => {
+            ovim_core::lsp_info!(
+                "AutoInstall",
+                "Custom install succeeded; resolved '{}' at {}",
+                verify_bin,
+                path.display()
+            );
+            InstallResult::Success(path)
+        }
+        None => InstallResult::Failed(format!(
+            "Install command succeeded, but '{}' was not found in PATH or any \
+             well-known install directory (~/go/bin, ~/.dotnet/tools, etc.). \
+             Add its install directory to PATH and reopen the file.",
+            verify_bin
+        )),
+    }
+}
+
+/// Verify a shell-installed binary by checking PATH then well-known locations.
+fn verify_shell_installation(binary: &str) -> Option<PathBuf> {
+    if binary.is_empty() {
+        return None;
+    }
+
+    // Try `which <binary>` first (checks PATH)
+    if let Ok(output) = Command::new("which").arg(binary).output() {
+        if output.status.success() {
+            let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+            if !path.is_empty() {
+                return Some(PathBuf::from(path));
+            }
+        }
+    }
+
+    // Fallback: the same well-known directories find_lsp_command searches,
+    // so a successful verification here implies re-detection will also succeed.
+    ovim::language_config::find_in_well_known_locations(binary).map(PathBuf::from)
 }
 
 #[cfg(test)]
@@ -800,5 +849,30 @@ mod tests {
             "clangd-arm64.zip",
             "clangd-*-linux*"
         ));
+    }
+
+    #[test]
+    fn test_verify_shell_installation_empty_binary() {
+        // An empty verify name must never resolve to a path, otherwise a shell
+        // install with no known binary would report a bogus success.
+        assert!(verify_shell_installation("").is_none());
+    }
+
+    #[test]
+    fn test_verify_shell_installation_resolves_path_binary() {
+        // `sh` is on PATH on every unix system this runs on; verification must
+        // resolve it so a successful shell install isn't reported as missing.
+        #[cfg(unix)]
+        {
+            let resolved = verify_shell_installation("sh");
+            assert!(resolved.is_some(), "expected to resolve `sh` via PATH");
+        }
+    }
+
+    #[test]
+    fn test_verify_shell_installation_missing_binary_is_none() {
+        // A binary that exists nowhere must return None (→ actionable failure),
+        // not a placeholder success that would re-trigger the install prompt.
+        assert!(verify_shell_installation("ovim-definitely-not-a-real-binary-xyz").is_none());
     }
 }

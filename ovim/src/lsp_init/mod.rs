@@ -769,19 +769,40 @@ pub async fn handle_approved_lsp_install(editor: &mut Editor) {
 
     match install_result {
         InstallResult::Success(path) => {
-            editor.set_lsp_status(format!(
-                "LSP: {} installed successfully!",
-                lsp_config.command
-            ));
             ovim_core::lsp_info!(
                 "LSP",
                 "Auto-installed {} to {}",
                 lsp_config.command,
                 path.display()
             );
-            // Re-run the full LSP init now that the server is installed.
-            // This time find_lsp_command will succeed and skip auto-install.
-            initialize_lsp_for_file(editor, &approved.file_path).await;
+
+            // Guard against an infinite consent loop: only re-run init if the
+            // binary is now discoverable. Re-running init when find_lsp_command
+            // still can't locate the server would drop straight back into the
+            // auto-install branch and re-raise the install prompt (the bug this
+            // guard fixes — seen with go/dotnet installs whose bin dirs aren't
+            // on PATH). If we can't find it, report an actionable status instead.
+            if find_lsp_command(lsp_config).is_some() {
+                editor.set_lsp_status(format!(
+                    "LSP: {} installed successfully!",
+                    lsp_config.command
+                ));
+                // find_lsp_command will now succeed and skip auto-install.
+                initialize_lsp_for_file(editor, &approved.file_path).await;
+            } else {
+                editor.set_lsp_status(format!(
+                    "LSP: {} installed to {} but not found in PATH. \
+                     Add its install dir to PATH and reopen the file.",
+                    lsp_config.command,
+                    path.display()
+                ));
+                ovim_core::lsp_warn!(
+                    "LSP",
+                    "Installed {} but it is not discoverable via find_lsp_command; \
+                     not re-running init to avoid a repeated install prompt",
+                    lsp_config.command
+                );
+            }
         }
         InstallResult::Failed(error) => {
             editor.set_lsp_status(format!("LSP: Auto-install failed: {}", error));

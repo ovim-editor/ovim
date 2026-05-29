@@ -601,19 +601,39 @@ pub fn find_lsp_command(config: &LspConfig) -> Option<String> {
 /// install directories aren't always in PATH (e.g., Arch Linux with
 /// pacman-installed cargo puts `cargo` in /usr/bin but `cargo install`
 /// targets go to ~/.cargo/bin which isn't in PATH by default).
-fn find_in_well_known_locations(binary: &str) -> Option<String> {
+///
+/// This list must stay in sync with the directories the auto-installers
+/// trust when *verifying* a successful install (see `auto_install.rs`).
+/// If `verify_*` accepts a location that this finder doesn't search, a
+/// post-install re-detection will fail even though the binary exists,
+/// which sends the consent flow back into an infinite install prompt.
+pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
+    use std::path::PathBuf;
     let home = dirs::home_dir()?;
     let candidates = [
         // cargo install location ($CARGO_HOME/bin or ~/.cargo/bin)
         std::env::var("CARGO_HOME")
             .ok()
-            .map(|h| std::path::PathBuf::from(h).join("bin").join(binary)),
+            .map(|h| PathBuf::from(h).join("bin").join(binary)),
         Some(home.join(".cargo/bin").join(binary)),
         // npm global install locations
         Some(home.join(".npm-global/bin").join(binary)),
         Some(home.join(".nvm/current/bin").join(binary)),
+        // npm/Homebrew default prefixes (matches verify_npm_installation)
+        Some(PathBuf::from("/opt/homebrew/bin").join(binary)),
+        Some(PathBuf::from("/usr/local/bin").join(binary)),
         // pip / pipx
         Some(home.join(".local/bin").join(binary)),
+        // go install ($GOBIN, $GOPATH/bin, or ~/go/bin)
+        std::env::var("GOBIN")
+            .ok()
+            .map(|p| PathBuf::from(p).join(binary)),
+        std::env::var("GOPATH")
+            .ok()
+            .map(|p| PathBuf::from(p).join("bin").join(binary)),
+        Some(home.join("go/bin").join(binary)),
+        // dotnet tool install --global
+        Some(home.join(".dotnet/tools").join(binary)),
         // ovim-managed LSP installs
         Some(
             home.join(".local/share/ovim/lsp")
