@@ -227,46 +227,56 @@ impl Window {
         self.scroll_offset = cursor_line.saturating_sub(center_offset);
     }
 
-    /// Scrolls viewport down N lines
-    /// Returns whether cursor needed to be adjusted to stay visible
-    pub fn scroll_down(&mut self, lines: usize, buffer_line_count: usize) -> bool {
-        let max_scroll = buffer_line_count.saturating_sub(self.height as usize);
+    /// Scrolls viewport down N lines (Ctrl-E).
+    ///
+    /// The cursor stays on its line unless that would put it within `scrolloff`
+    /// of the top edge, in which case it moves down to the scrolloff margin (Vim
+    /// semantics). The caller must sync the buffer cursor into this window's
+    /// cursor *before* calling, and read it back *after* — for the focused window
+    /// the buffer cursor is the source of truth, not `self.cursor`.
+    ///
+    /// Returns whether the cursor was moved.
+    pub fn scroll_down(&mut self, lines: usize, buffer_line_count: usize, scrolloff: usize) -> bool {
+        let visible_lines = self.height as usize;
+        let max_scroll = buffer_line_count.saturating_sub(visible_lines);
         let new_scroll = (self.scroll_offset + lines).min(max_scroll);
-        let cursor_line = self.cursor.line();
-
-        // Check if cursor would be above viewport after scrolling
-        let needs_adjustment = cursor_line < new_scroll;
-
         self.scroll_offset = new_scroll;
 
-        // Move cursor down if it would be above viewport
-        if needs_adjustment {
+        // Keep the cursor at least `scrolloff` lines below the new top edge.
+        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
+        let min_cursor_line = (new_scroll + scrolloff).min(buffer_line_count.saturating_sub(1));
+        if self.cursor.line() < min_cursor_line {
             let col = self.cursor.col();
-            self.cursor.set_position(new_scroll, col);
+            self.cursor.set_position(min_cursor_line, col);
+            return true;
         }
 
-        needs_adjustment
+        false
     }
 
-    /// Scrolls viewport up N lines
-    /// Returns whether cursor needed to be adjusted to stay visible
-    pub fn scroll_up(&mut self, lines: usize) -> bool {
+    /// Scrolls viewport up N lines (Ctrl-Y).
+    ///
+    /// The cursor stays on its line unless that would put it within `scrolloff`
+    /// of the bottom edge, in which case it moves up to the scrolloff margin.
+    /// See [`scroll_down`](Self::scroll_down) for the cursor-sync contract.
+    ///
+    /// Returns whether the cursor was moved.
+    pub fn scroll_up(&mut self, lines: usize, scrolloff: usize) -> bool {
+        let visible_lines = self.height as usize;
         let new_scroll = self.scroll_offset.saturating_sub(lines);
-        let cursor_line = self.cursor.line();
-        let last_visible = new_scroll + (self.height as usize).saturating_sub(1);
-
-        // Check if cursor would be below viewport after scrolling
-        let needs_adjustment = cursor_line > last_visible;
-
         self.scroll_offset = new_scroll;
 
-        // Move cursor up if it would be below viewport
-        if needs_adjustment {
+        // Keep the cursor at least `scrolloff` lines above the new bottom edge.
+        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
+        let last_visible = new_scroll + visible_lines.saturating_sub(1);
+        let max_cursor_line = last_visible.saturating_sub(scrolloff);
+        if self.cursor.line() > max_cursor_line {
             let col = self.cursor.col();
-            self.cursor.set_position(last_visible, col);
+            self.cursor.set_position(max_cursor_line, col);
+            return true;
         }
 
-        needs_adjustment
+        false
     }
 
     /// Moves cursor line to top of viewport
