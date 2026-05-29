@@ -1,5 +1,5 @@
 use crate::lsp::LspManager;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 /// Content type for hover window - distinguishes LSP hover from diagnostic popups
@@ -241,6 +241,10 @@ pub struct LspState {
     pub active_lsp_result_type: Option<LspResultType>,
     /// Cached diagnostics for current file (for inline display)
     pub current_file_diagnostics: Vec<lsp_types::Diagnostic>,
+    /// Line-indexed view of `current_file_diagnostics`. Values are indices
+    /// into the flat Vec, so per-line lookup is O(log L) without cloning.
+    /// Kept in sync via `set_current_file_diagnostics` / `clear_current_file_diagnostics`.
+    pub diagnostics_by_line: BTreeMap<usize, Vec<usize>>,
     /// File path when diagnostics were last cached.
     /// Prevents showing diagnostics from a previous file after save-as/path swaps.
     pub diagnostics_file_path: Option<String>,
@@ -281,6 +285,7 @@ impl LspState {
             inlay_hints: Vec::new(),
             active_lsp_result_type: None,
             current_file_diagnostics: Vec::new(),
+            diagnostics_by_line: BTreeMap::new(),
             diagnostics_file_path: None,
             current_file_lsp_version: 0,
             current_file_lsp_sent_version: 0,
@@ -292,6 +297,24 @@ impl LspState {
     /// Get language IDs of currently active/running LSP servers
     pub fn running_server_languages(&self) -> Vec<String> {
         self.active_lsp_servers.keys().cloned().collect()
+    }
+
+    /// Replace the cached diagnostics and rebuild the line index.
+    pub fn set_current_file_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {
+        self.diagnostics_by_line.clear();
+        for (idx, diag) in diagnostics.iter().enumerate() {
+            self.diagnostics_by_line
+                .entry(diag.range.start.line as usize)
+                .or_default()
+                .push(idx);
+        }
+        self.current_file_diagnostics = diagnostics;
+    }
+
+    /// Clear cached diagnostics and the line index together.
+    pub fn clear_current_file_diagnostics(&mut self) {
+        self.current_file_diagnostics.clear();
+        self.diagnostics_by_line.clear();
     }
 }
 

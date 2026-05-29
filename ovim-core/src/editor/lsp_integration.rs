@@ -1089,7 +1089,7 @@ impl Editor {
         // leaving. The decorations get wiped below regardless, but leaving the
         // raw vector populated is an inconsistency with how inlay_hints is
         // treated. (OV-00269)
-        self.lsp.state.current_file_diagnostics.clear();
+        self.lsp.state.clear_current_file_diagnostics();
         self.lsp.slots.inlay_hints.cancel_and_invalidate();
         self.lsp.intents.clear();
         self.lsp.slots.cancel_all();

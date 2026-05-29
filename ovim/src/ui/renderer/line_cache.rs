@@ -27,10 +27,12 @@ struct LineCacheKey {
     tab_width: usize,
     /// Whether markdown conceal was active for this render
     markdown_conceal: bool,
-    /// Decoration generation — decorations (inlay hints, diagnostic vtext)
-    /// are now included in the cached line, so the cache must invalidate
-    /// when they change.
-    decoration_generation: u64,
+    /// Per-line decoration fingerprint. Replaces the previous global
+    /// `decoration_generation` so an LSP push that touches one line doesn't
+    /// invalidate the cached render for every other stable line. Computed
+    /// from the projected decorations on this line via
+    /// `ProjectedDecorations::line_hash`.
+    decoration_hash: u64,
 }
 
 /// A cached rendered line (before soft-wrap splitting).
@@ -116,7 +118,7 @@ impl LineRenderCache {
         wrap: bool,
         tab_width: usize,
         markdown_conceal: bool,
-        decoration_generation: u64,
+        decoration_hash: u64,
     ) -> Option<&Line<'static>> {
         // Fast path: if buffer version changed, invalidate everything
         if buffer_version != self.last_buffer_version {
@@ -135,7 +137,7 @@ impl LineRenderCache {
             wrap,
             tab_width,
             markdown_conceal,
-            decoration_generation,
+            decoration_hash,
         };
 
         if let Some((cached_key, cached)) = self.entries.get(&line_idx) {
@@ -162,7 +164,7 @@ impl LineRenderCache {
         wrap: bool,
         tab_width: usize,
         markdown_conceal: bool,
-        decoration_generation: u64,
+        decoration_hash: u64,
         line: Line<'static>,
         is_stable: bool,
     ) {
@@ -186,7 +188,7 @@ impl LineRenderCache {
             wrap,
             tab_width,
             markdown_conceal,
-            decoration_generation,
+            decoration_hash,
         };
         self.entries
             .insert(line_idx, (key, CachedLine { line, is_stable }));
@@ -281,6 +283,35 @@ mod tests {
         assert!(!cache.entries.contains_key(&0));
         assert!(!cache.entries.contains_key(&1));
         assert!(!cache.entries.contains_key(&2));
+    }
+
+    #[test]
+    fn per_line_decoration_hash_isolates_invalidation() {
+        // Two lines cached. Only line 0's decoration hash changes — line 1
+        // should still hit. Demonstrates that an LSP push touching one line
+        // no longer invalidates the entire cache (the regression Fix #6
+        // addressed).
+        let mut cache = LineRenderCache::new();
+        cache.last_buffer_version = 1;
+        cache.put(1, 0, 1, 0, 80, false, 4, false, 100, make_line("a"), true);
+        cache.put(1, 1, 1, 0, 80, false, 4, false, 200, make_line("b"), true);
+
+        // Line 0's hash changed (e.g. new diagnostic).
+        assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, 101).is_none());
+        // Line 1 is untouched — should still hit with its original hash.
+        assert!(cache.get(1, 1, 1, 0, 80, false, 4, false, 200).is_some());
+    }
+
+    #[test]
+    fn cache_miss_decoration_hash_change() {
+        let mut cache = LineRenderCache::new();
+        cache.last_buffer_version = 1;
+        cache.put(1, 0, 1, 0, 80, false, 4, false, 42, make_line("x"), true);
+
+        // Same line, different decoration hash — should miss.
+        assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, 43).is_none());
+        // Same line, same hash — should hit.
+        assert!(cache.get(1, 0, 1, 0, 80, false, 4, false, 42).is_some());
     }
 
     #[test]

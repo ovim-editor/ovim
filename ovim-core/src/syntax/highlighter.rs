@@ -1,8 +1,157 @@
 use super::languages::{Language, LanguageRegistry};
 use super::theme::HighlightGroup;
+use ropey::Rope;
 use std::ops::Range;
 use streaming_iterator::StreamingIterator;
 use tree_sitter::{Parser, Query, QueryCursor, Tree};
+
+/// Tree-sitter [`tree_sitter::TextProvider`] backed by a [`Rope`].
+///
+/// Used by the rope-aware highlight queries so we don't have to copy the
+/// entire buffer into a `String` just to satisfy the query cursor's text
+/// matching predicates (`#eq?`, `#match?`). Most highlight queries don't
+/// invoke this — but when they do we walk rope chunks directly.
+struct RopeTextProvider<'a> {
+    rope: &'a Rope,
+}
+
+struct RopeChunkIter<'a> {
+    rope: &'a Rope,
+    pos: usize,
+    end: usize,
+}
+
+impl<'a> Iterator for RopeChunkIter<'a> {
+    type Item = &'a [u8];
+
+    fn next(&mut self) -> Option<&'a [u8]> {
+        if self.pos >= self.end {
+            return None;
+        }
+        let (chunk, chunk_byte_idx, _, _) = self.rope.chunk_at_byte(self.pos);
+        let chunk_end = chunk_byte_idx + chunk.len();
+        let local_start = self.pos - chunk_byte_idx;
+        let take_end = chunk_end.min(self.end);
+        let local_end = take_end - chunk_byte_idx;
+        self.pos = take_end;
+        Some(&chunk.as_bytes()[local_start..local_end])
+    }
+}
+
+impl<'a> tree_sitter::TextProvider<&'a [u8]> for RopeTextProvider<'a> {
+    type I = RopeChunkIter<'a>;
+
+    fn text(&mut self, node: tree_sitter::Node) -> Self::I {
+        let range = node.byte_range();
+        let end = range.end.min(self.rope.len_bytes());
+        let pos = range.start.min(end);
+        RopeChunkIter {
+            rope: self.rope,
+            pos,
+            end,
+        }
+    }
+}
+
+/// Build a tree-sitter chunk callback that streams bytes from a rope.
+///
+/// The closure is what we hand to `Parser::parse_with_options` so we can
+/// parse a rope without first materialising it into one big `String`. Each
+/// call returns the *suffix* of the chunk containing `byte` — tree-sitter
+/// will keep calling with advancing offsets until it gets an empty slice.
+/// Return `(line_start_bytes, line_end_bytes)` mirroring the semantics of
+/// `String::lines()` — a trailing newline does NOT add a phantom empty line,
+/// so the returned vectors are indexable identically to the existing
+/// `cached_highlights` cache built from the `&str` path.
+fn rope_line_byte_offsets(rope: &Rope) -> (Vec<usize>, Vec<usize>) {
+    let total_bytes = rope.len_bytes();
+    let raw_lines = rope.len_lines();
+    // Drop the phantom trailing empty line when the buffer ends with '\n',
+    // matching `String::lines()` behaviour.
+    let effective_lines = if total_bytes > 0 && rope.byte(total_bytes - 1) == b'\n' && raw_lines > 0
+    {
+        raw_lines - 1
+    } else {
+        raw_lines
+    };
+
+    let mut line_start_bytes = Vec::with_capacity(effective_lines);
+    let mut line_end_bytes = Vec::with_capacity(effective_lines);
+    for i in 0..effective_lines {
+        let start = rope.line_to_byte(i);
+        // For all but the last effective line, the next line's start - 1 is
+        // the byte position of the terminating '\n'; trim it off so byte
+        // offsets are line-content-relative.
+        let raw_next = if i + 1 < raw_lines {
+            rope.line_to_byte(i + 1)
+        } else {
+            total_bytes
+        };
+        let end = if raw_next > start && rope.byte(raw_next - 1) == b'\n' {
+            raw_next - 1
+        } else {
+            raw_next
+        };
+        line_start_bytes.push(start);
+        line_end_bytes.push(end);
+    }
+    (line_start_bytes, line_end_bytes)
+}
+
+/// Update a `(start, end)` dirty byte range with a new tree-sitter
+/// [`tree_sitter::InputEdit`]. Output coordinates are in the **new** tree.
+///
+/// Three transforms compose:
+/// 1. Pre-existing dirty bytes that sat entirely after the edit shift by
+///    `new_end_byte - old_end_byte`.
+/// 2. Pre-existing dirty bytes that overlapped the edit get absorbed by it.
+/// 3. The edit itself contributes `start_byte..new_end_byte`.
+///
+/// We return the bounding box of all three. Over-querying is fine — under-
+/// querying would leave stale highlights.
+fn expand_dirty_range(
+    current: Option<(usize, usize)>,
+    edit: &tree_sitter::InputEdit,
+) -> Option<(usize, usize)> {
+    let edit_start = edit.start_byte;
+    let edit_new_end = edit.new_end_byte;
+    let edit_old_end = edit.old_end_byte;
+    let edit_delta = edit_new_end as isize - edit_old_end as isize;
+
+    let (cur_s, cur_e) = match current {
+        Some(r) => r,
+        None => return Some((edit_start, edit_new_end)),
+    };
+
+    let shift = |b: usize| -> usize {
+        if b > edit_old_end {
+            ((b as isize) + edit_delta).max(edit_new_end as isize) as usize
+        } else if b > edit_start {
+            // Within the edit window — collapse to the new end of the edit.
+            edit_new_end
+        } else {
+            b
+        }
+    };
+
+    let new_s = shift(cur_s).min(edit_start);
+    let new_e = shift(cur_e).max(edit_new_end);
+    Some((new_s, new_e))
+}
+
+fn rope_chunk_callback<'r>(
+    rope: &'r Rope,
+) -> impl FnMut(usize, tree_sitter::Point) -> &'r [u8] + 'r {
+    let total_bytes = rope.len_bytes();
+    move |byte: usize, _pos: tree_sitter::Point| -> &'r [u8] {
+        if byte >= total_bytes {
+            return b"";
+        }
+        let (chunk, chunk_byte_idx, _, _) = rope.chunk_at_byte(byte);
+        let offset = byte - chunk_byte_idx;
+        &chunk.as_bytes()[offset..]
+    }
+}
 
 /// Syntax highlighter using tree-sitter
 pub struct SyntaxHighlighter {
@@ -11,6 +160,21 @@ pub struct SyntaxHighlighter {
     tree: Option<Tree>,
     query: Query,
     capture_names: Vec<String>,
+    /// Snapshot of `tree` at the time of the last full highlight cache build
+    /// (see `mark_cache_built`). Each `update_rope`/`update` call applies the
+    /// same `InputEdit` to this snapshot so its byte coordinates stay in sync
+    /// with the rope, while its STRUCTURE remains frozen. Comparing it to the
+    /// current `tree` via `Tree::changed_ranges` then yields the byte ranges
+    /// whose tree STRUCTURE changed since the last rebuild — useful for
+    /// catching propagation (e.g. an unclosed string re-highlights lines
+    /// below).
+    prev_tree: Option<Tree>,
+    /// Accumulated byte range covering every edit since the last
+    /// `mark_cache_built`. Stored in CURRENT tree byte coordinates and
+    /// expanded/shifted on each `update_rope` to account for new edits.
+    /// Catches byte-content changes that don't shift tree structure
+    /// (e.g. `1` → `10`), which `prev_tree.changed_ranges(...)` misses.
+    dirty_byte_range: Option<(usize, usize)>,
 }
 
 impl SyntaxHighlighter {
@@ -39,22 +203,245 @@ impl SyntaxHighlighter {
             tree: None,
             query,
             capture_names,
+            prev_tree: None,
+            dirty_byte_range: None,
         })
     }
 
     /// Parses the given source code
     pub fn parse(&mut self, source: &str) {
         self.tree = self.parser.parse(source, None);
+        self.prev_tree = None;
+        self.dirty_byte_range = None;
     }
 
     /// Updates the syntax tree after an edit
     pub fn update(&mut self, edit: tree_sitter::InputEdit, source: &str) {
         if let Some(ref mut tree) = self.tree {
             tree.edit(&edit);
+            if let Some(ref mut prev) = self.prev_tree {
+                prev.edit(&edit);
+            }
+            self.dirty_byte_range = expand_dirty_range(self.dirty_byte_range, &edit);
             self.tree = self.parser.parse(source, Some(tree));
         } else {
             self.parse(source);
         }
+    }
+
+    /// Parse directly from a [`Rope`] without materialising the whole buffer
+    /// as a `String`. Tree-sitter pulls bytes via a chunk callback that walks
+    /// the rope.
+    pub fn parse_rope(&mut self, rope: &Rope) {
+        let mut callback = rope_chunk_callback(rope);
+        self.tree = self.parser.parse_with_options(&mut callback, None, None);
+        self.prev_tree = None;
+        self.dirty_byte_range = None;
+    }
+
+    /// Update the syntax tree after an edit, parsing the new content directly
+    /// from a [`Rope`]. Skips the `rope.to_string()` copy the `&str` overload
+    /// requires.
+    pub fn update_rope(&mut self, edit: tree_sitter::InputEdit, rope: &Rope) {
+        if let Some(ref mut tree) = self.tree {
+            tree.edit(&edit);
+            if let Some(ref mut prev) = self.prev_tree {
+                prev.edit(&edit);
+            }
+            self.dirty_byte_range = expand_dirty_range(self.dirty_byte_range, &edit);
+            let mut callback = rope_chunk_callback(rope);
+            self.tree = self
+                .parser
+                .parse_with_options(&mut callback, Some(tree), None);
+        } else {
+            self.parse_rope(rope);
+        }
+    }
+
+    /// Byte ranges that need re-querying since the last
+    /// [`Self::mark_cache_built`] (or initial parse).
+    ///
+    /// Combines two sources of truth:
+    /// * **Edited byte ranges** — tracked from `InputEdit`s so we catch
+    ///   byte-content changes that don't shift tree structure (`1` → `10`).
+    ///   `Tree::changed_ranges` returns an empty Vec in that case, which is
+    ///   why we can't rely on it alone.
+    /// * **`Tree::changed_ranges`** — catches structural propagation beyond
+    ///   the literal edit point (e.g. opening a string mid-buffer re-styles
+    ///   the rest of the line until a closing quote).
+    ///
+    /// Returns `None` when there's no baseline yet (first build) — callers
+    /// should fall back to a full rebuild.
+    pub fn dirty_ranges_since_last_build(&self) -> Option<Vec<std::ops::Range<usize>>> {
+        let cur = self.tree.as_ref()?;
+        let prev = self.prev_tree.as_ref()?;
+        let mut ranges: Vec<std::ops::Range<usize>> = prev
+            .changed_ranges(cur)
+            .map(|r| r.start_byte..r.end_byte)
+            .collect();
+        if let Some((s, e)) = self.dirty_byte_range {
+            ranges.push(s..e);
+        }
+        Some(ranges)
+    }
+
+    /// Mark the current tree as the baseline for future
+    /// [`Self::dirty_ranges_since_last_build`] calls. Call this after a full
+    /// highlight cache rebuild so subsequent rebuilds can skip unchanged
+    /// regions.
+    pub fn mark_cache_built(&mut self) {
+        self.prev_tree = self.tree.clone();
+        self.dirty_byte_range = None;
+    }
+
+    /// Rope-aware analogue of [`Self::highlights_for_all_lines`].
+    ///
+    /// The line index space matches `String::lines()` — i.e. a trailing
+    /// newline does NOT produce a phantom empty line, so the returned Vec is
+    /// indexable identically to the existing `cached_highlights` cache.
+    pub fn highlights_for_all_lines_rope(
+        &self,
+        rope: &Rope,
+    ) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+        let Some(ref tree) = self.tree else {
+            return Vec::new();
+        };
+
+        let (line_start_bytes, line_end_bytes) = rope_line_byte_offsets(rope);
+        let line_count = line_start_bytes.len();
+        if line_count == 0 {
+            return Vec::new();
+        }
+        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> =
+            vec![Vec::new(); line_count];
+
+        let mut cursor = QueryCursor::new();
+        let text_provider = RopeTextProvider { rope };
+        let mut matches = cursor.matches(&self.query, tree.root_node(), text_provider);
+
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                let node = capture.node;
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+
+                let capture_name = &self.capture_names[capture.index as usize];
+                let group = Self::capture_to_highlight_group(capture_name);
+
+                let first_line = line_end_bytes.partition_point(|&line_end| line_end <= start_byte);
+
+                for line_idx in first_line..line_count {
+                    let line_start_byte = line_start_bytes[line_idx];
+                    if line_start_byte >= end_byte {
+                        break;
+                    }
+                    let col_start = start_byte.saturating_sub(line_start_byte);
+                    let line_end_byte = line_end_bytes[line_idx];
+                    let line_len = line_end_byte - line_start_byte;
+                    let col_end = if end_byte <= line_end_byte {
+                        end_byte - line_start_byte
+                    } else {
+                        line_len
+                    };
+                    line_highlights[line_idx].push((col_start..col_end, group));
+                }
+            }
+        }
+
+        for highlights in &mut line_highlights {
+            highlights.sort_by_key(|(range, _)| range.start);
+        }
+
+        line_highlights
+    }
+
+    /// Rope-aware analogue of [`Self::highlights_for_line_range`].
+    pub fn highlights_for_line_range_rope(
+        &self,
+        rope: &Rope,
+        start_line: usize,
+        end_line: usize,
+    ) -> Vec<Vec<(Range<usize>, HighlightGroup)>> {
+        let Some(ref tree) = self.tree else {
+            return Vec::new();
+        };
+
+        let range_len = end_line.saturating_sub(start_line);
+        if range_len == 0 {
+            return Vec::new();
+        }
+
+        let (line_start_bytes, line_end_bytes_all) = rope_line_byte_offsets(rope);
+        let line_count = line_start_bytes.len();
+        let actual_end = end_line.min(line_count);
+        let actual_len = actual_end.saturating_sub(start_line);
+        if actual_len == 0 {
+            return Vec::new();
+        }
+
+        let mut line_highlights: Vec<Vec<(Range<usize>, HighlightGroup)>> =
+            vec![Vec::new(); actual_len];
+
+        let mut cursor = QueryCursor::new();
+        cursor.set_point_range(
+            tree_sitter::Point {
+                row: start_line,
+                column: 0,
+            }..tree_sitter::Point {
+                row: actual_end,
+                column: 0,
+            },
+        );
+
+        // Slice of line_end_bytes covering the requested range — used for
+        // binary-search-based capture distribution like the &str path.
+        let viewport_line_end_bytes: Vec<usize> =
+            line_end_bytes_all[start_line..actual_end].to_vec();
+
+        let text_provider = RopeTextProvider { rope };
+        let mut matches = cursor.matches(&self.query, tree.root_node(), text_provider);
+
+        while let Some(m) = matches.next() {
+            for capture in m.captures {
+                let node = capture.node;
+                let start_byte = node.start_byte();
+                let end_byte = node.end_byte();
+
+                let capture_name = &self.capture_names[capture.index as usize];
+                let group = Self::capture_to_highlight_group(capture_name);
+
+                let first_rel =
+                    viewport_line_end_bytes.partition_point(|&line_end| line_end <= start_byte);
+
+                for (rel_idx, highlights) in line_highlights
+                    .iter_mut()
+                    .enumerate()
+                    .take(actual_len)
+                    .skip(first_rel)
+                {
+                    let line_idx = start_line + rel_idx;
+                    let line_start_byte = line_start_bytes[line_idx];
+                    if line_start_byte >= end_byte {
+                        break;
+                    }
+                    let col_start = start_byte.saturating_sub(line_start_byte);
+                    let line_end_byte = line_end_bytes_all[line_idx];
+                    let line_len = line_end_byte - line_start_byte;
+                    let col_end = if end_byte <= line_end_byte {
+                        end_byte - line_start_byte
+                    } else {
+                        line_len
+                    };
+                    highlights.push((col_start..col_end, group));
+                }
+            }
+        }
+
+        for highlights in &mut line_highlights {
+            highlights.sort_by_key(|(range, _)| range.start);
+        }
+
+        line_highlights
     }
 
     /// Gets highlights for all lines at once (more efficient than per-line)

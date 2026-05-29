@@ -29,9 +29,9 @@ fn find_highlight(
     group: HighlightGroup,
 ) -> Option<std::ops::Range<usize>> {
     buf.highlights_for_line(line)
-        .into_iter()
+        .iter()
         .find(|(_, g)| *g == group)
-        .map(|(r, _)| r)
+        .map(|(r, _)| r.clone())
 }
 
 /// Helper: collect all highlights of a given group on a line.
@@ -41,9 +41,9 @@ fn find_all_highlights(
     group: HighlightGroup,
 ) -> Vec<std::ops::Range<usize>> {
     buf.highlights_for_line(line)
-        .into_iter()
+        .iter()
         .filter(|(_, g)| *g == group)
-        .map(|(r, _)| r)
+        .map(|(r, _)| r.clone())
         .collect()
 }
 
@@ -219,22 +219,22 @@ fn test_ov_00218_deletion_retain_logic_with_multibyte() {
     // Capture shifted punctuation highlights
     let puncts_shifted: Vec<_> = buf
         .highlights_for_line(0)
-        .into_iter()
+        .iter()
         .filter(|(_, g)| {
             *g == HighlightGroup::Punctuation || *g == HighlightGroup::PunctuationDelimiter
         })
-        .map(|(r, _)| r)
+        .map(|(r, _)| r.clone())
         .collect();
 
     // Rebuild from scratch (ground truth)
     buf.rebuild_highlight_cache();
     let puncts_rebuilt: Vec<_> = buf
         .highlights_for_line(0)
-        .into_iter()
+        .iter()
         .filter(|(_, g)| {
             *g == HighlightGroup::Punctuation || *g == HighlightGroup::PunctuationDelimiter
         })
-        .map(|(r, _)| r)
+        .map(|(r, _)| r.clone())
         .collect();
 
     assert_eq!(
@@ -354,4 +354,93 @@ fn test_ov_00221_code_block_lookup_many_blocks() {
         buf.highlights_for_line(1).is_empty(),
         "Blank line should have no highlights"
     );
+}
+
+// ---------------------------------------------------------------------------
+// Fix #7: incremental rebuild via tree-sitter changed_ranges
+// ---------------------------------------------------------------------------
+
+/// Two non-adjacent edits between rebuilds must both end up in the cache.
+/// Catches the bug where only the last edit's byte range would be re-queried.
+#[test]
+fn incremental_rebuild_covers_multiple_disjoint_edits() {
+    let source = "fn one() { let x = 1; }\n\
+                  fn two() { let y = 2; }\n\
+                  fn three() { let z = 3; }\n";
+
+    let mut buf = rust_buffer(source);
+    // First rebuild seeds the baseline tree.
+    buf.rebuild_highlight_cache();
+
+    // Two edits on different lines without an intervening rebuild.
+    buf.insert_text_at(0, CharCol(20), "0"); // 1 -> 01 on line 0
+    buf.insert_text_at(2, CharCol(22), "0"); // 3 -> 03 on line 2
+
+    // Incremental rebuild — must patch BOTH affected lines, not just one.
+    buf.rebuild_highlight_cache();
+
+    let final_source = "fn one() { let x = 01; }\n\
+                        fn two() { let y = 2; }\n\
+                        fn three() { let z = 03; }\n";
+    let mut buf_fresh = rust_buffer(final_source);
+    buf_fresh.rebuild_highlight_cache();
+
+    for line in 0..3 {
+        let inc: Vec<_> = buf.highlights_for_line(line).iter().cloned().collect();
+        let fresh: Vec<_> = buf_fresh
+            .highlights_for_line(line)
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(
+            inc, fresh,
+            "Line {}: incremental rebuild missed an edit",
+            line
+        );
+    }
+}
+
+/// After an edit and an initial `rebuild_highlight_cache`, a second rebuild
+/// triggered by another edit should still produce highlights equivalent to
+/// starting from a fresh buffer with the same final content. Guards against
+/// the incremental patcher (Fix #7) missing lines it should re-query.
+#[test]
+fn incremental_rebuild_matches_fresh_rebuild() {
+    let source = "fn one() { let x = 1; }\n\
+                  fn two() { let y = 2; }\n\
+                  fn three() { let z = 3; }\n";
+
+    // Incremental path: edit, rebuild (first rebuild = full + marks baseline),
+    // edit again, rebuild (this one uses changed_ranges).
+    let mut buf_incremental = rust_buffer(source);
+    buf_incremental.insert_text_at(1, CharCol(20), "4");
+    buf_incremental.rebuild_highlight_cache();
+    buf_incremental.insert_text_at(0, CharCol(20), "0");
+    buf_incremental.rebuild_highlight_cache();
+
+    // Fresh path: build the final string up-front so the rebuild is a single
+    // full pass with no baseline to diff against.
+    let final_source = "fn one() { let x = 01; }\n\
+                        fn two() { let y = 42; }\n\
+                        fn three() { let z = 3; }\n";
+    let mut buf_fresh = rust_buffer(final_source);
+    buf_fresh.rebuild_highlight_cache();
+
+    for line in 0..3 {
+        let inc: Vec<_> = buf_incremental
+            .highlights_for_line(line)
+            .iter()
+            .cloned()
+            .collect();
+        let fresh: Vec<_> = buf_fresh
+            .highlights_for_line(line)
+            .iter()
+            .cloned()
+            .collect();
+        assert_eq!(
+            inc, fresh,
+            "Line {}: incremental rebuild diverged from fresh rebuild",
+            line
+        );
+    }
 }

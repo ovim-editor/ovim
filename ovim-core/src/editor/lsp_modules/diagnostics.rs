@@ -64,21 +64,21 @@ impl Editor {
         }
 
         let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
-            self.lsp.state.current_file_diagnostics.clear();
+            self.lsp.state.clear_current_file_diagnostics();
             self.lsp.state.diagnostic_count = (0, 0, 0, 0);
             self.lsp.state.diagnostics_file_path = None;
             return;
         };
 
         let Some(file_path) = self.buffer().file_path().map(str::to_string) else {
-            self.lsp.state.current_file_diagnostics.clear();
+            self.lsp.state.clear_current_file_diagnostics();
             self.lsp.state.diagnostic_count = (0, 0, 0, 0);
             self.lsp.state.diagnostics_file_path = None;
             return;
         };
 
         let Some(uri) = uri_from_file_path(&file_path) else {
-            self.lsp.state.current_file_diagnostics.clear();
+            self.lsp.state.clear_current_file_diagnostics();
             self.lsp.state.diagnostic_count = (0, 0, 0, 0);
             self.lsp.state.diagnostics_file_path = None;
             return;
@@ -146,7 +146,9 @@ impl Editor {
                 // If the buffer changed since spawn, also request a fresh set.
                 self.lsp.state.diagnostic_count = result.count;
                 self.on_diagnostic_counts_changed(result.count.0, result.count.1);
-                self.lsp.state.current_file_diagnostics = result.diagnostics;
+                self.lsp
+                    .state
+                    .set_current_file_diagnostics(result.diagnostics);
                 self.lsp.state.diagnostics_file_path = Some(result.file_path);
 
                 // Build unified decorations from the new diagnostics.  Step E
@@ -202,29 +204,20 @@ impl Editor {
         if self.diagnostics_cache_stale() {
             return Vec::new();
         }
-        let result: Vec<_> = self
-            .lsp
-            .state
-            .current_file_diagnostics
-            .iter()
-            .filter(|d| d.range.start.line as usize == line)
-            .collect();
-        // Only log if there are cached diagnostics (to avoid spam)
-        if !self.lsp.state.current_file_diagnostics.is_empty() && result.is_empty() && line < 10 {
-            crate::log_debug!(
-                "diagnostics",
-                "diagnostics_for_line({}): 0 matches in {} cached diagnostics, first diag line={}",
-                line,
-                self.lsp.state.current_file_diagnostics.len(),
-                self.lsp
-                    .state
-                    .current_file_diagnostics
-                    .first()
-                    .map(|d| d.range.start.line)
-                    .unwrap_or(0)
-            );
+        let Some(indices) = self.lsp.state.diagnostics_by_line.get(&line) else {
+            return Vec::new();
+        };
+        let diagnostics = &self.lsp.state.current_file_diagnostics;
+        indices.iter().map(|&i| &diagnostics[i]).collect()
+    }
+
+    /// Returns true if any diagnostics are cached for the given line. Cheaper
+    /// than building a Vec when the caller only needs presence.
+    pub fn has_diagnostics_on_line(&self, line: usize) -> bool {
+        if self.diagnostics_cache_stale() {
+            return false;
         }
-        result
+        self.lsp.state.diagnostics_by_line.contains_key(&line)
     }
 
     /// Get the current diagnostic at the cursor position

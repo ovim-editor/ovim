@@ -475,18 +475,140 @@ impl DecorationMap {
     /// char_offset, then by priority.
     fn sort_all_lines(lines: &mut BTreeMap<usize, Vec<Decoration>>) {
         for line_decs in lines.values_mut() {
-            line_decs.sort_by(|a, b| {
-                let pos_a = match &a.placement {
-                    DecorationPlacement::Inline { char_offset } => (0, *char_offset),
-                    DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
-                };
-                let pos_b = match &b.placement {
-                    DecorationPlacement::Inline { char_offset } => (0, *char_offset),
-                    DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
-                };
-                pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
-            });
+            sort_decorations_in_line(line_decs);
         }
+    }
+
+    /// Project every decoration through `log` once and group results by their
+    /// projected line. The renderer can then look up per-line decorations in
+    /// O(log L) without re-scanning `iter_all()` per visible line.
+    pub fn project_all(&self, rope: &Rope, log: &EditLog) -> ProjectedDecorations {
+        let mut by_line: BTreeMap<usize, Vec<Decoration>> = BTreeMap::new();
+        for (_, dec) in self.iter_all() {
+            let Some(projected) = Self::project_decoration(dec, log) else {
+                continue;
+            };
+            let projected_line = if projected <= rope.len_chars() {
+                rope.char_to_line(projected)
+            } else {
+                rope.char_to_line(rope.len_chars())
+            };
+            let mut cloned = dec.clone();
+            match &mut cloned.placement {
+                DecorationPlacement::Inline { char_offset }
+                | DecorationPlacement::EndOfLine { char_offset } => {
+                    *char_offset = projected;
+                }
+            }
+            by_line.entry(projected_line).or_default().push(cloned);
+        }
+        for line_decs in by_line.values_mut() {
+            sort_decorations_in_line(line_decs);
+        }
+        ProjectedDecorations { by_line }
+    }
+}
+
+/// Sort a single line's decorations: inline before EOL, then by `char_offset`,
+/// then by priority.
+fn sort_decorations_in_line(line_decs: &mut [Decoration]) {
+    line_decs.sort_by(|a, b| {
+        let pos_a = match &a.placement {
+            DecorationPlacement::Inline { char_offset } => (0, *char_offset),
+            DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
+        };
+        let pos_b = match &b.placement {
+            DecorationPlacement::Inline { char_offset } => (0, *char_offset),
+            DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
+        };
+        pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
+    });
+}
+
+/// Snapshot of decorations projected through the edit log for a single render
+/// pass. Built once at the start of rendering (see
+/// [`DecorationMap::project_all`]) so the per-visible-line lookups don't have
+/// to re-scan `iter_all()` and re-project each decoration.
+///
+/// The `char_offset` inside each decoration has already been projected forward.
+#[derive(Debug, Default, Clone)]
+pub struct ProjectedDecorations {
+    by_line: BTreeMap<usize, Vec<Decoration>>,
+}
+
+impl ProjectedDecorations {
+    /// Decorations whose projected line equals `line`, in sort order.
+    pub fn for_line(&self, line: usize) -> &[Decoration] {
+        self.by_line.get(&line).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+
+    /// A 64-bit fingerprint of the decorations on `line`, suitable for
+    /// per-line render cache invalidation. Lines with no decorations always
+    /// hash to the same value, so unrelated lines don't invalidate when an
+    /// LSP push only touches a different line.
+    pub fn line_hash(&self, line: usize) -> u64 {
+        use std::hash::{Hash, Hasher};
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        for dec in self.for_line(line) {
+            dec.placement.char_offset().hash(&mut hasher);
+            // text differentiates same-position decorations (e.g. inlay hint
+            // label changes); display_width covers width-affecting changes.
+            dec.text.hash(&mut hasher);
+            dec.display_width.hash(&mut hasher);
+            // Style/source don't affect rendered output if text is identical,
+            // but include them to be safe — they're cheap to fold in.
+            match dec.placement {
+                DecorationPlacement::Inline { .. } => 0u8.hash(&mut hasher),
+                DecorationPlacement::EndOfLine { .. } => 1u8.hash(&mut hasher),
+            }
+        }
+        hasher.finish()
+    }
+
+    /// EOL decorations for the given projected line.
+    pub fn eol_for_line(&self, line: usize) -> Vec<&Decoration> {
+        self.for_line(line)
+            .iter()
+            .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
+            .collect()
+    }
+
+    /// `(char_idx_in_line, display_width)` pairs for inline decorations on
+    /// the given projected line, sorted by char_idx (matches the storage order
+    /// produced by `project_all`).
+    pub fn inline_decorations_for_line(&self, line: usize, rope: &Rope) -> Vec<(usize, usize)> {
+        let line_start = rope.line_to_char(line);
+        self.for_line(line)
+            .iter()
+            .filter_map(|d| match d.placement {
+                DecorationPlacement::Inline { char_offset } => {
+                    Some((char_offset.saturating_sub(line_start), d.display_width))
+                }
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// Total display width of inline decorations on `line` that render to the
+    /// left of `char_idx`. Mirrors `DecorationMap::inline_width_before` but
+    /// operates on projected offsets.
+    pub fn inline_width_before(&self, line: usize, char_idx: usize, rope: &Rope) -> usize {
+        let line_start = rope.line_to_char(line);
+        let line_len = crate::display::line_content_len(rope, line);
+        self.for_line(line)
+            .iter()
+            .filter_map(|d| match d.placement {
+                DecorationPlacement::Inline { char_offset } => {
+                    let idx = char_offset.saturating_sub(line_start);
+                    if idx < char_idx || (idx == char_idx && idx < line_len) {
+                        Some(d.display_width)
+                    } else {
+                        None
+                    }
+                }
+                _ => None,
+            })
+            .sum()
     }
 }
 

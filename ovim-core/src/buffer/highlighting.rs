@@ -2,6 +2,7 @@ use super::Buffer;
 use crate::syntax::{
     CodeBlockCache, HighlightGroup, Language, LanguageRegistry, SyntaxHighlighter,
 };
+use std::borrow::Cow;
 use std::ops::Range;
 
 /// Finds inline code spans (single backtick `code`) in a line of text.
@@ -76,6 +77,48 @@ const LARGE_FILE_LINES: usize = 50_000;
 /// Large file threshold in bytes - files above this disable expensive features
 const LARGE_FILE_BYTES: usize = 5 * 1024 * 1024; // 5MB
 
+/// Convert byte ranges to (start_line, end_line) pairs against the given
+/// rope, clamped to `[0, line_count]`. Overlapping/adjacent line ranges are
+/// merged so the caller doesn't re-query the same lines twice.
+fn byte_ranges_to_line_ranges_owned(
+    rope: &ropey::Rope,
+    ranges: &[std::ops::Range<usize>],
+    line_count: usize,
+) -> Vec<(usize, usize)> {
+    if ranges.is_empty() || line_count == 0 {
+        return Vec::new();
+    }
+    let total_bytes = rope.len_bytes();
+    let mut line_ranges: Vec<(usize, usize)> = ranges
+        .iter()
+        .map(|r| {
+            let start_byte = r.start.min(total_bytes);
+            let end_byte = r.end.min(total_bytes);
+            let start_line = rope.byte_to_line(start_byte).min(line_count);
+            // Include the line where end_byte lands by adding 1 (half-open).
+            let end_line = (rope.byte_to_line(end_byte) + 1).min(line_count);
+            (start_line, end_line.max(start_line))
+        })
+        .filter(|(s, e)| e > s)
+        .collect();
+    if line_ranges.is_empty() {
+        return Vec::new();
+    }
+    line_ranges.sort_by_key(|&(s, _)| s);
+    // Merge overlapping/adjacent ranges.
+    let mut merged: Vec<(usize, usize)> = Vec::with_capacity(line_ranges.len());
+    for (s, e) in line_ranges {
+        if let Some(last) = merged.last_mut() {
+            if s <= last.1 {
+                last.1 = last.1.max(e);
+                continue;
+            }
+        }
+        merged.push((s, e));
+    }
+    merged
+}
+
 impl Buffer {
     /// Checks if this is a large file (exceeds line or byte threshold)
     pub fn is_large_file(&self) -> bool {
@@ -108,12 +151,10 @@ impl Buffer {
         if let Some(ref path) = self.file_path {
             if let Some(lang) = LanguageRegistry::detect_from_path(path) {
                 if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
-                    let source = self.rope.to_string();
-
-                    highlighter.parse(&source);
-
-                    // Build initial highlight cache
-                    self.build_highlight_cache(&highlighter, &source);
+                    // Parse and build the cache directly from the rope — no
+                    // intermediate `String` copy of the entire buffer.
+                    highlighter.parse_rope(&self.rope);
+                    self.build_highlight_cache_from_rope(&highlighter);
 
                     self.syntax = Some(highlighter);
                     self.version += 1;
@@ -184,12 +225,15 @@ impl Buffer {
         // This parses the current content, which is fast (~5ms for typical files) and
         // doesn't cause FOUC since highlights are already cached above.
         if let Ok(mut highlighter) = SyntaxHighlighter::new(lang) {
-            let source = self.rope.to_string();
-            highlighter.parse(&source);
+            highlighter.parse_rope(&self.rope);
 
-            // For markdown files, also build code block cache
+            // For markdown files, also build code block cache. The code block
+            // cache builder still consumes `&str`, so allocate once here. (A
+            // future change can move it to a rope-aware path; for now the
+            // markdown path is rarer than the hot edit path.)
             if lang == Language::Markdown {
                 if let Some(tree) = highlighter.tree() {
+                    let source = self.rope.to_string();
                     let mut cache = crate::syntax::CodeBlockCache::new();
                     cache.update_from_tree(tree, &source, self.highlight_version);
                     self.code_block_cache = Some(cache);
@@ -204,16 +248,19 @@ impl Buffer {
         true
     }
 
-    /// Builds the highlight cache for all lines
-    pub(super) fn build_highlight_cache(&mut self, highlighter: &SyntaxHighlighter, source: &str) {
-        // Use the efficient single-pass method that queries the tree once
-        self.cached_highlights = Some(highlighter.highlights_for_all_lines(source));
+    /// Rope-aware highlight cache builder. Avoids the per-build `String`
+    /// copy of the entire buffer the previous `&str` path required.
+    pub(super) fn build_highlight_cache_from_rope(&mut self, highlighter: &SyntaxHighlighter) {
+        self.cached_highlights = Some(highlighter.highlights_for_all_lines_rope(&self.rope));
 
-        // For markdown files, also build code block cache for language-specific highlighting
+        // For markdown files, also build code block cache. The code-block
+        // builder still needs `&str` for its tree walk; allocate only on the
+        // markdown path (much rarer than per-edit rehighlight).
         if highlighter.language() == Language::Markdown {
             if let Some(tree) = highlighter.tree() {
+                let source = self.rope.to_string();
                 let mut cache = CodeBlockCache::new();
-                cache.update_from_tree(tree, source, self.highlight_version);
+                cache.update_from_tree(tree, &source, self.highlight_version);
                 self.code_block_cache = Some(cache);
             }
         }
@@ -398,8 +445,10 @@ impl Buffer {
     /// This is much faster than full re-parse for small edits
     pub(super) fn apply_incremental_syntax_edit(&mut self, edit: tree_sitter::InputEdit) {
         if let Some(ref mut syntax) = self.syntax {
-            let source = self.rope.to_string();
-            syntax.update(edit, &source);
+            // Re-parse directly from the rope — avoids the per-keystroke
+            // `rope.to_string()` allocation. Tree-sitter still reuses the
+            // existing tree via `update_rope`.
+            syntax.update_rope(edit, &self.rope);
 
             // Keep stale highlights until new ones are calculated
             // This prevents flashing (no highlights) during typing
@@ -502,65 +551,65 @@ impl Buffer {
     }
 
     /// Gets syntax highlights for a specific line
-    /// Returns a list of (column_range, highlight_group) tuples
+    ///
+    /// Returns a borrowed view of the cached highlight list when possible. The
+    /// hot rendering path is per-visible-line, so avoiding a Vec clone here is
+    /// material — the common case (non-markdown, no semantic overlay) returns
+    /// `Cow::Borrowed`. Markdown files that need to overlay inline code spans
+    /// pay one allocation on top of the cache, same as before.
     ///
     /// Priority order:
     /// 1. Code block cache (for markdown code fences with known languages)
     /// 2. Semantic highlights (from LSP)
     /// 3. Tree-sitter cached highlights
     /// 4. Inline code overlay (for markdown: backtick `code` spans)
-    pub fn highlights_for_line(&self, line_idx: usize) -> Vec<(Range<usize>, HighlightGroup)> {
+    pub fn highlights_for_line(
+        &self,
+        line_idx: usize,
+    ) -> Cow<'_, [(Range<usize>, HighlightGroup)]> {
         // For markdown: check code block cache first (language-specific highlighting)
         if let Some(ref code_cache) = self.code_block_cache {
             if let Some(highlights) = code_cache.highlights_for_line(line_idx) {
-                return highlights.clone();
+                return Cow::Borrowed(highlights.as_slice());
             }
         }
 
         // Prefer semantic highlights from LSP if available
         if let Some(ref semantic) = self.semantic_highlights {
             if line_idx < semantic.len() && !semantic[line_idx].is_empty() {
-                return semantic[line_idx].clone();
+                return Cow::Borrowed(semantic[line_idx].as_slice());
             }
         }
 
-        // Get base highlights from tree-sitter cache
-        let mut highlights = if let Some(ref cache) = self.cached_highlights {
-            if line_idx < cache.len() {
-                cache[line_idx].clone()
-            } else {
-                Vec::new()
-            }
-        } else {
-            Vec::new()
-        };
+        // Get base highlights from tree-sitter cache (borrowed when no overlay needed)
+        let base: &[(Range<usize>, HighlightGroup)] = self
+            .cached_highlights
+            .as_ref()
+            .and_then(|cache| cache.get(line_idx))
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
 
-        // For markdown files: overlay inline code spans (backtick `code`)
-        // Only for lines NOT inside fenced code blocks
-        if self.code_block_cache.is_some() {
-            let in_code_block = self
-                .code_block_cache
-                .as_ref()
-                .is_some_and(|c| c.is_line_in_code_block(line_idx));
-
-            if !in_code_block {
-                if let Some(line_text) = self.rope.line(line_idx).as_str() {
-                    let inline_spans = find_inline_code_spans(line_text);
-                    for span in inline_spans {
-                        highlights.push((span, HighlightGroup::MarkupRaw));
-                    }
+        // For markdown files NOT inside fenced code blocks, overlay inline `code` spans
+        if let Some(ref code_cache) = self.code_block_cache {
+            if !code_cache.is_line_in_code_block(line_idx) {
+                let inline_spans = if let Some(line_text) = self.rope.line(line_idx).as_str() {
+                    find_inline_code_spans(line_text)
                 } else {
                     // Fallback for lines that cross chunk boundaries
                     let line_text: String = self.rope.line(line_idx).chars().collect();
-                    let inline_spans = find_inline_code_spans(&line_text);
+                    find_inline_code_spans(&line_text)
+                };
+                if !inline_spans.is_empty() {
+                    let mut highlights = base.to_vec();
                     for span in inline_spans {
                         highlights.push((span, HighlightGroup::MarkupRaw));
                     }
+                    return Cow::Owned(highlights);
                 }
             }
         }
 
-        highlights
+        Cow::Borrowed(base)
     }
 
     /// Sets semantic highlights decoded from LSP semantic tokens
@@ -680,28 +729,82 @@ impl Buffer {
     /// This uses the incrementally-updated parse tree, so it's fast!
     /// The tree-sitter parse tree was already updated incrementally via `update()`,
     /// so this just queries it for highlights (no re-parsing needed).
+    ///
+    /// When a previous cache build exists, only the line ranges that changed
+    /// structurally (per `Tree::changed_ranges`) are re-queried; lines that
+    /// didn't change keep their existing cache entries. Falls back to a full
+    /// rebuild for the very first build and when the buffer's line count
+    /// shifted (insertion/deletion of full lines makes patching brittle).
     pub fn rebuild_highlight_cache(&mut self) -> Option<u64> {
         if !self.needs_rehighlight() {
             return None;
         }
 
-        let syntax = self.syntax.as_ref()?;
-        let content = self.rope.to_string();
+        let language = self.syntax.as_ref()?.language();
         let version = self.highlight_version;
 
-        // Query the incrementally-updated parse tree for highlights
-        // This is fast because tree-sitter already updated the tree via InputEdit
-        let highlights = syntax.highlights_for_all_lines(&content);
+        let new_line_count = self.line_count();
+        let can_patch = self
+            .cached_highlights
+            .as_ref()
+            .map(|c| c.len() == new_line_count)
+            .unwrap_or(false);
 
-        self.cached_highlights = Some(highlights);
+        let dirty_ranges_opt: Option<Vec<std::ops::Range<usize>>> = if can_patch {
+            self.syntax
+                .as_ref()
+                .and_then(|s| s.dirty_ranges_since_last_build())
+        } else {
+            None
+        };
 
-        // For markdown files, also rebuild code block cache
-        if syntax.language() == Language::Markdown {
-            if let Some(tree) = syntax.tree() {
-                let mut cache = CodeBlockCache::new();
-                cache.update_from_tree(tree, &content, version);
-                self.code_block_cache = Some(cache);
+        match dirty_ranges_opt {
+            Some(ref ranges) if !ranges.is_empty() => {
+                // Incremental patch: re-query only the affected line ranges.
+                let line_ranges =
+                    byte_ranges_to_line_ranges_owned(&self.rope, ranges, new_line_count);
+                if let Some(syntax) = self.syntax.as_ref() {
+                    if let Some(cache) = self.cached_highlights.as_mut() {
+                        for (start_line, end_line) in line_ranges {
+                            let highlights = syntax
+                                .highlights_for_line_range_rope(&self.rope, start_line, end_line);
+                            for (i, h) in highlights.into_iter().enumerate() {
+                                let idx = start_line + i;
+                                if idx < cache.len() {
+                                    cache[idx] = h;
+                                }
+                            }
+                        }
+                    }
+                }
             }
+            Some(_) => {
+                // No changes since baseline — keep existing cache.
+            }
+            None => {
+                // First build or line-count shift: full rebuild.
+                let syntax = self.syntax.as_ref()?;
+                let highlights = syntax.highlights_for_all_lines_rope(&self.rope);
+                self.cached_highlights = Some(highlights);
+            }
+        }
+
+        // For markdown files, also rebuild code block cache. Still &str-based —
+        // markdown is the rarer path; the hot path is non-markdown edits.
+        if language == Language::Markdown {
+            if let Some(syntax) = self.syntax.as_ref() {
+                if let Some(tree) = syntax.tree() {
+                    let content = self.rope.to_string();
+                    let mut cache = CodeBlockCache::new();
+                    cache.update_from_tree(tree, &content, version);
+                    self.code_block_cache = Some(cache);
+                }
+            }
+        }
+
+        // Refresh the baseline so the next call can be incremental.
+        if let Some(syntax) = self.syntax.as_mut() {
+            syntax.mark_cache_built();
         }
 
         self.pending_rehighlight = false;
@@ -717,15 +820,16 @@ impl Buffer {
             None => return,
         };
 
-        let content = self.rope.to_string();
         let line_count = self.line_count();
         let actual_end = end_line.min(line_count);
         if start_line >= actual_end {
             return;
         }
 
+        // Query just the visible range, streaming bytes from the rope (no
+        // whole-buffer String copy per keystroke).
         let viewport_highlights =
-            syntax.highlights_for_line_range(&content, start_line, actual_end);
+            syntax.highlights_for_line_range_rope(&self.rope, start_line, actual_end);
 
         // Ensure the cache exists and is the right size
         let cache = self
@@ -747,6 +851,7 @@ impl Buffer {
         // available immediately (not deferred to the debounced full rebuild).
         if syntax.language() == Language::Markdown && self.code_block_cache.is_none() {
             if let Some(tree) = syntax.tree() {
+                let content = self.rope.to_string();
                 let mut cb_cache = CodeBlockCache::new();
                 cb_cache.update_from_tree(tree, &content, self.highlight_version);
                 self.code_block_cache = Some(cb_cache);

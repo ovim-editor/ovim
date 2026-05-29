@@ -1438,6 +1438,11 @@ pub fn render_buffer(
     // allocating two Vec<usize> per visible line per frame.
     let mut hl_shift_buffers = HighlightShiftBuffers::new();
 
+    // Project every decoration through the edit log ONCE per render. Per-line
+    // lookups in the loop below then read from a line-keyed map instead of
+    // re-scanning `iter_all()` and re-projecting each decoration.
+    let projected_decorations = editor.decorations.project_all(rope, buffer.edit_log());
+
     let mut line_idx = start_line;
     while line_idx < line_count && visual_rows_used < visible_lines {
         if line_idx < rope.len_lines() {
@@ -1489,7 +1494,11 @@ pub fn render_buffer(
                 && !has_ai_generated_on_line;
 
             let md_conceal = editor.options.markdown_conceal;
-            let dec_gen = editor.decorations.generation;
+            // Per-line decoration hash from the per-frame projection. Lets the
+            // line cache invalidate only the lines whose decorations actually
+            // changed (vs. the previous global generation counter that wiped
+            // every cached line on any LSP push).
+            let dec_hash = projected_decorations.line_hash(line_idx);
 
             if is_stable {
                 if let Some(cached_line) = line_cache.get(
@@ -1501,20 +1510,14 @@ pub fn render_buffer(
                     wrap,
                     tab_width,
                     md_conceal,
-                    dec_gen,
+                    dec_hash,
                 ) {
                     let mut cached_line = cached_line.clone();
                     // Cached line has inline decorations but needs
-                    // EOL decorations (diagnostics) applied fresh.
-                    // Step E: route through projection so diagnostics anchored
-                    // before the current edit still render in the right spot.
-                    let projected_eol_owned: Vec<Decoration> =
-                        editor.decorations.eol_for_line_projected(
-                            line_idx,
-                            editor.buffer().rope(),
-                            editor.buffer().edit_log(),
-                        );
-                    let eol_decs: Vec<&Decoration> = projected_eol_owned.iter().collect();
+                    // EOL decorations (diagnostics) applied fresh. The
+                    // per-frame projection cache (built before the loop)
+                    // avoids re-scanning every decoration here.
+                    let eol_decs: Vec<&Decoration> = projected_decorations.eol_for_line(line_idx);
 
                     if has_wrap {
                         let mut visual_rows = split_line_into_rows(cached_line, text_width);
@@ -1595,20 +1598,23 @@ pub fn render_buffer(
                         Vec::new(),
                     )
                 };
-            let line_text = exp.text;
+            let expanded_text = exp.text;
             let conceal_byte_map = exp.byte_mapping;
             let control_ranges = exp.control_ranges;
             let char_mapping = exp.char_mapping;
 
-            // Keep a reference to expanded text before slicing (for highlight remapping)
-            let expanded_text = line_text.clone();
-
-            // Apply horizontal viewport slicing if nowrap is set
-            let (line_text, precedes, _extends) = if !wrap {
-                slice_horizontal_viewport(&line_text, h_offset, text_width)
+            // Apply horizontal viewport slicing if nowrap is set. In wrap mode
+            // the rendered slice IS the expanded text — no allocation needed.
+            // We keep the optional sliced String alive in `line_sliced` so
+            // `line_text` can borrow from it (!wrap) or from `expanded_text` (wrap).
+            let (line_sliced, precedes, _extends): (Option<String>, bool, bool) = if !wrap {
+                let (sliced, p, e) =
+                    slice_horizontal_viewport(&expanded_text, h_offset, text_width);
+                (Some(sliced), p, e)
             } else {
-                (line_text.to_string(), false, false)
+                (None, false, false)
             };
+            let line_text: &str = line_sliced.as_deref().unwrap_or(&expanded_text);
 
             // Get syntax highlights for this line and remap them for expanded text
             let original_highlights = buffer.highlights_for_line(line_idx);
@@ -1619,7 +1625,7 @@ pub fn render_buffer(
                 syntax_highlights = shift_highlights_for_viewport(
                     &syntax_highlights,
                     &expanded_text,
-                    &line_text,
+                    line_text,
                     h_offset,
                     text_width,
                     precedes,
@@ -1631,7 +1637,7 @@ pub fn render_buffer(
             let has_visual_selection = has_visual_on_line;
 
             let search_matches = if let Some(search) = current_search {
-                search.find_all_in_line(&line_text)
+                search.find_all_in_line(line_text)
             } else {
                 Vec::new()
             };
@@ -1662,10 +1668,7 @@ pub fn render_buffer(
                             expanded_char_to_display_col(&expanded_text, expanded_char_col);
                         let viewport_display_col = display_col.saturating_sub(h_offset);
                         let offset_adjustment = if precedes { 1 } else { 0 };
-                        display_col_to_char_idx(
-                            &line_text,
-                            viewport_display_col + offset_adjustment,
-                        )
+                        display_col_to_char_idx(line_text, viewport_display_col + offset_adjustment)
                     };
                     let sc = if line_idx == sl { adjust(sc) } else { sc };
                     let ec = if line_idx == el { adjust(ec) } else { ec };
@@ -1698,7 +1701,7 @@ pub fn render_buffer(
                         let viewport_display_col = display_col - h_offset;
                         let offset_adjustment = if precedes { 1 } else { 0 };
                         let sliced_char_idx = display_col_to_char_idx(
-                            &line_text,
+                            line_text,
                             viewport_display_col + offset_adjustment,
                         );
                         Some(sliced_char_idx)
@@ -1768,11 +1771,11 @@ pub fn render_buffer(
                         }
                         let offset_adj = if precedes { 1 } else { 0 };
                         let mut sliced_start = display_col_to_char_idx(
-                            &line_text,
+                            line_text,
                             start_display.saturating_sub(h_offset) + offset_adj,
                         );
                         let mut sliced_end = display_col_to_char_idx(
-                            &line_text,
+                            line_text,
                             end_display.saturating_sub(h_offset) + offset_adj,
                         );
                         if sliced_start > sliced_end {
@@ -1801,7 +1804,7 @@ pub fn render_buffer(
                 line_content_chars: line_char_count,
                 char_mapping: &char_mapping,
                 expanded_text: &expanded_text,
-                line_text: &line_text,
+                line_text,
                 wrap,
                 h_offset,
                 text_width,
@@ -1854,11 +1857,11 @@ pub fn render_buffer(
                             } else {
                                 let offset_adj = if precedes { 1 } else { 0 };
                                 start = display_col_to_char_idx(
-                                    &line_text,
+                                    line_text,
                                     start_display.saturating_sub(h_offset) + offset_adj,
                                 );
                                 end_exclusive = display_col_to_char_idx(
-                                    &line_text,
+                                    line_text,
                                     end_display.saturating_sub(h_offset) + offset_adj,
                                 );
                                 if end_exclusive > start {
@@ -1914,7 +1917,7 @@ pub fn render_buffer(
             if needs_detailed_rendering {
                 let mut line = render_line_with_highlights(
                     theme,
-                    &line_text,
+                    line_text,
                     line_idx,
                     remapped_visual_selection,
                     editor.mode(),
@@ -2001,21 +2004,18 @@ pub fn render_buffer(
                 // cache-hit frames render the same decorations that cursor
                 // positioning (inline_width_before) accounts for.
                 //
-                // Step E: route through `for_line_projected` so we read the
-                // projected offsets. In steady state (accumulator keeps
-                // `source_version` current) this yields the same result as
-                // the stored offsets; when Step F removes the accumulator the
-                // projection becomes the sole source of truth.
-                let line_decorations_owned = editor.decorations.for_line_projected(
-                    line_idx,
-                    editor.buffer().rope(),
-                    editor.buffer().edit_log(),
-                );
-                let inline_decs: Vec<&Decoration> = line_decorations_owned
+                // Step E: read projected offsets from the per-frame
+                // projection cache built before the loop.  In steady state
+                // (accumulator keeps `source_version` current) this yields
+                // the same result as the stored offsets; when Step F removes
+                // the accumulator the projection becomes the sole source of
+                // truth.
+                let line_decorations = projected_decorations.for_line(line_idx);
+                let inline_decs: Vec<&Decoration> = line_decorations
                     .iter()
                     .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
                     .collect();
-                let eol_decs: Vec<&Decoration> = line_decorations_owned
+                let eol_decs: Vec<&Decoration> = line_decorations
                     .iter()
                     .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
                     .collect();
@@ -2043,7 +2043,7 @@ pub fn render_buffer(
                     wrap,
                     tab_width,
                     md_conceal,
-                    dec_gen,
+                    dec_hash,
                     line.clone(),
                     is_stable,
                 );
@@ -2105,7 +2105,7 @@ pub fn render_buffer(
                     wrap,
                     tab_width,
                     md_conceal,
-                    dec_gen,
+                    dec_hash,
                     simple_line,
                     true,
                 );
@@ -2200,7 +2200,7 @@ pub fn render_buffer(
                                 .and_then(|b| b.get(line_idx - start_line)),
                         ));
                     }
-                    let line_display_len = unicode_width::UnicodeWidthStr::width(&*line_text);
+                    let line_display_len = unicode_width::UnicodeWidthStr::width(line_text);
                     let line_text = if line_display_len < render_width {
                         format!(
                             "{}{}",
