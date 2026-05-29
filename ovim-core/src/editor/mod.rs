@@ -1485,12 +1485,22 @@ impl Editor {
         0
     }
 
-    /// Calculates half-page scroll amount
-    /// Uses options.scroll if set, otherwise viewport_height / 2
+    /// Calculates half-page scroll amount (Ctrl-D / Ctrl-U).
+    ///
+    /// Uses `options.scroll` when set. Otherwise it's half the *focused window's*
+    /// height — not the whole buffer area — so that in a split, Ctrl-D/U scroll
+    /// half of the focused pane rather than half of the entire editor.
     pub fn half_page_scroll(&self) -> usize {
-        self.options
-            .scroll
-            .unwrap_or(self.viewport.viewport_height / 2)
+        if let Some(scroll) = self.options.scroll {
+            return scroll;
+        }
+        let height = self
+            .window_manager
+            .as_ref()
+            .and_then(|wm| wm.focused_window())
+            .map(|window| window.height() as usize)
+            .unwrap_or(self.viewport.viewport_height);
+        (height / 2).max(1)
     }
 
     /// Clears the pending command
