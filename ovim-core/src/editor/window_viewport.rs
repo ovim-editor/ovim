@@ -373,56 +373,6 @@ impl Editor {
         self.viewport.skip_scroll_update = true;
     }
 
-    /// Scrolls down half a page (both viewport and cursor)
-    pub fn scroll_half_page_down(&mut self) {
-        // Extract window info first to avoid borrowing conflicts
-        let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
-            if let Some(window) = wm.focused_window() {
-                (window.scroll_offset(), window.height() as usize)
-            } else {
-                return;
-            }
-        } else {
-            return;
-        };
-
-        // Now we can mutably borrow buffer
-        let new_viewport =
-            Motions::scroll_half_page_down(self.buffer_mut(), viewport_start, viewport_height);
-
-        // Finally update window scroll offset
-        if let Some(wm) = &mut self.window_manager {
-            if let Some(window) = wm.focused_window_mut() {
-                window.set_scroll_offset(new_viewport);
-            }
-        }
-    }
-
-    /// Scrolls up half a page (both viewport and cursor)
-    pub fn scroll_half_page_up(&mut self) {
-        // Extract window info first to avoid borrowing conflicts
-        let (viewport_start, viewport_height) = if let Some(wm) = &self.window_manager {
-            if let Some(window) = wm.focused_window() {
-                (window.scroll_offset(), window.height() as usize)
-            } else {
-                return;
-            }
-        } else {
-            return;
-        };
-
-        // Now we can mutably borrow buffer
-        let new_viewport =
-            Motions::scroll_half_page_up(self.buffer_mut(), viewport_start, viewport_height);
-
-        // Finally update window scroll offset
-        if let Some(wm) = &mut self.window_manager {
-            if let Some(window) = wm.focused_window_mut() {
-                window.set_scroll_offset(new_viewport);
-            }
-        }
-    }
-
     /// Scrolls forward (down) one page (both viewport and cursor)
     pub fn scroll_page_down(&mut self) {
         // Extract window info first to avoid borrowing conflicts

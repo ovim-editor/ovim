@@ -969,40 +969,6 @@ proptest! {
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(200))]
 
-    /// Property: scroll_half_page_down never panics, cursor stays in bounds.
-    #[test]
-    fn prop_scroll_half_page_down_safe(
-        text in arb_motion_text(),
-        viewport_start in 0..10usize,
-        viewport_height in 5..30usize,
-    ) {
-        let mut buffer = Buffer::new_from_str(&text);
-        let lc = buffer.line_count();
-        let safe_start = viewport_start.min(lc.saturating_sub(1));
-        buffer.cursor_mut().set_position(safe_start, GraphemeCol::ZERO);
-
-        let _ = Motions::scroll_half_page_down(&mut buffer, safe_start, viewport_height);
-
-        assert_cursor_in_bounds(&buffer, "scroll_half_page_down")?;
-    }
-
-    /// Property: scroll_half_page_up never panics, cursor stays in bounds.
-    #[test]
-    fn prop_scroll_half_page_up_safe(
-        text in arb_motion_text(),
-        viewport_start in 0..10usize,
-        viewport_height in 5..30usize,
-    ) {
-        let mut buffer = Buffer::new_from_str(&text);
-        let lc = buffer.line_count();
-        let safe_start = viewport_start.min(lc.saturating_sub(1));
-        buffer.cursor_mut().set_position(safe_start, GraphemeCol::ZERO);
-
-        let _ = Motions::scroll_half_page_up(&mut buffer, safe_start, viewport_height);
-
-        assert_cursor_in_bounds(&buffer, "scroll_half_page_up")?;
-    }
-
     /// Property: scroll_page_down never panics.
     #[test]
     fn prop_scroll_page_down_safe(
