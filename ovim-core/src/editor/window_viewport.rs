@@ -190,50 +190,76 @@ impl Editor {
     // === Viewport Scrolling ===
 
     /// Scrolls viewport down N lines (Ctrl-e).
-    /// When the window cursor is adjusted to stay visible, sync it back to the buffer cursor.
-    /// This prevents `update_scroll_offset()` from undoing the scroll.
+    ///
+    /// The focused window's source of truth for the cursor is the *buffer*
+    /// cursor (the renderer reads `buffer().cursor()` for the focused pane), so
+    /// we sync it into the window before scrolling and read it back after.
+    /// `Window::scroll_down` keeps the cursor `scrolloff` lines from the top
+    /// edge, so the subsequent `update_scroll_offset()` is a vertical no-op
+    /// rather than fighting the scroll.
     pub fn scroll_viewport_down(&mut self, lines: usize) {
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
         let buffer_line_count = self.buffer().line_count();
-        let new_cursor = if let Some(wm) = &mut self.window_manager {
-            if let Some(window) = wm.focused_window_mut() {
-                let adjusted = window.scroll_down(lines, buffer_line_count);
-                if adjusted {
-                    Some((window.cursor().line(), window.cursor().col()))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+        let scrolloff = self.options.scrolloff;
+        let (line, col) = {
+            let cursor = self.buffer().cursor();
+            (cursor.line(), cursor.col())
+        };
+
+        let new_state = if let Some(wm) = &mut self.window_manager {
+            wm.focused_window_mut().map(|window| {
+                window.cursor_mut().set_position(line, col);
+                window.scroll_down(lines, buffer_line_count, scrolloff);
+                (
+                    window.scroll_offset(),
+                    window.cursor().line(),
+                    window.cursor().col(),
+                )
+            })
         } else {
             None
         };
 
-        if let Some((line, col)) = new_cursor {
+        if let Some((scroll_offset, line, col)) = new_state {
+            self.viewport.scroll_offset = scroll_offset;
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
 
     /// Scrolls viewport up N lines (Ctrl-y).
-    /// When the window cursor is adjusted to stay visible, sync it back to the buffer cursor.
-    /// This prevents `update_scroll_offset()` from undoing the scroll.
+    ///
+    /// See [`scroll_viewport_down`](Self::scroll_viewport_down) for the
+    /// cursor-sync contract.
     pub fn scroll_viewport_up(&mut self, lines: usize) {
-        let new_cursor = if let Some(wm) = &mut self.window_manager {
-            if let Some(window) = wm.focused_window_mut() {
-                let adjusted = window.scroll_up(lines);
-                if adjusted {
-                    Some((window.cursor().line(), window.cursor().col()))
-                } else {
-                    None
-                }
-            } else {
-                None
-            }
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+
+        let scrolloff = self.options.scrolloff;
+        let (line, col) = {
+            let cursor = self.buffer().cursor();
+            (cursor.line(), cursor.col())
+        };
+
+        let new_state = if let Some(wm) = &mut self.window_manager {
+            wm.focused_window_mut().map(|window| {
+                window.cursor_mut().set_position(line, col);
+                window.scroll_up(lines, scrolloff);
+                (
+                    window.scroll_offset(),
+                    window.cursor().line(),
+                    window.cursor().col(),
+                )
+            })
         } else {
             None
         };
 
-        if let Some((line, col)) = new_cursor {
+        if let Some((scroll_offset, line, col)) = new_state {
+            self.viewport.scroll_offset = scroll_offset;
             self.buffer_mut().cursor_mut().set_position(line, col);
         }
     }
