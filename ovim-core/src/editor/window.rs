@@ -218,15 +218,6 @@ impl Window {
         old_offset != new_offset
     }
 
-    /// Centers the cursor in the window
-    /// Note: Centering doesn't need scrolloff adjustment since cursor is already far from edges
-    pub fn center_cursor(&mut self) {
-        let cursor_line = self.cursor.line();
-        let visible_lines = self.height as usize;
-        let center_offset = visible_lines / 2;
-        self.scroll_offset = cursor_line.saturating_sub(center_offset);
-    }
-
     /// Scrolls viewport down N lines (Ctrl-E).
     ///
     /// The cursor stays on its line unless that would put it within `scrolloff`
@@ -282,27 +273,6 @@ impl Window {
         }
 
         false
-    }
-
-    /// Moves cursor line to top of viewport
-    /// Respects scrolloff by positioning cursor scrolloff lines from the actual top
-    pub fn move_cursor_to_top(&mut self, scrolloff: usize) {
-        let cursor_line = self.cursor.line();
-        let visible_lines = self.height as usize;
-        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
-        self.scroll_offset = cursor_line.saturating_sub(scrolloff);
-    }
-
-    /// Moves cursor line to bottom of viewport
-    /// Respects scrolloff by positioning cursor scrolloff lines from the actual bottom
-    pub fn move_cursor_to_bottom(&mut self, scrolloff: usize) {
-        let cursor_line = self.cursor.line();
-        let visible_lines = self.height as usize;
-        let scrolloff = scrolloff.min(visible_lines.saturating_sub(1) / 2);
-        // Position cursor scrolloff lines from bottom
-        // Formula: cursor_line - (viewport_height - 1 - scrolloff)
-        let bottom_position = visible_lines.saturating_sub(1).saturating_sub(scrolloff);
-        self.scroll_offset = cursor_line.saturating_sub(bottom_position);
     }
 }
 

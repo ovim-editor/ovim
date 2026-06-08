@@ -264,113 +264,147 @@ impl Editor {
         }
     }
 
-    /// Centers cursor in viewport
+    /// Centers cursor in viewport (zz).
     pub fn center_cursor_in_viewport(&mut self) {
-        // Initialize window manager if needed (fallback dimensions)
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
         }
-
-        let buffer_line_count = self.buffer().line_count();
-
-        // Extract buffer cursor position before borrowing window_manager
-        let (line, col) = {
-            let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col())
-        };
-
-        // Now safe to mutably borrow window_manager
-        if let Some(wm) = &mut self.window_manager {
-            if let Some(window) = wm.focused_window_mut() {
-                window.cursor_mut().set_position(line, col);
-                window.center_cursor();
-
-                let max_scroll_offset = buffer_line_count.saturating_sub(window.height() as usize);
-                let scroll_offset = window.scroll_offset();
-                if scroll_offset > max_scroll_offset {
-                    window.set_scroll_offset(max_scroll_offset);
-                }
-            }
-        }
-
-        // Skip automatic scroll update - we explicitly set the scroll position
-        self.viewport.skip_scroll_update = true;
+        let visible = self.focused_visible_rows();
+        self.scroll_cursor_to_rows_below_top(visible / 2);
     }
 
-    /// Moves cursor line to top of viewport, respecting scrolloff
+    /// Moves cursor line to top of viewport, respecting scrolloff (zt).
     pub fn move_cursor_line_to_top(&mut self) {
         self.move_cursor_line_to_top_with_offset(self.options.scrolloff);
     }
 
     /// Moves cursor line to viewport with an explicit top offset.
-    /// `top_offset` is the number of lines from viewport top where the cursor should land.
+    /// `top_offset` is the number of rows from the viewport top where the cursor should land.
     pub fn move_cursor_line_to_top_with_offset(&mut self, top_offset: usize) {
-        // Initialize window manager if needed (fallback dimensions)
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
         }
-
-        let buffer_line_count = self.buffer().line_count();
-        // Extract buffer cursor position before borrowing window_manager
-        let (line, col) = {
-            let cursor = self.buffer().cursor();
-            (cursor.line(), cursor.col())
-        };
-
-        // Now safe to mutably borrow window_manager
-        if let Some(wm) = &mut self.window_manager {
-            if let Some(window) = wm.focused_window_mut() {
-                window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_top(top_offset);
-
-                let max_scroll_offset = buffer_line_count.saturating_sub(window.height() as usize);
-                let scroll_offset = window.scroll_offset();
-                if scroll_offset > max_scroll_offset {
-                    window.set_scroll_offset(max_scroll_offset);
-                }
-            }
-        }
-
-        // Skip automatic scroll update - we explicitly set the scroll position
-        self.viewport.skip_scroll_update = true;
+        let visible = self.focused_visible_rows();
+        let rows_above = top_offset.min(visible.saturating_sub(1) / 2);
+        self.scroll_cursor_to_rows_below_top(rows_above);
     }
 
-    /// Moves cursor line to bottom of viewport, respecting scrolloff
+    /// Moves cursor line to bottom of viewport, respecting scrolloff (zb).
     pub fn move_cursor_line_to_bottom(&mut self) {
         self.move_cursor_line_to_bottom_with_offset(self.options.scrolloff);
     }
 
     /// Moves cursor line to bottom of viewport with an explicit bottom offset.
-    /// `bottom_offset` is the number of lines from viewport bottom where the cursor should land.
+    /// `bottom_offset` is the number of rows from the viewport bottom where the cursor should land.
     pub fn move_cursor_line_to_bottom_with_offset(&mut self, bottom_offset: usize) {
-        // Initialize window manager if needed (fallback dimensions)
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+        let visible = self.focused_visible_rows();
+        let bottom_offset = bottom_offset.min(visible.saturating_sub(1) / 2);
+        let rows_above = visible.saturating_sub(1).saturating_sub(bottom_offset);
+        self.scroll_cursor_to_rows_below_top(rows_above);
+    }
+
+    /// The focused window's height in rows (≥ 1), falling back to the viewport
+    /// height when there's no window manager.
+    fn focused_visible_rows(&self) -> usize {
+        self.window_manager
+            .as_ref()
+            .and_then(|wm| wm.focused_window())
+            .map(|w| (w.height() as usize).max(1))
+            .unwrap_or_else(|| self.viewport.viewport_height.max(1))
+    }
+
+    /// Scrolls the focused window so the cursor's line sits `rows_above` visual
+    /// rows below the viewport top, then pins the scroll (skip_scroll_update).
+    ///
+    /// This is the shared engine for `zt`/`zz`/`zb`. It is wrap-aware: when soft
+    /// wrap is on and a usable wrap map exists, `rows_above` is measured in
+    /// *visual* (wrapped) rows so the cursor lands where the user sees it, not
+    /// where logical line counting would put it.
+    fn scroll_cursor_to_rows_below_top(&mut self, rows_above: usize) {
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
         }
 
-        let buffer_line_count = self.buffer().line_count();
-        // Extract buffer cursor position before borrowing window_manager
         let (line, col) = {
             let cursor = self.buffer().cursor();
             (cursor.line(), cursor.col())
         };
+        let max_line = self.buffer().line_count().saturating_sub(1);
+        let visible = self.focused_visible_rows();
 
-        // Now safe to mutably borrow window_manager
+        let new_offset = self.top_line_for_cursor(line, col, rows_above, visible, max_line);
+
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
                 window.cursor_mut().set_position(line, col);
-                window.move_cursor_to_bottom(bottom_offset);
+                window.set_scroll_offset(new_offset);
+            }
+        }
 
-                let max_scroll_offset = buffer_line_count.saturating_sub(window.height() as usize);
-                let scroll_offset = window.scroll_offset();
-                if scroll_offset > max_scroll_offset {
-                    window.set_scroll_offset(max_scroll_offset);
+        // Skip automatic scroll update - we explicitly set the scroll position.
+        self.viewport.skip_scroll_update = true;
+    }
+
+    /// Computes the top logical line so the cursor's line sits `rows_above` rows
+    /// below it. Counts visual (wrapped) rows when wrap is on with a usable map;
+    /// otherwise counts logical lines.
+    fn top_line_for_cursor(
+        &self,
+        cursor_line: usize,
+        cursor_col: crate::unicode::GraphemeCol,
+        rows_above: usize,
+        visible: usize,
+        max_line: usize,
+    ) -> usize {
+        if self.options.wrap {
+            if let Some(map) = self.wrap_map() {
+                // Only trust the map when it covers the whole buffer (stale maps
+                // can lag a structural edit until the next render rebuild).
+                if map.line_count() >= self.buffer().rope().len_lines() {
+                    let wrap_width = map.wrap_width().max(1);
+                    let tab_width = self.options.tab_width;
+                    let line_text = self.cursor_line_text(cursor_line);
+                    let char_col = self.cursor_grapheme_to_char_col(cursor_line, cursor_col);
+                    let rope = self.buffer().rope();
+                    let edit_log = self.buffer().edit_log();
+                    let inline = self.decorations.inline_decorations_for_line_projected(
+                        cursor_line,
+                        rope,
+                        edit_log,
+                    );
+                    // Flat display column including any inline decoration widths
+                    // before the cursor (matches update_scroll_offset).
+                    let disp_col =
+                        crate::display::char_col_to_display_col(&line_text, char_col, tab_width)
+                            + self.decorations.inline_width_before_projected(
+                                cursor_line,
+                                char_col,
+                                rope,
+                                edit_log,
+                            );
+                    let subline = Self::cursor_subline_in_wrapped_line(
+                        &line_text, disp_col, wrap_width, tab_width, &inline,
+                    );
+                    let offset = self.top_offset_for_wrapped_cursor(
+                        cursor_line,
+                        subline,
+                        rows_above,
+                        wrap_width,
+                        tab_width,
+                        true,
+                    );
+                    let max_scroll = Self::compute_wrap_max_scroll_offset(map, visible, max_line);
+                    return offset.min(max_scroll);
                 }
             }
         }
 
-        // Skip automatic scroll update - we explicitly set the scroll position
-        self.viewport.skip_scroll_update = true;
+        // Logical fallback: count whole lines.
+        let offset = cursor_line.saturating_sub(rows_above);
+        offset.min(max_line.saturating_sub(visible.saturating_sub(1)))
     }
 
     /// Scrolls forward (down) one page (both viewport and cursor)

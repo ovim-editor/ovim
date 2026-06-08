@@ -408,6 +408,50 @@ fn count_z_minus_moves_to_first_non_blank() {
 }
 
 // ==========================================================================
+// [count] with bare zt/zz/zb keeps the cursor column (unlike z<CR>/z./z-)
+//
+// Vim: "zt — Like z<CR>, but leave the cursor in the same column." The count
+// changes the target LINE, not the column rule. Only z<CR>/z./z- jump to the
+// first non-blank. These guard against "fixing" the column into a regression.
+// ==========================================================================
+
+#[test]
+fn count_zt_keeps_cursor_column() {
+    let content = make_content(50);
+    let mut test = setup(&content, 20);
+    test.keys("5l"); // column 5 on line 0
+    test.keys("10zt"); // jump to line 9 (1-indexed 10)
+
+    let vp = ViewportAssertion::new(&test.editor);
+    assert_eq!(vp.cursor_line(), 9);
+    assert_eq!(vp.cursor_col(), 5, "[count]zt keeps the cursor column");
+}
+
+#[test]
+fn count_zz_keeps_cursor_column() {
+    let content = make_content(50);
+    let mut test = setup(&content, 20);
+    test.keys("5l");
+    test.keys("25zz");
+
+    let vp = ViewportAssertion::new(&test.editor);
+    assert_eq!(vp.cursor_line(), 24);
+    assert_eq!(vp.cursor_col(), 5, "[count]zz keeps the cursor column");
+}
+
+#[test]
+fn count_zb_keeps_cursor_column() {
+    let content = make_content(50);
+    let mut test = setup(&content, 20);
+    test.keys("5l");
+    test.keys("25zb");
+
+    let vp = ViewportAssertion::new(&test.editor);
+    assert_eq!(vp.cursor_line(), 24);
+    assert_eq!(vp.cursor_col(), 5, "[count]zb keeps the cursor column");
+}
+
+// ==========================================================================
 // Edge cases: file smaller than viewport
 // ==========================================================================
 
