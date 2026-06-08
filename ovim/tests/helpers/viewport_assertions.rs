@@ -45,11 +45,27 @@ impl<'a> ViewportAssertion<'a> {
         self.editor.viewport_height()
     }
 
-    /// The cursor's visual row measured from the top of the viewport, in
-    /// *visual* (wrapped) rows. Requires soft-wrap to be on with a built wrap
-    /// map. This is the ground truth for "where on screen is the cursor" under
-    /// wrapping — e.g. `zz` should leave it near `viewport_height() / 2`.
-    pub fn cursor_visual_row_from_top(&self) -> usize {
+    /// The absolute visual (wrapped) row currently drawn at the top of the
+    /// viewport. Requires soft-wrap to be on with a built wrap map.
+    ///
+    /// NOTE: once a sub-row scroll offset lands (see /tmp/ovim-handoff.md), this
+    /// must become `logical_to_visual(scroll_offset) + window.scroll_subrow()`.
+    /// It is the single place the visual-row origin is computed, so the visual
+    /// assertions below all follow automatically.
+    pub fn viewport_top_visual_row(&self) -> usize {
+        let wm = self
+            .editor
+            .window_manager()
+            .expect("window manager required for visual-row assertions");
+        let window = wm.focused_window().expect("a focused window");
+        let map = window
+            .wrap_map()
+            .expect("wrap map must be built (call ensure_wrap_map)");
+        map.logical_to_visual(window.scroll_offset())
+    }
+
+    /// The absolute visual (wrapped) row the cursor sits on.
+    pub fn cursor_absolute_visual_row(&self) -> usize {
         let wm = self
             .editor
             .window_manager()
@@ -64,8 +80,16 @@ impl<'a> ViewportAssertion<'a> {
         // Tests using this helper are ASCII (no tabs/decorations), so the
         // grapheme column equals the display column.
         let (cursor_visual, _) = map.cursor_to_visual(line, cursor.col().0, &line_text);
-        let top_visual = map.logical_to_visual(window.scroll_offset());
-        cursor_visual.saturating_sub(top_visual)
+        cursor_visual
+    }
+
+    /// The cursor's visual row measured from the top of the viewport, in
+    /// *visual* (wrapped) rows. This is the ground truth for "where on screen is
+    /// the cursor" under wrapping — e.g. `zz` should leave it near
+    /// `viewport_height() / 2`.
+    pub fn cursor_visual_row_from_top(&self) -> usize {
+        self.cursor_absolute_visual_row()
+            .saturating_sub(self.viewport_top_visual_row())
     }
 
     /// Whether the cursor's visual row currently falls within the viewport.
