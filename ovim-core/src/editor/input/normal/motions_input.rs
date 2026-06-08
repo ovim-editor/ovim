@@ -361,12 +361,18 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
             Ok(true)
         }
         KeyCode::Char('f') => {
-            editor.scroll_page_down();
+            // [count]CTRL-F scrolls [count] pages forward.
+            for _ in 0..editor.effective_count() {
+                editor.scroll_page_down();
+            }
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('b') => {
-            editor.scroll_page_up();
+            // [count]CTRL-B scrolls [count] pages backward.
+            for _ in 0..editor.effective_count() {
+                editor.scroll_page_up();
+            }
             editor.clear_count();
             Ok(true)
         }
