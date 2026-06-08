@@ -236,7 +236,12 @@ impl Window {
     /// the buffer cursor is the source of truth, not `self.cursor`.
     ///
     /// Returns whether the cursor was moved.
-    pub fn scroll_down(&mut self, lines: usize, buffer_line_count: usize, scrolloff: usize) -> bool {
+    pub fn scroll_down(
+        &mut self,
+        lines: usize,
+        buffer_line_count: usize,
+        scrolloff: usize,
+    ) -> bool {
         let visible_lines = self.height as usize;
         let max_scroll = buffer_line_count.saturating_sub(visible_lines);
         let new_scroll = (self.scroll_offset + lines).min(max_scroll);

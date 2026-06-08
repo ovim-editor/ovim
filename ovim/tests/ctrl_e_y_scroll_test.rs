@@ -35,7 +35,11 @@ fn ctrl_e_at_top_scrolls_and_keeps_cursor_at_scrolloff_margin() {
     test.keys("<C-e>");
 
     let v = ViewportAssertion::new(&test.editor);
-    assert_eq!(v.scroll_offset(), 1, "view should scroll down exactly one line");
+    assert_eq!(
+        v.scroll_offset(),
+        1,
+        "view should scroll down exactly one line"
+    );
     assert_eq!(
         v.cursor_line(),
         6,
