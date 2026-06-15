@@ -135,6 +135,19 @@ impl WrapMap {
             .unwrap_or(self.total_visual_lines)
     }
 
+    /// Absolute visual row drawn at the very top of a viewport whose top
+    /// logical line is `scroll_offset` with `scroll_subrow` of that line's
+    /// wrapped rows hidden above the top edge.
+    ///
+    /// This is the single source of truth for the viewport's visual-row origin:
+    /// `logical_to_visual(scroll_offset) + scroll_subrow`. The buffer renderer
+    /// (which skips `scroll_subrow` rows of the top line) and the cursor/overlay
+    /// screen-row math must both derive from it, or they drift — omitting the
+    /// sub-row term draws the cursor `scroll_subrow` rows too low (OV-00019).
+    pub fn viewport_top_visual_row(&self, scroll_offset: usize, scroll_subrow: usize) -> usize {
+        self.logical_to_visual(scroll_offset) + scroll_subrow
+    }
+
     /// Converts a visual row index to (logical_line, sub_line) within that line.
     pub fn visual_to_logical(&self, visual_row: usize) -> (usize, usize) {
         // Binary search for the logical line containing this visual row

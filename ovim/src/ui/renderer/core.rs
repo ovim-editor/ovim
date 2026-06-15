@@ -601,7 +601,7 @@ fn set_cursor_position(
             };
 
             let viewport_visual_row = if let Some(wrap_map) = editor.wrap_map() {
-                wrap_map.logical_to_visual(viewport_start)
+                wrap_map.viewport_top_visual_row(viewport_start, editor.scroll_subrow())
             } else {
                 viewport_start
             };
@@ -967,5 +967,99 @@ impl Renderer {
     pub fn clear(&mut self) -> Result<()> {
         self.terminal.clear()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod cursor_screen_position_tests {
+    //! Regression coverage for the hardware-cursor screen row under soft wrap.
+    //!
+    //! The viewport's visual-row origin is `logical_to_visual(scroll_offset) +
+    //! scroll_subrow`. When the top logical line is wrapped and scrolled into
+    //! (`scroll_subrow > 0`), the buffer renderer skips those sub-rows — so the
+    //! cursor must subtract them too. Omitting the sub-row term drew the cursor
+    //! `scroll_subrow` rows below its real input point (regression of OV-00019,
+    //! visible when many wrapped rows precede the cursor).
+
+    use super::Renderer;
+    use crate::editor::Editor;
+    use crate::ui::renderer::line_cache::LineRenderCache;
+    use ratatui::backend::TestBackend;
+    use ratatui::Terminal;
+
+    /// Renders `editor` to a `WIDTH x HEIGHT` test terminal and returns the
+    /// hardware cursor's `y` coordinate (absolute terminal row).
+    fn render_and_cursor_y(editor: &mut Editor, width: u16, height: u16) -> u16 {
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut line_cache = LineRenderCache::new();
+        terminal
+            .draw(|f| Renderer::render_to_frame(f, editor, &mut line_cache))
+            .unwrap();
+        terminal.get_cursor_position().unwrap().y
+    }
+
+    #[test]
+    fn cursor_row_accounts_for_scroll_subrow_in_wrapped_line() {
+        const WIDTH: u16 = 24;
+        const HEIGHT: u16 = 12;
+
+        // One very long logical line so it wraps into many visual rows
+        // regardless of the exact gutter width the layout chooses.
+        let content = "a".repeat(400);
+        let mut editor = Editor::with_content(&content);
+        editor.init_window_manager(WIDTH, HEIGHT);
+        editor.set_viewport_height(HEIGHT as usize);
+        editor.options.wrap = true;
+        editor.options.scrolloff = 0;
+
+        // First render establishes the real layout (text_width after gutter)
+        // and builds the wrap map at that width.
+        render_and_cursor_y(&mut editor, WIDTH, HEIGHT);
+        let text_width = editor.render_cache.last_text_width;
+        let buffer_top = editor.render_cache.last_buffer_area.unwrap().y;
+        assert!(
+            text_width > 0,
+            "wrap mode must produce a positive text width"
+        );
+
+        // Park the cursor on the 6th visual row of line 0, then scroll 3 wrapped
+        // rows into the line. The cursor then sits at screen row 6 - 3 = 3:
+        // comfortably mid-viewport, so the `min(height - 1)` clamp can't mask a
+        // wrong (too-low) value.
+        const CURSOR_VISUAL_ROW: usize = 6;
+        const SUBROW: usize = 3;
+        let cursor_col = CURSOR_VISUAL_ROW * text_width + 2;
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(0, ovim_core::unicode::CharCol(cursor_col));
+        if let Some(wm) = editor.window_manager_mut() {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_position(0, SUBROW);
+            }
+        }
+
+        let cursor_y = render_and_cursor_y(&mut editor, WIDTH, HEIGHT);
+
+        // Ground truth from the wrap map: absolute visual row of the cursor
+        // minus the viewport's visual-row origin, offset by the buffer's top.
+        let map = editor
+            .window_manager()
+            .unwrap()
+            .focused_window()
+            .unwrap()
+            .wrap_map()
+            .unwrap();
+        let line_text = editor.buffer().line_text(0).unwrap_or_default();
+        let (abs_row, _) = map.cursor_to_visual(0, cursor_col, &line_text);
+        let top = map.viewport_top_visual_row(0, SUBROW);
+        let expected_y = buffer_top + (abs_row - top) as u16;
+
+        assert_eq!(
+            cursor_y, expected_y,
+            "cursor drawn at terminal row {cursor_y}, expected {expected_y} \
+             (abs visual row {abs_row}, viewport top visual row {top}); a value \
+             {SUBROW} rows too low means scroll_subrow was ignored"
+        );
     }
 }

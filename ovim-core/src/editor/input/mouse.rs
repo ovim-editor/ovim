@@ -96,7 +96,8 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     // Determine buffer line and full display column, accounting for wrap
     let (buffer_line, display_col) = if editor.options.wrap {
         if let Some(wrap_map) = editor.wrap_map() {
-            let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+            let viewport_visual_row =
+                wrap_map.viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
             let absolute_visual_row = rel_row + viewport_visual_row;
             let (logical_line, sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             let line = logical_line.min(editor.buffer().line_count().saturating_sub(1));
@@ -191,7 +192,8 @@ fn check_concealed_link_click(editor: &Editor, screen_col: u16, screen_row: u16)
     // Determine buffer line (same logic as screen_to_buffer)
     let buffer_line = if editor.options.wrap {
         if let Some(wrap_map) = editor.wrap_map() {
-            let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+            let viewport_visual_row =
+                wrap_map.viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
             let absolute_visual_row = rel_row + viewport_visual_row;
             let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             logical_line.min(editor.buffer().line_count().saturating_sub(1))
@@ -265,7 +267,8 @@ fn is_blame_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<u
     if rel_col < blame_width {
         let buffer_line = if editor.options.wrap {
             if let Some(wrap_map) = editor.wrap_map() {
-                let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+                let viewport_visual_row = wrap_map
+                    .viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
                 let absolute_visual_row = rel_row + viewport_visual_row;
                 let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
                 logical_line.min(editor.buffer().line_count().saturating_sub(1))
@@ -313,7 +316,8 @@ fn is_sign_column_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Op
     let rel_row = (screen_row - area.y) as usize;
     let buffer_line = if editor.options.wrap {
         if let Some(wrap_map) = editor.wrap_map() {
-            let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+            let viewport_visual_row =
+                wrap_map.viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
             let absolute_visual_row = rel_row + viewport_visual_row;
             let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             logical_line.min(editor.buffer().line_count().saturating_sub(1))
@@ -349,7 +353,8 @@ fn is_gutter_click(editor: &Editor, screen_col: u16, screen_row: u16) -> Option<
     if rel_col < gutter_width {
         let buffer_line = if editor.options.wrap {
             if let Some(wrap_map) = editor.wrap_map() {
-                let viewport_visual_row = wrap_map.logical_to_visual(editor.scroll_offset());
+                let viewport_visual_row = wrap_map
+                    .viewport_top_visual_row(editor.scroll_offset(), editor.scroll_subrow());
                 let absolute_visual_row = rel_row + viewport_visual_row;
                 let (logical_line, _sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
                 logical_line.min(editor.buffer().line_count().saturating_sub(1))

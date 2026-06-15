@@ -114,7 +114,8 @@ pub fn render_hover_window(
                 &line_text,
                 &inline_widths,
             );
-            let viewport_row = wrap_map.logical_to_visual(viewport_start);
+            let viewport_row =
+                wrap_map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
             (abs_row.saturating_sub(viewport_row), vcol)
         } else {
             (cursor_line.saturating_sub(viewport_start), display_col)
@@ -308,7 +309,8 @@ pub fn render_completion_menu(frame: &mut Frame, editor: &Editor, ctx: &OverlayC
                 &line_text,
                 &inline_widths,
             );
-            let viewport_row = wrap_map.logical_to_visual(viewport_start);
+            let viewport_row =
+                wrap_map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
             (abs_row.saturating_sub(viewport_row), vcol)
         } else {
             (cursor_line.saturating_sub(viewport_start), display_col)

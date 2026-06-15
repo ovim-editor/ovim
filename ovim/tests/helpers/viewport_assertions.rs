@@ -60,7 +60,7 @@ impl<'a> ViewportAssertion<'a> {
         let map = window
             .wrap_map()
             .expect("wrap map must be built (call ensure_wrap_map)");
-        map.logical_to_visual(window.scroll_offset()) + window.scroll_subrow()
+        map.viewport_top_visual_row(window.scroll_offset(), window.scroll_subrow())
     }
 
     /// The absolute visual (wrapped) row the cursor sits on.
