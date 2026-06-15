@@ -856,6 +856,20 @@ impl Editor {
         self.viewport.scroll_offset
     }
 
+    /// Gets the visual sub-row offset within the top visible logical line.
+    ///
+    /// Mirrors [`scroll_offset`](Self::scroll_offset): the focused window's value
+    /// when there's a window manager, otherwise the editor-global fallback.
+    /// Always 0 when soft wrap is off.
+    pub fn scroll_subrow(&self) -> usize {
+        if let Some(wm) = &self.window_manager {
+            if let Some(window) = wm.focused_window() {
+                return window.scroll_subrow();
+            }
+        }
+        self.viewport.scroll_subrow
+    }
+
     /// Gets a reference to the wrap map for the active viewport (the focused
     /// window when there's a window manager, otherwise the editor-global slot
     /// used in headless / no-window-manager contexts).
@@ -1095,24 +1109,22 @@ impl Editor {
         // After edits (e.g. `o` inserting a line) the map is stale until the next
         // render pass rebuilds it.  Using stale data causes cursor_to_visual to
         // return 0 for the new line, jumping the viewport to the top.
-        let wrap_map_usable = self.options.wrap
-            && self
-                .viewport
-                .wrap_map
-                .as_ref()
-                .is_some_and(|m| m.line_count() >= self.buffer().rope().len_lines());
+        //
+        // Consult the *active* map via `wrap_map()` — the focused window owns its
+        // map when there's a window manager (the common case); `self.viewport.
+        // wrap_map` is only the no-window-manager fallback slot.
+        let len_lines = self.buffer().rope().len_lines();
+        let wrap_map_usable =
+            self.options.wrap && self.wrap_map().is_some_and(|m| m.line_count() >= len_lines);
 
         // In wrap mode, each logical line can consume multiple visual rows. Clamping using
         // logical line counts can prevent scrolling far enough to reveal the final logical
         // lines when a wrapped line appears near EOF. Instead, derive the maximum scroll
         // offset from total visual rows.
-        let wrap_width_known =
-            self.viewport.wrap_map.is_some() || self.render_cache.last_text_width > 0;
+        let wrap_width_known = self.wrap_map().is_some() || self.render_cache.last_text_width > 0;
 
         let max_scroll = if wrap_map_usable {
-            self.viewport
-                .wrap_map
-                .as_ref()
+            self.wrap_map()
                 .map(|m| Self::compute_wrap_max_scroll_offset(m, visible_lines, max_line))
                 .unwrap_or_else(|| max_line.saturating_sub(visible_lines.saturating_sub(1)))
         } else if self.options.wrap && wrap_width_known {
@@ -1132,13 +1144,19 @@ impl Editor {
             .scrolloff
             .min(visible_lines.saturating_sub(1) / 2);
 
-        // Calculate new scroll offset
-        let new_offset;
+        // Calculate new scroll offset (and, in wrap mode, the visual sub-row
+        // offset within the top logical line).
+        let current_subrow = self.scroll_subrow();
+        let mut new_offset;
+        let mut new_subrow = 0usize;
+        // Set when the wrap path has already bounded the position in visual-row
+        // space; skip the logical `max_scroll` clamp below, which knows nothing
+        // about sub-rows and would desync `new_offset` from `new_subrow`.
+        let mut visual_clamped = false;
 
         if wrap_map_usable {
-            if let Some(ref wrap_map) = self.viewport.wrap_map {
-                // Wrap-aware scrolling: work in visual rows
-                // Get the display column for proper sub-line calculation
+            if let Some(wrap_map) = self.wrap_map() {
+                // Wrap-aware scrolling: work in absolute visual rows.
                 let line_text = self.cursor_line_text(cursor_line);
                 let cursor_char_col =
                     self.cursor_grapheme_to_char_col(cursor_line, self.buffer().cursor().col());
@@ -1149,28 +1167,36 @@ impl Editor {
                 );
                 let (cursor_visual_row, _) =
                     wrap_map.cursor_to_visual(cursor_line, disp_col, &line_text);
-                let viewport_visual_start = wrap_map.logical_to_visual(current_offset);
+                let viewport_visual_start =
+                    wrap_map.logical_to_visual(current_offset) + current_subrow;
 
                 if cursor_visual_row < viewport_visual_start + scrolloff {
-                    // Cursor above viewport top margin — scroll up
-                    // Find the logical line whose visual start puts cursor at scrolloff from top
+                    // Cursor above the top margin — scroll up. Begin at the start
+                    // of the logical line containing the target row (conservative:
+                    // a line boundary, matching long-standing behaviour).
                     let target_visual = cursor_visual_row.saturating_sub(scrolloff);
                     let (new_line, _) = wrap_map.visual_to_logical(target_visual);
                     new_offset = new_line;
+                    new_subrow = 0;
                 } else if cursor_visual_row + scrolloff >= viewport_visual_start + visible_lines {
-                    // Cursor below viewport bottom margin — scroll down
-                    let target_visual = cursor_visual_row + scrolloff + 1 - visible_lines;
+                    // Cursor below the bottom margin — scroll down by exact visual
+                    // rows, beginning *partway into* a wrapped line when needed so
+                    // a logical line taller than the viewport stays fully reachable
+                    // (its tail no longer falls off the bottom edge).
+                    let total_visual = wrap_map.total_visual_lines();
+                    let max_visual_start = total_visual.saturating_sub(visible_lines);
+                    let target_visual = (cursor_visual_row + scrolloff + 1)
+                        .saturating_sub(visible_lines)
+                        .min(max_visual_start);
                     let (new_line, sub_line) = wrap_map.visual_to_logical(target_visual);
-                    // We can't start rendering in the middle of a wrapped line. If the ideal
-                    // visual start lands on a sub-line, advance to the next logical line so the
-                    // viewport can still reach the final logical lines near EOF.
-                    new_offset = if sub_line > 0 {
-                        new_line.saturating_add(1)
-                    } else {
-                        new_line
-                    };
+                    new_offset = new_line;
+                    new_subrow = sub_line;
+                    visual_clamped = true;
                 } else {
+                    // Cursor already visible — hold position, including the sub-row
+                    // offset so a mid-line scroll isn't snapped back to the top.
                     new_offset = current_offset;
+                    new_subrow = current_subrow;
                 }
             } else {
                 // Wrap enabled but no wrap map yet — use logical line fallback
@@ -1205,7 +1231,8 @@ impl Editor {
         // cursor visibility.  When the cursor is already visible the scroll paths
         // return `current_offset` unchanged — clamping that would snap away the
         // deliberate positioning set by viewport commands (zt/zz/zb) near EOF.
-        let new_offset = if new_offset != current_offset {
+        // The wrap down-scroll path has already clamped in visual-row space.
+        new_offset = if !visual_clamped && new_offset != current_offset {
             new_offset.min(max_scroll)
         } else {
             new_offset
@@ -1213,6 +1240,7 @@ impl Editor {
 
         // Update both editor-level and window-level scroll offsets
         self.viewport.scroll_offset = new_offset;
+        self.viewport.scroll_subrow = new_subrow;
 
         // Extract cursor column and options before mutably borrowing window_manager
         // Convert char column to display column for proper horizontal scrolling
@@ -1242,7 +1270,7 @@ impl Editor {
 
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
-                window.set_scroll_offset(new_offset);
+                window.set_scroll_position(new_offset, new_subrow);
 
                 // Update horizontal scroll offset to keep cursor visible horizontally
                 if window.ensure_cursor_visible_horizontal(

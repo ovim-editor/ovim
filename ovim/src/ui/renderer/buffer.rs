@@ -29,6 +29,8 @@ pub struct WindowRenderContext {
     pub cursor: Option<Cursor>,
     /// Override scroll offset (for non-focused windows)
     pub scroll_offset: Option<usize>,
+    /// Override visual sub-row offset within the top line (for non-focused windows)
+    pub scroll_subrow: Option<usize>,
     /// Override horizontal scroll offset (for non-focused windows)
     pub horizontal_offset: Option<usize>,
     /// Use this window's own soft-wrap map (built at *this* window's content
@@ -1311,6 +1313,12 @@ pub fn render_buffer(
     let start_line = window_context
         .and_then(|ctx| ctx.scroll_offset)
         .unwrap_or_else(|| editor.scroll_offset());
+    // Visual sub-row offset within `start_line`: the first `top_skip` wrapped
+    // rows of the top logical line are scrolled off the top edge. Only meaningful
+    // under soft wrap (set to 0 otherwise below, once `has_wrap` is known).
+    let mut top_skip = window_context
+        .and_then(|ctx| ctx.scroll_subrow)
+        .unwrap_or_else(|| editor.scroll_subrow());
 
     // Get horizontal viewport settings
     // Use window-specific horizontal offset if provided
@@ -1395,6 +1403,14 @@ pub fn render_buffer(
         None => editor.wrap_map(),
     };
     let has_wrap = wrap && wrap_map.is_some();
+    // Sub-row scroll only applies under soft wrap — the renderer can't begin
+    // partway into a logical line otherwise.
+    if !has_wrap {
+        top_skip = 0;
+    }
+    // To start rendering `top_skip` visual rows into the top logical line, emit
+    // that many extra rows and drop them from the top after the layout loop.
+    let emit_budget = visible_lines + top_skip;
     let mut visual_rows_used = 0;
     let buffer_version = buffer.version();
     let buffer_id = editor.current_buffer_index();
@@ -1444,7 +1460,7 @@ pub fn render_buffer(
     let projected_decorations = editor.decorations.project_all(rope, buffer.edit_log());
 
     let mut line_idx = start_line;
-    while line_idx < line_count && visual_rows_used < visible_lines {
+    while line_idx < line_count && visual_rows_used < emit_budget {
         if line_idx < rope.len_lines() {
             // --- Cache check: try to reuse a previously rendered stable line ---
             // Determine upfront if this line has transient overlays that prevent caching.
@@ -1528,7 +1544,7 @@ pub fn render_buffer(
                             render_width,
                         );
                         for (row_idx, row) in visual_rows.into_iter().enumerate() {
-                            if visual_rows_used >= visible_lines {
+                            if visual_rows_used >= emit_budget {
                                 break;
                             }
                             if gutter_area.is_some() {
@@ -2053,7 +2069,7 @@ pub fn render_buffer(
                     let mut visual_rows = split_line_into_rows(line, text_width);
                     place_eol_on_visual_rows(&mut visual_rows, &eol_decs, text_width, render_width);
                     for (row_idx, row) in visual_rows.into_iter().enumerate() {
-                        if visual_rows_used >= visible_lines {
+                        if visual_rows_used >= emit_budget {
                             break;
                         }
                         if gutter_area.is_some() {
@@ -2138,7 +2154,7 @@ pub fn render_buffer(
 
                             if row_width + ch_width > text_width && !row_text.is_empty() {
                                 // Flush current row
-                                if visual_rows_used >= visible_lines {
+                                if visual_rows_used >= emit_budget {
                                     break;
                                 }
                                 if gutter_area.is_some() {
@@ -2167,7 +2183,7 @@ pub fn render_buffer(
                         }
 
                         // Flush the last row
-                        if !row_text.is_empty() && visual_rows_used < visible_lines {
+                        if !row_text.is_empty() && visual_rows_used < emit_budget {
                             if gutter_area.is_some() {
                                 gutter_lines.push(build_gutter_line(
                                     &gutter_ctx,
@@ -2220,6 +2236,19 @@ pub fn render_buffer(
             visual_rows_used += 1;
         }
         line_idx += 1;
+    }
+
+    // Drop the first `top_skip` visual rows so the viewport begins partway into
+    // the wrapped top logical line. These rows always belong to `start_line` (a
+    // real line with gutter entries), so `lines` and `gutter_lines` stay aligned.
+    if top_skip > 0 {
+        let drop = top_skip.min(lines.len());
+        lines.drain(0..drop);
+        if !gutter_lines.is_empty() {
+            let gdrop = top_skip.min(gutter_lines.len());
+            gutter_lines.drain(0..gdrop);
+        }
+        visual_rows_used = visual_rows_used.saturating_sub(top_skip);
     }
 
     // Fill remaining rows with blanks

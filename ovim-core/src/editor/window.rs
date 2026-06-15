@@ -12,6 +12,12 @@ pub struct Window {
     cursor: Cursor,
     /// Scroll offset (top line visible in window)
     scroll_offset: usize,
+    /// Visual sub-row offset *within* `scroll_offset`: how many wrapped rows of
+    /// the top logical line are scrolled off the top edge. Always 0 when wrap is
+    /// off (the renderer can only start mid-line under soft wrap). Lets the
+    /// viewport begin partway into a wrapped line so the tail of a line taller
+    /// than the viewport is reachable, and so Ctrl-E/Ctrl-Y move one visual row.
+    scroll_subrow: usize,
     /// Horizontal scroll offset (leftmost visible display column)
     horizontal_offset: DisplayCol,
     /// Window width (columns)
@@ -36,6 +42,7 @@ impl Window {
             buffer_id,
             cursor: Cursor::new(0, crate::unicode::GraphemeCol::ZERO),
             scroll_offset: 0,
+            scroll_subrow: 0,
             horizontal_offset: DisplayCol::ZERO,
             width,
             height,
@@ -92,9 +99,27 @@ impl Window {
         self.scroll_offset
     }
 
-    /// Sets the scroll offset
+    /// Sets the scroll offset, resetting the visual sub-row offset to 0.
+    ///
+    /// Logical-line scroll positioning (most callers, and all non-wrap paths)
+    /// implies the viewport starts at a line boundary. Callers that intend a
+    /// mid-line start must use [`set_scroll_position`](Self::set_scroll_position).
     pub fn set_scroll_offset(&mut self, offset: usize) {
         self.scroll_offset = offset;
+        self.scroll_subrow = 0;
+    }
+
+    /// Gets the visual sub-row offset within the top logical line.
+    pub fn scroll_subrow(&self) -> usize {
+        self.scroll_subrow
+    }
+
+    /// Sets both the logical scroll offset and the visual sub-row offset within
+    /// it. Used by wrap-aware scrolling to begin rendering partway into a
+    /// wrapped line.
+    pub fn set_scroll_position(&mut self, offset: usize, subrow: usize) {
+        self.scroll_offset = offset;
+        self.scroll_subrow = subrow;
     }
 
     /// Gets the horizontal scroll offset (display columns).
@@ -306,6 +331,8 @@ pub struct WindowView {
     pub cursor: Cursor,
     /// Top visible line.
     pub scroll_offset: usize,
+    /// Visual sub-row offset within the top visible line.
+    pub scroll_subrow: usize,
     /// Leftmost visible display column.
     pub horizontal_offset: usize,
 }
@@ -344,6 +371,7 @@ impl WindowNode {
             WindowNode::Leaf(window) => WindowViewNode::Leaf(WindowView {
                 cursor: *window.cursor(),
                 scroll_offset: window.scroll_offset(),
+                scroll_subrow: window.scroll_subrow(),
                 horizontal_offset: window.horizontal_offset(),
             }),
             WindowNode::Split {

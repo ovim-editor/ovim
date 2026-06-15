@@ -189,6 +189,99 @@ impl Editor {
 
     // === Viewport Scrolling ===
 
+    /// Scrolls the focused viewport by `delta_down` *visual* (wrapped) rows —
+    /// positive scrolls content up (Ctrl-E), negative scrolls content down
+    /// (Ctrl-Y) — updating the visual sub-row offset so the viewport can stop
+    /// partway into a wrapped line. Keeps the cursor within the viewport (minus
+    /// `scrolloff`) measured in visual rows.
+    ///
+    /// Returns `false` without changing anything when soft wrap is off or the
+    /// wrap map is stale, so the caller falls back to logical-line scrolling.
+    fn scroll_visual_rows(&mut self, delta_down: isize) -> bool {
+        if !self.options.wrap {
+            return false;
+        }
+        let len_lines = self.buffer().rope().len_lines();
+        if !self.wrap_map().is_some_and(|m| m.line_count() >= len_lines) {
+            return false;
+        }
+
+        let visible = self.focused_visible_rows().max(1);
+        let scrolloff = self.options.scrolloff.min(visible.saturating_sub(1) / 2);
+        let cur_off = self.scroll_offset();
+        let cur_sub = self.scroll_subrow();
+        let tab_width = self.options.tab_width;
+
+        // The cursor's flat display column, computed before borrowing the map.
+        let (cur_line, cur_col) = {
+            let c = self.buffer().cursor();
+            (c.line(), c.col())
+        };
+        let line_text = self.cursor_line_text(cur_line);
+        let char_col = self.cursor_grapheme_to_char_col(cur_line, cur_col);
+        let disp_col = crate::display::char_col_to_display_col(&line_text, char_col, tab_width);
+
+        let (new_off, new_sub, new_cursor_line) = {
+            let map = match self.wrap_map() {
+                Some(m) => m,
+                None => return false,
+            };
+            let total_visual = map.total_visual_lines();
+            let max_visual_start = total_visual.saturating_sub(visible);
+            let cur_top = map.logical_to_visual(cur_off) + cur_sub;
+            let new_top = if delta_down >= 0 {
+                (cur_top + delta_down as usize).min(max_visual_start)
+            } else {
+                cur_top.saturating_sub(delta_down.unsigned_abs())
+            };
+            let (no, ns) = map.visual_to_logical(new_top);
+
+            // Keep the cursor inside the viewport (± scrolloff) in visual rows.
+            let (cursor_visual, _) = map.cursor_to_visual(cur_line, disp_col, &line_text);
+            let last_visual = total_visual.saturating_sub(1);
+            let new_cursor_line = if delta_down >= 0 {
+                let min_visual = (new_top + scrolloff).min(last_visual);
+                if cursor_visual < min_visual {
+                    map.visual_to_logical(min_visual).0
+                } else {
+                    cur_line
+                }
+            } else {
+                let bottom_visual = new_top + visible.saturating_sub(1);
+                let max_visual = bottom_visual.saturating_sub(scrolloff);
+                if cursor_visual > max_visual {
+                    map.visual_to_logical(max_visual).0
+                } else {
+                    cur_line
+                }
+            };
+            (no, ns, new_cursor_line)
+        };
+
+        let new_cursor_line = new_cursor_line.min(len_lines.saturating_sub(1));
+        self.viewport.scroll_offset = new_off;
+        self.viewport.scroll_subrow = new_sub;
+        if let Some(wm) = &mut self.window_manager {
+            if let Some(window) = wm.focused_window_mut() {
+                window.set_scroll_position(new_off, new_sub);
+                if new_cursor_line != cur_line {
+                    window.cursor_mut().set_position(new_cursor_line, cur_col);
+                }
+            }
+        }
+        if new_cursor_line != cur_line {
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(new_cursor_line, cur_col);
+        }
+
+        // We set the scroll explicitly — including a sub-row offset that
+        // logical cursor-keeping can't express — so suppress the post-command
+        // `update_scroll_offset`, which would otherwise snap the sub-row away.
+        self.viewport.skip_scroll_update = true;
+        true
+    }
+
     /// Scrolls viewport down N lines (Ctrl-e).
     ///
     /// The focused window's source of truth for the cursor is the *buffer*
@@ -200,6 +293,11 @@ impl Editor {
     pub fn scroll_viewport_down(&mut self, lines: usize) {
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
+        }
+
+        // Soft wrap: scroll by visual rows (can stop partway into a wrapped line).
+        if self.scroll_visual_rows(lines as isize) {
+            return;
         }
 
         let buffer_line_count = self.buffer().line_count();
@@ -236,6 +334,11 @@ impl Editor {
     pub fn scroll_viewport_up(&mut self, lines: usize) {
         if self.window_manager.is_none() {
             self.init_window_manager(80, 24);
+        }
+
+        // Soft wrap: scroll by visual rows (can stop partway into a wrapped line).
+        if self.scroll_visual_rows(-(lines as isize)) {
+            return;
         }
 
         let scrolloff = self.options.scrolloff;

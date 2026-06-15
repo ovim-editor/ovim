@@ -673,6 +673,7 @@ fn render_window_tree(
                 Some(WindowRenderContext {
                     cursor: Some(view.cursor),
                     scroll_offset: Some(view.scroll_offset),
+                    scroll_subrow: Some(view.scroll_subrow),
                     horizontal_offset: Some(view.horizontal_offset),
                     wrap_map_window_index: Some(window_idx),
                 })

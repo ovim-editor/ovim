@@ -31,10 +31,20 @@ fn wrap_allows_scrolling_to_reveal_final_logical_lines() {
 
     editor.update_scroll_offset();
 
-    // With a 3-row viewport, starting at logical line 2 would render:
-    // - line2 row1
-    // - line2 row2
-    // - line3
-    // making it impossible to see line4. We must allow scrolling to line3.
-    assert_eq!(editor.scroll_offset(), 3);
+    // The final logical line must be visible. With a visual-row sub-offset the
+    // viewport scrolls *partway into* the wrapped line2 (offset 2, sub-row 1)
+    // rather than jumping to a logical-line boundary, placing the cursor exactly
+    // at the bottom edge while still revealing line2's tail. Assert the invariant
+    // (final line on screen), not the exact offset mechanics.
+    let height = 3;
+    let map = editor.wrap_map().expect("wrap map");
+    let top_visual = map.logical_to_visual(editor.scroll_offset()) + editor.scroll_subrow();
+    let line_text = editor.buffer().line_text(last_line).unwrap_or_default();
+    let (cursor_visual, _) = map.cursor_to_visual(last_line, 0, &line_text);
+    assert!(
+        cursor_visual >= top_visual && cursor_visual < top_visual + height,
+        "final logical line must be visible: cursor visual row {cursor_visual}, \
+         viewport visual rows {top_visual}..{}",
+        top_visual + height
+    );
 }

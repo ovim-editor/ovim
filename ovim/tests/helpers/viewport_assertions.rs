@@ -48,10 +48,9 @@ impl<'a> ViewportAssertion<'a> {
     /// The absolute visual (wrapped) row currently drawn at the top of the
     /// viewport. Requires soft-wrap to be on with a built wrap map.
     ///
-    /// NOTE: once a sub-row scroll offset lands (see /tmp/ovim-handoff.md), this
-    /// must become `logical_to_visual(scroll_offset) + window.scroll_subrow()`.
-    /// It is the single place the visual-row origin is computed, so the visual
-    /// assertions below all follow automatically.
+    /// This is `logical_to_visual(scroll_offset) + scroll_subrow` — the single
+    /// place the visual-row origin is computed, so the visual assertions below
+    /// all follow from it.
     pub fn viewport_top_visual_row(&self) -> usize {
         let wm = self
             .editor
@@ -61,7 +60,7 @@ impl<'a> ViewportAssertion<'a> {
         let map = window
             .wrap_map()
             .expect("wrap map must be built (call ensure_wrap_map)");
-        map.logical_to_visual(window.scroll_offset())
+        map.logical_to_visual(window.scroll_offset()) + window.scroll_subrow()
     }
 
     /// The absolute visual (wrapped) row the cursor sits on.

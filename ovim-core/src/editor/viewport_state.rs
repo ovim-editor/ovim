@@ -9,6 +9,10 @@ pub struct ViewportState {
     pub viewport_height: usize,
     /// Scroll offset (top visible line) - maintained with scrolloff
     pub scroll_offset: usize,
+    /// Visual sub-row offset within `scroll_offset` (no-window-manager fallback
+    /// mirror of `Window::scroll_subrow`). Rows of the top wrapped line hidden
+    /// above the top edge; always 0 when wrap is off.
+    pub scroll_subrow: usize,
     /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
     pub skip_scroll_update: bool,
     /// Wrap map for soft wrap rendering — the **no-window-manager fallback**
@@ -28,6 +32,7 @@ impl Default for ViewportState {
         Self {
             viewport_height: 24,
             scroll_offset: 0,
+            scroll_subrow: 0,
             skip_scroll_update: false,
             wrap_map: None,
             wrap_decoration_generation: 0,

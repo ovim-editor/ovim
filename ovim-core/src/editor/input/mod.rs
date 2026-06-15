@@ -197,8 +197,14 @@ impl InputHandler {
             editor.set_lsp_status("AI lock active for selected region".to_string());
         }
 
+        // When the mapping layer handled this key it already ran the scroll
+        // update on the inner (replayed) dispatch, consuming `skip_scroll_update`.
+        // Re-running it here would scroll a second time and, worse, undo a
+        // deliberate sub-row scroll (e.g. Ctrl-E) whose cursor sits off-screen by
+        // design. Only run the post-command scroll update at this (outer) level
+        // when we handled the key directly.
         let is_viewport_pending = matches!(editor.pending_command(), Some('z') | Some('Z'));
-        if !editor.viewport.skip_scroll_update && !is_viewport_pending {
+        if !editor.viewport.skip_scroll_update && !is_viewport_pending && !mapping_handled {
             editor.update_scroll_offset();
         } else {
             // Reset flag for next key event

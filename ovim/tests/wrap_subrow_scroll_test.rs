@@ -1,18 +1,13 @@
-//! FAILING tests (red) for the two scroll bugs that require a *visual-row
-//! sub-offset* in the viewport — i.e. the ability to start rendering partway
-//! into a wrapped logical line. Today `scroll_offset` is a single logical line
-//! and rendering always begins at a line boundary, so:
+//! Regression tests for the two scroll bugs that needed a *visual-row
+//! sub-offset* in the viewport — the ability to start rendering partway into a
+//! wrapped logical line. The viewport top is now `(scroll_offset, scroll_subrow)`
+//! (see `Window::scroll_subrow`), so:
 //!
-//!   #4  The tail of a wrapped sole/final logical line that is taller than the
-//!       viewport is unreachable — the cursor at its end renders off-screen.
-//!   #5  Ctrl-E / Ctrl-Y scroll a whole *logical line* instead of one *visual
-//!       (wrapped) row*.
-//!
-//! These are intentionally left red as executable documentation of the bugs.
-//! The fix (adding a sub-row scroll offset + renderer support) is specced in
-//! /tmp/ovim-handoff.md. When it lands, update
-//! `ViewportAssertion::viewport_top_visual_row` to add the sub-row, and these
-//! pass.
+//!   #4  The tail of a wrapped sole/final logical line taller than the viewport
+//!       is reachable — scrolling begins partway into the line so the cursor at
+//!       its end stays on screen.
+//!   #5  Ctrl-E / Ctrl-Y scroll exactly one *visual* (wrapped) row, not a whole
+//!       logical line.
 
 mod helpers;
 #[path = "helpers/viewport_assertions.rs"]
