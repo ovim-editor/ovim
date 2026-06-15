@@ -22,6 +22,14 @@ pub struct WrapMap {
     tab_width: usize,
     /// Buffer version when this map was built (for invalidation)
     buffer_version: usize,
+    /// The cursor's logical line at build time, when markdown conceal affects
+    /// layout (`Some(line)`), else `None`. The renderer reveals (does not
+    /// conceal) the cursor line so editing isn't blind, so that one line keeps
+    /// its raw width in the map while every other line is concealed. Moving the
+    /// cursor to a different line therefore changes the layout and must
+    /// invalidate the map. `None` when conceal is inactive, so plain buffers
+    /// never rebuild on vertical cursor movement.
+    conceal_cursor_line: Option<usize>,
 }
 
 impl WrapMap {
@@ -87,7 +95,20 @@ impl WrapMap {
             wrap_width: width,
             tab_width,
             buffer_version,
+            conceal_cursor_line: None,
         }
+    }
+
+    /// The cursor line this map was built against for markdown conceal, or
+    /// `None` if conceal did not affect layout. See [`set_conceal_cursor_line`].
+    pub fn conceal_cursor_line(&self) -> Option<usize> {
+        self.conceal_cursor_line
+    }
+
+    /// Records which logical line was the (revealed) cursor line when conceal
+    /// was applied to the rest of the buffer. Used for invalidation only.
+    pub fn set_conceal_cursor_line(&mut self, line: Option<usize>) {
+        self.conceal_cursor_line = line;
     }
 
     /// Returns the buffer version this map was built for
@@ -189,6 +210,7 @@ impl WrapMap {
         self.wrap_width = width;
         self.tab_width = tab_width;
         self.buffer_version = buffer_version;
+        self.conceal_cursor_line = None;
         self.visual_counts.clear();
         self.visual_counts.reserve(line_count);
         self.visual_offsets.clear();

@@ -970,11 +970,30 @@ impl Editor {
         let line_count = self.buffer().rope().len_lines();
         let buf_version = self.buffer().version();
         let dec_gen = self.decorations.generation;
+        // When markdown conceal is active, the renderer draws concealed (often
+        // much shorter) text for every line *except* the cursor line, which it
+        // reveals so editing isn't blind. The wrap map must mirror that exactly
+        // or row counts (and therefore cursor row / scrolling) drift from what
+        // is drawn. `conceal_cursor_line` is `Some(cursor_line)` only when
+        // conceal affects layout, so plain buffers never rebuild on j/k.
+        let conceal_active = self.options.markdown_conceal
+            && self
+                .buffer()
+                .file_path()
+                .map(|p| p.ends_with(".md"))
+                .unwrap_or(false);
+        let cursor_line = self.buffer().cursor().line();
+        let conceal_cursor_line = if conceal_active {
+            Some(cursor_line)
+        } else {
+            None
+        };
         if let Some(map) = existing {
             if map.buffer_version() == buf_version
                 && map.wrap_width() == width
                 && map.line_count() == line_count
                 && existing_dec_gen == dec_gen
+                && map.conceal_cursor_line() == conceal_cursor_line
             {
                 return WrapMapRefresh::UpToDate;
             }
@@ -988,7 +1007,23 @@ impl Editor {
         // disagrees with the renderer about row counts at width boundaries.
         // (OV-00257) `display::line_content` is the shared "line content for a
         // `&Rope` holder" helper (mirrors `Buffer::line_text`).
-        let make_line_text = |line_idx: usize| crate::display::line_content(rope, line_idx);
+        //
+        // When conceal is active, replace links/images with their concealed
+        // form on every line but the cursor line, mirroring the renderer
+        // (`render_buffer` skips conceal on `is_cursor_line_for_conceal`).
+        let make_line_text = |line_idx: usize| {
+            let raw = crate::display::line_content(rope, line_idx);
+            if conceal_active && line_idx != cursor_line {
+                let spans = crate::markdown_conceal::scan_markdown_conceal(&raw);
+                if spans.is_empty() {
+                    raw
+                } else {
+                    crate::markdown_conceal::apply_conceal(&raw, &spans).text
+                }
+            } else {
+                raw
+            }
+        };
         // Wrap-width calculation reads *projected* decoration widths so wrap
         // points match what the renderer will draw (decorations are immutable
         // after placement; the projection replays `edit_log` since each
@@ -998,7 +1033,7 @@ impl Editor {
                 .inline_decorations_for_line_projected(line_idx, rope, edit_log)
         };
 
-        let map = WrapMap::new_with_decorations(
+        let mut map = WrapMap::new_with_decorations(
             line_count,
             width,
             tab_width,
@@ -1006,6 +1041,7 @@ impl Editor {
             make_line_text,
             inline_widths,
         );
+        map.set_conceal_cursor_line(conceal_cursor_line);
         WrapMapRefresh::Rebuilt(map, dec_gen)
     }
 

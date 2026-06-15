@@ -164,6 +164,50 @@ pub fn scan_markdown_conceal(line: &str) -> Vec<ConcealSpan> {
     spans
 }
 
+/// Inverse of a [`LineTransform`]: map a character index in the *view*
+/// (concealed) text back to a character column in the *source* text.
+///
+/// Used by mouse hit-testing: the user clicks at a view column, but the cursor
+/// must be placed in source space. A view position that falls inside a concealed
+/// span's replacement maps to the **start** of that span (where the line reveals
+/// itself for editing); positions in un-concealed runs map 1:1.
+pub fn view_char_to_src_char(src: &str, transform: &LineTransform, view_char: usize) -> usize {
+    // `src_to_view` is non-decreasing in source byte offset. Walk source chars
+    // and find the last one whose view index is `<= view_char`, then back up to
+    // the first char sharing that same view index — that first char is the
+    // start of the concealed span (or the char itself, in a 1:1 run).
+    let chars: Vec<usize> = src.char_indices().map(|(b, _)| b).collect();
+    let view_at = |char_idx: usize| -> usize {
+        let byte = chars.get(char_idx).copied().unwrap_or(src.len());
+        transform
+            .src_to_view
+            .get(byte)
+            .copied()
+            .unwrap_or_else(|| transform.src_to_view.last().copied().unwrap_or(0))
+    };
+
+    let mut last: Option<usize> = None;
+    for ci in 0..chars.len() {
+        if view_at(ci) <= view_char {
+            last = Some(ci);
+        } else {
+            break;
+        }
+    }
+
+    match last {
+        None => 0,
+        Some(ci) => {
+            let v = view_at(ci);
+            let mut first = ci;
+            while first > 0 && view_at(first - 1) == v {
+                first -= 1;
+            }
+            first
+        }
+    }
+}
+
 /// A concealed link's position in view space and its target URL.
 #[derive(Debug, Clone)]
 pub struct ConcealedLink {
@@ -208,6 +252,29 @@ mod tests {
         assert_eq!(t.text, "label");
         // first byte maps to view 0
         assert_eq!(t.src_to_view[0], 0);
+    }
+
+    #[test]
+    fn view_char_to_src_char_maps_label_to_span_start() {
+        let src = "pre [clickme](http://example.com) post";
+        let spans = scan_markdown_conceal(src);
+        let t = apply_conceal(src, &spans);
+        // View text is "pre clickme post".
+        assert_eq!(t.text, "pre clickme post");
+        // "pre " is a 1:1 run → maps straight through.
+        assert_eq!(view_char_to_src_char(src, &t, 0), 0); // 'p'
+        assert_eq!(view_char_to_src_char(src, &t, 2), 2); // 'e'
+                                                          // Anywhere inside the "clickme" label (view 4..11) → start of the span,
+                                                          // i.e. the '[' at source char 4.
+        assert_eq!(view_char_to_src_char(src, &t, 4), 4);
+        assert_eq!(view_char_to_src_char(src, &t, 7), 4);
+        assert_eq!(view_char_to_src_char(src, &t, 10), 4);
+        // The space before "post" in view space → its source char (after the
+        // whole concealed span).
+        let space_view = "pre clickme".chars().count(); // 11
+        let src_space = src.find(") post").unwrap() + 1; // byte of the space
+        let src_space_char = src[..src_space].chars().count();
+        assert_eq!(view_char_to_src_char(src, &t, space_view), src_space_char);
     }
 
     #[test]

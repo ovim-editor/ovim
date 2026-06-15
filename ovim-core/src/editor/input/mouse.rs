@@ -58,12 +58,39 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
     }
 
     let display_col_in_row = rel_col - gutter_width;
-    let line_text = |line: usize| {
+    let raw_line_text = |line: usize| {
         editor
             .buffer()
             .line_text(line)
             .map(|l| l.to_string())
             .unwrap_or_default()
+    };
+
+    // Markdown conceal shortens every line *except* the cursor line (which the
+    // renderer reveals). Display columns the user clicked therefore live in
+    // *concealed* space for non-cursor lines, so we must hit-test against the
+    // concealed text and then map the result back to source columns. Mirror the
+    // renderer's `.md` + cursor-line gate exactly.
+    let cursor_line = editor.buffer().cursor().line();
+    let conceal_active = editor.options.markdown_conceal
+        && editor
+            .buffer()
+            .file_path()
+            .map(|p| p.ends_with(".md"))
+            .unwrap_or(false);
+    // The text as drawn on screen for `line` (concealed for non-cursor lines).
+    let render_text = |line: usize| -> String {
+        let raw = raw_line_text(line);
+        if conceal_active && line != cursor_line {
+            let spans = scan_markdown_conceal(&raw);
+            if spans.is_empty() {
+                raw
+            } else {
+                apply_conceal(&raw, &spans).text
+            }
+        } else {
+            raw
+        }
     };
 
     // Determine buffer line and full display column, accounting for wrap
@@ -73,7 +100,9 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
             let absolute_visual_row = rel_row + viewport_visual_row;
             let (logical_line, sub_line) = wrap_map.visual_to_logical(absolute_visual_row);
             let line = logical_line.min(editor.buffer().line_count().saturating_sub(1));
-            let row_text = line_text(line);
+            // `sub_line_display_range` must run on the *rendered* text so its
+            // segment boundaries match the (conceal-aware) wrap map.
+            let row_text = render_text(line);
             let (row_start, _) = wrap_map
                 .sub_line_display_range(&row_text, sub_line)
                 .unwrap_or((0, 0));
@@ -91,14 +120,28 @@ fn screen_to_buffer(editor: &Editor, screen_col: u16, screen_row: u16) -> Option
         (line, display_col_in_row + editor.horizontal_offset())
     };
 
-    // Convert display column to character column using tab/wide-char aware function
-    let line_text = line_text(buffer_line);
+    // Convert display column to character column using tab/wide-char aware
+    // function. For a concealed line, the display column indexes the concealed
+    // text — resolve a *view* char index there, then map it back to a source
+    // char column via the conceal transform.
+    let raw_line = raw_line_text(buffer_line);
     let tab_width = editor.options.tab_width;
-    let char_col = display_col_to_char_col(&line_text, display_col, tab_width);
-    let grapheme_col = char_to_grapheme_col(&line_text, crate::unicode::CharCol(char_col)).0;
+    let char_col = if conceal_active && buffer_line != cursor_line {
+        let spans = scan_markdown_conceal(&raw_line);
+        if spans.is_empty() {
+            display_col_to_char_col(&raw_line, display_col, tab_width)
+        } else {
+            let transform = apply_conceal(&raw_line, &spans);
+            let view_char = display_col_to_char_col(&transform.text, display_col, tab_width);
+            crate::markdown_conceal::view_char_to_src_char(&raw_line, &transform, view_char)
+        }
+    } else {
+        display_col_to_char_col(&raw_line, display_col, tab_width)
+    };
+    let grapheme_col = char_to_grapheme_col(&raw_line, crate::unicode::CharCol(char_col)).0;
 
     // Clamp to line length (Normal mode: last char, Insert mode: past last char)
-    let line_len = grapheme_count(&line_text);
+    let line_len = grapheme_count(&raw_line);
     let max_col = if editor.mode() == Mode::Insert {
         line_len
     } else {
