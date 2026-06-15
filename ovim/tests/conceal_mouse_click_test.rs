@@ -64,6 +64,45 @@ fn click_on_concealed_image_line_lands_in_span() {
 }
 
 #[test]
+fn click_on_concealed_wrapping_line_resolves_correct_line_in_wrap_mode() {
+    // In wrap mode the click row is resolved through the (conceal-aware) wrap
+    // map, and the sub-line display range is taken from the *rendered* text.
+    // A concealed image whose label wraps to two visual rows must still resolve
+    // to its own logical line, and the click maps to the start of the span.
+    let label = "AAAAAAAAAABBBBBBBBBBCCCC"; // 24 chars → wraps once at width 20
+    let content = format!("intro\n![{label}](really/long/path/to/image.png)\noutro");
+    let mut editor = md_editor(&content);
+    editor.options.wrap = true;
+    // Narrow viewport so the concealed label (~26 cols) wraps to 2 rows.
+    editor.render_cache.last_buffer_area = Some(Rect {
+        x: 0,
+        y: 0,
+        width: 20,
+        height: 24,
+    });
+    editor.set_viewport_height(24);
+    editor.init_window_manager(20, 24);
+    editor.ensure_wrap_map(20);
+    // Cursor on line 0 keeps line 1 concealed.
+
+    // Visual rows: line0 'intro' = row 0; concealed image line = rows 1,2;
+    // 'outro' = row 3. Click the *second* sub-row of the image line.
+    left_click(&mut editor, 2, 2);
+
+    let cursor = editor.buffer().cursor();
+    assert_eq!(
+        cursor.line(),
+        1,
+        "second visual row of the concealed image still resolves to its line"
+    );
+    assert_eq!(
+        cursor.col().0,
+        0,
+        "click on the single whole-line concealed span maps to its start"
+    );
+}
+
+#[test]
 fn click_on_cursor_line_is_unaffected_by_conceal() {
     // When the click lands on the line the cursor is already on, that line is
     // revealed (raw) by the renderer, so the column maps 1:1 through raw text.

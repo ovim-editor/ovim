@@ -119,6 +119,70 @@ fn cursor_row_below_concealed_link_is_correct() {
 }
 
 #[test]
+fn cursor_sub_row_within_revealed_wrapping_line() {
+    // The cursor line is revealed (raw, 3 wrapped rows). The cursor must land on
+    // the correct *sub-row within that line*, and lines above it (concealed)
+    // must still contribute only their concealed height.
+    let content = format!("intro\n{LINK}\ntail");
+    let mut test = md_editor(&content, 10);
+    test.keys("j"); // onto the link line (line 1), column 0
+    test.editor.ensure_wrap_map(WIDTH);
+
+    let vp = ViewportAssertion::new(&test.editor);
+    assert_eq!(vp.cursor_line(), 1);
+    assert_eq!(
+        vp.cursor_absolute_visual_row(),
+        1,
+        "start of the revealed link line is visual row 1 (after 'intro')"
+    );
+
+    // Jump to the last column of the revealed line — it should be on the third
+    // sub-row of that line (visual row 1 + 2 = 3).
+    test.keys("$");
+    test.editor.ensure_wrap_map(WIDTH);
+    let vp = ViewportAssertion::new(&test.editor);
+    assert_eq!(
+        vp.cursor_absolute_visual_row(),
+        3,
+        "end of the 57-char revealed link line is on its third sub-row (row 3)"
+    );
+}
+
+#[test]
+fn conceal_revealed_transition_rebuilds_layout_both_ways() {
+    // Moving the cursor onto the link line reveals it (raw height); moving back
+    // off re-conceals it. The wrap map must follow on every move — this is what
+    // the real render loop does via `ensure_wrap_map` before cursor placement.
+    let content = format!("intro\n{LINK}\noutro");
+    let mut test = md_editor(&content, 10);
+
+    // Cursor on line 0: link concealed → 'outro' at row 2.
+    assert_eq!(
+        test.editor.wrap_map().unwrap().logical_to_visual(2),
+        2,
+        "concealed: outro at row 2"
+    );
+
+    // Move onto the link line: revealed → 3 rows, outro pushed to row 4.
+    test.keys("j");
+    test.editor.ensure_wrap_map(WIDTH);
+    assert_eq!(
+        test.editor.wrap_map().unwrap().logical_to_visual(2),
+        4,
+        "revealed: outro at row 4"
+    );
+
+    // Move back off the link line: re-concealed → outro back at row 2.
+    test.keys("k");
+    test.editor.ensure_wrap_map(WIDTH);
+    assert_eq!(
+        test.editor.wrap_map().unwrap().logical_to_visual(2),
+        2,
+        "re-concealed: outro back at row 2"
+    );
+}
+
+#[test]
 fn cursor_line_is_revealed_in_wrap_map() {
     // When the cursor is ON the link line, the renderer reveals the raw markdown
     // so editing isn't blind. The wrap map must match: that line occupies its
