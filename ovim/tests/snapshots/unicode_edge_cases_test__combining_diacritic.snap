@@ -1,5 +1,6 @@
 ---
-source: tests/unicode_edge_cases_test.rs
+source: ovim/tests/unicode_edge_cases_test.rs
+assertion_line: 189
 expression: test.snapshot_state()
 ---
 Mode: Normal
@@ -7,4 +8,4 @@ Cursor: 0:0
 Lines: 1
 
 Buffer:
-[́]
+[ ]

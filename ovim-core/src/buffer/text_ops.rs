@@ -719,16 +719,20 @@ impl Buffer {
     /// Returns the deleted text. Clamps to end of line.
     pub fn delete_chars_forward(&mut self, count: usize) -> String {
         let line_idx = self.cursor().line();
-        let col = self.cursor_char_col();
+        let grapheme_col = self.cursor().col();
         let Some(line) = self.line_text(line_idx) else {
             return String::new();
         };
-        let line_len = line.chars().count();
-        if col >= line_len {
+        // Operate in grapheme space so multi-codepoint clusters (combining marks,
+        // ZWJ emoji, flags) are deleted whole rather than split scalar-by-scalar.
+        let grapheme_len = grapheme_count(&line);
+        if grapheme_col.0 >= grapheme_len {
             return String::new();
         }
-        let end_col = (col + count).min_usize(line_len);
-        let deleted = self.delete_range(line_idx, col, line_idx, end_col);
+        let end_grapheme = GraphemeCol((grapheme_col.0 + count).min(grapheme_len));
+        let start_char = grapheme_to_char_col(&line, grapheme_col);
+        let end_char = grapheme_to_char_col(&line, end_grapheme);
+        let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
         self.clamp_cursor_col();
         deleted
     }
@@ -738,14 +742,18 @@ impl Buffer {
     pub fn delete_chars_backward(&mut self, count: usize) -> String {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col();
-        let col = self.cursor_char_col();
-        if col == CharCol::ZERO {
+        if grapheme_col.0 == 0 {
             return String::new();
         }
-        let start_col = col.saturating_sub(count);
-        let deleted = self.delete_range(line_idx, start_col, line_idx, col);
-        // Restore cursor using grapheme col offset (cursor stays in grapheme space)
+        let Some(line) = self.line_text(line_idx) else {
+            return String::new();
+        };
+        // Walk back `count` graphemes (not scalars) so composed clusters delete whole.
         let grapheme_start = GraphemeCol(grapheme_col.0.saturating_sub(count));
+        let start_char = grapheme_to_char_col(&line, grapheme_start);
+        let end_char = grapheme_to_char_col(&line, grapheme_col);
+        let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
+        // Restore cursor using grapheme col offset (cursor stays in grapheme space)
         self.cursor_mut().set_position(line_idx, grapheme_start);
         self.clamp_cursor_col();
         deleted
@@ -981,23 +989,25 @@ impl Buffer {
     pub fn replace_chars_at_cursor(&mut self, ch: char, count: usize) -> String {
         let line_idx = self.cursor().line();
         let grapheme_col = self.cursor().col();
-        let col = self.cursor_char_col();
 
         let Some(line_text) = self.line_text(line_idx) else {
             return String::new();
         };
-        let chars_count = line_text.chars().count();
+        // Replace whole graphemes, not scalars, so composed clusters aren't corrupted.
+        let grapheme_len = grapheme_count(&line_text);
 
-        if col >= chars_count {
+        if grapheme_col.0 >= grapheme_len {
             return String::new();
         }
 
-        let replace_count = count.min(chars_count - col.0);
-        let end_col = col + replace_count;
+        let replace_count = count.min(grapheme_len - grapheme_col.0);
+        let start_char = grapheme_to_char_col(&line_text, grapheme_col);
+        let end_char =
+            grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 + replace_count));
 
-        let deleted = self.delete_range(line_idx, col, line_idx, end_col);
+        let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
         let replacement = ch.to_string().repeat(replace_count);
-        self.insert_text_at(line_idx, col, &replacement);
+        self.insert_text_at(line_idx, start_char, &replacement);
 
         // Cursor stays at original position (Vim behavior for r)
         self.cursor_mut().set_position(line_idx, grapheme_col);
