@@ -229,8 +229,16 @@ impl InputHandler {
         // Skip in Insert/Replace modes: `validate_cursor_position` uses Normal mode
         // semantics (cursor must be ON a character), but Insert mode legitimately
         // allows cursor at `line_len` (the append position, e.g. after `A`).
-        if !matches!(editor.mode(), Mode::Insert | Mode::Replace) {
-            editor.buffer_mut().validate_cursor_position();
+        //
+        // VisualBlock also legitimately allows the cursor beyond a short line's
+        // end (the block column). Clamping the column there collapses the block
+        // over short lines and corrupts a subsequent block delete/yank, so only
+        // clamp the line for VisualBlock and leave the column (and its goal)
+        // intact.
+        match editor.mode() {
+            Mode::Insert | Mode::Replace => {}
+            Mode::VisualBlock => editor.buffer_mut().validate_cursor_line(),
+            _ => editor.buffer_mut().validate_cursor_position(),
         }
 
         result

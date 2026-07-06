@@ -834,6 +834,17 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     let actual_end_col = end_col.min(line_len.saturating_sub(1));
                     let append_col = actual_end_col.saturating_add(1);
 
+                    // A block created "to end of line" — either via `$` inside
+                    // block mode (visual_block_dollar) or a `$` before entering
+                    // block mode (which leaves the sticky column at usize::MAX) —
+                    // appends at each line's own EOL. A fixed-column block appends
+                    // at the block column (padding short lines). Fold the sticky
+                    // MAXCOL case into visual_block_dollar so the insert finalize
+                    // has a single flag to consult.
+                    if editor.buffer().cursor().desired_col() == usize::MAX {
+                        editor.set_visual_block_dollar(true);
+                    }
+
                     let cursor_before = CursorPos::new(start_line, GraphemeCol(append_col));
                     editor
                         .buffer_mut()
@@ -894,15 +905,22 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 // Linewise: use paste_before to insert at current line
                 helpers::paste_before(editor, 1)?;
             } else {
-                // Character: adjust cursor and paste_after
+                // Character: paste at the position the selection started. After
+                // deleting the selection the cursor sits on the surviving char at
+                // that column. paste_after inserts *after* the cursor, so step
+                // back one column first — but at column 0 there's nothing to step
+                // back over, so paste_before (which inserts AT the cursor column)
+                // is required to avoid a one-char misplacement.
                 let cursor_col = editor.buffer().cursor().col().0;
                 if cursor_col > 0 {
                     editor
                         .buffer_mut()
                         .cursor_mut()
                         .set_col(GraphemeCol(cursor_col - 1));
+                    helpers::paste_after(editor, 1)?;
+                } else {
+                    helpers::paste_before(editor, 1)?;
                 }
-                helpers::paste_after(editor, 1)?;
             }
 
             // 6. Set unnamed register to deleted text (so next p pastes the replaced text)

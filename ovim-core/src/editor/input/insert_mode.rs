@@ -190,16 +190,36 @@ fn exit_insert_mode(editor: &mut Editor) {
             let mut all_edits: Vec<crate::edit::Edit> =
                 last_change.into_edits().unwrap_or_default();
 
+            // `$A` (block append to end-of-line) appends at each line's EOL;
+            // a plain `A` appends at the fixed block column on every line.
+            // Consume the flag here since this path doesn't route through
+            // exit_visual_mode_to_normal (which is where it normally resets).
+            let block_dollar = editor.visual_block_dollar();
+            editor.set_visual_block_dollar(false);
+
             // Replay the typed text on each sibling line inside a record()
             // session so the edits are captured (and the edit_log populated)
             // without the caller having to track each insert_text_at manually.
             let ((), sibling_edits) = editor.buffer_mut().record(|buf| {
                 for line_idx in (start_line + 1)..=end_line {
-                    if is_append {
-                        // Append mode: insert at end of line.
+                    if is_append && block_dollar {
+                        // `$A`: append at end of each line.
                         if let Some(line) = buf.line_text(line_idx) {
                             let line_len = line.chars().count();
                             buf.insert_text_at(line_idx, CharCol(line_len), &inserted_text);
+                        }
+                    } else if is_append {
+                        // `A`: append at the block append column, padding short
+                        // lines so the column lines up (matching Vim).
+                        if let Some(line) = buf.line_text(line_idx) {
+                            let line_len = line.chars().count();
+                            if col <= line_len {
+                                buf.insert_text_at(line_idx, CharCol(col), &inserted_text);
+                            } else {
+                                let padding = " ".repeat(col - line_len);
+                                let padded = format!("{padding}{inserted_text}");
+                                buf.insert_text_at(line_idx, CharCol(line_len), &padded);
+                            }
                         }
                     } else {
                         // Insert mode: insert at the block column (`col` is

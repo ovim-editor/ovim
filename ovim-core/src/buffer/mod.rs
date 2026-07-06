@@ -314,6 +314,17 @@ impl Buffer {
         &mut self.cursor
     }
 
+    /// Clamps only the cursor *line* to the buffer bounds, leaving the column
+    /// untouched. Used by VisualBlock mode, where the cursor legitimately sits
+    /// beyond a short line's end (the block column) and must not be collapsed by
+    /// the normal-mode column clamp.
+    pub fn validate_cursor_line(&mut self) {
+        let max_line = self.line_count().saturating_sub(1);
+        if self.cursor.line() > max_line {
+            self.cursor.set_line(max_line);
+        }
+    }
+
     /// Validates and corrects cursor position to ensure it's within buffer bounds
     /// This should be called after operations that may leave cursor in invalid state
     pub fn validate_cursor_position(&mut self) {
