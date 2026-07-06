@@ -378,8 +378,11 @@ impl TextObjects {
             let open_pos = quote_positions[i];
             let close_pos = quote_positions[i + 1];
 
-            // Cursor is inside or on this pair
-            if col >= open_pos && col <= close_pos {
+            // Select the first pair whose closing quote is at or after the
+            // cursor: this is the pair the cursor sits inside, or — when the
+            // cursor is before all quotes on the line — the next pair forward,
+            // matching Vim's forward search for ci"/di".
+            if col <= close_pos {
                 start_col = Some(open_pos);
                 end_col = Some(close_pos);
                 break;

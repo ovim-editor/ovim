@@ -124,6 +124,24 @@ impl Motions {
             }
         }
 
+        // If the step-back landed on the whitespace/terminator that ends the
+        // *previous* sentence — i.e. the cursor was sitting at the start of the
+        // current sentence — skip back over that boundary. Otherwise the scan
+        // below immediately re-finds this sentence's own terminator and returns
+        // where we already are, making `(` a no-op at a sentence start.
+        if let Some(line) = buffer.line_text(line_idx) {
+            let chars: Vec<char> = line.chars().collect();
+            if !chars.is_empty() {
+                col = col.min(chars.len() - 1);
+                while col > 0 && chars[col].is_whitespace() {
+                    col -= 1;
+                }
+                while col > 0 && matches!(chars[col], '.' | '!' | '?') {
+                    col -= 1;
+                }
+            }
+        }
+
         // Look for sentence-ending punctuation (.!?) followed by space/newline
         loop {
             if let Some(line) = buffer.line_text(line_idx) {

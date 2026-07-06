@@ -59,28 +59,39 @@ impl Motions {
             return;
         }
 
+        // Whether the cursor began on a blank line. Only in that case do we skip
+        // the current run of blank lines backward; if it began on a content line,
+        // the blank line immediately above is the target and must NOT be skipped
+        // (otherwise `{` jumps a whole paragraph too far).
+        let started_blank = buffer
+            .line_text(line_idx)
+            .map(|l| l.trim().is_empty())
+            .unwrap_or(false);
+
         line_idx = line_idx.saturating_sub(1);
 
-        // Fix: Skip blank lines backward - check line 0 explicitly
-        while line_idx > 0 {
-            if let Some(line) = buffer.line_text(line_idx) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    break;
+        if started_blank {
+            // Skip blank lines backward - check line 0 explicitly
+            while line_idx > 0 {
+                if let Some(line) = buffer.line_text(line_idx) {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        break;
+                    }
                 }
+                line_idx = line_idx.saturating_sub(1);
             }
-            line_idx = line_idx.saturating_sub(1);
-        }
-        // Check line 0 after loop (loop condition skips it)
-        if line_idx == 0 {
-            if let Some(line) = buffer.line_text(0) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() {
-                    // Line 0 is non-blank, continue to next phase
-                } else {
-                    // Line 0 is blank, stop here
-                    buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
-                    return;
+            // Check line 0 after loop (loop condition skips it)
+            if line_idx == 0 {
+                if let Some(line) = buffer.line_text(0) {
+                    let trimmed = line.trim();
+                    if !trimmed.is_empty() {
+                        // Line 0 is non-blank, continue to next phase
+                    } else {
+                        // Line 0 is blank, stop here
+                        buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
+                        return;
+                    }
                 }
             }
         }

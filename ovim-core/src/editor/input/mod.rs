@@ -96,11 +96,20 @@ impl InputHandler {
         record_macro: bool,
         remap_depth: usize,
     ) -> Result<()> {
-        // Record the event if we're recording a macro
-        // (but don't record the 'q' that stops recording)
-        let should_record_macro = record_macro
-            && editor.is_recording_macro()
-            && !(key_event.code == KeyCode::Char('q') && editor.mode() == Mode::Normal);
+        // Record the event if we're recording a macro (but don't record the 'q'
+        // that stops recording). A 'q' only terminates recording when it reaches
+        // the terminator branch — i.e. Normal mode with no pending
+        // operator/command/register/input state. A 'q' typed as an *argument*
+        // (fq, rq, mq, `q, "q, @q, …) must still be recorded, otherwise replaying
+        // the macro silently drops it.
+        let is_recording_terminator = key_event.code == KeyCode::Char('q')
+            && editor.mode() == Mode::Normal
+            && matches!(editor.input_state(), InputState::Normal)
+            && editor.pending_operator().is_none()
+            && editor.pending_command().is_none()
+            && editor.pending_register().is_none();
+        let should_record_macro =
+            record_macro && editor.is_recording_macro() && !is_recording_terminator;
 
         if should_record_macro {
             editor.record_macro_event(key_event);
