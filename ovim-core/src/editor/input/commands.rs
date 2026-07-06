@@ -1334,6 +1334,65 @@ pub fn execute_command_string(editor: &mut Editor, command: &str) -> Result<()> 
     execute_command_impl(editor, command)
 }
 
+/// Executes a command string on behalf of the headless API / CLI, returning a
+/// structured [`CommandResult`].
+///
+/// The headless `exec` path historically called [`crate::commands::execute_command`]
+/// directly, which only knows the "standard" ex-commands (`:w`, `:q`, `:set`, …).
+/// Substitute (`:s`), global (`:g`/`:v`), ranges, and `:d`/`:y` live in the
+/// interactive command handler and were therefore unreachable headlessly — an
+/// `exec ':%s/a/b/'` returned "Not an editor command" while the same keys typed
+/// interactively worked. Routing through the same dispatcher the interactive
+/// command line uses keeps the two paths in parity.
+pub fn execute_command_string_api(editor: &mut Editor, command: &str) -> CommandResult {
+    use crate::command_result::{err, ok, ok_silent};
+
+    let command = command.trim();
+
+    // Standard commands return a structured result we forward verbatim — this
+    // preserves messages like line counts and errors like "No write since last
+    // change". Only when the standard dispatcher reports the command as unknown
+    // do we fall through to the richer interactive handler.
+    let result = crate::commands::execute_command(editor, command);
+    let is_unknown = matches!(
+        &result,
+        CommandResult::Error(e) if e.error.contains("Not an editor command")
+    );
+    if !is_unknown {
+        return result;
+    }
+
+    // The standard dispatcher performs no mutation when it doesn't recognize a
+    // command, so it is safe to re-run the full interactive handler (which
+    // re-checks the standard dispatcher and then handles substitute / global /
+    // range / etc.). That handler reports outcomes on the status line rather
+    // than returning them, so clear the line first and read it back afterwards.
+    editor.set_lsp_status(String::new());
+    match execute_command_string(editor, command) {
+        Ok(()) => {
+            let status = editor.lsp_status().trim().to_string();
+            if status.is_empty() {
+                ok_silent()
+            } else if is_vim_error_status(&status) {
+                err(status)
+            } else {
+                ok(status)
+            }
+        }
+        Err(e) => err(e.to_string()),
+    }
+}
+
+/// Vim surfaces command errors on the status line using the `E<number>:`
+/// convention (`E146`, `E20`, `E486`, …). Map those back to an API error even
+/// though the editor itself treats them as ordinary status messages.
+fn is_vim_error_status(status: &str) -> bool {
+    matches!(
+        status.strip_prefix('E'),
+        Some(rest) if rest.starts_with(|c: char| c.is_ascii_digit())
+    )
+}
+
 /// Executes a command from the command line
 fn execute_command(editor: &mut Editor) -> Result<()> {
     let command = editor.command_line().trim().to_string();

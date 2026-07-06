@@ -15,7 +15,6 @@ use ovim::api::{
     PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
 };
 use ovim::buffer::{BufferId, LineHighlights};
-use ovim::commands;
 use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim::session::SessionInfo;
@@ -1167,7 +1166,11 @@ async fn handle_api_request(
             }));
         }
         ApiRequest::ExecuteCommand(command, tx) => {
-            let response: ApiResponse = commands::execute_command(editor, &command).into();
+            // Route through the full interactive dispatcher so headless `exec`
+            // has parity with the command line (substitute, global, ranges, …),
+            // not just the standard commands module.
+            let response: ApiResponse =
+                InputHandler::execute_command_api(editor, &command).into();
             let _ = tx.send(response);
         }
         ApiRequest::GetRender {

@@ -454,6 +454,17 @@ impl InputHandler {
         commands::execute_command_string(editor, command)
     }
 
+    /// Execute a command string for the headless API / CLI, returning a
+    /// structured result. Unlike the standard commands module, this reaches
+    /// substitute, global, and range commands (full parity with the
+    /// interactive command line).
+    pub fn execute_command_api(
+        editor: &mut Editor,
+        command: &str,
+    ) -> crate::command_result::CommandResult {
+        commands::execute_command_string_api(editor, command)
+    }
+
     /// Wrapper to call commands module's handle_command_mode
     pub fn handle_command_mode_wrapper(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         commands::handle_command_mode(editor, key_event)
