@@ -8,7 +8,15 @@ use ropey::Rope;
 use std::path::{Path, PathBuf};
 
 use super::encoding::FileEncoding;
-use super::line_ending::LineEnding;
+use super::line_ending::{normalize_for_buffer, LineEnding};
+
+fn normalize_decoded_content(content: String) -> String {
+    if content.contains('\r') {
+        normalize_for_buffer(&content).into_owned()
+    } else {
+        content
+    }
+}
 
 /// Normalizes a path to an absolute, canonical form.
 ///
@@ -91,13 +99,11 @@ impl Buffer {
         // This avoids interrupting user output
         let _ = encoding; // Suppress unused variable warning if not used below
 
-        // Normalize CRLF to LF for internal representation
-        // (rope uses LF internally, we convert back on save if needed)
-        let content = if line_ending == LineEnding::Crlf {
-            content.replace("\r\n", "\n")
-        } else {
-            content
-        };
+        // Normalize all CR variants to LF for internal representation.
+        // The save path converts back for CRLF/CR files. Mixed files are
+        // saved as LF-only because their per-line style cannot be represented
+        // once normalized into the rope.
+        let content = normalize_decoded_content(content);
 
         let mut buffer = Self {
             id: super::next_buffer_id(),
@@ -191,11 +197,16 @@ impl Buffer {
 
         // Get content and convert line endings if needed
         let content = self.rope.to_string();
-        let content = if self.line_ending == LineEnding::Crlf {
-            // Convert LF to CRLF for Windows files
-            content.replace('\n', "\r\n")
-        } else {
-            content
+        let content = match self.line_ending {
+            LineEnding::Lf | LineEnding::Mixed => content,
+            LineEnding::Crlf => {
+                // Convert LF to CRLF for Windows files.
+                content.replace('\n', "\r\n")
+            }
+            LineEnding::Cr => {
+                // Convert LF back to classic Mac line endings.
+                content.replace('\n', "\r")
+            }
         };
 
         // Encode content back to original encoding
@@ -227,6 +238,9 @@ impl Buffer {
         // Preserves URI stability for LSP tracking
         if self.file_path.as_deref() != Some(&path_str) {
             self.file_path = Some(path_str);
+        }
+        if self.line_ending == LineEnding::Mixed {
+            self.line_ending = LineEnding::Lf;
         }
         self.modified = false;
 
@@ -433,12 +447,7 @@ impl Buffer {
             )
         })?;
 
-        // Normalize CRLF
-        let content = if self.line_ending == LineEnding::Crlf {
-            content.replace("\r\n", "\n")
-        } else {
-            content
-        };
+        let content = normalize_decoded_content(content);
 
         // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
@@ -490,12 +499,7 @@ impl Buffer {
             )
         })?;
 
-        // Normalize CRLF
-        let content = if self.line_ending == LineEnding::Crlf {
-            content.replace("\r\n", "\n")
-        } else {
-            content
-        };
+        let content = normalize_decoded_content(content);
 
         // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);

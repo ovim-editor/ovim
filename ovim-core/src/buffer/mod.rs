@@ -57,7 +57,7 @@ pub struct Buffer {
     pub(super) modified: bool,
     /// Optional file path for this buffer
     pub(super) file_path: Option<String>,
-    /// Line ending style for this buffer (LF or CRLF)
+    /// Line ending style for this buffer (LF, CRLF, CR, or mixed on load)
     pub(super) line_ending: LineEnding,
     /// File encoding for this buffer
     pub(super) encoding: FileEncoding,

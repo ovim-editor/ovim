@@ -33,7 +33,12 @@ pub fn normalize_for_buffer(text: &str) -> Cow<'_, str> {
     Cow::Owned(out)
 }
 
-/// Line ending style for the buffer
+/// Line ending style detected for the buffer.
+///
+/// The rope stores line breaks as LF internally. `Cr` is converted back to bare
+/// CR on save for Mac-classic files. `Mixed` cannot be losslessly represented
+/// once normalized into the rope, so saving writes LF-only content rather than
+/// preserving a corrupt per-line mixture.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LineEnding {
     /// Unix-style line endings (LF, \n)
@@ -41,19 +46,44 @@ pub enum LineEnding {
     Lf,
     /// Windows-style line endings (CRLF, \r\n)
     Crlf,
+    /// Classic Mac-style line endings (CR, \r)
+    Cr,
+    /// More than one line-ending style was found in the same file.
+    Mixed,
 }
 
 impl LineEnding {
     /// Detects the line ending style from file content bytes
     pub fn detect(content: &[u8]) -> Self {
-        // Look for \r\n first (Windows)
-        for window in content.windows(2) {
-            if window == b"\r\n" {
-                return LineEnding::Crlf;
+        let mut saw_lf = false;
+        let mut saw_crlf = false;
+        let mut saw_cr = false;
+
+        let mut i = 0;
+        while i < content.len() {
+            match content[i] {
+                b'\r' if content.get(i + 1) == Some(&b'\n') => {
+                    saw_crlf = true;
+                    i += 2;
+                }
+                b'\r' => {
+                    saw_cr = true;
+                    i += 1;
+                }
+                b'\n' => {
+                    saw_lf = true;
+                    i += 1;
+                }
+                _ => i += 1,
             }
         }
-        // Default to LF (Unix) - this handles \n only or no line endings
-        LineEnding::Lf
+
+        match (saw_lf, saw_crlf, saw_cr) {
+            (false, false, false) | (true, false, false) => LineEnding::Lf,
+            (false, true, false) => LineEnding::Crlf,
+            (false, false, true) => LineEnding::Cr,
+            _ => LineEnding::Mixed,
+        }
     }
 
     /// Returns the string representation of this line ending
@@ -61,6 +91,8 @@ impl LineEnding {
         match self {
             LineEnding::Lf => "\n",
             LineEnding::Crlf => "\r\n",
+            LineEnding::Cr => "\r",
+            LineEnding::Mixed => "\n",
         }
     }
 
@@ -69,13 +101,51 @@ impl LineEnding {
         match self {
             LineEnding::Lf => "LF",
             LineEnding::Crlf => "CRLF",
+            LineEnding::Cr => "CR",
+            LineEnding::Mixed => "MIXED",
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::normalize_for_buffer;
+    use super::{normalize_for_buffer, LineEnding};
+
+    #[test]
+    fn detect_defaults_to_lf_for_empty_or_no_newlines() {
+        assert_eq!(LineEnding::detect(b""), LineEnding::Lf);
+        assert_eq!(LineEnding::detect(b"single line"), LineEnding::Lf);
+    }
+
+    #[test]
+    fn detect_lf_only() {
+        assert_eq!(LineEnding::detect(b"a\nb\nc"), LineEnding::Lf);
+    }
+
+    #[test]
+    fn detect_crlf_only() {
+        assert_eq!(LineEnding::detect(b"a\r\nb\r\nc"), LineEnding::Crlf);
+    }
+
+    #[test]
+    fn detect_bare_cr_only() {
+        assert_eq!(LineEnding::detect(b"a\rb\rc"), LineEnding::Cr);
+    }
+
+    #[test]
+    fn detect_mixed_crlf_and_lf() {
+        assert_eq!(LineEnding::detect(b"a\r\nb\nc"), LineEnding::Mixed);
+    }
+
+    #[test]
+    fn detect_mixed_crlf_and_bare_cr() {
+        assert_eq!(LineEnding::detect(b"a\r\nb\rc"), LineEnding::Mixed);
+    }
+
+    #[test]
+    fn detect_mixed_lf_and_bare_cr() {
+        assert_eq!(LineEnding::detect(b"a\nb\rc"), LineEnding::Mixed);
+    }
 
     #[test]
     fn lf_only_input_is_borrowed() {
