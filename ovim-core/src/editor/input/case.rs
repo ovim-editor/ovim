@@ -67,6 +67,7 @@ pub fn change_case_motion<F>(
     editor: &mut Editor,
     count: usize,
     case_change: CaseChange,
+    inclusive: bool,
     motion: F,
 ) -> Result<()>
 where
@@ -82,7 +83,17 @@ where
 
     let end_cursor = editor.buffer().cursor();
     let end_line = end_cursor.line();
-    let end_grapheme_col = end_cursor.col(); // grapheme index
+    let mut end_grapheme_col = end_cursor.col(); // grapheme index
+
+    // Inclusive motions (e.g. `e`) land the cursor ON the last affected char.
+    // The range below is exclusive of the end, so extend by one grapheme to
+    // include that final character.
+    if inclusive {
+        if let Some(line) = editor.buffer().line_text(end_line) {
+            let glen = grapheme_count(&line);
+            end_grapheme_col = crate::unicode::GraphemeCol((end_grapheme_col.0 + 1).min(glen));
+        }
+    }
 
     // Convert grapheme cols → char cols for rope operations
     let start_char_col = editor

@@ -79,19 +79,50 @@ pub fn find_number_at_or_after(line: &str, col: CharCol) -> Option<(CharCol, Cha
             }
         }
 
-        // Determine if this is a hex number (check for 0x prefix in collected range)
-        let is_hex = start_col + 1 < chars.len()
-            && chars[start_col] == '0'
-            && (chars[start_col + 1] == 'x' || chars[start_col + 1] == 'X');
+        // Detect a based literal (0x/0b/0o) at the number start so the cursor
+        // sitting on the leading '0' (or the prefix letter) still yields the
+        // whole literal rather than just "0". Without this, the end-scan starts
+        // at cursor+1 (the prefix letter), which fails the digit test and
+        // truncates "0xff" to "0".
+        let prefix = if start_col + 1 < chars.len() && chars[start_col] == '0' {
+            match chars[start_col + 1] {
+                'x' | 'X' => Some((true, false, false)),
+                'b' | 'B' => Some((false, true, false)),
+                'o' | 'O' => Some((false, false, true)),
+                _ => None,
+            }
+        } else {
+            None
+        };
 
-        let mut end_col = cursor_col + 1;
+        let (mut end_col, is_hex, is_binary, is_octal) = match prefix {
+            // Start scanning just past the two-char prefix, validating per base.
+            Some((h, b, o)) => (start_col + 2, h, b, o),
+            None => (cursor_col + 1, false, false, false),
+        };
         while end_col < chars.len() {
             let ch = chars[end_col];
-            if (is_hex && ch.is_ascii_hexdigit()) || ch.is_ascii_digit() {
+            let valid = if is_hex {
+                ch.is_ascii_hexdigit()
+            } else if is_binary {
+                ch == '0' || ch == '1'
+            } else if is_octal {
+                ch.is_ascii_digit()
+            } else {
+                ch.is_ascii_digit()
+            };
+            if valid {
                 end_col += 1;
             } else {
                 break;
             }
+        }
+
+        // A prefix with no following digits (e.g. a bare "0x") isn't a real
+        // based literal — fall back to treating the leading '0' as decimal.
+        if prefix.is_some() && end_col == start_col + 2 {
+            let number_str: String = chars[start_col..=start_col].iter().collect();
+            return Some((CharCol(start_col), CharCol(start_col + 1), number_str));
         }
 
         let number_str: String = chars[start_col..end_col].iter().collect();

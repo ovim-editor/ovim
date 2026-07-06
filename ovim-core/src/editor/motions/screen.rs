@@ -90,19 +90,20 @@ impl Motions {
         let new_cursor_line =
             (new_viewport + cursor_offset).min(buffer.line_count().saturating_sub(1));
 
-        // Keep cursor in same column if possible
-        let col = buffer.cursor().col();
-        buffer.cursor_mut().set_position(new_cursor_line, col);
-
-        // Adjust column to be within line bounds
+        // Keep cursor in the same column if possible, preserving the goal
+        // column across shorter lines (matching j/k and Ctrl-D/U).
+        let want = buffer.cursor().desired_col();
+        buffer.cursor_mut().set_line(new_cursor_line);
         if let Some(line) = buffer.line_text(new_cursor_line) {
             let line_len = grapheme_count(&line);
-            if line_len > 0 {
-                let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
-                buffer.cursor_mut().set_col(clamped_col);
+            let clamped = if line_len > 0 {
+                want.min(line_len - 1)
             } else {
-                buffer.cursor_mut().set_col(GraphemeCol::ZERO);
-            }
+                0
+            };
+            buffer
+                .cursor_mut()
+                .set_col_preserve_desired(GraphemeCol(clamped));
         }
 
         new_viewport
@@ -123,19 +124,20 @@ impl Motions {
         let cursor_offset = cursor_line.saturating_sub(viewport_start);
         let new_cursor_line = new_viewport + cursor_offset;
 
-        // Keep cursor in same column if possible
-        let col = buffer.cursor().col();
-        buffer.cursor_mut().set_position(new_cursor_line, col);
-
-        // Adjust column to be within line bounds
+        // Keep cursor in the same column if possible, preserving the goal
+        // column across shorter lines (matching j/k and Ctrl-D/U).
+        let want = buffer.cursor().desired_col();
+        buffer.cursor_mut().set_line(new_cursor_line);
         if let Some(line) = buffer.line_text(new_cursor_line) {
             let line_len = grapheme_count(&line);
-            if line_len > 0 {
-                let clamped_col = col.min(GraphemeCol(line_len.saturating_sub(1)));
-                buffer.cursor_mut().set_col(clamped_col);
+            let clamped = if line_len > 0 {
+                want.min(line_len - 1)
             } else {
-                buffer.cursor_mut().set_col(GraphemeCol::ZERO);
-            }
+                0
+            };
+            buffer
+                .cursor_mut()
+                .set_col_preserve_desired(GraphemeCol(clamped));
         }
 
         new_viewport

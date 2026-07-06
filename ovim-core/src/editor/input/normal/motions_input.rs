@@ -334,7 +334,8 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
             let cursor = editor.buffer_mut().cursor_mut();
             let new_line = (cursor.line() + count).min(max_line);
             cursor.set_line(new_line);
-            helpers::clamp_cursor_to_line(editor);
+            // Preserve the goal column across shorter lines, matching j/k.
+            helpers::clamp_cursor_with_goal_column(editor);
             editor.clear_count();
             Ok(true)
         }
@@ -344,7 +345,8 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
             let cursor = editor.buffer_mut().cursor_mut();
             let new_line = cursor.line().saturating_sub(count);
             cursor.set_line(new_line);
-            helpers::clamp_cursor_to_line(editor);
+            // Preserve the goal column across shorter lines, matching j/k.
+            helpers::clamp_cursor_with_goal_column(editor);
             editor.clear_count();
             Ok(true)
         }
