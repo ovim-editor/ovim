@@ -100,7 +100,11 @@ fn exec_unknown_command_still_errors() {
     let result = exec(&mut test, "notacommand");
 
     assert_error(&result, "notacommand");
-    assert_eq!(test.buffer_content(), "hello world\n", "buffer must be untouched");
+    assert_eq!(
+        test.buffer_content(),
+        "hello world\n",
+        "buffer must be untouched"
+    );
 }
 
 #[test]

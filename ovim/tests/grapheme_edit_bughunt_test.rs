@@ -15,7 +15,11 @@ fn test_x_deletes_whole_grapheme_cluster() {
     let mut test = EditorTest::new(&format!("{E_ACUTE}x"));
     // cursor on the é grapheme (grapheme col 0)
     test.press('x');
-    assert_eq!(test.buffer_content(), "x\n", "x should delete the whole é grapheme");
+    assert_eq!(
+        test.buffer_content(),
+        "x\n",
+        "x should delete the whole é grapheme"
+    );
 }
 
 #[test]
@@ -23,7 +27,11 @@ fn test_X_deletes_whole_grapheme_cluster() {
     let mut test = EditorTest::new(&format!("{E_ACUTE}x"));
     // move right one grapheme onto 'x', then X deletes the é before it
     test.press('l').press('X');
-    assert_eq!(test.buffer_content(), "x\n", "X should delete the whole é grapheme before cursor");
+    assert_eq!(
+        test.buffer_content(),
+        "x\n",
+        "X should delete the whole é grapheme before cursor"
+    );
 }
 
 #[test]
@@ -42,7 +50,11 @@ fn test_x_with_count_deletes_multiple_graphemes() {
     // Two é graphemes then 'x'
     let mut test = EditorTest::new(&format!("{E_ACUTE}{E_ACUTE}x"));
     test.press('2').press('x');
-    assert_eq!(test.buffer_content(), "x\n", "2x should delete two whole graphemes");
+    assert_eq!(
+        test.buffer_content(),
+        "x\n",
+        "2x should delete two whole graphemes"
+    );
 }
 
 #[test]
@@ -50,7 +62,11 @@ fn test_x_on_flag_emoji_grapheme() {
     // Regional indicator pair 🇳🇴 (Norway flag) = one grapheme, two scalars.
     let mut test = EditorTest::new("🇳🇴!");
     test.press('x');
-    assert_eq!(test.buffer_content(), "!\n", "x should delete the whole flag grapheme");
+    assert_eq!(
+        test.buffer_content(),
+        "!\n",
+        "x should delete the whole flag grapheme"
+    );
 }
 
 #[test]

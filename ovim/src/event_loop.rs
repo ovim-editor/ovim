@@ -1169,8 +1169,7 @@ async fn handle_api_request(
             // Route through the full interactive dispatcher so headless `exec`
             // has parity with the command line (substitute, global, ranges, …),
             // not just the standard commands module.
-            let response: ApiResponse =
-                InputHandler::execute_command_api(editor, &command).into();
+            let response: ApiResponse = InputHandler::execute_command_api(editor, &command).into();
             let _ = tx.send(response);
         }
         ApiRequest::GetRender {

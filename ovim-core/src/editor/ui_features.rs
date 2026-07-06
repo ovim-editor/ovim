@@ -576,8 +576,8 @@ impl Editor {
             // later match on the SAME line shifts by that delta — without this
             // adjustment the next same-line replacement lands at a stale offset
             // and corrupts the buffer (e.g. `:s/a/XX/gc` on "aaa").
-            let delta = replacement.chars().count() as isize
-                - (end_col as isize - start_col as isize);
+            let delta =
+                replacement.chars().count() as isize - (end_col as isize - start_col as isize);
             if delta != 0 {
                 let next = self.editing.substitute_match_index + 1;
                 for m in self.editing.substitute_matches.iter_mut().skip(next) {

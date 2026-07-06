@@ -100,10 +100,14 @@ fn test_interactive_substitute_individual_confirm() {
 fn test_empty_search_repeats_last() {
     let mut test = EditorTest::new("b x b x b");
     test.keys("/b<CR>"); // search for b, lands on next b
-    // Now an empty search should repeat, not wipe the search.
+                         // Now an empty search should repeat, not wipe the search.
     test.keys("/<CR>");
     // n should still work: find another b
     let before = test.cursor();
     test.keys("n");
-    assert_ne!(test.cursor(), before, "n should still advance after an empty-pattern search");
+    assert_ne!(
+        test.cursor(),
+        before,
+        "n should still advance after an empty-pattern search"
+    );
 }

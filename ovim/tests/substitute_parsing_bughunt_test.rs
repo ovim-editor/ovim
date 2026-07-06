@@ -11,7 +11,11 @@ fn test_backref_followed_by_word_char() {
     // (ovim uses Rust-regex pattern syntax, so capture groups are `(a)`.)
     let mut test = EditorTest::new("abc");
     test.command("s/(a)/\\1x/");
-    assert_eq!(test.buffer_content(), "axbc\n", "\\1x should expand group 1 then literal x");
+    assert_eq!(
+        test.buffer_content(),
+        "axbc\n",
+        "\\1x should expand group 1 then literal x"
+    );
 }
 
 #[test]
@@ -33,7 +37,11 @@ fn test_literal_dollar_in_replacement() {
 fn test_ampersand_whole_match() {
     let mut test = EditorTest::new("cat");
     test.command("s/cat/[&]/");
-    assert_eq!(test.buffer_content(), "[cat]\n", "& should expand to the whole match");
+    assert_eq!(
+        test.buffer_content(),
+        "[cat]\n",
+        "& should expand to the whole match"
+    );
 }
 
 #[test]
@@ -48,7 +56,11 @@ fn test_escaped_delimiter_in_pattern() {
 fn test_escaped_delimiter_in_replacement() {
     let mut test = EditorTest::new("a-b");
     test.command("s/-/\\//");
-    assert_eq!(test.buffer_content(), "a/b\n", "\\/ in replacement is a literal slash");
+    assert_eq!(
+        test.buffer_content(),
+        "a/b\n",
+        "\\/ in replacement is a literal slash"
+    );
 }
 
 #[test]

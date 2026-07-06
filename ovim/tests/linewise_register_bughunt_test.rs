@@ -32,7 +32,10 @@ fn test_yj_then_paste_inserts_two_lines() {
 fn test_yk_register_keeps_newlines() {
     let mut test = EditorTest::new("foo\nbar\nbaz");
     test.keys("jyk"); // cursor on "bar", yank up to "foo"
-    assert_eq!(test.get_register_content('"').as_deref(), Some("foo\nbar\n"));
+    assert_eq!(
+        test.get_register_content('"').as_deref(),
+        Some("foo\nbar\n")
+    );
 }
 
 #[test]
@@ -42,7 +45,10 @@ fn test_y_paragraph_forward_keeps_newlines() {
     let reg = test.get_register_content('"').unwrap();
     // Must contain the internal separators, not "abc"
     assert!(reg.contains("a\nb\nc"), "y}} register was {reg:?}");
-    assert!(reg.ends_with('\n'), "linewise register must end with newline");
+    assert!(
+        reg.ends_with('\n'),
+        "linewise register must end with newline"
+    );
 }
 
 #[test]
@@ -70,7 +76,7 @@ fn test_count_paste_yy_two_copies() {
 fn test_dap_stores_linewise_register() {
     let mut test = EditorTest::new("foo\nbar\n\nqux");
     test.keys("dap"); // delete a paragraph (first two lines + blank)
-    // Now paste it back below — it should come back as whole lines, not spliced
+                      // Now paste it back below — it should come back as whole lines, not spliced
     let reg = test.get_register_content('"').unwrap();
     assert!(reg.starts_with("foo\nbar"), "dap register was {reg:?}");
     // Paste and confirm it lands as separate lines, not spliced into "qux"
@@ -100,7 +106,11 @@ fn test_blockwise_count_paste_repeats_horizontally() {
     // Row 2 unchanged.
     let content = test.buffer_content();
     let lines: Vec<&str> = content.lines().collect();
-    assert_eq!(lines.len(), 3, "block paste must not add extra lines, got {content:?}");
+    assert_eq!(
+        lines.len(),
+        3,
+        "block paste must not add extra lines, got {content:?}"
+    );
     assert_eq!(lines[0], "aababbc", "got {content:?}");
     assert_eq!(lines[1], "ddedeef", "got {content:?}");
     assert_eq!(lines[2], "ghi");

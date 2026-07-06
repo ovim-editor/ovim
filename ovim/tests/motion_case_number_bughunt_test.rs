@@ -15,7 +15,11 @@ use ovim_core::{KeyCode, Modifiers};
 fn test_gUe_uppercases_whole_word() {
     let mut test = EditorTest::new("hello world");
     test.keys("gUe");
-    assert_eq!(test.buffer_content(), "HELLO world\n", "gUe must uppercase the final char too");
+    assert_eq!(
+        test.buffer_content(),
+        "HELLO world\n",
+        "gUe must uppercase the final char too"
+    );
 }
 
 #[test]
@@ -51,7 +55,11 @@ fn test_ctrl_a_on_leading_zero_of_hex() {
     let mut test = EditorTest::new("0xff");
     // cursor on leading '0'
     ctrl(&mut test, 'a');
-    assert_eq!(test.buffer_content(), "0x100\n", "Ctrl-A on 0xff should give 0x100, not mangle to 1");
+    assert_eq!(
+        test.buffer_content(),
+        "0x100\n",
+        "Ctrl-A on 0xff should give 0x100, not mangle to 1"
+    );
 }
 
 #[test]
@@ -106,6 +114,9 @@ fn test_ctrl_d_preserves_goal_column() {
     // After landing, if on a long line the col should be 8 (goal preserved)
     let (line, col) = test.cursor();
     if test.line_text(line).map(|l| l.len()).unwrap_or(0) >= 9 {
-        assert_eq!(col, 8, "goal column should be preserved on long lines after Ctrl-D");
+        assert_eq!(
+            col, 8,
+            "goal column should be preserved on long lines after Ctrl-D"
+        );
     }
 }

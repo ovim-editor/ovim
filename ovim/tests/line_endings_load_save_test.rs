@@ -52,7 +52,10 @@ async fn save_mixed_file_writes_lf_only_and_updates_state() {
     buffer.save_async().await.unwrap();
 
     assert_eq!(buffer.line_ending(), LineEnding::Lf);
-    assert_eq!(std::fs::read(file.path()).unwrap(), b"alpha\nbeta\ngamma\ndelta");
+    assert_eq!(
+        std::fs::read(file.path()).unwrap(),
+        b"alpha\nbeta\ngamma\ndelta"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

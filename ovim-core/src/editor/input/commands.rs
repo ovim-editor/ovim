@@ -500,8 +500,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         return Ok(()); // Invalid format
     }
 
-    let Some((raw_pattern, raw_replacement, flags_str)) =
-        split_substitute_parts(substitute_part)
+    let Some((raw_pattern, raw_replacement, flags_str)) = split_substitute_parts(substitute_part)
     else {
         editor.set_lsp_status("E146: Invalid substitute syntax".to_string());
         return Ok(()); // Invalid format - need at least /pattern/replacement/

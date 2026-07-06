@@ -14,7 +14,11 @@ fn test_paragraph_backward_from_first_content_line_stops_on_blank() {
     let mut test = EditorTest::new("a1\na2\n\nb1\nb2\n");
     test.set_cursor(3, 0); // "b1"
     test.keys("{");
-    assert_eq!(test.cursor().0, 2, "{{ should land on the blank line above the paragraph");
+    assert_eq!(
+        test.cursor().0,
+        2,
+        "{{ should land on the blank line above the paragraph"
+    );
 }
 
 #[test]
@@ -35,7 +39,11 @@ fn test_sentence_backward_at_sentence_start() {
     let mut test = EditorTest::new("One. Two. Three.");
     test.set_cursor(0, 5); // start of "Two"
     test.keys("(");
-    assert_eq!(test.cursor(), (0, 0), "( at a sentence start goes to the previous sentence");
+    assert_eq!(
+        test.cursor(),
+        (0, 0),
+        "( at a sentence start goes to the previous sentence"
+    );
 }
 
 #[test]
@@ -43,7 +51,11 @@ fn test_sentence_backward_from_mid_sentence() {
     let mut test = EditorTest::new("One. Two. Three.");
     test.set_cursor(0, 12); // inside "Three"
     test.keys("(");
-    assert_eq!(test.cursor(), (0, 10), "( from mid-sentence goes to that sentence's start");
+    assert_eq!(
+        test.cursor(),
+        (0, 10),
+        "( from mid-sentence goes to that sentence's start"
+    );
 }
 
 // ---- ci"/di" forward search ---------------------------------------------
@@ -54,7 +66,11 @@ fn test_di_quote_before_quotes_searches_forward() {
     let mut test = EditorTest::new("foo = \"bar\"");
     test.set_cursor(0, 0); // on 'f', before the quotes
     test.keys("di\"");
-    assert_eq!(test.buffer_content(), "foo = \"\"\n", "di\" should delete inside the forward quotes");
+    assert_eq!(
+        test.buffer_content(),
+        "foo = \"\"\n",
+        "di\" should delete inside the forward quotes"
+    );
 }
 
 #[test]
@@ -78,7 +94,11 @@ fn test_macro_records_q_as_find_target() {
     // Move to start and replay
     test.keys("0");
     test.keys("@a");
-    assert_eq!(test.cursor(), (0, 1), "replaying macro must repeat fq, landing on a q");
+    assert_eq!(
+        test.cursor(),
+        (0, 1),
+        "replaying macro must repeat fq, landing on a q"
+    );
 }
 
 #[test]
@@ -91,5 +111,9 @@ fn test_macro_records_r_replacement_q() {
     assert_eq!(test.buffer_content(), "qbcd\n");
     test.keys("l"); // move to 'b'
     test.keys("@a"); // replay -> replace 'b' with 'q'
-    assert_eq!(test.buffer_content(), "qqcd\n", "macro replay must re-run rq");
+    assert_eq!(
+        test.buffer_content(),
+        "qqcd\n",
+        "macro replay must re-run rq"
+    );
 }
