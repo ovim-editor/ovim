@@ -641,14 +641,45 @@ pub fn insert_line_above(editor: &mut Editor) -> Result<bool> {
     Ok(true)
 }
 
+/// Expands register text for a `[count]p`/`[count]P`, honoring the register type
+/// so the copies land as the register kind intends (see call sites for rationale).
+fn expand_paste_by_count(text: String, reg_type: RegisterType, count: usize) -> String {
+    if count <= 1 {
+        // Line registers still normalize their trailing newline in the paste
+        // branch, so a single paste needs no expansion here.
+        return text;
+    }
+    match reg_type {
+        RegisterType::Block => text
+            .split('\n')
+            .map(|row| row.repeat(count))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        RegisterType::Line => {
+            let base = if text.ends_with('\n') {
+                text
+            } else {
+                format!("{text}\n")
+            };
+            base.repeat(count)
+        }
+        RegisterType::Character => text.repeat(count),
+    }
+}
+
 pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
     let (text, reg_type) = editor.get_from_register_with_type();
     if text.is_empty() {
         return Ok(());
     }
 
-    // Multiply paste text by count
-    let text = if count > 1 { text.repeat(count) } else { text };
+    // Multiply paste text by count, respecting the register type:
+    // - Character: concatenate copies inline.
+    // - Line: each copy must be its own line, so normalize a trailing newline
+    //   FIRST (registers from `S`/single-line cuts lack one) then repeat, else
+    //   the copies glue into one merged line.
+    // - Block: `count` repeats each row horizontally, keeping the block height.
+    let text = expand_paste_by_count(text, reg_type, count);
 
     let cursor = editor.buffer().cursor();
     let cursor_before = CursorPos::new(cursor.line(), cursor.col());
@@ -851,8 +882,8 @@ pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
         return Ok(());
     }
 
-    // Multiply paste text by count
-    let text = if count > 1 { text.repeat(count) } else { text };
+    // Multiply paste text by count (see `expand_paste_by_count`).
+    let text = expand_paste_by_count(text, reg_type, count);
 
     let cursor = editor.buffer().cursor();
     let cursor_before = CursorPos::new(cursor.line(), cursor.col());

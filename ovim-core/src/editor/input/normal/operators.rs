@@ -1085,10 +1085,13 @@ fn handle_yj(editor: &mut Editor, count: usize) -> Result<()> {
     let start_line = editor.buffer().cursor().line();
     let end_line = (start_line + count + 1).min(editor.buffer().line_count());
 
+    // Linewise register: each line keeps its terminator (line_text strips it),
+    // otherwise the pasted lines glue into one merged line.
     let mut yanked = String::new();
     for line_idx in start_line..end_line {
         if let Some(line) = editor.buffer().line_text(line_idx) {
             yanked.push_str(&line);
+            yanked.push('\n');
         }
     }
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
@@ -1101,10 +1104,12 @@ fn handle_yk(editor: &mut Editor, count: usize) -> Result<()> {
     let end_line = editor.buffer().cursor().line() + 1;
     let start_line = editor.buffer().cursor().line().saturating_sub(count);
 
+    // Linewise register: keep a terminator on every yanked line.
     let mut yanked = String::new();
     for line_idx in start_line..end_line {
         if let Some(line) = editor.buffer().line_text(line_idx) {
             yanked.push_str(&line);
+            yanked.push('\n');
         }
     }
     editor.yank_to_register_with_type(yanked, RegisterType::Line);
@@ -1120,12 +1125,15 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     Motions::paragraph_forward(editor.buffer_mut(), count);
     let end_line = editor.buffer().cursor().line();
 
+    // Linewise register: every line keeps a terminator so multi-line pastes
+    // don't collapse into one glued line.
     let mut yanked = String::new();
     if start_line == end_line {
         if let Some(line) = editor.buffer().line_text(start_line) {
             let chars: Vec<char> = line.chars().collect();
             yanked = chars[start_col..].iter().collect();
         }
+        yanked.push('\n');
     } else {
         for line_idx in start_line..=end_line {
             if let Some(line) = editor.buffer().line_text(line_idx) {
@@ -1135,6 +1143,7 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
                 } else {
                     yanked.push_str(&line);
                 }
+                yanked.push('\n');
             }
         }
     }
@@ -1156,6 +1165,7 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     Motions::paragraph_backward(editor.buffer_mut(), count);
     let start_line = editor.buffer().cursor().line();
 
+    // Linewise register: keep a terminator on every line.
     let mut yanked = String::new();
     for line_idx in start_line..=end_line {
         if let Some(line) = editor.buffer().line_text(line_idx) {
@@ -1169,6 +1179,7 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
             } else {
                 yanked.push_str(&line);
             }
+            yanked.push('\n');
         }
     }
 

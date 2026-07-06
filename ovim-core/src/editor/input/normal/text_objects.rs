@@ -203,7 +203,16 @@ fn apply_delete_operator(
     });
     let cursor_after = editor.cursor_position();
     if !edits.is_empty() {
-        editor.delete_to_register(deleted);
+        // Paragraph text objects (dip/dap) are linewise — store the register as
+        // Line so a subsequent `p` pastes it as whole new lines, mirroring the
+        // yank path's `p`-key branch. Otherwise a Character register splices the
+        // paragraph into the middle of the current line.
+        let reg_type = if matches!(object_type, TextObjectType::Paragraph { .. }) {
+            RegisterType::Line
+        } else {
+            RegisterType::Character
+        };
+        editor.delete_to_register_with_type(deleted, reg_type);
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
         editor.set_repeat_action(RepeatAction::DeleteTextObject { object_type });
     }
