@@ -350,6 +350,50 @@ fn accept_selected_into_command_line(editor: &mut Editor) {
     }
 }
 
+/// Finds the byte index where the command name begins — the end of the leading
+/// `[range]` prefix. The prefix may include mark addresses (`'a`, `'<`, `'>`),
+/// whose following letter must NOT be mistaken for the command name. Skipping
+/// the char after each `'` keeps `:'a,'bd` parsing as range `'a,'b` + command
+/// `d` rather than range `'` + command `a,'bd`. Returns None when the whole
+/// string is a bare range with no command.
+fn command_name_start(command: &str) -> Option<usize> {
+    let mut chars = command.char_indices();
+    while let Some((idx, ch)) = chars.next() {
+        if ch == '\'' {
+            // Mark address: consume the mark-name char that follows.
+            chars.next();
+            continue;
+        }
+        if ch.is_alphabetic() {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// Extracts the destination address of a `:copy`/`:t` or `:move`/`:m` command
+/// from the command portion, accepting both the spaced (`t 3`) and the unspaced
+/// (`t3`, `t0`, `t.`) Vim forms. Returns `None` when `cmd_part` isn't this
+/// command — a trailing letter (`tabnew`, `marks`) is rejected so it doesn't get
+/// mistaken for a copy/move to a mark.
+fn parse_copy_move_dest<'a>(cmd_part: &'a str, long: &str, short: &str) -> Option<&'a str> {
+    for word in [long, short] {
+        if let Some(rest) = cmd_part.strip_prefix(word) {
+            if rest.is_empty() {
+                return Some("");
+            }
+            let first = rest.chars().next().unwrap();
+            if first.is_whitespace()
+                || first.is_ascii_digit()
+                || matches!(first, '.' | '$' | '\'' | '+' | '-' | '/' | '?')
+            {
+                return Some(rest.trim());
+            }
+        }
+    }
+    None
+}
+
 /// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax.
 ///
 /// Backrefs are emitted in the braced `${N}` form so a following word character
@@ -1450,9 +1494,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     //
     // Treat '!' as the command separator only when it appears *before* the
     // first alphabetic command character (i.e. it's the command itself).
-    let first_alpha = command.chars().position(|c| c.is_alphabetic());
+    let cmd_start = command_name_start(command);
     let bang_split = command.find('!').and_then(|exclaim_idx| {
-        let is_shell_separator = match first_alpha {
+        let is_shell_separator = match cmd_start {
             None => true,
             Some(alpha_idx) => exclaim_idx < alpha_idx,
         };
@@ -1465,8 +1509,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     let (range_str, cmd_part) = if let Some(exclaim_idx) = bang_split {
         (&command[..exclaim_idx], &command[exclaim_idx..])
-    } else if let Some(first_alpha) = first_alpha {
-        (&command[..first_alpha], &command[first_alpha..])
+    } else if let Some(cmd_start) = cmd_start {
+        (&command[..cmd_start], &command[cmd_start..])
     } else {
         (command, "")
     };
@@ -1632,17 +1676,8 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle :copy or :t command (copy lines to destination)
     // Format: :[range]copy {address} or :[range]t {address}
-    if cmd_part.starts_with("copy ")
-        || cmd_part.starts_with("t ")
-        || cmd_part == "copy"
-        || cmd_part == "t"
-    {
-        let dest_str = cmd_part
-            .strip_prefix("copy ")
-            .or_else(|| cmd_part.strip_prefix("t "))
-            .unwrap_or("");
-        let dest_str = dest_str.trim();
-
+    // (helper `parse_copy_move_dest` accepts both the spaced and unspaced forms)
+    if let Some(dest_str) = parse_copy_move_dest(cmd_part, "copy", "t") {
         if dest_str.is_empty() {
             editor.set_lsp_status("E488: Trailing characters".to_string());
             return Ok(());
@@ -1666,8 +1701,10 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     }
                 }
 
-                // Insert after destination line
-                let insert_line = dest_line + 1;
+                // Insert after destination line. Address 0 is Vim's "before the
+                // first line" — insert at buffer index 0 rather than after line 1
+                // (both "0" and "1" parse to 0-based line 0, so disambiguate here).
+                let insert_line = if dest_str == "0" { 0 } else { dest_line + 1 };
                 let cursor_before = CursorPos::new(
                     editor.buffer().cursor().line(),
                     editor.buffer().cursor().col(),
@@ -1717,17 +1754,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
 
     // Handle :move or :m command (move lines to destination)
     // Format: :[range]move {address} or :[range]m {address}
-    if cmd_part.starts_with("move ")
-        || cmd_part.starts_with("m ")
-        || cmd_part == "move"
-        || cmd_part == "m"
-    {
-        let dest_str = cmd_part
-            .strip_prefix("move ")
-            .or_else(|| cmd_part.strip_prefix("m "))
-            .unwrap_or("");
-        let dest_str = dest_str.trim();
-
+    if let Some(dest_str) = parse_copy_move_dest(cmd_part, "move", "m") {
         if dest_str.is_empty() {
             editor.set_lsp_status("E488: Trailing characters".to_string());
             return Ok(());
@@ -1777,8 +1804,9 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     dest_line = dest_line.saturating_sub(line_count);
                 }
 
-                // Insert after destination line
-                let insert_line = dest_line + 1;
+                // Insert after destination line; address 0 means the top of the
+                // file (Vim), so insert at index 0 instead of after line 1.
+                let insert_line = if dest_str == "0" { 0 } else { dest_line + 1 };
                 let insert_char = if insert_line < editor.buffer().line_count() {
                     editor.buffer().rope().line_to_char(insert_line)
                 } else {
@@ -1951,8 +1979,13 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     editor.set_lsp_status(message);
                 }
             }
-        } else {
-            // Unknown command - for now just ignore
+        } else if editor.lsp_status().is_empty() {
+            // Truly unrecognized ex-command (no handler set a status). Report it
+            // the way Vim does (E492) so the user gets feedback on typos instead
+            // of silence, and so the headless API can surface it as an error.
+            // Guarded on an empty status so a recognized command that failed and
+            // already set its own error (e.g. E20 from `:copy 'z`) isn't clobbered.
+            editor.set_lsp_status(format!("E492: Not an editor command: {}", command));
         }
     }
 

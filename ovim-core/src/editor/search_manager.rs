@@ -68,19 +68,26 @@ impl Editor {
 
     /// Executes the current search and moves cursor to first match
     pub fn execute_search(&mut self) {
-        if self.search.search_buffer.is_empty() {
-            // Clear search highlight and restore cursor position on empty search
-            self.clear_search_highlight();
-            self.restore_search_start_position();
-            return;
-        }
-
-        // Update the / register with the search pattern
-        self.registers
-            .set_last_search(self.search.search_buffer.clone());
+        // An empty pattern (`/<CR>` or `?<CR>`) repeats the last search in the
+        // requested direction (Vim behavior), rather than wiping the active
+        // search. Only fall back to clearing when there is no last search.
+        let pattern = if self.search.search_buffer.is_empty() {
+            let last = self.registers.get_last_search().to_string();
+            if last.is_empty() {
+                self.clear_search_highlight();
+                self.restore_search_start_position();
+                return;
+            }
+            last
+        } else {
+            // Update the / register with the search pattern
+            self.registers
+                .set_last_search(self.search.search_buffer.clone());
+            self.search.search_buffer.clone()
+        };
 
         let mut search = Search::new_with_options(
-            self.search.search_buffer.clone(),
+            pattern,
             self.search.search_forward,
             self.options.ignorecase,
             self.options.smartcase,
