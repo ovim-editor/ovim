@@ -571,6 +571,23 @@ impl Editor {
                 self.push_recorded_undo(edits, cursor_before, cursor_after);
             }
 
+            // Matches were collected as absolute offsets against the ORIGINAL
+            // line. When a confirmed replacement changes the line's length, every
+            // later match on the SAME line shifts by that delta — without this
+            // adjustment the next same-line replacement lands at a stale offset
+            // and corrupts the buffer (e.g. `:s/a/XX/gc` on "aaa").
+            let delta = replacement.chars().count() as isize
+                - (end_col as isize - start_col as isize);
+            if delta != 0 {
+                let next = self.editing.substitute_match_index + 1;
+                for m in self.editing.substitute_matches.iter_mut().skip(next) {
+                    if m.0 == line {
+                        m.1 = (m.1 as isize + delta).max(0) as usize;
+                        m.2 = (m.2 as isize + delta).max(0) as usize;
+                    }
+                }
+            }
+
             self.editing.substitute_match_index += 1;
             if self.editing.substitute_match_index >= self.editing.substitute_matches.len() {
                 self.end_substitute_confirm();

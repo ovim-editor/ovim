@@ -59,8 +59,10 @@ fn substitute_empty_pattern_without_prior_search() {
 #[test]
 fn global_substitute_converts_backrefs() {
     let mut test = EditorTest::new("foo123\nbar456\nbaz789");
-    // Use :g with substitute that has a capture group
-    test.command(":g/[0-9]/s/([a-z]+)([0-9]+)/$2$1/");
+    // Use :g with substitute that has a capture group. Vim capture refs in the
+    // replacement are `\1`/`\2` (a literal `$` is literal text, e.g. dollar
+    // amounts), so use the Vim spelling here.
+    test.command(":g/[0-9]/s/([a-z]+)([0-9]+)/\\2\\1/");
     assert_eq!(test.buffer_content(), "123foo\n456bar\n789baz\n");
 }
 

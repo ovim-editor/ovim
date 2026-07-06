@@ -350,7 +350,13 @@ fn accept_selected_into_command_line(editor: &mut Editor) {
     }
 }
 
-/// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax ($1, $2, $0, $0)
+/// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax.
+///
+/// Backrefs are emitted in the braced `${N}` form so a following word character
+/// doesn't get absorbed into the group name — Rust regex reads `$1foo` as a
+/// reference to a group literally named "1foo" (which doesn't exist, so it
+/// expands to empty). A literal `$` in the Vim replacement is escaped to `$$`
+/// so Rust regex emits it verbatim instead of treating it as a capture ref.
 fn convert_vim_backrefs(replacement: &str) -> String {
     let mut result = String::with_capacity(replacement.len() * 2);
     let mut chars = replacement.chars().peekable();
@@ -360,9 +366,10 @@ fn convert_vim_backrefs(replacement: &str) -> String {
             if let Some(&next) = chars.peek() {
                 match next {
                     '0'..='9' => {
-                        // \1 -> $1, \2 -> $2, etc.
-                        result.push('$');
+                        // \1 -> ${1}, \2 -> ${2}, etc.
+                        result.push_str("${");
                         result.push(chars.next().unwrap());
+                        result.push('}');
                     }
                     '\\' => {
                         // \\ -> \
@@ -378,14 +385,61 @@ fn convert_vim_backrefs(replacement: &str) -> String {
                 result.push(ch);
             }
         } else if ch == '&' {
-            // & means whole match in Vim, $0 in Rust
-            result.push_str("$0");
+            // & means whole match in Vim, ${0} in Rust
+            result.push_str("${0}");
+        } else if ch == '$' {
+            // A literal '$' in a Vim replacement — escape it for Rust regex.
+            result.push_str("$$");
         } else {
             result.push(ch);
         }
     }
 
     result
+}
+
+/// Splits a substitute body `/pattern/replacement/flags` into its three fields,
+/// honoring backslash-escaped delimiters (`\/`) inside the pattern/replacement.
+/// The escaped delimiter is unescaped to a literal `/` (which is not a regex
+/// metacharacter); all other backslash escapes are preserved for the regex /
+/// replacement engines. Returns `None` if there is no replacement delimiter.
+fn split_substitute_parts(body: &str) -> Option<(String, String, String)> {
+    let mut chars = body.chars();
+    if chars.next() != Some('/') {
+        return None;
+    }
+
+    let mut fields: Vec<String> = vec![String::new()];
+    let mut escaped = false;
+    for ch in chars {
+        if escaped {
+            let cur = fields.last_mut().unwrap();
+            if ch == '/' {
+                cur.push('/');
+            } else {
+                cur.push('\\');
+                cur.push(ch);
+            }
+            escaped = false;
+        } else if ch == '\\' {
+            escaped = true;
+        } else if ch == '/' {
+            fields.push(String::new());
+        } else {
+            fields.last_mut().unwrap().push(ch);
+        }
+    }
+    if escaped {
+        fields.last_mut().unwrap().push('\\');
+    }
+
+    if fields.len() < 2 {
+        return None;
+    }
+    let pattern = fields[0].clone();
+    let replacement = fields.get(1).cloned().unwrap_or_default();
+    let flags = fields.get(2).cloned().unwrap_or_default();
+    Some((pattern, replacement, flags))
 }
 
 /// Handles substitute command (:s/pattern/replacement/flags)
@@ -402,14 +456,15 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         return Ok(()); // Invalid format
     }
 
-    let parts: Vec<&str> = substitute_part.splitn(4, '/').collect();
-    if parts.len() < 3 {
+    let Some((raw_pattern, raw_replacement, flags_str)) =
+        split_substitute_parts(substitute_part)
+    else {
         editor.set_lsp_status("E146: Invalid substitute syntax".to_string());
         return Ok(()); // Invalid format - need at least /pattern/replacement/
-    }
+    };
 
     // Empty pattern reuses last search (Vim behavior: :%s//bar/ means "replace last search with bar")
-    let pattern = if parts[1].is_empty() {
+    let pattern = if raw_pattern.is_empty() {
         let last = editor.registers().get_last_search().to_string();
         if last.is_empty() {
             editor.set_lsp_status("E35: No previous regular expression".to_string());
@@ -418,12 +473,12 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         last
     } else {
         // Update last search register with this pattern
-        editor.registers_mut().set_last_search(parts[1].to_string());
-        parts[1].to_string()
+        editor.registers_mut().set_last_search(raw_pattern.clone());
+        raw_pattern
     };
     // Convert Vim-style backreferences to Rust regex syntax
-    let replacement = convert_vim_backrefs(parts[2]);
-    let flags = if parts.len() >= 4 { parts[3] } else { "" };
+    let replacement = convert_vim_backrefs(&raw_replacement);
+    let flags = flags_str.as_str();
 
     // Parse flags
     let global = flags.contains('g');
