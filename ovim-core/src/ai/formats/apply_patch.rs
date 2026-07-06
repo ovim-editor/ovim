@@ -123,8 +123,15 @@ fn parse_hunks(lines: &[&str]) -> Result<Vec<Hunk>> {
             in_hunk = true;
         } else if in_hunk {
             hunk_lines.push(line);
+        } else if line.starts_with('+') || line.starts_with('-') || line.starts_with(' ') {
+            // A hunk may omit its `@@` header (some models do). Start one
+            // implicitly at the first diff-shaped line. Bare prose (no diff
+            // prefix) before the patch still doesn't start a hunk, so it isn't
+            // misinterpreted as content.
+            in_hunk = true;
+            hunk_lines.push(line);
         }
-        // Lines before the first @@ are ignored (e.g., file metadata)
+        // Other lines before the first hunk are ignored (e.g., file metadata)
     }
 
     // Flush final hunk
@@ -144,37 +151,25 @@ fn build_hunk(lines: &[&str]) -> Hunk {
     let mut search = String::new();
     let mut replace = String::new();
 
-    for (i, line) in lines.iter().enumerate() {
-        let is_last = i == lines.len() - 1;
-
+    // Emit a terminator after every line's content. Suppressing it on the last
+    // line (the old behavior) dropped a trailing blank line that a hunk meant to
+    // delete/match — e.g. a final `-` (empty removal) contributed no newline, so
+    // the blank line vanished from the search text and the match failed.
+    for line in lines.iter() {
         if let Some(content) = line.strip_prefix('-') {
             search.push_str(content);
-            if !is_last {
-                search.push('\n');
-            }
+            search.push('\n');
         } else if let Some(content) = line.strip_prefix('+') {
             replace.push_str(content);
-            if !is_last {
-                replace.push('\n');
-            }
+            replace.push('\n');
         } else {
             // Context line: strip leading space if present, otherwise treat as-is
             let content = line.strip_prefix(' ').unwrap_or(line);
             search.push_str(content);
+            search.push('\n');
             replace.push_str(content);
-            if !is_last {
-                search.push('\n');
-                replace.push('\n');
-            }
+            replace.push('\n');
         }
-    }
-
-    // Ensure trailing newlines are consistent
-    if !search.is_empty() && !search.ends_with('\n') {
-        search.push('\n');
-    }
-    if !replace.is_empty() && !replace.ends_with('\n') {
-        replace.push('\n');
     }
 
     Hunk { search, replace }
@@ -410,5 +405,46 @@ fn foo() {
         let hunk = build_hunk(&["-old_line", "+new_line"]);
         assert!(hunk.search.ends_with('\n'));
         assert!(hunk.replace.ends_with('\n'));
+    }
+
+    #[test]
+    fn build_hunk_keeps_trailing_blank_removal() {
+        // A final empty removal ("-") is a blank line the hunk deletes; it must
+        // survive in the search text rather than being dropped.
+        let hunk = build_hunk(&["+line_b", "-line_a", "-"]);
+        assert_eq!(hunk.search, "line_a\n\n");
+        assert_eq!(hunk.replace, "line_b\n");
+    }
+
+    #[test]
+    fn hunk_without_at_header_is_parsed() {
+        // Some models omit the `@@` hunk header — the change lines should still
+        // form a hunk.
+        let input = r#"*** Begin Patch
+*** Update File: a.rs
+-    old();
++    new();
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        assert_eq!(edits[0].hunks.len(), 1);
+        assert!(edits[0].hunks[0].search.contains("old();"));
+        assert!(edits[0].hunks[0].replace.contains("new();"));
+    }
+
+    #[test]
+    fn prose_before_patch_is_not_a_hunk() {
+        // Bare prose (no diff prefix) before the patch must not become a hunk.
+        let input = r#"Some prose before the patch.
+*** Begin Patch
+*** Update File: a.rs
+@@ @@
+-old
++new
+*** End Patch
+"#;
+        let edits = parse_apply_patch(input).expect("should parse");
+        assert_eq!(edits.len(), 1);
+        assert_eq!(edits[0].hunks.len(), 1);
     }
 }
