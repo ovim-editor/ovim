@@ -572,18 +572,41 @@ impl Editor {
             }
 
             // Matches were collected as absolute offsets against the ORIGINAL
-            // line. When a confirmed replacement changes the line's length, every
-            // later match on the SAME line shifts by that delta — without this
-            // adjustment the next same-line replacement lands at a stale offset
-            // and corrupts the buffer (e.g. `:s/a/XX/gc` on "aaa").
-            let delta =
-                replacement.chars().count() as isize - (end_col as isize - start_col as isize);
-            if delta != 0 {
-                let next = self.editing.substitute_match_index + 1;
+            // buffer. A confirmed replacement invalidates the later offsets two
+            // ways — without adjustment the next replacement lands at a stale
+            // position and corrupts the buffer:
+            // - same-line, same length class: later matches on the line shift by
+            //   the length delta (e.g. `:s/a/XX/gc` on "aaa");
+            // - multi-line replacement (`\r`): the rest of the line moves onto a
+            //   new line `newlines` further down, and every later line shifts
+            //   down by `newlines` as well.
+            let next = self.editing.substitute_match_index + 1;
+            let newlines = replacement.matches('\n').count();
+            if newlines == 0 {
+                let delta =
+                    replacement.chars().count() as isize - (end_col as isize - start_col as isize);
+                if delta != 0 {
+                    for m in self.editing.substitute_matches.iter_mut().skip(next) {
+                        if m.0 == line {
+                            m.1 = (m.1 as isize + delta).max(0) as usize;
+                            m.2 = (m.2 as isize + delta).max(0) as usize;
+                        }
+                    }
+                }
+            } else {
+                // Chars after the last '\n' — the prefix now preceding the
+                // remainder of the original line on its new (final) line.
+                let last_seg_len = replacement.chars().rev().take_while(|&c| c != '\n').count();
                 for m in self.editing.substitute_matches.iter_mut().skip(next) {
                     if m.0 == line {
-                        m.1 = (m.1 as isize + delta).max(0) as usize;
-                        m.2 = (m.2 as isize + delta).max(0) as usize;
+                        // Later matches on the confirmed line sit after end_col;
+                        // they land on the replacement's final line.
+                        let len = m.2 - m.1;
+                        m.0 = line + newlines;
+                        m.1 = last_seg_len + m.1.saturating_sub(end_col);
+                        m.2 = m.1 + len;
+                    } else if m.0 > line {
+                        m.0 += newlines;
                     }
                 }
             }

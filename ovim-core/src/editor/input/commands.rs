@@ -401,6 +401,7 @@ fn parse_copy_move_dest<'a>(cmd_part: &'a str, long: &str, short: &str) -> Optio
 /// reference to a group literally named "1foo" (which doesn't exist, so it
 /// expands to empty). A literal `$` in the Vim replacement is escaped to `$$`
 /// so Rust regex emits it verbatim instead of treating it as a capture ref.
+/// `\r` becomes a line break and `\t` a tab, as in Vim.
 fn convert_vim_backrefs(replacement: &str) -> String {
     let mut result = String::with_capacity(replacement.len() * 2);
     let mut chars = replacement.chars().peekable();
@@ -418,6 +419,18 @@ fn convert_vim_backrefs(replacement: &str) -> String {
                     '\\' => {
                         // \\ -> \
                         result.push('\\');
+                        chars.next();
+                    }
+                    'r' => {
+                        // Vim: \r in the replacement is a line break. (\n would
+                        // be a NUL byte in Vim; we leave it alone rather than
+                        // emulate that trap.)
+                        result.push('\n');
+                        chars.next();
+                    }
+                    't' => {
+                        // Vim: \t in the replacement is a tab.
+                        result.push('\t');
                         chars.next();
                     }
                     _ => {
@@ -600,7 +613,13 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
     let cursor_before = editor.cursor_position();
 
     let ((), edits) = editor.buffer_mut().record(|buf| {
-        for line_idx in start_line..=end_line.min(buf.line_count().saturating_sub(1)) {
+        // Iterate bottom-up: a replacement containing `\r` (a line break) splits
+        // its line and shifts every line below it, so top-down iteration would
+        // process the freshly inserted continuation lines and skip the
+        // originally targeted ones (OV-00244). Lines above the edit keep their
+        // indices, so reverse order visits each original line exactly once.
+        let last_line = end_line.min(buf.line_count().saturating_sub(1));
+        for line_idx in (start_line..=last_line).rev() {
             if let Some(line_text) = buf.line_text(line_idx) {
                 let new_text = if global {
                     regex
@@ -817,7 +836,10 @@ fn handle_global_command(
                     let cursor_before = editor.cursor_position();
 
                     let ((), edits) = editor.buffer_mut().record(|buf| {
-                        for &line_idx in &matching_lines {
+                        // Bottom-up for the same reason as handle_substitute_command:
+                        // a `\r` in the replacement splits the line and would shift
+                        // the remaining matched line numbers (OV-00244).
+                        for &line_idx in matching_lines.iter().rev() {
                             if let Some(line_text) = buf.line_text(line_idx) {
                                 let new_text = if global {
                                     sub_regex
