@@ -11,24 +11,32 @@ use super::chat_types::StreamChunk;
 // ---------------------------------------------------------------------------
 
 struct SseLineBuffer {
-    buffer: String,
+    /// Raw bytes, decoded to UTF-8 only at complete line boundaries. Buffering
+    /// as bytes (not a String) prevents a multi-byte UTF-8 codepoint that
+    /// straddles two network chunks from being decoded twice as replacement
+    /// characters — `from_utf8_lossy` per chunk would corrupt it.
+    buffer: Vec<u8>,
 }
 
 impl SseLineBuffer {
     fn new() -> Self {
-        Self {
-            buffer: String::new(),
-        }
+        Self { buffer: Vec::new() }
     }
 
     /// Feed raw bytes. Returns complete lines (without trailing \n or \r\n).
     fn feed(&mut self, chunk: &[u8]) -> Vec<String> {
-        let text = String::from_utf8_lossy(chunk);
-        self.buffer.push_str(&text);
+        self.buffer.extend_from_slice(chunk);
 
         let mut lines = Vec::new();
-        while let Some(pos) = self.buffer.find('\n') {
-            let line = self.buffer[..pos].trim_end_matches('\r').to_string();
+        // '\n' (0x0A) is ASCII and can never appear inside a multi-byte UTF-8
+        // sequence, so scanning for it in the raw bytes is safe. Any partial
+        // trailing codepoint stays buffered until its continuation arrives.
+        while let Some(pos) = self.buffer.iter().position(|&b| b == b'\n') {
+            let mut end = pos;
+            if end > 0 && self.buffer[end - 1] == b'\r' {
+                end -= 1;
+            }
+            let line = String::from_utf8_lossy(&self.buffer[..end]).into_owned();
             self.buffer.drain(..=pos);
             lines.push(line);
         }
@@ -585,6 +593,30 @@ mod tests {
     use std::pin::Pin;
     use std::task::{Context, Poll};
     use tokio::sync::mpsc;
+
+    #[test]
+    fn sse_line_buffer_handles_multibyte_split_across_chunks() {
+        let mut buf = SseLineBuffer::new();
+        // "文" = E6 96 87, split across two chunks; line completes in the third.
+        let full = "文".as_bytes();
+        assert_eq!(buf.feed(&full[..2]), Vec::<String>::new());
+        assert_eq!(buf.feed(&full[2..]), Vec::<String>::new());
+        assert_eq!(buf.feed(b"\n"), vec!["文".to_string()]);
+    }
+
+    #[test]
+    fn sse_line_buffer_splits_lines_and_trims_cr() {
+        let mut buf = SseLineBuffer::new();
+        assert_eq!(
+            buf.feed(b"data: a\r\ndata: b\n"),
+            vec!["data: a".to_string(), "data: b".to_string()]
+        );
+        // Emoji (4-byte) split mid-codepoint across two chunks then completed.
+        let rocket = "🚀".as_bytes();
+        assert_eq!(buf.feed(&rocket[..1]), Vec::<String>::new());
+        assert_eq!(buf.feed(&rocket[1..]), Vec::<String>::new());
+        assert_eq!(buf.feed(b"\n"), vec!["🚀".to_string()]);
+    }
 
     /// Helper: turn a Vec<&str> into a pinned stream of Result<Bytes, String>.
     fn make_stream(chunks: Vec<&str>) -> Pin<Box<dyn Stream<Item = Result<Bytes, String>> + Send>> {
