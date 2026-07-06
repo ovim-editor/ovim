@@ -119,8 +119,14 @@ impl CodeBlockCache {
             return;
         }
 
+        // The info string may carry attributes after the language name
+        // (e.g. "rust {.line-numbers}", "python title=foo"). The language is the
+        // first whitespace/comma-delimited token; using the whole string would
+        // fail to match and leave the block unhighlighted.
+        let lang_token = info.split([' ', '\t', ',']).next().unwrap_or("").trim();
+
         // Try to get a language from the info string
-        let Some(language) = LanguageRegistry::from_info_string(info) else {
+        let Some(language) = LanguageRegistry::from_info_string(lang_token) else {
             return;
         };
 
