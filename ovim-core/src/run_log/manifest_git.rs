@@ -158,6 +158,12 @@ pub struct GitSnapshotContentReader {
     sources: HashMap<String, GitContentSource>,
 }
 
+impl GitSnapshotContentReader {
+    pub fn workdir(&self) -> &Path {
+        &self.workdir
+    }
+}
+
 #[derive(Debug)]
 enum GitContentSource {
     Disk(RepoPath),
