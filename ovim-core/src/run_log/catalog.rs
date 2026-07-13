@@ -9,7 +9,7 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const CATALOG_DATABASE: &str = "index.sqlite";
-const LATEST_MIGRATION: u32 = 1;
+const LATEST_MIGRATION: u32 = 2;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 pub trait CatalogClock: Send + Sync {
@@ -68,6 +68,37 @@ pub struct ConversationBinding {
     pub selected_branch_id: BranchId,
 }
 
+/// Opaque coordinates for provider-owned resumable state.
+///
+/// These coordinates refer to ovim identities, but the provider thread and
+/// turn identifiers stored beneath them remain unparsed provider data. They
+/// must never be used as substitutes for an [`AgentId`] or [`BranchId`].
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct ProviderSessionKey {
+    pub provider: String,
+    pub agent_id: AgentId,
+    pub branch_id: BranchId,
+}
+
+/// Versioned digest of every configuration input that affects whether a
+/// provider session can be safely resumed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderConfigurationFingerprint {
+    pub version: u32,
+    pub value: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ProviderSession {
+    pub key: ProviderSessionKey,
+    /// Provider-owned opaque identifier; it is not an ovim identity.
+    pub provider_thread_id: String,
+    pub configuration_fingerprint: ProviderConfigurationFingerprint,
+    /// Provider-owned opaque identifier for the latest known turn.
+    pub last_provider_turn_id: Option<String>,
+    pub updated_at_millis: i64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LeaseOwner {
     /// Opaque identity generated once per live ovim process. PID is not an
@@ -101,6 +132,7 @@ pub enum CatalogError {
     LeaseHeld(RunLease),
     LeaseNotOwned(RunLease),
     InvalidLeaseDuration,
+    InvalidProviderSession(String),
 }
 
 impl fmt::Display for CatalogError {
@@ -129,6 +161,9 @@ impl fmt::Display for CatalogError {
             ),
             Self::InvalidLeaseDuration => {
                 formatter.write_str("lease duration must be positive and fit in milliseconds")
+            }
+            Self::InvalidProviderSession(detail) => {
+                write!(formatter, "invalid provider session: {detail}")
             }
         }
     }
@@ -514,6 +549,155 @@ impl RunCatalog {
             Some(lease) => LeaseStatus::Active(lease),
         })
     }
+
+    /// Inserts or replaces provider-owned resume state for one ovim agent
+    /// branch. The complete record is written atomically.
+    pub fn upsert_provider_session(
+        &self,
+        key: ProviderSessionKey,
+        provider_thread_id: String,
+        configuration_fingerprint: ProviderConfigurationFingerprint,
+        last_provider_turn_id: Option<String>,
+    ) -> Result<ProviderSession, CatalogError> {
+        validate_provider_session(
+            &key,
+            &provider_thread_id,
+            &configuration_fingerprint,
+            last_provider_turn_id.as_deref(),
+        )?;
+        let updated_at_millis = self.clock.now_millis();
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO provider_sessions(
+                 provider, agent_id, branch_id, provider_thread_id, fingerprint_version,
+                 fingerprint_value, last_provider_turn_id, updated_at_millis)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+                 ON CONFLICT(provider, agent_id, branch_id) DO UPDATE SET
+                 provider_thread_id=excluded.provider_thread_id,
+                 fingerprint_version=excluded.fingerprint_version,
+                 fingerprint_value=excluded.fingerprint_value,
+                 last_provider_turn_id=excluded.last_provider_turn_id,
+                 updated_at_millis=excluded.updated_at_millis",
+                params![
+                    key.provider,
+                    key.agent_id.as_str(),
+                    key.branch_id.as_str(),
+                    provider_thread_id,
+                    configuration_fingerprint.version,
+                    configuration_fingerprint.value,
+                    last_provider_turn_id,
+                    updated_at_millis,
+                ],
+            )
+            .map_err(|error| storage("upsert provider session", error))?;
+        Ok(ProviderSession {
+            key,
+            provider_thread_id,
+            configuration_fingerprint,
+            last_provider_turn_id,
+            updated_at_millis,
+        })
+    }
+
+    /// Returns provider state only when its versioned configuration
+    /// fingerprint exactly equals the expected fingerprint.
+    pub fn provider_session(
+        &self,
+        key: &ProviderSessionKey,
+        expected_fingerprint: &ProviderConfigurationFingerprint,
+    ) -> Result<Option<ProviderSession>, CatalogError> {
+        validate_provider_key(key)?;
+        validate_provider_fingerprint(expected_fingerprint)?;
+        let connection = self.connection()?;
+        connection
+            .query_row(
+                "SELECT provider_thread_id, fingerprint_version, fingerprint_value,
+                 last_provider_turn_id, updated_at_millis FROM provider_sessions
+                 WHERE provider=?1 AND agent_id=?2 AND branch_id=?3
+                 AND fingerprint_version=?4 AND fingerprint_value=?5",
+                params![
+                    key.provider,
+                    key.agent_id.as_str(),
+                    key.branch_id.as_str(),
+                    expected_fingerprint.version,
+                    expected_fingerprint.value,
+                ],
+                |row| {
+                    Ok(ProviderSession {
+                        key: key.clone(),
+                        provider_thread_id: row.get(0)?,
+                        configuration_fingerprint: ProviderConfigurationFingerprint {
+                            version: row.get(1)?,
+                            value: row.get(2)?,
+                        },
+                        last_provider_turn_id: row.get(3)?,
+                        updated_at_millis: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| storage("read provider session", error))
+    }
+
+    pub fn delete_provider_session(&self, key: &ProviderSessionKey) -> Result<bool, CatalogError> {
+        validate_provider_key(key)?;
+        let connection = self.connection()?;
+        Ok(connection
+            .execute(
+                "DELETE FROM provider_sessions WHERE provider=?1 AND agent_id=?2 AND branch_id=?3",
+                params![key.provider, key.agent_id.as_str(), key.branch_id.as_str()],
+            )
+            .map_err(|error| storage("delete provider session", error))?
+            == 1)
+    }
+}
+
+fn validate_provider_key(key: &ProviderSessionKey) -> Result<(), CatalogError> {
+    if key.provider.trim().is_empty() {
+        Err(CatalogError::InvalidProviderSession(
+            "provider name is empty".into(),
+        ))
+    } else {
+        Ok(())
+    }
+}
+
+fn validate_provider_fingerprint(
+    fingerprint: &ProviderConfigurationFingerprint,
+) -> Result<(), CatalogError> {
+    if fingerprint.version == 0 {
+        return Err(CatalogError::InvalidProviderSession(
+            "configuration fingerprint version is zero".into(),
+        ));
+    }
+    if fingerprint.value.trim().is_empty() {
+        return Err(CatalogError::InvalidProviderSession(
+            "configuration fingerprint is empty".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_provider_session(
+    key: &ProviderSessionKey,
+    provider_thread_id: &str,
+    fingerprint: &ProviderConfigurationFingerprint,
+    last_provider_turn_id: Option<&str>,
+) -> Result<(), CatalogError> {
+    validate_provider_key(key)?;
+    if provider_thread_id.trim().is_empty() {
+        return Err(CatalogError::InvalidProviderSession(
+            "provider thread id is empty".into(),
+        ));
+    }
+    validate_provider_fingerprint(fingerprint)?;
+    if last_provider_turn_id.is_some_and(|turn_id| turn_id.trim().is_empty()) {
+        return Err(CatalogError::InvalidProviderSession(
+            "last provider turn id is empty".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn read_binding(
@@ -674,6 +858,19 @@ fn migrate(connection: &mut Connection) -> Result<(), CatalogError> {
              PRAGMA user_version=1;"
         ).map_err(|error| migration(1, error))?;
     }
+    if current < 2 {
+        transaction
+            .execute_batch(
+                "CREATE TABLE provider_sessions(\
+                 provider TEXT NOT NULL, agent_id TEXT NOT NULL, branch_id TEXT NOT NULL,\
+                 provider_thread_id TEXT NOT NULL, fingerprint_version INTEGER NOT NULL,\
+                 fingerprint_value TEXT NOT NULL, last_provider_turn_id TEXT,\
+                 updated_at_millis INTEGER NOT NULL,\
+                 PRIMARY KEY(provider, agent_id, branch_id));\
+             PRAGMA user_version=2;",
+            )
+            .map_err(|error| migration(2, error))?;
+    }
     transaction.commit().map_err(|error| migration(0, error))
 }
 
@@ -763,6 +960,235 @@ mod tests {
             common_git_dir: PathBuf::from(format!("/{clone}/.git")),
             worktree_aliases: vec![PathBuf::from(format!("/{clone}"))],
         }
+    }
+
+    fn provider_key() -> ProviderSessionKey {
+        ProviderSessionKey {
+            provider: "codex".into(),
+            agent_id: AgentId::new(),
+            branch_id: BranchId::new(),
+        }
+    }
+
+    fn fingerprint(version: u32, value: &str) -> ProviderConfigurationFingerprint {
+        ProviderConfigurationFingerprint {
+            version,
+            value: value.into(),
+        }
+    }
+
+    #[test]
+    fn provider_session_roundtrips_opaque_ids_across_reopen_and_deletes() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let clock = Arc::new(TestClock::new(7_000));
+        let catalog = RunCatalog::open_with_clock(&layout, clock).unwrap();
+        let key = provider_key();
+        let configuration = fingerprint(3, "sha256:configuration");
+        let expected = catalog
+            .upsert_provider_session(
+                key.clone(),
+                "agt_provider-owned/thread:42".into(),
+                configuration.clone(),
+                Some("trn_provider-owned/turn:9".into()),
+            )
+            .unwrap();
+        assert_eq!(expected.updated_at_millis, 7_000);
+        drop(catalog);
+
+        let reopened = RunCatalog::open(&layout).unwrap();
+        assert_eq!(
+            reopened.provider_session(&key, &configuration).unwrap(),
+            Some(expected)
+        );
+        assert!(reopened.delete_provider_session(&key).unwrap());
+        assert!(!reopened.delete_provider_session(&key).unwrap());
+        assert_eq!(
+            reopened.provider_session(&key, &configuration).unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn provider_session_requires_an_exact_versioned_fingerprint() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let catalog = RunCatalog::open(&layout).unwrap();
+        let key = provider_key();
+        let original = fingerprint(1, "same-digest");
+        catalog
+            .upsert_provider_session(key.clone(), "thread-one".into(), original.clone(), None)
+            .unwrap();
+
+        assert!(catalog
+            .provider_session(&key, &fingerprint(2, "same-digest"))
+            .unwrap()
+            .is_none());
+        assert!(catalog
+            .provider_session(&key, &fingerprint(1, "different-digest"))
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            catalog
+                .provider_session(&key, &original)
+                .unwrap()
+                .unwrap()
+                .provider_thread_id,
+            "thread-one"
+        );
+
+        let changed = fingerprint(2, "replacement");
+        catalog
+            .upsert_provider_session(
+                key.clone(),
+                "thread-two".into(),
+                changed.clone(),
+                Some("turn-two".into()),
+            )
+            .unwrap();
+        assert!(catalog.provider_session(&key, &original).unwrap().is_none());
+        assert_eq!(
+            catalog
+                .provider_session(&key, &changed)
+                .unwrap()
+                .unwrap()
+                .last_provider_turn_id
+                .as_deref(),
+            Some("turn-two")
+        );
+    }
+
+    #[test]
+    fn provider_sessions_reject_blank_values_and_unversioned_fingerprints() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let catalog = RunCatalog::open(&layout).unwrap();
+        let key = provider_key();
+
+        let invalid = [
+            catalog.upsert_provider_session(
+                ProviderSessionKey {
+                    provider: " \t".into(),
+                    ..key.clone()
+                },
+                "thread".into(),
+                fingerprint(1, "config"),
+                None,
+            ),
+            catalog.upsert_provider_session(
+                key.clone(),
+                " \n".into(),
+                fingerprint(1, "config"),
+                None,
+            ),
+            catalog.upsert_provider_session(
+                key.clone(),
+                "thread".into(),
+                fingerprint(1, " \r"),
+                None,
+            ),
+            catalog.upsert_provider_session(
+                key.clone(),
+                "thread".into(),
+                fingerprint(0, "config"),
+                None,
+            ),
+            catalog.upsert_provider_session(
+                key.clone(),
+                "thread".into(),
+                fingerprint(1, "config"),
+                Some("  ".into()),
+            ),
+        ];
+        assert!(invalid
+            .into_iter()
+            .all(|result| matches!(result, Err(CatalogError::InvalidProviderSession(_)))));
+        assert!(matches!(
+            catalog.provider_session(&key, &fingerprint(0, "config")),
+            Err(CatalogError::InvalidProviderSession(_))
+        ));
+    }
+
+    #[test]
+    fn migration_from_v1_adds_provider_sessions_without_replacing_catalog() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        layout.ensure_root().unwrap();
+        let database = layout.root().join(CATALOG_DATABASE);
+        let connection = Connection::open(&database).unwrap();
+        connection
+            .execute_batch(
+                "CREATE TABLE preserved(value TEXT NOT NULL);\
+             INSERT INTO preserved(value) VALUES ('still-here');\
+             PRAGMA user_version=1;",
+            )
+            .unwrap();
+        drop(connection);
+
+        let catalog = RunCatalog::open(&layout).unwrap();
+        let key = provider_key();
+        let configuration = fingerprint(1, "config");
+        catalog
+            .upsert_provider_session(key.clone(), "thread".into(), configuration.clone(), None)
+            .unwrap();
+        assert!(catalog
+            .provider_session(&key, &configuration)
+            .unwrap()
+            .is_some());
+        assert_eq!(
+            catalog
+                .connection()
+                .unwrap()
+                .query_row("SELECT value FROM preserved", [], |row| row
+                    .get::<_, String>(0))
+                .unwrap(),
+            "still-here"
+        );
+    }
+
+    #[test]
+    fn concurrent_provider_upserts_never_expose_a_torn_record() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        RunCatalog::open(&layout).unwrap();
+        let key = provider_key();
+        let barrier = Arc::new(Barrier::new(8));
+        let handles: Vec<_> = (0..8)
+            .map(|index| {
+                let layout = layout.clone();
+                let key = key.clone();
+                let barrier = barrier.clone();
+                thread::spawn(move || {
+                    let catalog = RunCatalog::open(&layout).unwrap();
+                    barrier.wait();
+                    catalog
+                        .upsert_provider_session(
+                            key,
+                            format!("thread-{index}"),
+                            fingerprint(1, &format!("configuration-{index}")),
+                            Some(format!("turn-{index}")),
+                        )
+                        .unwrap();
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap();
+        }
+
+        let catalog = RunCatalog::open(&layout).unwrap();
+        let matches: Vec<_> = (0..8)
+            .filter_map(|index| {
+                catalog
+                    .provider_session(&key, &fingerprint(1, &format!("configuration-{index}")))
+                    .unwrap()
+                    .map(|session| (index, session))
+            })
+            .collect();
+        assert_eq!(matches.len(), 1);
+        let (index, session) = &matches[0];
+        assert_eq!(session.provider_thread_id, format!("thread-{index}"));
+        assert_eq!(session.last_provider_turn_id, Some(format!("turn-{index}")));
     }
 
     #[test]
