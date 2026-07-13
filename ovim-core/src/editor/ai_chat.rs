@@ -678,7 +678,7 @@ impl Editor {
                     let result = CodexAutoModeClassifier::default()
                         .classify(&request, &operation_id)
                         .await
-                        .map_err(|error| error.to_string());
+                        .map_err(|error| format!("{error:#}"));
                     let _ = result_tx.send(result);
                 });
                 if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -757,13 +757,16 @@ impl Editor {
                     verdict.reason
                 },
             ),
-            Err(error) => self.pause_dynamic_tool_for_approval(
-                pending.runtime_turn,
-                pending.runtime_tool,
-                pending.tool_call,
-                pending.dynamic_response,
-                format!("classifier unavailable; explicit confirmation required: {error}"),
-            ),
+            Err(error) => {
+                crate::log_warn!("ai_auto_mode", "classifier unavailable: {error}");
+                self.pause_dynamic_tool_for_approval(
+                    pending.runtime_turn,
+                    pending.runtime_tool,
+                    pending.tool_call,
+                    pending.dynamic_response,
+                    format!("classifier unavailable; explicit confirmation required: {error}"),
+                )
+            }
         }
         true
     }
@@ -914,6 +917,7 @@ impl Editor {
             pending.dynamic_response,
             received.expect("shell result"),
         );
+        self.set_lsp_status(String::new());
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = true;
         }
@@ -1998,6 +2002,7 @@ mod tests {
         }
         let result = response_rx.await.unwrap().unwrap();
         assert!(result.contains("completed"), "{result}");
+        assert!(editor.lsp_status().is_empty());
         let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
         let start_index = events
             .iter()

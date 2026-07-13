@@ -422,12 +422,12 @@ fn verdict_tool_schema() -> Value {
             "additionalProperties": false,
             "required": ["policy_version", "decision", "scope", "reason", "confidence", "expiry"],
             "properties": {
-                "policy_version": {"const": AUTO_MODE_POLICY_VERSION},
-                "decision": {"enum": ["allow", "ask", "deny"]},
+                "policy_version": {"type": "string", "const": AUTO_MODE_POLICY_VERSION},
+                "decision": {"type": "string", "enum": ["allow", "ask", "deny"]},
                 "scope": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["project_root"],
+                    "required": ["project_root", "objective_source_id", "command_fingerprint"],
                     "properties": {
                         "project_root": {"type": "string"},
                         "objective_source_id": {"type": ["string", "null"]},
@@ -437,10 +437,10 @@ fn verdict_tool_schema() -> Value {
                 "reason": {"type": "string", "minLength": 1},
                 "confidence": {"type": "number", "minimum": 0, "maximum": 1},
                 "expiry": {
-                    "oneOf": [
-                        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"const": "after_command"}}},
-                        {"type": "object", "additionalProperties": false, "required": ["kind", "turn_id"], "properties": {"kind": {"const": "end_of_turn"}, "turn_id": {"type": "string"}}},
-                        {"type": "object", "additionalProperties": false, "required": ["kind", "timestamp"], "properties": {"kind": {"const": "at_utc"}, "timestamp": {"type": "string"}}}
+                    "anyOf": [
+                        {"type": "object", "additionalProperties": false, "required": ["kind"], "properties": {"kind": {"type": "string", "const": "after_command"}}},
+                        {"type": "object", "additionalProperties": false, "required": ["kind", "turn_id"], "properties": {"kind": {"type": "string", "const": "end_of_turn"}, "turn_id": {"type": "string"}}},
+                        {"type": "object", "additionalProperties": false, "required": ["kind", "timestamp"], "properties": {"kind": {"type": "string", "const": "at_utc"}, "timestamp": {"type": "string"}}}
                     ]
                 }
             }
@@ -943,6 +943,19 @@ mod tests {
         assert_eq!(first_stable, second_stable);
         assert_ne!(first_dynamic, second_dynamic);
         assert!(!first_stable.contains("Deploy this to prod"));
+    }
+
+    #[test]
+    fn classifier_schema_uses_the_strict_structured_output_subset() {
+        let schema = verdict_tool_schema();
+        let scope = &schema["schema"]["properties"]["scope"];
+        assert_eq!(
+            scope["required"],
+            json!(["project_root", "objective_source_id", "command_fingerprint"])
+        );
+        let expiry = &schema["schema"]["properties"]["expiry"];
+        assert!(expiry.get("anyOf").is_some());
+        assert!(expiry.get("oneOf").is_none());
     }
 
     #[test]

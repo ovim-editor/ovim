@@ -349,11 +349,7 @@ impl AppServerClient {
         ephemeral: bool,
     ) -> Result<String> {
         let project_tools_enabled = !tools.is_empty();
-        let tool_instruction = if project_tools_enabled {
-            "Use only the ovim-provided dynamic tools when project context is needed. Do not use shell, apply_patch, built-in file tools, or any mutation tool. Ovim owns tool execution, edits, validation, and approvals."
-        } else {
-            "Do not run commands, use tools, or modify files. Return the requested answer only; ovim owns all tool execution, edits, validation, and approvals."
-        };
+        let tool_instruction = codex_tool_instruction(project_tools_enabled);
         let mut params = json!({
             "model": profile.model,
             "cwd": cwd,
@@ -584,6 +580,14 @@ impl AppServerClient {
             }
         }))
         .await
+    }
+}
+
+fn codex_tool_instruction(project_tools_enabled: bool) -> &'static str {
+    if project_tools_enabled {
+        "Use the ovim-provided dynamic tools whenever they help complete the request. You may invoke every dynamic tool ovim advertises, including its `bash` and mutation tools; ovim records, authorizes, and executes those calls. Do not use Codex's built-in shell, apply_patch, file, or mutation tools."
+    } else {
+        "Do not run commands, use tools, or modify files. Return the requested answer only; ovim owns all tool execution, edits, validation, and approvals."
     }
 }
 
@@ -885,6 +889,14 @@ mod tests {
         let params = initialize_params();
         assert_eq!(params["capabilities"]["experimentalApi"], true);
         assert_eq!(params["clientInfo"]["name"], "ovim");
+    }
+
+    #[test]
+    fn dynamic_tool_instruction_authorizes_ovim_bash_but_not_codex_shell() {
+        let instruction = codex_tool_instruction(true);
+        assert!(instruction.contains("including its `bash`"));
+        assert!(instruction.contains("Do not use Codex's built-in shell"));
+        assert!(!instruction.contains("Do not use shell"));
     }
 
     #[test]
