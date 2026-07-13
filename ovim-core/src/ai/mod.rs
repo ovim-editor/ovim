@@ -1,3 +1,4 @@
+pub mod auto_mode;
 pub mod chat_types;
 mod codex_app_server;
 mod config;
