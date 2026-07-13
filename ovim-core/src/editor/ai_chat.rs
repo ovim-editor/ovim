@@ -25,6 +25,12 @@ impl Editor {
         let buffer_id = self.buffer().id();
         let mode_before = self.mode();
 
+        if let Err(error) = self.prepare_durable_ai_chat(buffer_id, &opts.name) {
+            self.set_lsp_status(format!(
+                "Durable AI history unavailable; agent edits are disabled: {error}"
+            ));
+        }
+
         // Ensure conversation exists
         let key = (buffer_id, opts.name.clone());
         self.ai_state.conversations.entry(key.clone()).or_default();
@@ -39,10 +45,17 @@ impl Editor {
             .map(ConversationTree::branch_generation)
             .unwrap_or_default();
         let mut chat = AiChatState::new(opts, buffer_id, mode_before);
-        let runtime_locator = crate::agent_runtime::ConversationLocator(format!(
-            "buffer:{buffer_id}:conversation:{}",
-            chat.opts.name
-        ));
+        let runtime_locator = self
+            .ai_state
+            .durable_chat_bindings
+            .get(&key)
+            .map(|binding| binding.locator.clone())
+            .unwrap_or_else(|| {
+                crate::agent_runtime::ConversationLocator(format!(
+                    "buffer:{buffer_id}:conversation:{}",
+                    chat.opts.name
+                ))
+            });
         chat.runtime_branch = self
             .ai_state
             .agent_runtime
@@ -171,6 +184,31 @@ impl Editor {
 
     /// Drain available streaming chunks. Returns true if state changed.
     pub fn poll_pending_ai_chat_job(&mut self) -> bool {
+        if self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.waiting)
+        {
+            if let Err(error) = self.heartbeat_ai_chat_lease() {
+                if let Some(job) = self
+                    .ai_state
+                    .chat
+                    .as_mut()
+                    .and_then(|chat| chat.pending_job.take())
+                {
+                    job.task.abort();
+                }
+                self.ai_runtime_interrupt_turn(format!("durable run lease lost: {error}"));
+                if let Some(conversation) = self.conversation_mut() {
+                    conversation.append_error(format!(
+                        "Stopped agent because durable history ownership was lost: {error}"
+                    ));
+                }
+                self.clear_streaming_state();
+                return true;
+            }
+        }
         let current_branch_generation = self
             .conversation()
             .map(ConversationTree::branch_generation)

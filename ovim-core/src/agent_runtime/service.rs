@@ -240,11 +240,6 @@ impl AgentRuntime {
                 "conversation or run is already restored under another locator".into(),
             ));
         }
-        if !self.conversations.is_empty() && self.workspace_id != binding.workspace_id {
-            return Err(AgentRuntimeError::BindingMismatch(
-                "workspace differs from other conversations in this runtime".into(),
-            ));
-        }
         let persisted = self.sink.events(&binding.run_id)?;
         if persisted != events {
             return Err(AgentRuntimeError::BindingMismatch(
@@ -258,7 +253,6 @@ impl AgentRuntime {
             workspace_id: binding.workspace_id.clone(),
         };
         if events.is_empty() {
-            self.workspace_id = binding.workspace_id;
             self.conversations.insert(
                 locator,
                 ConversationState {
@@ -612,7 +606,6 @@ impl AgentRuntime {
             AgentRuntimeError::InvalidHistory("selected branch is undeclared".into())
         })?;
 
-        self.workspace_id = binding.workspace_id;
         self.conversations.insert(
             locator,
             ConversationState {
@@ -1033,6 +1026,19 @@ impl AgentRuntime {
             .branches
             .get(&state.selected_branch)
             .map(|branch| &branch.last_event)
+    }
+
+    /// Whether a conversation still owns work whose terminal outcome has not
+    /// been recorded. Lease owners use this to avoid advertising a crashed
+    /// turn as a clean shutdown.
+    pub fn has_active_work(&self, locator: &ConversationLocator) -> bool {
+        self.conversations.get(locator).is_some_and(|state| {
+            state.active_turn.is_some()
+                || state
+                    .tools
+                    .values()
+                    .any(|tool| tool.state != ToolState::Terminal)
+        })
     }
 
     pub fn append_reasoning_summary(
@@ -1545,6 +1551,38 @@ mod tests {
                 ..RunCreationMetadata::default()
             },
         )
+    }
+
+    #[test]
+    fn restores_multiple_conversations_with_distinct_workspace_ids() {
+        let sink: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let mut runtime = AgentRuntime::with_sink(sink);
+        let repository_id = RepositoryId::parse("repo_multi_workspace_restore").unwrap();
+        let binding = |name: &str| ConversationBinding {
+            key: ConversationKey {
+                repository_id: repository_id.clone(),
+                scope: ConversationScope::NoFile,
+                logical_name: name.into(),
+            },
+            conversation_id: ConversationId::new(),
+            run_id: RunId::new(),
+            root_agent_id: AgentId::new(),
+            workspace_id: WorkspaceId::new(),
+            selected_branch_id: BranchId::new(),
+        };
+        let first = binding("first");
+        let second = binding("second");
+        assert_ne!(first.workspace_id, second.workspace_id);
+
+        let first_ref = runtime
+            .restore_conversation("first", first.clone(), Vec::new())
+            .unwrap();
+        let second_ref = runtime
+            .restore_conversation("second", second.clone(), Vec::new())
+            .unwrap();
+
+        assert_eq!(first_ref.workspace_id, first.workspace_id);
+        assert_eq!(second_ref.workspace_id, second.workspace_id);
     }
 
     #[test]

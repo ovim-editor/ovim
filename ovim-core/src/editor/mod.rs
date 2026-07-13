@@ -5,6 +5,7 @@ mod ai_chat_mutations;
 pub(crate) mod ai_chat_state;
 mod ai_chat_tools;
 mod ai_context;
+mod ai_durable_chat;
 pub(crate) mod ai_integration;
 mod ai_run_events;
 mod ai_state;

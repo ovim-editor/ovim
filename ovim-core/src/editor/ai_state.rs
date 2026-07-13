@@ -6,7 +6,31 @@ use crate::mode::Mode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use std::time::Instant;
+use std::sync::OnceLock;
+use std::time::{Duration, Instant};
+
+const RUN_LEASE_DURATION: Duration = Duration::from_secs(30);
+
+fn process_lease_instance_id() -> String {
+    static INSTANCE_ID: OnceLock<String> = OnceLock::new();
+    INSTANCE_ID
+        .get_or_init(|| crate::run_log::ConversationId::new().to_string())
+        .clone()
+}
+
+pub(crate) struct DurableRunServices {
+    pub store: Arc<crate::run_log::LocalRunStore>,
+    pub catalog: crate::run_log::RunCatalog,
+    pub owner: crate::run_log::LeaseOwner,
+    pub lease_duration: Duration,
+}
+
+#[derive(Clone)]
+pub(crate) struct DurableChatBinding {
+    pub binding: crate::run_log::ConversationBinding,
+    pub locator: crate::agent_runtime::ConversationLocator,
+    pub lease_renewed_at: Instant,
+}
 
 #[derive(Debug, Clone)]
 pub struct ChatRuntimeNodeRef {
@@ -78,6 +102,10 @@ pub struct AiState {
     /// process is recording agent history in memory only. Retained for a later
     /// status/diagnostics projection rather than silently hiding provenance.
     pub run_storage_warning: Option<Box<str>>,
+    /// Durable services are retained alongside the runtime so catalog identity,
+    /// recovery, and leases use exactly the same event store as live appends.
+    pub(crate) durable_runs: Option<Box<DurableRunServices>>,
+    pub(crate) durable_chat_bindings: HashMap<(BufferId, String), DurableChatBinding>,
     pub config: AiConfig,
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
@@ -117,6 +145,7 @@ impl AiState {
     fn with_agent_runtime(
         agent_runtime: crate::agent_runtime::AgentRuntime,
         run_storage_warning: Option<Box<str>>,
+        durable_runs: Option<DurableRunServices>,
     ) -> Self {
         let mut config = AiConfig::load().unwrap_or_else(|_| AiConfig::default());
         let default_profile = if config.profiles.contains_key(&config.default_profile) {
@@ -141,6 +170,8 @@ impl AiState {
         Self {
             agent_runtime: Box::new(agent_runtime),
             run_storage_warning,
+            durable_runs: durable_runs.map(Box::new),
+            durable_chat_bindings: HashMap::new(),
             config,
             prompt: AiPromptState::default(),
             active_selection: None,
@@ -174,10 +205,26 @@ impl AiState {
         // Validate the root eagerly so a permission or path failure can be
         // surfaced before the first provider turn begins.
         layout.ensure_root()?;
-        let sink = crate::run_log::LocalRunStore::new(layout);
+        let sink = Arc::new(crate::run_log::LocalRunStore::new(layout.clone()));
+        let catalog = crate::run_log::RunCatalog::open(&layout).map_err(|error| {
+            crate::run_log::RunLogError::Storage {
+                operation: "open durable run catalog".into(),
+                detail: error.to_string(),
+            }
+        })?;
+        let owner = crate::run_log::LeaseOwner {
+            instance_id: process_lease_instance_id(),
+            pid_marker: Some(std::process::id()),
+        };
         Ok(Self::with_agent_runtime(
-            crate::agent_runtime::AgentRuntime::with_sink(Arc::new(sink)),
+            crate::agent_runtime::AgentRuntime::with_sink(sink.clone()),
             None,
+            Some(DurableRunServices {
+                store: sink,
+                catalog,
+                owner,
+                lease_duration: RUN_LEASE_DURATION,
+            }),
         ))
     }
 
@@ -194,6 +241,7 @@ impl AiState {
                     )
                     .into_boxed_str(),
                 ),
+                None,
             ),
         }
     }
@@ -204,12 +252,36 @@ impl Default for AiState {
         // Unit tests must never discover or write the user's real data path.
         #[cfg(test)]
         {
-            Self::with_agent_runtime(crate::agent_runtime::AgentRuntime::new(), None)
+            Self::with_agent_runtime(crate::agent_runtime::AgentRuntime::new(), None, None)
         }
 
         #[cfg(not(test))]
         {
             Self::with_discovered_run_storage(crate::run_log::RunStorageLayout::discover())
+        }
+    }
+}
+
+impl Drop for AiState {
+    fn drop(&mut self) {
+        let Some(services) = self.durable_runs.as_ref() else {
+            return;
+        };
+        let mut runs = self
+            .durable_chat_bindings
+            .values()
+            .map(|entry| entry.binding.run_id.clone())
+            .collect::<Vec<_>>();
+        runs.sort();
+        runs.dedup();
+        for run_id in runs {
+            let active = self.durable_chat_bindings.values().any(|entry| {
+                entry.binding.run_id == run_id
+                    && self.agent_runtime.has_active_work(&entry.locator)
+            });
+            if !active {
+                let _ = services.catalog.release_lease(&run_id, &services.owner);
+            }
         }
     }
 }
@@ -283,5 +355,23 @@ mod tests {
             .as_deref()
             .unwrap()
             .contains("history is in-memory only"));
+    }
+
+    #[test]
+    fn durable_states_share_one_process_lease_identity() {
+        let first_dir = tempfile::tempdir().unwrap();
+        let second_dir = tempfile::tempdir().unwrap();
+        let first = AiState::with_run_storage_layout(RunStorageLayout::new(
+            first_dir.path().join("runs"),
+        ))
+        .unwrap();
+        let second = AiState::with_run_storage_layout(RunStorageLayout::new(
+            second_dir.path().join("runs"),
+        ))
+        .unwrap();
+        assert_eq!(
+            first.durable_runs.as_ref().unwrap().owner.instance_id,
+            second.durable_runs.as_ref().unwrap().owner.instance_id
+        );
     }
 }

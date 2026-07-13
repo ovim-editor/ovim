@@ -83,6 +83,15 @@ impl Editor {
             caps.shell = false;
         }
 
+        // Mutating/external tools require durable intent/outcome history. A
+        // storage/catalog failure leaves project reads and navigation useful,
+        // but fails closed before any agent-controlled effect is advertised.
+        if !self.durable_ai_mutations_available() {
+            caps.allow_mutations = false;
+            caps.shell = false;
+            caps.network = false;
+        }
+
         caps
     }
 

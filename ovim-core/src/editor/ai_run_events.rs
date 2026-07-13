@@ -51,8 +51,14 @@ impl Editor {
     }
 
     pub(crate) fn ai_runtime_conversation_locator(&self) -> ConversationLocator {
-        let (buffer_id, name) = self.ai_chat_conversation_key();
-        ConversationLocator(format!("buffer:{buffer_id}:conversation:{name}"))
+        let key = self.ai_chat_conversation_key();
+        self.ai_state
+            .durable_chat_bindings
+            .get(&key)
+            .map(|binding| binding.locator.clone())
+            .unwrap_or_else(|| {
+                ConversationLocator(format!("buffer:{}:conversation:{}", key.0, key.1))
+            })
     }
 
     pub(crate) fn ai_runtime_current_tip(&self) -> Option<crate::run_log::EventId> {
@@ -67,6 +73,9 @@ impl Editor {
         &mut self,
         user_message: &str,
     ) -> Result<PendingTurnRef, AgentRuntimeError> {
+        self.heartbeat_ai_chat_lease().map_err(|error| {
+            AgentRuntimeError::BindingMismatch(format!("durable run lease unavailable: {error}"))
+        })?;
         let locator = self.ai_runtime_conversation_locator();
         let branch = self
             .ai_state
@@ -191,6 +200,7 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.runtime_branch = target;
         }
+        self.persist_selected_ai_branch();
         true
     }
 
@@ -227,7 +237,36 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.runtime_branch = target;
         }
+        self.persist_selected_ai_branch();
         true
+    }
+
+    fn persist_selected_ai_branch(&mut self) {
+        let key = self.ai_chat_conversation_key();
+        let Some(services) = self.ai_state.durable_runs.as_ref() else {
+            return;
+        };
+        let Some(entry) = self.ai_state.durable_chat_bindings.get_mut(&key) else {
+            return;
+        };
+        let Some((_, branch)) = self
+            .ai_state
+            .agent_runtime
+            .selected_branch(&entry.locator)
+        else {
+            return;
+        };
+        match services
+            .catalog
+            .update_selected_branch(&entry.binding.key, branch.branch_id.clone())
+        {
+            Ok(Some(binding)) => entry.binding = binding,
+            Ok(None) => crate::log_warn!("agent_runtime", "catalog binding disappeared"),
+            Err(error) => crate::log_warn!(
+                "agent_runtime",
+                "failed to persist selected agent branch: {error}"
+            ),
+        }
     }
 
     pub(crate) fn ai_runtime_complete_turn(&mut self) {
