@@ -7,11 +7,17 @@
 mod artifact;
 mod event;
 mod identity;
+mod layout;
+mod local_store;
+mod repository;
 mod sqlite;
 mod store;
 
 pub use artifact::*;
 pub use event::*;
 pub use identity::*;
+pub use layout::*;
+pub use local_store::*;
+pub use repository::*;
 pub use sqlite::*;
 pub use store::*;
