@@ -5,6 +5,7 @@ pub(crate) mod ai_chat_state;
 mod ai_chat_tools;
 mod ai_context;
 pub(crate) mod ai_integration;
+mod ai_run_events;
 mod ai_state;
 mod ai_tool_execution;
 mod ai_tool_path;

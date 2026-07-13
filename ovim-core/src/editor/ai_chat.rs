@@ -17,17 +17,40 @@ impl Editor {
 
     /// Open or resume an AI chat panel.
     pub fn open_ai_chat(&mut self, opts: ChatOpts) -> Result<()> {
+        // Replacing an open panel must not detach its provider task or strand
+        // an active runtime turn.
+        if self.ai_state.chat.is_some() {
+            self.close_ai_chat();
+        }
         let buffer_id = self.buffer().id();
         let mode_before = self.mode();
 
         // Ensure conversation exists
         let key = (buffer_id, opts.name.clone());
-        self.ai_state.conversations.entry(key).or_default();
+        self.ai_state.conversations.entry(key.clone()).or_default();
 
         // Send initial message if provided and conversation is empty
         let initial = opts.initial_message.clone();
         let buffer_clean = !self.buffer().is_modified();
+        let branch_generation = self
+            .ai_state
+            .conversations
+            .get(&key)
+            .map(ConversationTree::branch_generation)
+            .unwrap_or_default();
         let mut chat = AiChatState::new(opts, buffer_id, mode_before);
+        let runtime_locator = crate::agent_runtime::ConversationLocator(format!(
+            "buffer:{buffer_id}:conversation:{}",
+            chat.opts.name
+        ));
+        chat.runtime_branch = self
+            .ai_state
+            .agent_runtime
+            .selected_branch(&runtime_locator)
+            .map(|(locator, _)| locator.clone())
+            .unwrap_or_else(|| {
+                crate::agent_runtime::BranchLocator(format!("branch-{branch_generation}"))
+            });
         chat.buffer_was_clean_at_chat_start = buffer_clean;
         self.ai_state.chat = Some(chat);
         self.set_mode(Mode::AiChat);
@@ -50,7 +73,17 @@ impl Editor {
 
     /// Close the AI chat panel, preserving conversation history.
     pub fn close_ai_chat(&mut self) {
-        if let Some(chat) = self.ai_state.chat.take() {
+        if let Some(job) = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_job.as_ref())
+        {
+            job.task.abort();
+        }
+        self.ai_runtime_interrupt_turn("chat closed");
+        if let Some(mut chat) = self.ai_state.chat.take() {
+            chat.pending_job.take();
             self.set_mode(chat.mode_before_chat);
         }
     }
@@ -89,9 +122,21 @@ impl Editor {
             return Ok(());
         }
 
-        // Append user message to conversation
-        if let Some(conv) = self.conversation_mut() {
-            conv.append_user_message(input.clone());
+        // Allocate stable ovim run/agent/turn identity before provider work.
+        let runtime_turn = self
+            .begin_ai_runtime_turn(&input)
+            .map_err(|error| anyhow::anyhow!("failed to start agent turn: {error}"))?;
+        let user_event_id = runtime_turn.initiating_event.caused_by.clone();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.runtime_turn = Some(Box::new(runtime_turn));
+        }
+
+        // Append user message to the UI projection.
+        let user_node = self
+            .conversation_mut()
+            .map(|conv| conv.append_user_message(input.clone()));
+        if let (Some(node_id), Some(event_id)) = (user_node, user_event_id) {
+            self.record_ai_chat_node(node_id, event_id);
         }
 
         // Clear input and mark as waiting
@@ -108,6 +153,7 @@ impl Editor {
 
         // Spawn the streaming request
         if let Err(e) = self.spawn_streaming_request() {
+            self.ai_runtime_fail_turn(e.to_string());
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error(e.to_string());
             }
@@ -125,6 +171,35 @@ impl Editor {
 
     /// Drain available streaming chunks. Returns true if state changed.
     pub fn poll_pending_ai_chat_job(&mut self) -> bool {
+        let current_branch_generation = self
+            .conversation()
+            .map(ConversationTree::branch_generation)
+            .unwrap_or_default();
+        let pending_branch_generation = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_job.as_ref())
+            .map(|job| job.branch_generation);
+        if pending_branch_generation
+            .is_some_and(|generation| generation != current_branch_generation)
+        {
+            if let Some(job) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_job.take())
+            {
+                job.task.abort();
+            }
+            self.ai_runtime_interrupt_turn("conversation branch changed during provider turn");
+            if let Some(conv) = self.conversation_mut() {
+                conv.append_error("Discarded stale response from a previous branch".into());
+            }
+            self.clear_streaming_state();
+            return true;
+        }
+
         let chat = match self.ai_state.chat.as_mut() {
             Some(c) => c,
             None => return false,
@@ -159,6 +234,7 @@ impl Editor {
             .as_ref()
             .map(|j| j.model_name.clone())
             .unwrap_or_default();
+        let runtime_turn = chat.pending_job.as_ref().map(|job| (*job.turn).clone());
 
         // Phase 2: Process collected chunks.
         let mut changed = false;
@@ -196,6 +272,28 @@ impl Editor {
                     changed = true;
                 }
                 StreamChunk::DynamicToolRequest { call, response } => {
+                    self.flush_ai_runtime_stream_segments();
+                    let Some(turn) = runtime_turn.as_ref() else {
+                        let _ = response.send(Err("agent turn identity is missing".into()));
+                        continue;
+                    };
+                    let tool = match self.ai_runtime_record_tool_intent(turn, &call) {
+                        Ok(tool) => tool,
+                        Err(error) => {
+                            let message = format!("failed to record tool intent: {error}");
+                            let _ = response.send(Err(message.clone()));
+                            self.ai_runtime_fail_turn(message);
+                            self.clear_streaming_state();
+                            return true;
+                        }
+                    };
+                    if let Err(error) = self.ai_runtime_start_tool(turn, &tool) {
+                        let message = format!("failed to record tool start: {error}");
+                        let _ = response.send(Err(message.clone()));
+                        self.ai_runtime_fail_turn(message);
+                        self.clear_streaming_state();
+                        return true;
+                    }
                     let outcome = self.dispatch_tool_call_with_approval(&call, None);
                     let result = match outcome {
                         super::ai_chat_tools::ToolDispatchOutcome::Completed(result) => result,
@@ -206,6 +304,13 @@ impl Editor {
                             ))
                         }
                     };
+                    if let Err(error) = self.ai_runtime_finish_tool(turn, &tool, &result) {
+                        let message = format!("failed to record tool result: {error}");
+                        let _ = response.send(Err(message.clone()));
+                        self.ai_runtime_fail_turn(message);
+                        self.clear_streaming_state();
+                        return true;
+                    }
                     self.record_tool_event_summary(&call, &result);
                     let wire_result = match &result {
                         crate::ai::tools::ToolResult::Success(text) => Ok(text.clone()),
@@ -215,6 +320,7 @@ impl Editor {
                     changed = true;
                 }
                 StreamChunk::Done => {
+                    self.flush_ai_runtime_stream_segments();
                     // Commit thinking (if any) as a Thinking message.
                     let thinking = self
                         .ai_state
@@ -223,8 +329,16 @@ impl Editor {
                         .and_then(|c| c.streaming_thinking.take());
                     if let Some(thinking_text) = thinking {
                         if !thinking_text.is_empty() {
-                            if let Some(conv) = self.conversation_mut() {
-                                conv.append_thinking_message(thinking_text, model_name.clone());
+                            let event_id = self
+                                .ai_state
+                                .chat
+                                .as_ref()
+                                .and_then(|chat| chat.runtime_last_reasoning_event.clone());
+                            let node_id = self.conversation_mut().map(|conv| {
+                                conv.append_thinking_message(thinking_text, model_name.clone())
+                            });
+                            if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+                                self.record_ai_chat_node(node_id, event_id);
                             }
                         }
                     }
@@ -249,8 +363,15 @@ impl Editor {
 
                     // No tool calls — normal text-only commit
                     if !content.is_empty() {
-                        if let Some(conv) = self.conversation_mut() {
-                            conv.append_assistant_message(content, model_name.clone());
+                        // The visible message may contain text streamed before a
+                        // dynamic tool. Anchor the node at the current causal tip
+                        // so forking from it includes the observed tool result.
+                        let event_id = self.ai_runtime_current_tip();
+                        let node_id = self
+                            .conversation_mut()
+                            .map(|conv| conv.append_assistant_message(content, model_name.clone()));
+                        if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+                            self.record_ai_chat_node(node_id, event_id);
                         }
                     }
 
@@ -259,17 +380,20 @@ impl Editor {
                         chat.current_undo_group = None;
                     }
 
+                    self.ai_runtime_complete_turn();
                     self.clear_streaming_state();
                     return true;
                 }
                 StreamChunk::Error(msg) => {
+                    self.flush_ai_runtime_stream_segments();
                     self.commit_partial_streaming(&model_name);
 
                     // Append the error.
                     if let Some(conv) = self.conversation_mut() {
-                        conv.append_error(msg);
+                        conv.append_error(msg.clone());
                     }
 
+                    self.ai_runtime_fail_turn(msg);
                     self.clear_streaming_state();
                     return true;
                 }
@@ -281,6 +405,25 @@ impl Editor {
 
         // Handle channel disconnected without Done (task crashed/cancelled).
         if disconnected {
+            self.flush_ai_runtime_stream_segments();
+            let thinking = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|c| c.streaming_thinking.take());
+            if let Some(thinking_text) = thinking.filter(|text| !text.is_empty()) {
+                let event_id = self
+                    .ai_state
+                    .chat
+                    .as_ref()
+                    .and_then(|chat| chat.runtime_last_reasoning_event.clone());
+                let node_id = self
+                    .conversation_mut()
+                    .map(|conv| conv.append_thinking_message(thinking_text, model_name.clone()));
+                if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+                    self.record_ai_chat_node(node_id, event_id);
+                }
+            }
             let content = self
                 .ai_state
                 .chat
@@ -288,14 +431,23 @@ impl Editor {
                 .and_then(|c| c.streaming_content.take());
             if let Some(content_text) = content {
                 if !content_text.is_empty() {
-                    if let Some(conv) = self.conversation_mut() {
-                        conv.append_assistant_message(content_text, model_name.clone());
+                    let event_id = self
+                        .ai_state
+                        .chat
+                        .as_ref()
+                        .and_then(|chat| chat.runtime_last_content_event.clone());
+                    let node_id = self.conversation_mut().map(|conv| {
+                        conv.append_assistant_message(content_text, model_name.clone())
+                    });
+                    if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+                        self.record_ai_chat_node(node_id, event_id);
                     }
                 }
             }
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error("Stream interrupted".to_string());
             }
+            self.ai_runtime_interrupt_turn("provider stream disconnected");
             self.clear_streaming_state();
             return true;
         }
@@ -312,8 +464,16 @@ impl Editor {
             .and_then(|c| c.streaming_thinking.take());
         if let Some(thinking_text) = thinking {
             if !thinking_text.is_empty() {
-                if let Some(conv) = self.conversation_mut() {
-                    conv.append_thinking_message(thinking_text, model_name.to_string());
+                let event_id = self
+                    .ai_state
+                    .chat
+                    .as_ref()
+                    .and_then(|chat| chat.runtime_last_reasoning_event.clone());
+                let node_id = self.conversation_mut().map(|conv| {
+                    conv.append_thinking_message(thinking_text, model_name.to_string())
+                });
+                if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+                    self.record_ai_chat_node(node_id, event_id);
                 }
             }
         }
@@ -325,8 +485,16 @@ impl Editor {
             .and_then(|c| c.streaming_content.take());
         if let Some(content_text) = content {
             if !content_text.is_empty() {
-                if let Some(conv) = self.conversation_mut() {
-                    conv.append_assistant_message(content_text, model_name.to_string());
+                let event_id = self
+                    .ai_state
+                    .chat
+                    .as_ref()
+                    .and_then(|chat| chat.runtime_last_content_event.clone());
+                let node_id = self.conversation_mut().map(|conv| {
+                    conv.append_assistant_message(content_text, model_name.to_string())
+                });
+                if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+                    self.record_ai_chat_node(node_id, event_id);
                 }
             }
         }
@@ -946,6 +1114,7 @@ mod tests {
     use super::*;
     use crate::ai::chat_types::ChatOpts;
     use crate::buffer::Buffer;
+    use crate::run_log::{EventKind, TurnLifecycleState};
 
     fn open_test_chat(editor: &mut Editor) {
         editor
@@ -955,6 +1124,242 @@ mod tests {
                 ..Default::default()
             })
             .expect("open chat");
+    }
+
+    fn attach_pending_runtime_job(
+        editor: &mut Editor,
+        turn: crate::agent_runtime::PendingTurnRef,
+        branch_generation: u64,
+    ) -> tokio::task::AbortHandle {
+        let (_tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let abort_handle = task.abort_handle();
+        let chat = editor.ai_state.chat.as_mut().expect("chat");
+        chat.runtime_turn = Some(Box::new(turn.clone()));
+        chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
+            receiver: rx,
+            task,
+            profile_name: "test".into(),
+            model_name: "test".into(),
+            turn: Box::new(turn),
+            branch_generation,
+        });
+        chat.waiting = true;
+        abort_handle
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn closing_chat_aborts_provider_and_records_interrupted_turn() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("inspect").unwrap();
+        let run_id = turn.run_id.clone();
+        let abort_handle = attach_pending_runtime_job(&mut editor, turn, 0);
+
+        editor.close_ai_chat();
+        tokio::task::yield_now().await;
+
+        assert!(abort_handle.is_finished());
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            &events.last().unwrap().kind,
+            EventKind::TurnLifecycle(event)
+                if event.state == TurnLifecycleState::Interrupted
+        ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn reopening_chat_interrupts_old_job_and_preserves_underlying_mode() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("inspect").unwrap();
+        let run_id = turn.run_id.clone();
+        let abort_handle = attach_pending_runtime_job(&mut editor, turn, 0);
+
+        open_test_chat(&mut editor);
+        tokio::task::yield_now().await;
+
+        assert!(abort_handle.is_finished());
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            &events.last().unwrap().kind,
+            EventKind::TurnLifecycle(event)
+                if event.state == TurnLifecycleState::Interrupted
+        ));
+        editor.close_ai_chat();
+        assert_ne!(editor.mode(), Mode::AiChat);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn stale_provider_branch_is_aborted_before_output_is_applied() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("inspect").unwrap();
+        let run_id = turn.run_id.clone();
+        let abort_handle = attach_pending_runtime_job(&mut editor, turn, 0);
+        {
+            let conv = editor.conversation_mut().unwrap();
+            conv.append_user_message("root".into());
+            let root = conv.active_leaf_id().unwrap();
+            conv.append_assistant_message("old branch".into(), "test".into());
+            conv.fork_from(root);
+        }
+
+        assert!(editor.poll_pending_ai_chat_job());
+        tokio::task::yield_now().await;
+
+        assert!(abort_handle.is_finished());
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            &events.last().unwrap().kind,
+            EventKind::TurnLifecycle(event)
+                if event.state == TurnLifecycleState::Interrupted
+        ));
+        assert!(editor
+            .conversation()
+            .unwrap()
+            .messages()
+            .iter()
+            .any(|message| message.content.contains("Discarded stale response")));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_tool_events_are_terminal_before_codex_receives_result() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("check diagnostics").unwrap();
+        let run_id = turn.run_id.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let abort_handle = task.abort_handle();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn.clone()));
+        editor.ai_state.chat.as_mut().unwrap().streaming_content = Some(String::new());
+        editor.ai_state.chat.as_mut().unwrap().pending_job =
+            Some(super::super::ai_chat_state::PendingAiChatJob {
+                receiver: rx,
+                task,
+                profile_name: "test".into(),
+                model_name: "test".into(),
+                turn: Box::new(turn),
+                branch_generation: 0,
+            });
+
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        tx.send(StreamChunk::Content("Before tool. ".into()))
+            .unwrap();
+        tx.send(StreamChunk::DynamicToolRequest {
+            call: ToolCallInfo {
+                id: "provider-call-1".into(),
+                name: "read_diagnostics".into(),
+                arguments: serde_json::json!({}),
+            },
+            response: result_tx,
+        })
+        .unwrap();
+
+        assert!(editor.poll_pending_ai_chat_job());
+        let events_before_provider_result = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            &events_before_provider_result.last().unwrap().kind,
+            EventKind::ToolResult(_)
+        ));
+        let pre_tool_message = events_before_provider_result
+            .iter()
+            .position(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::Message(crate::run_log::MessageEvent {
+                        role: crate::run_log::MessageRole::Agent,
+                        content,
+                    }) if content == "Before tool. "
+                )
+            })
+            .unwrap();
+        let tool_intent = events_before_provider_result
+            .iter()
+            .position(|event| matches!(event.kind, EventKind::ToolIntent(_)))
+            .unwrap();
+        assert!(pre_tool_message < tool_intent);
+        let _provider_result = result_rx.await.unwrap();
+
+        tx.send(StreamChunk::Content("After tool.".into())).unwrap();
+        tx.send(StreamChunk::Done).unwrap();
+        assert!(editor.poll_pending_ai_chat_job());
+        abort_handle.abort();
+
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            &events.last().unwrap().kind,
+            EventKind::TurnLifecycle(event)
+                if event.state == TurnLifecycleState::Completed
+        ));
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| matches!(event.kind, EventKind::ToolResult(_)))
+                .count(),
+            1
+        );
+    }
+
+    fn append_recorded_test_turn(
+        editor: &mut Editor,
+        user: &str,
+        assistant: &str,
+    ) -> (NodeId, NodeId, crate::agent_runtime::PendingTurnRef) {
+        let turn = editor.begin_ai_runtime_turn(user).unwrap();
+        let user_event = turn.initiating_event.caused_by.clone().unwrap();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn.clone()));
+        let user_node = editor
+            .conversation_mut()
+            .unwrap()
+            .append_user_message(user.into());
+        editor.record_ai_chat_node(user_node, user_event);
+        let assistant_event = editor.ai_runtime_append_agent_message(assistant).unwrap();
+        let assistant_node = editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message(assistant.into(), "test".into());
+        editor.record_ai_chat_node(assistant_node, assistant_event);
+        editor.ai_runtime_complete_turn();
+        (user_node, assistant_node, turn)
+    }
+
+    #[test]
+    fn ui_fork_gets_distinct_runtime_branch_and_switch_back_resumes_main() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (_, first_reply, first_turn) = append_recorded_test_turn(&mut editor, "one", "a1");
+        let (_, main_leaf, _) = append_recorded_test_turn(&mut editor, "two", "a2");
+
+        assert!(editor.fork_ai_chat_runtime_from(first_reply));
+        let fork_turn = editor.begin_ai_runtime_turn("forked").unwrap();
+        assert_ne!(fork_turn.branch_id, first_turn.branch_id);
+        let fork_user_event_id = fork_turn.initiating_event.caused_by.clone().unwrap();
+        let fork_user_event = editor
+            .ai_state
+            .agent_runtime
+            .events(&fork_turn.run_id)
+            .unwrap()
+            .into_iter()
+            .find(|event| event.event_id == fork_user_event_id)
+            .unwrap();
+        assert_eq!(
+            fork_user_event.caused_by,
+            editor
+                .ai_state
+                .conversation_runtime_nodes
+                .get(&editor.ai_chat_conversation_key())
+                .unwrap()
+                .get(&first_reply)
+                .map(|node| node.event_id.clone())
+        );
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(fork_turn));
+        editor.ai_runtime_complete_turn();
+
+        assert!(editor.switch_ai_chat_runtime_branch(main_leaf));
+        let resumed = editor.begin_ai_runtime_turn("back").unwrap();
+        assert_eq!(resumed.branch_id, first_turn.branch_id);
     }
 
     #[test]

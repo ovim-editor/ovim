@@ -217,6 +217,15 @@ impl Editor {
         } else {
             None
         };
+        let runtime_turn = chat
+            .runtime_turn
+            .as_deref()
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("no active agent turn"))?;
+        let branch_generation = self
+            .conversation()
+            .map(crate::ai::ConversationTree::branch_generation)
+            .unwrap_or_default();
 
         let messages: Vec<ChatMessage> = self
             .conversation()
@@ -282,10 +291,16 @@ impl Editor {
                 task,
                 profile_name,
                 model_name,
+                turn: Box::new(runtime_turn),
+                branch_generation,
             });
             chat.pending_tool_approval = None;
             chat.streaming_content = Some(String::new());
             chat.streaming_thinking = None;
+            chat.runtime_recorded_content_bytes = 0;
+            chat.runtime_recorded_thinking_bytes = 0;
+            chat.runtime_last_content_event = None;
+            chat.runtime_last_reasoning_event = None;
             chat.streaming_tool_calls.clear();
         }
 
@@ -398,6 +413,8 @@ impl Editor {
             chat.pending_tool_approval = None;
             chat.streaming_content = None;
             chat.streaming_thinking = None;
+            chat.runtime_recorded_content_bytes = 0;
+            chat.runtime_recorded_thinking_bytes = 0;
             if chat.viewport.follow_latest {
                 chat.viewport.row_scroll_from_bottom = 0;
                 chat.viewport.pinned_base_total_rows = None;

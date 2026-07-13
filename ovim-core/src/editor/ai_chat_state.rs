@@ -10,6 +10,7 @@ use std::path::PathBuf;
 /// paths outside the active project boundary.
 pub struct PendingToolApproval {
     pub tool_call: ToolCallInfo,
+    pub runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
     pub remaining_tool_calls: Vec<ToolCallInfo>,
     pub model_name: String,
     pub requested_path: PathBuf,
@@ -69,6 +70,10 @@ pub struct AiChatState {
     /// Buffer ID where the chat was originally opened.
     /// Used for the conversation key — never changes during the session.
     pub origin_buffer_id: BufferId,
+    /// Stable runtime branch locator for the active conversation trajectory.
+    pub runtime_branch: crate::agent_runtime::BranchLocator,
+    /// Active ovim turn. Provider continuations and dynamic tools share it.
+    pub runtime_turn: Option<Box<crate::agent_runtime::PendingTurnRef>>,
     /// Buffer ID that mutations target. Updated by `open_file`.
     pub active_buffer_id: BufferId,
     /// Chat input text.
@@ -97,6 +102,12 @@ pub struct AiChatState {
     pub streaming_content: Option<String>,
     /// Accumulated streaming thinking (committed on Done).
     pub streaming_thinking: Option<String>,
+    /// Byte offsets already emitted to the normalized run log. The UI keeps
+    /// one accumulated message while provenance can preserve tool chronology.
+    pub runtime_recorded_content_bytes: usize,
+    pub runtime_recorded_thinking_bytes: usize,
+    pub runtime_last_content_event: Option<crate::run_log::EventId>,
+    pub runtime_last_reasoning_event: Option<crate::run_log::EventId>,
     /// Node IDs of thinking messages that are expanded in the UI.
     pub expanded_thinking: HashSet<NodeId>,
     /// Whether the tree panel sidebar is open.
@@ -145,6 +156,8 @@ impl AiChatState {
         Self {
             opts,
             origin_buffer_id: active_buffer_id,
+            runtime_branch: crate::agent_runtime::BranchLocator("branch-0".into()),
+            runtime_turn: None,
             active_buffer_id,
             input: String::new(),
             input_cursor: 0,
@@ -159,6 +172,10 @@ impl AiChatState {
             last_escape: None,
             streaming_content: None,
             streaming_thinking: None,
+            runtime_recorded_content_bytes: 0,
+            runtime_recorded_thinking_bytes: 0,
+            runtime_last_content_event: None,
+            runtime_last_reasoning_event: None,
             expanded_thinking: HashSet::new(),
             tree_panel_open: false,
             tree_panel_cursor: 0,
@@ -185,6 +202,10 @@ pub struct PendingAiChatJob {
     pub task: tokio::task::JoinHandle<()>,
     pub profile_name: String,
     pub model_name: String,
+    /// Runtime identity captured before the provider request was spawned.
+    pub turn: Box<crate::agent_runtime::PendingTurnRef>,
+    /// Prevents late output from attaching to a newly selected UI branch.
+    pub branch_generation: u64,
 }
 
 pub struct ScratchBufferState {

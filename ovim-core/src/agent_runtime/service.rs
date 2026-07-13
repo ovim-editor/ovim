@@ -101,6 +101,8 @@ enum ToolState {
 struct ToolRecord {
     turn_id: TurnId,
     state: ToolState,
+    tool_name: String,
+    provider_call_id: Option<String>,
 }
 
 struct BranchState {
@@ -341,6 +343,28 @@ impl AgentRuntime {
         source: &BranchLocator,
         target: BranchLocator,
     ) -> Result<BranchRef, AgentRuntimeError> {
+        let source_tip = self
+            .conversations
+            .get(locator)
+            .ok_or(AgentRuntimeError::UnknownConversation)?
+            .branches
+            .get(source)
+            .ok_or(AgentRuntimeError::UnknownBranch)?
+            .last_event
+            .clone();
+        self.fork_branch_at(locator, source, target, source_tip)
+    }
+
+    /// Fork a trajectory from an earlier recorded event rather than the
+    /// source branch's current tip. Conversation UIs use this when editing a
+    /// previous user message.
+    pub fn fork_branch_at(
+        &mut self,
+        locator: &ConversationLocator,
+        source: &BranchLocator,
+        target: BranchLocator,
+        causal_event: EventId,
+    ) -> Result<BranchRef, AgentRuntimeError> {
         let state = self
             .conversations
             .get_mut(locator)
@@ -363,7 +387,7 @@ impl AgentRuntime {
             target,
             BranchState {
                 reference: branch.clone(),
-                last_event: source.last_event.clone(),
+                last_event: causal_event,
             },
         );
         Ok(branch)
@@ -394,6 +418,24 @@ impl AgentRuntime {
         self.conversations
             .get(locator)
             .map(|state| &state.reference)
+    }
+
+    /// Transient editor locator for the currently selected durable branch.
+    pub fn selected_branch(
+        &self,
+        locator: &ConversationLocator,
+    ) -> Option<(&BranchLocator, &BranchRef)> {
+        let state = self.conversations.get(locator)?;
+        let branch = state.branches.get(&state.selected_branch)?;
+        Some((&state.selected_branch, &branch.reference))
+    }
+
+    pub fn selected_branch_tip(&self, locator: &ConversationLocator) -> Option<&EventId> {
+        let state = self.conversations.get(locator)?;
+        state
+            .branches
+            .get(&state.selected_branch)
+            .map(|branch| &branch.last_event)
     }
 
     pub fn append_reasoning_summary(
@@ -474,6 +516,8 @@ impl AgentRuntime {
             ToolRecord {
                 turn_id: turn.turn_id.clone(),
                 state: ToolState::Intended,
+                tool_name: tool_name.clone(),
+                provider_call_id: provider_call_id.clone(),
             },
         );
         Ok(PendingToolRef {
@@ -625,6 +669,46 @@ impl AgentRuntime {
         detail: Option<String>,
     ) -> Result<EventEnvelope, AgentRuntimeError> {
         let (sink, state) = self.active_state(turn)?;
+        if terminal != TurnLifecycleState::Completed {
+            let mut outstanding = state
+                .tools
+                .iter()
+                .filter(|(_, tool)| {
+                    tool.turn_id == turn.turn_id && tool.state != ToolState::Terminal
+                })
+                .map(|(operation_id, tool)| {
+                    (
+                        operation_id.clone(),
+                        tool.tool_name.clone(),
+                        tool.provider_call_id.clone(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            outstanding.sort_by(|left, right| left.0.cmp(&right.0));
+            for (operation_id, tool_name, provider_call_id) in outstanding {
+                let previous = state.branches[&state.selected_branch].last_event.clone();
+                let interrupted = append_for(
+                    sink,
+                    &state.reference,
+                    Some(turn.turn_id.clone()),
+                    Some(previous),
+                    EventActor::Agent(turn.agent_id.clone()),
+                    EventKind::ToolResult(ToolResultEvent {
+                        outcome: ToolOutcome::Interrupted,
+                        summary: Some(format!("{tool_name} interrupted with its turn")),
+                        result: None,
+                    }),
+                    Some(operation_id.clone()),
+                    provider_call_id,
+                )?;
+                state
+                    .branches
+                    .get_mut(&state.selected_branch)
+                    .unwrap()
+                    .last_event = interrupted.event_id;
+                state.tools.get_mut(&operation_id).unwrap().state = ToolState::Terminal;
+            }
+        }
         let previous = state.branches[&state.selected_branch].last_event.clone();
         let event = append_for(
             sink,
@@ -932,6 +1016,44 @@ mod tests {
         ));
         runtime.complete_tool(&turn, &tool, None, None).unwrap();
         runtime.complete_turn(&turn).unwrap();
+    }
+
+    #[test]
+    fn interrupted_turn_terminalizes_outstanding_tool_operations_first() {
+        let mut runtime = AgentRuntime::new();
+        let turn = runtime
+            .begin_turn("chat", "main", "inspect", AgentSpec::chat())
+            .unwrap();
+        let tool = runtime
+            .record_tool_intent(
+                &turn,
+                "read_file",
+                json!({"path": "src/lib.rs"}),
+                ToolSideEffect::Read,
+                Some("call-1".into()),
+            )
+            .unwrap();
+        runtime.start_tool(&turn, &tool).unwrap();
+
+        runtime
+            .interrupt_turn(&turn, Some("chat closed".into()))
+            .unwrap();
+
+        let events = runtime.events(&turn.run_id).unwrap();
+        assert!(matches!(
+            &events[events.len() - 2].kind,
+            EventKind::ToolResult(ToolResultEvent {
+                outcome: ToolOutcome::Interrupted,
+                ..
+            })
+        ));
+        assert!(matches!(
+            &events.last().unwrap().kind,
+            EventKind::TurnLifecycle(TurnLifecycleEvent {
+                state: TurnLifecycleState::Interrupted,
+                ..
+            })
+        ));
     }
 
     #[test]

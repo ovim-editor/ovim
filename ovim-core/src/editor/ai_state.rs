@@ -1,4 +1,4 @@
-use crate::ai::chat_types::ConversationTree;
+use crate::ai::chat_types::{ConversationTree, NodeId};
 use crate::ai::tools::ToolRegistry;
 use crate::ai::{AiConfig, AiJobResult, EditFormat, PROFILE_LOCAL};
 use crate::buffer::BufferId;
@@ -6,6 +6,12 @@ use crate::mode::Mode;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::time::Instant;
+
+#[derive(Debug, Clone)]
+pub struct ChatRuntimeNodeRef {
+    pub event_id: crate::run_log::EventId,
+    pub branch: crate::agent_runtime::BranchLocator,
+}
 
 #[derive(Debug, Clone, Default)]
 pub struct AiPromptState {
@@ -65,6 +71,8 @@ pub struct PendingAiJob {
 }
 
 pub struct AiState {
+    /// Provider-independent run/agent/turn history and transient bindings.
+    pub agent_runtime: Box<crate::agent_runtime::AgentRuntime>,
     pub config: AiConfig,
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
@@ -81,6 +89,9 @@ pub struct AiState {
     pub chat: Option<super::ai_chat_state::AiChatState>,
     /// Persistent conversations keyed by (stable_buffer_id, conversation_name).
     pub conversations: HashMap<(BufferId, String), ConversationTree>,
+    /// UI message-node projection onto durable event/branch identity.
+    pub conversation_runtime_nodes:
+        Box<HashMap<(BufferId, String), HashMap<NodeId, ChatRuntimeNodeRef>>>,
     /// Registry of all available tools.
     pub tool_registry: ToolRegistry,
     /// Whether we've already asked for no-repo folder access in this process session.
@@ -120,6 +131,7 @@ impl Default for AiState {
         }
 
         Self {
+            agent_runtime: Box::new(crate::agent_runtime::AgentRuntime::new()),
             config,
             prompt: AiPromptState::default(),
             active_selection: None,
@@ -134,6 +146,7 @@ impl Default for AiState {
             last_observed_buffer_version: 0,
             chat: None,
             conversations: HashMap::new(),
+            conversation_runtime_nodes: Box::new(HashMap::new()),
             tool_registry: ToolRegistry::new(),
             no_repo_session_prompted: false,
             no_repo_session_allowed_root: None,

@@ -143,7 +143,7 @@ impl ConversationTree {
     // Append methods — all create a node, link it, update cache
     // ------------------------------------------------------------------
 
-    pub fn append_user_message(&mut self, content: String) {
+    pub fn append_user_message(&mut self, content: String) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::User,
             content,
@@ -151,10 +151,10 @@ impl ConversationTree {
             timestamp: Instant::now(),
             tool_calls: vec![],
             tool_call_id: None,
-        });
+        })
     }
 
-    pub fn append_assistant_message(&mut self, content: String, model: String) {
+    pub fn append_assistant_message(&mut self, content: String, model: String) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Assistant,
             content,
@@ -162,7 +162,7 @@ impl ConversationTree {
             timestamp: Instant::now(),
             tool_calls: vec![],
             tool_call_id: None,
-        });
+        })
     }
 
     pub fn append_assistant_message_with_tools(
@@ -170,7 +170,7 @@ impl ConversationTree {
         content: String,
         model: String,
         tool_calls: Vec<ToolCallInfo>,
-    ) {
+    ) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Assistant,
             content,
@@ -178,10 +178,10 @@ impl ConversationTree {
             timestamp: Instant::now(),
             tool_calls,
             tool_call_id: None,
-        });
+        })
     }
 
-    pub fn append_tool_result(&mut self, tool_call_id: String, content: String) {
+    pub fn append_tool_result(&mut self, tool_call_id: String, content: String) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Tool,
             content,
@@ -189,10 +189,10 @@ impl ConversationTree {
             timestamp: Instant::now(),
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id),
-        });
+        })
     }
 
-    pub fn append_thinking_message(&mut self, content: String, model: String) {
+    pub fn append_thinking_message(&mut self, content: String, model: String) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Thinking,
             content,
@@ -200,10 +200,10 @@ impl ConversationTree {
             timestamp: Instant::now(),
             tool_calls: vec![],
             tool_call_id: None,
-        });
+        })
     }
 
-    pub fn append_error(&mut self, content: String) {
+    pub fn append_error(&mut self, content: String) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Error,
             content,
@@ -211,7 +211,7 @@ impl ConversationTree {
             timestamp: Instant::now(),
             tool_calls: vec![],
             tool_call_id: None,
-        });
+        })
     }
 
     pub fn is_empty(&self) -> bool {
@@ -239,20 +239,26 @@ impl ConversationTree {
     /// Switch to the branch containing `node_id` by walking down first-child
     /// pointers to a leaf, then rebuild the cache.
     pub fn switch_to_branch(&mut self, node_id: NodeId) {
-        if !self.nodes.contains_key(&node_id) {
+        let Some(current) = self.branch_leaf_id(node_id) else {
             return;
+        };
+        self.active_leaf = Some(current);
+        self.rebuild_branch_cache();
+        self.branch_generation = self.branch_generation.wrapping_add(1);
+    }
+
+    pub fn branch_leaf_id(&self, node_id: NodeId) -> Option<NodeId> {
+        if !self.nodes.contains_key(&node_id) {
+            return None;
         }
         let mut current = node_id;
         loop {
             let children = &self.nodes[&current].children;
             if children.is_empty() {
-                break;
+                return Some(current);
             }
             current = children[0];
         }
-        self.active_leaf = Some(current);
-        self.rebuild_branch_cache();
-        self.branch_generation = self.branch_generation.wrapping_add(1);
     }
 
     /// Root-to-leaf path of `ChatNode` refs for the active branch.
@@ -291,7 +297,7 @@ impl ConversationTree {
         id
     }
 
-    fn append_node(&mut self, message: ChatMessage) {
+    fn append_node(&mut self, message: ChatMessage) -> NodeId {
         let id = self.next_id();
         let parent = self.active_leaf;
 
@@ -317,6 +323,7 @@ impl ConversationTree {
 
         self.active_leaf = Some(id);
         self.rebuild_branch_cache();
+        id
     }
 
     fn rebuild_branch_cache(&mut self) {

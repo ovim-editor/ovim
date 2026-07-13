@@ -495,6 +495,7 @@ impl Editor {
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error("Tool call iteration limit reached.".to_string());
             }
+            self.ai_runtime_fail_turn("tool call iteration limit reached");
             self.clear_streaming_state();
             return true;
         }
@@ -509,12 +510,20 @@ impl Editor {
         }
 
         // 1. Commit content + tool_calls as assistant message
-        if let Some(conv) = self.conversation_mut() {
+        let event_id = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.runtime_last_content_event.clone());
+        let node_id = self.conversation_mut().map(|conv| {
             conv.append_assistant_message_with_tools(
                 content,
                 model_name.to_string(),
                 tool_calls.clone(),
-            );
+            )
+        });
+        if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
+            self.record_ai_chat_node(node_id, event_id);
         }
 
         // 2. Execute tools. May pause for user approval.
@@ -534,13 +543,19 @@ impl Editor {
         };
 
         if !allow {
-            self.record_tool_event_summary(
-                &pending.tool_call,
-                &ToolResult::Error(format!(
-                    "user denied outside-project access for '{}'",
-                    pending.requested_path.display()
-                )),
-            );
+            let denied_result = ToolResult::Error(format!(
+                "user denied outside-project access for '{}'",
+                pending.requested_path.display()
+            ));
+            if let (Some(turn), Some(runtime_tool)) =
+                (self.active_ai_runtime_turn(), pending.runtime_tool.as_ref())
+            {
+                if let Err(error) = self.ai_runtime_finish_tool(&turn, runtime_tool, &denied_result)
+                {
+                    crate::log_warn!("agent_runtime", "failed to record denied tool: {error}");
+                }
+            }
+            self.record_tool_event_summary(&pending.tool_call, &denied_result);
             let result_content = self.format_tool_result_with_target(
                 &pending.tool_call,
                 &ToolResult::Error(format!(
@@ -576,6 +591,16 @@ impl Editor {
             self.dispatch_tool_call_with_approval(&pending.tool_call, Some(&pending.approval_root));
         match outcome {
             ToolDispatchOutcome::Completed(result) => {
+                if let (Some(turn), Some(runtime_tool)) =
+                    (self.active_ai_runtime_turn(), pending.runtime_tool.as_ref())
+                {
+                    if let Err(error) = self.ai_runtime_finish_tool(&turn, runtime_tool, &result) {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to record approved tool: {error}"
+                        );
+                    }
+                }
                 self.record_tool_event_summary(&pending.tool_call, &result);
                 let result_content =
                     self.format_tool_result_with_target(&pending.tool_call, &result);
@@ -595,6 +620,7 @@ impl Editor {
             ToolDispatchOutcome::ApprovalRequired(req) => {
                 self.pause_for_tool_approval(PendingToolApproval {
                     tool_call: pending.tool_call,
+                    runtime_tool: pending.runtime_tool,
                     remaining_tool_calls: pending.remaining_tool_calls,
                     model_name: pending.model_name,
                     requested_path: req.requested_path.clone(),
@@ -680,12 +706,43 @@ impl Editor {
                 if let Some(conv) = self.conversation_mut() {
                     conv.append_error("Tool call iteration limit reached.".to_string());
                 }
+                self.ai_runtime_fail_turn("tool call iteration limit reached");
                 self.clear_streaming_state();
                 return true;
             }
 
+            let runtime_tool = match self.active_ai_runtime_turn() {
+                Some(turn) => match self.ai_runtime_record_tool_intent(&turn, tc) {
+                    Ok(tool) => {
+                        if let Err(error) = self.ai_runtime_start_tool(&turn, &tool) {
+                            self.ai_runtime_fail_turn(format!(
+                                "failed to record tool start: {error}"
+                            ));
+                            self.clear_streaming_state();
+                            return true;
+                        }
+                        Some((turn, tool))
+                    }
+                    Err(error) => {
+                        self.ai_runtime_fail_turn(format!("failed to record tool intent: {error}"));
+                        self.clear_streaming_state();
+                        return true;
+                    }
+                },
+                None => None,
+            };
+
             match self.dispatch_tool_call_with_approval(tc, None) {
                 ToolDispatchOutcome::Completed(result) => {
+                    if let Some((turn, tool)) = runtime_tool.as_ref() {
+                        if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result) {
+                            self.ai_runtime_fail_turn(format!(
+                                "failed to record tool result: {error}"
+                            ));
+                            self.clear_streaming_state();
+                            return true;
+                        }
+                    }
                     self.record_tool_event_summary(tc, &result);
                     let result_content = self.format_tool_result_with_target(tc, &result);
                     if let Some(conv) = self.conversation_mut() {
@@ -700,6 +757,7 @@ impl Editor {
                     }
                     self.pause_for_tool_approval(PendingToolApproval {
                         tool_call: tc.clone(),
+                        runtime_tool: runtime_tool.map(|(_, tool)| tool),
                         remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
                         model_name,
                         requested_path: req.requested_path,
@@ -717,6 +775,7 @@ impl Editor {
         }
 
         if let Err(e) = self.spawn_streaming_request() {
+            self.ai_runtime_fail_turn(format!("failed to continue after tools: {e}"));
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error(format!("Failed to continue: {e}"));
             }
@@ -1927,5 +1986,42 @@ mod tests {
                 panic!("unexpected approval request: {}", req.message);
             }
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn structured_tool_batch_emits_runtime_intent_start_and_result() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".into(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let turn = editor.begin_ai_runtime_turn("check diagnostics").unwrap();
+        let run_id = turn.run_id.clone();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+
+        editor.execute_tool_call_batch(
+            vec![ToolCallInfo {
+                id: "structured-call-1".into(),
+                name: "read_diagnostics".into(),
+                arguments: serde_json::json!({}),
+            }],
+            "test".into(),
+        );
+
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        let labels = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                crate::run_log::EventKind::ToolIntent(_) => Some("intent"),
+                crate::run_log::EventKind::ToolStarted(_) => Some("started"),
+                crate::run_log::EventKind::ToolResult(_) => Some("result"),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(labels, ["intent", "started", "result"]);
+        editor.close_ai_chat();
     }
 }

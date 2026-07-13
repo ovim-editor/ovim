@@ -359,9 +359,7 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         .and_then(|c| c.node(node_id))
                         .and_then(|n| n.parent);
                     if let Some(pid) = parent_id {
-                        if let Some(conv) = editor.conversation_mut() {
-                            conv.fork_from(pid);
-                        }
+                        editor.fork_ai_chat_runtime_from(pid);
                     }
                     // Return to text input for the new message
                     if let Some(chat) = editor.ai_state.chat.as_mut() {
@@ -411,9 +409,7 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         KeyCode::Enter => {
             let node_id = tree_panel_selected_node_id(editor);
             if let Some(id) = node_id {
-                if let Some(conv) = editor.conversation_mut() {
-                    conv.switch_to_branch(id);
-                }
+                editor.switch_ai_chat_runtime_branch(id);
                 if let Some(chat) = editor.ai_state.chat.as_mut() {
                     chat.focus = ChatFocus::TextInput;
                 }
@@ -608,6 +604,7 @@ mod tests {
                             name: "read_file".to_string(),
                             arguments: serde_json::json!({}),
                         },
+                        runtime_tool: None,
                         remaining_tool_calls: Vec::new(),
                         model_name: "test-model".to_string(),
                         requested_path: PathBuf::from("/tmp/demo.txt"),
@@ -627,6 +624,7 @@ mod tests {
                             name: "read_file".to_string(),
                             arguments: serde_json::json!({}),
                         },
+                        runtime_tool: None,
                         remaining_tool_calls: Vec::new(),
                         model_name: "test-model".to_string(),
                         requested_path: PathBuf::from("/tmp/demo.txt"),
