@@ -54,14 +54,17 @@ async fn request_ephemeral(
     tools: Option<&[Value]>,
     stream_tx: Option<UnboundedSender<StreamChunk>>,
 ) -> Result<String> {
-    let project_tools_enabled = stream_tx.is_some();
     let mut client = AppServerClient::spawn(cwd).await?;
-    client.initialize(project_tools_enabled).await?;
+    client.initialize().await?;
     let thread_id = client
         .start_thread(profile, instructions, cwd, tools.unwrap_or_default(), true)
         .await?;
-    client.start_turn(profile, &thread_id, input).await?;
-    let output = client.stream_turn(stream_tx, cwd).await;
+    let turn = client
+        .start_turn(profile, &thread_id, input, CodexTurnOptions::default())
+        .await?;
+    let output = client
+        .stream_turn(stream_tx, cwd, &thread_id, &turn.id)
+        .await;
     client.stop().await;
     output
 }
@@ -117,7 +120,7 @@ async fn request_persistent(
         // resumed safely on a newly spawned process without an explicit resume.
         runtime.threads.clear();
         let mut client = AppServerClient::spawn(cwd).await?;
-        client.initialize(true).await?;
+        client.initialize().await?;
         runtime.client = Some(client);
     }
 
@@ -154,8 +157,12 @@ async fn request_persistent(
         continuation_input
     };
     let result = async {
-        client.start_turn(profile, &thread_id, input).await?;
-        client.stream_turn(stream_tx, cwd).await
+        let turn = client
+            .start_turn(profile, &thread_id, input, CodexTurnOptions::default())
+            .await?;
+        client
+            .stream_turn(stream_tx, cwd, &thread_id, &turn.id)
+            .await
     }
     .await;
     if client.is_alive() {
@@ -188,7 +195,7 @@ fn request_cwd(file_path: Option<&str>) -> Result<PathBuf> {
         .to_path_buf())
 }
 
-struct AppServerClient {
+pub(crate) struct AppServerClient {
     child: Child,
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
@@ -196,7 +203,7 @@ struct AppServerClient {
 }
 
 impl AppServerClient {
-    async fn spawn(cwd: &Path) -> Result<Self> {
+    pub(crate) async fn spawn(cwd: &Path) -> Result<Self> {
         let mut child = Command::new("codex")
             .args(["app-server", "--stdio"])
             .current_dir(cwd)
@@ -240,7 +247,7 @@ impl AppServerClient {
         id
     }
 
-    async fn start_thread(
+    pub(crate) async fn start_thread(
         &mut self,
         profile: &AiProfileConfig,
         instructions: &str,
@@ -277,38 +284,40 @@ impl AppServerClient {
             .context("Codex thread/start response did not include a thread id")
     }
 
-    async fn start_turn(
+    /// Rejoins a persisted Codex thread. The caller must only reuse an id whose
+    /// stored configuration fingerprint still matches these overrides.
+    #[allow(dead_code)] // Transport seam for durable provider-session wiring.
+    pub(crate) async fn resume_thread(
+        &mut self,
+        profile: &AiProfileConfig,
+        cwd: &Path,
+        thread_id: &str,
+    ) -> Result<String> {
+        let params = thread_resume_params(profile, cwd, thread_id);
+        let request_id = self.request_id();
+        self.send(json!({ "method": "thread/resume", "id": request_id, "params": params }))
+            .await?;
+        let resumed = self.wait_for_response(request_id, None).await?;
+        parse_resumed_thread_id(&resumed, thread_id)
+    }
+
+    pub(crate) async fn start_turn(
         &mut self,
         profile: &AiProfileConfig,
         thread_id: &str,
         input: &str,
-    ) -> Result<()> {
-        let mut params = json!({
-            "threadId": thread_id,
-            "input": [{ "type": "text", "text": input }],
-            "model": profile.model,
-        });
-        if let Some(effort) = profile.reasoning_effort.as_deref() {
-            params["effort"] = json!(effort);
-        }
+        options: CodexTurnOptions<'_>,
+    ) -> Result<CodexTurn> {
+        let params = turn_start_params(profile, thread_id, input, options);
         let request_id = self.request_id();
         self.send(json!({ "method": "turn/start", "id": request_id, "params": params }))
             .await?;
-        self.wait_for_response(request_id, None).await?;
-        Ok(())
+        let started = self.wait_for_response(request_id, None).await?;
+        parse_started_turn(&started)
     }
 
-    async fn initialize(&mut self, experimental_api: bool) -> Result<()> {
-        let mut params = json!({
-            "clientInfo": {
-                "name": "ovim",
-                "title": "ovim",
-                "version": CLIENT_VERSION,
-            }
-        });
-        if experimental_api {
-            params["capabilities"] = json!({ "experimentalApi": true });
-        }
+    pub(crate) async fn initialize(&mut self) -> Result<()> {
+        let params = initialize_params();
         self.send(json!({
             "method": "initialize",
             "id": 0,
@@ -366,16 +375,18 @@ impl AppServerClient {
         }
     }
 
-    async fn stream_turn(
+    pub(crate) async fn stream_turn(
         &mut self,
         stream_tx: Option<UnboundedSender<StreamChunk>>,
         _cwd: &Path,
+        thread_id: &str,
+        turn_id: &str,
     ) -> Result<String> {
         let mut output = String::new();
         loop {
             let message = self.next_message().await?;
             if message.get("method").and_then(Value::as_str) == Some("item/tool/call") {
-                self.respond_to_tool_call(&message, stream_tx.as_ref())
+                self.respond_to_tool_call(&message, stream_tx.as_ref(), thread_id, turn_id)
                     .await?;
                 continue;
             }
@@ -435,7 +446,7 @@ impl AppServerClient {
         }
     }
 
-    async fn stop(&mut self) {
+    pub(crate) async fn stop(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
     }
@@ -444,42 +455,36 @@ impl AppServerClient {
         &mut self,
         message: &Value,
         stream_tx: Option<&UnboundedSender<StreamChunk>>,
+        thread_id: &str,
+        turn_id: &str,
     ) -> Result<()> {
-        let id = message
-            .get("id")
-            .cloned()
-            .context("dynamic tool call has no id")?;
-        let tool = message
-            .pointer("/params/tool")
-            .and_then(Value::as_str)
-            .unwrap_or("");
-        let arguments = message.pointer("/params/arguments").unwrap_or(&Value::Null);
+        let call = parse_dynamic_tool_call(message, thread_id, turn_id)?;
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         let Some(stream_tx) = stream_tx else {
-            bail!("Codex requested tool '{tool}' outside an interactive chat");
+            bail!(
+                "Codex requested tool '{}' outside an interactive chat",
+                call.tool
+            );
         };
         stream_tx
             .send(StreamChunk::DynamicToolRequest {
                 call: super::ToolCallInfo {
-                    id: id
-                        .as_str()
-                        .map(str::to_string)
-                        .unwrap_or_else(|| id.to_string()),
-                    name: tool.to_string(),
-                    arguments: arguments.clone(),
+                    id: call.call_id.to_string(),
+                    name: call.tool.to_string(),
+                    arguments: call.arguments.clone(),
                 },
                 response: response_tx,
             })
-            .map_err(|_| anyhow!("ovim editor closed while executing '{tool}'"))?;
+            .map_err(|_| anyhow!("ovim editor closed while executing '{}'", call.tool))?;
         let result = response_rx
             .await
-            .map_err(|_| anyhow!("ovim dropped the response for '{tool}'"))?;
+            .map_err(|_| anyhow!("ovim dropped the response for '{}'", call.tool))?;
         let (text, success) = match result {
             Ok(text) => (text, true),
             Err(error) => (error, false),
         };
         self.send(json!({
-            "id": id,
+            "id": call.response_id,
             "result": {
                 "contentItems": [{ "type": "inputText", "text": text }],
                 "success": success,
@@ -487,6 +492,127 @@ impl AppServerClient {
         }))
         .await
     }
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+pub(crate) struct CodexTurnOptions<'a> {
+    pub(crate) output_schema: Option<&'a Value>,
+    pub(crate) client_user_message_id: Option<&'a str>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct CodexTurn {
+    pub(crate) id: String,
+}
+
+fn initialize_params() -> Value {
+    json!({
+        "clientInfo": {
+            "name": "ovim",
+            "title": "ovim",
+            "version": CLIENT_VERSION,
+        },
+        "capabilities": { "experimentalApi": true },
+    })
+}
+
+fn thread_resume_params(profile: &AiProfileConfig, cwd: &Path, thread_id: &str) -> Value {
+    json!({
+        "threadId": thread_id,
+        "model": profile.model,
+        "cwd": cwd,
+        "approvalPolicy": "never",
+        "sandbox": "read-only",
+    })
+}
+
+fn parse_resumed_thread_id(response: &Value, expected_thread_id: &str) -> Result<String> {
+    let resumed_id = response
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+        .context("Codex thread/resume response did not include a thread id")?;
+    if resumed_id != expected_thread_id {
+        bail!("Codex resumed thread '{resumed_id}' instead of requested thread '{expected_thread_id}'");
+    }
+    Ok(resumed_id.to_string())
+}
+
+fn parse_started_turn(response: &Value) -> Result<CodexTurn> {
+    let id = response
+        .pointer("/result/turn/id")
+        .and_then(Value::as_str)
+        .context("Codex turn/start response did not include a turn id")?;
+    Ok(CodexTurn { id: id.to_string() })
+}
+
+fn turn_start_params(
+    profile: &AiProfileConfig,
+    thread_id: &str,
+    input: &str,
+    options: CodexTurnOptions<'_>,
+) -> Value {
+    let mut params = json!({
+        "threadId": thread_id,
+        "input": [{ "type": "text", "text": input }],
+        "model": profile.model,
+    });
+    if let Some(effort) = profile.reasoning_effort.as_deref() {
+        params["effort"] = json!(effort);
+    }
+    if let Some(output_schema) = options.output_schema {
+        params["outputSchema"] = output_schema.clone();
+    }
+    if let Some(client_user_message_id) = options.client_user_message_id {
+        params["clientUserMessageId"] = json!(client_user_message_id);
+    }
+    params
+}
+
+struct DynamicToolCall<'a> {
+    response_id: &'a Value,
+    call_id: &'a str,
+    tool: &'a str,
+    arguments: &'a Value,
+}
+
+fn parse_dynamic_tool_call<'a>(
+    message: &'a Value,
+    expected_thread_id: &str,
+    expected_turn_id: &str,
+) -> Result<DynamicToolCall<'a>> {
+    let response_id = message
+        .get("id")
+        .context("dynamic tool call has no JSON-RPC id")?;
+    let thread_id = message
+        .pointer("/params/threadId")
+        .and_then(Value::as_str)
+        .context("dynamic tool call has no threadId")?;
+    if thread_id != expected_thread_id {
+        bail!("dynamic tool call belongs to thread '{thread_id}', not active thread '{expected_thread_id}'");
+    }
+    let turn_id = message
+        .pointer("/params/turnId")
+        .and_then(Value::as_str)
+        .context("dynamic tool call has no turnId")?;
+    if turn_id != expected_turn_id {
+        bail!(
+            "dynamic tool call belongs to turn '{turn_id}', not active turn '{expected_turn_id}'"
+        );
+    }
+    Ok(DynamicToolCall {
+        response_id,
+        call_id: message
+            .pointer("/params/callId")
+            .and_then(Value::as_str)
+            .context("dynamic tool call has no callId")?,
+        tool: message
+            .pointer("/params/tool")
+            .and_then(Value::as_str)
+            .context("dynamic tool call has no tool")?,
+        arguments: message
+            .pointer("/params/arguments")
+            .context("dynamic tool call has no arguments")?,
+    })
 }
 
 fn codex_dynamic_tool_specs(tools: &[Value]) -> Value {
@@ -628,7 +754,136 @@ fn emit_delta(message: &Value, stream_tx: Option<&UnboundedSender<StreamChunk>>)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::{
+        AgentLoopConfig, AiProviderKind, ContextGatheringPolicy, EditFormat, ProfileScope,
+        RetryPolicy,
+    };
     use tempfile::tempdir;
+
+    fn profile() -> AiProfileConfig {
+        AiProfileConfig {
+            name: "codex_test".into(),
+            provider: AiProviderKind::Codex,
+            model: "gpt-5.6-luna".into(),
+            base_url: None,
+            api_key: None,
+            api_key_env: None,
+            temperature: None,
+            max_tokens: None,
+            system_prompt: None,
+            edit_format: EditFormat::default(),
+            chat_edit_format: None,
+            context: ContextGatheringPolicy::default(),
+            agent_loop: AgentLoopConfig::default(),
+            tools: vec![],
+            scope: ProfileScope::default(),
+            edit_prompt: None,
+            chat_prompt: None,
+            chat_edit_prompt: None,
+            reasoning_effort: Some("low".into()),
+            verbosity: None,
+            syntax_check: None,
+            retry: RetryPolicy::default(),
+        }
+    }
+
+    #[test]
+    fn initialize_opts_into_experimental_protocol() {
+        let params = initialize_params();
+        assert_eq!(params["capabilities"]["experimentalApi"], true);
+        assert_eq!(params["clientInfo"]["name"], "ovim");
+    }
+
+    #[test]
+    fn turn_start_fixture_carries_stable_schema_message_id_and_effort() {
+        let schema = json!({
+            "type": "object",
+            "required": ["verdict"],
+            "properties": { "verdict": { "enum": ["allow", "ask", "deny"] } }
+        });
+        let params = turn_start_params(
+            &profile(),
+            "thread-7",
+            "classify",
+            CodexTurnOptions {
+                output_schema: Some(&schema),
+                client_user_message_id: Some("operation-42"),
+            },
+        );
+
+        assert_eq!(params["threadId"], "thread-7");
+        assert_eq!(params["clientUserMessageId"], "operation-42");
+        assert_eq!(params["outputSchema"], schema);
+        assert_eq!(params["effort"], "low");
+    }
+
+    #[test]
+    fn resume_fixture_prefers_native_thread_id_with_safe_overrides() {
+        let cwd = Path::new("/tmp/project");
+        let params = thread_resume_params(&profile(), cwd, "thread-7");
+        assert_eq!(params["threadId"], "thread-7");
+        assert_eq!(params["model"], "gpt-5.6-luna");
+        assert_eq!(params["approvalPolicy"], "never");
+        assert_eq!(params["sandbox"], "read-only");
+        assert!(params.get("developerInstructions").is_none());
+    }
+
+    #[test]
+    fn provider_response_fixtures_capture_turn_and_validate_resumed_thread() {
+        let turn = parse_started_turn(&json!({
+            "id": 4,
+            "result": { "turn": { "id": "turn-8", "items": [], "status": "inProgress" } }
+        }))
+        .unwrap();
+        assert_eq!(turn.id, "turn-8");
+
+        let resumed = json!({
+            "id": 5,
+            "result": { "thread": { "id": "thread-7", "turns": [] } }
+        });
+        assert_eq!(
+            parse_resumed_thread_id(&resumed, "thread-7").unwrap(),
+            "thread-7"
+        );
+        assert!(parse_resumed_thread_id(&resumed, "other-thread").is_err());
+    }
+
+    #[test]
+    fn dynamic_tool_fixture_separates_call_id_from_json_rpc_id() {
+        let message = json!({
+            "method": "item/tool/call",
+            "id": 91,
+            "params": {
+                "threadId": "thread-7",
+                "turnId": "turn-8",
+                "callId": "tool-call-9",
+                "tool": "read_file",
+                "arguments": { "path": "README.md" }
+            }
+        });
+        let call = parse_dynamic_tool_call(&message, "thread-7", "turn-8").unwrap();
+        assert_eq!(call.response_id, &json!(91));
+        assert_eq!(call.call_id, "tool-call-9");
+        assert_eq!(call.tool, "read_file");
+        assert_eq!(call.arguments["path"], "README.md");
+    }
+
+    #[test]
+    fn dynamic_tool_fixture_rejects_cross_turn_or_cross_thread_calls() {
+        let message = json!({
+            "method": "item/tool/call",
+            "id": "rpc-91",
+            "params": {
+                "threadId": "thread-7",
+                "turnId": "turn-8",
+                "callId": "tool-call-9",
+                "tool": "read_file",
+                "arguments": {}
+            }
+        });
+        assert!(parse_dynamic_tool_call(&message, "other-thread", "turn-8").is_err());
+        assert!(parse_dynamic_tool_call(&message, "thread-7", "other-turn").is_err());
+    }
 
     #[test]
     fn converts_ovim_openai_schema_to_codex_dynamic_tool() {
