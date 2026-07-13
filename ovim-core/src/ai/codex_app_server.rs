@@ -17,6 +17,9 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::UnboundedSender;
 
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+pub(crate) const AUTO_MODE_CLASSIFIER_MODEL: &str = "gpt-5.6-luna";
+pub(crate) const AUTO_MODE_CLASSIFIER_EFFORT: &str = "low";
+pub(crate) const AUTO_MODE_CLASSIFIER_EPHEMERAL_THREAD: bool = true;
 
 pub(crate) async fn request(
     profile: &AiProfileConfig,
@@ -84,6 +87,96 @@ struct CodexRuntime {
 fn runtime() -> &'static tokio::sync::Mutex<CodexRuntime> {
     static RUNTIME: OnceLock<tokio::sync::Mutex<CodexRuntime>> = OnceLock::new();
     RUNTIME.get_or_init(|| tokio::sync::Mutex::new(CodexRuntime::default()))
+}
+
+/// The auto-mode classifier keeps a warm app-server process, but never a model
+/// thread. A fresh ephemeral thread for every verdict prevents an earlier
+/// authorization payload from entering a later classification's context.
+fn classifier_client() -> &'static tokio::sync::Mutex<Option<AppServerClient>> {
+    static CLIENT: OnceLock<tokio::sync::Mutex<Option<AppServerClient>>> = OnceLock::new();
+    CLIENT.get_or_init(|| tokio::sync::Mutex::new(None))
+}
+
+pub(crate) async fn request_auto_mode_classification(
+    stable_instructions: &str,
+    output_schema: &Value,
+    dynamic_payload: &str,
+    cwd: &Path,
+    client_user_message_id: &str,
+) -> Result<String> {
+    let profile = auto_mode_classifier_profile();
+    let mut slot = classifier_client().lock().await;
+    if slot.as_mut().is_some_and(|client| !client.is_alive()) {
+        *slot = None;
+    }
+    if slot.is_none() {
+        let mut client = AppServerClient::spawn(cwd).await?;
+        client.initialize().await?;
+        *slot = Some(client);
+    }
+
+    let mut client = slot.take().expect("classifier client initialized");
+
+    let result = async {
+        let thread_id = client
+            .start_thread(
+                &profile,
+                stable_instructions,
+                cwd,
+                &[],
+                AUTO_MODE_CLASSIFIER_EPHEMERAL_THREAD,
+            )
+            .await?;
+        let turn = client
+            .start_turn(
+                &profile,
+                &thread_id,
+                dynamic_payload,
+                CodexTurnOptions {
+                    output_schema: Some(output_schema),
+                    client_user_message_id: Some(client_user_message_id),
+                },
+            )
+            .await?;
+        client.stream_turn(None, cwd, &thread_id, &turn.id).await
+    }
+    .await;
+    if client.is_alive() {
+        *slot = Some(client);
+    }
+    result
+}
+
+fn auto_mode_classifier_profile() -> AiProfileConfig {
+    use super::{
+        AgentLoopConfig, AiProviderKind, ContextGatheringPolicy, EditFormat, ProfileScope,
+        RetryPolicy,
+    };
+
+    AiProfileConfig {
+        name: "codex_auto_mode".into(),
+        provider: AiProviderKind::Codex,
+        model: AUTO_MODE_CLASSIFIER_MODEL.into(),
+        base_url: None,
+        api_key: None,
+        api_key_env: None,
+        temperature: None,
+        max_tokens: None,
+        system_prompt: None,
+        edit_format: EditFormat::default(),
+        chat_edit_format: None,
+        context: ContextGatheringPolicy::default(),
+        agent_loop: AgentLoopConfig::default(),
+        tools: Vec::new(),
+        scope: ProfileScope::default(),
+        edit_prompt: None,
+        chat_prompt: None,
+        chat_edit_prompt: None,
+        reasoning_effort: Some(AUTO_MODE_CLASSIFIER_EFFORT.into()),
+        verbosity: None,
+        syntax_check: None,
+        retry: RetryPolicy::default(),
+    }
 }
 
 async fn request_persistent(
