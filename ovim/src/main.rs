@@ -80,8 +80,10 @@ async fn main() -> Result<()> {
 
     // Check if we're running a subcommand (client mode)
     if let Some(command) = cli.command {
-        // Run subcommand and exit
-        return subcommands::execute_subcommand(command);
+        // Client subcommands use reqwest's blocking client. Run them in an
+        // explicit blocking region so its private runtime can be dropped
+        // safely even though the editor entry point is Tokio-powered.
+        return tokio::task::block_in_place(|| subcommands::execute_subcommand(command));
     }
 
     // Otherwise, run editor mode
