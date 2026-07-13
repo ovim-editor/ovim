@@ -4,11 +4,13 @@
 //! stores can implement [`RunEventSink`] without changing the event vocabulary
 //! consumed by editor projections.
 
+mod artifact;
 mod event;
 mod identity;
 mod sqlite;
 mod store;
 
+pub use artifact::*;
 pub use event::*;
 pub use identity::*;
 pub use sqlite::*;
