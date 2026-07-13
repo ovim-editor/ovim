@@ -30,6 +30,7 @@ pub mod navigation_types;
 pub mod number_ops;
 pub mod rect;
 pub mod repeat_action;
+pub mod run_log;
 pub mod search;
 pub mod session;
 pub mod syntax;
