@@ -5,6 +5,7 @@ use crate::buffer::BufferId;
 use crate::mode::Mode;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Instant;
 
 #[derive(Debug, Clone)]
@@ -73,6 +74,10 @@ pub struct PendingAiJob {
 pub struct AiState {
     /// Provider-independent run/agent/turn history and transient bindings.
     pub agent_runtime: Box<crate::agent_runtime::AgentRuntime>,
+    /// Present when durable run storage could not be initialized and this
+    /// process is recording agent history in memory only. Retained for a later
+    /// status/diagnostics projection rather than silently hiding provenance.
+    pub run_storage_warning: Option<Box<str>>,
     pub config: AiConfig,
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
@@ -108,8 +113,11 @@ pub struct AiState {
     pub next_workflow_run_id: u64,
 }
 
-impl Default for AiState {
-    fn default() -> Self {
+impl AiState {
+    fn with_agent_runtime(
+        agent_runtime: crate::agent_runtime::AgentRuntime,
+        run_storage_warning: Option<Box<str>>,
+    ) -> Self {
         let mut config = AiConfig::load().unwrap_or_else(|_| AiConfig::default());
         let default_profile = if config.profiles.contains_key(&config.default_profile) {
             config.default_profile.clone()
@@ -131,7 +139,8 @@ impl Default for AiState {
         }
 
         Self {
-            agent_runtime: Box::new(crate::agent_runtime::AgentRuntime::new()),
+            agent_runtime: Box::new(agent_runtime),
+            run_storage_warning,
             config,
             prompt: AiPromptState::default(),
             active_selection: None,
@@ -155,5 +164,124 @@ impl Default for AiState {
             pending_workflow_runs: Vec::new(),
             next_workflow_run_id: 1,
         }
+    }
+
+    /// Creates an AI state backed by an explicit durable layout. Tests and
+    /// embedders use this instead of mutating `OVIM_RUNS_DIR` process-wide.
+    pub(crate) fn with_run_storage_layout(
+        layout: crate::run_log::RunStorageLayout,
+    ) -> Result<Self, crate::run_log::RunLogError> {
+        // Validate the root eagerly so a permission or path failure can be
+        // surfaced before the first provider turn begins.
+        layout.ensure_root()?;
+        let sink = crate::run_log::LocalRunStore::new(layout);
+        Ok(Self::with_agent_runtime(
+            crate::agent_runtime::AgentRuntime::with_sink(Arc::new(sink)),
+            None,
+        ))
+    }
+
+    fn with_discovered_run_storage(
+        discovered: Result<crate::run_log::RunStorageLayout, crate::run_log::RunLogError>,
+    ) -> Self {
+        match discovered.and_then(Self::with_run_storage_layout) {
+            Ok(state) => state,
+            Err(error) => Self::with_agent_runtime(
+                crate::agent_runtime::AgentRuntime::new(),
+                Some(
+                    format!(
+                        "durable agent run storage is unavailable; history is in-memory only: {error}"
+                    )
+                    .into_boxed_str(),
+                ),
+            ),
+        }
+    }
+}
+
+impl Default for AiState {
+    fn default() -> Self {
+        // Unit tests must never discover or write the user's real data path.
+        #[cfg(test)]
+        {
+            Self::with_agent_runtime(crate::agent_runtime::AgentRuntime::new(), None)
+        }
+
+        #[cfg(not(test))]
+        {
+            Self::with_discovered_run_storage(crate::run_log::RunStorageLayout::discover())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::agent_runtime::{AgentSpec, BranchLocator};
+    use crate::run_log::{LocalRunStore, RunEventSink, RunStorageLayout};
+
+    #[test]
+    fn explicit_durable_state_persists_runs_across_recreation() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+
+        let first_run = {
+            let mut state = AiState::with_run_storage_layout(layout.clone()).unwrap();
+            let turn = state
+                .agent_runtime
+                .begin_turn(
+                    "first conversation",
+                    BranchLocator("main".into()),
+                    "persist the first turn",
+                    AgentSpec::chat(),
+                )
+                .unwrap();
+            assert!(state.run_storage_warning.is_none());
+            turn.run_id
+        };
+
+        let second_run = {
+            let mut recreated = AiState::with_run_storage_layout(layout.clone()).unwrap();
+            recreated
+                .agent_runtime
+                .begin_turn(
+                    "second conversation",
+                    BranchLocator("main".into()),
+                    "persist after reopening",
+                    AgentSpec::chat(),
+                )
+                .unwrap()
+                .run_id
+        };
+
+        // Runtime conversation maps are intentionally not restored yet. This
+        // assertion covers storage discovery/reopen only.
+        let reopened = LocalRunStore::new(layout);
+        let runs = reopened.runs().unwrap();
+        assert!(runs.contains(&first_run));
+        assert!(runs.contains(&second_run));
+        assert!(!reopened.events(&first_run).unwrap().is_empty());
+        assert!(!reopened.events(&second_run).unwrap().is_empty());
+    }
+
+    #[test]
+    fn ordinary_test_default_is_explicitly_transient() {
+        let state = AiState::default();
+        assert!(state.run_storage_warning.is_none());
+    }
+
+    #[test]
+    fn initialization_failure_falls_back_with_a_visible_warning() {
+        let state =
+            AiState::with_discovered_run_storage(Err(crate::run_log::RunLogError::Storage {
+                operation: "test durable initialization".into(),
+                detail: "read-only location".into(),
+            }));
+
+        assert!(state
+            .run_storage_warning
+            .as_deref()
+            .unwrap()
+            .contains("history is in-memory only"));
     }
 }
