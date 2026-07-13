@@ -16,6 +16,8 @@ pub trait RunEventSink: Send + Sync {
     ) -> Result<Option<EventEnvelope>, RunLogError>;
     fn events(&self, run_id: &RunId) -> Result<Vec<EventEnvelope>, RunLogError>;
     fn last_sequence(&self, run_id: &RunId) -> Result<Option<u64>, RunLogError>;
+    /// Discovers runs known to the store in stable creation order.
+    fn runs(&self) -> Result<Vec<RunId>, RunLogError>;
 }
 
 /// Injectable sources keep ordering tests deterministic without weakening the
@@ -52,6 +54,10 @@ pub enum RunLogError {
     MissingCause { run_id: RunId, event_id: EventId },
     DuplicateEventId { event_id: EventId },
     SequenceExhausted { run_id: RunId },
+    Storage { operation: String, detail: String },
+    Serialization { operation: String, detail: String },
+    Corruption { detail: String },
+    Migration { version: u32, detail: String },
     Poisoned,
 }
 
@@ -70,6 +76,22 @@ impl fmt::Display for RunLogError {
             Self::SequenceExhausted { run_id } => {
                 write!(formatter, "event sequence exhausted for run {run_id}")
             }
+            Self::Storage { operation, detail } => {
+                write!(
+                    formatter,
+                    "run log storage failed during {operation}: {detail}"
+                )
+            }
+            Self::Serialization { operation, detail } => {
+                write!(
+                    formatter,
+                    "run log serialization failed during {operation}: {detail}"
+                )
+            }
+            Self::Corruption { detail } => write!(formatter, "run log is corrupt: {detail}"),
+            Self::Migration { version, detail } => {
+                write!(formatter, "run log migration {version} failed: {detail}")
+            }
             Self::Poisoned => formatter.write_str("run event store lock was poisoned"),
         }
     }
@@ -81,6 +103,7 @@ impl std::error::Error for RunLogError {}
 struct InMemoryState {
     runs: HashMap<RunId, RunEvents>,
     event_runs: HashMap<EventId, RunId>,
+    next_run_order: u64,
 }
 
 #[derive(Default)]
@@ -88,6 +111,7 @@ struct RunEvents {
     by_sequence: BTreeMap<u64, EventEnvelope>,
     sequence_by_id: HashMap<EventId, u64>,
     last_sequence: u64,
+    created_order: u64,
 }
 
 /// Thread-safe reference implementation. A single lock makes allocation and
@@ -139,7 +163,21 @@ impl RunEventSink for InMemoryRunEventSink {
             return Err(RunLogError::DuplicateEventId { event_id });
         }
 
-        let run = state.runs.entry(event.run_id.clone()).or_default();
+        if !state.runs.contains_key(&event.run_id) {
+            state.next_run_order = state.next_run_order.saturating_add(1);
+            let created_order = state.next_run_order;
+            state.runs.insert(
+                event.run_id.clone(),
+                RunEvents {
+                    created_order,
+                    ..RunEvents::default()
+                },
+            );
+        }
+        let run = state
+            .runs
+            .get_mut(&event.run_id)
+            .expect("run was inserted above");
 
         let sequence =
             run.last_sequence
@@ -202,6 +240,17 @@ impl RunEventSink for InMemoryRunEventSink {
     fn last_sequence(&self, run_id: &RunId) -> Result<Option<u64>, RunLogError> {
         let state = self.state.lock().map_err(|_| RunLogError::Poisoned)?;
         Ok(state.runs.get(run_id).map(|run| run.last_sequence))
+    }
+
+    fn runs(&self) -> Result<Vec<RunId>, RunLogError> {
+        let state = self.state.lock().map_err(|_| RunLogError::Poisoned)?;
+        let mut runs: Vec<_> = state
+            .runs
+            .iter()
+            .map(|(run_id, run)| (run.created_order, run_id.clone()))
+            .collect();
+        runs.sort();
+        Ok(runs.into_iter().map(|(_, run_id)| run_id).collect())
     }
 }
 
@@ -357,5 +406,19 @@ mod tests {
         assert_eq!(envelope.event_id.as_str(), "evt_deterministic_0001");
         assert_eq!(envelope.sequence, 1);
         assert_eq!(envelope.recorded_at, "2026-07-13T12:00:00Z");
+    }
+
+    #[test]
+    fn discovers_runs_in_stable_creation_order() {
+        let sink = InMemoryRunEventSink::with_sources(
+            Arc::new(SequentialIds(AtomicU64::new(1))),
+            Arc::new(FixedClock),
+        );
+        let second = RunId::parse("run_second").unwrap();
+        let first = RunId::parse("run_first").unwrap();
+        sink.append(created(second.clone())).unwrap();
+        sink.append(created(first.clone())).unwrap();
+
+        assert_eq!(sink.runs().unwrap(), vec![second, first]);
     }
 }

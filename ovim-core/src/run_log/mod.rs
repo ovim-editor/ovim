@@ -6,8 +6,10 @@
 
 mod event;
 mod identity;
+mod sqlite;
 mod store;
 
 pub use event::*;
 pub use identity::*;
+pub use sqlite::*;
 pub use store::*;
