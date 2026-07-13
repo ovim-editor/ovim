@@ -1,10 +1,10 @@
 use crate::run_log::{
     AgentId, AgentLifecycleEvent, AgentLifecycleState, BranchId, BranchLifecycleEvent,
-    BranchLifecycleState, ConversationId, EventActor, EventEnvelope, EventId, EventKind,
-    InMemoryRunEventSink, MessageEvent, MessageRole, NewRunEvent, OperationId, RunCreationMetadata,
-    RunEventSink, RunId, RunLifecycleEvent, RunLifecycleState, RunLogError, ToolIntentEvent,
-    ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent, TurnId, TurnLifecycleEvent,
-    TurnLifecycleState, WorkspaceId,
+    BranchLifecycleState, ConversationBinding, ConversationId, EventActor, EventEnvelope, EventId,
+    EventKind, InMemoryRunEventSink, MessageEvent, MessageRole, NewRunEvent, OperationId,
+    RepositoryId, RunCreationMetadata, RunEventSink, RunId, RunLifecycleEvent, RunLifecycleState,
+    RunLogError, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent,
+    TurnId, TurnLifecycleEvent, TurnLifecycleState, WorkspaceId,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -120,6 +120,10 @@ struct ConversationState {
     active_turn: Option<TurnId>,
     terminal_turns: HashSet<TurnId>,
     tools: HashMap<OperationId, ToolRecord>,
+    /// A catalog binding may exist before its first event. The first turn uses
+    /// these durable identities to create, rather than replace, the run.
+    uninitialized_branch_id: Option<BranchId>,
+    uninitialized_repository_id: Option<RepositoryId>,
 }
 
 #[derive(Debug)]
@@ -138,6 +142,10 @@ pub enum AgentRuntimeError {
     WrongToolTurn,
     InvalidToolState,
     OutstandingToolOperations,
+    ConversationAlreadyExists,
+    BindingMismatch(String),
+    InvalidHistory(String),
+    UnrecoveredWork(String),
 }
 
 impl fmt::Display for AgentRuntimeError {
@@ -157,6 +165,14 @@ impl fmt::Display for AgentRuntimeError {
             Self::WrongToolTurn => f.write_str("tool operation belongs to another turn"),
             Self::InvalidToolState => f.write_str("tool operation is in the wrong state"),
             Self::OutstandingToolOperations => f.write_str("turn has nonterminal tool operations"),
+            Self::ConversationAlreadyExists => f.write_str("conversation locator is already bound"),
+            Self::BindingMismatch(detail) => {
+                write!(f, "conversation binding does not match history: {detail}")
+            }
+            Self::InvalidHistory(detail) => write!(f, "invalid durable history: {detail}"),
+            Self::UnrecoveredWork(detail) => {
+                write!(f, "durable history contains unrecovered work: {detail}")
+            }
         }
     }
 }
@@ -203,6 +219,416 @@ impl AgentRuntime {
         }
     }
 
+    /// Rebuilds provider-independent continuation state from a durable binding
+    /// and its normalized event history. The backing sink must contain the
+    /// same history so the next append can safely reference its causal tip.
+    pub fn restore_conversation(
+        &mut self,
+        locator: impl Into<ConversationLocator>,
+        binding: ConversationBinding,
+        events: Vec<EventEnvelope>,
+    ) -> Result<ConversationRef, AgentRuntimeError> {
+        let locator = locator.into();
+        if self.conversations.contains_key(&locator) {
+            return Err(AgentRuntimeError::ConversationAlreadyExists);
+        }
+        if self.conversations.values().any(|state| {
+            state.reference.conversation_id == binding.conversation_id
+                || state.reference.run_id == binding.run_id
+        }) {
+            return Err(AgentRuntimeError::BindingMismatch(
+                "conversation or run is already restored under another locator".into(),
+            ));
+        }
+        if !self.conversations.is_empty() && self.workspace_id != binding.workspace_id {
+            return Err(AgentRuntimeError::BindingMismatch(
+                "workspace differs from other conversations in this runtime".into(),
+            ));
+        }
+        let persisted = self.sink.events(&binding.run_id)?;
+        if persisted != events {
+            return Err(AgentRuntimeError::BindingMismatch(
+                "supplied events do not match the backing event sink".into(),
+            ));
+        }
+        let reference = ConversationRef {
+            conversation_id: binding.conversation_id.clone(),
+            run_id: binding.run_id.clone(),
+            root_agent_id: binding.root_agent_id.clone(),
+            workspace_id: binding.workspace_id.clone(),
+        };
+        if events.is_empty() {
+            self.workspace_id = binding.workspace_id;
+            self.conversations.insert(
+                locator,
+                ConversationState {
+                    reference: reference.clone(),
+                    branches: HashMap::new(),
+                    selected_branch: BranchLocator(String::new()),
+                    active_turn: None,
+                    terminal_turns: HashSet::new(),
+                    tools: HashMap::new(),
+                    uninitialized_branch_id: Some(binding.selected_branch_id),
+                    uninitialized_repository_id: Some(binding.key.repository_id),
+                },
+            );
+            return Ok(reference);
+        }
+        let mut branches: HashMap<BranchLocator, BranchState> = HashMap::new();
+        let mut branch_locators: HashMap<BranchId, BranchLocator> = HashMap::new();
+        let mut selected_branch_id: Option<BranchId> = None;
+        let mut initial_branch_id: Option<BranchId> = None;
+        let mut seen_events = HashSet::new();
+        let mut started_turns = HashSet::new();
+        let mut terminal_turns = HashSet::new();
+        let mut tools: HashMap<OperationId, ToolRecord> = HashMap::new();
+
+        for (index, event) in events.iter().enumerate() {
+            let expected_sequence = index as u64 + 1;
+            if event.run_id != binding.run_id || event.sequence != expected_sequence {
+                return Err(AgentRuntimeError::BindingMismatch(format!(
+                    "event {} has the wrong run or sequence",
+                    event.event_id
+                )));
+            }
+            if event
+                .agent_id
+                .as_ref()
+                .is_some_and(|id| id != &binding.root_agent_id)
+            {
+                return Err(AgentRuntimeError::BindingMismatch(format!(
+                    "event {} belongs to another agent",
+                    event.event_id
+                )));
+            }
+            if event
+                .workspace_id
+                .as_ref()
+                .is_some_and(|id| id != &binding.workspace_id)
+            {
+                return Err(AgentRuntimeError::BindingMismatch(format!(
+                    "event {} belongs to another workspace",
+                    event.event_id
+                )));
+            }
+            if let Some(cause) = &event.caused_by {
+                if !seen_events.contains(cause) {
+                    return Err(AgentRuntimeError::InvalidHistory(format!(
+                        "event {} references a missing or later cause {cause}",
+                        event.event_id
+                    )));
+                }
+            }
+            // Once a branch is declared, every event on it must extend that
+            // branch's own tip. Creation has no existing tip and Forked is the
+            // deliberate exception: it is caused by an exact event in the
+            // parent trajectory.
+            if let Some(branch_id) = &event.branch_id {
+                if let Some(branch_locator) = branch_locators.get(branch_id) {
+                    let is_fork = matches!(
+                        &event.kind,
+                        EventKind::BranchLifecycle(BranchLifecycleEvent {
+                            state: BranchLifecycleState::Forked,
+                            ..
+                        })
+                    );
+                    if !is_fork {
+                        let expected = &branches[branch_locator].last_event;
+                        if event.caused_by.as_ref() != Some(expected) {
+                            return Err(AgentRuntimeError::InvalidHistory(format!(
+                                "event {} does not extend branch {} tip {}",
+                                event.event_id, branch_id, expected
+                            )));
+                        }
+                    }
+                }
+            }
+
+            match &event.kind {
+                EventKind::RunLifecycle(lifecycle)
+                    if lifecycle.state == RunLifecycleState::Created =>
+                {
+                    let metadata = lifecycle.creation.as_ref().ok_or_else(|| {
+                        AgentRuntimeError::BindingMismatch(
+                            "run creation has no durable metadata".into(),
+                        )
+                    })?;
+                    if metadata.repository_id.as_ref() != Some(&binding.key.repository_id) {
+                        return Err(AgentRuntimeError::BindingMismatch(
+                            "run creation repository differs from the catalog binding".into(),
+                        ));
+                    }
+                    initial_branch_id = metadata.initial_branch_id.clone();
+                }
+                EventKind::AgentLifecycle(lifecycle)
+                    if lifecycle.agent_id != binding.root_agent_id =>
+                {
+                    return Err(AgentRuntimeError::BindingMismatch(format!(
+                        "agent lifecycle {} names another agent",
+                        event.event_id
+                    )));
+                }
+                EventKind::BranchLifecycle(lifecycle) => {
+                    if event.branch_id.as_ref() != Some(&lifecycle.branch_id) {
+                        return Err(AgentRuntimeError::InvalidHistory(format!(
+                            "branch lifecycle {} disagrees with its envelope",
+                            event.event_id
+                        )));
+                    }
+                    let label = lifecycle.label.as_ref().ok_or_else(|| {
+                        AgentRuntimeError::InvalidHistory(format!(
+                            "branch lifecycle {} has no durable locator",
+                            event.event_id
+                        ))
+                    })?;
+                    let locator = BranchLocator(label.clone());
+                    match lifecycle.state {
+                        BranchLifecycleState::Created => {
+                            if lifecycle.parent_branch_id.is_some()
+                                || lifecycle.forked_at.is_some()
+                                || branch_locators.contains_key(&lifecycle.branch_id)
+                                || branches.contains_key(&locator)
+                            {
+                                return Err(AgentRuntimeError::InvalidHistory(format!(
+                                    "invalid branch creation {}",
+                                    event.event_id
+                                )));
+                            }
+                            branches.insert(
+                                locator.clone(),
+                                BranchState {
+                                    reference: BranchRef {
+                                        branch_id: lifecycle.branch_id.clone(),
+                                        parent_branch_id: None,
+                                    },
+                                    last_event: event.event_id.clone(),
+                                },
+                            );
+                            branch_locators.insert(lifecycle.branch_id.clone(), locator);
+                            selected_branch_id.get_or_insert(lifecycle.branch_id.clone());
+                        }
+                        BranchLifecycleState::Forked => {
+                            let parent = lifecycle.parent_branch_id.as_ref().ok_or_else(|| {
+                                AgentRuntimeError::InvalidHistory(
+                                    "fork has no parent branch".into(),
+                                )
+                            })?;
+                            let forked_at = lifecycle.forked_at.as_ref().ok_or_else(|| {
+                                AgentRuntimeError::InvalidHistory("fork has no fork event".into())
+                            })?;
+                            if !branch_locators.contains_key(parent)
+                                || !seen_events.contains(forked_at)
+                                || event.caused_by.as_ref() != Some(forked_at)
+                                || branch_locators.contains_key(&lifecycle.branch_id)
+                                || branches.contains_key(&locator)
+                            {
+                                return Err(AgentRuntimeError::InvalidHistory(format!(
+                                    "invalid branch fork {}",
+                                    event.event_id
+                                )));
+                            }
+                            branches.insert(
+                                locator.clone(),
+                                BranchState {
+                                    reference: BranchRef {
+                                        branch_id: lifecycle.branch_id.clone(),
+                                        parent_branch_id: Some(parent.clone()),
+                                    },
+                                    last_event: event.event_id.clone(),
+                                },
+                            );
+                            branch_locators.insert(lifecycle.branch_id.clone(), locator);
+                        }
+                        BranchLifecycleState::Selected => {
+                            let known =
+                                branch_locators.get(&lifecycle.branch_id).ok_or_else(|| {
+                                    AgentRuntimeError::InvalidHistory(
+                                        "selected branch was never declared".into(),
+                                    )
+                                })?;
+                            if known != &locator {
+                                return Err(AgentRuntimeError::InvalidHistory(
+                                    "selected branch locator changed".into(),
+                                ));
+                            }
+                            selected_branch_id = Some(lifecycle.branch_id.clone());
+                        }
+                    }
+                }
+                EventKind::TurnLifecycle(lifecycle) => {
+                    let turn_id = event.turn_id.clone().ok_or_else(|| {
+                        AgentRuntimeError::InvalidHistory("turn lifecycle has no turn ID".into())
+                    })?;
+                    match lifecycle.state {
+                        TurnLifecycleState::Started => {
+                            if !started_turns.insert(turn_id.clone())
+                                || terminal_turns.contains(&turn_id)
+                            {
+                                return Err(AgentRuntimeError::InvalidHistory(
+                                    "turn was started more than once".into(),
+                                ));
+                            }
+                        }
+                        TurnLifecycleState::Completed
+                        | TurnLifecycleState::Interrupted
+                        | TurnLifecycleState::Failed => {
+                            if !started_turns.contains(&turn_id)
+                                || !terminal_turns.insert(turn_id.clone())
+                            {
+                                return Err(AgentRuntimeError::InvalidHistory(
+                                    "turn terminal record has no unique start".into(),
+                                ));
+                            }
+                            if tools.values().any(|tool| {
+                                tool.turn_id == turn_id && tool.state != ToolState::Terminal
+                            }) {
+                                return Err(AgentRuntimeError::InvalidHistory(
+                                    "turn became terminal before its tool operations".into(),
+                                ));
+                            }
+                        }
+                        TurnLifecycleState::Steered => {
+                            if !started_turns.contains(&turn_id)
+                                || terminal_turns.contains(&turn_id)
+                            {
+                                return Err(AgentRuntimeError::InvalidHistory(
+                                    "turn was steered while it was not active".into(),
+                                ));
+                            }
+                        }
+                    }
+                }
+                EventKind::ToolIntent(intent) => {
+                    let operation_id = event.operation_id.clone().ok_or_else(|| {
+                        AgentRuntimeError::InvalidHistory("tool intent has no operation ID".into())
+                    })?;
+                    let turn_id = event.turn_id.clone().ok_or_else(|| {
+                        AgentRuntimeError::InvalidHistory("tool intent has no turn ID".into())
+                    })?;
+                    if !started_turns.contains(&turn_id) || terminal_turns.contains(&turn_id) {
+                        return Err(AgentRuntimeError::InvalidHistory(
+                            "tool intent is outside an active turn".into(),
+                        ));
+                    }
+                    if tools
+                        .insert(
+                            operation_id,
+                            ToolRecord {
+                                turn_id,
+                                state: ToolState::Intended,
+                                tool_name: intent.tool_name.clone(),
+                                provider_call_id: event.provider_call_id.clone(),
+                            },
+                        )
+                        .is_some()
+                    {
+                        return Err(AgentRuntimeError::InvalidHistory(
+                            "operation has more than one intent".into(),
+                        ));
+                    }
+                }
+                EventKind::ToolStarted(_) => {
+                    restored_tool_transition(
+                        event,
+                        &mut tools,
+                        ToolState::Intended,
+                        ToolState::Started,
+                    )?;
+                }
+                EventKind::ToolResult(_) => {
+                    let operation_id = event.operation_id.as_ref().ok_or_else(|| {
+                        AgentRuntimeError::InvalidHistory("tool result has no operation ID".into())
+                    })?;
+                    let record = tools.get_mut(operation_id).ok_or_else(|| {
+                        AgentRuntimeError::InvalidHistory("tool result has no intent".into())
+                    })?;
+                    if record.state == ToolState::Terminal
+                        || event.turn_id.as_ref() != Some(&record.turn_id)
+                    {
+                        return Err(AgentRuntimeError::InvalidHistory(
+                            "tool result is duplicated or belongs to another turn".into(),
+                        ));
+                    }
+                    record.state = ToolState::Terminal;
+                }
+                _ => {}
+            }
+
+            if let Some(branch_id) = &event.branch_id {
+                if let Some(locator) = branch_locators.get(branch_id) {
+                    branches.get_mut(locator).unwrap().last_event = event.event_id.clone();
+                } else if !branches.is_empty()
+                    || initial_branch_id.as_ref().is_some_and(|id| id != branch_id)
+                {
+                    return Err(AgentRuntimeError::InvalidHistory(format!(
+                        "event {} references an undeclared branch",
+                        event.event_id
+                    )));
+                }
+            } else if !branches.is_empty() {
+                return Err(AgentRuntimeError::InvalidHistory(format!(
+                    "event {} after branch creation has no branch ID",
+                    event.event_id
+                )));
+            }
+            seen_events.insert(event.event_id.clone());
+        }
+
+        let unfinished_turns: Vec<_> = started_turns.difference(&terminal_turns).collect();
+        let unfinished_tools: Vec<_> = tools
+            .iter()
+            .filter(|(_, tool)| tool.state != ToolState::Terminal)
+            .collect();
+        if !unfinished_turns.is_empty() || !unfinished_tools.is_empty() {
+            return Err(AgentRuntimeError::UnrecoveredWork(format!(
+                "{} turn(s) and {} tool operation(s) are nonterminal",
+                unfinished_turns.len(),
+                unfinished_tools.len()
+            )));
+        }
+        if branches.is_empty() {
+            return Err(AgentRuntimeError::InvalidHistory(
+                "history predates durable branch declarations and cannot be continued safely"
+                    .into(),
+            ));
+        }
+        if initial_branch_id
+            .as_ref()
+            .is_some_and(|id| !branch_locators.contains_key(id))
+        {
+            return Err(AgentRuntimeError::InvalidHistory(
+                "run creation names an undeclared initial branch".into(),
+            ));
+        }
+        let selected_id = selected_branch_id.ok_or_else(|| {
+            AgentRuntimeError::InvalidHistory("history has no selected branch".into())
+        })?;
+        if selected_id != binding.selected_branch_id {
+            return Err(AgentRuntimeError::BindingMismatch(
+                "selected branch does not match the latest branch lifecycle".into(),
+            ));
+        }
+        let selected_branch = branch_locators.get(&selected_id).cloned().ok_or_else(|| {
+            AgentRuntimeError::InvalidHistory("selected branch is undeclared".into())
+        })?;
+
+        self.workspace_id = binding.workspace_id;
+        self.conversations.insert(
+            locator,
+            ConversationState {
+                reference: reference.clone(),
+                branches,
+                selected_branch,
+                active_turn: None,
+                terminal_turns,
+                tools,
+                uninitialized_branch_id: None,
+                uninitialized_repository_id: None,
+            },
+        );
+        Ok(reference)
+    }
+
     pub fn begin_turn(
         &mut self,
         locator: impl Into<ConversationLocator>,
@@ -218,6 +644,12 @@ impl AgentRuntime {
         let branch = branch.into();
         if !self.conversations.contains_key(&locator) {
             self.create_conversation(locator.clone(), branch.clone(), &spec)?;
+        } else if self
+            .conversations
+            .get(&locator)
+            .is_some_and(|state| state.uninitialized_branch_id.is_some())
+        {
+            self.initialize_bound_conversation(&locator, branch.clone(), &spec)?;
         }
         let state = self.conversations.get_mut(&locator).unwrap();
         if state.active_turn.is_some() {
@@ -369,8 +801,99 @@ impl AgentRuntime {
                 active_turn: None,
                 terminal_turns: HashSet::new(),
                 tools: HashMap::new(),
+                uninitialized_branch_id: None,
+                uninitialized_repository_id: None,
             },
         );
+        Ok(())
+    }
+
+    fn initialize_bound_conversation(
+        &mut self,
+        locator: &ConversationLocator,
+        branch: BranchLocator,
+        spec: &AgentSpec,
+    ) -> Result<(), AgentRuntimeError> {
+        let state = self
+            .conversations
+            .get_mut(locator)
+            .ok_or(AgentRuntimeError::UnknownConversation)?;
+        let initial_branch_id = state.uninitialized_branch_id.clone().ok_or_else(|| {
+            AgentRuntimeError::InvalidHistory("binding is already initialized".into())
+        })?;
+        let repository_id = state.uninitialized_repository_id.clone();
+        let reference = state.reference.clone();
+        let mut creation = self.run_creation.clone();
+        creation.repository_id = repository_id;
+        creation.initial_branch_id = Some(initial_branch_id.clone());
+        let created = append_for(
+            &self.sink,
+            &reference,
+            None,
+            None,
+            EventActor::User,
+            EventKind::RunLifecycle(RunLifecycleEvent {
+                state: RunLifecycleState::Created,
+                objective: spec.objective.clone(),
+                detail: None,
+                creation: Some(creation),
+            }),
+            None,
+            None,
+            Some(initial_branch_id.clone()),
+        )?;
+        let dispatched = append_for(
+            &self.sink,
+            &reference,
+            None,
+            Some(created.event_id),
+            EventActor::System("agent_runtime".into()),
+            agent_event(&reference, spec, AgentLifecycleState::Dispatched),
+            None,
+            None,
+            Some(initial_branch_id.clone()),
+        )?;
+        let started = append_for(
+            &self.sink,
+            &reference,
+            None,
+            Some(dispatched.event_id),
+            EventActor::Agent(reference.root_agent_id.clone()),
+            agent_event(&reference, spec, AgentLifecycleState::Started),
+            None,
+            None,
+            Some(initial_branch_id.clone()),
+        )?;
+        let branch_created = append_for(
+            &self.sink,
+            &reference,
+            None,
+            Some(started.event_id),
+            EventActor::System("agent_runtime".into()),
+            EventKind::BranchLifecycle(BranchLifecycleEvent {
+                state: BranchLifecycleState::Created,
+                branch_id: initial_branch_id.clone(),
+                parent_branch_id: None,
+                forked_at: None,
+                label: Some(branch.0.clone()),
+            }),
+            None,
+            None,
+            Some(initial_branch_id.clone()),
+        )?;
+        state.branches.insert(
+            branch.clone(),
+            BranchState {
+                reference: BranchRef {
+                    branch_id: initial_branch_id,
+                    parent_branch_id: None,
+                },
+                last_event: branch_created.event_id,
+            },
+        );
+        state.selected_branch = branch;
+        state.uninitialized_branch_id = None;
+        state.uninitialized_repository_id = None;
         Ok(())
     }
 
@@ -854,6 +1377,27 @@ impl AgentRuntime {
     }
 }
 
+fn restored_tool_transition(
+    event: &EventEnvelope,
+    tools: &mut HashMap<OperationId, ToolRecord>,
+    expected: ToolState,
+    next: ToolState,
+) -> Result<(), AgentRuntimeError> {
+    let operation_id = event.operation_id.as_ref().ok_or_else(|| {
+        AgentRuntimeError::InvalidHistory("tool transition has no operation ID".into())
+    })?;
+    let record = tools
+        .get_mut(operation_id)
+        .ok_or_else(|| AgentRuntimeError::InvalidHistory("tool transition has no intent".into()))?;
+    if record.state != expected || event.turn_id.as_ref() != Some(&record.turn_id) {
+        return Err(AgentRuntimeError::InvalidHistory(
+            "tool transition is out of order or belongs to another turn".into(),
+        ));
+    }
+    record.state = next;
+    Ok(())
+}
+
 fn agent_event(
     reference: &ConversationRef,
     spec: &AgentSpec,
@@ -898,8 +1442,66 @@ fn append_for(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_log::{BaseManifestId, RepositoryId};
+    use crate::run_log::{BaseManifestId, ConversationKey, ConversationScope, RepositoryId};
     use serde_json::json;
+
+    struct SnapshotSink {
+        events: Vec<EventEnvelope>,
+    }
+
+    impl RunEventSink for SnapshotSink {
+        fn append(&self, _event: NewRunEvent) -> Result<EventEnvelope, RunLogError> {
+            Err(RunLogError::Storage {
+                operation: "append to read-only test snapshot".into(),
+                detail: "unsupported".into(),
+            })
+        }
+
+        fn event(
+            &self,
+            run_id: &RunId,
+            event_id: &EventId,
+        ) -> Result<Option<EventEnvelope>, RunLogError> {
+            Ok(self
+                .events
+                .iter()
+                .find(|event| &event.run_id == run_id && &event.event_id == event_id)
+                .cloned())
+        }
+
+        fn events(&self, run_id: &RunId) -> Result<Vec<EventEnvelope>, RunLogError> {
+            Ok(self
+                .events
+                .iter()
+                .filter(|event| &event.run_id == run_id)
+                .cloned()
+                .collect())
+        }
+
+        fn last_sequence(&self, run_id: &RunId) -> Result<Option<u64>, RunLogError> {
+            Ok(self
+                .events
+                .iter()
+                .filter(|event| &event.run_id == run_id)
+                .map(|event| event.sequence)
+                .max())
+        }
+
+        fn runs(&self) -> Result<Vec<RunId>, RunLogError> {
+            let mut runs: Vec<_> = self
+                .events
+                .iter()
+                .map(|event| event.run_id.clone())
+                .collect();
+            runs.sort();
+            runs.dedup();
+            Ok(runs)
+        }
+    }
+
+    fn snapshot_sink(events: Vec<EventEnvelope>) -> Arc<dyn RunEventSink> {
+        Arc::new(SnapshotSink { events })
+    }
 
     fn labels(events: &[EventEnvelope]) -> Vec<String> {
         events
@@ -916,6 +1518,330 @@ mod tests {
                 _ => "other".into(),
             })
             .collect()
+    }
+
+    fn binding_for(runtime: &AgentRuntime, locator: &ConversationLocator) -> ConversationBinding {
+        let conversation = runtime.conversation(locator).unwrap();
+        let (_, branch) = runtime.selected_branch(locator).unwrap();
+        ConversationBinding {
+            key: ConversationKey {
+                repository_id: RepositoryId::parse("repo_restore_tests").unwrap(),
+                scope: ConversationScope::NoFile,
+                logical_name: locator.0.clone(),
+            },
+            conversation_id: conversation.conversation_id.clone(),
+            run_id: conversation.run_id.clone(),
+            root_agent_id: conversation.root_agent_id.clone(),
+            workspace_id: conversation.workspace_id.clone(),
+            selected_branch_id: branch.branch_id.clone(),
+        }
+    }
+
+    fn runtime_with_catalog_repository(sink: Arc<dyn RunEventSink>) -> AgentRuntime {
+        AgentRuntime::with_sink_and_run_metadata(
+            sink,
+            RunCreationMetadata {
+                repository_id: Some(RepositoryId::parse("repo_restore_tests").unwrap()),
+                ..RunCreationMetadata::default()
+            },
+        )
+    }
+
+    #[test]
+    fn restores_branches_and_continues_each_causal_tip_with_stable_ids() {
+        let sink: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let locator = ConversationLocator("durable-chat".into());
+        let main = BranchLocator("main".into());
+        let fork_locator = BranchLocator("fork".into());
+        let mut first_runtime = runtime_with_catalog_repository(sink.clone());
+        let first = first_runtime
+            .begin_turn(locator.0.clone(), main.0.clone(), "one", AgentSpec::chat())
+            .unwrap();
+        first_runtime.complete_turn(&first).unwrap();
+        let fork = first_runtime
+            .fork_branch(&locator, &main, fork_locator.clone())
+            .unwrap();
+        first_runtime
+            .select_branch(&locator, &fork_locator)
+            .unwrap();
+        let fork_turn = first_runtime
+            .begin_turn(
+                locator.0.clone(),
+                fork_locator.0.clone(),
+                "fork",
+                AgentSpec::chat(),
+            )
+            .unwrap();
+        first_runtime.complete_turn(&fork_turn).unwrap();
+        first_runtime.select_branch(&locator, &main).unwrap();
+        let main_tip = first_runtime.selected_branch_tip(&locator).unwrap().clone();
+        let binding = binding_for(&first_runtime, &locator);
+        let encoded = serde_json::to_string(&first_runtime.events(&first.run_id).unwrap()).unwrap();
+        let events: Vec<EventEnvelope> = serde_json::from_str(&encoded).unwrap();
+
+        let mut restored = AgentRuntime::with_sink(sink.clone());
+        let reference = restored
+            .restore_conversation(locator.clone(), binding.clone(), events)
+            .unwrap();
+        assert_eq!(reference.run_id, binding.run_id);
+        assert_eq!(reference.root_agent_id, binding.root_agent_id);
+        assert_eq!(reference.workspace_id, binding.workspace_id);
+        let resumed_main = restored
+            .begin_turn(
+                locator.0.clone(),
+                main.0.clone(),
+                "main again",
+                AgentSpec::chat(),
+            )
+            .unwrap();
+        assert_eq!(resumed_main.run_id, first.run_id);
+        assert_eq!(resumed_main.agent_id, first.agent_id);
+        assert_eq!(resumed_main.branch_id, first.branch_id);
+        let main_user = sink
+            .event(
+                &resumed_main.run_id,
+                resumed_main.initiating_event.caused_by.as_ref().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(main_user.caused_by, Some(main_tip));
+        restored.complete_turn(&resumed_main).unwrap();
+
+        let fork_tip = restored
+            .events(&binding.run_id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|event| event.branch_id.as_ref() == Some(&fork.branch_id))
+            .unwrap()
+            .event_id;
+        restored.select_branch(&locator, &fork_locator).unwrap();
+        let selected_fork_tip = restored.selected_branch_tip(&locator).unwrap().clone();
+        let selected = sink
+            .event(&binding.run_id, &selected_fork_tip)
+            .unwrap()
+            .unwrap();
+        assert_eq!(selected.caused_by, Some(fork_tip));
+        let resumed_fork = restored
+            .begin_turn(locator.0, fork_locator.0, "fork again", AgentSpec::chat())
+            .unwrap();
+        assert_eq!(resumed_fork.branch_id, fork.branch_id);
+        let fork_user = sink
+            .event(
+                &binding.run_id,
+                resumed_fork.initiating_event.caused_by.as_ref().unwrap(),
+            )
+            .unwrap()
+            .unwrap();
+        assert_eq!(fork_user.caused_by, Some(selected_fork_tip));
+    }
+
+    #[test]
+    fn restore_rejects_active_turn_and_pending_tool_histories() {
+        let sink: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let locator = ConversationLocator("active".into());
+        let mut runtime = runtime_with_catalog_repository(sink.clone());
+        let turn = runtime
+            .begin_turn(locator.0.clone(), "main", "work", AgentSpec::chat())
+            .unwrap();
+        let binding = binding_for(&runtime, &locator);
+        let events = runtime.events(&turn.run_id).unwrap();
+        assert!(matches!(
+            AgentRuntime::with_sink(sink.clone()).restore_conversation(
+                "restored-active",
+                binding.clone(),
+                events
+            ),
+            Err(AgentRuntimeError::UnrecoveredWork(_))
+        ));
+
+        runtime
+            .record_tool_intent(&turn, "shell", json!({}), ToolSideEffect::Mutation, None)
+            .unwrap();
+        assert!(matches!(
+            AgentRuntime::with_sink(sink).restore_conversation(
+                "restored-tool",
+                binding,
+                runtime.events(&turn.run_id).unwrap()
+            ),
+            Err(AgentRuntimeError::UnrecoveredWork(_))
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_binding_identity_mismatch() {
+        let sink: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let locator = ConversationLocator("mismatch".into());
+        let mut runtime = runtime_with_catalog_repository(sink.clone());
+        let turn = runtime
+            .begin_turn(locator.0.clone(), "main", "done", AgentSpec::chat())
+            .unwrap();
+        runtime.complete_turn(&turn).unwrap();
+        let mut binding = binding_for(&runtime, &locator);
+        binding.root_agent_id = AgentId::new();
+        assert!(matches!(
+            AgentRuntime::with_sink(sink).restore_conversation(
+                "bad",
+                binding,
+                runtime.events(&turn.run_id).unwrap()
+            ),
+            Err(AgentRuntimeError::BindingMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn empty_catalog_binding_initializes_its_exact_identities_on_first_turn() {
+        let sink: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let repository_id = RepositoryId::parse("repo_bound_new").unwrap();
+        let binding = ConversationBinding {
+            key: ConversationKey {
+                repository_id: repository_id.clone(),
+                scope: ConversationScope::NoFile,
+                logical_name: "new".into(),
+            },
+            conversation_id: ConversationId::new(),
+            run_id: RunId::new(),
+            root_agent_id: AgentId::new(),
+            workspace_id: WorkspaceId::new(),
+            selected_branch_id: BranchId::new(),
+        };
+        let mut runtime = AgentRuntime::with_sink(sink);
+        runtime
+            .restore_conversation("new", binding.clone(), Vec::new())
+            .unwrap();
+        let turn = runtime
+            .begin_turn("new", "main", "first", AgentSpec::chat())
+            .unwrap();
+        assert_eq!(turn.run_id, binding.run_id);
+        assert_eq!(turn.agent_id, binding.root_agent_id);
+        assert_eq!(turn.workspace_id, binding.workspace_id);
+        assert_eq!(turn.conversation_id, binding.conversation_id);
+        assert_eq!(turn.branch_id, binding.selected_branch_id);
+        let events = runtime.events(&binding.run_id).unwrap();
+        let EventKind::RunLifecycle(created) = &events[0].kind else {
+            panic!("bound run must begin with run creation")
+        };
+        let metadata = created.creation.as_ref().unwrap();
+        assert_eq!(metadata.repository_id.as_ref(), Some(&repository_id));
+        assert_eq!(
+            metadata.initial_branch_id.as_ref(),
+            Some(&binding.selected_branch_id)
+        );
+    }
+
+    #[test]
+    fn restore_rejects_cross_branch_causal_edges() {
+        let source: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let locator = ConversationLocator("cross-branch".into());
+        let main = BranchLocator("main".into());
+        let fork_locator = BranchLocator("fork".into());
+        let mut runtime = runtime_with_catalog_repository(source);
+        let main_turn = runtime
+            .begin_turn(locator.0.clone(), main.0.clone(), "main", AgentSpec::chat())
+            .unwrap();
+        let main_tip = runtime.complete_turn(&main_turn).unwrap().event_id;
+        let fork = runtime
+            .fork_branch(&locator, &main, fork_locator.clone())
+            .unwrap();
+        runtime.select_branch(&locator, &fork_locator).unwrap();
+        let fork_turn = runtime
+            .begin_turn(locator.0.clone(), fork_locator.0, "fork", AgentSpec::chat())
+            .unwrap();
+        runtime.complete_turn(&fork_turn).unwrap();
+        let binding = binding_for(&runtime, &locator);
+        let mut events = runtime.events(&binding.run_id).unwrap();
+        let fork_user = events
+            .iter_mut()
+            .find(|event| {
+                event.branch_id.as_ref() == Some(&fork.branch_id)
+                    && event.turn_id.as_ref() == Some(&fork_turn.turn_id)
+                    && matches!(
+                        event.kind,
+                        EventKind::Message(MessageEvent {
+                            role: MessageRole::User,
+                            ..
+                        })
+                    )
+            })
+            .unwrap();
+        fork_user.caused_by = Some(main_tip);
+        let sink = snapshot_sink(events.clone());
+        assert!(matches!(
+            AgentRuntime::with_sink(sink).restore_conversation("bad", binding, events),
+            Err(AgentRuntimeError::InvalidHistory(_))
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_repository_binding_mismatch() {
+        let sink: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let recorded_repository = RepositoryId::parse("repo_recorded").unwrap();
+        let locator = ConversationLocator("repository-mismatch".into());
+        let mut runtime = AgentRuntime::with_sink_and_run_metadata(
+            sink.clone(),
+            RunCreationMetadata {
+                repository_id: Some(recorded_repository),
+                ..RunCreationMetadata::default()
+            },
+        );
+        let turn = runtime
+            .begin_turn(locator.0.clone(), "main", "done", AgentSpec::chat())
+            .unwrap();
+        runtime.complete_turn(&turn).unwrap();
+        let binding = binding_for(&runtime, &locator);
+        let mut events = runtime.events(&turn.run_id).unwrap();
+        assert!(matches!(
+            AgentRuntime::with_sink(sink).restore_conversation(
+                "bad",
+                binding.clone(),
+                events.clone()
+            ),
+            Err(AgentRuntimeError::BindingMismatch(_))
+        ));
+        let EventKind::RunLifecycle(created) = &mut events[0].kind else {
+            panic!("first event must create the run")
+        };
+        created.creation.as_mut().unwrap().repository_id = None;
+        let missing_sink = snapshot_sink(events.clone());
+        assert!(matches!(
+            AgentRuntime::with_sink(missing_sink).restore_conversation("missing", binding, events),
+            Err(AgentRuntimeError::BindingMismatch(_))
+        ));
+    }
+
+    #[test]
+    fn restore_rejects_steering_before_turn_start() {
+        let source: Arc<dyn RunEventSink> = Arc::new(InMemoryRunEventSink::new());
+        let locator = ConversationLocator("bad-steer".into());
+        let mut runtime = runtime_with_catalog_repository(source);
+        let turn = runtime
+            .begin_turn(locator.0.clone(), "main", "done", AgentSpec::chat())
+            .unwrap();
+        runtime.complete_turn(&turn).unwrap();
+        let binding = binding_for(&runtime, &locator);
+        let mut events = runtime.events(&turn.run_id).unwrap();
+        let user_message = events
+            .iter_mut()
+            .find(|event| {
+                event.turn_id.as_ref() == Some(&turn.turn_id)
+                    && matches!(
+                        event.kind,
+                        EventKind::Message(MessageEvent {
+                            role: MessageRole::User,
+                            ..
+                        })
+                    )
+            })
+            .unwrap();
+        user_message.kind = EventKind::TurnLifecycle(TurnLifecycleEvent {
+            state: TurnLifecycleState::Steered,
+            detail: None,
+        });
+        let sink = snapshot_sink(events.clone());
+        assert!(matches!(
+            AgentRuntime::with_sink(sink).restore_conversation("bad", binding, events),
+            Err(AgentRuntimeError::InvalidHistory(_))
+        ));
     }
 
     #[test]
