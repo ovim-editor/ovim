@@ -1,3 +1,4 @@
+pub mod agent_runtime;
 pub mod ai;
 pub mod buffer;
 pub mod change;
