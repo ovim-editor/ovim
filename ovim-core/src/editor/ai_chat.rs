@@ -851,10 +851,66 @@ impl Editor {
                 );
                 return;
             };
+            let artifact_store = match self.ai_state.durable_runs.as_ref().and_then(|services| {
+                services
+                    .store
+                    .layout()
+                    .ensure_run_directory(&turn.run_id)
+                    .map_err(|error| error.to_string())
+                    .and_then(|_| {
+                        crate::run_log::ArtifactStore::open(
+                            services.store.layout().artifact_directory(&turn.run_id),
+                        )
+                        .map_err(|error| error.to_string())
+                    })
+                    .ok()
+            }) {
+                Some(store) => store,
+                None => {
+                    self.finish_dynamic_tool(
+                        &turn,
+                        &tool,
+                        &call,
+                        response,
+                        crate::ai::tools::ToolResult::Error(
+                            "shell program was not executed because replay artifact storage is unavailable".into(),
+                        ),
+                    );
+                    return;
+                }
+            };
             let (result_tx, result_rx) = tokio::sync::oneshot::channel();
             let task = tokio::task::spawn_blocking(move || {
-                let result = super::ai_tool_execution::run_bash_program(&command, &workdir);
-                let _ = result_tx.send(result);
+                let observation = match crate::run_log::capture_workspace(&workdir, &artifact_store) {
+                    Ok(before) => {
+                        let result = super::ai_tool_execution::run_bash_program(&command, &workdir);
+                        match crate::run_log::capture_workspace(&workdir, &artifact_store) {
+                            Ok(after) => super::ai_chat_state::ShellExecutionObservation {
+                                result,
+                                delta: Some(before.diff(after)),
+                                capture_error: None,
+                                outcome_unknown: false,
+                            },
+                            Err(error) => super::ai_chat_state::ShellExecutionObservation {
+                                result,
+                                delta: None,
+                                capture_error: Some(format!(
+                                    "shell completed, but after-state capture failed: {error}"
+                                )),
+                                outcome_unknown: true,
+                            },
+                        }
+                    }
+                    Err(error) => super::ai_chat_state::ShellExecutionObservation {
+                        result: crate::ai::tools::ToolResult::Error(format!(
+                            "shell program was not executed because before-state capture failed: {error}"
+                        )),
+                        delta: None,
+                        capture_error: Some(error),
+                        outcome_unknown: false,
+                    },
+                };
+                let _ = result_tx.send(observation);
             });
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.pending_shell_execution = Some(super::ai_chat_state::PendingShellExecution {
@@ -898,9 +954,16 @@ impl Editor {
                 Ok(result) => Some(result),
                 Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    Some(crate::ai::tools::ToolResult::Error(
-                        "shell execution task stopped without a result".into(),
-                    ))
+                    Some(super::ai_chat_state::ShellExecutionObservation {
+                        result: crate::ai::tools::ToolResult::Error(
+                            "shell execution task stopped without a result".into(),
+                        ),
+                        delta: None,
+                        capture_error: Some(
+                            "shell execution and workspace result are unknown".into(),
+                        ),
+                        outcome_unknown: true,
+                    })
                 }
             }
         };
@@ -910,13 +973,67 @@ impl Editor {
             .as_mut()
             .and_then(|chat| chat.pending_shell_execution.take())
             .expect("pending shell exists");
-        self.finish_dynamic_tool(
-            &pending.runtime_turn,
-            &pending.runtime_tool,
-            &pending.tool_call,
-            pending.dynamic_response,
-            received.expect("shell result"),
-        );
+        let observation = received.expect("shell result");
+        if let Some(delta) = observation.delta {
+            for mutation in delta.mutations {
+                if let Err(error) = self.ai_state.agent_runtime.record_tool_file_mutation(
+                    &pending.runtime_turn,
+                    &pending.runtime_tool,
+                    mutation,
+                ) {
+                    crate::log_warn!("agent_runtime", "failed to record shell mutation: {error}");
+                }
+            }
+            for issue in delta.issues {
+                if let Err(error) = self.ai_state.agent_runtime.record_tool_capture_issue(
+                    &pending.runtime_turn,
+                    &pending.runtime_tool,
+                    issue,
+                ) {
+                    crate::log_warn!("agent_runtime", "failed to record capture issue: {error}");
+                }
+            }
+        }
+        if let Some(error) = observation.capture_error.as_ref() {
+            if let Err(record_error) = self.ai_state.agent_runtime.record_tool_capture_issue(
+                &pending.runtime_turn,
+                &pending.runtime_tool,
+                error.clone(),
+            ) {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "failed to record capture failure: {record_error}"
+                );
+            }
+        }
+        if observation.outcome_unknown {
+            let detail = observation
+                .capture_error
+                .unwrap_or_else(|| "shell result and workspace effects are unknown".into());
+            if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
+                &pending.runtime_turn,
+                &pending.runtime_tool,
+                detail.clone(),
+            ) {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "failed to record unknown shell outcome: {error}"
+                );
+            }
+            let _ = pending.dynamic_response.send(Err(detail));
+            self.fail_specific_dynamic_turn(
+                &pending.runtime_turn,
+                "shell execution could not be durably observed".into(),
+            );
+        } else {
+            self.finish_dynamic_tool(
+                &pending.runtime_turn,
+                &pending.runtime_tool,
+                &pending.tool_call,
+                pending.dynamic_response,
+                observation.result,
+            );
+        }
         self.set_lsp_status(String::new());
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = true;
@@ -934,15 +1051,20 @@ impl Editor {
             return false;
         };
         pending.task.abort();
-        self.finish_dynamic_tool(
+        let unknown = format!(
+            "shell result and workspace effects are unknown because durable run ownership was lost: {error}"
+        );
+        if let Err(runtime_error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
             &pending.runtime_turn,
             &pending.runtime_tool,
-            &pending.tool_call,
-            pending.dynamic_response,
-            crate::ai::tools::ToolResult::Error(format!(
-                "shell result is unknown because durable run ownership was lost: {error}"
-            )),
-        );
+            unknown.clone(),
+        ) {
+            crate::log_warn!(
+                "agent_runtime",
+                "failed to record unknown shell outcome: {runtime_error}"
+            );
+        }
+        let _ = pending.dynamic_response.send(Err(unknown));
         self.fail_specific_dynamic_turn(
             &pending.runtime_turn,
             format!("durable run ownership was lost: {error}"),
@@ -1954,10 +2076,15 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn authorized_shell_runs_in_background_while_editor_poll_stays_responsive() {
         let dir = tempfile::tempdir().unwrap();
-        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        git2::Repository::init(dir.path()).unwrap();
         let file = dir.path().join("main.rs");
         std::fs::write(&file, "fn main() {}\n").unwrap();
+        let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
+        editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .unwrap();
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("run the gated check").unwrap();
@@ -1966,7 +2093,7 @@ mod tests {
             id: "gated-shell".into(),
             name: "bash".into(),
             arguments: serde_json::json!({
-                "command": "while [ ! -f release-gate ]; do sleep 0.01; done; echo completed"
+                "command": "while [ ! -f release-gate ]; do sleep 0.01; done; touch agent-marker; echo completed"
             }),
         };
         let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
@@ -2012,7 +2139,20 @@ mod tests {
             .iter()
             .position(|event| matches!(event.kind, EventKind::ToolResult(_)))
             .unwrap();
-        assert!(start_index < result_index);
+        let mutation_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::FileMutation(mutation) if mutation.path == "agent-marker"
+                )
+            })
+            .unwrap();
+        assert!(start_index < mutation_index && mutation_index < result_index);
+        assert_eq!(
+            events[mutation_index].operation_id,
+            events[start_index].operation_id
+        );
     }
 
     fn attach_finished_classifier(

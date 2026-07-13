@@ -198,7 +198,19 @@ impl ReplaySession {
         store: &ArtifactStore,
         git: Option<&dyn ReplayGitResolver>,
     ) -> Result<Self, ReplayError> {
-        let artifacts = ArtifactCatalog::new(&manifest.artifacts, additional_artifacts)?;
+        let embedded_artifacts: Vec<_> = events
+            .iter()
+            .filter_map(|event| match &event.kind {
+                EventKind::FileMutation(mutation) => Some(mutation.artifacts.iter()),
+                _ => None,
+            })
+            .flatten()
+            .collect();
+        let artifacts = ArtifactCatalog::new(
+            &manifest.artifacts,
+            additional_artifacts,
+            &embedded_artifacts,
+        )?;
         let mut initial = materialize_base(manifest, &artifacts, store, git);
         let normalized = normalize_transitions(events, &mut initial)?;
         let mut transition_artifacts = HashMap::new();
@@ -475,9 +487,14 @@ impl<'a> ArtifactCatalog<'a> {
     fn new(
         base: &'a [ArtifactRecord],
         additional: &'a [ArtifactRecord],
+        embedded: &[&'a ArtifactRecord],
     ) -> Result<Self, ReplayError> {
         let mut records = HashMap::new();
-        for record in base.iter().chain(additional) {
+        for record in base
+            .iter()
+            .chain(additional)
+            .chain(embedded.iter().copied())
+        {
             if let Some(existing) = records.insert(&record.artifact_id, record) {
                 if existing != record {
                     return Err(ReplayError::ConflictingArtifactMetadata(
@@ -1257,6 +1274,7 @@ mod tests {
             file_kind: FileKind::Regular,
             before_artifact: before,
             after_artifact: after,
+            artifacts: Vec::new(),
             state: FileMutationState::Completed,
         })
     }
@@ -1324,6 +1342,35 @@ mod tests {
         assert_eq!(visible(&replay, "src/lib.rs"), Some(b"one".as_slice()));
         replay.reconstruct(ReplayBoundary::End).unwrap();
         assert_eq!(visible(&replay, "src/lib.rs"), Some(b"three".as_slice()));
+    }
+
+    #[test]
+    fn mutation_embedded_artifact_metadata_is_replayable_without_side_channel_records() {
+        let fixture = Fixture::new();
+        let manifest = fixture.manifest(Vec::new());
+        let record = record(&fixture.store, "embedded_created", b"created by shell");
+        let reference = record.as_ref();
+        let mutation = FileMutationEvent {
+            path: "created.txt".into(),
+            previous_path: None,
+            surface: WorkspaceSurface::Disk,
+            file_kind: FileKind::Regular,
+            before_artifact: None,
+            after_artifact: Some(reference),
+            artifacts: vec![record],
+            state: FileMutationState::Completed,
+        };
+        let events = vec![event(1, EventKind::FileMutation(mutation), None, None)];
+        let mut replay = ReplaySession::new(&manifest, &[], &events, &fixture.store, None).unwrap();
+
+        replay.reconstruct(ReplayBoundary::End).unwrap();
+        let comparison = replay.compare_observed_workspace(&[ObservedFile {
+            path: RepoPath::parse("created.txt").unwrap(),
+            bytes: Some(b"created by shell".to_vec()),
+            surface: WorkspaceSurface::Disk,
+        }]);
+        assert!(comparison.divergences.is_empty());
+        assert_eq!(comparison.replayability, Replayability::Exact);
     }
 
     #[test]

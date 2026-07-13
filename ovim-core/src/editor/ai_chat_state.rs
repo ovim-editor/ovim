@@ -37,8 +37,16 @@ pub struct PendingShellExecution {
     pub runtime_tool: crate::agent_runtime::PendingToolRef,
     pub runtime_turn: crate::agent_runtime::PendingTurnRef,
     pub dynamic_response: tokio::sync::oneshot::Sender<Result<String, String>>,
-    pub receiver: tokio::sync::oneshot::Receiver<crate::ai::tools::ToolResult>,
+    pub receiver: tokio::sync::oneshot::Receiver<ShellExecutionObservation>,
     pub task: tokio::task::JoinHandle<()>,
+}
+
+pub struct ShellExecutionObservation {
+    pub result: crate::ai::tools::ToolResult,
+    pub delta: Option<crate::run_log::WorkspaceDelta>,
+    pub capture_error: Option<String>,
+    /// The command may have run, but its resulting disk state was not captured.
+    pub outcome_unknown: bool,
 }
 
 #[derive(Debug, Clone)]

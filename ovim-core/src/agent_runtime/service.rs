@@ -1,10 +1,11 @@
 use crate::run_log::{
     AgentId, AgentLifecycleEvent, AgentLifecycleState, BranchId, BranchLifecycleEvent,
-    BranchLifecycleState, ConversationBinding, ConversationId, EventActor, EventEnvelope, EventId,
-    EventKind, InMemoryRunEventSink, MessageEvent, MessageRole, NewRunEvent, OperationId,
-    RepositoryId, RunCreationMetadata, RunEventSink, RunId, RunLifecycleEvent, RunLifecycleState,
-    RunLogError, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent,
-    TurnId, TurnLifecycleEvent, TurnLifecycleState, WorkspaceId,
+    BranchLifecycleState, ConversationBinding, ConversationId, DivergenceEvent, EventActor,
+    EventEnvelope, EventId, EventKind, FileMutationEvent, InMemoryRunEventSink, MessageEvent,
+    MessageRole, NewRunEvent, OperationId, Replayability, RepositoryId, RunCreationMetadata,
+    RunEventSink, RunId, RunLifecycleEvent, RunLifecycleState, RunLogError, ToolIntentEvent,
+    ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent, TurnId, TurnLifecycleEvent,
+    TurnLifecycleState, WorkspaceId,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -1192,6 +1193,99 @@ impl AgentRuntime {
         )
     }
 
+    pub fn mark_tool_outcome_unknown(
+        &mut self,
+        turn: &PendingTurnRef,
+        tool: &PendingToolRef,
+        summary: impl Into<String>,
+    ) -> Result<EventEnvelope, AgentRuntimeError> {
+        let summary = summary.into();
+        self.tool_transition(
+            turn,
+            tool,
+            &[ToolState::Started],
+            ToolState::Terminal,
+            |_| {
+                EventKind::ToolResult(ToolResultEvent {
+                    outcome: ToolOutcome::UnknownAfterCrash,
+                    summary: Some(summary),
+                    result: None,
+                })
+            },
+        )
+    }
+
+    /// Appends an observed workspace transition while keeping the owning tool
+    /// operation open. This makes ToolStarted -> mutations -> ToolResult one
+    /// branch-local causal chain.
+    pub fn record_tool_file_mutation(
+        &mut self,
+        turn: &PendingTurnRef,
+        tool: &PendingToolRef,
+        mutation: FileMutationEvent,
+    ) -> Result<EventEnvelope, AgentRuntimeError> {
+        self.record_started_tool_event(turn, tool, EventKind::FileMutation(mutation))
+    }
+
+    pub fn record_tool_capture_issue(
+        &mut self,
+        turn: &PendingTurnRef,
+        tool: &PendingToolRef,
+        detail: impl Into<String>,
+    ) -> Result<EventEnvelope, AgentRuntimeError> {
+        self.record_started_tool_event(
+            turn,
+            tool,
+            EventKind::Divergence(DivergenceEvent {
+                scope: "workspace_capture".into(),
+                expected_artifact: None,
+                actual_artifact: None,
+                replayability: Replayability::Partial,
+                detail: Some(detail.into()),
+            }),
+        )
+    }
+
+    fn record_started_tool_event(
+        &mut self,
+        turn: &PendingTurnRef,
+        tool: &PendingToolRef,
+        kind: EventKind,
+    ) -> Result<EventEnvelope, AgentRuntimeError> {
+        if tool.turn_id != turn.turn_id {
+            return Err(AgentRuntimeError::WrongToolTurn);
+        }
+        let (sink, state) = self.active_state(turn)?;
+        let record = state
+            .tools
+            .get(&tool.operation_id)
+            .ok_or(AgentRuntimeError::UnknownOperation)?;
+        if record.turn_id != turn.turn_id {
+            return Err(AgentRuntimeError::WrongToolTurn);
+        }
+        if record.state != ToolState::Started {
+            return Err(AgentRuntimeError::InvalidToolState);
+        }
+        let previous = state.branches[&state.selected_branch].last_event.clone();
+        let event = append_for(
+            sink,
+            &state.reference,
+            Some(turn.turn_id.clone()),
+            Some(previous),
+            EventActor::Agent(turn.agent_id.clone()),
+            kind,
+            Some(tool.operation_id.clone()),
+            tool.provider_call_id.clone(),
+            Some(turn.branch_id.clone()),
+        )?;
+        state
+            .branches
+            .get_mut(&state.selected_branch)
+            .unwrap()
+            .last_event = event.event_id.clone();
+        Ok(event)
+    }
+
     fn tool_transition(
         &mut self,
         turn: &PendingTurnRef,
@@ -1938,6 +2032,46 @@ mod tests {
         assert!(events
             .iter()
             .all(|event| event.branch_id.as_ref() == Some(&turn.branch_id)));
+    }
+
+    #[test]
+    fn shell_mutations_extend_the_tool_causal_chain_before_terminal_outcome() {
+        let mut runtime = AgentRuntime::new();
+        let turn = runtime
+            .begin_turn("buffer:1", "main", "change it", AgentSpec::chat())
+            .unwrap();
+        let tool = runtime
+            .record_tool_intent(
+                &turn,
+                "bash",
+                json!({"command": "touch made"}),
+                ToolSideEffect::Mutation,
+                Some("call-shell".into()),
+            )
+            .unwrap();
+        let started = runtime.start_tool(&turn, &tool).unwrap();
+        let mutation = runtime
+            .record_tool_file_mutation(
+                &turn,
+                &tool,
+                crate::run_log::FileMutationEvent {
+                    path: "made".into(),
+                    previous_path: None,
+                    surface: crate::run_log::WorkspaceSurface::Disk,
+                    file_kind: crate::run_log::FileKind::Regular,
+                    before_artifact: None,
+                    after_artifact: None,
+                    artifacts: Vec::new(),
+                    state: crate::run_log::FileMutationState::Completed,
+                },
+            )
+            .unwrap();
+        let terminal = runtime.complete_tool(&turn, &tool, None, None).unwrap();
+
+        assert_eq!(mutation.caused_by, Some(started.event_id));
+        assert_eq!(terminal.caused_by, Some(mutation.event_id));
+        assert_eq!(mutation.operation_id, Some(tool.operation_id.clone()));
+        assert_eq!(mutation.turn_id, Some(turn.turn_id.clone()));
     }
 
     #[test]

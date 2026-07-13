@@ -18,6 +18,7 @@ mod replay;
 mod repository;
 mod sqlite;
 mod store;
+mod workspace_capture;
 
 pub use artifact::*;
 pub use catalog::*;
@@ -33,3 +34,4 @@ pub use replay::*;
 pub use repository::*;
 pub use sqlite::*;
 pub use store::*;
+pub use workspace_capture::*;

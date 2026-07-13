@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 
 pub const OVIM_RUNS_DIR_ENV: &str = "OVIM_RUNS_DIR";
 const EVENT_DATABASE: &str = "events.sqlite3";
+const ARTIFACT_DIRECTORY: &str = "artifacts";
 
 /// Canonical on-disk locations for durable agent runs.
 ///
@@ -53,6 +54,10 @@ impl RunStorageLayout {
 
     pub fn event_database(&self, run_id: &RunId) -> PathBuf {
         self.run_directory(run_id).join(EVENT_DATABASE)
+    }
+
+    pub fn artifact_directory(&self, run_id: &RunId) -> PathBuf {
+        self.run_directory(run_id).join(ARTIFACT_DIRECTORY)
     }
 
     pub(crate) fn ensure_root(&self) -> Result<(), RunLogError> {

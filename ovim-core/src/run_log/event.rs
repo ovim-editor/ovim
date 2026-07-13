@@ -474,6 +474,11 @@ pub struct FileMutationEvent {
     pub before_artifact: Option<ArtifactRef>,
     /// `None` represents deletion by the transition.
     pub after_artifact: Option<ArtifactRef>,
+    /// Artifact metadata carried with the transition so a durable event log
+    /// and its content-addressed blob directory are a self-contained replay
+    /// bundle. Older events deserialize with an empty collection.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub artifacts: Vec<super::ArtifactRecord>,
     pub state: FileMutationState,
 }
 
