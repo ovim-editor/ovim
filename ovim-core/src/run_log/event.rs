@@ -1,4 +1,7 @@
-use super::{AgentId, EventId, OperationId, RunId, TurnId, WorkspaceId};
+use super::{
+    AgentId, BaseManifestId, BranchId, EventId, OperationId, RepositoryId, RunId, TurnId,
+    WorkspaceId,
+};
 use serde::{
     de::{self, DeserializeOwned},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -35,6 +38,10 @@ pub struct EventEnvelope {
     pub agent_id: Option<AgentId>,
     pub turn_id: Option<TurnId>,
     pub workspace_id: Option<WorkspaceId>,
+    /// Durable conversation trajectory. Editor tree/node identifiers remain a
+    /// transient projection and must not be persisted here.
+    #[serde(default)]
+    pub branch_id: Option<BranchId>,
     pub kind: EventKind,
 }
 
@@ -49,6 +56,8 @@ pub struct NewRunEvent {
     pub agent_id: Option<AgentId>,
     pub turn_id: Option<TurnId>,
     pub workspace_id: Option<WorkspaceId>,
+    #[serde(default)]
+    pub branch_id: Option<BranchId>,
     pub kind: EventKind,
 }
 
@@ -63,6 +72,7 @@ impl NewRunEvent {
             agent_id: None,
             turn_id: None,
             workspace_id: None,
+            branch_id: None,
             kind,
         }
     }
@@ -96,6 +106,11 @@ impl NewRunEvent {
         self.workspace_id = Some(workspace_id);
         self
     }
+
+    pub fn in_branch(mut self, branch_id: BranchId) -> Self {
+        self.branch_id = Some(branch_id);
+        self
+    }
 }
 
 /// Version-one normalized event payload. New semantic shapes should normally be
@@ -104,6 +119,7 @@ impl NewRunEvent {
 #[non_exhaustive]
 pub enum EventKind {
     RunLifecycle(RunLifecycleEvent),
+    BranchLifecycle(BranchLifecycleEvent),
     AgentLifecycle(AgentLifecycleEvent),
     TurnLifecycle(TurnLifecycleEvent),
     Message(MessageEvent),
@@ -135,6 +151,7 @@ impl Serialize for EventKind {
     {
         let (kind, data) = match self {
             Self::RunLifecycle(value) => ("run_lifecycle", serde_json::to_value(value)),
+            Self::BranchLifecycle(value) => ("branch_lifecycle", serde_json::to_value(value)),
             Self::AgentLifecycle(value) => ("agent_lifecycle", serde_json::to_value(value)),
             Self::TurnLifecycle(value) => ("turn_lifecycle", serde_json::to_value(value)),
             Self::Message(value) => ("message", serde_json::to_value(value)),
@@ -172,6 +189,7 @@ impl<'de> Deserialize<'de> for EventKind {
         let raw = RawEventKind::deserialize(deserializer)?;
         match raw.kind.as_str() {
             "run_lifecycle" => decode(raw.data).map(Self::RunLifecycle),
+            "branch_lifecycle" => decode(raw.data).map(Self::BranchLifecycle),
             "agent_lifecycle" => decode(raw.data).map(Self::AgentLifecycle),
             "turn_lifecycle" => decode(raw.data).map(Self::TurnLifecycle),
             "message" => decode(raw.data).map(Self::Message),
@@ -203,6 +221,44 @@ pub struct RunLifecycleEvent {
     pub state: RunLifecycleState,
     pub objective: Option<String>,
     pub detail: Option<String>,
+    /// Present on `Created`. Optional/defaulted so historical envelopes remain
+    /// readable and non-creation lifecycle records stay compact.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub creation: Option<RunCreationMetadata>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunCreationMetadata {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub repository_id: Option<RepositoryId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_commit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub base_manifest_id: Option<BaseManifestId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub initial_branch_id: Option<BranchId>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct BranchLifecycleEvent {
+    pub state: BranchLifecycleState,
+    pub branch_id: BranchId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_branch_id: Option<BranchId>,
+    /// Exact event in the parent trajectory from which this branch diverged.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub forked_at: Option<EventId>,
+    /// Human-facing locator at the time of the event; never used as identity.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BranchLifecycleState {
+    Created,
+    Forked,
+    Selected,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -321,6 +377,9 @@ pub enum ToolOutcome {
     Completed,
     Failed,
     Interrupted,
+    /// The process stopped after an effect may have begun but before a durable
+    /// terminal result was recorded. Recovery must not guess success/failure.
+    UnknownAfterCrash,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

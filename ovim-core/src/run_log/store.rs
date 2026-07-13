@@ -199,6 +199,7 @@ impl RunEventSink for InMemoryRunEventSink {
             agent_id: event.agent_id,
             turn_id: event.turn_id,
             workspace_id: event.workspace_id,
+            branch_id: event.branch_id,
             kind: event.kind,
         };
 
@@ -272,6 +273,7 @@ mod tests {
                 state: RunLifecycleState::Created,
                 objective: Some("ship it".into()),
                 detail: None,
+                creation: None,
             }),
         )
     }

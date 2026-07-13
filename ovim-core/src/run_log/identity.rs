@@ -98,6 +98,8 @@ identifier!(ArtifactId, "art_");
 identifier!(ManifestId, "mft_");
 identifier!(ConversationId, "cnv_");
 identifier!(BranchId, "brn_");
+identifier!(RepositoryId, "repo_");
+identifier!(BaseManifestId, "bsm_");
 
 #[cfg(test)]
 mod tests {

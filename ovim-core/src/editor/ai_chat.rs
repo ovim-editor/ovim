@@ -1336,16 +1336,29 @@ mod tests {
         let fork_turn = editor.begin_ai_runtime_turn("forked").unwrap();
         assert_ne!(fork_turn.branch_id, first_turn.branch_id);
         let fork_user_event_id = fork_turn.initiating_event.caused_by.clone().unwrap();
-        let fork_user_event = editor
+        let events = editor
             .ai_state
             .agent_runtime
             .events(&fork_turn.run_id)
-            .unwrap()
-            .into_iter()
+            .unwrap();
+        let fork_user_event = events
+            .iter()
             .find(|event| event.event_id == fork_user_event_id)
             .unwrap();
+        let selected_event = events
+            .iter()
+            .find(|event| Some(&event.event_id) == fork_user_event.caused_by.as_ref())
+            .unwrap();
+        let durable_fork_event = events
+            .iter()
+            .find(|event| Some(&event.event_id) == selected_event.caused_by.as_ref())
+            .unwrap();
+        assert!(matches!(
+            durable_fork_event.kind,
+            EventKind::BranchLifecycle(_)
+        ));
         assert_eq!(
-            fork_user_event.caused_by,
+            durable_fork_event.caused_by,
             editor
                 .ai_state
                 .conversation_runtime_nodes

@@ -1,9 +1,10 @@
 use crate::run_log::{
-    AgentId, AgentLifecycleEvent, AgentLifecycleState, BranchId, ConversationId, EventActor,
-    EventEnvelope, EventId, EventKind, InMemoryRunEventSink, MessageEvent, MessageRole,
-    NewRunEvent, OperationId, RunEventSink, RunId, RunLifecycleEvent, RunLifecycleState,
-    RunLogError, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent,
-    TurnId, TurnLifecycleEvent, TurnLifecycleState, WorkspaceId,
+    AgentId, AgentLifecycleEvent, AgentLifecycleState, BranchId, BranchLifecycleEvent,
+    BranchLifecycleState, ConversationId, EventActor, EventEnvelope, EventId, EventKind,
+    InMemoryRunEventSink, MessageEvent, MessageRole, NewRunEvent, OperationId, RunCreationMetadata,
+    RunEventSink, RunId, RunLifecycleEvent, RunLifecycleState, RunLogError, ToolIntentEvent,
+    ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent, TurnId, TurnLifecycleEvent,
+    TurnLifecycleState, WorkspaceId,
 };
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
@@ -171,6 +172,7 @@ impl From<RunLogError> for AgentRuntimeError {
 pub struct AgentRuntime {
     sink: Arc<dyn RunEventSink>,
     workspace_id: WorkspaceId,
+    run_creation: RunCreationMetadata,
     conversations: HashMap<ConversationLocator, ConversationState>,
 }
 
@@ -186,9 +188,17 @@ impl AgentRuntime {
     }
 
     pub fn with_sink(sink: Arc<dyn RunEventSink>) -> Self {
+        Self::with_sink_and_run_metadata(sink, RunCreationMetadata::default())
+    }
+
+    pub fn with_sink_and_run_metadata(
+        sink: Arc<dyn RunEventSink>,
+        run_creation: RunCreationMetadata,
+    ) -> Self {
         Self {
             sink,
             workspace_id: WorkspaceId::new(),
+            run_creation,
             conversations: HashMap::new(),
         }
     }
@@ -239,6 +249,7 @@ impl AgentRuntime {
             }),
             None,
             None,
+            Some(branch_id.clone()),
         )?;
         let started = append_for(
             &self.sink,
@@ -252,6 +263,7 @@ impl AgentRuntime {
             }),
             None,
             None,
+            Some(branch_id.clone()),
         )?;
         state.branches.get_mut(&branch).unwrap().last_event = started.event_id.clone();
         state.active_turn = Some(turn_id.clone());
@@ -278,6 +290,10 @@ impl AgentRuntime {
             root_agent_id: AgentId::new(),
             workspace_id: self.workspace_id.clone(),
         };
+        let initial_branch = BranchRef {
+            branch_id: BranchId::new(),
+            parent_branch_id: None,
+        };
         let created = append_for(
             &self.sink,
             &reference,
@@ -288,9 +304,14 @@ impl AgentRuntime {
                 state: RunLifecycleState::Created,
                 objective: spec.objective.clone(),
                 detail: None,
+                creation: Some(RunCreationMetadata {
+                    initial_branch_id: Some(initial_branch.branch_id.clone()),
+                    ..self.run_creation.clone()
+                }),
             }),
             None,
             None,
+            Some(initial_branch.branch_id.clone()),
         )?;
         let dispatched = append_for(
             &self.sink,
@@ -301,6 +322,7 @@ impl AgentRuntime {
             agent_event(&reference, spec, AgentLifecycleState::Dispatched),
             None,
             None,
+            Some(initial_branch.branch_id.clone()),
         )?;
         let started = append_for(
             &self.sink,
@@ -311,16 +333,31 @@ impl AgentRuntime {
             agent_event(&reference, spec, AgentLifecycleState::Started),
             None,
             None,
+            Some(initial_branch.branch_id.clone()),
+        )?;
+        let branch_created = append_for(
+            &self.sink,
+            &reference,
+            None,
+            Some(started.event_id),
+            EventActor::System("agent_runtime".into()),
+            EventKind::BranchLifecycle(BranchLifecycleEvent {
+                state: BranchLifecycleState::Created,
+                branch_id: initial_branch.branch_id.clone(),
+                parent_branch_id: None,
+                forked_at: None,
+                label: Some(branch.0.clone()),
+            }),
+            None,
+            None,
+            Some(initial_branch.branch_id.clone()),
         )?;
         let mut branches = HashMap::new();
         branches.insert(
             branch.clone(),
             BranchState {
-                reference: BranchRef {
-                    branch_id: BranchId::new(),
-                    parent_branch_id: None,
-                },
-                last_event: started.event_id,
+                reference: initial_branch,
+                last_event: branch_created.event_id,
             },
         );
         self.conversations.insert(
@@ -379,15 +416,33 @@ impl AgentRuntime {
             .branches
             .get(source)
             .ok_or(AgentRuntimeError::UnknownBranch)?;
+        let parent_branch_id = source.reference.branch_id.clone();
         let branch = BranchRef {
             branch_id: BranchId::new(),
-            parent_branch_id: Some(source.reference.branch_id.clone()),
+            parent_branch_id: Some(parent_branch_id.clone()),
         };
+        let forked = append_for(
+            &self.sink,
+            &state.reference,
+            None,
+            Some(causal_event.clone()),
+            EventActor::System("agent_runtime".into()),
+            EventKind::BranchLifecycle(BranchLifecycleEvent {
+                state: BranchLifecycleState::Forked,
+                branch_id: branch.branch_id.clone(),
+                parent_branch_id: Some(parent_branch_id),
+                forked_at: Some(causal_event),
+                label: Some(target.0.clone()),
+            }),
+            None,
+            None,
+            Some(branch.branch_id.clone()),
+        )?;
         state.branches.insert(
             target,
             BranchState {
                 reference: branch.clone(),
-                last_event: causal_event,
+                last_event: forked.event_id,
             },
         );
         Ok(branch)
@@ -410,6 +465,25 @@ impl AgentRuntime {
             .get(branch)
             .map(|branch| branch.reference.clone())
             .ok_or(AgentRuntimeError::UnknownBranch)?;
+        let previous = state.branches[branch].last_event.clone();
+        let selected_event = append_for(
+            &self.sink,
+            &state.reference,
+            None,
+            Some(previous),
+            EventActor::System("agent_runtime".into()),
+            EventKind::BranchLifecycle(BranchLifecycleEvent {
+                state: BranchLifecycleState::Selected,
+                branch_id: selected.branch_id.clone(),
+                parent_branch_id: selected.parent_branch_id.clone(),
+                forked_at: None,
+                label: Some(branch.0.clone()),
+            }),
+            None,
+            None,
+            Some(selected.branch_id.clone()),
+        )?;
+        state.branches.get_mut(branch).unwrap().last_event = selected_event.event_id;
         state.selected_branch = branch.clone();
         Ok(selected)
     }
@@ -471,6 +545,7 @@ impl AgentRuntime {
             EventKind::Message(MessageEvent { role, content }),
             None,
             None,
+            Some(turn.branch_id.clone()),
         )?;
         state
             .branches
@@ -505,6 +580,7 @@ impl AgentRuntime {
             }),
             Some(operation_id.clone()),
             provider_call_id.clone(),
+            Some(turn.branch_id.clone()),
         )?;
         state
             .branches
@@ -619,6 +695,7 @@ impl AgentRuntime {
             kind(tool.tool_name.clone()),
             Some(tool.operation_id.clone()),
             tool.provider_call_id.clone(),
+            Some(turn.branch_id.clone()),
         )?;
         state
             .branches
@@ -700,6 +777,7 @@ impl AgentRuntime {
                     }),
                     Some(operation_id.clone()),
                     provider_call_id,
+                    Some(turn.branch_id.clone()),
                 )?;
                 state
                     .branches
@@ -722,6 +800,7 @@ impl AgentRuntime {
             }),
             None,
             None,
+            Some(turn.branch_id.clone()),
         )?;
         state
             .branches
@@ -800,6 +879,7 @@ fn append_for(
     kind: EventKind,
     operation_id: Option<OperationId>,
     provider_call_id: Option<String>,
+    branch_id: Option<BranchId>,
 ) -> Result<EventEnvelope, RunLogError> {
     sink.append(NewRunEvent {
         run_id: reference.run_id.clone(),
@@ -810,6 +890,7 @@ fn append_for(
         agent_id: Some(reference.root_agent_id.clone()),
         turn_id,
         workspace_id: Some(reference.workspace_id.clone()),
+        branch_id,
         kind,
     })
 }
@@ -817,6 +898,7 @@ fn append_for(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::run_log::{BaseManifestId, RepositoryId};
     use serde_json::json;
 
     fn labels(events: &[EventEnvelope]) -> Vec<String> {
@@ -824,6 +906,7 @@ mod tests {
             .iter()
             .map(|event| match &event.kind {
                 EventKind::RunLifecycle(value) => format!("run.{:?}", value.state),
+                EventKind::BranchLifecycle(value) => format!("branch.{:?}", value.state),
                 EventKind::AgentLifecycle(value) => format!("agent.{:?}", value.state),
                 EventKind::TurnLifecycle(value) => format!("turn.{:?}", value.state),
                 EventKind::Message(value) => format!("message.{:?}", value.role),
@@ -866,6 +949,7 @@ mod tests {
                 "run.Created",
                 "agent.Dispatched",
                 "agent.Started",
+                "branch.Created",
                 "message.User",
                 "turn.Started",
                 "message.ReasoningSummary",
@@ -880,12 +964,15 @@ mod tests {
         assert!(events
             .windows(2)
             .all(|pair| pair[1].caused_by == Some(pair[0].event_id.clone())));
-        assert_eq!(events[6].operation_id, events[7].operation_id);
         assert_eq!(events[7].operation_id, events[8].operation_id);
+        assert_eq!(events[8].operation_id, events[9].operation_id);
         assert_eq!(
-            events[6].provider_call_id.as_deref(),
+            events[7].provider_call_id.as_deref(),
             Some("provider-call-7")
         );
+        assert!(events
+            .iter()
+            .all(|event| event.branch_id.as_ref() == Some(&turn.branch_id)));
     }
 
     #[test]
@@ -918,6 +1005,66 @@ mod tests {
     }
 
     #[test]
+    fn run_creation_records_repository_anchors_and_initial_branch() {
+        let repository_id = RepositoryId::parse("repo_ovim").unwrap();
+        let base_manifest_id = BaseManifestId::parse("bsm_initial").unwrap();
+        let mut runtime = AgentRuntime::with_sink_and_run_metadata(
+            Arc::new(InMemoryRunEventSink::new()),
+            RunCreationMetadata {
+                repository_id: Some(repository_id.clone()),
+                base_commit: Some("0123456789abcdef".into()),
+                base_manifest_id: Some(base_manifest_id.clone()),
+                initial_branch_id: None,
+            },
+        );
+        let turn = runtime
+            .begin_turn("chat", "main", "inspect", AgentSpec::chat())
+            .unwrap();
+        let events = runtime.events(&turn.run_id).unwrap();
+        let EventKind::RunLifecycle(created) = &events[0].kind else {
+            panic!("first event must create the run")
+        };
+        let metadata = created.creation.as_ref().unwrap();
+        assert_eq!(metadata.repository_id.as_ref(), Some(&repository_id));
+        assert_eq!(metadata.base_commit.as_deref(), Some("0123456789abcdef"));
+        assert_eq!(metadata.base_manifest_id.as_ref(), Some(&base_manifest_id));
+        assert_eq!(metadata.initial_branch_id.as_ref(), Some(&turn.branch_id));
+    }
+
+    #[test]
+    fn fork_event_durably_identifies_parent_and_exact_fork_point() {
+        let mut runtime = AgentRuntime::new();
+        let locator = ConversationLocator("chat".into());
+        let main = BranchLocator("main".into());
+        let first = runtime
+            .begin_turn("chat", "main", "one", AgentSpec::chat())
+            .unwrap();
+        runtime.complete_turn(&first).unwrap();
+        let fork_point = first.initiating_event.event_id.clone();
+        let fork = runtime
+            .fork_branch_at(
+                &locator,
+                &main,
+                BranchLocator("alternative".into()),
+                fork_point.clone(),
+            )
+            .unwrap();
+
+        let events = runtime.events(&first.run_id).unwrap();
+        let forked = events
+            .iter()
+            .find(|event| event.branch_id.as_ref() == Some(&fork.branch_id))
+            .unwrap();
+        assert_eq!(forked.caused_by.as_ref(), Some(&fork_point));
+        let EventKind::BranchLifecycle(lifecycle) = &forked.kind else {
+            panic!("first event on the fork must describe the fork")
+        };
+        assert_eq!(lifecycle.state, BranchLifecycleState::Forked);
+        assert_eq!(lifecycle.parent_branch_id.as_ref(), Some(&first.branch_id));
+        assert_eq!(lifecycle.forked_at.as_ref(), Some(&fork_point));
+    }
+
+    #[test]
     fn switching_back_resumes_that_branches_causal_tip() {
         let mut runtime = AgentRuntime::new();
         let locator = ConversationLocator("chat".into());
@@ -941,9 +1088,23 @@ mod tests {
             .begin_turn("chat", "main", "back on main", AgentSpec::chat())
             .unwrap();
 
-        let resumed_message = runtime
-            .events(&resumed.run_id)
-            .unwrap()
+        let events = runtime.events(&resumed.run_id).unwrap();
+        let selected_main = events
+            .iter()
+            .find(|event| {
+                event.branch_id.as_ref() == Some(&first.branch_id)
+                    && matches!(
+                        &event.kind,
+                        EventKind::BranchLifecycle(BranchLifecycleEvent {
+                            state: BranchLifecycleState::Selected,
+                            ..
+                        })
+                    )
+            })
+            .unwrap();
+        assert_eq!(selected_main.caused_by, Some(main_tip.event_id));
+        let selected_main_id = selected_main.event_id.clone();
+        let resumed_message = events
             .into_iter()
             .find(|event| {
                 event.turn_id.as_ref() == Some(&resumed.turn_id)
@@ -956,7 +1117,7 @@ mod tests {
                     )
             })
             .unwrap();
-        assert_eq!(resumed_message.caused_by, Some(main_tip.event_id));
+        assert_eq!(resumed_message.caused_by, Some(selected_main_id));
         assert_ne!(resumed_message.caused_by, Some(fork_tip.event_id));
     }
 

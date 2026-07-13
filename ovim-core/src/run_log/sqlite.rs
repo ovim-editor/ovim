@@ -6,9 +6,9 @@ use super::{
 use rusqlite::{params, Connection, ErrorCode, OpenFlags, OptionalExtension, TransactionBehavior};
 use std::path::Path;
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-const LATEST_MIGRATION: u32 = 2;
+const LATEST_MIGRATION: u32 = 3;
 const BUSY_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// Durable SQLite-backed event history.
@@ -60,12 +60,12 @@ impl SqliteRunEventSink {
     }
 
     fn from_connection(
-        connection: Connection,
+        mut connection: Connection,
         id_generator: Arc<dyn EventIdGenerator>,
         clock: Arc<dyn EventClock>,
     ) -> Result<Self, RunLogError> {
         configure(&connection)?;
-        migrate(&connection)?;
+        migrate(&mut connection)?;
         Ok(Self {
             connection: Mutex::new(connection),
             id_generator,
@@ -150,6 +150,7 @@ impl RunEventSink for SqliteRunEventSink {
             agent_id: event.agent_id,
             turn_id: event.turn_id,
             workspace_id: event.workspace_id,
+            branch_id: event.branch_id,
             kind: event.kind,
         };
         let envelope_json =
@@ -168,8 +169,8 @@ impl RunEventSink for SqliteRunEventSink {
             .execute(
                 "INSERT INTO events \
                  (event_id, run_id, sequence, caused_by, recorded_at, envelope_json, \
-                  kind, agent_id, turn_id, operation_id, workspace_id) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+                  kind, agent_id, turn_id, operation_id, workspace_id, branch_id) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
                 params![
                     envelope.event_id.as_str(),
                     envelope.run_id.as_str(),
@@ -182,6 +183,7 @@ impl RunEventSink for SqliteRunEventSink {
                     envelope.turn_id.as_ref().map(|id| id.as_str()),
                     envelope.operation_id.as_ref().map(|id| id.as_str()),
                     envelope.workspace_id.as_ref().map(|id| id.as_str()),
+                    envelope.branch_id.as_ref().map(|id| id.as_str()),
                 ],
             )
             .map_err(|error| {
@@ -309,9 +311,7 @@ fn configure(connection: &Connection) -> Result<(), RunLogError> {
         .pragma_update(None, "foreign_keys", "ON")
         .map_err(|error| storage("enable foreign keys", error))?;
     // In-memory databases report `memory`; file databases switch to WAL.
-    connection
-        .pragma_update(None, "journal_mode", "WAL")
-        .map_err(|error| storage("enable WAL journal", error))?;
+    configure_wal(connection)?;
     // Intent events must reach durable storage before their effects begin. FULL
     // synchronous mode keeps that ordering meaningful across power loss, not
     // merely process crashes.
@@ -321,8 +321,29 @@ fn configure(connection: &Connection) -> Result<(), RunLogError> {
     Ok(())
 }
 
-fn migrate(connection: &Connection) -> Result<(), RunLogError> {
-    let current: u32 = connection
+fn configure_wal(connection: &Connection) -> Result<(), RunLogError> {
+    // Setting WAL itself needs an exclusive schema lock and SQLite does not
+    // consistently invoke the busy handler for this PRAGMA. Retry within the
+    // same bounded window used by normal database operations.
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    loop {
+        match connection.pragma_update(None, "journal_mode", "WAL") {
+            Ok(()) => return Ok(()),
+            Err(error) if is_busy(&error) && Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(error) => return Err(storage("enable WAL journal", error)),
+        }
+    }
+}
+
+fn migrate(connection: &mut Connection) -> Result<(), RunLogError> {
+    // Serialize the version read and every migration step. Without this lock,
+    // two first-open callers can both observe version zero and race the ALTERs.
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| migration(0, error))?;
+    let current: u32 = transaction
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .map_err(|error| RunLogError::Migration {
             version: 0,
@@ -335,13 +356,6 @@ fn migrate(connection: &Connection) -> Result<(), RunLogError> {
         });
     }
     if current < 1 {
-        let transaction =
-            connection
-                .unchecked_transaction()
-                .map_err(|error| RunLogError::Migration {
-                    version: 1,
-                    detail: error.to_string(),
-                })?;
         transaction
             .execute_batch(
                 "CREATE TABLE IF NOT EXISTS schema_migrations (\
@@ -372,23 +386,58 @@ fn migrate(connection: &Connection) -> Result<(), RunLogError> {
                 version: 1,
                 detail: error.to_string(),
             })?;
-        transaction
-            .commit()
-            .map_err(|error| RunLogError::Migration {
-                version: 1,
-                detail: error.to_string(),
-            })?;
     }
     if current < 2 {
-        migrate_indexed_event_dimensions(connection)?;
+        migrate_indexed_event_dimensions(&transaction)?;
     }
+    if current < 3 {
+        migrate_branch_dimension(&transaction)?;
+    }
+    transaction.commit().map_err(|error| migration(0, error))
+}
+
+fn migrate_branch_dimension(transaction: &rusqlite::Transaction<'_>) -> Result<(), RunLogError> {
+    transaction
+        .execute_batch("ALTER TABLE events ADD COLUMN branch_id TEXT;")
+        .map_err(|error| migration(3, error))?;
+
+    let stored: Vec<(String, String)> = {
+        let mut statement = transaction
+            .prepare("SELECT event_id, envelope_json FROM events")
+            .map_err(|error| migration(3, error))?;
+        let rows = statement
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(|error| migration(3, error))?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| migration(3, error))?
+    };
+    for (event_id, json) in stored {
+        let envelope: EventEnvelope =
+            serde_json::from_str(&json).map_err(|error| RunLogError::Migration {
+                version: 3,
+                detail: format!("cannot index event {event_id}: {error}"),
+            })?;
+        transaction
+            .execute(
+                "UPDATE events SET branch_id = ?2 WHERE event_id = ?1",
+                params![event_id, envelope.branch_id.as_ref().map(|id| id.as_str()),],
+            )
+            .map_err(|error| migration(3, error))?;
+    }
+    transaction
+        .execute_batch(
+            "CREATE INDEX events_branch_id ON events(branch_id);\
+             INSERT OR IGNORE INTO schema_migrations(version, applied_at) \
+                 VALUES (3, CURRENT_TIMESTAMP);\
+             PRAGMA user_version = 3;",
+        )
+        .map_err(|error| migration(3, error))?;
     Ok(())
 }
 
-fn migrate_indexed_event_dimensions(connection: &Connection) -> Result<(), RunLogError> {
-    let transaction = connection
-        .unchecked_transaction()
-        .map_err(|error| migration(2, error))?;
+fn migrate_indexed_event_dimensions(
+    transaction: &rusqlite::Transaction<'_>,
+) -> Result<(), RunLogError> {
     transaction
         .execute_batch(
             "ALTER TABLE events ADD COLUMN kind TEXT;\
@@ -442,12 +491,13 @@ fn migrate_indexed_event_dimensions(connection: &Connection) -> Result<(), RunLo
              PRAGMA user_version = 2;",
         )
         .map_err(|error| migration(2, error))?;
-    transaction.commit().map_err(|error| migration(2, error))
+    Ok(())
 }
 
 fn event_kind_name(kind: &super::EventKind) -> &str {
     match kind {
         super::EventKind::RunLifecycle(_) => "run_lifecycle",
+        super::EventKind::BranchLifecycle(_) => "branch_lifecycle",
         super::EventKind::AgentLifecycle(_) => "agent_lifecycle",
         super::EventKind::TurnLifecycle(_) => "turn_lifecycle",
         super::EventKind::Message(_) => "message",
@@ -484,15 +534,24 @@ fn is_constraint(error: &rusqlite::Error) -> bool {
     )
 }
 
+fn is_busy(error: &rusqlite::Error) -> bool {
+    matches!(
+        error,
+        rusqlite::Error::SqliteFailure(details, _)
+            if matches!(details.code, ErrorCode::DatabaseBusy | ErrorCode::DatabaseLocked)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::run_log::{
-        AgentId, EventActor, EventKind, InMemoryRunEventSink, MessageEvent, MessageRole,
+        AgentId, BranchId, EventActor, EventKind, InMemoryRunEventSink, MessageEvent, MessageRole,
         OperationId, TurnId, WorkspaceId,
     };
     use serde_json::json;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Barrier;
     use std::thread;
     use tempfile::tempdir;
 
@@ -606,20 +665,22 @@ mod tests {
         let turn = TurnId::parse("trn_indexed").unwrap();
         let operation = OperationId::parse("op_indexed").unwrap();
         let workspace = WorkspaceId::parse("wsp_indexed").unwrap();
+        let branch = BranchId::parse("brn_indexed").unwrap();
         let envelope = sink
             .append(
                 message(run, "indexed")
                     .for_agent(agent.clone())
                     .in_turn(turn.clone())
                     .for_operation(operation.clone())
-                    .in_workspace(workspace.clone()),
+                    .in_workspace(workspace.clone())
+                    .in_branch(branch.clone()),
             )
             .unwrap();
 
         let connection = sink.connection().unwrap();
-        let indexed: (String, String, String, String, String) = connection
+        let indexed: (String, String, String, String, String, String) = connection
             .query_row(
-                "SELECT kind, agent_id, turn_id, operation_id, workspace_id \
+                "SELECT kind, agent_id, turn_id, operation_id, workspace_id, branch_id \
                  FROM events WHERE event_id = ?1",
                 [envelope.event_id.as_str()],
                 |row| {
@@ -629,6 +690,7 @@ mod tests {
                         row.get(2)?,
                         row.get(3)?,
                         row.get(4)?,
+                        row.get(5)?,
                     ))
                 },
             )
@@ -641,12 +703,14 @@ mod tests {
                 turn.to_string(),
                 operation.to_string(),
                 workspace.to_string(),
+                branch.to_string(),
             )
         );
         assert_eq!(envelope.agent_id, Some(agent));
         assert_eq!(envelope.turn_id, Some(turn));
         assert_eq!(envelope.operation_id, Some(operation));
         assert_eq!(envelope.workspace_id, Some(workspace));
+        assert_eq!(envelope.branch_id, Some(branch));
     }
 
     #[test]
@@ -667,8 +731,9 @@ mod tests {
         let directory = tempdir().unwrap();
         let path = directory.path().join("runs.sqlite");
         let run = RunId::parse("run_v1").unwrap();
+        let branch = BranchId::parse("brn_from_v1_envelope").unwrap();
         let envelope = InMemoryRunEventSink::new()
-            .append(message(run.clone(), "from v1"))
+            .append(message(run.clone(), "from v1").in_branch(branch.clone()))
             .unwrap();
         {
             let connection = Connection::open(&path).unwrap();
@@ -708,14 +773,14 @@ mod tests {
         let sink = SqliteRunEventSink::open(path).unwrap();
         assert_eq!(sink.events(&run).unwrap(), vec![envelope.clone()]);
         let connection = sink.connection().unwrap();
-        let kind: String = connection
+        let indexed: (String, String) = connection
             .query_row(
-                "SELECT kind FROM events WHERE event_id = ?1",
+                "SELECT kind, branch_id FROM events WHERE event_id = ?1",
                 [envelope.event_id.as_str()],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(kind, "message");
+        assert_eq!(indexed, ("message".into(), branch.to_string()));
     }
 
     #[test]
@@ -746,5 +811,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             (1..=12).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn concurrent_first_open_serializes_schema_migrations() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("brand-new.sqlite");
+        let barrier = Arc::new(Barrier::new(12));
+        let handles: Vec<_> = (0..12)
+            .map(|_| {
+                let path = path.clone();
+                let barrier = Arc::clone(&barrier);
+                thread::spawn(move || {
+                    barrier.wait();
+                    SqliteRunEventSink::open(path)
+                })
+            })
+            .collect();
+        for handle in handles {
+            handle.join().unwrap().unwrap();
+        }
+        let connection = Connection::open(path).unwrap();
+        let version: u32 = connection
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, LATEST_MIGRATION);
     }
 }
