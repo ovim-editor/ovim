@@ -2031,7 +2031,8 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let runs = crate::run_log::RunStorageLayout::new(dir.path().join("runs"));
         let mut editor = Editor::default();
-        editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap();
+        editor.ai_state =
+            Box::new(super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap());
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("create the marker").unwrap();
@@ -2081,10 +2082,12 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
-            crate::run_log::RunStorageLayout::new(runs.path()),
-        )
-        .unwrap();
+        editor.ai_state = Box::new(
+            super::super::ai_state::AiState::with_run_storage_layout(
+                crate::run_log::RunStorageLayout::new(runs.path()),
+            )
+            .unwrap(),
+        );
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("run the gated check").unwrap();

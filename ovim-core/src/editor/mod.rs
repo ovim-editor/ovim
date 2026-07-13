@@ -357,7 +357,7 @@ pub struct Editor {
     /// DAP (Debug Adapter Protocol) manager for debug sessions
     dap_manager: crate::dap::DapManager,
     /// AI prompt, pending jobs, and in-buffer agent logs
-    pub ai_state: ai_state::AiState,
+    pub ai_state: Box<ai_state::AiState>,
     /// API server port (set during startup, used by :session start/stop)
     api_port: Option<u16>,
     /// Active session name (set by :session start, cleared by :session stop)
@@ -512,7 +512,7 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             dap_manager: crate::dap::DapManager::new(),
-            ai_state: ai_state::AiState::default(),
+            ai_state: Box::new(ai_state::AiState::default()),
             api_port: None,
             active_session: None,
             git_branch: None,
@@ -561,7 +561,7 @@ impl Editor {
             yank_flash: None,
             ui_panels: UiPanels::default(),
             dap_manager: crate::dap::DapManager::new(),
-            ai_state: ai_state::AiState::default(),
+            ai_state: Box::new(ai_state::AiState::default()),
             api_port: None,
             active_session: None,
             git_branch: None,

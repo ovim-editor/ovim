@@ -276,7 +276,7 @@ mod tests {
     fn durable_editor(file: &Path, layout: RunStorageLayout) -> Editor {
         let mut editor = Editor::default();
         editor.open_file(file).unwrap();
-        editor.ai_state = AiState::with_run_storage_layout(layout).unwrap();
+        editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
         editor
     }
 
