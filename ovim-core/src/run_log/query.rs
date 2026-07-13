@@ -340,8 +340,15 @@ fn branch_state_label(state: &BranchLifecycleState) -> &'static str {
 
 fn agent_state_label(state: &AgentLifecycleState) -> &'static str {
     match state {
+        AgentLifecycleState::Created => "created",
         AgentLifecycleState::Dispatched => "dispatched",
         AgentLifecycleState::Started => "started",
+        AgentLifecycleState::Queued => "queued",
+        AgentLifecycleState::Starting => "starting",
+        AgentLifecycleState::Running => "running",
+        AgentLifecycleState::WaitingForAgent => "waiting_for_agent",
+        AgentLifecycleState::WaitingForTool => "waiting_for_tool",
+        AgentLifecycleState::WaitingForUser => "waiting_for_user",
         AgentLifecycleState::Waiting => "waiting",
         AgentLifecycleState::Blocked => "blocked",
         AgentLifecycleState::Completed => "completed",
@@ -469,6 +476,7 @@ mod tests {
                     kind: "primary".into(),
                     objective: None,
                     detail: None,
+                    dispatch_spec: None,
                 }),
             )
             .for_agent(agent_id)

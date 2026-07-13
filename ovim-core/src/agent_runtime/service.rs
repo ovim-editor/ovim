@@ -1416,6 +1416,7 @@ fn agent_event(
         kind: spec.kind.clone(),
         objective: spec.objective.clone(),
         detail: None,
+        dispatch_spec: None,
     })
 }
 

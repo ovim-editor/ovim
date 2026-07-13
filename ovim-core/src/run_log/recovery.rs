@@ -342,6 +342,7 @@ pub fn apply_recovery(
                 kind: agent.kind.clone(),
                 objective: agent.objective.clone(),
                 detail: Some("active agent interrupted during stale-run crash recovery".into()),
+                dispatch_spec: None,
             }),
         )?;
         appended.push(event);
@@ -467,8 +468,15 @@ fn turn_is_active(state: &TurnLifecycleState) -> bool {
 fn agent_is_active(state: &AgentLifecycleState) -> bool {
     matches!(
         state,
-        AgentLifecycleState::Dispatched
+        AgentLifecycleState::Created
+            | AgentLifecycleState::Dispatched
             | AgentLifecycleState::Started
+            | AgentLifecycleState::Queued
+            | AgentLifecycleState::Starting
+            | AgentLifecycleState::Running
+            | AgentLifecycleState::WaitingForAgent
+            | AgentLifecycleState::WaitingForTool
+            | AgentLifecycleState::WaitingForUser
             | AgentLifecycleState::Waiting
             | AgentLifecycleState::Blocked
     )

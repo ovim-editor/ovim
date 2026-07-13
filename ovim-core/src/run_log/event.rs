@@ -1,6 +1,6 @@
 use super::{
-    AgentId, BaseManifestId, BranchId, EventId, OperationId, RepositoryId, RunId, TurnId,
-    WorkspaceId,
+    AgentId, BaseManifestId, BranchId, EventId, ManifestId, OperationId, RepositoryId, RunId,
+    TurnId, WorkspaceId,
 };
 use serde::{
     de::{self, DeserializeOwned},
@@ -281,13 +281,95 @@ pub struct AgentLifecycleEvent {
     pub kind: String,
     pub objective: Option<String>,
     pub detail: Option<String>,
+    /// Resolved provider-independent configuration, recorded once on Created.
+    /// Optional/defaulted for histories written before dispatch snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dispatch_spec: Option<AgentDispatchSpecSnapshot>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentDispatchSpecSnapshot {
+    pub version: u32,
+    pub model: AgentModelProfileSnapshot,
+    pub instructions: String,
+    pub capabilities: Vec<AgentCapabilitySnapshot>,
+    pub kind_workspace_policy: AgentWorkspacePolicySnapshot,
+    pub assigned_workspace: AgentWorkspaceStrategySnapshot,
+    pub completion_contract: AgentCompletionContractSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentModelProfileSnapshot {
+    pub model: String,
+    pub effort: AgentModelEffortSnapshot,
+    pub fallback_model: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentModelEffortSnapshot {
+    Low,
+    Medium,
+    High,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentCapabilitySnapshot {
+    Read,
+    Navigate,
+    SafeShell,
+    Shell,
+    WorkspaceWrite,
+    ExternalEffects,
+    DispatchAgents,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentWorkspacePolicySnapshot {
+    SharedWorkspace,
+    IsolatedWorktree,
+    ReadOnlyProjection,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentWorkspaceStrategySnapshot {
+    SharedWorkspace,
+    IsolatedWorktree {
+        base_manifest_id: Option<ManifestId>,
+    },
+    ReadOnlySnapshot {
+        manifest_id: Option<ManifestId>,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", content = "value", rename_all = "snake_case")]
+pub enum AgentCompletionContractSnapshot {
+    StructuredHandoff,
+    ReviewReport,
+    SafetyVerdict,
+    Plan,
+    Custom(String),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentLifecycleState {
+    Created,
+    /// Legacy dispatch state retained for existing run histories.
     Dispatched,
+    /// Legacy running state retained for existing run histories.
     Started,
+    Queued,
+    Starting,
+    Running,
+    WaitingForAgent,
+    WaitingForTool,
+    WaitingForUser,
+    /// Legacy undifferentiated waiting state.
     Waiting,
     Blocked,
     Completed,
