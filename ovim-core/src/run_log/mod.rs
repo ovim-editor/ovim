@@ -5,23 +5,27 @@
 //! consumed by editor projections.
 
 mod artifact;
+mod catalog;
 mod event;
 mod identity;
 mod layout;
 mod local_store;
 mod manifest;
 mod query;
+mod recovery;
 mod repository;
 mod sqlite;
 mod store;
 
 pub use artifact::*;
+pub use catalog::*;
 pub use event::*;
 pub use identity::*;
 pub use layout::*;
 pub use local_store::*;
 pub use manifest::*;
 pub use query::*;
+pub use recovery::*;
 pub use repository::*;
 pub use sqlite::*;
 pub use store::*;
