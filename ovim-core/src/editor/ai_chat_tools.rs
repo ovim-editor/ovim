@@ -92,18 +92,26 @@ impl Editor {
         profile: &crate::ai::AiProfileConfig,
     ) -> Vec<serde_json::Value> {
         let caps = self.build_chat_capabilities();
-        let tools = self
+        let mut tools = self
             .ai_state
             .tool_registry
             .tools_for_profile(profile, &caps);
+        // Codex currently runs as a read-only, editor-aware assistant. Navigation
+        // is safe, but mutation and external tools stay behind ovim's existing
+        // non-Codex agent loop until dynamic approval/resume is implemented.
+        if profile.provider == crate::ai::AiProviderKind::Codex {
+            tools.retain(|tool| {
+                matches!(tool.side_effect, SideEffect::Read | SideEffect::Navigation)
+            });
+        }
         if tools.is_empty() {
             return vec![];
         }
 
         match profile.provider {
-            crate::ai::AiProviderKind::OpenAi | crate::ai::AiProviderKind::Ollama => {
-                schema::tools_to_openai_schema(&tools)
-            }
+            crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::OpenAi
+            | crate::ai::AiProviderKind::Ollama => schema::tools_to_openai_schema(&tools),
             crate::ai::AiProviderKind::Anthropic => schema::tools_to_anthropic_schema(&tools),
         }
     }
@@ -361,7 +369,7 @@ impl Editor {
     /// mutation tools get `&mut self`.
     ///
     /// `approved_once_root` temporarily allows one outside-project access for the call.
-    fn dispatch_tool_call_with_approval(
+    pub(super) fn dispatch_tool_call_with_approval(
         &mut self,
         tc: &ToolCallInfo,
         approved_once_root: Option<&PathBuf>,
@@ -731,7 +739,7 @@ impl Editor {
         }
     }
 
-    fn record_tool_event_summary(&mut self, tc: &ToolCallInfo, result: &ToolResult) {
+    pub(super) fn record_tool_event_summary(&mut self, tc: &ToolCallInfo, result: &ToolResult) {
         if tc.id.is_empty() {
             return;
         }

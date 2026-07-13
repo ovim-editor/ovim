@@ -49,6 +49,24 @@ pub async fn request_ai_edit(
         }
 
         let response_text = match profile.provider {
+            AiProviderKind::Codex => {
+                let mut input = build_user_prompt(request);
+                if !extra_messages.is_empty() {
+                    input.push_str("\n\nPrevious response and correction request:\n");
+                    input.push_str(&serde_json::to_string(&extra_messages)?);
+                }
+                super::codex_app_server::request(
+                    profile,
+                    &input,
+                    None,
+                    &current_system_prompt,
+                    request.file_path.as_deref(),
+                    None,
+                    None,
+                    None,
+                )
+                .await?
+            }
             AiProviderKind::OpenAi => {
                 request_openai(
                     &client,
@@ -235,6 +253,7 @@ pub(crate) fn append_project_context(system_prompt: &str, project_context: &str)
 /// Build the API endpoint URL for the given provider.
 fn provider_url(profile: &AiProfileConfig) -> String {
     let (default_base, path) = match profile.provider {
+        AiProviderKind::Codex => ("", ""),
         AiProviderKind::OpenAi => ("https://api.openai.com/v1", "/chat/completions"),
         AiProviderKind::Anthropic => ("https://api.anthropic.com", "/v1/messages"),
         AiProviderKind::Ollama => ("http://127.0.0.1:11434", "/api/chat"),
@@ -252,6 +271,7 @@ fn provider_headers(
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     match profile.provider {
+        AiProviderKind::Codex => {}
         AiProviderKind::OpenAi => {
             let api_key = read_api_key(profile, registry)?;
             headers.insert(
@@ -278,6 +298,7 @@ fn provider_headers(
 /// Provider label for error messages.
 fn provider_label(provider: AiProviderKind) -> &'static str {
     match provider {
+        AiProviderKind::Codex => "Codex",
         AiProviderKind::OpenAi => "OpenAI",
         AiProviderKind::Anthropic => "Anthropic",
         AiProviderKind::Ollama => "Ollama",
@@ -291,6 +312,7 @@ fn apply_optional_params(body: &mut Value, profile: &AiProfileConfig, tools: Opt
             AiProviderKind::Ollama => {
                 body["options"] = json!({ "temperature": temp });
             }
+            AiProviderKind::Codex => {}
             _ => {
                 body["temperature"] = json!(temp);
             }
@@ -454,6 +476,9 @@ pub async fn stream_ai_chat(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
     system_prompt: Option<&str>,
+    working_file_path: Option<&str>,
+    session_key: Option<&str>,
+    turn_context: Option<&str>,
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
     registry: &HashMap<String, ApiKeyConfig>,
@@ -464,6 +489,38 @@ pub async fn stream_ai_chat(
         .context("failed to create AI HTTP client")?;
 
     match profile.provider {
+        AiProviderKind::Codex => {
+            let mut initial_input = render_codex_chat_input(messages);
+            let mut continuation_input = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == super::chat_types::ChatRole::User)
+                .map(|message| message.content.clone())
+                .unwrap_or_default();
+            if let Some(context) = turn_context.filter(|context| !context.is_empty()) {
+                initial_input =
+                    format!("Current ovim editor context:\n{context}\n\n{initial_input}");
+                continuation_input = format!(
+                    "Current ovim editor context:\n{context}\n\nUser request:\n{continuation_input}"
+                );
+            }
+            let instructions = system_prompt
+                .or(profile.system_prompt.as_deref())
+                .unwrap_or("You are the AI assistant embedded in ovim.");
+            super::codex_app_server::request(
+                profile,
+                &initial_input,
+                Some(&continuation_input),
+                instructions,
+                working_file_path,
+                tools,
+                Some(tx.clone()),
+                session_key,
+            )
+            .await?;
+            let _ = tx.send(StreamChunk::Done);
+            Ok(())
+        }
         AiProviderKind::OpenAi => {
             stream_openai_chat(
                 &client,
@@ -501,6 +558,26 @@ pub async fn stream_ai_chat(
             .await
         }
     }
+}
+
+fn render_codex_chat_input(messages: &[super::chat_types::ChatMessage]) -> String {
+    use super::chat_types::ChatRole;
+    let mut out = String::from(
+        "The following is the current ovim conversation. Respond to the final user message.\n\n",
+    );
+    for message in messages {
+        let label = match message.role {
+            ChatRole::User => "USER",
+            ChatRole::Assistant => "ASSISTANT",
+            ChatRole::Tool => "TOOL RESULT",
+            ChatRole::Thinking | ChatRole::Error => continue,
+        };
+        out.push_str(label);
+        out.push_str(":\n");
+        out.push_str(&message.content);
+        out.push_str("\n\n");
+    }
+    out
 }
 
 /// Serialize chat messages to OpenAI format.
@@ -1015,6 +1092,10 @@ fn build_retry_messages(
     provider: AiProviderKind,
 ) -> Vec<Value> {
     match provider {
+        AiProviderKind::Codex => vec![
+            json!({ "role": "assistant", "content": response_text }),
+            json!({ "role": "user", "content": feedback }),
+        ],
         AiProviderKind::Anthropic => vec![
             json!({"role": "assistant", "content": [{"type": "text", "text": response_text}]}),
             json!({"role": "user", "content": feedback}),

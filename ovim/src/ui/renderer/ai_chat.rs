@@ -5,7 +5,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
 
@@ -121,8 +121,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
     }
 
-    // Layout: [message_history | input_bar(dynamic) | model_selector(1)]
-    let model_bar_height = 1u16;
+    // Layout: [message_history | input_bar(dynamic)]. `/model` opens a popup.
     let input_content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
     let input_lines = if input_content_width > 0 {
         let input_text = editor.ai_chat_input();
@@ -131,7 +130,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         1
     };
     let input_height = (1 + input_lines as u16).min(6); // border + content, max ~5 lines
-    let min_chrome = model_bar_height + input_height;
+    let min_chrome = input_height;
 
     if main_area.height <= min_chrome {
         // Too small — just render input
@@ -153,16 +152,11 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         width: main_area.width,
         height: input_height,
     };
-    let model_area = Rect {
-        x: main_area.x,
-        y: main_area.y + messages_height + input_height,
-        width: main_area.width,
-        height: model_bar_height,
-    };
-
     render_message_history(frame, editor, messages_area, theme);
     render_text_input(frame, editor, input_area);
-    render_model_selector_bar(frame, editor, model_area);
+    if editor.ai_chat_focus() == ChatFocus::ModelSelector {
+        render_model_picker(frame, editor, main_area);
+    }
 
     // Show standalone waiting indicator only before first streaming chunk arrives.
     if editor.ai_chat_waiting() {
@@ -205,7 +199,7 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let wrapped_rows = wrap_input_rows(input, content_width.max(1), tab_width);
     let input_line_count = wrapped_rows.len();
     let input_height = (1 + input_line_count as u16).min(6);
-    let min_chrome = input_height + 1; // input + model(1)
+    let min_chrome = input_height;
     if main_area.height <= min_chrome {
         return None;
     }
@@ -972,6 +966,7 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
 // Model Selector Bar
 // ---------------------------------------------------------------------------
 
+#[allow(dead_code)]
 fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     if area.height == 0 || area.width < 10 {
         return;
@@ -1088,6 +1083,45 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     }
 
     frame.render_widget(Paragraph::new(vec![Line::from(spans)]), area);
+}
+
+fn render_model_picker(frame: &mut Frame, editor: &Editor, area: Rect) {
+    if area.height < 5 || area.width < 24 {
+        return;
+    }
+    let profile_names = editor.ai_profile_names_sorted();
+    let active_profile = editor.ai_chat_effective_profile();
+    let height = (profile_names.len() as u16 + 2).min(area.height.saturating_sub(2));
+    let width = area.width.saturating_sub(4).min(54);
+    let popup = Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width,
+        height,
+    };
+    let items = profile_names.iter().filter_map(|name| {
+        let profile = editor.ai_state.config.resolve_profile(name)?;
+        let selected = name == &active_profile;
+        let marker = if selected { "›" } else { " " };
+        let style = if selected {
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(TEXT_NORMAL)
+        };
+        Some(ListItem::new(format!("{marker} {name}  {}", profile.model)).style(style))
+    });
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .title(" Model · ↑/↓ choose · Enter close ")
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(82, 139, 255))),
+        ),
+        popup,
+    );
 }
 
 // ---------------------------------------------------------------------------

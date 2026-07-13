@@ -285,10 +285,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         KeyCode::Down => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 let (line, total) = cursor_line_info(&chat.input, chat.input_cursor);
-                if line >= total - 1 {
-                    // Last line — navigate to model selector
-                    chat.focus = ChatFocus::ModelSelector;
-                } else {
+                if line < total - 1 {
                     chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, 1);
                 }
             }
@@ -380,13 +377,13 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
 fn handle_model_selector(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
-        KeyCode::Left | KeyCode::Char('h') => {
+        KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
             editor.ai_cycle_profile(false);
         }
-        KeyCode::Right | KeyCode::Char('l') => {
+        KeyCode::Down | KeyCode::Right | KeyCode::Char('j') | KeyCode::Char('l') => {
             editor.ai_cycle_profile(true);
         }
-        KeyCode::Up => {
+        KeyCode::Enter => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.focus = ChatFocus::TextInput;
             }

@@ -71,6 +71,24 @@ impl Editor {
             return Ok(());
         }
 
+        if input == "/model" {
+            chat.input.clear();
+            chat.input_cursor = 0;
+            chat.focus = ChatFocus::ModelSelector;
+            return Ok(());
+        }
+        if let Some(profile) = input.strip_prefix("/model ").map(str::trim) {
+            if self.ai_set_profile(profile) {
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.input.clear();
+                    chat.input_cursor = 0;
+                }
+            } else {
+                self.set_lsp_status(format!("Unknown AI profile: {profile}"));
+            }
+            return Ok(());
+        }
+
         // Append user message to conversation
         if let Some(conv) = self.conversation_mut() {
             conv.append_user_message(input.clone());
@@ -175,6 +193,25 @@ impl Editor {
                             arguments,
                         });
                     }
+                    changed = true;
+                }
+                StreamChunk::DynamicToolRequest { call, response } => {
+                    let outcome = self.dispatch_tool_call_with_approval(&call, None);
+                    let result = match outcome {
+                        super::ai_chat_tools::ToolDispatchOutcome::Completed(result) => result,
+                        super::ai_chat_tools::ToolDispatchOutcome::ApprovalRequired(req) => {
+                            crate::ai::tools::ToolResult::Error(format!(
+                                "Tool requires user approval and was not executed: {}",
+                                req.message
+                            ))
+                        }
+                    };
+                    self.record_tool_event_summary(&call, &result);
+                    let wire_result = match &result {
+                        crate::ai::tools::ToolResult::Success(text) => Ok(text.clone()),
+                        crate::ai::tools::ToolResult::Error(text) => Err(text.clone()),
+                    };
+                    let _ = response.send(wire_result);
                     changed = true;
                 }
                 StreamChunk::Done => {

@@ -111,7 +111,9 @@ impl Editor {
             crate::ai::AiProviderKind::Ollama => {
                 "For Ollama specifically: emit structured tool calls, not raw JSON in content."
             }
-            crate::ai::AiProviderKind::OpenAi | crate::ai::AiProviderKind::Anthropic => {
+            crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::OpenAi
+            | crate::ai::AiProviderKind::Anthropic => {
                 "Use the provider's structured tool-calling protocol for every tool invocation."
             }
         };
@@ -178,26 +180,43 @@ impl Editor {
             .or_else(|| Some(self.build_chat_system_prompt(&profile)))
         };
         // For remote providers, keep default context narrower to reduce accidental egress.
-        let system_prompt = if remote_provider {
-            system_prompt
-        } else {
-            let project_ctx = crate::ai::project_context::load_project_context(
-                &self.ai_state.config.project_context,
-                self.buffers[self.current_buffer_index].file_path(),
-            );
-            system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx))
-        };
+        let system_prompt =
+            if remote_provider && profile.provider != crate::ai::AiProviderKind::Codex {
+                system_prompt
+            } else {
+                let project_ctx = crate::ai::project_context::load_project_context(
+                    &self.ai_state.config.project_context,
+                    self.buffers[self.current_buffer_index].file_path(),
+                );
+                system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx))
+            };
         let system_prompt = match (system_prompt, tool_call_contract.as_deref()) {
             (Some(sp), Some(contract)) => Some(format!("{sp}\n\n{contract}")),
             (Some(sp), None) => Some(sp),
             (None, Some(contract)) => Some(contract.to_string()),
             (None, None) => None,
         };
+        let stable_system_prompt = system_prompt.clone();
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
         let editor_state_budget = if remote_provider { 2500 } else { 8000 };
         let editor_state = self.build_editor_state_context(editor_state_budget);
         let system_prompt = system_prompt.map(|sp| format!("{sp}\n\n{editor_state}"));
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
+        let working_file_path = self.buffers[self.current_buffer_index]
+            .file_path()
+            .map(ToString::to_string);
+        let codex_session_key = if profile.provider == crate::ai::AiProviderKind::Codex {
+            let (buffer_id, conversation_name) = self.ai_chat_conversation_key();
+            let branch_generation = self
+                .conversation()
+                .map(crate::ai::ConversationTree::branch_generation)
+                .unwrap_or_default();
+            Some(format!(
+                "{buffer_id}:{conversation_name}:branch-{branch_generation}"
+            ))
+        } else {
+            None
+        };
 
         let messages: Vec<ChatMessage> = self
             .conversation()
@@ -235,10 +254,18 @@ impl Editor {
             } else {
                 Some(tool_schemas.as_slice())
             };
+            let provider_system_prompt = if profile.provider == crate::ai::AiProviderKind::Codex {
+                stable_system_prompt.as_deref()
+            } else {
+                system_prompt.as_deref()
+            };
             if let Err(e) = stream_ai_chat(
                 &profile,
                 &messages,
-                system_prompt.as_deref(),
+                provider_system_prompt,
+                working_file_path.as_deref(),
+                codex_session_key.as_deref(),
+                Some(&editor_state),
                 tools_ref,
                 tx.clone(),
                 &api_key_registry,
@@ -405,7 +432,12 @@ impl Editor {
             }
             None => {
                 out.push_str("No file open.\n");
-                out.push_str(&format!("{}\n", self.no_file_open_guidance()));
+                let workspace = self
+                    .ai_effective_project_root()
+                    .or_else(|| std::env::current_dir().ok())
+                    .unwrap_or_else(|| PathBuf::from("."));
+                out.push_str(&format!("Workspace: {}\n", workspace.display()));
+                out.push_str("Use project tools to inspect the workspace before answering project questions.\n");
                 return out;
             }
         };

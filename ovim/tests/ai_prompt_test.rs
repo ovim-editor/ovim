@@ -420,7 +420,8 @@ fn test_ai_chat_model_selector_cycle_updates_chat_profile() {
     test.keys("<Space>ai");
     assert_eq!(test.editor.ai_chat_effective_profile(), "alpha");
 
-    test.press_key(KeyCode::Down);
+    test.type_text("/model");
+    test.press_key(KeyCode::Enter);
     test.press_key(KeyCode::Right);
 
     assert_eq!(test.editor.ai_state.active_profile, "beta");

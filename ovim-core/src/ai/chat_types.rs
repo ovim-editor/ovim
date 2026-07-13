@@ -12,7 +12,7 @@ pub enum ChatRole {
     Tool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub enum StreamChunk {
     /// Chain-of-thought tokens (Anthropic extended thinking).
     Thinking(String),
@@ -29,6 +29,11 @@ pub enum StreamChunk {
         id: String,
         name: String,
         arguments: serde_json::Value,
+    },
+    /// A Codex app-server dynamic tool call that must execute against live editor state.
+    DynamicToolRequest {
+        call: ToolCallInfo,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
     },
     /// Stream finished successfully.
     Done,
@@ -88,6 +93,8 @@ pub struct ConversationTree {
     branch_cache: Vec<ChatMessage>,
     /// Parallel vec of NodeIds matching branch_cache by index.
     branch_node_ids: Vec<NodeId>,
+    /// Changes whenever the active trajectory is forked or switched.
+    branch_generation: u64,
 }
 
 impl ConversationTree {
@@ -99,6 +106,7 @@ impl ConversationTree {
             active_leaf: None,
             branch_cache: Vec::new(),
             branch_node_ids: Vec::new(),
+            branch_generation: 0,
         }
     }
 
@@ -117,6 +125,10 @@ impl ConversationTree {
 
     pub fn active_leaf_id(&self) -> Option<NodeId> {
         self.active_leaf
+    }
+
+    pub fn branch_generation(&self) -> u64 {
+        self.branch_generation
     }
 
     pub fn root_id(&self) -> Option<NodeId> {
@@ -220,6 +232,7 @@ impl ConversationTree {
         if self.nodes.contains_key(&node_id) {
             self.active_leaf = Some(node_id);
             self.rebuild_branch_cache();
+            self.branch_generation = self.branch_generation.wrapping_add(1);
         }
     }
 
@@ -239,6 +252,7 @@ impl ConversationTree {
         }
         self.active_leaf = Some(current);
         self.rebuild_branch_cache();
+        self.branch_generation = self.branch_generation.wrapping_add(1);
     }
 
     /// Root-to-leaf path of `ChatNode` refs for the active branch.
@@ -494,6 +508,19 @@ mod tests {
         // Switch back to branch A
         tree.switch_to_branch(reply_a_leaf);
         assert_eq!(tree.messages().last().unwrap().content, "reply A");
+    }
+
+    #[test]
+    fn branch_generation_changes_for_provider_thread_isolation() {
+        let mut tree = ConversationTree::new();
+        tree.append_user_message("root".into());
+        let root = tree.active_leaf_id().unwrap();
+        assert_eq!(tree.branch_generation(), 0);
+
+        tree.fork_from(root);
+        assert_eq!(tree.branch_generation(), 1);
+        tree.switch_to_branch(root);
+        assert_eq!(tree.branch_generation(), 2);
     }
 
     #[test]

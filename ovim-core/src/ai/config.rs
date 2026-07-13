@@ -338,7 +338,9 @@ fn parse_tool_approval_mode(s: &str) -> ToolApprovalMode {
 /// Infer provider from model name prefix.
 pub fn infer_provider(model: &str) -> AiProviderKind {
     let m = model.to_lowercase();
-    if m.starts_with("claude") {
+    if m.starts_with("gpt-5.6-") || m.contains("codex") {
+        AiProviderKind::Codex
+    } else if m.starts_with("claude") {
         AiProviderKind::Anthropic
     } else if m.starts_with("gpt-")
         || m.starts_with("o1-")
@@ -354,6 +356,7 @@ pub fn infer_provider(model: &str) -> AiProviderKind {
 /// Default API key environment variable for a given provider.
 pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
     match provider {
+        AiProviderKind::Codex => None,
         AiProviderKind::OpenAi => Some("OPENAI_API_KEY".to_string()),
         AiProviderKind::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
         AiProviderKind::Ollama => None,
@@ -363,6 +366,7 @@ pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
 /// Parse a provider string (e.g. from Lua) into AiProviderKind.
 pub fn parse_provider_str(s: &str) -> Option<AiProviderKind> {
     match s.to_lowercase().as_str() {
+        "codex" => Some(AiProviderKind::Codex),
         "openai" => Some(AiProviderKind::OpenAi),
         "anthropic" => Some(AiProviderKind::Anthropic),
         "ollama" => Some(AiProviderKind::Ollama),
@@ -435,5 +439,13 @@ mod tests {
             parse_tool_approval_mode("something_else"),
             ToolApprovalMode::SensitivePrompt
         );
+    }
+
+    #[test]
+    fn codex_provider_is_parseable_and_needs_no_api_key() {
+        assert_eq!(parse_provider_str("codex"), Some(AiProviderKind::Codex));
+        assert_eq!(infer_provider("gpt-5.6-sol"), AiProviderKind::Codex);
+        assert_eq!(infer_provider("gpt-5.6-terra"), AiProviderKind::Codex);
+        assert_eq!(default_api_key_env(AiProviderKind::Codex), None);
     }
 }

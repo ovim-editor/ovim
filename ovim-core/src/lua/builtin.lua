@@ -130,15 +130,41 @@ vim.ai.context_policies = {
 -- ================================================================
 
 vim.ai.setup({
-    default_profile = "local",
+    default_profile = "codex_terra",
 
     contexts = {
-        selection = "local",
-        chat = "openai_frontier",
-        query = "local",
+        selection = "codex_terra",
+        chat = "codex_sol",
+        query = "codex_terra",
     },
 
     profiles = {
+        codex_sol = {
+            scope = "project",
+            provider = "codex",
+            model = "gpt-5.6-sol",
+            max_tokens = 4096,
+            edit_format = "codeblock",
+            chat_edit_format = "apply_patch",
+            context = vim.ai.context_policies.hybrid,
+            syntax_check = true,
+            retry = { max = 1 },
+            reasoning_effort = "medium",
+        },
+
+        codex_terra = {
+            scope = "project",
+            provider = "codex",
+            model = "gpt-5.6-terra",
+            max_tokens = 4096,
+            edit_format = "codeblock",
+            chat_edit_format = "apply_patch",
+            context = vim.ai.context_policies.hybrid,
+            syntax_check = true,
+            retry = { max = 1 },
+            reasoning_effort = "low",
+        },
+
         ["local"] = {
             scope = "project",
             provider = "ollama",

@@ -337,6 +337,9 @@ async fn run_prompt_step(
             &messages,
             Some(&system_prompt_clone),
             None,
+            None,
+            None,
+            None,
             tx.clone(),
             &registry,
         )
@@ -357,7 +360,8 @@ async fn run_prompt_step(
             }
             crate::ai::StreamChunk::Thinking(_)
             | crate::ai::StreamChunk::ToolCall { .. }
-            | crate::ai::StreamChunk::ToolCallComplete { .. } => {}
+            | crate::ai::StreamChunk::ToolCallComplete { .. }
+            | crate::ai::StreamChunk::DynamicToolRequest { .. } => {}
         }
     }
     let _ = task.await;

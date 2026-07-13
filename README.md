@@ -72,14 +72,24 @@ vim.opt.tabstop = 4
 vim.opt.shiftwidth = 4
 vim.opt.scrolloff = 10
 
--- AI (requires OPENAI_API_KEY in environment)
+-- AI: Codex uses your ChatGPT/Codex subscription via the Codex CLI.
 vim.ai.setup({
-  default_profile = "openai",
+  default_profile = "codex_terra",
+  contexts = {
+    chat = "codex_sol",
+    selection = "codex_terra",
+    query = "codex_terra",
+  },
   profiles = {
-    openai = {
-      provider = "openai",
-      model = "gpt-4.1-mini",
-      api_key_env = "OPENAI_API_KEY",
+    codex_sol = {
+      provider = "codex",
+      model = "gpt-5.6-sol",
+      reasoning_effort = "medium",
+    },
+    codex_terra = {
+      provider = "codex",
+      model = "gpt-5.6-terra",
+      reasoning_effort = "low",
     },
   },
 })
@@ -193,4 +203,3 @@ Contributions are welcome!
 ## License
 
 [MIT](LICENSE)
-

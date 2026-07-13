@@ -273,11 +273,11 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
 
     if is_ai_chat {
         // AI chat right-side: profile:model, tool iterations, streaming status, position
-        let active_profile = &editor.ai_state.active_profile;
+        let active_profile = editor.ai_chat_effective_profile();
         let model_display = editor
             .ai_state
             .config
-            .resolve_profile(active_profile)
+            .resolve_profile(&active_profile)
             .map(|p| {
                 let short: String = p.model.chars().take(16).collect();
                 format!(" {}:{} ", active_profile, short)
