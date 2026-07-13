@@ -609,6 +609,8 @@ mod tests {
                         model_name: "test-model".to_string(),
                         requested_path: PathBuf::from("/tmp/demo.txt"),
                         approval_root: PathBuf::from("/tmp"),
+                        dynamic_response: None,
+                        dynamic_turn: None,
                     });
             }
 
@@ -629,6 +631,8 @@ mod tests {
                         model_name: "test-model".to_string(),
                         requested_path: PathBuf::from("/tmp/demo.txt"),
                         approval_root: PathBuf::from("/tmp"),
+                        dynamic_response: None,
+                        dynamic_turn: None,
                     });
             }
             handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))

@@ -184,13 +184,19 @@ impl Editor {
 
     /// Drain available streaming chunks. Returns true if state changed.
     pub fn poll_pending_ai_chat_job(&mut self) -> bool {
-        if self
-            .ai_state
-            .chat
-            .as_ref()
-            .is_some_and(|chat| chat.waiting)
-        {
+        if self.ai_state.chat.as_ref().is_some_and(|chat| {
+            chat.waiting
+                || chat
+                    .pending_tool_approval
+                    .as_ref()
+                    .is_some_and(|pending| pending.dynamic_response.is_some())
+                || chat.pending_auto_mode_classification.is_some()
+                || chat.pending_shell_execution.is_some()
+        }) {
             if let Err(error) = self.heartbeat_ai_chat_lease() {
+                if self.fail_pending_shell_for_lost_lease(&error.to_string()) {
+                    return true;
+                }
                 if let Some(job) = self
                     .ai_state
                     .chat
@@ -208,6 +214,12 @@ impl Editor {
                 self.clear_streaming_state();
                 return true;
             }
+        }
+        if self.poll_pending_auto_mode_classification() {
+            return true;
+        }
+        if self.poll_pending_shell_execution() {
+            return true;
         }
         let current_branch_generation = self
             .conversation()
@@ -325,6 +337,23 @@ impl Editor {
                             return true;
                         }
                     };
+                    if call.name == "bash" {
+                        if self.ai_state.config.tool_approval_mode
+                            == crate::ai::ToolApprovalMode::Auto
+                        {
+                            self.begin_dynamic_bash_auto_mode(call, response, turn.clone(), tool);
+                        } else {
+                            self.pause_dynamic_tool_for_approval(
+                                turn.clone(),
+                                tool,
+                                call,
+                                response,
+                                "configured approval policy requires confirmation".into(),
+                            );
+                        }
+                        changed = true;
+                        continue;
+                    }
                     if let Err(error) = self.ai_runtime_start_tool(turn, &tool) {
                         let message = format!("failed to record tool start: {error}");
                         let _ = response.send(Err(message.clone()));
@@ -536,6 +565,468 @@ impl Editor {
                 }
             }
         }
+    }
+
+    fn shell_authorization_context(
+        &self,
+        project_root: &std::path::Path,
+    ) -> crate::ai::auto_mode::ConversationAuthorizationContext {
+        use crate::ai::auto_mode::{AuthorizedObjective, ExplicitAuthorization};
+
+        let key = self.ai_chat_conversation_key();
+        let runtime_nodes = self.ai_state.conversation_runtime_nodes.get(&key);
+        let mut recent = self
+            .conversation()
+            .map(|conversation| {
+                conversation
+                    .messages()
+                    .iter()
+                    .zip(conversation.node_ids_for_active_branch())
+                    .filter(|(message, _)| message.role == ChatRole::User)
+                    .map(|(message, node_id)| {
+                        let source_id = runtime_nodes
+                            .and_then(|nodes| nodes.get(node_id))
+                            .map(|reference| reference.event_id.as_str().to_string())
+                            .unwrap_or_else(|| format!("ui-node:{node_id}"));
+                        (message.content.clone(), source_id)
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        if recent.len() > 8 {
+            recent.drain(..recent.len() - 8);
+        }
+        let explicit_user_instructions = recent
+            .iter()
+            .map(|(instruction, source_id)| ExplicitAuthorization {
+                instruction: instruction.clone(),
+                project_root: project_root.to_path_buf(),
+                source_id: source_id.clone(),
+            })
+            .collect();
+        let authorized_objectives = recent
+            .last()
+            .map(|(objective, source_id)| {
+                vec![AuthorizedObjective {
+                    objective: objective.clone(),
+                    project_root: project_root.to_path_buf(),
+                    source_id: source_id.clone(),
+                }]
+            })
+            .unwrap_or_default();
+        crate::ai::auto_mode::ConversationAuthorizationContext {
+            explicit_user_instructions,
+            authorized_objectives,
+        }
+    }
+
+    fn begin_dynamic_bash_auto_mode(
+        &mut self,
+        call: ToolCallInfo,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+        turn: crate::agent_runtime::PendingTurnRef,
+        tool: crate::agent_runtime::PendingToolRef,
+    ) {
+        use crate::ai::auto_classifier::{AutoModeClassifier, CodexAutoModeClassifier};
+        use crate::ai::auto_mode::{ClassifierRequest, ShellProposal, StaticDisposition};
+        use std::collections::BTreeSet;
+
+        let command = call
+            .arguments
+            .get("command")
+            .and_then(|value| value.as_str())
+            .unwrap_or_default()
+            .trim()
+            .to_string();
+        let Some(project_root) = self.ai_effective_project_root() else {
+            self.finish_dynamic_tool(
+                &turn,
+                &tool,
+                &call,
+                response,
+                crate::ai::tools::ToolResult::Error(self.no_project_root_error()),
+            );
+            return;
+        };
+        let request = ClassifierRequest::new(
+            ShellProposal {
+                command,
+                cwd: project_root.clone(),
+                project_root: project_root.clone(),
+                requested_capabilities: BTreeSet::new(),
+            },
+            self.shell_authorization_context(&project_root),
+        );
+
+        match request.dynamic.static_analysis.disposition {
+            StaticDisposition::LocallySafe => {
+                self.execute_dynamic_tool_after_policy(turn, tool, call, response);
+            }
+            StaticDisposition::UserConfirmationRequired => {
+                self.pause_dynamic_tool_for_approval(
+                    turn,
+                    tool,
+                    call,
+                    response,
+                    "static analysis requires explicit user confirmation".into(),
+                );
+            }
+            StaticDisposition::ModelReviewRequired => {
+                let operation_id = tool.operation_id.clone();
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                tokio::spawn(async move {
+                    let result = CodexAutoModeClassifier::default()
+                        .classify(&request, &operation_id)
+                        .await
+                        .map_err(|error| error.to_string());
+                    let _ = result_tx.send(result);
+                });
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.pending_auto_mode_classification =
+                        Some(super::ai_chat_state::PendingAutoModeClassification {
+                            tool_call: call,
+                            runtime_tool: tool,
+                            runtime_turn: turn,
+                            dynamic_response: response,
+                            receiver: result_rx,
+                        });
+                }
+                self.set_lsp_status("Luna is reviewing the proposed shell program".into());
+            }
+        }
+    }
+
+    fn poll_pending_auto_mode_classification(&mut self) -> bool {
+        use crate::ai::auto_mode::ClassifierDecision;
+        let received = {
+            let Some(pending) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_auto_mode_classification.as_mut())
+            else {
+                return false;
+            };
+            match pending.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    Some(Err("auto-mode classifier stopped without a verdict".into()))
+                }
+            }
+        };
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_auto_mode_classification.take())
+            .expect("pending classifier exists");
+        let project_root = self.ai_effective_project_root();
+        match received.expect("classifier result") {
+            Ok(verdict)
+                if verdict.decision == ClassifierDecision::Allow
+                    && project_root.as_ref() == Some(&verdict.scope.project_root) =>
+            {
+                self.execute_dynamic_tool_after_policy(
+                    pending.runtime_turn,
+                    pending.runtime_tool,
+                    pending.tool_call,
+                    pending.dynamic_response,
+                );
+            }
+            Ok(verdict) if verdict.decision == ClassifierDecision::Deny => {
+                self.finish_dynamic_tool(
+                    &pending.runtime_turn,
+                    &pending.runtime_tool,
+                    &pending.tool_call,
+                    pending.dynamic_response,
+                    crate::ai::tools::ToolResult::Error(format!(
+                        "auto mode denied shell program: {}",
+                        verdict.reason
+                    )),
+                );
+            }
+            Ok(verdict) => self.pause_dynamic_tool_for_approval(
+                pending.runtime_turn,
+                pending.runtime_tool,
+                pending.tool_call,
+                pending.dynamic_response,
+                if verdict.decision == ClassifierDecision::Allow {
+                    "classifier returned an Allow outside the active repository scope".into()
+                } else {
+                    verdict.reason
+                },
+            ),
+            Err(error) => self.pause_dynamic_tool_for_approval(
+                pending.runtime_turn,
+                pending.runtime_tool,
+                pending.tool_call,
+                pending.dynamic_response,
+                format!("classifier unavailable; explicit confirmation required: {error}"),
+            ),
+        }
+        true
+    }
+
+    pub(super) fn execute_dynamic_tool_after_policy(
+        &mut self,
+        turn: crate::agent_runtime::PendingTurnRef,
+        tool: crate::agent_runtime::PendingToolRef,
+        call: ToolCallInfo,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    ) {
+        if let Err(error) = self.heartbeat_ai_chat_lease() {
+            let result = crate::ai::tools::ToolResult::Error(format!(
+                "shell program was not executed because durable run ownership was lost: {error}"
+            ));
+            self.finish_dynamic_tool(&turn, &tool, &call, response, result);
+            self.fail_specific_dynamic_turn(
+                &turn,
+                format!("durable run ownership was lost: {error}"),
+            );
+            if let Some(job) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_job.take())
+            {
+                job.task.abort();
+            }
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.waiting = false;
+            }
+            self.set_lsp_status(format!(
+                "Blocked agent effect because durable run ownership was lost: {error}"
+            ));
+            return;
+        }
+        if call.name == "bash" {
+            let authorized =
+                self.ai_state
+                    .tool_registry
+                    .get(&call.name)
+                    .is_some_and(|definition| {
+                        let capabilities = self.build_chat_capabilities();
+                        capabilities.allows_side_effect(definition.side_effect)
+                            && capabilities.contains(&definition.required_scope)
+                    });
+            if !authorized {
+                self.finish_dynamic_tool(
+                    &turn,
+                    &tool,
+                    &call,
+                    response,
+                    crate::ai::tools::ToolResult::Error(
+                        "shell access is not authorized for this chat".into(),
+                    ),
+                );
+                return;
+            }
+        }
+        if let Err(error) = self.ai_runtime_start_tool(&turn, &tool) {
+            let result = crate::ai::tools::ToolResult::Error(format!(
+                "failed to durably record tool start: {error}"
+            ));
+            self.finish_dynamic_tool(&turn, &tool, &call, response, result);
+            return;
+        }
+        if call.name == "bash" {
+            let command = call
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or_default()
+                .trim()
+                .to_string();
+            let Some(workdir) = self.ai_effective_project_root() else {
+                self.finish_dynamic_tool(
+                    &turn,
+                    &tool,
+                    &call,
+                    response,
+                    crate::ai::tools::ToolResult::Error(self.no_project_root_error()),
+                );
+                return;
+            };
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            let task = tokio::task::spawn_blocking(move || {
+                let result = super::ai_tool_execution::run_bash_program(&command, &workdir);
+                let _ = result_tx.send(result);
+            });
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.pending_shell_execution = Some(super::ai_chat_state::PendingShellExecution {
+                    tool_call: call,
+                    runtime_tool: tool,
+                    runtime_turn: turn,
+                    dynamic_response: response,
+                    receiver: result_rx,
+                    task,
+                });
+                chat.waiting = true;
+            }
+            self.set_lsp_status("Agent shell program is running".into());
+            return;
+        }
+        let result = {
+            match self.dispatch_tool_call_with_approval(&call, None) {
+                super::ai_chat_tools::ToolDispatchOutcome::Completed(result) => result,
+                super::ai_chat_tools::ToolDispatchOutcome::ApprovalRequired(request) => {
+                    crate::ai::tools::ToolResult::Error(format!(
+                        "tool policy changed after auto-mode approval: {}",
+                        request.message
+                    ))
+                }
+            }
+        };
+        self.finish_dynamic_tool(&turn, &tool, &call, response, result);
+    }
+
+    fn poll_pending_shell_execution(&mut self) -> bool {
+        let received = {
+            let Some(pending) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_shell_execution.as_mut())
+            else {
+                return false;
+            };
+            match pending.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    Some(crate::ai::tools::ToolResult::Error(
+                        "shell execution task stopped without a result".into(),
+                    ))
+                }
+            }
+        };
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_shell_execution.take())
+            .expect("pending shell exists");
+        self.finish_dynamic_tool(
+            &pending.runtime_turn,
+            &pending.runtime_tool,
+            &pending.tool_call,
+            pending.dynamic_response,
+            received.expect("shell result"),
+        );
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.waiting = true;
+        }
+        true
+    }
+
+    fn fail_pending_shell_for_lost_lease(&mut self, error: &str) -> bool {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_shell_execution.take())
+        else {
+            return false;
+        };
+        pending.task.abort();
+        self.finish_dynamic_tool(
+            &pending.runtime_turn,
+            &pending.runtime_tool,
+            &pending.tool_call,
+            pending.dynamic_response,
+            crate::ai::tools::ToolResult::Error(format!(
+                "shell result is unknown because durable run ownership was lost: {error}"
+            )),
+        );
+        self.fail_specific_dynamic_turn(
+            &pending.runtime_turn,
+            format!("durable run ownership was lost: {error}"),
+        );
+        if let Some(job) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_job.take())
+        {
+            job.task.abort();
+        }
+        self.set_lsp_status(format!(
+            "Stopped agent after durable run ownership was lost: {error}"
+        ));
+        true
+    }
+
+    fn fail_specific_dynamic_turn(
+        &mut self,
+        turn: &crate::agent_runtime::PendingTurnRef,
+        detail: String,
+    ) {
+        if let Err(error) = self.ai_state.agent_runtime.fail_turn(turn, detail) {
+            crate::log_warn!("agent_runtime", "failed to terminate dynamic turn: {error}");
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            if chat
+                .runtime_turn
+                .as_ref()
+                .is_some_and(|active| active.turn_id == turn.turn_id)
+            {
+                chat.runtime_turn = None;
+            }
+        }
+    }
+
+    pub(super) fn finish_dynamic_tool(
+        &mut self,
+        turn: &crate::agent_runtime::PendingTurnRef,
+        tool: &crate::agent_runtime::PendingToolRef,
+        call: &ToolCallInfo,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+        result: crate::ai::tools::ToolResult,
+    ) {
+        if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result) {
+            let _ = response.send(Err(format!("failed to record tool result: {error}")));
+            self.ai_runtime_fail_turn(format!("failed to record tool result: {error}"));
+            self.clear_streaming_state();
+            return;
+        }
+        self.record_tool_event_summary(call, &result);
+        let wire = match result {
+            crate::ai::tools::ToolResult::Success(text) => Ok(text),
+            crate::ai::tools::ToolResult::Error(text) => Err(text),
+        };
+        let _ = response.send(wire);
+    }
+
+    fn pause_dynamic_tool_for_approval(
+        &mut self,
+        turn: crate::agent_runtime::PendingTurnRef,
+        tool: crate::agent_runtime::PendingToolRef,
+        call: ToolCallInfo,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+        reason: String,
+    ) {
+        let root = self
+            .ai_effective_project_root()
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_tool_approval = Some(super::ai_chat_state::PendingToolApproval {
+                tool_call: call,
+                runtime_tool: Some(tool),
+                remaining_tool_calls: Vec::new(),
+                model_name: String::new(),
+                requested_path: root.clone(),
+                approval_root: root,
+                dynamic_response: Some(response),
+                dynamic_turn: Some(turn),
+            });
+            // Keep pending_job alive: its app-server task is blocked on the
+            // dynamic response and resumes exactly once after this UI decision.
+            chat.waiting = false;
+        }
+        self.set_lsp_status(format!(
+            "Shell approval required: {reason}. Press Ctrl-Y to allow once or Ctrl-N to deny."
+        ));
     }
 
     // -----------------------------------------------------------------
@@ -1340,6 +1831,244 @@ mod tests {
         );
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn auto_mode_unauthorized_deploy_pauses_dynamic_codex_response() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        open_test_chat(&mut editor);
+        editor.ai_state.config.tool_approval_mode = crate::ai::ToolApprovalMode::Auto;
+        let turn = editor.begin_ai_runtime_turn("inspect the project").unwrap();
+        let run_id = turn.run_id.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let abort_handle = task.abort_handle();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.runtime_turn = Some(Box::new(turn.clone()));
+        chat.streaming_content = Some(String::new());
+        chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
+            receiver: rx,
+            task,
+            profile_name: "test".into(),
+            model_name: "test".into(),
+            turn: Box::new(turn),
+            branch_generation: 0,
+        });
+
+        let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
+        tx.send(StreamChunk::DynamicToolRequest {
+            call: ToolCallInfo {
+                id: "deploy-call".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({"command": "./deploy production"}),
+            },
+            response: result_tx,
+        })
+        .unwrap();
+
+        assert!(editor.poll_pending_ai_chat_job());
+        assert!(editor.ai_chat_has_pending_tool_approval());
+        assert!(matches!(
+            result_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ToolIntent(_))));
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ToolStarted(_))));
+
+        // Headless `/keys` routes through this same input dispatcher; no
+        // renderer state is involved in resolving the paused app-server call.
+        crate::editor::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Char('n'), crate::Modifiers::CONTROL),
+        )
+        .unwrap();
+        assert!(!editor.ai_chat_has_pending_tool_approval());
+        assert!(result_rx.await.unwrap().is_err());
+        abort_handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn lost_durable_lease_blocks_approved_shell_effect() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = dir.path().join("repo");
+        std::fs::create_dir_all(&repo).unwrap();
+        git2::Repository::init(&repo).unwrap();
+        let file = repo.join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let runs = crate::run_log::RunStorageLayout::new(dir.path().join("runs"));
+        let mut editor = Editor::default();
+        editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap();
+        editor.open_file(&file).unwrap();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("create the marker").unwrap();
+        let call = ToolCallInfo {
+            id: "write-marker".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "touch effect-marker"}),
+        };
+        let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
+        let key = editor.ai_chat_conversation_key();
+        let binding = editor.ai_state.durable_chat_bindings.get(&key).unwrap();
+        let run_id = binding.binding.run_id.clone();
+        let services = editor.ai_state.durable_runs.as_ref().unwrap();
+        let owner = services.owner.clone();
+        services.catalog.release_lease(&run_id, &owner).unwrap();
+        editor
+            .ai_state
+            .durable_chat_bindings
+            .get_mut(&key)
+            .unwrap()
+            .lease_renewed_at = std::time::Instant::now() - std::time::Duration::from_secs(60);
+
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx);
+
+        assert!(response_rx.await.unwrap().is_err());
+        assert!(!repo.join("effect-marker").exists());
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(!events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ToolStarted(_))));
+        assert!(events
+            .iter()
+            .any(|event| matches!(event.kind, EventKind::ToolResult(_))));
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TurnLifecycle(lifecycle)
+                if lifecycle.state == TurnLifecycleState::Failed
+        )));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn authorized_shell_runs_in_background_while_editor_poll_stays_responsive() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("run the gated check").unwrap();
+        let run_id = turn.run_id.clone();
+        let call = ToolCallInfo {
+            id: "gated-shell".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "while [ ! -f release-gate ]; do sleep 0.01; done; echo completed"
+            }),
+        };
+        let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+
+        let started = std::time::Instant::now();
+        editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx);
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert!(editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .is_some());
+        assert!(!editor.poll_pending_ai_chat_job());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+
+        std::fs::write(dir.path().join("release-gate"), "go").unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        loop {
+            if editor.poll_pending_ai_chat_job() {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell did not finish"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let result = response_rx.await.unwrap().unwrap();
+        assert!(result.contains("completed"), "{result}");
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        let start_index = events
+            .iter()
+            .position(|event| matches!(event.kind, EventKind::ToolStarted(_)))
+            .unwrap();
+        let result_index = events
+            .iter()
+            .position(|event| matches!(event.kind, EventKind::ToolResult(_)))
+            .unwrap();
+        assert!(start_index < result_index);
+    }
+
+    fn attach_finished_classifier(
+        editor: &mut Editor,
+        result: Result<crate::ai::auto_mode::ClassifierVerdict, String>,
+    ) -> tokio::sync::oneshot::Receiver<Result<String, String>> {
+        let turn = editor.begin_ai_runtime_turn("review command").unwrap();
+        let call = ToolCallInfo {
+            id: "classifier-call".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({"command": "custom-tool"}),
+        };
+        let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let (classification_tx, classification_rx) = tokio::sync::oneshot::channel();
+        classification_tx.send(result).unwrap();
+        editor
+            .ai_state
+            .chat
+            .as_mut()
+            .unwrap()
+            .pending_auto_mode_classification =
+            Some(super::super::ai_chat_state::PendingAutoModeClassification {
+                tool_call: call,
+                runtime_tool: tool,
+                runtime_turn: turn,
+                dynamic_response: response_tx,
+                receiver: classification_rx,
+            });
+        response_rx
+    }
+
+    #[tokio::test]
+    async fn classifier_failure_escalates_to_paused_user_approval() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let mut response = attach_finished_classifier(&mut editor, Err("protocol failed".into()));
+
+        assert!(editor.poll_pending_auto_mode_classification());
+        assert!(editor.ai_chat_has_pending_tool_approval());
+        assert!(matches!(
+            response.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn classifier_deny_returns_terminal_error_without_execution() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let verdict = crate::ai::auto_mode::ClassifierVerdict::parse_strict(
+            r#"{"policy_version":"ovim.auto-mode.v1","decision":"deny","scope":{"project_root":"/repo"},"reason":"conflicts with objective","confidence":0.99,"expiry":{"kind":"after_command"}}"#,
+        )
+        .unwrap();
+        let response = attach_finished_classifier(&mut editor, Ok(verdict));
+
+        assert!(editor.poll_pending_auto_mode_classification());
+        assert!(!editor.ai_chat_has_pending_tool_approval());
+        assert!(response.await.unwrap().is_err());
+    }
+
     fn append_recorded_test_turn(
         editor: &mut Editor,
         user: &str,
@@ -1361,6 +2090,34 @@ mod tests {
         editor.record_ai_chat_node(assistant_node, assistant_event);
         editor.ai_runtime_complete_turn();
         (user_node, assistant_node, turn)
+    }
+
+    #[test]
+    fn shell_authorization_projection_is_chronological_durable_and_bounded() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        for index in 0..10 {
+            append_recorded_test_turn(&mut editor, &format!("instruction {index}"), "ack");
+        }
+        let context = editor.shell_authorization_context(std::path::Path::new("/repo"));
+        assert_eq!(context.explicit_user_instructions.len(), 8);
+        assert_eq!(
+            context.explicit_user_instructions[0].instruction,
+            "instruction 2"
+        );
+        assert_eq!(
+            context.explicit_user_instructions[7].instruction,
+            "instruction 9"
+        );
+        assert!(context
+            .explicit_user_instructions
+            .iter()
+            .all(|authorization| authorization.source_id.starts_with("evt_")));
+        assert_eq!(context.authorized_objectives[0].objective, "instruction 9");
+        assert_eq!(
+            context.authorized_objectives[0].source_id,
+            context.explicit_user_instructions[7].source_id
+        );
     }
 
     #[test]

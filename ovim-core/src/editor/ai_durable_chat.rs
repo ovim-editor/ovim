@@ -113,13 +113,14 @@ impl Editor {
         self.ai_state
             .conversation_runtime_nodes
             .insert(ui_key.clone(), nodes);
-        self.ai_state
-            .durable_chat_bindings
-            .insert(ui_key, DurableChatBinding {
+        self.ai_state.durable_chat_bindings.insert(
+            ui_key,
+            DurableChatBinding {
                 binding,
                 locator,
                 lease_renewed_at: std::time::Instant::now(),
-            });
+            },
+        );
         Ok(())
     }
 
@@ -154,11 +155,9 @@ impl Editor {
             return Ok(());
         }
         let run_id = binding.binding.run_id.clone();
-        services.catalog.renew_lease(
-            &run_id,
-            &services.owner,
-            services.lease_duration,
-        )?;
+        services
+            .catalog
+            .renew_lease(&run_id, &services.owner, services.lease_duration)?;
         if let Some(binding) = self.ai_state.durable_chat_bindings.get_mut(&key) {
             binding.lease_renewed_at = std::time::Instant::now();
         }
@@ -312,7 +311,10 @@ mod tests {
             .durable_chat_bindings
             .get(&reopened.ai_chat_conversation_key())
             .unwrap();
-        assert_eq!(restored.binding.conversation_id, first_binding.conversation_id);
+        assert_eq!(
+            restored.binding.conversation_id,
+            first_binding.conversation_id
+        );
         assert_eq!(restored.binding.run_id, first_binding.run_id);
         let messages = reopened.conversation().unwrap().messages();
         assert_eq!(messages.len(), 2);
@@ -345,11 +347,8 @@ mod tests {
         let storage = tempfile::tempdir().unwrap();
         let layout = RunStorageLayout::new(storage.path().join("runs"));
         let mut editor = durable_editor(&file, layout.clone());
-        let snapshot = RepositorySnapshot::capture(
-            &file,
-            crate::run_log::RepositoryId::new(),
-        )
-        .unwrap();
+        let snapshot =
+            RepositorySnapshot::capture(&file, crate::run_log::RepositoryId::new()).unwrap();
         let worktree = snapshot.local_paths.workdir.unwrap();
         let services = editor.ai_state.durable_runs.as_ref().unwrap();
         let repository = services
@@ -387,9 +386,7 @@ mod tests {
         let run_id = binding.run_id;
 
         let buffer_id = editor.buffer().id();
-        assert!(editor
-            .prepare_durable_ai_chat(buffer_id, "chat")
-            .is_err());
+        assert!(editor.prepare_durable_ai_chat(buffer_id, "chat").is_err());
         let catalog = crate::run_log::RunCatalog::open(&layout).unwrap();
         assert_eq!(catalog.lease_status(&run_id).unwrap(), LeaseStatus::Missing);
     }

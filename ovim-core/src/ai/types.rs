@@ -57,8 +57,8 @@ impl Default for ProfileScope {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ToolApprovalMode {
-    Auto,
     #[default]
+    Auto,
     SensitivePrompt,
     AlwaysPrompt,
 }

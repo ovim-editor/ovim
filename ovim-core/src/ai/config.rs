@@ -407,6 +407,15 @@ mod tests {
     use super::*;
 
     #[test]
+    fn auto_is_the_default_tool_approval_mode() {
+        assert_eq!(ToolApprovalMode::default(), ToolApprovalMode::Auto);
+        assert_eq!(
+            AiConfig::default().tool_approval_mode,
+            ToolApprovalMode::Auto
+        );
+    }
+
+    #[test]
     fn profile_scope_default_is_file() {
         assert_eq!(ProfileScope::default().files, FileScope::File);
     }

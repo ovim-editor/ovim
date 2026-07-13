@@ -249,11 +249,7 @@ impl Editor {
         let Some(entry) = self.ai_state.durable_chat_bindings.get_mut(&key) else {
             return;
         };
-        let Some((_, branch)) = self
-            .ai_state
-            .agent_runtime
-            .selected_branch(&entry.locator)
-        else {
+        let Some((_, branch)) = self.ai_state.agent_runtime.selected_branch(&entry.locator) else {
             return;
         };
         match services

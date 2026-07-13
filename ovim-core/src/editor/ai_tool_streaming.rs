@@ -295,6 +295,10 @@ impl Editor {
                 branch_generation,
             });
             chat.pending_tool_approval = None;
+            chat.pending_auto_mode_classification = None;
+            if let Some(pending) = chat.pending_shell_execution.take() {
+                pending.task.abort();
+            }
             chat.streaming_content = Some(String::new());
             chat.streaming_thinking = None;
             chat.runtime_recorded_content_bytes = 0;
@@ -411,6 +415,10 @@ impl Editor {
             chat.waiting = false;
             chat.pending_job = None;
             chat.pending_tool_approval = None;
+            chat.pending_auto_mode_classification = None;
+            if let Some(pending) = chat.pending_shell_execution.take() {
+                pending.task.abort();
+            }
             chat.streaming_content = None;
             chat.streaming_thinking = None;
             chat.runtime_recorded_content_bytes = 0;

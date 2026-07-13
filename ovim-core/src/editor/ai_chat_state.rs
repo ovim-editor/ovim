@@ -15,6 +15,30 @@ pub struct PendingToolApproval {
     pub model_name: String,
     pub requested_path: PathBuf,
     pub approval_root: PathBuf,
+    /// Present for an app-server dynamic tool. Keeping this sender alive is
+    /// what genuinely pauses Codex while the approval UI is visible.
+    pub dynamic_response: Option<tokio::sync::oneshot::Sender<Result<String, String>>>,
+    pub dynamic_turn: Option<crate::agent_runtime::PendingTurnRef>,
+}
+
+/// A Luna auto-mode verdict in flight for a Codex dynamic bash request.
+pub struct PendingAutoModeClassification {
+    pub tool_call: ToolCallInfo,
+    pub runtime_tool: crate::agent_runtime::PendingToolRef,
+    pub runtime_turn: crate::agent_runtime::PendingTurnRef,
+    pub dynamic_response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    pub receiver:
+        tokio::sync::oneshot::Receiver<Result<crate::ai::auto_mode::ClassifierVerdict, String>>,
+}
+
+/// An authorized shell effect running off the editor/event-loop thread.
+pub struct PendingShellExecution {
+    pub tool_call: ToolCallInfo,
+    pub runtime_tool: crate::agent_runtime::PendingToolRef,
+    pub runtime_turn: crate::agent_runtime::PendingTurnRef,
+    pub dynamic_response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    pub receiver: tokio::sync::oneshot::Receiver<crate::ai::tools::ToolResult>,
+    pub task: tokio::task::JoinHandle<()>,
 }
 
 #[derive(Debug, Clone)]
@@ -120,6 +144,8 @@ pub struct AiChatState {
     pub tool_call_count: u16,
     /// Paused tool call awaiting user approval for outside-project access.
     pub pending_tool_approval: Option<PendingToolApproval>,
+    pub pending_auto_mode_classification: Option<PendingAutoModeClassification>,
+    pub pending_shell_execution: Option<PendingShellExecution>,
     /// First-chat-open prompt when session starts outside a git repo.
     pub pending_no_repo_folder_approval: Option<PathBuf>,
     /// Session-scoped roots explicitly approved for path-restricted tool access
@@ -182,6 +208,8 @@ impl AiChatState {
             streaming_tool_calls: Vec::new(),
             tool_call_count: 0,
             pending_tool_approval: None,
+            pending_auto_mode_classification: None,
+            pending_shell_execution: None,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             tool_event_summaries: HashMap::new(),

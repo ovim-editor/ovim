@@ -276,8 +276,7 @@ impl Drop for AiState {
         runs.dedup();
         for run_id in runs {
             let active = self.durable_chat_bindings.values().any(|entry| {
-                entry.binding.run_id == run_id
-                    && self.agent_runtime.has_active_work(&entry.locator)
+                entry.binding.run_id == run_id && self.agent_runtime.has_active_work(&entry.locator)
             });
             if !active {
                 let _ = services.catalog.release_lease(&run_id, &services.owner);
@@ -361,14 +360,12 @@ mod tests {
     fn durable_states_share_one_process_lease_identity() {
         let first_dir = tempfile::tempdir().unwrap();
         let second_dir = tempfile::tempdir().unwrap();
-        let first = AiState::with_run_storage_layout(RunStorageLayout::new(
-            first_dir.path().join("runs"),
-        ))
-        .unwrap();
-        let second = AiState::with_run_storage_layout(RunStorageLayout::new(
-            second_dir.path().join("runs"),
-        ))
-        .unwrap();
+        let first =
+            AiState::with_run_storage_layout(RunStorageLayout::new(first_dir.path().join("runs")))
+                .unwrap();
+        let second =
+            AiState::with_run_storage_layout(RunStorageLayout::new(second_dir.path().join("runs")))
+                .unwrap();
         assert_eq!(
             first.durable_runs.as_ref().unwrap().owner.instance_id,
             second.durable_runs.as_ref().unwrap().owner.instance_id

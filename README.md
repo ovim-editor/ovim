@@ -73,6 +73,8 @@ vim.opt.shiftwidth = 4
 vim.opt.scrolloff = 10
 
 -- AI: Codex uses your ChatGPT/Codex subscription via the Codex CLI.
+-- Codex stays sandboxed read-only; ovim's durable auto-mode harness owns edits
+-- and repository-root shell programs. Context-dependent effects use Luna low.
 vim.ai.setup({
   default_profile = "codex_terra",
   contexts = {

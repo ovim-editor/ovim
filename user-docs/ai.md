@@ -20,7 +20,19 @@ codex login status
 
 The built-in defaults use `gpt-5.6-sol` at medium effort for chat and
 `gpt-5.6-terra` at low effort for selection edits and read-only queries. Codex
-runs read-only; ovim remains responsible for applying and validating edits.
+runs with its app-server sandbox read-only and approval policy set to `never`.
+For editable chats, ovim exposes its own durable mutation and raw-shell dynamic
+tools. Ovim records tool intent first, applies auto-mode policy, executes the
+approved effect in the repository, and returns the result to Codex.
+
+Auto mode is the default. Read-only local inspection and tests run immediately;
+context-dependent commands are reviewed by subscription-backed Luna at low
+effort. Elevated privileges, credential access, outside-project effects,
+remote-code pipelines, ambiguous authorization, and classifier failures pause
+for you. Press Enter or Ctrl-Y to allow once, Ctrl-A to allow the requested
+folder for the chat, or Esc/Ctrl-N to deny. To opt out of auto mode, set
+`tool_approval_mode = "sensitive_prompt"` or `"always_prompt"` in legacy
+`ai.toml`.
 
 Chat conversations retain a native Codex thread and reuse a shared app-server
 process. After the first message, ovim sends only the new user turn plus current

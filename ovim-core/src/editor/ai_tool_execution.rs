@@ -3,16 +3,112 @@ use crate::ai::tools::ToolResult;
 use crate::ai::truncate_utf8_with_notice;
 use crate::unicode::GraphemeCol;
 use serde_json::json;
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::Arc;
 
 use super::ai_chat_tools::{ToolDispatchOutcome, ToolPathResolution};
-use super::ai_tool_path::{
-    compact_tool_label, is_allowed_bash_binary, normalize_path, parse_bash_command,
-    resolve_bash_binary, to_relative_path_for_boundary, DEFAULT_BASH_ALLOWLIST,
-};
+use super::ai_tool_path::{compact_tool_label, normalize_path, to_relative_path_for_boundary};
 use super::Editor;
+
+fn read_capped_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
+    let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+    let mut buffer = [0_u8; 8 * 1024];
+    let mut truncated = false;
+    loop {
+        let count = match reader.read(&mut buffer) {
+            Ok(0) | Err(_) => break,
+            Ok(count) => count,
+        };
+        let available = limit.saturating_sub(retained.len());
+        let keep = available.min(count);
+        retained.extend_from_slice(&buffer[..keep]);
+        truncated |= keep < count;
+    }
+    (retained, truncated)
+}
+
+pub(super) fn run_bash_program(command: &str, workdir: &Path) -> ToolResult {
+    let shell = std::env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
+    let mut child = match Command::new(&shell)
+        .arg("-lc")
+        .arg(command)
+        .current_dir(workdir)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(err) => {
+            return ToolResult::Error(format!(
+                "failed to execute '{}': {}",
+                std::path::Path::new(&shell).display(),
+                err
+            ))
+        }
+    };
+    let stdout = child.stdout.take().expect("piped stdout");
+    let stderr = child.stderr.take().expect("piped stderr");
+    let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
+    let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
+    let status = match child.wait() {
+        Ok(status) => status,
+        Err(error) => return ToolResult::Error(format!("failed waiting for shell: {error}")),
+    };
+    let (stdout_bytes, stdout_truncated) = stdout_task.join().unwrap_or_default();
+    let (stderr_bytes, stderr_truncated) = stderr_task.join().unwrap_or_default();
+    let stdout = String::from_utf8_lossy(&stdout_bytes);
+    let stderr = String::from_utf8_lossy(&stderr_bytes);
+    let mut body = String::new();
+    if !stdout.trim_end().is_empty() {
+        body.push_str(stdout.trim_end());
+    }
+    if !stderr.trim_end().is_empty() {
+        if !body.is_empty() {
+            body.push('\n');
+        }
+        body.push_str("stderr:\n");
+        body.push_str(stderr.trim_end());
+    }
+    if stdout_truncated || stderr_truncated {
+        body.push_str("\n[output truncated by ovim]");
+    }
+    let status_line = match status.code() {
+        Some(code) => format!("exit code {code}"),
+        None => "terminated by signal".to_string(),
+    };
+    let cmd_label = compact_tool_label(command);
+    let out = if body.is_empty() {
+        format!(
+            "bash `{}` {} ({status_line}) with no output.",
+            cmd_label,
+            if status.success() {
+                "succeeded"
+            } else {
+                "failed"
+            }
+        )
+    } else {
+        format!(
+            "bash `{}` {} ({status_line}).\n{}",
+            cmd_label,
+            if status.success() {
+                "succeeded"
+            } else {
+                "failed"
+            },
+            body
+        )
+    };
+    if status.success() {
+        ToolResult::Success(truncate_utf8_with_notice(&out, 64 * 1024))
+    } else {
+        ToolResult::Error(truncate_utf8_with_notice(&out, 64 * 1024))
+    }
+}
 
 impl Editor {
     /// Execute a single read tool call, checking scope before dispatch.
@@ -459,7 +555,7 @@ impl Editor {
         ))
     }
 
-    /// Execute an external tool (`bash`) with explicit command allowlists.
+    /// Execute an external tool (`bash`) after the caller has applied tool policy.
     pub(crate) fn execute_external_tool(
         &mut self,
         name: &str,
@@ -497,49 +593,48 @@ impl Editor {
             }
         };
 
-        let argv = match parse_bash_command(command) {
-            Ok(tokens) => tokens,
-            Err(err) => return ToolResult::Error(err),
+        // A shell-capable agent must have an explicit repository boundary. Do
+        // not silently fall back to the editor process cwd for effects.
+        let Some(workdir) = self.ai_effective_project_root() else {
+            return ToolResult::Error(self.no_project_root_error());
         };
-        let Some(bin) = argv.first().map(String::as_str) else {
-            return ToolResult::Error("'command' is required and must be non-empty".to_string());
-        };
-        if !is_allowed_bash_binary(bin) {
-            return ToolResult::Error(format!(
-                "command '{}' is not on the bash allowlist. Allowed: {}",
-                bin,
-                DEFAULT_BASH_ALLOWLIST.join(", ")
-            ));
-        }
+        let shell = std::env::var_os("SHELL")
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
 
-        let workdir = self
-            .ai_effective_project_root()
-            .or_else(|| self.ai_project_start_path())
-            .or_else(|| std::env::current_dir().ok())
-            .unwrap_or_else(|| PathBuf::from("."));
-
-        let binary = match resolve_bash_binary(bin) {
-            Ok(path) => path,
-            Err(err) => return ToolResult::Error(err),
-        };
-
-        let output = match Command::new(&binary)
-            .args(argv.iter().skip(1))
+        let mut child = match Command::new(&shell)
+            .arg("-lc")
+            .arg(command)
             .current_dir(&workdir)
-            .output()
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
         {
-            Ok(o) => o,
+            Ok(child) => child,
             Err(err) => {
                 return ToolResult::Error(format!(
                     "failed to execute '{}': {}",
-                    binary.display(),
+                    std::path::Path::new(&shell).display(),
                     err
                 ))
             }
         };
+        // Drain both pipes concurrently to avoid deadlock, retaining only a
+        // bounded prefix. A noisy one-off script cannot grow ovim without
+        // bound even though the child is allowed to finish normally.
+        let stdout = child.stdout.take().expect("piped stdout");
+        let stderr = child.stderr.take().expect("piped stderr");
+        let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
+        let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
+        let status = match child.wait() {
+            Ok(status) => status,
+            Err(error) => return ToolResult::Error(format!("failed waiting for shell: {error}")),
+        };
+        let (stdout_bytes, stdout_truncated) = stdout_task.join().unwrap_or_default();
+        let (stderr_bytes, stderr_truncated) = stderr_task.join().unwrap_or_default();
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&stdout_bytes);
+        let stderr = String::from_utf8_lossy(&stderr_bytes);
         let mut body = String::new();
         if !stdout.trim_end().is_empty() {
             body.push_str(stdout.trim_end());
@@ -551,14 +646,17 @@ impl Editor {
             body.push_str("stderr:\n");
             body.push_str(stderr.trim_end());
         }
+        if stdout_truncated || stderr_truncated {
+            body.push_str("\n[output truncated by ovim]");
+        }
 
-        let status_line = match output.status.code() {
+        let status_line = match status.code() {
             Some(code) => format!("exit code {code}"),
             None => "terminated by signal".to_string(),
         };
         let cmd_label = compact_tool_label(command);
 
-        if output.status.success() {
+        if status.success() {
             let out = if body.is_empty() {
                 format!(
                     "bash `{}` succeeded ({status_line}) with no output.",

@@ -62,7 +62,7 @@ impl Editor {
         let mut caps = Capabilities {
             file_scope: profile_scope.files,
             // Enable shell capability for editable chats by default. External
-            // execution remains constrained by explicit tool allowlists.
+            // execution remains constrained by durable auto-mode policy.
             shell: profile_scope.shell || allow_edits,
             network: profile_scope.network,
             allow_mutations: allow_edits,
@@ -101,18 +101,14 @@ impl Editor {
         profile: &crate::ai::AiProfileConfig,
     ) -> Vec<serde_json::Value> {
         let caps = self.build_chat_capabilities();
-        let mut tools = self
+        let tools = self
             .ai_state
             .tool_registry
             .tools_for_profile(profile, &caps);
-        // Codex currently runs as a read-only, editor-aware assistant. Navigation
-        // is safe, but mutation and external tools stay behind ovim's existing
-        // non-Codex agent loop until dynamic approval/resume is implemented.
-        if profile.provider == crate::ai::AiProviderKind::Codex {
-            tools.retain(|tool| {
-                matches!(tool.side_effect, SideEffect::Read | SideEffect::Navigation)
-            });
-        }
+        // Codex itself remains `approvalPolicy: never` and read-only. Effects
+        // are advertised only when the durable ovim harness granted the
+        // corresponding capability; app-server calls them as dynamic tools and
+        // ovim records intent and applies policy before touching live state.
         if tools.is_empty() {
             return vec![];
         }
@@ -383,8 +379,10 @@ impl Editor {
         tc: &ToolCallInfo,
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
-        if let Err(err) = self.active_chat_target_buffer_index_strict() {
-            return ToolDispatchOutcome::Completed(ToolResult::Error(err));
+        if tc.name != "bash" {
+            if let Err(err) = self.active_chat_target_buffer_index_strict() {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(err));
+            }
         }
 
         let has_explicit_path = tc
@@ -409,6 +407,7 @@ impl Editor {
 
         if !self.active_chat_target_has_file_path()
             && tc.name != "open_file"
+            && tc.name != "bash"
             && !path_scoped_without_open_file
         {
             return ToolDispatchOutcome::Completed(ToolResult::Error(self.no_file_open_guidance()));
@@ -551,6 +550,37 @@ impl Editor {
             return false;
         };
 
+        if pending.dynamic_response.is_some() {
+            let response = pending
+                .dynamic_response
+                .expect("dynamic approval has response sender");
+            let Some(turn) = pending.dynamic_turn else {
+                let _ = response.send(Err("dynamic approval lost its runtime turn".into()));
+                return true;
+            };
+            let Some(tool) = pending.runtime_tool else {
+                let _ = response.send(Err("dynamic approval lost its runtime tool".into()));
+                return true;
+            };
+            if allow {
+                self.execute_dynamic_tool_after_policy(turn, tool, pending.tool_call, response);
+                self.set_lsp_status("Approved shell program for this invocation".into());
+            } else {
+                self.finish_dynamic_tool(
+                    &turn,
+                    &tool,
+                    &pending.tool_call,
+                    response,
+                    ToolResult::Error("user denied shell program".into()),
+                );
+                self.set_lsp_status("Denied shell program".into());
+            }
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.waiting = true;
+            }
+            return true;
+        }
+
         if !allow {
             let denied_result = ToolResult::Error(format!(
                 "user denied outside-project access for '{}'",
@@ -634,6 +664,8 @@ impl Editor {
                     model_name: pending.model_name,
                     requested_path: req.requested_path.clone(),
                     approval_root: req.approval_root.clone(),
+                    dynamic_response: None,
+                    dynamic_turn: None,
                 });
                 self.set_lsp_status(req.message);
                 true
@@ -771,6 +803,8 @@ impl Editor {
                         model_name,
                         requested_path: req.requested_path,
                         approval_root: req.approval_root,
+                        dynamic_response: None,
+                        dynamic_turn: None,
                     });
                     self.set_lsp_status(req.message);
                     return true;
@@ -1156,9 +1190,7 @@ mod tests {
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
     use crate::ai::{FileScope, ToolApprovalMode};
     use crate::editor::ai_tool_execution::find_enclosing_symbol;
-    use crate::editor::ai_tool_path::{
-        is_allowed_bash_binary, normalize_path, parse_bash_command, resolve_bash_binary,
-    };
+    use crate::editor::ai_tool_path::normalize_path;
     use std::fs;
 
     fn set_active_profile_project_scope(editor: &mut Editor) {
@@ -1412,28 +1444,6 @@ mod tests {
                 .unwrap_or_else(|_| normalize_path(&repo));
             assert_eq!(detected, expected);
         });
-    }
-
-    #[test]
-    fn parse_bash_command_handles_quotes_and_rejects_operators() {
-        let parsed = parse_bash_command("rg \"hello world\" src").expect("parse");
-        assert_eq!(parsed, vec!["rg", "hello world", "src"]);
-
-        assert!(parse_bash_command("ls | head").is_err());
-        assert!(parse_bash_command("echo $HOME").is_err());
-    }
-
-    #[test]
-    fn bash_allowlist_requires_bare_command_name() {
-        assert!(is_allowed_bash_binary("rg"));
-        assert!(!is_allowed_bash_binary("/bin/rg"));
-        assert!(!is_allowed_bash_binary("rm"));
-    }
-
-    #[test]
-    fn resolve_bash_binary_reports_missing_command() {
-        let missing = resolve_bash_binary("__ovim_missing_bash_command__");
-        assert!(missing.is_err());
     }
 
     #[test]
@@ -1848,7 +1858,38 @@ mod tests {
     }
 
     #[test]
-    fn bash_tool_rejects_non_allowlisted_command() {
+    fn editable_codex_chat_advertises_shell_and_mutation_dynamic_tools() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+        let mut profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&editor.ai_state.active_profile)
+            .expect("profile")
+            .clone();
+        profile.provider = crate::ai::AiProviderKind::Codex;
+        profile.tools.clear();
+
+        let schemas = editor.build_tool_schemas_for_chat(&profile);
+        let names = schemas
+            .iter()
+            .filter_map(|schema| schema.get("function"))
+            .filter_map(|function| function.get("name"))
+            .filter_map(serde_json::Value::as_str)
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"bash"), "schemas: {schemas:?}");
+        assert!(names.contains(&"edit_range"), "schemas: {schemas:?}");
+        assert!(names.contains(&"insert_lines"), "schemas: {schemas:?}");
+    }
+
+    #[test]
+    fn bash_tool_executes_shell_composition_after_policy() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1865,21 +1906,22 @@ mod tests {
                 })
                 .expect("open chat");
             editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
 
             let tool_call = ToolCallInfo {
                 id: "call_bash".to_string(),
                 name: "bash".to_string(),
                 arguments: serde_json::json!({
-                    "command": "rm -rf /tmp/demo"
+                    "command": "printf 'alpha\\nbeta\\n' | tail -n 1"
                 }),
             };
 
             match editor.dispatch_tool_call_with_approval(&tool_call, None) {
-                ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
-                    assert!(err.contains("not on the bash allowlist"));
-                }
                 ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
-                    panic!("expected allowlist error, got success: {ok}");
+                    assert!(ok.contains("beta"), "{ok}");
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                    panic!("expected compound shell program to run: {err}");
                 }
                 ToolDispatchOutcome::ApprovalRequired(req) => {
                     panic!("unexpected approval request: {}", req.message);
@@ -1889,7 +1931,7 @@ mod tests {
     }
 
     #[test]
-    fn bash_tool_accepts_allowlisted_command_for_execution() {
+    fn bash_tool_executes_simple_program_in_project_root() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
             let dir = tempfile::tempdir().expect("tempdir");
@@ -1906,6 +1948,7 @@ mod tests {
                 })
                 .expect("open chat");
             editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
 
             let tool_call = ToolCallInfo {
                 id: "call_bash_pwd".to_string(),

@@ -105,9 +105,9 @@ pub fn execute_builtin(
 fn bash_def() -> ToolDefinition {
     ToolDefinition {
         name: "bash".to_string(),
-        description: "Run a whitelisted shell command without shell interpolation. \
-            Use for safe project inspection commands such as pwd, ls, rg, grep, find, \
-            cat, head, tail, wc, cut, sort, uniq, tr, stat, file, realpath, dirname, basename."
+        description: "Run a shell program in the repository root through the user's login shell. \
+            Shell composition is supported, including pipelines, loops, conditionals, redirection, \
+            substitutions, and one-off scripts. Ovim applies auto-mode policy before execution."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::File,
@@ -119,7 +119,8 @@ fn bash_def() -> ToolDefinition {
             name: "command".to_string(),
             param_type: ParamType::String,
             required: true,
-            description: "Command string to execute (single command only; no pipes/redirection)."
+            description: "Exact shell program to pass to `$SHELL -lc`; pipelines, loops, \
+                redirection, substitutions, and compound commands are supported."
                 .to_string(),
         }],
     }

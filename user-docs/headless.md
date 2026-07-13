@@ -21,6 +21,21 @@ ovim exec -s dev "w"
 ovim session kill -s dev
 ```
 
+AI chat uses the same background poller and input dispatcher in headless mode
+as in the TUI. Open editable chat with `Space Space`, type a request, and submit
+with Enter:
+
+```bash
+ovim send -s dev "  "
+ovim send -s dev "inspect the project<Enter>"
+```
+
+If auto mode pauses a dynamic tool for approval, the Codex response remains
+blocked until the decision arrives. Inspect it with `ovim snapshot -s dev`, then
+send `<C-y>` (or `<Enter>`) to allow once, or `<C-n>` (or `<Esc>`) to deny. The
+50 ms headless background tick also polls Luna classifier completions; no
+renderer or attached terminal is required.
+
 LSP helpers:
 
 ```bash

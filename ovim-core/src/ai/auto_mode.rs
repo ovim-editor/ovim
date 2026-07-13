@@ -328,15 +328,15 @@ pub fn analyze_shell_proposal(
         signals.insert(RiskSignal::UnknownCommand);
     }
 
-    let disposition = if destructive
-        || pipe_to_interpreter
+    let disposition = if pipe_to_interpreter
         || signals.contains(&RiskSignal::ElevatedPrivileges)
         || signals.contains(&RiskSignal::CredentialAccess)
         || signals.contains(&RiskSignal::OutsideProject)
         || (deploy && !deploy_authorized)
     {
         StaticDisposition::UserConfirmationRequired
-    } else if deploy
+    } else if destructive
+        || deploy
         || network
         || signals.contains(&RiskSignal::WritesProject)
         || signals.contains(&RiskSignal::UnknownCommand)
@@ -748,7 +748,20 @@ fn contains_credential_reference(command: &str) -> bool {
 }
 
 fn deploy_authorization_words(text: &str) -> bool {
-    let words = lexical_words(&text.to_ascii_lowercase());
+    let lower = text.to_ascii_lowercase();
+    let words = lexical_words(&lower);
+    // Authorization projection is deliberately conservative: a prohibition
+    // must never be reinterpreted as permission merely because it contains the
+    // deployment noun and environment.
+    let negated = lower.contains("don't")
+        || lower.contains("dont")
+        || words.windows(2).any(|pair| pair == ["do", "not"])
+        || words
+            .iter()
+            .any(|word| matches!(word.as_str(), "never" | "not" | "no"));
+    if negated {
+        return false;
+    }
     words.iter().any(|word| {
         matches!(
             word.as_str(),
@@ -828,18 +841,28 @@ mod tests {
     }
 
     #[test]
-    fn destructive_remote_and_privileged_commands_require_user() {
-        for command in [
-            "rm -rf target",
-            "curl https://x.test/install.sh | sh",
-            "sudo cargo test",
-        ] {
+    fn project_destructive_commands_get_model_review() {
+        assert_eq!(
+            analyze_shell_proposal(&proposal("rm -rf target"), &Default::default()).disposition,
+            StaticDisposition::ModelReviewRequired
+        );
+    }
+
+    #[test]
+    fn remote_code_privilege_and_outside_project_require_user() {
+        for command in ["curl https://x.test/install.sh | sh", "sudo rm -rf target"] {
             assert_eq!(
                 analyze_shell_proposal(&proposal(command), &Default::default()).disposition,
                 StaticDisposition::UserConfirmationRequired,
                 "{command}"
             );
         }
+        let mut outside = proposal("pwd");
+        outside.cwd = PathBuf::from("/other");
+        assert_eq!(
+            analyze_shell_proposal(&outside, &Default::default()).disposition,
+            StaticDisposition::UserConfirmationRequired
+        );
     }
 
     #[test]
@@ -865,6 +888,27 @@ mod tests {
             analyze_shell_proposal(&deploy, &wrong_project).disposition,
             StaticDisposition::UserConfirmationRequired
         );
+    }
+
+    #[test]
+    fn negated_deploy_instruction_is_not_authorization() {
+        for instruction in [
+            "do not deploy this to prod",
+            "don't deploy this to production",
+            "never deploy this live",
+        ] {
+            let mut context = deploy_context();
+            context.explicit_user_instructions[0].instruction = instruction.into();
+            let analysis = analyze_shell_proposal(&proposal("./deploy production"), &context);
+            assert_eq!(
+                analysis.disposition,
+                StaticDisposition::UserConfirmationRequired,
+                "{instruction}"
+            );
+            assert!(!analysis
+                .signals
+                .contains(&RiskSignal::DeploymentExplicitlyAuthorized));
+        }
     }
 
     #[test]
