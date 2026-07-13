@@ -277,6 +277,188 @@ impl AgentDispatchScheduler {
         }
     }
 
+    /// Rebuild scheduler ownership from normalized durable lifecycle events.
+    /// Queued work remains recoverable. Any state that may have crossed a
+    /// provider/effect boundary is durably interrupted because this process
+    /// cannot prove the old provider session is still attached.
+    pub fn rehydrate(run_id: RunId, sink: Arc<dyn RunEventSink>) -> Result<Self, DispatchError> {
+        let mut events = sink.events(&run_id).map_err(DispatchError::RunLog)?;
+        events.sort_by_key(|event| event.sequence);
+        let mut scheduler = Self::new(run_id.clone(), sink);
+        let mut ignored_agents = BTreeSet::new();
+
+        for event in &events {
+            if event.run_id != run_id {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "event {} belongs to run {}, expected {}",
+                    event.event_id, event.run_id, run_id
+                )));
+            }
+            let EventKind::AgentLifecycle(lifecycle) = &event.kind else {
+                continue;
+            };
+            if event.agent_id.as_ref() != Some(&lifecycle.agent_id) {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "agent lifecycle {} disagrees with its envelope",
+                    lifecycle.agent_id
+                )));
+            }
+
+            if !scheduler.agents.contains_key(&lifecycle.agent_id) {
+                let Some(spec) = lifecycle.dispatch_spec.as_ref() else {
+                    // Root/provider agents are normalized by the runtime too,
+                    // but are outside scheduler ownership.
+                    ignored_agents.insert(lifecycle.agent_id.clone());
+                    continue;
+                };
+                if lifecycle.state != AgentLifecycleState::Created {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} has a dispatch spec outside Created",
+                        lifecycle.agent_id
+                    )));
+                }
+                let workspace_id = event.workspace_id.clone().ok_or_else(|| {
+                    DispatchError::InvalidHistory(format!(
+                        "agent {} has no persisted workspace identity",
+                        lifecycle.agent_id
+                    ))
+                })?;
+                let objective = lifecycle
+                    .objective
+                    .clone()
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| {
+                        DispatchError::InvalidHistory(format!(
+                            "agent {} has no persisted objective",
+                            lifecycle.agent_id
+                        ))
+                    })?;
+                let (kind, strategy) = restore_dispatch_spec(&lifecycle.kind, spec)?;
+                if kind.can_write()
+                    && matches!(strategy, WorkspaceStrategy::ReadOnlySnapshot { .. })
+                {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "write-capable agent {} was persisted in a read-only workspace",
+                        lifecycle.agent_id
+                    )));
+                }
+                scheduler.agents.insert(
+                    lifecycle.agent_id.clone(),
+                    ScheduledAgent {
+                        handle: DispatchHandle {
+                            run_id: run_id.clone(),
+                            agent_id: lifecycle.agent_id.clone(),
+                            workspace: WorkspaceAssignment {
+                                workspace_id,
+                                strategy,
+                            },
+                        },
+                        kind,
+                        objective,
+                        parent_agent_id: lifecycle.parent_agent_id.clone(),
+                        causing_turn_id: event.turn_id.clone(),
+                        state: DispatchState::Created,
+                        last_event_id: event.event_id.clone(),
+                    },
+                );
+                continue;
+            }
+            if ignored_agents.contains(&lifecycle.agent_id) {
+                continue;
+            }
+
+            let agent = scheduler
+                .agents
+                .get_mut(&lifecycle.agent_id)
+                .expect("scheduler agent checked above");
+            if lifecycle.dispatch_spec.is_some() {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "agent {} repeats its dispatch spec",
+                    lifecycle.agent_id
+                )));
+            }
+            if event.workspace_id.as_ref() != Some(&agent.handle.workspace.workspace_id) {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "agent {} changed workspace identity",
+                    lifecycle.agent_id
+                )));
+            }
+            if lifecycle.parent_agent_id != agent.parent_agent_id
+                || event.turn_id != agent.causing_turn_id
+                || lifecycle.kind != agent.kind.name.to_string()
+                || lifecycle.objective.as_deref() != Some(agent.objective.as_str())
+            {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "agent {} changed immutable dispatch identity",
+                    lifecycle.agent_id
+                )));
+            }
+            if event.caused_by.as_ref() != Some(&agent.last_event_id) {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "agent {} lifecycle is not causally contiguous",
+                    lifecycle.agent_id
+                )));
+            }
+            let next = projected_state(&lifecycle.state);
+            let legacy_start = agent.state == DispatchState::Queued
+                && lifecycle.state == AgentLifecycleState::Started;
+            if !legacy_start && !valid_transition(&agent.state, &next) {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "agent {} has invalid transition {:?} -> {:?}",
+                    lifecycle.agent_id, agent.state, next
+                )));
+            }
+            agent.state = next;
+            agent.last_event_id = event.event_id.clone();
+        }
+
+        let ambiguous = scheduler
+            .agents
+            .values()
+            .filter(|agent| {
+                matches!(
+                    agent.state,
+                    DispatchState::Created
+                        | DispatchState::Starting
+                        | DispatchState::Running
+                        | DispatchState::WaitingForAgent
+                        | DispatchState::WaitingForTool
+                        | DispatchState::WaitingForUser
+                )
+            })
+            .map(|agent| agent.handle.clone())
+            .collect::<Vec<_>>();
+        for handle in ambiguous {
+            scheduler.transition(
+                &handle,
+                DispatchState::Interrupted,
+                Some("interrupted while recovering scheduler after process restart".into()),
+            )?;
+        }
+
+        for agent in scheduler.agents.values() {
+            if agent.state.is_terminal()
+                || !agent.kind.can_write()
+                || !matches!(
+                    agent.handle.workspace.strategy,
+                    WorkspaceStrategy::SharedWorkspace
+                )
+            {
+                continue;
+            }
+            if let Some(holder) = scheduler.shared_writer.insert(
+                agent.handle.workspace.workspace_id.clone(),
+                agent.handle.agent_id.clone(),
+            ) {
+                return Err(DispatchError::InvalidHistory(format!(
+                    "shared workspace {} has nonterminal writers {} and {}",
+                    agent.handle.workspace.workspace_id, holder, agent.handle.agent_id
+                )));
+            }
+        }
+        Ok(scheduler)
+    }
+
     pub fn dispatch(&mut self, request: DispatchRequest) -> Result<DispatchHandle, DispatchError> {
         self.validate_request(&request)?;
         let agent_id = AgentId::new();
@@ -597,6 +779,104 @@ fn dispatch_spec_snapshot(
     }
 }
 
+fn restore_dispatch_spec(
+    kind_name: &str,
+    snapshot: &AgentDispatchSpecSnapshot,
+) -> Result<(AgentKind, WorkspaceStrategy), DispatchError> {
+    if snapshot.version != 1 {
+        return Err(DispatchError::InvalidHistory(format!(
+            "unsupported dispatch spec version {}",
+            snapshot.version
+        )));
+    }
+    if snapshot.model.model.trim().is_empty() {
+        return Err(DispatchError::InvalidHistory(
+            "dispatch spec has an empty model".into(),
+        ));
+    }
+    let capabilities = snapshot
+        .capabilities
+        .iter()
+        .map(|capability| match capability {
+            AgentCapabilitySnapshot::Read => AgentCapability::Read,
+            AgentCapabilitySnapshot::Navigate => AgentCapability::Navigate,
+            AgentCapabilitySnapshot::SafeShell => AgentCapability::SafeShell,
+            AgentCapabilitySnapshot::Shell => AgentCapability::Shell,
+            AgentCapabilitySnapshot::WorkspaceWrite => AgentCapability::WorkspaceWrite,
+            AgentCapabilitySnapshot::ExternalEffects => AgentCapability::ExternalEffects,
+            AgentCapabilitySnapshot::DispatchAgents => AgentCapability::DispatchAgents,
+        })
+        .collect::<BTreeSet<_>>();
+    if capabilities.len() != snapshot.capabilities.len() {
+        return Err(DispatchError::InvalidHistory(
+            "dispatch spec repeats a capability".into(),
+        ));
+    }
+    let name = match kind_name {
+        "implementer" => AgentKindName::Implementer,
+        "explorer" => AgentKindName::Explorer,
+        "verifier" => AgentKindName::Verifier,
+        "reviewer" => AgentKindName::Reviewer,
+        "safety" => AgentKindName::Safety,
+        "planner" => AgentKindName::Planner,
+        custom if custom.starts_with("custom:") && custom.len() > "custom:".len() => {
+            AgentKindName::Custom(custom["custom:".len()..].into())
+        }
+        other => {
+            return Err(DispatchError::InvalidHistory(format!(
+                "unknown persisted agent kind {other:?}"
+            )))
+        }
+    };
+    let workspace_policy = match snapshot.kind_workspace_policy {
+        AgentWorkspacePolicySnapshot::SharedWorkspace => WorkspacePolicy::SharedWorkspace,
+        AgentWorkspacePolicySnapshot::IsolatedWorktree => WorkspacePolicy::IsolatedWorktree,
+        AgentWorkspacePolicySnapshot::ReadOnlyProjection => WorkspacePolicy::ReadOnlyProjection,
+    };
+    let strategy = match &snapshot.assigned_workspace {
+        AgentWorkspaceStrategySnapshot::SharedWorkspace => WorkspaceStrategy::SharedWorkspace,
+        AgentWorkspaceStrategySnapshot::IsolatedWorktree { base_manifest_id } => {
+            WorkspaceStrategy::IsolatedWorktree {
+                base_manifest_id: base_manifest_id.clone(),
+            }
+        }
+        AgentWorkspaceStrategySnapshot::ReadOnlySnapshot { manifest_id } => {
+            WorkspaceStrategy::ReadOnlySnapshot {
+                manifest_id: manifest_id.clone(),
+            }
+        }
+    };
+    Ok((
+        AgentKind {
+            name,
+            model: AgentModelProfile {
+                model: snapshot.model.model.clone(),
+                effort: match snapshot.model.effort {
+                    AgentModelEffortSnapshot::Low => ModelEffort::Low,
+                    AgentModelEffortSnapshot::Medium => ModelEffort::Medium,
+                    AgentModelEffortSnapshot::High => ModelEffort::High,
+                },
+                fallback_model: snapshot.model.fallback_model.clone(),
+            },
+            instructions: snapshot.instructions.clone(),
+            capabilities,
+            workspace_policy,
+            completion_contract: match &snapshot.completion_contract {
+                AgentCompletionContractSnapshot::StructuredHandoff => {
+                    CompletionContract::StructuredHandoff
+                }
+                AgentCompletionContractSnapshot::ReviewReport => CompletionContract::ReviewReport,
+                AgentCompletionContractSnapshot::SafetyVerdict => CompletionContract::SafetyVerdict,
+                AgentCompletionContractSnapshot::Plan => CompletionContract::Plan,
+                AgentCompletionContractSnapshot::Custom(value) => {
+                    CompletionContract::Custom(value.clone())
+                }
+            },
+        },
+        strategy,
+    ))
+}
+
 fn lifecycle_state(state: DispatchState) -> AgentLifecycleState {
     match state {
         DispatchState::Created => AgentLifecycleState::Created,
@@ -614,6 +894,7 @@ fn lifecycle_state(state: DispatchState) -> AgentLifecycleState {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchError {
+    InvalidHistory(String),
     EmptyObjective,
     UnknownParent(AgentId),
     ChildMissingCausingTurn,
@@ -654,6 +935,7 @@ pub enum DispatchError {
 impl fmt::Display for DispatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
+            Self::InvalidHistory(detail) => write!(formatter, "invalid dispatch history: {detail}"),
             Self::EmptyObjective => formatter.write_str("agent objective is empty"),
             Self::UnknownParent(id) => write!(formatter, "parent agent {id} is unknown"),
             Self::ChildMissingCausingTurn => {
@@ -1243,6 +1525,202 @@ mod tests {
         ));
         assert!(first.is_ok());
         assert!(second.is_ok());
+    }
+
+    #[test]
+    fn restart_rehydrates_shared_writer_lease_and_excludes_second_writer() {
+        let (mut scheduler, sink) = scheduler();
+        let run_id = scheduler.run_id.clone();
+        let workspace = WorkspaceId::parse("wsp_restart_shared_writer").unwrap();
+        let first = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace.clone(),
+                WorkspaceStrategy::SharedWorkspace,
+            ))
+            .unwrap();
+        drop(scheduler);
+
+        let mut restored = AgentDispatchScheduler::rehydrate(run_id, sink).unwrap();
+        assert_eq!(
+            restored.state(&first.agent_id),
+            Some(&DispatchState::Queued)
+        );
+        let rejected = restored
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace.clone(),
+                WorkspaceStrategy::SharedWorkspace,
+            ))
+            .unwrap_err();
+        assert!(matches!(
+            rejected,
+            DispatchError::SharedWorkspaceWriterHeld {
+                workspace_id,
+                holder,
+            } if workspace_id == workspace && holder == first.agent_id
+        ));
+    }
+
+    #[test]
+    fn restart_allows_isolated_writers_to_coexist() {
+        let (mut scheduler, sink) = scheduler();
+        let run_id = scheduler.run_id.clone();
+        let workspace = WorkspaceId::parse("wsp_restart_isolated_writers").unwrap();
+        let first = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace.clone(),
+                WorkspaceStrategy::IsolatedWorktree {
+                    base_manifest_id: None,
+                },
+            ))
+            .unwrap();
+        let second = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace.clone(),
+                WorkspaceStrategy::IsolatedWorktree {
+                    base_manifest_id: None,
+                },
+            ))
+            .unwrap();
+        drop(scheduler);
+
+        let mut restored = AgentDispatchScheduler::rehydrate(run_id, sink).unwrap();
+        assert_eq!(
+            restored.state(&first.agent_id),
+            Some(&DispatchState::Queued)
+        );
+        assert_eq!(
+            restored.state(&second.agent_id),
+            Some(&DispatchState::Queued)
+        );
+        assert!(restored
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace,
+                WorkspaceStrategy::IsolatedWorktree {
+                    base_manifest_id: None,
+                },
+            ))
+            .is_ok());
+    }
+
+    #[test]
+    fn restart_interrupts_in_flight_agent_and_releases_shared_writer() {
+        let (mut scheduler, sink) = scheduler();
+        let run_id = scheduler.run_id.clone();
+        let workspace = WorkspaceId::parse("wsp_restart_running_writer").unwrap();
+        let first = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace.clone(),
+                WorkspaceStrategy::SharedWorkspace,
+            ))
+            .unwrap();
+        scheduler
+            .transition(&first, DispatchState::Starting, None)
+            .unwrap();
+        scheduler
+            .transition(&first, DispatchState::Running, None)
+            .unwrap();
+        drop(scheduler);
+
+        let mut restored = AgentDispatchScheduler::rehydrate(run_id.clone(), sink.clone()).unwrap();
+        assert_eq!(
+            restored.state(&first.agent_id),
+            Some(&DispatchState::Interrupted)
+        );
+        let events = sink.events(&run_id).unwrap();
+        assert!(matches!(
+            events.last().map(|event| &event.kind),
+            Some(EventKind::AgentLifecycle(AgentLifecycleEvent {
+                state: AgentLifecycleState::Interrupted,
+                ..
+            }))
+        ));
+        assert!(restored
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Implementer),
+                workspace,
+                WorkspaceStrategy::SharedWorkspace,
+            ))
+            .is_ok());
+    }
+
+    #[test]
+    fn rehydrate_rejects_changed_workspace_identity() {
+        let (mut scheduler, sink) = scheduler();
+        let run_id = scheduler.run_id.clone();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_original_identity").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let mut events = sink.events(&run_id).unwrap();
+        let queued = events.pop().unwrap();
+        sink.append(NewRunEvent {
+            run_id: run_id.clone(),
+            caused_by: queued.caused_by,
+            operation_id: None,
+            provider_call_id: None,
+            actor: queued.actor,
+            agent_id: queued.agent_id,
+            turn_id: queued.turn_id,
+            workspace_id: Some(WorkspaceId::parse("wsp_changed_identity").unwrap()),
+            branch_id: None,
+            kind: queued.kind,
+        })
+        .unwrap();
+        drop(scheduler);
+
+        assert!(matches!(
+            AgentDispatchScheduler::rehydrate(run_id, sink),
+            Err(DispatchError::InvalidHistory(detail))
+                if detail.contains("workspace identity")
+        ));
+        let _ = handle;
+    }
+
+    #[test]
+    fn rehydrate_rejects_unsupported_dispatch_spec_version() {
+        let (mut scheduler, source) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_invalid_spec_version").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let created = source.events(&handle.run_id).unwrap().remove(0);
+        let EventKind::AgentLifecycle(mut lifecycle) = created.kind else {
+            panic!("expected lifecycle")
+        };
+        lifecycle.dispatch_spec.as_mut().unwrap().version = 99;
+        let corrupted = Arc::new(InMemoryRunEventSink::new());
+        corrupted
+            .append(NewRunEvent {
+                run_id: handle.run_id.clone(),
+                caused_by: None,
+                operation_id: None,
+                provider_call_id: None,
+                actor: created.actor,
+                agent_id: created.agent_id,
+                turn_id: created.turn_id,
+                workspace_id: created.workspace_id,
+                branch_id: None,
+                kind: EventKind::AgentLifecycle(lifecycle),
+            })
+            .unwrap();
+
+        assert!(matches!(
+            AgentDispatchScheduler::rehydrate(handle.run_id, corrupted),
+            Err(DispatchError::InvalidHistory(detail))
+                if detail.contains("unsupported dispatch spec version 99")
+        ));
     }
 
     #[test]
