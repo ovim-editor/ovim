@@ -64,6 +64,7 @@ pub async fn request_ai_edit(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await?
             }
@@ -483,6 +484,33 @@ pub async fn stream_ai_chat(
     tx: UnboundedSender<StreamChunk>,
     registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<()> {
+    stream_ai_chat_with_codex_session(
+        profile,
+        messages,
+        system_prompt,
+        working_file_path,
+        session_key,
+        turn_context,
+        tools,
+        tx,
+        registry,
+        None,
+    )
+    .await
+}
+
+pub(crate) async fn stream_ai_chat_with_codex_session(
+    profile: &AiProfileConfig,
+    messages: &[super::chat_types::ChatMessage],
+    system_prompt: Option<&str>,
+    working_file_path: Option<&str>,
+    session_key: Option<&str>,
+    turn_context: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
+    tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
+    durable_codex_session: Option<super::codex_app_server::DurableCodexSession>,
+) -> Result<()> {
     // No timeout — streaming connections are long-lived.
     let client = reqwest::Client::builder()
         .build()
@@ -516,6 +544,7 @@ pub async fn stream_ai_chat(
                 tools,
                 Some(tx.clone()),
                 session_key,
+                durable_codex_session,
             )
             .await?;
             let _ = tx.send(StreamChunk::Done);

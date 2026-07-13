@@ -20,7 +20,7 @@ fn process_lease_instance_id() -> String {
 
 pub(crate) struct DurableRunServices {
     pub store: Arc<crate::run_log::LocalRunStore>,
-    pub catalog: crate::run_log::RunCatalog,
+    pub catalog: Arc<crate::run_log::RunCatalog>,
     pub owner: crate::run_log::LeaseOwner,
     pub lease_duration: Duration,
 }
@@ -206,12 +206,12 @@ impl AiState {
         // surfaced before the first provider turn begins.
         layout.ensure_root()?;
         let sink = Arc::new(crate::run_log::LocalRunStore::new(layout.clone()));
-        let catalog = crate::run_log::RunCatalog::open(&layout).map_err(|error| {
-            crate::run_log::RunLogError::Storage {
+        let catalog = crate::run_log::RunCatalog::open(&layout)
+            .map(Arc::new)
+            .map_err(|error| crate::run_log::RunLogError::Storage {
                 operation: "open durable run catalog".into(),
                 detail: error.to_string(),
-            }
-        })?;
+            })?;
         let owner = crate::run_log::LeaseOwner {
             instance_id: process_lease_instance_id(),
             pid_marker: Some(std::process::id()),

@@ -9,17 +9,43 @@ use anyhow::{anyhow, bail, Context, Result};
 #[cfg(test)]
 use ignore::WalkBuilder;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::OnceLock;
+use std::sync::{Arc, OnceLock};
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 use tokio::sync::mpsc::UnboundedSender;
 
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+const PROVIDER_SESSION_NAME: &str = "codex";
+const PROVIDER_CONFIGURATION_VERSION: u32 = 1;
 pub(crate) const AUTO_MODE_CLASSIFIER_MODEL: &str = "gpt-5.6-luna";
 pub(crate) const AUTO_MODE_CLASSIFIER_EFFORT: &str = "low";
 pub(crate) const AUTO_MODE_CLASSIFIER_EPHEMERAL_THREAD: bool = true;
+
+#[derive(Clone)]
+pub(crate) struct DurableCodexSession {
+    catalog: Arc<crate::run_log::RunCatalog>,
+    key: crate::run_log::ProviderSessionKey,
+}
+
+impl DurableCodexSession {
+    pub(crate) fn new(
+        catalog: Arc<crate::run_log::RunCatalog>,
+        agent_id: crate::run_log::AgentId,
+        branch_id: crate::run_log::BranchId,
+    ) -> Self {
+        Self {
+            catalog,
+            key: crate::run_log::ProviderSessionKey {
+                provider: PROVIDER_SESSION_NAME.into(),
+                agent_id,
+                branch_id,
+            },
+        }
+    }
+}
 
 pub(crate) async fn request(
     profile: &AiProfileConfig,
@@ -30,9 +56,10 @@ pub(crate) async fn request(
     tools: Option<&[Value]>,
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: Option<&str>,
+    durable_session: Option<DurableCodexSession>,
 ) -> Result<String> {
     let cwd = request_cwd(file_path)?;
-    if let Some(session_key) = session_key {
+    if session_key.is_some() || durable_session.is_some() {
         return request_persistent(
             profile,
             initial_input,
@@ -41,7 +68,8 @@ pub(crate) async fn request(
             &cwd,
             tools.unwrap_or_default(),
             stream_tx,
-            session_key,
+            session_key.unwrap_or("durable"),
+            durable_session,
         )
         .await;
     }
@@ -75,7 +103,7 @@ async fn request_ephemeral(
 #[derive(Clone)]
 struct PersistentThread {
     id: String,
-    configuration: String,
+    configuration: crate::run_log::ProviderConfigurationFingerprint,
 }
 
 #[derive(Default)]
@@ -188,15 +216,18 @@ async fn request_persistent(
     tools: &[Value],
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: &str,
+    durable_session: Option<DurableCodexSession>,
 ) -> Result<String> {
-    let configuration = format!(
-        "{}\n{}\n{}\n{}",
-        profile.model,
-        cwd.display(),
-        instructions,
-        serde_json::to_string(tools)?
-    );
-    let runtime_key = format!("{}:{}", cwd.display(), session_key);
+    let configuration = provider_configuration_fingerprint(profile, instructions, cwd, tools)?;
+    let runtime_key = durable_session
+        .as_ref()
+        .map(|session| {
+            format!(
+                "{}:{}:{}",
+                session.key.provider, session.key.agent_id, session.key.branch_id
+            )
+        })
+        .unwrap_or_else(|| format!("{}:{session_key}", cwd.display()));
     let mut runtime = runtime().lock().await;
 
     let client_dead = runtime
@@ -208,9 +239,9 @@ async fn request_persistent(
         runtime.threads.clear();
     }
     if runtime.client.is_none() {
-        // A missing client with retained thread ids means the previous request
-        // was cancelled while it owned the connection. Those ids cannot be
-        // resumed safely on a newly spawned process without an explicit resume.
+        // A missing client with retained process-local state means the previous
+        // request was cancelled while it owned the connection. Durable sessions
+        // will explicitly rejoin through thread/resume below.
         runtime.threads.clear();
         let mut client = AppServerClient::spawn(cwd).await?;
         client.initialize().await?;
@@ -222,29 +253,86 @@ async fn request_persistent(
     // observes `None`, clears stale thread ids, and reconstructs from ovim history.
     let mut client = runtime.client.take().expect("client initialized");
 
+    let durable_record = durable_session
+        .as_ref()
+        .map(|session| {
+            session
+                .catalog
+                .provider_session(&session.key, &configuration)
+                .map_err(anyhow::Error::from)
+        })
+        .transpose()?
+        .flatten();
+    if let Some(session) = durable_session
+        .as_ref()
+        .filter(|_| durable_record.is_none())
+    {
+        // Absence and fingerprint mismatch deliberately share one safe path:
+        // clear any stale mapping before creating a replacement thread.
+        invalidate_durable_provider_session(session)
+            .context("failed to invalidate a stale Codex provider session")?;
+    }
     let existing = runtime
         .threads
         .get(&runtime_key)
-        .filter(|thread| thread.configuration == configuration)
+        .filter(|thread| {
+            thread.configuration == configuration
+                && durable_record
+                    .as_ref()
+                    .is_none_or(|record| record.provider_thread_id == thread.id)
+                && (durable_session.is_none() || durable_record.is_some())
+        })
         .cloned();
-    let is_new = existing.is_none();
-    let thread_id = if let Some(thread) = existing {
-        thread.id
+    let (thread_id, use_initial_input) = if let Some(thread) = existing {
+        (thread.id, false)
+    } else if let (Some(session), Some(record)) =
+        (durable_session.as_ref(), durable_record.as_ref())
+    {
+        match client
+            .resume_thread(profile, cwd, &record.provider_thread_id)
+            .await
+        {
+            Ok(id) => {
+                runtime.threads.insert(
+                    runtime_key.clone(),
+                    PersistentThread {
+                        id: id.clone(),
+                        configuration: configuration.clone(),
+                    },
+                );
+                (id, false)
+            }
+            Err(resume_error) => {
+                invalidate_durable_provider_session(session)
+                    .context("failed to invalidate Codex session after thread/resume failed")?;
+                bail!(
+                    "Codex thread/resume failed; invalidated the durable provider session: {resume_error}"
+                );
+            }
+        }
     } else {
         let id = client
             .start_thread(profile, instructions, cwd, tools, false)
             .await?;
+        if let Some(session) = durable_session.as_ref() {
+            session.catalog.upsert_provider_session(
+                session.key.clone(),
+                id.clone(),
+                configuration.clone(),
+                None,
+            )?;
+        }
         runtime.threads.insert(
-            runtime_key,
+            runtime_key.clone(),
             PersistentThread {
                 id: id.clone(),
-                configuration,
+                configuration: configuration.clone(),
             },
         );
-        id
+        (id, true)
     };
 
-    let input = if is_new {
+    let input = if use_initial_input {
         initial_input
     } else {
         continuation_input
@@ -253,6 +341,20 @@ async fn request_persistent(
         let turn = client
             .start_turn(profile, &thread_id, input, CodexTurnOptions::default())
             .await?;
+        if let Some(session) = durable_session.as_ref() {
+            if let Err(error) = session.catalog.upsert_provider_session(
+                session.key.clone(),
+                thread_id.clone(),
+                configuration.clone(),
+                Some(turn.id.clone()),
+            ) {
+                runtime.threads.remove(&runtime_key);
+                let _ = session.catalog.delete_provider_session(&session.key);
+                return Err(anyhow!(
+                    "failed to persist the active Codex provider turn; invalidated its session: {error}"
+                ));
+            }
+        }
         client
             .stream_turn(stream_tx, cwd, &thread_id, &turn.id)
             .await
@@ -264,6 +366,43 @@ async fn request_persistent(
         runtime.threads.clear();
     }
     result
+}
+
+fn invalidate_durable_provider_session(session: &DurableCodexSession) -> Result<()> {
+    // A concurrent delete is already the desired state, so `false` is not an
+    // error. Storage failures remain fatal because retrying a known-bad resume
+    // mapping would loop or attach to the wrong provider state.
+    session.catalog.delete_provider_session(&session.key)?;
+    Ok(())
+}
+
+fn provider_configuration_fingerprint(
+    profile: &AiProfileConfig,
+    instructions: &str,
+    cwd: &Path,
+    tools: &[Value],
+) -> Result<crate::run_log::ProviderConfigurationFingerprint> {
+    let project_tools_enabled = !tools.is_empty();
+    let effective_instructions = format!(
+        "{instructions}\n\n{}",
+        codex_tool_instruction(project_tools_enabled)
+    );
+    let configuration = json!({
+        "protocol": "codex-app-server-v2",
+        "model": profile.model,
+        "cwd": cwd,
+        "approvalPolicy": "never",
+        "sandbox": "read-only",
+        "ephemeral": false,
+        "serviceName": "ovim",
+        "developerInstructions": effective_instructions,
+        "dynamicTools": if project_tools_enabled { codex_dynamic_tool_specs(tools) } else { Value::Null },
+    });
+    let digest = Sha256::digest(serde_json::to_vec(&configuration)?);
+    Ok(crate::run_log::ProviderConfigurationFingerprint {
+        version: PROVIDER_CONFIGURATION_VERSION,
+        value: format!("sha256:{digest:x}"),
+    })
 }
 
 fn request_cwd(file_path: Option<&str>) -> Result<PathBuf> {
@@ -951,6 +1090,98 @@ mod tests {
             "thread-7"
         );
         assert!(parse_resumed_thread_id(&resumed, "other-thread").is_err());
+    }
+
+    #[test]
+    fn provider_fingerprint_is_stable_and_covers_thread_configuration() {
+        let base = profile();
+        let cwd = Path::new("/tmp/project");
+        let tools = vec![json!({
+            "type": "function",
+            "function": {
+                "name": "read_file",
+                "description": "Read a file",
+                "parameters": { "type": "object" }
+            }
+        })];
+        let original =
+            provider_configuration_fingerprint(&base, "instructions", cwd, &tools).unwrap();
+        assert_eq!(original.version, PROVIDER_CONFIGURATION_VERSION);
+        assert_eq!(original.value.len(), "sha256:".len() + 64);
+        assert_eq!(
+            original,
+            provider_configuration_fingerprint(&base, "instructions", cwd, &tools).unwrap()
+        );
+
+        let mut changed_model = base.clone();
+        changed_model.model = "gpt-5.6-terra".into();
+        assert_ne!(
+            original,
+            provider_configuration_fingerprint(&changed_model, "instructions", cwd, &tools)
+                .unwrap()
+        );
+        assert_ne!(
+            original,
+            provider_configuration_fingerprint(&base, "different", cwd, &tools).unwrap()
+        );
+        assert_ne!(
+            original,
+            provider_configuration_fingerprint(
+                &base,
+                "instructions",
+                Path::new("/tmp/other"),
+                &tools
+            )
+            .unwrap()
+        );
+        assert_ne!(
+            original,
+            provider_configuration_fingerprint(&base, "instructions", cwd, &[]).unwrap()
+        );
+    }
+
+    #[test]
+    fn stale_or_failed_resume_invalidation_is_scoped_to_exact_ovim_agent_branch() {
+        let temporary = tempdir().unwrap();
+        let layout = crate::run_log::RunStorageLayout::new(temporary.path().join("runs"));
+        let catalog = Arc::new(crate::run_log::RunCatalog::open(&layout).unwrap());
+        let agent_id = crate::run_log::AgentId::new();
+        let branch_id = crate::run_log::BranchId::new();
+        let session =
+            DurableCodexSession::new(catalog.clone(), agent_id.clone(), branch_id.clone());
+        let fingerprint = provider_configuration_fingerprint(
+            &profile(),
+            "instructions",
+            Path::new("/tmp/project"),
+            &[],
+        )
+        .unwrap();
+        catalog
+            .upsert_provider_session(
+                session.key.clone(),
+                "provider-thread".into(),
+                fingerprint.clone(),
+                Some("provider-turn".into()),
+            )
+            .unwrap();
+
+        let changed = crate::run_log::ProviderConfigurationFingerprint {
+            version: fingerprint.version,
+            value: "sha256:changed".into(),
+        };
+        assert!(catalog
+            .provider_session(&session.key, &changed)
+            .unwrap()
+            .is_none());
+
+        invalidate_durable_provider_session(&session).unwrap();
+        assert!(catalog
+            .provider_session(&session.key, &fingerprint)
+            .unwrap()
+            .is_none());
+        assert_eq!(session.key.agent_id, agent_id);
+        assert_eq!(session.key.branch_id, branch_id);
+        assert_eq!(session.key.provider, PROVIDER_SESSION_NAME);
     }
 
     #[test]

@@ -1,5 +1,5 @@
 use crate::ai::chat_types::{ChatMessage, ChatRole, StreamChunk};
-use crate::ai::stream_ai_chat;
+use crate::ai::stream_ai_chat_with_codex_session;
 use crate::ai::tools::builtins::ProjectDiagnosticFile;
 use crate::ai::tools::SideEffect;
 use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice};
@@ -222,6 +222,17 @@ impl Editor {
             .as_deref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("no active agent turn"))?;
+        let durable_codex_session = if profile.provider == crate::ai::AiProviderKind::Codex {
+            self.ai_state.durable_runs.as_ref().map(|services| {
+                crate::ai::DurableCodexSession::new(
+                    services.catalog.clone(),
+                    runtime_turn.agent_id.clone(),
+                    runtime_turn.branch_id.clone(),
+                )
+            })
+        } else {
+            None
+        };
         let branch_generation = self
             .conversation()
             .map(crate::ai::ConversationTree::branch_generation)
@@ -268,7 +279,7 @@ impl Editor {
             } else {
                 system_prompt.as_deref()
             };
-            if let Err(e) = stream_ai_chat(
+            if let Err(e) = stream_ai_chat_with_codex_session(
                 &profile,
                 &messages,
                 provider_system_prompt,
@@ -278,6 +289,7 @@ impl Editor {
                 tools_ref,
                 tx.clone(),
                 &api_key_registry,
+                durable_codex_session,
             )
             .await
             {
