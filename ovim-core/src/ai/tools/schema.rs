@@ -61,6 +61,11 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
             "type": "string",
             "description": description,
         }),
+        ParamType::StringArray => json!({
+            "type": "array",
+            "items": { "type": "string" },
+            "description": description,
+        }),
         ParamType::Integer => json!({
             "type": "integer",
             "description": description,
@@ -186,6 +191,10 @@ mod tests {
 
         let schema = param_type_to_schema(&ParamType::Integer, "desc");
         assert_eq!(schema["type"], "integer");
+
+        let schema = param_type_to_schema(&ParamType::StringArray, "desc");
+        assert_eq!(schema["type"], "array");
+        assert_eq!(schema["items"]["type"], "string");
 
         let schema = param_type_to_schema(&ParamType::Boolean, "desc");
         assert_eq!(schema["type"], "boolean");

@@ -391,6 +391,16 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
     let mode = editor.mode();
 
     if mode == Mode::AiChat {
+        if editor.ai_chat_has_exa_setup_dialog() {
+            if editor
+                .render_cache
+                .ai_chat_exa_dashboard_hitbox
+                .is_some_and(|area| area.contains(col, row))
+            {
+                return Ok(Some(editor.ai_chat_exa_dashboard_url().to_string()));
+            }
+            return Ok(None);
+        }
         if editor.ai_chat_image_modal_path().is_some() {
             editor.close_ai_chat_image_modal();
             return Ok(None);

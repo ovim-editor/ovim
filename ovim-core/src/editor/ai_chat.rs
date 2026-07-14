@@ -29,6 +29,7 @@ impl Editor {
                 chat.mode_before_chat = mode_before;
             }
             self.set_mode(Mode::AiChat);
+            self.maybe_prompt_exa_on_chat_open();
             return Ok(());
         }
 
@@ -83,6 +84,7 @@ impl Editor {
         self.ai_state.chat = Some(chat);
         self.set_mode(Mode::AiChat);
         self.maybe_prompt_no_repo_session_folder_access_on_chat_open();
+        self.maybe_prompt_exa_on_chat_open();
 
         if let Some(msg) = initial {
             if let Some(conv) = self.conversation() {
@@ -132,18 +134,20 @@ impl Editor {
                 || chat.pending_tool_approval.is_some()
                 || chat.pending_auto_mode_classification.is_some()
                 || chat.pending_shell_execution.is_some()
+                || chat.pending_web_execution.is_some()
         });
 
         self.flush_ai_runtime_stream_segments();
         self.commit_partial_streaming(&model_name);
 
-        let (pending_job, pending_approval, pending_classification, pending_shell) = {
+        let (pending_job, pending_approval, pending_classification, pending_shell, pending_web) = {
             let chat = self.ai_state.chat.as_mut().expect("pending chat exists");
             (
                 chat.pending_job.take(),
                 chat.pending_tool_approval.take(),
                 chat.pending_auto_mode_classification.take(),
                 chat.pending_shell_execution.take(),
+                chat.pending_web_execution.take(),
             )
         };
 
@@ -201,6 +205,20 @@ impl Editor {
                 .dynamic_response
                 .send(Err("cancelled by user".into()));
         }
+        if let Some(pending) = pending_web {
+            pending.task.abort();
+            if let (Some(turn), Some(tool)) =
+                (pending.runtime_turn.as_ref(), pending.runtime_tool.as_ref())
+            {
+                if let Err(error) =
+                    self.ai_state
+                        .agent_runtime
+                        .fail_tool(turn, tool, "cancelled by user")
+                {
+                    crate::log_warn!("agent_runtime", "failed to cancel web tool: {error}");
+                }
+            }
+        }
 
         self.ai_runtime_interrupt_turn("cancelled by user");
         self.clear_streaming_state();
@@ -227,6 +245,14 @@ impl Editor {
             .and_then(|chat| chat.pending_job.as_ref())
         {
             job.task.abort();
+        }
+        if let Some(web) = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_web_execution.as_ref())
+        {
+            web.task.abort();
         }
         self.ai_runtime_interrupt_turn(reason);
         if let Some(mut chat) = self.ai_state.chat.take() {
@@ -328,6 +354,7 @@ impl Editor {
                     .is_some_and(|pending| pending.dynamic_response.is_some())
                 || chat.pending_auto_mode_classification.is_some()
                 || chat.pending_shell_execution.is_some()
+                || chat.pending_web_execution.is_some()
         }) {
             if let Err(error) = self.heartbeat_ai_chat_lease() {
                 if self.fail_pending_shell_for_lost_lease(&error.to_string()) {
@@ -355,6 +382,9 @@ impl Editor {
             return true;
         }
         if self.poll_pending_shell_execution() {
+            return true;
+        }
+        if self.poll_pending_web_execution() {
             return true;
         }
         let current_branch_generation = self
@@ -1231,6 +1261,62 @@ impl Editor {
             chat.waiting = true;
         }
         true
+    }
+
+    fn poll_pending_web_execution(&mut self) -> bool {
+        let received = {
+            let Some(pending) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_web_execution.as_mut())
+            else {
+                return false;
+            };
+            match pending.receiver.try_recv() {
+                Ok(outcome) => outcome,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
+                    crate::ai::exa::WebToolOutcome {
+                        result: crate::ai::tools::ToolResult::Error(
+                            "Exa web task stopped without returning a result".into(),
+                        ),
+                        credential_rejected: false,
+                        environment_override: false,
+                    }
+                }
+            }
+        };
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_web_execution.take())
+            .expect("pending web execution exists");
+
+        if let (Some(turn), Some(tool)) =
+            (pending.runtime_turn.as_ref(), pending.runtime_tool.as_ref())
+        {
+            if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &received.result) {
+                self.ai_runtime_fail_turn(format!("failed to record web tool result: {error}"));
+                self.clear_streaming_state();
+                return true;
+            }
+        }
+        self.record_tool_event_summary(&pending.tool_call, &received.result);
+        let result_content =
+            self.format_tool_result_with_target(&pending.tool_call, &received.result);
+        if let Some(conversation) = self.conversation_mut() {
+            conversation.append_tool_result(pending.tool_call.id.clone(), result_content);
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+        }
+        if received.credential_rejected {
+            self.note_exa_credential_rejected(received.environment_override);
+        }
+        self.set_lsp_status(String::new());
+        self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
     }
 
     fn fail_pending_shell_for_lost_lease(&mut self, error: &str) -> bool {

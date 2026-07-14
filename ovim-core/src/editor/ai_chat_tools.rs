@@ -93,6 +93,11 @@ impl Editor {
             caps.network = false;
         }
 
+        // Web search belongs to the Ovim-owned direct Codex harness. It is a
+        // read effect and needs neither shell permission nor Codex sandbox
+        // access, but is advertised only when usable Exa credentials exist.
+        caps.network |= self.ai_chat_uses_direct_codex() && crate::ai::exa::credential().is_some();
+
         caps
     }
 
@@ -102,10 +107,16 @@ impl Editor {
         profile: &crate::ai::AiProfileConfig,
     ) -> Vec<serde_json::Value> {
         let caps = self.build_chat_capabilities();
+        let direct_codex = profile.provider == crate::ai::AiProviderKind::Codex;
         let tools = self
             .ai_state
             .tool_registry
-            .tools_for_profile(profile, &caps);
+            .tools_for_profile(profile, &caps)
+            .into_iter()
+            .filter(|tool| {
+                direct_codex || !matches!(tool.name.as_str(), "web_search" | "web_fetch")
+            })
+            .collect::<Vec<_>>();
         // Codex itself remains `approvalPolicy: never` and read-only. Effects
         // are advertised only when the durable ovim harness granted the
         // corresponding capability; app-server calls them as dynamic tools and
@@ -413,6 +424,8 @@ impl Editor {
         if !self.active_chat_target_has_file_path()
             && tc.name != "open_file"
             && tc.name != "bash"
+            && tc.name != "web_search"
+            && tc.name != "web_fetch"
             && !path_scoped_without_open_file
             && !project_scoped_without_open_file
         {
@@ -460,6 +473,19 @@ impl Editor {
             .map(|t| t.side_effect)
         {
             Some(SideEffect::Read) => match tc.name.as_str() {
+                "web_search" | "web_fetch" => {
+                    if !self.ai_chat_uses_direct_codex() {
+                        return ToolDispatchOutcome::Completed(ToolResult::Error(
+                            "Exa web tools are available only with the direct Codex/Ovim harness"
+                                .to_string(),
+                        ));
+                    }
+                    let outcome = crate::ai::exa::execute(&tc.name, &tc.arguments);
+                    if outcome.credential_rejected {
+                        self.note_exa_credential_rejected(outcome.environment_override);
+                    }
+                    outcome.result
+                }
                 "document_symbols" | "hover" | "goto_definition" => {
                     self.execute_lsp_tool(&tc.name, &tc.arguments)
                 }
@@ -729,7 +755,7 @@ impl Editor {
         true
     }
 
-    fn execute_tool_call_batch(
+    pub(super) fn execute_tool_call_batch(
         &mut self,
         tool_calls: Vec<ToolCallInfo>,
         model_name: String,
@@ -781,6 +807,34 @@ impl Editor {
                 },
                 None => None,
             };
+
+            if matches!(tc.name.as_str(), "web_search" | "web_fetch")
+                && self.ai_chat_uses_direct_codex()
+            {
+                let call = tc.clone();
+                let worker_call = call.clone();
+                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+                let task = tokio::task::spawn_blocking(move || {
+                    let outcome =
+                        crate::ai::exa::execute(&worker_call.name, &worker_call.arguments);
+                    let _ = result_tx.send(outcome);
+                });
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.tool_call_count = chat.tool_call_count.saturating_add(executed_in_batch);
+                    chat.pending_web_execution = Some(super::ai_chat_state::PendingWebExecution {
+                        tool_call: call,
+                        runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
+                        runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
+                        remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                        model_name,
+                        receiver: result_rx,
+                        task,
+                    });
+                    chat.waiting = true;
+                }
+                self.set_lsp_status("Searching the web with Exa".to_string());
+                return true;
+            }
 
             match self.dispatch_tool_call_with_approval(tc, None) {
                 ToolDispatchOutcome::Completed(result) => {
@@ -1101,6 +1155,22 @@ impl Editor {
                     None => format!("\"{}\" search", compact_tool_label(query)),
                 };
                 (ToolSummaryKind::Search, label)
+            }
+            "web_search" => {
+                let query = tc
+                    .arguments
+                    .get("query")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("web");
+                (ToolSummaryKind::Search, format!("Web: {query}"))
+            }
+            "web_fetch" => {
+                let url = tc
+                    .arguments
+                    .get("url")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("page");
+                (ToolSummaryKind::Read, format!("Web page: {url}"))
             }
             "read_diagnostics" => {
                 let success = tool_result_success(result).unwrap_or_default();

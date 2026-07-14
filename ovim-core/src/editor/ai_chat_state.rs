@@ -52,6 +52,25 @@ pub struct ShellExecutionObservation {
     pub outcome_unknown: bool,
 }
 
+/// An Exa request running off the editor/event-loop thread.
+pub struct PendingWebExecution {
+    pub tool_call: ToolCallInfo,
+    pub runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+    pub runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,
+    pub remaining_tool_calls: Vec<ToolCallInfo>,
+    pub model_name: String,
+    pub receiver: tokio::sync::oneshot::Receiver<crate::ai::exa::WebToolOutcome>,
+    pub task: tokio::task::JoinHandle<()>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExaSetupDialog {
+    pub input: String,
+    pub cursor: usize,
+    pub error: Option<String>,
+    pub environment_override: bool,
+}
+
 #[derive(Debug, Clone)]
 pub struct ToolEventSummary {
     pub kind: ToolSummaryKind,
@@ -141,6 +160,8 @@ pub struct AiChatState {
     pub pending_images: Vec<ImageAttachment>,
     /// Image currently expanded over the chat panel.
     pub image_modal: Option<PathBuf>,
+    /// First-run/recovery dialog for Ovim-owned Exa web search.
+    pub exa_setup: Option<ExaSetupDialog>,
     /// User inputs submitted while an agent round is active.
     pub queued_inputs: VecDeque<QueuedChatInput>,
     pub next_queued_input_id: u64,
@@ -192,6 +213,7 @@ pub struct AiChatState {
     pub pending_tool_approval: Option<PendingToolApproval>,
     pub pending_auto_mode_classification: Option<PendingAutoModeClassification>,
     pub pending_shell_execution: Option<PendingShellExecution>,
+    pub pending_web_execution: Option<PendingWebExecution>,
     /// First-chat-open prompt when session starts outside a git repo.
     pub pending_no_repo_folder_approval: Option<PathBuf>,
     /// Session-scoped roots explicitly approved for path-restricted tool access
@@ -235,6 +257,7 @@ impl AiChatState {
             input_cursor: 0,
             pending_images: Vec::new(),
             image_modal: None,
+            exa_setup: None,
             queued_inputs: VecDeque::new(),
             next_queued_input_id: 1,
             focus: ChatFocus::TextInput,
@@ -263,6 +286,7 @@ impl AiChatState {
             pending_tool_approval: None,
             pending_auto_mode_classification: None,
             pending_shell_execution: None,
+            pending_web_execution: None,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             tool_event_summaries: HashMap::new(),

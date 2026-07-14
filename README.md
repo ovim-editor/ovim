@@ -75,6 +75,7 @@ vim.opt.scrolloff = 10
 -- AI: Codex supplies inference from your ChatGPT subscription. Ovim is the
 -- agent harness: it owns context, tools, approvals, edits, and shell programs.
 -- Run `codex login` once to bootstrap subscription authentication.
+-- The first chat can optionally enable Exa web search; reopen setup with /exa.
 vim.ai.setup({
   default_profile = "codex_terra",
   contexts = {

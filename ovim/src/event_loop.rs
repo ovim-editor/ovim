@@ -2601,6 +2601,22 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
             .map(image_snapshot)
             .collect(),
         pending_approval,
+        pending_setup: editor
+            .ai_chat_exa_setup_summary()
+            .map(|(_, _, error, environment_override)| {
+                let source = if environment_override {
+                    " EXA_API_KEY is currently taking precedence."
+                } else {
+                    ""
+                };
+                let error = error
+                    .map(|message| format!(" Error: {message}"))
+                    .unwrap_or_default();
+                format!(
+                    "Exa web search setup. Add a key from {} or dismiss with Escape; reopen later with /exa.{source}{error}",
+                    editor.ai_chat_exa_dashboard_url()
+                )
+            }),
         queued,
         messages,
     })

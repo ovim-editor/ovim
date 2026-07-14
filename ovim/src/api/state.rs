@@ -166,6 +166,9 @@ pub struct AiChatSnapshot {
     #[serde(default)]
     pub pending_images: Vec<ImageAttachmentSnapshot>,
     pub pending_approval: Option<String>,
+    /// Blocking first-run/recovery setup currently shown by the chat UI.
+    #[serde(default)]
+    pub pending_setup: Option<String>,
     pub queued: Vec<QueuedChatSnapshot>,
     pub messages: Vec<AiChatMessageSnapshot>,
 }

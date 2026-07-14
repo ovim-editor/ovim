@@ -19,8 +19,8 @@ use super::file_tree_widget::render_file_tree;
 use super::layout::{BufferLayout, OverlayContext};
 use super::line_cache::LineRenderCache;
 use super::overlays::{
-    render_ai_chat_permission_dialog, render_ai_review_shortcuts, render_completion_menu,
-    render_hover_window, render_lsp_install_dialog,
+    render_ai_chat_exa_setup_dialog, render_ai_chat_permission_dialog, render_ai_review_shortcuts,
+    render_completion_menu, render_hover_window, render_lsp_install_dialog,
 };
 use super::picker_widget::{render_picker, Fill};
 use super::status_widgets::{
@@ -423,6 +423,7 @@ fn render_overlays(
 
 fn has_blocking_modal(editor: &Editor) -> bool {
     editor.has_pending_lsp_install()
+        || editor.ai_chat_has_exa_setup_dialog()
         || editor.ai_chat_image_modal_path().is_some()
         || (editor.mode() == crate::mode::Mode::AiChat
             && (editor.ai_chat_has_pending_tool_approval()
@@ -433,9 +434,11 @@ fn has_blocking_modal(editor: &Editor) -> bool {
 ///
 /// This tier is reserved for workflows that block agent/user progress until
 /// explicitly resolved. Keep these dialogs highly visible and singular.
-fn render_blocking_modals(frame: &mut Frame, editor: &Editor, theme: &Theme) {
+fn render_blocking_modals(frame: &mut Frame, editor: &mut Editor, theme: &Theme) {
     if editor.has_pending_lsp_install() {
         render_lsp_install_dialog(frame, editor, theme);
+    } else if editor.ai_chat_has_exa_setup_dialog() {
+        render_ai_chat_exa_setup_dialog(frame, editor);
     } else if editor.ai_chat_image_modal_path().is_some() {
         super::overlays::render_ai_chat_image_modal_frame(frame, editor);
     } else if has_blocking_modal(editor) {
@@ -515,6 +518,10 @@ fn set_cursor_position(
             (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::AiChat && chat_area.is_some() {
+        if let Some(position) = editor.render_cache.ai_chat_exa_input_cursor_pos {
+            frame.set_cursor_position(position);
+            return;
+        }
         if let Some(chat_rect) = chat_area {
             if let Some((cx, cy)) = super::ai_chat::chat_cursor_info(editor, chat_rect) {
                 frame.set_cursor_position((cx, cy));

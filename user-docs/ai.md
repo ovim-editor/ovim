@@ -29,6 +29,21 @@ executes approved effects in the repository, and returns results for the next
 inference round. Codex's read-only workspace sandbox is therefore not involved
 in repository reads or writes.
 
+On the first direct-Codex chat, Ovim offers to enable live web search through
+[Exa](https://dashboard.exa.ai/api-keys). Paste an Exa API key into the dialog,
+or click the link to sign in and create one. The dialog is dismissible and can
+always be reopened with `/exa`. Ovim stores the key beside `codex-auth.json` as
+`ovim/exa-auth.json` in the platform config directory, using an atomic,
+owner-only file on Unix. Set `EXA_API_KEY` to supply a key without storing it;
+the environment value takes precedence.
+
+The Ovim harness exposes `web_search` and `web_fetch` only while a usable key is
+configured. A rejected or revoked stored key reopens the setup dialog. Credit
+or budget exhaustion links to Exa's dashboard without discarding the key, and
+temporary rate limits and server failures receive one bounded retry. Web tools
+are read-only Ovim operations: they do not invoke a shell and do not require a
+Codex sandbox or Luna approval.
+
 Auto mode is the default. Read-only local inspection and tests run immediately;
 context-dependent commands are reviewed by subscription-backed Luna at low
 effort. Elevated privileges, credential access, outside-project effects,
@@ -93,6 +108,7 @@ Chat slash commands are handled by ovim rather than sent to the provider:
 - `/model` opens the profile picker.
 - `/model codex_sol` switches directly to a named profile.
 - `/clear` clears the current conversation and starts a fresh provider context.
+- `/exa` opens web-search setup to add or replace an Exa API key.
 
 While an agent round is running, the composer remains editable:
 

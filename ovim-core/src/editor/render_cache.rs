@@ -64,6 +64,10 @@ pub struct RenderCache {
     pub ai_chat_input_content_width: usize,
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
+    /// Click target for the Exa API-key dashboard in the setup dialog.
+    pub ai_chat_exa_dashboard_hitbox: Option<crate::Rect>,
+    /// Hardware cursor position for the Exa key field.
+    pub ai_chat_exa_input_cursor_pos: Option<(u16, u16)>,
     /// Whether the frontend selected a real terminal graphics protocol.
     pub terminal_image_support: bool,
     /// Render rectangles for clickable chat-image thumbnails.

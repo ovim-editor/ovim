@@ -21,6 +21,7 @@ pub enum SideEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamType {
     String,
+    StringArray,
     Integer,
     Boolean,
     FilePath,

@@ -11,6 +11,10 @@ use std::time::Duration;
 const DOUBLE_ESC_THRESHOLD: Duration = Duration::from_millis(300);
 
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    if editor.ai_chat_has_exa_setup_dialog() {
+        editor.handle_exa_setup_key(key_event);
+        return Ok(());
+    }
     if editor.ai_chat_image_modal_path().is_some() {
         if matches!(key_event.code, KeyCode::Esc | KeyCode::Enter) {
             editor.close_ai_chat_image_modal();

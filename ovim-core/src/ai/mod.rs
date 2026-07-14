@@ -4,6 +4,7 @@ pub mod chat_types;
 mod codex_app_server;
 mod codex_inference;
 mod config;
+pub(crate) mod exa;
 mod extract;
 pub mod formats;
 pub mod path_policy;

@@ -648,6 +648,133 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
     );
 }
 
+/// First-run and credential-recovery dialog for Exa-backed web search.
+pub fn render_ai_chat_exa_setup_dialog(frame: &mut Frame, editor: &mut Editor) {
+    editor.render_cache.ai_chat_exa_dashboard_hitbox = None;
+    editor.render_cache.ai_chat_exa_input_cursor_pos = None;
+    let Some((input, cursor, error, environment_override)) = editor.ai_chat_exa_setup_summary()
+    else {
+        return;
+    };
+    let full = frame.area();
+    if full.width < 48 || full.height < 12 {
+        return;
+    }
+    let width = ((full.width * 72) / 100)
+        .clamp(56, 100)
+        .min(full.width.saturating_sub(2));
+    let height = if error.is_some() { 17 } else { 15 }.min(full.height.saturating_sub(2));
+    let area = centered_area(full, width, height);
+    let inner = Rect::new(
+        area.x + 2,
+        area.y + 2,
+        area.width.saturating_sub(4),
+        area.height.saturating_sub(4),
+    );
+    let c = &MODAL_COLORS;
+
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(c.border).bg(c.bg))
+            .title(" Enable Web Search ")
+            .title_style(
+                Style::default()
+                    .fg(c.title)
+                    .bg(c.bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        area,
+    );
+
+    let intro = if environment_override {
+        "Ovim found EXA_API_KEY in the environment. Replace it there if it is expired or revoked."
+    } else {
+        "Ovim uses Exa for live web search and readable page/PDF extraction. Your key is stored locally in Ovim's private configuration directory."
+    };
+    frame.render_widget(
+        Paragraph::new(intro)
+            .style(Style::default().fg(c.text).bg(c.bg))
+            .wrap(Wrap { trim: false }),
+        Rect::new(inner.x, inner.y, inner.width, 3),
+    );
+
+    let link_y = inner.y + 4;
+    let link_text = editor.ai_chat_exa_dashboard_url();
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                "Get or manage a key: ",
+                Style::default().fg(c.secondary).bg(c.bg),
+            ),
+            Span::styled(
+                link_text,
+                Style::default()
+                    .fg(Color::Rgb(90, 170, 255))
+                    .bg(c.bg)
+                    .add_modifier(Modifier::UNDERLINED),
+            ),
+        ])),
+        Rect::new(inner.x, link_y, inner.width, 1),
+    );
+    let prefix_width = UnicodeWidthStr::width("Get or manage a key: ") as u16;
+    editor.render_cache.ai_chat_exa_dashboard_hitbox = Some(ovim_core::Rect {
+        x: inner.x + prefix_width,
+        y: link_y,
+        width: (UnicodeWidthStr::width(link_text) as u16)
+            .min(inner.width.saturating_sub(prefix_width)),
+        height: 1,
+    });
+
+    let field_y = inner.y + 6;
+    let field_width = inner.width.saturating_sub(2).max(1);
+    let masked = "•".repeat(input.chars().count());
+    let visible_capacity = field_width.saturating_sub(1) as usize;
+    let cursor_chars = input[..cursor.min(input.len())].chars().count();
+    let scroll = cursor_chars.saturating_sub(visible_capacity);
+    let visible = masked
+        .chars()
+        .skip(scroll)
+        .take(visible_capacity)
+        .collect::<String>();
+    frame.render_widget(
+        Paragraph::new(visible)
+            .style(Style::default().fg(c.text).bg(Color::Rgb(22, 27, 35)))
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(c.secondary)),
+            ),
+        Rect::new(inner.x, field_y, inner.width, 3),
+    );
+    editor.render_cache.ai_chat_exa_input_cursor_pos = Some((
+        inner.x + 1 + cursor_chars.saturating_sub(scroll).min(visible_capacity) as u16,
+        field_y + 1,
+    ));
+
+    let mut hint_y = field_y + 4;
+    if let Some(error) = error {
+        frame.render_widget(
+            Paragraph::new(error)
+                .style(Style::default().fg(Color::Rgb(255, 105, 105)).bg(c.bg))
+                .wrap(Wrap { trim: false }),
+            Rect::new(inner.x, hint_y, inner.width, 2),
+        );
+        hint_y += 2;
+    }
+    frame.render_widget(
+        Paragraph::new("Enter: save and enable   Esc: not now   /exa: reopen later").style(
+            Style::default()
+                .fg(c.action)
+                .bg(c.bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Rect::new(inner.x, hint_y, inner.width, 1),
+    );
+}
+
 pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
     let Some(path) = editor.ai_chat_image_modal_path() else {
         return;

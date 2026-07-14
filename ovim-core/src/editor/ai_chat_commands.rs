@@ -7,6 +7,7 @@ use super::Editor;
 #[derive(Debug, PartialEq, Eq)]
 enum AiChatSlashCommand {
     Clear,
+    Exa,
     Model { profile: Option<String> },
 }
 
@@ -20,6 +21,8 @@ impl AiChatSlashCommand {
         let parsed = match name {
             "clear" if arguments.is_empty() => Ok(Self::Clear),
             "clear" => Err("Usage: /clear".to_string()),
+            "exa" if arguments.is_empty() => Ok(Self::Exa),
+            "exa" => Err("Usage: /exa".to_string()),
             "model" if arguments.len() <= 1 => Ok(Self::Model {
                 profile: arguments.first().map(|value| (*value).to_string()),
             }),
@@ -40,6 +43,10 @@ impl Editor {
         };
         match command {
             Ok(AiChatSlashCommand::Clear) => self.clear_ai_chat_conversation()?,
+            Ok(AiChatSlashCommand::Exa) => {
+                self.clear_ai_chat_input();
+                self.open_exa_setup_dialog(None);
+            }
             Ok(AiChatSlashCommand::Model { profile: None }) => {
                 self.clear_ai_chat_input();
                 if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -138,6 +145,10 @@ mod tests {
         assert_eq!(
             AiChatSlashCommand::parse("/clear"),
             Some(Ok(AiChatSlashCommand::Clear))
+        );
+        assert_eq!(
+            AiChatSlashCommand::parse("/exa"),
+            Some(Ok(AiChatSlashCommand::Exa))
         );
         assert_eq!(
             AiChatSlashCommand::parse("/model fast"),
