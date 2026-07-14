@@ -112,6 +112,12 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
         "send wrapper failed or panicked:\n{}",
         output_detail(&send)
     );
+    let rendered = String::from_utf8_lossy(&send.stdout);
+    assert!(
+        rendered.contains("first") && rendered.contains("second"),
+        "send wrapper should print the plain editor render:\n{}",
+        output_detail(&send)
+    );
 
     let snapshot = run_cli(&session_dir, &["snapshot", "-s", &session_name]);
     assert!(

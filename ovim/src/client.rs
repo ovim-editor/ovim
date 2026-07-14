@@ -271,12 +271,7 @@ impl OvimClient {
             anyhow::bail!("Failed to get render");
         }
 
-        let info: Value = response.json()?;
-        Ok(info
-            .get("ansi")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string())
+        response.text().context("Failed to read render response")
     }
 
     /// Send MCP JSON-RPC request
