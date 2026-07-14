@@ -614,8 +614,8 @@ fn toast_colors(theme: &Theme, level: ToastLevel) -> (Color, Color) {
 
 /// Renders a top-right toast stack over the buffer area.
 ///
-/// Slot 0 is reserved for persistent diagnostics (when present), and additional rows
-/// show transient toasts from the editor's toast center.
+/// Persistent AI activity and diagnostics are followed by transient toasts from
+/// the editor's toast center.
 pub fn render_top_right_toasts(
     frame: &mut Frame,
     editor: &Editor,
@@ -623,6 +623,10 @@ pub fn render_top_right_toasts(
     buffer_area: Rect,
 ) {
     let mut rows: Vec<(String, ToastLevel)> = Vec::new();
+
+    if let Some(status) = hidden_ai_chat_status(editor) {
+        rows.push(status);
+    }
 
     if !editor.diagnostic_badge_dismissed() {
         let (errors, warnings, _, _) = editor.cached_diagnostic_count();
@@ -696,6 +700,33 @@ pub fn render_top_right_toasts(
         ));
         frame.render_widget(badge, area);
     }
+}
+
+fn hidden_ai_chat_status(editor: &Editor) -> Option<(String, ToastLevel)> {
+    hidden_ai_chat_status_for(
+        editor.mode() == crate::mode::Mode::AiChat,
+        editor.ai_chat_waiting(),
+        editor.ai_chat_has_pending_tool_approval(),
+        editor.ai_chat_has_pending_no_repo_folder_approval(),
+    )
+}
+
+fn hidden_ai_chat_status_for(
+    chat_open: bool,
+    waiting: bool,
+    tool_approval: bool,
+    folder_approval: bool,
+) -> Option<(String, ToastLevel)> {
+    if chat_open {
+        return None;
+    }
+    if tool_approval {
+        return Some((" AI approval needed ".to_string(), ToastLevel::Warning));
+    }
+    if folder_approval {
+        return Some((" AI folder approval ".to_string(), ToastLevel::Warning));
+    }
+    waiting.then(|| (" AI working… ".to_string(), ToastLevel::Info))
 }
 
 /// Renders contextual widgets in the left and right margins when textwidth centering
@@ -1338,7 +1369,7 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_path_hint, truncate_middle, wrap_prompt_rows};
+    use super::{compact_path_hint, hidden_ai_chat_status_for, truncate_middle, wrap_prompt_rows};
 
     #[test]
     fn test_wrap_prompt_rows_preserves_text_across_rows() {
@@ -1374,5 +1405,13 @@ mod tests {
         assert!(out.starts_with("edits"));
         assert!(out.ends_with("chat.rs"));
         assert!(out.contains('…'));
+    }
+
+    #[test]
+    fn hidden_running_chat_has_compact_top_right_status() {
+        assert!(hidden_ai_chat_status_for(true, true, false, false).is_none());
+        let (text, _) =
+            hidden_ai_chat_status_for(false, true, false, false).expect("hidden AI status");
+        assert_eq!(text, " AI working… ");
     }
 }

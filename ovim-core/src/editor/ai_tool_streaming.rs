@@ -89,8 +89,8 @@ impl Editor {
 
             if !self.active_chat_target_has_file_path() {
                 prompt.push_str(
-                    "- No file is currently open. First call open_file(path) or open_file(path, create=true).\n\
-                     - If the path is unknown, ask the user to open/select a file first.\n\n",
+                    "- No file is currently open. Project tools such as list_files and search_project still work when a project boundary is available.\n\
+                     - Use those project tools to discover a path, then call open_file(path) or open_file(path, create=true) before using file-scoped tools.\n\n",
                 );
             }
         }

@@ -11,6 +11,11 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
     // --- Review mode: explicit allowlist only (no normal-mode delegation) ---
     let review_mode = editor.ai_chat_review_mode();
 
+    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::CONTROL) {
+        editor.cancel_ai_chat_generation();
+        return Ok(());
+    }
+
     if review_mode {
         let pending_work = editor.ai_chat_has_pending_work();
 
@@ -114,11 +119,6 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         if !editor.copy_ai_chat_text_selection() {
             editor.copy_ai_chat_conversation();
         }
-        return Ok(());
-    }
-
-    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::CONTROL) {
-        editor.close_ai_chat();
         return Ok(());
     }
 
@@ -628,6 +628,28 @@ mod tests {
         let chat = editor.ai_state.chat.as_ref().expect("chat");
         assert!(chat.view_mode == crate::editor::ai_chat_state::ChatViewMode::ReviewFocused);
         assert_eq!(chat.agent_edits.total_edit_count(), 1);
+    }
+
+    #[test]
+    fn control_c_stops_generation_without_closing_chat() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.waiting = true;
+        }
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL),
+        )
+        .expect("control-c");
+
+        assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
+        assert!(!editor.ai_chat_waiting());
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content == "Generation stopped by user."));
     }
 
     #[test]

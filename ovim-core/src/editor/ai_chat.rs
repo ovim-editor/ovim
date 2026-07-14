@@ -113,6 +113,111 @@ impl Editor {
         }
     }
 
+    /// Stop the active AI round without hiding the panel or discarding chat state.
+    pub fn cancel_ai_chat_generation(&mut self) -> bool {
+        if !self.ai_chat_has_pending_work() {
+            return false;
+        }
+
+        let model_name = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_job.as_ref())
+            .map(|job| job.model_name.clone())
+            .unwrap_or_default();
+        let had_agent_work = self.ai_state.chat.as_ref().is_some_and(|chat| {
+            chat.waiting
+                || chat.pending_job.is_some()
+                || chat.pending_tool_approval.is_some()
+                || chat.pending_auto_mode_classification.is_some()
+                || chat.pending_shell_execution.is_some()
+        });
+
+        self.flush_ai_runtime_stream_segments();
+        self.commit_partial_streaming(&model_name);
+
+        let (pending_job, pending_approval, pending_classification, pending_shell) = {
+            let chat = self.ai_state.chat.as_mut().expect("pending chat exists");
+            (
+                chat.pending_job.take(),
+                chat.pending_tool_approval.take(),
+                chat.pending_auto_mode_classification.take(),
+                chat.pending_shell_execution.take(),
+            )
+        };
+
+        if let Some(job) = pending_job {
+            job.task.abort();
+        }
+        if let Some(pending) = pending_approval {
+            if let (Some(turn), Some(tool)) =
+                (pending.dynamic_turn.as_ref(), pending.runtime_tool.as_ref())
+            {
+                if let Err(error) =
+                    self.ai_state
+                        .agent_runtime
+                        .fail_tool(turn, tool, "cancelled by user")
+                {
+                    crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
+                }
+            } else if let (Some(turn), Some(tool)) =
+                (self.active_ai_runtime_turn(), pending.runtime_tool.as_ref())
+            {
+                if let Err(error) =
+                    self.ai_state
+                        .agent_runtime
+                        .fail_tool(&turn, tool, "cancelled by user")
+                {
+                    crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
+                }
+            }
+            if let Some(response) = pending.dynamic_response {
+                let _ = response.send(Err("cancelled by user".into()));
+            }
+        }
+        if let Some(pending) = pending_classification {
+            if let Err(error) = self.ai_state.agent_runtime.fail_tool(
+                &pending.runtime_turn,
+                &pending.runtime_tool,
+                "cancelled by user",
+            ) {
+                crate::log_warn!("agent_runtime", "failed to cancel classified tool: {error}");
+            }
+            let _ = pending
+                .dynamic_response
+                .send(Err("cancelled by user".into()));
+        }
+        if let Some(pending) = pending_shell {
+            pending.task.abort();
+            if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
+                &pending.runtime_turn,
+                &pending.runtime_tool,
+                "cancelled by user before the shell result was observed",
+            ) {
+                crate::log_warn!("agent_runtime", "failed to cancel shell tool: {error}");
+            }
+            let _ = pending
+                .dynamic_response
+                .send(Err("cancelled by user".into()));
+        }
+
+        self.ai_runtime_interrupt_turn("cancelled by user");
+        self.clear_streaming_state();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_no_repo_folder_approval = None;
+        }
+        if had_agent_work {
+            if let Some(conv) = self.conversation_mut() {
+                conv.append_error("Generation stopped by user.".to_string());
+            }
+            self.set_lsp_status("AI generation stopped".to_string());
+        } else {
+            self.set_lsp_status("AI folder access prompt cancelled".to_string());
+        }
+        true
+    }
+
     /// Permanently discard the live panel state when replacing conversations.
     fn discard_active_ai_chat(&mut self, reason: &str) {
         if let Some(job) = self
@@ -2066,6 +2171,42 @@ mod tests {
         ));
 
         editor.discard_active_ai_chat("test cleanup");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_generation_stops_provider_but_preserves_chat() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("inspect").unwrap();
+        let run_id = turn.run_id.clone();
+        let abort_handle = attach_pending_runtime_job(&mut editor, turn, 0);
+        {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = "keep this draft".into();
+            chat.streaming_content = Some("Partial answer".into());
+        }
+
+        assert!(editor.cancel_ai_chat_generation());
+        tokio::task::yield_now().await;
+
+        assert!(abort_handle.is_finished());
+        assert_eq!(editor.mode(), Mode::AiChat);
+        assert_eq!(editor.ai_chat_input(), "keep this draft");
+        assert!(!editor.ai_chat_waiting());
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content == "Partial answer"));
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content == "Generation stopped by user."));
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            &events.last().unwrap().kind,
+            EventKind::TurnLifecycle(event)
+                if event.state == TurnLifecycleState::Interrupted
+        ));
     }
 
     #[tokio::test(flavor = "current_thread")]
