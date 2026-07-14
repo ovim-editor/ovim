@@ -391,6 +391,20 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
     let mode = editor.mode();
 
     if mode == Mode::AiChat {
+        if editor.ai_chat_image_modal_path().is_some() {
+            editor.close_ai_chat_image_modal();
+            return Ok(None);
+        }
+        if let Some(path) = editor
+            .render_cache
+            .ai_chat_image_thumbnails
+            .iter()
+            .find(|(area, _)| area.contains(col, row))
+            .map(|(_, path)| path.clone())
+        {
+            editor.open_ai_chat_image_modal(path);
+            return Ok(None);
+        }
         if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.focus = crate::ai::chat_types::ChatFocus::MessageHistory;
@@ -909,6 +923,45 @@ mod tests {
             editor.ai_chat_focus(),
             crate::ai::chat_types::ChatFocus::TextInput
         );
+    }
+
+    #[test]
+    fn clicking_chat_thumbnail_opens_and_closes_the_image_modal() {
+        let mut editor = editor_with_docked_chat();
+        let path = std::path::PathBuf::from("/tmp/example.png");
+        editor.render_cache.ai_chat_image_thumbnails = vec![(
+            crate::Rect {
+                x: 42,
+                y: 12,
+                width: 10,
+                height: 4,
+            },
+            path.clone(),
+        )];
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 45,
+                row: 13,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(editor.ai_chat_image_modal_path(), Some(path.as_path()));
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 1,
+                row: 1,
+            },
+        )
+        .unwrap();
+
+        assert!(editor.ai_chat_image_modal_path().is_none());
     }
 
     #[test]

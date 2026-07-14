@@ -647,3 +647,28 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
         ],
     );
 }
+
+pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
+    let Some(path) = editor.ai_chat_image_modal_path() else {
+        return;
+    };
+    let full = frame.area();
+    if full.width < 20 || full.height < 10 {
+        return;
+    }
+    let area = centered_area(full, full.width * 4 / 5, full.height * 4 / 5);
+    let title = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .unwrap_or("Image");
+    frame.render_widget(ratatui::widgets::Clear, area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(MODAL_COLORS.border).bg(MODAL_COLORS.bg))
+            .title(format!(" {title} · Esc/click to close ")),
+        area,
+    );
+    // The terminal-graphics pass runs after Ratatui and fills the bordered area.
+}

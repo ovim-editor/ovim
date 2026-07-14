@@ -7,6 +7,8 @@ description = "Oxidized Vim — a snappy, batteries-included terminal editor wit
 [dependencies]
 ovim-core = { path = "../ovim-core" }
 ratatui = "0.29"
+ratatui-image = { version = "9.0.0", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 crossterm = { version = "0.28", features = ["event-stream"] }
 futures = "0.3"
 anyhow = "1.0"

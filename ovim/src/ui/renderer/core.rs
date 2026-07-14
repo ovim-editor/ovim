@@ -423,6 +423,7 @@ fn render_overlays(
 
 fn has_blocking_modal(editor: &Editor) -> bool {
     editor.has_pending_lsp_install()
+        || editor.ai_chat_image_modal_path().is_some()
         || (editor.mode() == crate::mode::Mode::AiChat
             && (editor.ai_chat_has_pending_tool_approval()
                 || editor.ai_chat_has_pending_no_repo_folder_approval()))
@@ -435,6 +436,8 @@ fn has_blocking_modal(editor: &Editor) -> bool {
 fn render_blocking_modals(frame: &mut Frame, editor: &Editor, theme: &Theme) {
     if editor.has_pending_lsp_install() {
         render_lsp_install_dialog(frame, editor, theme);
+    } else if editor.ai_chat_image_modal_path().is_some() {
+        super::overlays::render_ai_chat_image_modal_frame(frame, editor);
     } else if has_blocking_modal(editor) {
         render_ai_chat_permission_dialog(frame, editor, theme);
     }
@@ -807,6 +810,7 @@ pub struct Renderer {
     last_cursor_style: Option<u8>,
     /// Cached terminal title to avoid redundant crossterm writes every frame
     last_title: String,
+    image_renderer: super::terminal_images::TerminalImageRenderer,
 }
 
 impl Default for Renderer {
@@ -825,6 +829,7 @@ impl Renderer {
             line_cache: LineRenderCache::new(),
             last_cursor_style: None,
             last_title: String::new(),
+            image_renderer: super::terminal_images::TerminalImageRenderer::detect(),
         }
     }
 
@@ -949,11 +954,14 @@ impl Renderer {
         }
 
         self.terminal.autoresize()?;
+        editor.render_cache.terminal_image_support = self.image_renderer.is_enabled();
 
         // Take the line cache out to avoid borrow conflict with terminal.draw()
         let mut line_cache = std::mem::take(&mut self.line_cache);
+        let image_renderer = &mut self.image_renderer;
         self.terminal.draw(|frame| {
             Self::render_to_frame(frame, editor, &mut line_cache);
+            image_renderer.render(frame, editor);
         })?;
         self.line_cache = line_cache;
 

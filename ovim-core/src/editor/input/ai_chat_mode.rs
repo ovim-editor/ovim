@@ -11,6 +11,13 @@ use std::time::Duration;
 const DOUBLE_ESC_THRESHOLD: Duration = Duration::from_millis(300);
 
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    if editor.ai_chat_image_modal_path().is_some() {
+        if matches!(key_event.code, KeyCode::Esc | KeyCode::Enter) {
+            editor.close_ai_chat_image_modal();
+        }
+        return Ok(());
+    }
+
     // --- Review mode: explicit allowlist only (no normal-mode delegation) ---
     let review_mode = editor.ai_chat_review_mode();
 

@@ -15,6 +15,42 @@ impl Editor {
             .unwrap_or(&[])
     }
 
+    pub fn ai_chat_gallery_image_paths(&self) -> Vec<PathBuf> {
+        let mut paths = self
+            .conversation()
+            .into_iter()
+            .flat_map(|conversation| conversation.messages().iter())
+            .flat_map(|message| message.images.iter())
+            .map(|image| image.path.clone())
+            .collect::<Vec<_>>();
+        paths.extend(
+            self.ai_chat_pending_images()
+                .iter()
+                .map(|image| image.path.clone()),
+        );
+        let mut seen = std::collections::HashSet::new();
+        paths.retain(|path| seen.insert(path.clone()));
+        paths
+    }
+
+    pub fn ai_chat_image_modal_path(&self) -> Option<&Path> {
+        self.ai_state.chat.as_ref()?.image_modal.as_deref()
+    }
+
+    pub fn open_ai_chat_image_modal(&mut self, path: PathBuf) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.image_modal = Some(path);
+        }
+    }
+
+    pub fn close_ai_chat_image_modal(&mut self) -> bool {
+        self.ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.image_modal.take())
+            .is_some()
+    }
+
     /// Interpret a bracketed paste consisting entirely of image paths as a
     /// terminal drag/drop. Ordinary text and mixed text/path pastes remain
     /// ordinary composer input.
@@ -179,5 +215,26 @@ mod tests {
             .try_attach_dropped_chat_images("please inspect image.png")
             .unwrap());
         assert!(editor.ai_chat_pending_images().is_empty());
+    }
+
+    #[test]
+    fn gallery_paths_are_deduplicated_and_modal_can_be_closed() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let path = PathBuf::from("/tmp/image.png");
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        for _ in 0..2 {
+            chat.pending_images.push(ImageAttachment {
+                path: path.clone(),
+                mime_type: "image/png".into(),
+                data: vec![],
+            });
+        }
+
+        assert_eq!(editor.ai_chat_gallery_image_paths(), vec![path.clone()]);
+        editor.open_ai_chat_image_modal(path.clone());
+        assert_eq!(editor.ai_chat_image_modal_path(), Some(path.as_path()));
+        assert!(editor.close_ai_chat_image_modal());
+        assert!(editor.ai_chat_image_modal_path().is_none());
     }
 }

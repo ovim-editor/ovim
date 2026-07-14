@@ -135,6 +135,8 @@ pub struct AiChatState {
     pub input_cursor: usize,
     /// Images dropped into the current composer.
     pub pending_images: Vec<ImageAttachment>,
+    /// Image currently expanded over the chat panel.
+    pub image_modal: Option<PathBuf>,
     /// User inputs submitted while an agent round is active.
     pub queued_inputs: VecDeque<QueuedChatInput>,
     /// Which zone has focus.
@@ -225,6 +227,7 @@ impl AiChatState {
             input: String::new(),
             input_cursor: 0,
             pending_images: Vec::new(),
+            image_modal: None,
             queued_inputs: VecDeque::new(),
             focus: ChatFocus::TextInput,
             viewport: ChatViewportState::default(),

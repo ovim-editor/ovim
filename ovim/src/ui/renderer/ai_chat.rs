@@ -97,6 +97,7 @@ fn tree_panel_width(chat_width: u16) -> u16 {
 /// Render the full chat panel.
 pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
     editor.render_cache.ai_chat_history_area = None;
+    editor.render_cache.ai_chat_image_thumbnails.clear();
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -145,7 +146,12 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     let input_visible_start =
         chat_input_visible_start(input_rows.len(), cursor_row, visible_input_rows);
     let input_height = (1 + visible_input_rows) as u16;
-    let messages_height = main_area.height.saturating_sub(input_height);
+    let gallery_paths = editor.ai_chat_gallery_image_paths();
+    let gallery_height = chat_image_gallery_height(editor, main_area, &gallery_paths);
+    let messages_height = main_area
+        .height
+        .saturating_sub(input_height)
+        .saturating_sub(gallery_height);
 
     let messages_area = Rect {
         x: main_area.x,
@@ -155,7 +161,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     };
     let input_area = Rect {
         x: main_area.x,
-        y: main_area.y + messages_height,
+        y: main_area.y + messages_height + gallery_height,
         width: main_area.width,
         height: input_height,
     };
@@ -163,6 +169,19 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         render_message_history(frame, editor, messages_area, theme);
     } else {
         editor.render_cache.ai_chat_history_area = None;
+    }
+    if gallery_height > 0 {
+        render_chat_image_gallery(
+            frame,
+            editor,
+            Rect::new(
+                main_area.x,
+                main_area.y + messages_height,
+                main_area.width,
+                gallery_height,
+            ),
+            &gallery_paths,
+        );
     }
     render_text_input(frame, editor, input_area, &input_rows, input_visible_start);
     if editor.ai_chat_focus() == ChatFocus::ModelSelector {
@@ -209,8 +228,13 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let visible_start =
         chat_input_visible_start(wrapped_rows.len(), cursor_line, visible_input_rows);
     let input_height = (1 + visible_input_rows) as u16;
-    let messages_height = main_area.height.saturating_sub(input_height);
-    let input_y = main_area.y + messages_height;
+    let gallery_paths = editor.ai_chat_gallery_image_paths();
+    let gallery_height = chat_image_gallery_height(editor, main_area, &gallery_paths);
+    let messages_height = main_area
+        .height
+        .saturating_sub(input_height)
+        .saturating_sub(gallery_height);
+    let input_y = main_area.y + messages_height + gallery_height;
 
     // First line has "│ >> " prefix (border + space + prompt = 5), continuation lines same width
     let prefix_len = 5u16;
@@ -223,6 +247,63 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let y = input_y + 1 + cursor_line.saturating_sub(visible_start) as u16;
 
     Some((x, y))
+}
+
+fn chat_image_gallery_height(editor: &Editor, area: Rect, paths: &[std::path::PathBuf]) -> u16 {
+    if editor.render_cache.terminal_image_support && !paths.is_empty() && area.height >= 10 {
+        6
+    } else {
+        0
+    }
+}
+
+fn render_chat_image_gallery(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    area: Rect,
+    paths: &[std::path::PathBuf],
+) {
+    const THUMB_WIDTH: u16 = 14;
+    let capacity = (area.width / THUMB_WIDTH).max(1) as usize;
+    let first = paths.len().saturating_sub(capacity);
+    for (index, path) in paths[first..].iter().enumerate() {
+        let outer = Rect::new(
+            area.x + index as u16 * THUMB_WIDTH,
+            area.y,
+            THUMB_WIDTH.min(
+                area.right()
+                    .saturating_sub(area.x + index as u16 * THUMB_WIDTH),
+            ),
+            area.height,
+        );
+        if outer.width < 4 {
+            break;
+        }
+        let name = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image");
+        frame.render_widget(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Rgb(82, 139, 255)))
+                .title(truncate_with_ellipsis(
+                    name,
+                    outer.width.saturating_sub(2) as usize,
+                )),
+            outer,
+        );
+        let image_area = Rect::new(
+            outer.x + 1,
+            outer.y + 1,
+            outer.width.saturating_sub(2),
+            outer.height.saturating_sub(2),
+        );
+        editor.render_cache.ai_chat_image_thumbnails.push((
+            crate::key_convert::convert_ratatui_rect(image_area),
+            path.clone(),
+        ));
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1544,9 +1625,11 @@ mod tests {
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
     use ovim_core::editor::{Editor, QueuedChatInputKind};
     use ratatui::{
+        backend::TestBackend,
         layout::Rect,
         style::{Color, Style},
         text::{Line, Span},
+        Terminal,
     };
 
     #[test]
@@ -1599,6 +1682,37 @@ mod tests {
         assert!(x >= panel.x && x < panel.x + panel.width);
         assert!(y >= panel.y && y < panel.y + panel.height);
         assert_eq!(y, panel.y + panel.height - 1);
+    }
+
+    #[test]
+    fn supported_terminal_reserves_clickable_thumbnail_strip() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.render_cache.terminal_image_support = true;
+        editor.ai_state.chat.as_mut().unwrap().pending_images.push(
+            ovim_core::ai::chat_types::ImageAttachment {
+                path: std::path::PathBuf::from("/tmp/preview.png"),
+                mime_type: "image/png".into(),
+                data: vec![1, 2, 3],
+            },
+        );
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+
+        assert_eq!(editor.render_cache.ai_chat_image_thumbnails.len(), 1);
+        assert_eq!(
+            editor.render_cache.ai_chat_image_thumbnails[0].1,
+            std::path::PathBuf::from("/tmp/preview.png")
+        );
     }
 
     #[test]

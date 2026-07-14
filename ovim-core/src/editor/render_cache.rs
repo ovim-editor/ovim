@@ -62,6 +62,10 @@ pub struct RenderCache {
     pub ai_chat_input_content_width: usize,
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
+    /// Whether the frontend selected a real terminal graphics protocol.
+    pub terminal_image_support: bool,
+    /// Render rectangles for clickable chat-image thumbnails.
+    pub ai_chat_image_thumbnails: Vec<(crate::Rect, std::path::PathBuf)>,
     /// Absolute 80ms animation bucket used by the AI chat working spinner.
     pub ai_chat_working_animation_tick: u128,
 }
