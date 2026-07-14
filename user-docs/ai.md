@@ -130,6 +130,8 @@ Chat slash commands are handled by ovim rather than sent to the provider:
 
 While an agent round is running, the composer remains editable:
 
+- Shift-Enter inserts a newline without submitting. Ctrl-J provides the same
+  behavior for terminals that encode modified Return as a legacy line feed.
 - Enter queues a steer for the active round. Ovim delivers it after the next
   completed tool call. If the round finishes first, it becomes the next-round
   follow-up.

@@ -383,10 +383,13 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Enter if key_event.modifiers.contains(Modifiers::SHIFT) => {
-            if let Some(chat) = editor.ai_state.chat.as_mut() {
-                chat.input.insert(chat.input_cursor, '\n');
-                chat.input_cursor += 1;
-            }
+            insert_chat_input_newline(editor);
+        }
+        // Legacy terminals may encode Shift-Enter as LF. In raw mode Crossterm
+        // exposes that indistinguishable byte as Ctrl-J, so accept it as the
+        // composer newline fallback without changing Ctrl-J in other modes.
+        KeyCode::Char('j') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            insert_chat_input_newline(editor);
         }
         KeyCode::Enter => {
             editor.submit_ai_chat_message()?;
@@ -400,6 +403,14 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         _ => {}
     }
     Ok(())
+}
+
+fn insert_chat_input_newline(editor: &mut Editor) {
+    if let Some(chat) = editor.ai_state.chat.as_mut() {
+        let cursor = chat.input_cursor;
+        chat.input.insert(cursor, '\n');
+        chat.input_cursor = cursor + 1;
+    }
 }
 
 fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
@@ -697,6 +708,41 @@ mod tests {
             .ai_chat_messages()
             .iter()
             .any(|message| message.content == "Generation stopped by user."));
+    }
+
+    #[test]
+    fn shift_enter_inserts_newline_without_submitting_chat_input() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "helloworld".into();
+        chat.input_cursor = 5;
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::SHIFT))
+            .expect("shift-enter");
+
+        assert_eq!(editor.ai_chat_input(), "hello\nworld");
+        assert_eq!(editor.ai_chat_input_cursor(), 6);
+        assert!(editor.ai_chat_messages().is_empty());
+    }
+
+    #[test]
+    fn control_j_inserts_newline_for_legacy_shift_enter_encoding() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "hello".into();
+        chat.input_cursor = chat.input.len();
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('j'), Modifiers::CONTROL),
+        )
+        .expect("control-j");
+
+        assert_eq!(editor.ai_chat_input(), "hello\n");
+        assert_eq!(editor.ai_chat_input_cursor(), 6);
+        assert!(editor.ai_chat_messages().is_empty());
     }
 
     #[test]
