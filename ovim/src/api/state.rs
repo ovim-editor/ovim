@@ -362,7 +362,7 @@ impl ApiState {
 
 /// Parse a key string into KeyEvent
 /// Maximum allowed length for key string input to prevent DoS
-const MAX_KEY_STRING_LENGTH: usize = 1024;
+pub const MAX_KEY_STRING_LENGTH: usize = 100_000;
 
 pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
     // First, validate input length
@@ -374,44 +374,43 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
     }
 
     let mut events = Vec::new();
-    let chars: Vec<char> = s.chars().collect();
-    let mut i = 0;
+    let mut chars = s.char_indices().peekable();
 
-    while i < chars.len() {
-        let c = chars[i];
-
+    while let Some((byte_index, c)) = chars.next() {
         // Handle escape sequences: \e, \c, \n, \\
-        if c == '\\' && i + 1 < chars.len() {
-            let next = chars[i + 1];
+        if c == '\\' {
+            let Some(&(_, next)) = chars.peek() else {
+                events.push(KeyEvent::new(KeyCode::Char('\\'), Modifiers::NONE));
+                continue;
+            };
             match next {
                 'e' => {
                     // \e = Escape
                     events.push(KeyEvent::new(KeyCode::Esc, Modifiers::NONE));
-                    i += 2;
+                    chars.next();
                     continue;
                 }
                 'c' => {
                     // \c = Ctrl+C
                     events.push(KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL));
-                    i += 2;
+                    chars.next();
                     continue;
                 }
                 'n' => {
                     // \n = Enter/newline
                     events.push(KeyEvent::new(KeyCode::Enter, Modifiers::NONE));
-                    i += 2;
+                    chars.next();
                     continue;
                 }
                 '\\' => {
                     // \\ = Literal backslash
                     events.push(KeyEvent::new(KeyCode::Char('\\'), Modifiers::NONE));
-                    i += 2;
+                    chars.next();
                     continue;
                 }
                 _ => {
                     // Not a recognized escape sequence, treat backslash as literal
                     events.push(KeyEvent::new(KeyCode::Char('\\'), Modifiers::NONE));
-                    i += 1;
                     continue;
                 }
             }
@@ -420,15 +419,19 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
         // Handle special keys with <> notation
         if c == '<' {
             // Find the closing >
-            if let Some(end) = s[i..].find('>') {
-                let key_name = &s[i + 1..i + end];
+            let token_start = byte_index + c.len_utf8();
+            if let Some(relative_end) = s[token_start..].find('>') {
+                let token_end = token_start + relative_end;
+                let key_name = &s[token_start..token_end];
                 // Additional length check for special key names
                 if key_name.len() > 32 {
                     return Err("Special key name too long".to_string());
                 }
                 if let Some(event) = parse_special_key(key_name) {
                     events.push(event);
-                    i += end + 1;
+                    while chars.peek().is_some_and(|(index, _)| *index <= token_end) {
+                        chars.next();
+                    }
                     continue;
                 }
             }
@@ -436,7 +439,6 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
 
         // Regular character
         events.push(KeyEvent::new(KeyCode::Char(c), Modifiers::NONE));
-        i += 1;
     }
 
     Ok(events)
@@ -444,45 +446,60 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
 
 /// Parse special key names like "CR", "Esc", "C-w"
 fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
-    // Handle Ctrl- prefix
-    if key_name.starts_with("C-") && key_name.len() == 3 {
-        let c = key_name.chars().nth(2)?;
-        return Some(KeyEvent::new(KeyCode::Char(c), Modifiers::CONTROL));
-    }
-
-    // Handle Shift- prefix
-    if let Some(inner) = key_name.strip_prefix("S-") {
-        return parse_special_key(inner)
-            .map(|e| KeyEvent::new(e.code, e.modifiers | Modifiers::SHIFT));
+    let parts: Vec<&str> = key_name.split('-').collect();
+    let (modifier_parts, base_name) = parts.split_at(parts.len().saturating_sub(1));
+    let base_name = *base_name.first()?;
+    let mut modifiers = Modifiers::NONE;
+    for modifier in modifier_parts {
+        modifiers |= match *modifier {
+            "C" | "Ctrl" => Modifiers::CONTROL,
+            "S" | "Shift" => Modifiers::SHIFT,
+            "A" | "M" | "Alt" => Modifiers::ALT,
+            "D" | "Cmd" | "Super" => Modifiers::SUPER,
+            _ => return None,
+        };
     }
 
     // Handle function keys: F1-F12
-    if let Some(num) = key_name.strip_prefix('F') {
+    let code = if let Some(num) = base_name.strip_prefix('F') {
         if let Ok(n) = num.parse::<u8>() {
             if (1..=12).contains(&n) {
-                return Some(KeyEvent::new(KeyCode::F(n), Modifiers::NONE));
+                Some(KeyCode::F(n))
+            } else {
+                None
             }
+        } else {
+            None
         }
-    }
+    } else if base_name.chars().count() == 1 {
+        Some(KeyCode::Char(base_name.chars().next()?))
+    } else {
+        match base_name {
+            "CR" | "Enter" => Some(KeyCode::Enter),
+            "Esc" => Some(KeyCode::Esc),
+            "Tab" if modifiers.contains(Modifiers::SHIFT) => {
+                modifiers.remove(Modifiers::SHIFT);
+                Some(KeyCode::BackTab)
+            }
+            "Tab" => Some(KeyCode::Tab),
+            "BackTab" => Some(KeyCode::BackTab),
+            "BS" | "Backspace" => Some(KeyCode::Backspace),
+            "Del" | "Delete" => Some(KeyCode::Delete),
+            "Up" => Some(KeyCode::Up),
+            "Down" => Some(KeyCode::Down),
+            "Left" => Some(KeyCode::Left),
+            "Right" => Some(KeyCode::Right),
+            "Space" => Some(KeyCode::Char(' ')),
+            "Home" => Some(KeyCode::Home),
+            "End" => Some(KeyCode::End),
+            "PageUp" => Some(KeyCode::PageUp),
+            "PageDown" => Some(KeyCode::PageDown),
+            "Null" => Some(KeyCode::Null),
+            _ => None,
+        }
+    }?;
 
-    // Handle common special keys
-    match key_name {
-        "CR" | "Enter" => Some(KeyEvent::new(KeyCode::Enter, Modifiers::NONE)),
-        "Esc" => Some(KeyEvent::new(KeyCode::Esc, Modifiers::NONE)),
-        "Tab" => Some(KeyEvent::new(KeyCode::Tab, Modifiers::NONE)),
-        "BS" | "Backspace" => Some(KeyEvent::new(KeyCode::Backspace, Modifiers::NONE)),
-        "Del" | "Delete" => Some(KeyEvent::new(KeyCode::Delete, Modifiers::NONE)),
-        "Up" => Some(KeyEvent::new(KeyCode::Up, Modifiers::NONE)),
-        "Down" => Some(KeyEvent::new(KeyCode::Down, Modifiers::NONE)),
-        "Left" => Some(KeyEvent::new(KeyCode::Left, Modifiers::NONE)),
-        "Right" => Some(KeyEvent::new(KeyCode::Right, Modifiers::NONE)),
-        "Space" => Some(KeyEvent::new(KeyCode::Char(' '), Modifiers::NONE)),
-        "Home" => Some(KeyEvent::new(KeyCode::Home, Modifiers::NONE)),
-        "End" => Some(KeyEvent::new(KeyCode::End, Modifiers::NONE)),
-        "PageUp" => Some(KeyEvent::new(KeyCode::PageUp, Modifiers::NONE)),
-        "PageDown" => Some(KeyEvent::new(KeyCode::PageDown, Modifiers::NONE)),
-        _ => None,
-    }
+    Some(KeyEvent::new(code, modifiers))
 }
 
 /// Format a 21-line context window around the cursor
@@ -572,7 +589,31 @@ pub fn format_context_window(
 
 #[cfg(test)]
 mod context_window_tests {
-    use super::format_context_window;
+    use super::{format_context_window, parse_key_string};
+    use ovim_core::{KeyCode, Modifiers};
+
+    #[test]
+    fn unicode_before_special_key_is_byte_safe() {
+        let events = parse_key_string("héllo<Esc>").unwrap();
+        assert_eq!(events.len(), 6);
+        assert_eq!(events[0].code, KeyCode::Char('h'));
+        assert_eq!(events[1].code, KeyCode::Char('é'));
+        assert_eq!(events[5].code, KeyCode::Esc);
+    }
+
+    #[test]
+    fn parses_combined_terminal_modifiers() {
+        let events = parse_key_string("<C-S-x><A-Left><D-1><S-Tab>").unwrap();
+        assert_eq!(events.len(), 4);
+        assert_eq!(events[0].code, KeyCode::Char('x'));
+        assert!(events[0].modifiers.contains(Modifiers::CONTROL));
+        assert!(events[0].modifiers.contains(Modifiers::SHIFT));
+        assert_eq!(events[1].code, KeyCode::Left);
+        assert!(events[1].modifiers.contains(Modifiers::ALT));
+        assert_eq!(events[2].code, KeyCode::Char('1'));
+        assert!(events[2].modifiers.contains(Modifiers::SUPER));
+        assert_eq!(events[3].code, KeyCode::BackTab);
+    }
 
     #[test]
     fn empty_buffer_has_a_current_logical_line() {

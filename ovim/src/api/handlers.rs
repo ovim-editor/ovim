@@ -1,4 +1,4 @@
-use super::state::{ApiRequest, ApiResponse, ApiState};
+use super::state::{ApiRequest, ApiResponse, ApiState, MAX_KEY_STRING_LENGTH};
 use crate::metrics;
 use axum::{
     extract::State,
@@ -10,7 +10,6 @@ use serde::Deserialize;
 use tokio::sync::oneshot;
 
 // Input validation constants
-const MAX_KEYS_LENGTH: usize = 100_000; // 100KB of key input
 const MAX_BUFFER_SIZE: usize = 100_000_000; // 100MB max buffer content
 const MAX_COMMAND_LENGTH: usize = 10_000; // 10KB max command length
 
@@ -45,13 +44,13 @@ pub async fn send_keys(
     metrics::HTTP_REQUESTS_TOTAL.inc();
 
     // Validate input length
-    if payload.keys.len() > MAX_KEYS_LENGTH {
+    if payload.keys.len() > MAX_KEY_STRING_LENGTH {
         return plain_text_error(
             StatusCode::BAD_REQUEST,
             &format!(
                 "Keys input too large: {} bytes (max: {} bytes)",
                 payload.keys.len(),
-                MAX_KEYS_LENGTH
+                MAX_KEY_STRING_LENGTH
             ),
         );
     }
