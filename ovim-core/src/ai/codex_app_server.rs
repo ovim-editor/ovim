@@ -651,6 +651,11 @@ impl AppServerClient {
         loop {
             let message = self.next_message().await?;
             if message.get("method").and_then(Value::as_str) == Some("item/tool/call") {
+                if !message_belongs_to_turn(&message, thread_id, turn_id) {
+                    self.reject_stale_tool_call(&message, thread_id, turn_id)
+                        .await?;
+                    continue;
+                }
                 self.respond_to_tool_call(&message, stream_tx.as_ref(), thread_id, turn_id)
                     .await?;
                 if let Some(rx) = steer_rx.as_mut() {
@@ -679,6 +684,9 @@ impl AppServerClient {
             }
             match message.get("method").and_then(Value::as_str) {
                 Some("item/agentMessage/delta") => {
+                    if !message_belongs_to_turn(&message, thread_id, turn_id) {
+                        continue;
+                    }
                     if let Some(delta) = message.pointer("/params/delta").and_then(Value::as_str) {
                         output.push_str(delta);
                         current_message_had_delta = true;
@@ -688,6 +696,9 @@ impl AppServerClient {
                     }
                 }
                 Some("item/reasoning/summaryTextDelta") => {
+                    if !message_belongs_to_turn(&message, thread_id, turn_id) {
+                        continue;
+                    }
                     if let (Some(tx), Some(delta)) = (
                         stream_tx.as_ref(),
                         message.pointer("/params/delta").and_then(Value::as_str),
@@ -699,6 +710,9 @@ impl AppServerClient {
                     if message.pointer("/params/item/type").and_then(Value::as_str)
                         == Some("agentMessage") =>
                 {
+                    if !message_belongs_to_turn(&message, thread_id, turn_id) {
+                        continue;
+                    }
                     if !current_message_had_delta {
                         if let Some(text) =
                             message.pointer("/params/item/text").and_then(Value::as_str)
@@ -715,6 +729,11 @@ impl AppServerClient {
                     current_message_had_delta = false;
                 }
                 Some("error") => {
+                    if message_has_turn_identity(&message)
+                        && !message_belongs_to_turn(&message, thread_id, turn_id)
+                    {
+                        continue;
+                    }
                     let detail = message
                         .pointer("/params/error/message")
                         .and_then(Value::as_str)
@@ -722,6 +741,9 @@ impl AppServerClient {
                     bail!("{detail}");
                 }
                 Some("turn/completed") => {
+                    if !message_belongs_to_turn(&message, thread_id, turn_id) {
+                        continue;
+                    }
                     let status = message
                         .pointer("/params/turn/status")
                         .and_then(Value::as_str)
@@ -800,6 +822,38 @@ impl AppServerClient {
             "result": {
                 "contentItems": [{ "type": "inputText", "text": text }],
                 "success": success,
+            }
+        }))
+        .await
+    }
+
+    async fn reject_stale_tool_call(
+        &mut self,
+        message: &Value,
+        active_thread_id: &str,
+        active_turn_id: &str,
+    ) -> Result<()> {
+        let response_id = message
+            .get("id")
+            .context("stale dynamic tool call has no JSON-RPC id")?;
+        let received_thread = message
+            .pointer("/params/threadId")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        let received_turn = message
+            .pointer("/params/turnId")
+            .and_then(Value::as_str)
+            .unwrap_or("<missing>");
+        self.send(json!({
+            "id": response_id,
+            "result": {
+                "contentItems": [{
+                    "type": "inputText",
+                    "text": format!(
+                        "Ovim rejected a stale tool request for thread {received_thread}, turn {received_turn}; the active stream is thread {active_thread_id}, turn {active_turn_id}."
+                    )
+                }],
+                "success": false,
             }
         }))
         .await
@@ -932,6 +986,22 @@ struct DynamicToolCall<'a> {
     call_id: &'a str,
     tool: &'a str,
     arguments: &'a Value,
+}
+
+fn message_has_turn_identity(message: &Value) -> bool {
+    message.pointer("/params/threadId").is_some()
+        || message.pointer("/params/turnId").is_some()
+        || message.pointer("/params/turn/id").is_some()
+}
+
+fn message_belongs_to_turn(message: &Value, thread_id: &str, turn_id: &str) -> bool {
+    let received_thread = message.pointer("/params/threadId").and_then(Value::as_str);
+    let received_turn = message
+        .pointer("/params/turnId")
+        .or_else(|| message.pointer("/params/turn/id"))
+        .and_then(Value::as_str);
+    received_thread.is_none_or(|received| received == thread_id)
+        && received_turn.is_none_or(|received| received == turn_id)
 }
 
 fn parse_dynamic_tool_call<'a>(
@@ -1437,6 +1507,41 @@ mod tests {
         let mut wrong_namespace = message;
         wrong_namespace["params"]["namespace"] = json!("other-client");
         assert!(parse_dynamic_tool_call(&wrong_namespace, "thread-7", "turn-8").is_err());
+    }
+
+    #[test]
+    fn streamed_notifications_use_every_available_turn_identity() {
+        let active_tool = json!({
+            "params": {"threadId": "thread-7", "turnId": "turn-8"}
+        });
+        let stale_tool = json!({
+            "params": {"threadId": "thread-old", "turnId": "turn-old"}
+        });
+        let active_completion = json!({
+            "params": {"turn": {"id": "turn-8", "status": "completed"}}
+        });
+        let stale_completion = json!({
+            "params": {"turn": {"id": "turn-old", "status": "completed"}}
+        });
+        let unscoped_delta = json!({"params": {"itemId": "message-1", "delta": "hi"}});
+
+        assert!(message_belongs_to_turn(&active_tool, "thread-7", "turn-8"));
+        assert!(!message_belongs_to_turn(&stale_tool, "thread-7", "turn-8"));
+        assert!(message_belongs_to_turn(
+            &active_completion,
+            "thread-7",
+            "turn-8"
+        ));
+        assert!(!message_belongs_to_turn(
+            &stale_completion,
+            "thread-7",
+            "turn-8"
+        ));
+        assert!(message_belongs_to_turn(
+            &unscoped_delta,
+            "thread-7",
+            "turn-8"
+        ));
     }
 
     #[test]
