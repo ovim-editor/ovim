@@ -1,5 +1,80 @@
 use crate::display::{char_display_width, display_width};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum WordClass {
+    Word,
+    Punctuation,
+    Whitespace,
+}
+
+fn word_class(character: char) -> WordClass {
+    if character.is_whitespace() {
+        WordClass::Whitespace
+    } else if character.is_alphanumeric() || character == '_' {
+        WordClass::Word
+    } else {
+        WordClass::Punctuation
+    }
+}
+
+fn clamped_char_boundary(text: &str, cursor: usize) -> usize {
+    let mut boundary = cursor.min(text.len());
+    while !text.is_char_boundary(boundary) {
+        boundary = boundary.saturating_sub(1);
+    }
+    boundary
+}
+
+/// Find the readline-style Alt-B boundary before `cursor`: skip whitespace,
+/// then traverse one word or punctuation run.
+pub fn previous_chat_input_word_boundary(text: &str, cursor: usize) -> usize {
+    let mut boundary = clamped_char_boundary(text, cursor);
+    while boundary > 0 {
+        let (previous, character) = text[..boundary].char_indices().next_back().unwrap();
+        if word_class(character) != WordClass::Whitespace {
+            break;
+        }
+        boundary = previous;
+    }
+    let Some((_, character)) = text[..boundary].char_indices().next_back() else {
+        return boundary;
+    };
+    let class = word_class(character);
+    while boundary > 0 {
+        let (previous, character) = text[..boundary].char_indices().next_back().unwrap();
+        if word_class(character) != class {
+            break;
+        }
+        boundary = previous;
+    }
+    boundary
+}
+
+/// Find the readline-style Alt-F boundary after `cursor`: skip whitespace,
+/// then traverse one word or punctuation run.
+pub fn next_chat_input_word_boundary(text: &str, cursor: usize) -> usize {
+    let mut boundary = clamped_char_boundary(text, cursor);
+    while boundary < text.len() {
+        let character = text[boundary..].chars().next().unwrap();
+        if word_class(character) != WordClass::Whitespace {
+            break;
+        }
+        boundary += character.len_utf8();
+    }
+    let Some(character) = text[boundary..].chars().next() else {
+        return boundary;
+    };
+    let class = word_class(character);
+    while boundary < text.len() {
+        let character = text[boundary..].chars().next().unwrap();
+        if word_class(character) != class {
+            break;
+        }
+        boundary += character.len_utf8();
+    }
+    boundary
+}
+
 /// Byte range occupied by one visual row of the AI chat composer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatInputRow {
@@ -248,6 +323,18 @@ mod tests {
         let input = "example message that fits";
         let rows = wrap_chat_input_rows_with_widths(input, 12, 20, 4);
         assert_eq!(text(&rows, input), vec!["example ", "message that fits"]);
+    }
+
+    #[test]
+    fn word_boundaries_handle_whitespace_punctuation_and_unicode() {
+        let input = "alpha  beta.世界";
+        assert_eq!(previous_chat_input_word_boundary(input, input.len()), 12);
+        assert_eq!(previous_chat_input_word_boundary(input, 12), 11);
+        assert_eq!(previous_chat_input_word_boundary(input, 11), 7);
+        assert_eq!(next_chat_input_word_boundary(input, 0), 5);
+        assert_eq!(next_chat_input_word_boundary(input, 5), 11);
+        assert_eq!(next_chat_input_word_boundary(input, 11), 12);
+        assert_eq!(next_chat_input_word_boundary(input, 12), input.len());
     }
 
     #[test]

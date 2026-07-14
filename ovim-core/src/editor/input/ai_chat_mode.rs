@@ -1,5 +1,8 @@
 use crate::ai::chat_types::{ChatFocus, ChatRole};
-use crate::editor::ai_chat_input::{move_chat_input_cursor_vertical, wrap_chat_input_rows};
+use crate::editor::ai_chat_input::{
+    move_chat_input_cursor_vertical, next_chat_input_word_boundary,
+    previous_chat_input_word_boundary, wrap_chat_input_rows,
+};
 use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -197,6 +200,9 @@ fn handle_escape(editor: &mut Editor, focus: ChatFocus) -> Result<()> {
 }
 
 fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    let word_modifier = key_event
+        .modifiers
+        .intersects(Modifiers::ALT | Modifiers::CONTROL);
     match key_event.code {
         KeyCode::Char('v')
             if key_event.modifiers.contains(Modifiers::CONTROL)
@@ -216,6 +222,14 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 let pos = chat.input_cursor;
                 chat.input.insert(pos, ch);
                 chat.input_cursor = pos + ch.len_utf8();
+            }
+        }
+        KeyCode::Backspace if word_modifier => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                let end = chat.input_cursor;
+                let start = previous_chat_input_word_boundary(&chat.input, end);
+                chat.input.drain(start..end);
+                chat.input_cursor = start;
             }
         }
         KeyCode::Backspace => {
@@ -238,12 +252,25 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 editor.remove_last_ai_chat_image();
             }
         }
+        KeyCode::Delete if word_modifier => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                let start = chat.input_cursor;
+                let end = next_chat_input_word_boundary(&chat.input, start);
+                chat.input.drain(start..end);
+            }
+        }
         KeyCode::Delete => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 let pos = chat.input_cursor;
                 if pos < chat.input.len() {
                     chat.input.remove(pos);
                 }
+            }
+        }
+        KeyCode::Left if word_modifier => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.input_cursor =
+                    previous_chat_input_word_boundary(&chat.input, chat.input_cursor);
             }
         }
         KeyCode::Left => {
@@ -257,6 +284,11 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                         .unwrap_or(0);
                     chat.input_cursor = prev;
                 }
+            }
+        }
+        KeyCode::Right if word_modifier => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.input_cursor = next_chat_input_word_boundary(&chat.input, chat.input_cursor);
             }
         }
         KeyCode::Right => {
@@ -736,5 +768,63 @@ mod tests {
 
         assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
         assert!(editor.ai_chat_input_cursor() < editor.ai_chat_input().len());
+    }
+
+    #[test]
+    fn option_and_control_edit_chat_input_by_words() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = "one two three".to_string();
+            chat.input_cursor = chat.input.len();
+        }
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Left, Modifiers::ALT)).unwrap();
+        assert_eq!(editor.ai_chat_input_cursor(), 8);
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Left, Modifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(editor.ai_chat_input_cursor(), 4);
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Backspace, Modifiers::ALT),
+        )
+        .unwrap();
+        assert_eq!(editor.ai_chat_input(), "two three");
+        assert_eq!(editor.ai_chat_input_cursor(), 0);
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Delete, Modifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(editor.ai_chat_input(), " three");
+        assert_eq!(editor.ai_chat_input_cursor(), 0);
+    }
+
+    #[test]
+    fn option_and_control_right_move_to_word_ends() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = "one  two".to_string();
+            chat.input_cursor = 0;
+        }
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Right, Modifiers::CONTROL),
+        )
+        .unwrap();
+        assert_eq!(editor.ai_chat_input_cursor(), 3);
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Right, Modifiers::ALT)).unwrap();
+        assert_eq!(editor.ai_chat_input_cursor(), editor.ai_chat_input().len());
     }
 }
