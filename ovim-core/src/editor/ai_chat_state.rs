@@ -116,6 +116,8 @@ pub struct AiChatState {
     pub focus: ChatFocus,
     /// Viewport behavior for chat history.
     pub viewport: ChatViewportState,
+    /// Incremented whenever `/clear` starts a fresh provider context.
+    pub context_generation: u64,
     /// Message-history selection state.
     pub history: ChatHistoryState,
     /// Whether assistant can suggest edits.
@@ -197,6 +199,7 @@ impl AiChatState {
             input_cursor: 0,
             focus: ChatFocus::TextInput,
             viewport: ChatViewportState::default(),
+            context_generation: 0,
             history: ChatHistoryState::default(),
             allow_edits,
             waiting: false,

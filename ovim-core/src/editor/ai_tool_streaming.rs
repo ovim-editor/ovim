@@ -211,8 +211,9 @@ impl Editor {
                 .conversation()
                 .map(crate::ai::ConversationTree::branch_generation)
                 .unwrap_or_default();
+            let context_generation = chat.context_generation;
             Some(format!(
-                "{buffer_id}:{conversation_name}:branch-{branch_generation}"
+                "{buffer_id}:{conversation_name}:branch-{branch_generation}:context-{context_generation}"
             ))
         } else {
             None

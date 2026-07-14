@@ -12,6 +12,8 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 
+pub const CONVERSATION_CONTEXT_RESET_EVENT: &str = "conversation_context_reset";
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ConversationLocator(pub String);
 
@@ -1027,6 +1029,40 @@ impl AgentRuntime {
             .branches
             .get(&state.selected_branch)
             .map(|branch| &branch.last_event)
+    }
+
+    /// Record a user-requested provider-context boundary on the active branch.
+    /// Histories retain the audit trail while chat projections hide messages
+    /// preceding the most recent reset event.
+    pub fn record_context_reset(
+        &mut self,
+        locator: &ConversationLocator,
+    ) -> Result<Option<EventEnvelope>, AgentRuntimeError> {
+        let Some(state) = self.conversations.get_mut(locator) else {
+            return Ok(None);
+        };
+        if state.active_turn.is_some() {
+            return Err(AgentRuntimeError::TurnAlreadyActive);
+        }
+        let Some(branch) = state.branches.get_mut(&state.selected_branch) else {
+            return Ok(None);
+        };
+        let event = append_for(
+            &self.sink,
+            &state.reference,
+            None,
+            Some(branch.last_event.clone()),
+            EventActor::User,
+            EventKind::Unknown {
+                name: CONVERSATION_CONTEXT_RESET_EVENT.into(),
+                payload: serde_json::json!({ "version": 1 }),
+            },
+            None,
+            None,
+            Some(branch.reference.branch_id.clone()),
+        )?;
+        branch.last_event = event.event_id.clone();
+        Ok(Some(event))
     }
 
     /// Whether a conversation still owns work whose terminal outcome has not

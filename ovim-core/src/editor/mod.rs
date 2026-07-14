@@ -1,6 +1,7 @@
 mod ai_agent;
 mod ai_base_manifest;
 mod ai_chat;
+mod ai_chat_commands;
 mod ai_chat_mutations;
 pub(crate) mod ai_chat_state;
 mod ai_chat_tools;

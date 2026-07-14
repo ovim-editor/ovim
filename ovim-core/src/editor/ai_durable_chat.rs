@@ -163,6 +163,32 @@ impl Editor {
         }
         Ok(())
     }
+
+    /// Forget the provider-native thread while retaining ovim's durable audit log.
+    /// The next turn reconstructs context exclusively from the newly cleared UI tree.
+    pub(crate) fn reset_durable_ai_chat_provider_session(&mut self) -> Result<()> {
+        let key = self.ai_chat_conversation_key();
+        let Some(services) = self.ai_state.durable_runs.as_ref() else {
+            return Ok(());
+        };
+        let Some(binding) = self.ai_state.durable_chat_bindings.get(&key) else {
+            return Ok(());
+        };
+        let Some((_, branch)) = self
+            .ai_state
+            .agent_runtime
+            .selected_branch(&binding.locator)
+        else {
+            return Ok(());
+        };
+        crate::ai::DurableCodexSession::new(
+            services.catalog.clone(),
+            binding.binding.root_agent_id.clone(),
+            branch.branch_id.clone(),
+        )
+        .invalidate()?;
+        Ok(())
+    }
 }
 
 fn conversation_scope(
@@ -227,6 +253,15 @@ fn project_visible_messages(
         .iter()
         .filter(|event| causal.contains(&event.event_id))
     {
+        if matches!(
+            &event.kind,
+            EventKind::Unknown { name, .. }
+                if name == crate::agent_runtime::CONVERSATION_CONTEXT_RESET_EVENT
+        ) {
+            conversation = ConversationTree::new();
+            nodes.clear();
+            continue;
+        }
         let EventKind::Message(message) = &event.kind else {
             continue;
         };
@@ -320,6 +355,41 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "inspect this");
         assert_eq!(messages[1].content, "It is small.");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn context_reset_survives_durable_reopen() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        {
+            let mut editor = durable_editor(&file, layout.clone());
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            let turn = editor.begin_ai_runtime_turn("old question").unwrap();
+            editor
+                .ai_state
+                .agent_runtime
+                .append_agent_message(&turn, "old answer")
+                .unwrap();
+            editor.ai_state.agent_runtime.complete_turn(&turn).unwrap();
+            editor
+                .conversation_mut()
+                .unwrap()
+                .append_user_message("old question".into());
+            editor
+                .conversation_mut()
+                .unwrap()
+                .append_assistant_message("old answer".into(), "Agent".into());
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = "/clear".into();
+            chat.input_cursor = chat.input.len();
+            editor.submit_ai_chat_message().unwrap();
+            assert!(editor.ai_chat_messages().is_empty());
+        }
+
+        let mut reopened = durable_editor(&file, layout);
+        reopened.open_ai_chat(ChatOpts::default()).unwrap();
+        assert!(reopened.ai_chat_messages().is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

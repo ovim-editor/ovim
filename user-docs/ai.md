@@ -72,8 +72,15 @@ vim.ai.setup({
 The `codex` provider does not accept an API key. To change accounts or repair
 authentication, use `codex logout` and `codex login` directly.
 
-In AI chat, enter `/model` to open the profile picker. You can also switch
-directly with `/model codex_sol` or `/model codex_terra`.
+In AI chat, Escape hides the panel without interrupting the agent or clearing
+the conversation. Open the same chat again to resume it with its input and view
+state intact.
+
+Chat slash commands are handled by ovim rather than sent to the provider:
+
+- `/model` opens the profile picker.
+- `/model codex_sol` switches directly to a named profile.
+- `/clear` clears the current conversation and starts a fresh provider context.
 
 ## API-key providers
 

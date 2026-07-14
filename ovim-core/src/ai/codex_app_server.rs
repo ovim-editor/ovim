@@ -45,6 +45,10 @@ impl DurableCodexSession {
             },
         }
     }
+
+    pub(crate) fn invalidate(&self) -> Result<()> {
+        invalidate_durable_provider_session(self)
+    }
 }
 
 pub(crate) async fn request(

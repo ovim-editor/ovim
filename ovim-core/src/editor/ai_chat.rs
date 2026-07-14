@@ -17,10 +17,24 @@ impl Editor {
 
     /// Open or resume an AI chat panel.
     pub fn open_ai_chat(&mut self, opts: ChatOpts) -> Result<()> {
-        // Replacing an open panel must not detach its provider task or strand
-        // an active runtime turn.
+        if self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.opts.name == opts.name)
+        {
+            let mode_before = self.mode();
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.mode_before_chat = mode_before;
+            }
+            self.set_mode(Mode::AiChat);
+            return Ok(());
+        }
+
+        // Switching to another named conversation replaces the live panel.
+        // Its projected message history remains stored under its own key.
         if self.ai_state.chat.is_some() {
-            self.close_ai_chat();
+            self.discard_active_ai_chat("chat replaced");
         }
         let buffer_id = self.buffer().id();
         let mode_before = self.mode();
@@ -84,8 +98,20 @@ impl Editor {
         Ok(())
     }
 
-    /// Close the AI chat panel, preserving conversation history.
+    /// Hide the AI chat panel without clearing or interrupting it.
     pub fn close_ai_chat(&mut self) {
+        let mode_before = self
+            .ai_state
+            .chat
+            .as_ref()
+            .map(|chat| chat.mode_before_chat);
+        if let Some(mode) = mode_before {
+            self.set_mode(mode);
+        }
+    }
+
+    /// Permanently discard the live panel state when replacing conversations.
+    fn discard_active_ai_chat(&mut self, reason: &str) {
         if let Some(job) = self
             .ai_state
             .chat
@@ -94,10 +120,9 @@ impl Editor {
         {
             job.task.abort();
         }
-        self.ai_runtime_interrupt_turn("chat closed");
+        self.ai_runtime_interrupt_turn(reason);
         if let Some(mut chat) = self.ai_state.chat.take() {
             chat.pending_job.take();
-            self.set_mode(chat.mode_before_chat);
         }
     }
 
@@ -117,21 +142,7 @@ impl Editor {
             return Ok(());
         }
 
-        if input == "/model" {
-            chat.input.clear();
-            chat.input_cursor = 0;
-            chat.focus = ChatFocus::ModelSelector;
-            return Ok(());
-        }
-        if let Some(profile) = input.strip_prefix("/model ").map(str::trim) {
-            if self.ai_set_profile(profile) {
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.input.clear();
-                    chat.input_cursor = 0;
-                }
-            } else {
-                self.set_lsp_status(format!("Unknown AI profile: {profile}"));
-            }
+        if self.try_execute_ai_chat_slash_command(&input)? {
             return Ok(());
         }
 
@@ -1821,45 +1832,52 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn closing_chat_aborts_provider_and_records_interrupted_turn() {
+    async fn closing_chat_keeps_provider_and_live_state_running() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("inspect").unwrap();
         let run_id = turn.run_id.clone();
         let abort_handle = attach_pending_runtime_job(&mut editor, turn, 0);
+        editor.ai_state.chat.as_mut().unwrap().input = "follow up".into();
 
         editor.close_ai_chat();
         tokio::task::yield_now().await;
 
-        assert!(abort_handle.is_finished());
+        assert!(!abort_handle.is_finished());
+        assert_ne!(editor.mode(), Mode::AiChat);
+        let chat = editor.ai_state.chat.as_ref().expect("hidden chat retained");
+        assert_eq!(chat.input, "follow up");
+        assert!(chat.pending_job.is_some());
         let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
-        assert!(matches!(
+        assert!(!matches!(
             &events.last().unwrap().kind,
-            EventKind::TurnLifecycle(event)
-                if event.state == TurnLifecycleState::Interrupted
+            EventKind::TurnLifecycle(event) if event.state == TurnLifecycleState::Interrupted
         ));
+
+        editor.discard_active_ai_chat("test cleanup");
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn reopening_chat_interrupts_old_job_and_preserves_underlying_mode() {
+    async fn reopening_chat_resumes_live_state_and_preserves_underlying_mode() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("inspect").unwrap();
-        let run_id = turn.run_id.clone();
         let abort_handle = attach_pending_runtime_job(&mut editor, turn, 0);
+        editor.ai_state.chat.as_mut().unwrap().input = "still here".into();
+
+        editor.close_ai_chat();
+        assert_ne!(editor.mode(), Mode::AiChat);
 
         open_test_chat(&mut editor);
         tokio::task::yield_now().await;
 
-        assert!(abort_handle.is_finished());
-        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
-        assert!(matches!(
-            &events.last().unwrap().kind,
-            EventKind::TurnLifecycle(event)
-                if event.state == TurnLifecycleState::Interrupted
-        ));
+        assert!(!abort_handle.is_finished());
+        assert_eq!(editor.mode(), Mode::AiChat);
+        assert_eq!(editor.ai_chat_input(), "still here");
         editor.close_ai_chat();
         assert_ne!(editor.mode(), Mode::AiChat);
+
+        editor.discard_active_ai_chat("test cleanup");
     }
 
     #[tokio::test(flavor = "current_thread")]
