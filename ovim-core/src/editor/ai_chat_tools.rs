@@ -404,11 +404,14 @@ impl Editor {
                     | "snapshot_file"
                     | "restore_file"
             );
+        let project_scoped_without_open_file =
+            matches!(tc.name.as_str(), "list_files" | "search_project");
 
         if !self.active_chat_target_has_file_path()
             && tc.name != "open_file"
             && tc.name != "bash"
             && !path_scoped_without_open_file
+            && !project_scoped_without_open_file
         {
             return ToolDispatchOutcome::Completed(ToolResult::Error(self.no_file_open_guidance()));
         }
@@ -2014,6 +2017,55 @@ mod tests {
             }
             ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
                 panic!("expected guidance error, got success: {ok}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                panic!("unexpected approval request: {}", req.message);
+            }
+        }
+    }
+
+    #[test]
+    fn project_tools_work_from_unnamed_buffer_when_project_root_is_known() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+        set_active_profile_project_scope(&mut editor);
+
+        let list_call = ToolCallInfo {
+            id: "call_list".to_string(),
+            name: "list_files".to_string(),
+            arguments: serde_json::json!({}),
+        };
+        match editor.dispatch_tool_call_with_approval(&list_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                assert!(output.contains("Cargo.toml"), "{output}");
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                panic!("expected list_files success, got: {err}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                panic!("unexpected approval request: {}", req.message);
+            }
+        }
+
+        let search_call = ToolCallInfo {
+            id: "call_search".to_string(),
+            name: "search_project".to_string(),
+            arguments: serde_json::json!({
+                "query": "project_tools_work_from_unnamed_buffer_when_project_root_is_known"
+            }),
+        };
+        match editor.dispatch_tool_call_with_approval(&search_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                assert!(output.contains("ai_chat_tools.rs"), "{output}");
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                panic!("expected search_project success, got: {err}");
             }
             ToolDispatchOutcome::ApprovalRequired(req) => {
                 panic!("unexpected approval request: {}", req.message);
