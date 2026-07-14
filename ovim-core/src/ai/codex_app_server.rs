@@ -19,6 +19,7 @@ use tokio::sync::mpsc::UnboundedSender;
 
 const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROVIDER_SESSION_NAME: &str = "codex";
+const OVIM_TOOL_NAMESPACE: &str = "ovim";
 const PROVIDER_CONFIGURATION_VERSION: u32 = 1;
 pub(crate) const AUTO_MODE_CLASSIFIER_MODEL: &str = "gpt-5.6-luna";
 pub(crate) const AUTO_MODE_CLASSIFIER_EFFORT: &str = "low";
@@ -417,11 +418,7 @@ fn provider_configuration_fingerprint(
     cwd: &Path,
     tools: &[Value],
 ) -> Result<crate::run_log::ProviderConfigurationFingerprint> {
-    let project_tools_enabled = !tools.is_empty();
-    let effective_instructions = format!(
-        "{instructions}\n\n{}",
-        codex_tool_instruction(project_tools_enabled)
-    );
+    let effective_instructions = format!("{instructions}\n\n{}", codex_tool_instruction(tools));
     let configuration = json!({
         "protocol": "codex-app-server-v2",
         "model": profile.model,
@@ -431,7 +428,7 @@ fn provider_configuration_fingerprint(
         "ephemeral": false,
         "serviceName": "ovim",
         "developerInstructions": effective_instructions,
-        "dynamicTools": if project_tools_enabled { codex_dynamic_tool_specs(tools) } else { Value::Null },
+        "dynamicTools": if tools.is_empty() { Value::Null } else { codex_dynamic_tool_specs(tools) },
     });
     let digest = Sha256::digest(serde_json::to_vec(&configuration)?);
     Ok(crate::run_log::ProviderConfigurationFingerprint {
@@ -525,8 +522,7 @@ impl AppServerClient {
         tools: &[Value],
         ephemeral: bool,
     ) -> Result<String> {
-        let project_tools_enabled = !tools.is_empty();
-        let tool_instruction = codex_tool_instruction(project_tools_enabled);
+        let tool_instruction = codex_tool_instruction(tools);
         let mut params = json!({
             "model": profile.model,
             "cwd": cwd,
@@ -536,7 +532,7 @@ impl AppServerClient {
             "serviceName": "ovim",
             "developerInstructions": format!("{instructions}\n\n{tool_instruction}"),
         });
-        if project_tools_enabled {
+        if !tools.is_empty() {
             params["dynamicTools"] = codex_dynamic_tool_specs(tools);
         }
         let request_id = self.request_id();
@@ -810,12 +806,35 @@ impl AppServerClient {
     }
 }
 
-fn codex_tool_instruction(project_tools_enabled: bool) -> &'static str {
-    if project_tools_enabled {
-        "Use the ovim-provided dynamic tools whenever they help complete the request. You may invoke every dynamic tool ovim advertises, including its `bash` and mutation tools; ovim records, authorizes, and executes those calls. Do not use Codex's built-in shell, apply_patch, file, or mutation tools."
-    } else {
-        "Do not run commands, use tools, or modify files. Return the requested answer only; ovim owns all tool execution, edits, validation, and approvals."
+fn codex_tool_instruction(tools: &[Value]) -> &'static str {
+    if tools.is_empty() {
+        return "Do not run commands, use tools, or modify files. Return the requested answer only; ovim owns all tool execution, edits, validation, and approvals.";
     }
+
+    if codex_tools_allow_writes(tools) {
+        "The project is writable through the `ovim` dynamic tool namespace. Codex's built-in sandbox is intentionally read-only, but that does not make the Ovim workspace read-only. Use `ovim.apply_patch_at_path` for file edits when available, the other `ovim` mutation tools when appropriate, and `ovim.bash` for commands. Ovim records, authorizes, and executes these tools against the live editor and project. Never use Codex's built-in shell, apply_patch, file, or mutation tools. If a Codex built-in reports a read-only sandbox, retry with the corresponding `ovim` tool instead of asking the user to enable write access."
+    } else {
+        "Use the read-only tools in the `ovim` dynamic tool namespace when they help answer the request. This chat has no Ovim mutation or shell tools, so do not modify files or run commands. Never use Codex's built-in shell, apply_patch, file, or mutation tools."
+    }
+}
+
+fn codex_tools_allow_writes(tools: &[Value]) -> bool {
+    tools.iter().any(|tool| {
+        matches!(
+            tool.pointer("/function/name").and_then(Value::as_str),
+            Some(
+                "bash"
+                    | "edit_range"
+                    | "insert_lines"
+                    | "delete_lines"
+                    | "write_file_at_path"
+                    | "create_file"
+                    | "apply_patch_at_path"
+                    | "snapshot_file"
+                    | "restore_file"
+            )
+        )
+    })
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -939,6 +958,13 @@ fn parse_dynamic_tool_call<'a>(
             "dynamic tool call belongs to turn '{turn_id}', not active turn '{expected_turn_id}'"
         );
     }
+    let namespace = message
+        .pointer("/params/namespace")
+        .and_then(Value::as_str)
+        .context("dynamic tool call has no namespace")?;
+    if namespace != OVIM_TOOL_NAMESPACE {
+        bail!("dynamic tool call belongs to namespace '{namespace}', not '{OVIM_TOOL_NAMESPACE}'");
+    }
     Ok(DynamicToolCall {
         response_id,
         call_id: message
@@ -956,20 +982,25 @@ fn parse_dynamic_tool_call<'a>(
 }
 
 fn codex_dynamic_tool_specs(tools: &[Value]) -> Value {
-    Value::Array(
-        tools
-            .iter()
-            .filter_map(|tool| {
-                let function = tool.get("function")?;
-                Some(json!({
-                    "type": "function",
-                    "name": function.get("name")?,
-                    "description": function.get("description").cloned().unwrap_or(Value::Null),
-                    "inputSchema": function.get("parameters").cloned().unwrap_or_else(|| json!({"type": "object"})),
-                }))
-            })
-            .collect(),
-    )
+    let namespace_tools = tools
+        .iter()
+        .filter_map(|tool| {
+            let function = tool.get("function")?;
+            Some(json!({
+                "type": "function",
+                "name": function.get("name")?,
+                "description": function.get("description").cloned().unwrap_or(Value::Null),
+                "inputSchema": function.get("parameters").cloned().unwrap_or_else(|| json!({"type": "object"})),
+            }))
+        })
+        .collect::<Vec<_>>();
+
+    json!([{
+        "type": "namespace",
+        "name": OVIM_TOOL_NAMESPACE,
+        "description": "Tools executed by Ovim against the live editor and project.",
+        "tools": namespace_tools,
+    }])
 }
 
 #[cfg(test)]
@@ -1127,6 +1158,17 @@ mod tests {
         }
     }
 
+    fn tool_schema(name: &str) -> Value {
+        json!({
+            "type": "function",
+            "function": {
+                "name": name,
+                "description": format!("Ovim {name} tool"),
+                "parameters": { "type": "object" }
+            }
+        })
+    }
+
     #[test]
     fn initialize_opts_into_experimental_protocol() {
         let params = initialize_params();
@@ -1135,11 +1177,50 @@ mod tests {
     }
 
     #[test]
-    fn dynamic_tool_instruction_authorizes_ovim_bash_but_not_codex_shell() {
-        let instruction = codex_tool_instruction(true);
-        assert!(instruction.contains("including its `bash`"));
-        assert!(instruction.contains("Do not use Codex's built-in shell"));
-        assert!(!instruction.contains("Do not use shell"));
+    fn dynamic_tool_instruction_distinguishes_writable_ovim_tools_from_codex_sandbox() {
+        let instruction = codex_tool_instruction(&[
+            tool_schema("read_file_at_path"),
+            tool_schema("apply_patch_at_path"),
+            tool_schema("bash"),
+        ]);
+        assert!(instruction.contains("project is writable"));
+        assert!(instruction.contains("`ovim.apply_patch_at_path`"));
+        assert!(instruction.contains("`ovim.bash`"));
+        assert!(instruction.contains("built-in sandbox is intentionally read-only"));
+        assert!(instruction.contains("retry with the corresponding `ovim` tool"));
+        assert!(instruction.contains("Never use Codex's built-in shell"));
+    }
+
+    #[test]
+    fn dynamic_tool_instruction_does_not_claim_writes_without_mutation_tools() {
+        let instruction = codex_tool_instruction(&[
+            tool_schema("read_file_at_path"),
+            tool_schema("search_project"),
+        ]);
+        assert!(instruction.contains("read-only tools"));
+        assert!(instruction.contains("no Ovim mutation or shell tools"));
+        assert!(!instruction.contains("project is writable"));
+    }
+
+    #[test]
+    fn write_capability_tracks_every_effectful_ovim_tool() {
+        assert!(!codex_tools_allow_writes(&[tool_schema("read_file")]));
+        for name in [
+            "bash",
+            "edit_range",
+            "insert_lines",
+            "delete_lines",
+            "write_file_at_path",
+            "create_file",
+            "apply_patch_at_path",
+            "snapshot_file",
+            "restore_file",
+        ] {
+            assert!(
+                codex_tools_allow_writes(&[tool_schema(name)]),
+                "{name} should mark the Ovim tool contract writable"
+            );
+        }
     }
 
     #[test]
@@ -1324,6 +1405,7 @@ mod tests {
                 "threadId": "thread-7",
                 "turnId": "turn-8",
                 "callId": "tool-call-9",
+                "namespace": "ovim",
                 "tool": "read_file",
                 "arguments": { "path": "README.md" }
             }
@@ -1344,12 +1426,17 @@ mod tests {
                 "threadId": "thread-7",
                 "turnId": "turn-8",
                 "callId": "tool-call-9",
+                "namespace": "ovim",
                 "tool": "read_file",
                 "arguments": {}
             }
         });
         assert!(parse_dynamic_tool_call(&message, "other-thread", "turn-8").is_err());
         assert!(parse_dynamic_tool_call(&message, "thread-7", "other-turn").is_err());
+
+        let mut wrong_namespace = message;
+        wrong_namespace["params"]["namespace"] = json!("other-client");
+        assert!(parse_dynamic_tool_call(&wrong_namespace, "thread-7", "turn-8").is_err());
     }
 
     #[test]
@@ -1368,9 +1455,14 @@ mod tests {
         })];
 
         let converted = codex_dynamic_tool_specs(&tools);
-        assert_eq!(converted[0]["name"], "open_file");
-        assert_eq!(converted[0]["inputSchema"]["required"][0], "path");
-        assert!(converted[0].get("function").is_none());
+        assert_eq!(converted[0]["type"], "namespace");
+        assert_eq!(converted[0]["name"], "ovim");
+        assert_eq!(converted[0]["tools"][0]["name"], "open_file");
+        assert_eq!(
+            converted[0]["tools"][0]["inputSchema"]["required"][0],
+            "path"
+        );
+        assert!(converted[0]["tools"][0].get("function").is_none());
     }
 
     #[test]
