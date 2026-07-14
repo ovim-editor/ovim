@@ -96,6 +96,9 @@ pub struct SendKeysResult {
 /// Complete snapshot of editor state
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EditorSnapshot {
+    /// Snapshot schema version. Fields are additive within a version.
+    #[serde(default = "default_snapshot_schema_version")]
+    pub schema_version: u32,
     pub buffer: BufferInfo,
     pub cursor: CursorPosition,
     pub mode: String,
@@ -117,12 +120,49 @@ pub struct EditorSnapshot {
     /// arrive, or for file types without LSP support).
     #[serde(default)]
     pub decorations: Vec<DecorationInfo>,
+    /// UI state needed to compare a headless session with the interactive TUI.
+    #[serde(default)]
+    pub view: ViewSnapshot,
+}
+
+fn default_snapshot_schema_version() -> u32 {
+    1
+}
+
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ViewSnapshot {
+    pub viewport_width: Option<u16>,
+    pub viewport_height: Option<u16>,
+    pub scroll_offset: usize,
+    pub scroll_subrow: usize,
+    pub tab_count: usize,
+    pub current_tab: usize,
+    pub window_count: usize,
+    pub file_tree_visible: bool,
+    pub command_line: String,
+    pub command_cursor: usize,
+    pub search_query: String,
+    pub search_forward: bool,
+    pub status: String,
+    pub active_session: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiChatSnapshot {
     pub waiting: bool,
     pub input: String,
+    #[serde(default)]
+    pub input_cursor: usize,
+    #[serde(default)]
+    pub focus: String,
+    #[serde(default)]
+    pub streaming: bool,
+    #[serde(default)]
+    pub review_mode: bool,
+    #[serde(default)]
+    pub tree_panel_open: bool,
     pub pending_approval: Option<String>,
     pub queued: Vec<QueuedChatSnapshot>,
     pub messages: Vec<AiChatMessageSnapshot>,
@@ -140,6 +180,18 @@ pub struct AiChatMessageSnapshot {
     pub content: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool_call_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool: Option<ToolCallSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ToolCallSnapshot {
+    pub name: String,
+    pub summary: String,
+    pub expanded: bool,
+    /// Arguments are only included when the tool event is expanded in the UI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub arguments: Option<serde_json::Value>,
 }
 
 /// A single virtual-text decoration projected for external consumers.

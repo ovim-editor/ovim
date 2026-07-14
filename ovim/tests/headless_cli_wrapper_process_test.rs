@@ -106,7 +106,10 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
     };
     let initial: Value = serde_json::from_slice(&initial_snapshot.stdout)
         .expect("snapshot wrapper should print JSON");
+    assert_eq!(initial["schema_version"], 2);
     assert_eq!(initial["buffer"]["content"], "first\nsecond\n");
+    assert_eq!(initial["view"]["viewport_width"], 64);
+    assert_eq!(initial["view"]["viewport_height"], 18);
     let session_json: Value =
         serde_json::from_slice(&fs::read(&session_file).expect("read registered session metadata"))
             .expect("session metadata is JSON");

@@ -749,6 +749,7 @@ mod tests {
 
     fn snapshot_with(mode: &str, hover: Option<&str>) -> EditorSnapshot {
         EditorSnapshot {
+            schema_version: crate::api::SNAPSHOT_SCHEMA_VERSION,
             buffer: BufferInfo::default(),
             cursor: CursorPosition::default(),
             mode: mode.to_string(),
@@ -759,6 +760,7 @@ mod tests {
             hover_info: hover.map(|s| s.to_string()),
             ai_chat: None,
             decorations: Vec::new(),
+            view: crate::api::ViewSnapshot::default(),
         }
     }
 

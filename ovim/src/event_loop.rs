@@ -12,7 +12,8 @@ use ovim::api::{
     parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DecorationInfo,
     DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo,
     LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo,
-    PickerResultInfo, RenderInfo, SuccessResponse, VisualSelection,
+    PickerResultInfo, RenderInfo, SuccessResponse, ViewSnapshot, VisualSelection,
+    SNAPSHOT_SCHEMA_VERSION,
 };
 use ovim::buffer::{BufferId, LineHighlights};
 use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
@@ -1141,11 +1142,13 @@ async fn handle_api_request(
 ) {
     match request {
         ApiRequest::GetSnapshot(tx) => {
-            let snapshot = create_snapshot(editor);
+            let dimensions = session_info.lock().ok().and_then(|info| info.dimensions());
+            let snapshot = create_snapshot_with_dimensions(editor, dimensions);
             let _ = tx.send(ApiResponse::Snapshot(snapshot));
         }
         ApiRequest::GetSnapshotLight(tx) => {
-            let snapshot = create_snapshot_light(editor);
+            let dimensions = session_info.lock().ok().and_then(|info| info.dimensions());
+            let snapshot = create_snapshot_light(editor, dimensions);
             let _ = tx.send(ApiResponse::Snapshot(snapshot));
         }
         ApiRequest::SendKeys(keys, tx) => {
@@ -1578,14 +1581,15 @@ async fn handle_api_request(
 mod tests {
     use super::apply_java_status;
     use super::compute_text_width;
-    use super::create_snapshot;
     use super::find_char_positions;
     use super::handle_api_request;
     use super::handle_edit_line;
     use super::handle_terminal_resize;
     use super::ApiRequest;
     use super::ApiResponse;
-    use ovim::editor::Editor;
+    use super::{create_snapshot, create_snapshot_with_dimensions, refresh_after_input};
+    use ovim::api::SNAPSHOT_SCHEMA_VERSION;
+    use ovim::editor::{Editor, InputHandler};
     use ovim::mode::Mode;
     use ovim::session::SessionInfo;
     use ovim::ui::AnsiRenderCache;
@@ -1655,11 +1659,61 @@ mod tests {
         editor.open_ai_chat(ChatOpts::default()).unwrap();
 
         let snapshot = create_snapshot(&editor);
+        assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
         let chat = snapshot.ai_chat.expect("active chat snapshot");
         assert!(!chat.waiting);
         assert!(chat.input.is_empty());
         assert!(chat.queued.is_empty());
         assert!(chat.messages.is_empty());
+        assert_eq!(chat.focus, "text_input");
+        assert_eq!(chat.input_cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn api_keys_match_direct_input_state_and_render() {
+        let sequence = "jA!<Esc>gg0";
+        let dimensions = (72, 20);
+        let mut direct = Editor::with_content("alpha\nbeta\ngamma\n");
+        let mut via_api = Editor::with_content("alpha\nbeta\ngamma\n");
+        handle_terminal_resize(&mut direct, dimensions.0, dimensions.1).unwrap();
+        handle_terminal_resize(&mut via_api, dimensions.0, dimensions.1).unwrap();
+
+        for event in ovim::api::parse_key_string(sequence).unwrap() {
+            InputHandler::handle_key_event_no_dirty(&mut direct, event).unwrap();
+        }
+        refresh_after_input(&mut direct);
+
+        let (tx, rx) = oneshot::channel();
+        let mut api_cache = AnsiRenderCache::new();
+        let session = Arc::new(Mutex::new(
+            SessionInfo::new(12345, None, "parity".to_string())
+                .with_dimensions(dimensions.0, dimensions.1),
+        ));
+        handle_api_request(
+            &mut via_api,
+            ApiRequest::SendKeys(sequence.to_string(), tx),
+            SystemTime::now(),
+            &session,
+            &mut api_cache,
+        )
+        .await;
+        assert!(matches!(rx.await.unwrap(), ApiResponse::SendKeysResult(_)));
+
+        let direct_snapshot = create_snapshot_with_dimensions(&direct, Some(dimensions));
+        let api_snapshot = create_snapshot_with_dimensions(&via_api, Some(dimensions));
+        assert_eq!(
+            serde_json::to_value(direct_snapshot).unwrap(),
+            serde_json::to_value(api_snapshot).unwrap()
+        );
+
+        let mut direct_cache = AnsiRenderCache::new();
+        let direct_render = direct_cache
+            .render(&mut direct, dimensions.0, dimensions.1, true)
+            .unwrap();
+        let api_render = api_cache
+            .render(&mut via_api, dimensions.0, dimensions.1, true)
+            .unwrap();
+        assert_eq!(direct_render, api_render);
     }
 
     #[test]
@@ -2276,7 +2330,36 @@ pub fn update_file_list_cache_from_background(editor: &mut Editor) {
     }
 }
 
+#[cfg(test)]
 fn create_snapshot(editor: &Editor) -> EditorSnapshot {
+    create_snapshot_with_dimensions(editor, None)
+}
+
+fn create_view_snapshot(editor: &Editor, dimensions: Option<(u16, u16)>) -> ViewSnapshot {
+    ViewSnapshot {
+        viewport_width: dimensions.map(|(width, _)| width),
+        viewport_height: dimensions
+            .map(|(_, height)| height)
+            .or_else(|| u16::try_from(editor.viewport_height()).ok()),
+        scroll_offset: editor.scroll_offset(),
+        scroll_subrow: editor.scroll_subrow(),
+        tab_count: editor.tab_count(),
+        current_tab: editor.current_tab_index(),
+        window_count: editor.window_count(),
+        file_tree_visible: editor.file_tree().is_visible(),
+        command_line: editor.command_line().to_string(),
+        command_cursor: editor.command_cursor(),
+        search_query: editor.search_buffer().to_string(),
+        search_forward: editor.search_forward(),
+        status: editor.lsp_status().to_string(),
+        active_session: editor.active_session().map(str::to_string),
+    }
+}
+
+fn create_snapshot_with_dimensions(
+    editor: &Editor,
+    dimensions: Option<(u16, u16)>,
+) -> EditorSnapshot {
     let buffer_info = create_buffer_info(editor);
     let cursor = editor.buffer().cursor();
 
@@ -2411,6 +2494,7 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         .collect();
 
     EditorSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
         buffer: buffer_info,
         cursor: cursor_pos,
         mode: editor.mode().display_name().to_string(),
@@ -2421,12 +2505,13 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         hover_info: editor.hover_info().map(|s| s.to_string()),
         ai_chat: create_ai_chat_snapshot(editor),
         decorations,
+        view: create_view_snapshot(editor, dimensions),
     }
 }
 
 fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot> {
-    use ovim::api::{AiChatMessageSnapshot, AiChatSnapshot, QueuedChatSnapshot};
-    use ovim_core::ai::chat_types::ChatRole;
+    use ovim::api::{AiChatMessageSnapshot, AiChatSnapshot, QueuedChatSnapshot, ToolCallSnapshot};
+    use ovim_core::ai::chat_types::{ChatFocus, ChatRole};
     use ovim_core::editor::QueuedChatInputKind;
 
     editor.ai_chat_state()?;
@@ -2459,11 +2544,32 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
             .to_string(),
             content: message.content.clone(),
             tool_call_id: message.tool_call_id.clone(),
+            tool: message.tool_call_id.as_deref().and_then(|id| {
+                let summary = editor.ai_chat_tool_event_summary(id)?;
+                let expanded = editor.ai_chat_is_tool_event_expanded(id);
+                Some(ToolCallSnapshot {
+                    name: summary.call.name.clone(),
+                    summary: summary.label.clone(),
+                    expanded,
+                    arguments: expanded.then(|| summary.call.arguments.clone()),
+                })
+            }),
         })
         .collect();
     Some(AiChatSnapshot {
         waiting: editor.ai_chat_waiting(),
         input: editor.ai_chat_input().to_string(),
+        input_cursor: editor.ai_chat_input_cursor(),
+        focus: match editor.ai_chat_focus() {
+            ChatFocus::TextInput => "text_input",
+            ChatFocus::MessageHistory => "message_history",
+            ChatFocus::ModelSelector => "model_selector",
+            ChatFocus::TreePanel => "tree_panel",
+        }
+        .to_string(),
+        streaming: editor.ai_chat_is_streaming(),
+        review_mode: editor.ai_chat_review_mode(),
+        tree_panel_open: editor.ai_chat_tree_panel_open(),
         pending_approval,
         queued,
         messages,
@@ -2472,7 +2578,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
 
 /// Lightweight snapshot: skips buffer content, registers, marks, and picker.
 /// Used by MCP polling and other callers that only need mode/cursor/hover.
-fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
+fn create_snapshot_light(editor: &Editor, dimensions: Option<(u16, u16)>) -> EditorSnapshot {
     let cursor = editor.buffer().cursor();
     let cursor_pos = CursorPosition {
         line: cursor.line(),
@@ -2480,6 +2586,7 @@ fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
     };
 
     EditorSnapshot {
+        schema_version: SNAPSHOT_SCHEMA_VERSION,
         buffer: BufferInfo {
             content: String::new(),
             line_count: editor.buffer().rope().len_lines(),
@@ -2496,6 +2603,7 @@ fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
         // Lightweight snapshot deliberately omits decorations to keep polling
         // cheap; callers that need them should hit the full `/v1/snapshot`.
         decorations: Vec::new(),
+        view: create_view_snapshot(editor, dimensions),
     }
 }
 
