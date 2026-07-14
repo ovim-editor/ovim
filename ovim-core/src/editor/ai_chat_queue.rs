@@ -2,6 +2,7 @@ use anyhow::Result;
 
 use super::ai_chat_state::{QueuedChatInput, QueuedChatInputKind};
 use super::Editor;
+use crate::ai::chat_types::ProviderSteerUpdate;
 
 impl Editor {
     /// Tab submits a normal follow-up for the next round while work is active.
@@ -47,10 +48,13 @@ impl Editor {
         };
 
         if let Some(chat) = self.ai_state.chat.as_mut() {
+            let id = chat.next_queued_input_id;
+            chat.next_queued_input_id = chat.next_queued_input_id.saturating_add(1);
             chat.input.clear();
             chat.input_cursor = 0;
             let images = std::mem::take(&mut chat.pending_images);
             chat.queued_inputs.push_back(QueuedChatInput {
+                id,
                 kind,
                 content: input.clone(),
                 images,
@@ -61,7 +65,10 @@ impl Editor {
                     .as_ref()
                     .and_then(|job| job.steer_tx.as_ref())
                 {
-                    let _ = tx.send(input.clone());
+                    let _ = tx.send(ProviderSteerUpdate::Queue {
+                        id,
+                        content: input.clone(),
+                    });
                 }
             }
         }
@@ -85,18 +92,14 @@ impl Editor {
         Ok(())
     }
 
-    pub(crate) fn accept_provider_ai_chat_steer(&mut self, content: String) -> Result<()> {
-        self.remove_first_matching_queued_steer(&content);
+    pub(crate) fn accept_provider_ai_chat_steer(&mut self, id: u64, content: String) -> Result<()> {
+        self.remove_queued_ai_chat_input(id);
         self.record_accepted_ai_chat_steer(content)
     }
 
-    pub(crate) fn reject_provider_ai_chat_steer(&mut self, content: &str, error: &str) {
+    pub(crate) fn reject_provider_ai_chat_steer(&mut self, id: u64, error: &str) {
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            if let Some(item) = chat
-                .queued_inputs
-                .iter_mut()
-                .find(|item| item.kind == QueuedChatInputKind::Steer && item.content == content)
-            {
+            if let Some(item) = chat.queued_inputs.iter_mut().find(|item| item.id == id) {
                 item.kind = QueuedChatInputKind::FollowUp;
             }
         }
@@ -138,17 +141,48 @@ impl Editor {
         selected
     }
 
-    fn remove_first_matching_queued_steer(&mut self, content: &str) {
+    fn remove_queued_ai_chat_input(&mut self, id: u64) -> Option<QueuedChatInput> {
         let Some(chat) = self.ai_state.chat.as_mut() else {
-            return;
+            return None;
         };
-        if let Some(index) = chat
-            .queued_inputs
-            .iter()
-            .position(|item| item.kind == QueuedChatInputKind::Steer && item.content == content)
-        {
-            chat.queued_inputs.remove(index);
+        if let Some(index) = chat.queued_inputs.iter().position(|item| item.id == id) {
+            let removed = chat.queued_inputs.remove(index);
+            if chat.history.selected_queued_id == Some(id) {
+                chat.history.selected_queued_id = chat
+                    .queued_inputs
+                    .get(index.min(chat.queued_inputs.len().saturating_sub(1)))
+                    .map(|item| item.id);
+            }
+            return removed;
         }
+        None
+    }
+
+    pub fn recall_queued_ai_chat_input(&mut self, id: u64) -> bool {
+        let Some(item) = self.remove_queued_ai_chat_input(id) else {
+            return false;
+        };
+        if item.kind == QueuedChatInputKind::Steer {
+            if let Some(tx) = self
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.pending_job.as_ref())
+                .and_then(|job| job.steer_tx.as_ref())
+            {
+                let _ = tx.send(ProviderSteerUpdate::Cancel { id });
+            }
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.input = item.content;
+            chat.input_cursor = chat.input.len();
+            chat.pending_images = item.images;
+            chat.history.selected_queued_id = None;
+            chat.history.selected_node_id = None;
+            chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
+        }
+        self.set_lsp_status("Queued message moved back to the composer".to_string());
+        true
     }
 
     /// Execute queued commands in order, then start at most one queued user

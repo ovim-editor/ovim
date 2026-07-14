@@ -63,7 +63,9 @@ pub(crate) async fn request(
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: Option<&str>,
     durable_session: Option<DurableCodexSession>,
-    steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    steer_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<crate::ai::chat_types::ProviderSteerUpdate>,
+    >,
 ) -> Result<String> {
     let cwd = request_cwd(file_path)?;
     if session_key.is_some() || durable_session.is_some() {
@@ -246,7 +248,9 @@ async fn request_persistent(
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: &str,
     durable_session: Option<DurableCodexSession>,
-    steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+    steer_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<crate::ai::chat_types::ProviderSteerUpdate>,
+    >,
 ) -> Result<String> {
     let configuration = provider_configuration_fingerprint(profile, instructions, cwd, tools)?;
     let runtime_key = durable_session
@@ -644,10 +648,13 @@ impl AppServerClient {
         _cwd: &Path,
         thread_id: &str,
         turn_id: &str,
-        mut steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
+        mut steer_rx: Option<
+            tokio::sync::mpsc::UnboundedReceiver<crate::ai::chat_types::ProviderSteerUpdate>,
+        >,
     ) -> Result<String> {
         let mut output = String::new();
         let mut current_message_had_delta = false;
+        let mut pending_steers = std::collections::VecDeque::new();
         loop {
             let message = self.next_message().await?;
             if message.get("method").and_then(Value::as_str) == Some("item/tool/call") {
@@ -659,20 +666,23 @@ impl AppServerClient {
                 self.respond_to_tool_call(&message, stream_tx.as_ref(), thread_id, turn_id)
                     .await?;
                 if let Some(rx) = steer_rx.as_mut() {
-                    while let Ok(content) = rx.try_recv() {
+                    while let Ok(update) = rx.try_recv() {
+                        apply_provider_steer_update(&mut pending_steers, update);
+                    }
+                    while let Some((id, content)) = pending_steers.pop_front() {
                         match self
                             .steer_turn(thread_id, turn_id, &content, stream_tx.as_ref())
                             .await
                         {
                             Ok(()) => {
                                 if let Some(tx) = stream_tx.as_ref() {
-                                    let _ = tx.send(StreamChunk::SteerAccepted { content });
+                                    let _ = tx.send(StreamChunk::SteerAccepted { id, content });
                                 }
                             }
                             Err(error) => {
                                 if let Some(tx) = stream_tx.as_ref() {
                                     let _ = tx.send(StreamChunk::SteerRejected {
-                                        content,
+                                        id,
                                         error: error.to_string(),
                                     });
                                 }
@@ -857,6 +867,20 @@ impl AppServerClient {
             }
         }))
         .await
+    }
+}
+
+fn apply_provider_steer_update(
+    pending: &mut std::collections::VecDeque<(u64, String)>,
+    update: crate::ai::chat_types::ProviderSteerUpdate,
+) {
+    match update {
+        crate::ai::chat_types::ProviderSteerUpdate::Queue { id, content } => {
+            pending.push_back((id, content));
+        }
+        crate::ai::chat_types::ProviderSteerUpdate::Cancel { id } => {
+            pending.retain(|(queued_id, _)| *queued_id != id);
+        }
     }
 }
 
@@ -1615,5 +1639,22 @@ mod tests {
         let found = search_project(dir.path(), &json!({ "query": "needle", "limit": 1 })).unwrap();
         assert_eq!(found.lines().count(), 1);
         assert!(found.contains("notes.txt:2"));
+    }
+
+    #[test]
+    fn recalled_steer_is_removed_before_the_tool_boundary() {
+        use crate::ai::chat_types::ProviderSteerUpdate;
+
+        let mut pending = std::collections::VecDeque::new();
+        apply_provider_steer_update(
+            &mut pending,
+            ProviderSteerUpdate::Queue {
+                id: 7,
+                content: "old wording".into(),
+            },
+        );
+        apply_provider_steer_update(&mut pending, ProviderSteerUpdate::Cancel { id: 7 });
+
+        assert!(pending.is_empty());
     }
 }

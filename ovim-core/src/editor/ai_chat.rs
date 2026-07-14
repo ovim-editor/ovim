@@ -543,14 +543,14 @@ impl Editor {
                     let _ = response.send(wire_result);
                     changed = true;
                 }
-                StreamChunk::SteerAccepted { content } => {
-                    if let Err(error) = self.accept_provider_ai_chat_steer(content) {
+                StreamChunk::SteerAccepted { id, content } => {
+                    if let Err(error) = self.accept_provider_ai_chat_steer(id, content) {
                         self.set_lsp_status(format!("Failed to record accepted steer: {error}"));
                     }
                     changed = true;
                 }
-                StreamChunk::SteerRejected { content, error } => {
-                    self.reject_provider_ai_chat_steer(&content, &error);
+                StreamChunk::SteerRejected { id, error } => {
+                    self.reject_provider_ai_chat_steer(id, &error);
                     changed = true;
                 }
                 StreamChunk::Done => {
@@ -1596,6 +1596,9 @@ impl Editor {
 
     /// Selected message index in current conversation.
     pub fn ai_chat_history_selected_index(&self) -> Option<usize> {
+        if self.ai_chat_history_selected_queued_id().is_some() {
+            return None;
+        }
         let conv = self.conversation()?;
         let node_ids = conv.node_ids_for_active_branch();
         if node_ids.is_empty() {
@@ -1614,8 +1617,35 @@ impl Editor {
         Some(node_ids.len() - 1)
     }
 
+    pub fn ai_chat_history_selected_queued_id(&self) -> Option<u64> {
+        let chat = self.ai_state.chat.as_ref()?;
+        let id = chat.history.selected_queued_id?;
+        chat.queued_inputs
+            .iter()
+            .any(|item| item.id == id)
+            .then_some(id)
+    }
+
+    pub fn ai_chat_history_selected_queued_index(&self) -> Option<usize> {
+        let id = self.ai_chat_history_selected_queued_id()?;
+        self.ai_state
+            .chat
+            .as_ref()?
+            .queued_inputs
+            .iter()
+            .position(|item| item.id == id)
+    }
+
     /// Whether history selection currently points at latest message.
     pub fn ai_chat_history_is_latest_selected(&self) -> bool {
+        let queued_len = self
+            .ai_state
+            .chat
+            .as_ref()
+            .map_or(0, |chat| chat.queued_inputs.len());
+        if queued_len > 0 {
+            return self.ai_chat_history_selected_queued_index() == Some(queued_len - 1);
+        }
         let Some(idx) = self.ai_chat_history_selected_index() else {
             return true;
         };
@@ -1696,22 +1726,39 @@ impl Editor {
         if messages == 0 {
             return;
         }
-        let target_id = {
-            let Some(conv) = self.conversation() else {
-                return;
-            };
-            let node_ids = conv.node_ids_for_active_branch();
-            if node_ids.is_empty() {
-                return;
-            }
-            let current = self
-                .ai_chat_history_selected_index()
-                .unwrap_or(node_ids.len() - 1);
-            let target = current.saturating_sub(messages);
-            node_ids.get(target).copied()
-        };
+        let node_ids = self
+            .conversation()
+            .map(|conv| conv.node_ids_for_active_branch().to_vec())
+            .unwrap_or_default();
+        let queued_ids = self
+            .ai_state
+            .chat
+            .as_ref()
+            .map(|chat| {
+                chat.queued_inputs
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let total = node_ids.len() + queued_ids.len();
+        if total == 0 {
+            return;
+        }
+        let current = self
+            .ai_chat_history_selected_queued_index()
+            .map(|index| node_ids.len() + index)
+            .or_else(|| self.ai_chat_history_selected_index())
+            .unwrap_or(total - 1);
+        let target = current.saturating_sub(messages);
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.history.selected_node_id = target_id;
+            if target < node_ids.len() {
+                chat.history.selected_node_id = node_ids.get(target).copied();
+                chat.history.selected_queued_id = None;
+            } else {
+                chat.history.selected_node_id = None;
+                chat.history.selected_queued_id = queued_ids.get(target - node_ids.len()).copied();
+            }
         }
         self.ai_chat_history_ensure_cursor_visible();
     }
@@ -1723,36 +1770,54 @@ impl Editor {
         if messages == 0 {
             return self.ai_chat_history_is_latest_selected();
         }
-        let target_id = {
-            let Some(conv) = self.conversation() else {
-                return true;
-            };
-            let node_ids = conv.node_ids_for_active_branch();
-            if node_ids.is_empty() {
-                return true;
-            }
-            let current = self
-                .ai_chat_history_selected_index()
-                .unwrap_or(node_ids.len() - 1);
-            let target = (current + messages).min(node_ids.len() - 1);
-            node_ids.get(target).copied()
-        };
+        let node_ids = self
+            .conversation()
+            .map(|conv| conv.node_ids_for_active_branch().to_vec())
+            .unwrap_or_default();
+        let queued_ids = self
+            .ai_state
+            .chat
+            .as_ref()
+            .map(|chat| {
+                chat.queued_inputs
+                    .iter()
+                    .map(|item| item.id)
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        let total = node_ids.len() + queued_ids.len();
+        if total == 0 {
+            return true;
+        }
+        let current = self
+            .ai_chat_history_selected_queued_index()
+            .map(|index| node_ids.len() + index)
+            .or_else(|| self.ai_chat_history_selected_index())
+            .unwrap_or(total - 1);
+        let target = current.saturating_add(messages).min(total - 1);
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.history.selected_node_id = target_id;
+            if target < node_ids.len() {
+                chat.history.selected_node_id = node_ids.get(target).copied();
+                chat.history.selected_queued_id = None;
+            } else {
+                chat.history.selected_node_id = None;
+                chat.history.selected_queued_id = queued_ids.get(target - node_ids.len()).copied();
+            }
         }
         self.ai_chat_history_ensure_cursor_visible();
         self.ai_chat_history_is_latest_selected()
     }
 
     fn ai_chat_history_ensure_cursor_visible(&mut self) {
-        let Some(selected_idx) = self.ai_chat_history_selected_index() else {
-            return;
-        };
-        let Some(&(msg_start, msg_end)) = self
-            .render_cache
-            .ai_chat_last_message_row_spans
-            .get(selected_idx)
-        else {
+        let span = self
+            .ai_chat_history_selected_queued_index()
+            .and_then(|index| self.render_cache.ai_chat_last_queued_row_spans.get(index))
+            .or_else(|| {
+                self.ai_chat_history_selected_index()
+                    .and_then(|index| self.render_cache.ai_chat_last_message_row_spans.get(index))
+            })
+            .copied();
+        let Some((msg_start, msg_end)) = span else {
             return;
         };
         let vis_start = self.render_cache.ai_chat_last_visible_start_row;
@@ -1772,11 +1837,21 @@ impl Editor {
 
     /// Ensure history selection references the latest message.
     pub fn ai_chat_reset_history_cursor(&mut self) {
+        let latest_queued = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.queued_inputs.back().map(|item| item.id));
         let latest = self
             .conversation()
             .and_then(|c| c.node_ids_for_active_branch().last().copied());
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.history.selected_node_id = latest;
+            chat.history.selected_queued_id = latest_queued;
+            chat.history.selected_node_id = if latest_queued.is_none() {
+                latest
+            } else {
+                None
+            };
         }
     }
 

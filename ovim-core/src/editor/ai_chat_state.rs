@@ -92,6 +92,9 @@ pub struct ChatHistoryState {
     ///
     /// Using node identity keeps selection stable when new messages append.
     pub selected_node_id: Option<NodeId>,
+    /// Selected scheduled input, addressed by stable identity because steers
+    /// may disappear asynchronously when the provider accepts them.
+    pub selected_queued_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +109,7 @@ pub enum QueuedChatInputKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct QueuedChatInput {
+    pub id: u64,
     pub kind: QueuedChatInputKind,
     pub content: String,
     pub images: Vec<ImageAttachment>,
@@ -139,6 +143,7 @@ pub struct AiChatState {
     pub image_modal: Option<PathBuf>,
     /// User inputs submitted while an agent round is active.
     pub queued_inputs: VecDeque<QueuedChatInput>,
+    pub next_queued_input_id: u64,
     /// Which zone has focus.
     pub focus: ChatFocus,
     /// Viewport behavior for chat history.
@@ -229,6 +234,7 @@ impl AiChatState {
             pending_images: Vec::new(),
             image_modal: None,
             queued_inputs: VecDeque::new(),
+            next_queued_input_id: 1,
             focus: ChatFocus::TextInput,
             viewport: ChatViewportState::default(),
             context_generation: 0,
@@ -280,7 +286,8 @@ pub struct PendingAiChatJob {
     pub branch_generation: u64,
     /// Codex app-server steering input. Other providers use ovim's local
     /// post-tool continuation boundary and leave this unset.
-    pub steer_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
+    pub steer_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<crate::ai::chat_types::ProviderSteerUpdate>>,
 }
 
 pub struct ScratchBufferState {

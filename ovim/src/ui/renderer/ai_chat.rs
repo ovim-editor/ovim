@@ -312,6 +312,7 @@ fn render_chat_image_gallery(
 
 fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, theme: &Theme) {
     editor.render_cache.ai_chat_history_area = Some(crate::key_convert::convert_ratatui_rect(area));
+    editor.render_cache.ai_chat_last_queued_row_spans.clear();
     let messages = editor.ai_chat_messages();
     if messages.is_empty() {
         editor.render_cache.ai_chat_last_total_rows = 0;
@@ -488,16 +489,24 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     }
 
     // Follow-ups submitted during a run stay visible above the composer.
-    for queued in editor.ai_chat_queued_inputs() {
+    let selected_queued = editor.ai_chat_history_selected_queued_id();
+    let queued_inputs = editor.ai_chat_queued_inputs().cloned().collect::<Vec<_>>();
+    for queued in queued_inputs {
+        let row_start = rendered_lines.len();
         rendered_lines.push((
             render_queued_input_row(
                 panel_width,
                 queued.kind,
                 &queued.content,
                 queued.images.len(),
+                focus == ChatFocus::MessageHistory && selected_queued == Some(queued.id),
             ),
             false,
         ));
+        editor
+            .render_cache
+            .ai_chat_last_queued_row_spans
+            .push((row_start, rendered_lines.len()));
     }
 
     // Progress belongs to the run, not to an assistant message. Keep it as a
@@ -755,6 +764,7 @@ fn render_queued_input_row(
     kind: QueuedChatInputKind,
     content: &str,
     image_count: usize,
+    selected: bool,
 ) -> Line<'static> {
     let (prefix, label, color, background) = match kind {
         QueuedChatInputKind::Steer => (
@@ -787,12 +797,21 @@ fn render_queued_input_row(
     );
     let display = truncate_with_ellipsis(&text, panel_width);
     let padding = panel_width.saturating_sub(display.chars().count());
+    let style = Style::default()
+        .fg(color)
+        .bg(if selected {
+            Color::Rgb(64, 82, 120)
+        } else {
+            background
+        })
+        .add_modifier(if selected {
+            Modifier::BOLD
+        } else {
+            Modifier::DIM
+        });
     Line::from(Span::styled(
         format!("{display}{}", " ".repeat(padding)),
-        Style::default()
-            .fg(color)
-            .bg(background)
-            .add_modifier(Modifier::DIM),
+        style,
     ))
 }
 
@@ -1627,7 +1646,7 @@ mod tests {
     use ratatui::{
         backend::TestBackend,
         layout::Rect,
-        style::{Color, Style},
+        style::{Color, Modifier, Style},
         text::{Line, Span},
         Terminal,
     };
@@ -1753,13 +1772,20 @@ mod tests {
 
     #[test]
     fn queued_commands_are_labeled_distinctly() {
-        let line = render_queued_input_row(40, QueuedChatInputKind::Command, "/clear", 0);
+        let line = render_queued_input_row(40, QueuedChatInputKind::Command, "/clear", 0, false);
         let text = line
             .spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(text.contains("/ command: /clear"));
+    }
+
+    #[test]
+    fn selected_queued_input_is_visually_emphasized() {
+        let line = render_queued_input_row(40, QueuedChatInputKind::FollowUp, "next", 0, true);
+        assert!(line.spans[0].style.add_modifier.contains(Modifier::BOLD));
+        assert!(!line.spans[0].style.add_modifier.contains(Modifier::DIM));
     }
 
     #[test]

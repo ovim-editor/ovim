@@ -427,6 +427,10 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.ai_chat_scroll_viewport_down(10);
         }
         KeyCode::Enter => {
+            if let Some(id) = editor.ai_chat_history_selected_queued_id() {
+                editor.recall_queued_ai_chat_input(id);
+                return Ok(());
+            }
             let node_ids = editor
                 .conversation()
                 .map(|c| c.node_ids_for_active_branch().to_vec())
@@ -777,6 +781,69 @@ mod tests {
 
         assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
         assert!(editor.ai_chat_input_cursor() < editor.ai_chat_input().len());
+    }
+
+    #[test]
+    fn queued_inputs_are_selected_before_messages_and_enter_recalls_them() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_user_message("earlier message".into());
+        let turn = editor.begin_ai_runtime_turn("active request").unwrap();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+
+        for content in ["first queued", "/clear"] {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = content.into();
+            chat.input_cursor = chat.input.len();
+            editor.schedule_ai_chat_message().unwrap();
+        }
+        let queued_ids = editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .queued_inputs
+            .iter()
+            .map(|item| item.id)
+            .collect::<Vec<_>>();
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Up, Modifiers::NONE)).unwrap();
+        assert_eq!(
+            editor.ai_chat_history_selected_queued_id(),
+            Some(queued_ids[1])
+        );
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Up, Modifiers::NONE)).unwrap();
+        assert_eq!(
+            editor.ai_chat_history_selected_queued_id(),
+            Some(queued_ids[0])
+        );
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Up, Modifiers::NONE)).unwrap();
+        assert!(editor.ai_chat_history_selected_queued_id().is_none());
+        assert_eq!(editor.ai_chat_history_selected_index(), Some(0));
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Down, Modifiers::NONE)).unwrap();
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Down, Modifiers::NONE)).unwrap();
+        assert_eq!(
+            editor.ai_chat_history_selected_queued_id(),
+            Some(queued_ids[1])
+        );
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE)).unwrap();
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
+        assert_eq!(editor.ai_chat_input(), "/clear");
+        assert_eq!(
+            editor.ai_state.chat.as_ref().unwrap().queued_inputs.len(),
+            1
+        );
+        assert_eq!(
+            editor.ai_state.chat.as_ref().unwrap().queued_inputs[0].content,
+            "first queued"
+        );
     }
 
     #[test]
