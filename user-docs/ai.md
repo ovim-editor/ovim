@@ -53,6 +53,14 @@ folder for the chat, or Esc/Ctrl-N to deny. To opt out of auto mode, set
 `tool_approval_mode = "sensitive_prompt"` or `"always_prompt"` in legacy
 `ai.toml`.
 
+For trusted work where approval interruptions are more costly than the safety
+gate, click `YOLO OFF` at the top right of the chat to switch it to `YOLO ON`.
+YOLO is opt-in per chat and defaults off. It bypasses Luna and interactive tool
+approval prompts, and immediately releases a request already waiting for
+approval. It does not disable malformed-input checks, `..` traversal rejection,
+project-context requirements, or durable-run ownership checks. Click again or
+run `/yolo off` to restore normal policy.
+
 When an active agent pauses for one of these approval decisions, Ovim emits the
 terminal bell once. Whether that is audible, visual, or suppressed is controlled
 by the terminal's bell settings. The notification is tied to the new prompt,
@@ -114,6 +122,8 @@ Chat slash commands are handled by ovim rather than sent to the provider:
 - `/model codex_sol` switches directly to a named profile.
 - `/clear` clears the current conversation and starts a fresh provider context.
 - `/exa` opens web-search setup to add or replace an Exa API key.
+- `/yolo`, `/yolo on`, and `/yolo off` toggle or set the per-chat approval
+  bypass. This is also useful for headless sessions.
 
 While an agent round is running, the composer remains editable:
 

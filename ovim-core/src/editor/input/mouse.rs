@@ -405,6 +405,14 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.close_ai_chat_image_modal();
             return Ok(None);
         }
+        if editor
+            .render_cache
+            .ai_chat_yolo_hitbox
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.toggle_ai_chat_yolo_mode();
+            return Ok(None);
+        }
         if let Some(path) = editor
             .render_cache
             .ai_chat_image_thumbnails
@@ -985,6 +993,39 @@ mod tests {
         .unwrap();
 
         assert!(editor.ai_chat_image_modal_path().is_none());
+    }
+
+    #[test]
+    fn clicking_chat_yolo_toggle_changes_per_chat_policy() {
+        let mut editor = editor_with_docked_chat();
+        editor.render_cache.ai_chat_yolo_hitbox = Some(crate::Rect {
+            x: 69,
+            y: 0,
+            width: 11,
+            height: 1,
+        });
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 74,
+                row: 0,
+            },
+        )
+        .unwrap();
+        assert!(editor.ai_chat_yolo_mode());
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 74,
+                row: 0,
+            },
+        )
+        .unwrap();
+        assert!(!editor.ai_chat_yolo_mode());
     }
 
     #[test]

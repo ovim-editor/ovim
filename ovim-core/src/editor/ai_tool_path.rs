@@ -63,7 +63,9 @@ impl Editor {
 
         if requested_path.starts_with(&boundary_root) {
             if let Some(reason) = sensitive_path_reason(&requested_path) {
-                let approved_sensitive = approved_once_match || approved_session_match.is_some();
+                let approved_sensitive = self.ai_chat_yolo_mode()
+                    || approved_once_match
+                    || approved_session_match.is_some();
                 if !approved_sensitive {
                     return Ok(ToolPathResolution::NeedsApproval(ToolApprovalRequest {
                         requested_path: requested_path.clone(),
@@ -122,6 +124,13 @@ impl Editor {
                 .map(normalize_path)
                 .unwrap_or_else(|| requested_path.clone())
         };
+
+        if self.ai_chat_yolo_mode() {
+            return Ok(ToolPathResolution::Allowed {
+                absolute_path: requested_path,
+                boundary_root: approval_root,
+            });
+        }
 
         Ok(ToolPathResolution::NeedsApproval(ToolApprovalRequest {
             requested_path: requested_path.clone(),

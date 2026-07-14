@@ -9,6 +9,7 @@ enum AiChatSlashCommand {
     Clear,
     Exa,
     Model { profile: Option<String> },
+    Yolo { enabled: Option<bool> },
 }
 
 impl AiChatSlashCommand {
@@ -27,6 +28,14 @@ impl AiChatSlashCommand {
                 profile: arguments.first().map(|value| (*value).to_string()),
             }),
             "model" => Err("Usage: /model [profile]".to_string()),
+            "yolo" if arguments.is_empty() => Ok(Self::Yolo { enabled: None }),
+            "yolo" if arguments == ["on"] => Ok(Self::Yolo {
+                enabled: Some(true),
+            }),
+            "yolo" if arguments == ["off"] => Ok(Self::Yolo {
+                enabled: Some(false),
+            }),
+            "yolo" => Err("Usage: /yolo [on|off]".to_string()),
             "" => Err("Enter a slash command after /".to_string()),
             unknown => Err(format!("Unknown AI chat command: /{unknown}")),
         };
@@ -61,6 +70,11 @@ impl Editor {
                 } else {
                     self.set_lsp_status(format!("Unknown AI profile: {profile}"));
                 }
+            }
+            Ok(AiChatSlashCommand::Yolo { enabled }) => {
+                self.clear_ai_chat_input();
+                let enabled = enabled.unwrap_or_else(|| !self.ai_chat_yolo_mode());
+                self.set_ai_chat_yolo_mode(enabled);
             }
             Err(message) => self.set_lsp_status(message),
         }
@@ -156,6 +170,16 @@ mod tests {
                 profile: Some("fast".into())
             }))
         );
+        assert_eq!(
+            AiChatSlashCommand::parse("/yolo on"),
+            Some(Ok(AiChatSlashCommand::Yolo {
+                enabled: Some(true)
+            }))
+        );
+        assert_eq!(
+            AiChatSlashCommand::parse("/yolo"),
+            Some(Ok(AiChatSlashCommand::Yolo { enabled: None }))
+        );
         assert!(AiChatSlashCommand::parse("hello").is_none());
         assert!(matches!(
             AiChatSlashCommand::parse("/clear now"),
@@ -201,5 +225,24 @@ mod tests {
             .iter()
             .all(|message| message.role != ChatRole::User));
         assert_eq!(editor.ai_chat_input(), "/cler");
+    }
+
+    #[test]
+    fn yolo_command_toggles_per_chat_policy() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().expect("chat");
+        chat.input = "/yolo on".into();
+        chat.input_cursor = chat.input.len();
+
+        editor.submit_ai_chat_message().expect("enable yolo");
+        assert!(editor.ai_chat_yolo_mode());
+        assert!(editor.ai_chat_input().is_empty());
+
+        let chat = editor.ai_state.chat.as_mut().expect("chat");
+        chat.input = "/yolo off".into();
+        chat.input_cursor = chat.input.len();
+        editor.submit_ai_chat_message().expect("disable yolo");
+        assert!(!editor.ai_chat_yolo_mode());
     }
 }

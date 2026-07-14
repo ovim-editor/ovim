@@ -38,6 +38,8 @@ pub struct RenderCache {
     pub ai_prompt_model_trigger_hitbox: Option<crate::Rect>,
     /// Cached AI chat panel area from last render (for mouse scroll hit-testing).
     pub last_chat_area: Option<crate::Rect>,
+    /// Click target for the per-chat YOLO policy toggle.
+    pub ai_chat_yolo_hitbox: Option<crate::Rect>,
     /// Cached AI chat message-history area from the last render.
     pub ai_chat_history_area: Option<crate::Rect>,
     /// Cached AI chat total rendered row count from last render pass.

@@ -2644,6 +2644,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
         streaming: editor.ai_chat_is_streaming(),
         review_mode: editor.ai_chat_review_mode(),
         tree_panel_open: editor.ai_chat_tree_panel_open(),
+        yolo_mode: editor.ai_chat_yolo_mode(),
         pending_images: editor
             .ai_chat_pending_images()
             .iter()

@@ -6,7 +6,7 @@ use ovim_core::editor::ai_chat_input::{
 };
 use ovim_core::editor::QueuedChatInputKind;
 use ratatui::{
-    layout::Rect,
+    layout::{Alignment, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
@@ -99,6 +99,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     editor.render_cache.ai_chat_history_area = None;
     editor.render_cache.ai_chat_image_thumbnails.clear();
     editor.render_cache.ai_chat_branch_hitboxes.clear();
+    editor.render_cache.ai_chat_yolo_hitbox = None;
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -128,6 +129,14 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     if let Some(tree_rect) = tree_area {
         super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
     }
+
+    render_chat_header(frame, editor, main_area);
+    let main_area = Rect {
+        x: main_area.x,
+        y: main_area.y.saturating_add(1),
+        width: main_area.width,
+        height: main_area.height.saturating_sub(1),
+    };
 
     // Layout: [message_history | input_bar(dynamic)]. `/model` opens a popup.
     let input_content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
@@ -214,6 +223,12 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     } else {
         chat_area
     };
+    let main_area = Rect {
+        x: main_area.x,
+        y: main_area.y.saturating_add(1),
+        width: main_area.width,
+        height: main_area.height.saturating_sub(1),
+    };
 
     let content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
     let input = editor.ai_chat_input();
@@ -256,6 +271,34 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let y = input_y + 1 + cursor_line.saturating_sub(visible_start) as u16;
 
     Some((x, y))
+}
+
+fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
+    if area.width == 0 || area.height == 0 {
+        return;
+    }
+    let enabled = editor.ai_chat_yolo_mode();
+    let label = if enabled { " YOLO ON " } else { " YOLO OFF " };
+    let width = label.chars().count().min(area.width as usize) as u16;
+    let x = area.right().saturating_sub(width);
+    let style = if enabled {
+        Style::default()
+            .fg(Color::Rgb(255, 220, 120))
+            .bg(Color::Rgb(100, 48, 28))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(TEXT_DIM)
+            .bg(Color::Rgb(35, 40, 50))
+            .add_modifier(Modifier::DIM)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(label, style)).alignment(Alignment::Right),
+        Rect::new(area.x, area.y, area.width, 1),
+    );
+    editor.render_cache.ai_chat_yolo_hitbox = Some(crate::key_convert::convert_ratatui_rect(
+        Rect::new(x, area.y, width, 1),
+    ));
 }
 
 fn chat_image_gallery_height(editor: &Editor, area: Rect, paths: &[std::path::PathBuf]) -> u16 {
@@ -2012,6 +2055,51 @@ mod tests {
             editor.render_cache.ai_chat_image_thumbnails[0].1,
             std::path::PathBuf::from("/tmp/preview.png")
         );
+    }
+
+    #[test]
+    fn chat_header_renders_clickable_yolo_state_at_top_right() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+        let header = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .take(80)
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(header.contains("YOLO OFF"), "{header}");
+        let hitbox = editor.render_cache.ai_chat_yolo_hitbox.unwrap();
+        assert_eq!(hitbox.y, 0);
+        assert_eq!(hitbox.x + hitbox.width, 80);
+
+        assert!(editor.set_ai_chat_yolo_mode(true));
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+        let header = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .take(80)
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(header.contains("YOLO ON"), "{header}");
     }
 
     #[test]

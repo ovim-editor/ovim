@@ -528,7 +528,14 @@ impl Editor {
                         }
                     };
                     if call.name == "bash" {
-                        if self.ai_state.config.tool_approval_mode
+                        if self.ai_chat_yolo_mode() {
+                            self.execute_dynamic_tool_after_policy(
+                                turn.clone(),
+                                tool,
+                                call,
+                                response,
+                            );
+                        } else if self.ai_state.config.tool_approval_mode
                             == crate::ai::ToolApprovalMode::Auto
                         {
                             self.begin_dynamic_bash_auto_mode(call, response, turn.clone(), tool);
@@ -1608,6 +1615,65 @@ impl Editor {
         self.ai_chat_waiting()
             || self.ai_chat_has_pending_tool_approval()
             || self.ai_chat_has_pending_no_repo_folder_approval()
+    }
+
+    /// Whether this chat bypasses model and user tool-approval gates.
+    pub fn ai_chat_yolo_mode(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|chat| chat.yolo_mode)
+            .unwrap_or(false)
+    }
+
+    /// Set the per-chat approval bypass. Enabling it also releases work that
+    /// is already blocked on a folder, tool, or Luna decision.
+    pub fn set_ai_chat_yolo_mode(&mut self, enabled: bool) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if chat.yolo_mode == enabled {
+            return false;
+        }
+        chat.yolo_mode = enabled;
+
+        if enabled {
+            if self.ai_chat_has_pending_no_repo_folder_approval() {
+                self.ai_chat_resolve_pending_no_repo_folder_approval(true);
+            }
+            if self.ai_chat_has_pending_tool_approval() {
+                self.ai_chat_resolve_pending_tool_approval(true, false);
+            }
+            let pending_classifier = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_auto_mode_classification.take());
+            if let Some(pending) = pending_classifier {
+                self.execute_dynamic_tool_after_policy(
+                    pending.runtime_turn,
+                    pending.runtime_tool,
+                    pending.tool_call,
+                    pending.dynamic_response,
+                );
+            }
+        }
+
+        self.set_lsp_status(if enabled {
+            "YOLO mode enabled for this chat; tool approvals are bypassed".into()
+        } else {
+            "YOLO mode disabled; normal tool approval policy restored".into()
+        });
+        true
+    }
+
+    pub fn toggle_ai_chat_yolo_mode(&mut self) -> bool {
+        if self.ai_state.chat.is_none() {
+            return false;
+        }
+        let enabled = !self.ai_chat_yolo_mode();
+        self.set_ai_chat_yolo_mode(enabled);
+        enabled
     }
 
     /// Monotonic signal updated whenever an active agent pauses for approval.
@@ -2858,6 +2924,29 @@ mod tests {
             response.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
+        assert!(editor.set_ai_chat_yolo_mode(true));
+        assert!(!editor.ai_chat_has_pending_tool_approval());
+    }
+
+    #[tokio::test]
+    async fn enabling_yolo_releases_pending_luna_review_without_prompt() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let _response = attach_finished_classifier(&mut editor, Err("still reviewing".into()));
+
+        assert!(editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_auto_mode_classification
+            .is_some());
+        assert!(editor.set_ai_chat_yolo_mode(true));
+
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(chat.pending_auto_mode_classification.is_none());
+        assert!(chat.pending_tool_approval.is_none());
+        assert!(editor.ai_chat_yolo_mode());
     }
 
     #[tokio::test]

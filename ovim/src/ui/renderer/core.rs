@@ -850,6 +850,7 @@ impl Renderer {
         // visible thumbnail placements on every frame so hiding the chat or
         // scrolling an image message away cannot replay stale image commands.
         editor.render_cache.ai_chat_image_thumbnails.clear();
+        editor.render_cache.ai_chat_yolo_hitbox = None;
         init_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {

@@ -75,6 +75,10 @@ send `<C-y>` (or `<Enter>`) to allow once, or `<C-n>` (or `<Esc>`) to deny. The
 50 ms headless background tick also polls Luna classifier completions; no
 renderer or attached terminal is required.
 
+For a trusted session, enter `/yolo on` in the chat composer to bypass Luna and
+interactive approvals for that chat; `/yolo off` restores normal policy. The
+snapshot's `ai_chat.yolo_mode` field reports the current setting.
+
 LSP helpers:
 
 ```bash

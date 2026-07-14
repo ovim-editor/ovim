@@ -175,6 +175,9 @@ pub struct AiChatState {
     pub history: ChatHistoryState,
     /// Whether assistant can suggest edits.
     pub allow_edits: bool,
+    /// Per-chat opt-in that executes tool requests without Luna or approval
+    /// prompts. Hard path/integrity validation remains enforced.
+    pub yolo_mode: bool,
     /// Waiting for AI response.
     pub waiting: bool,
     /// Pending async chat job.
@@ -265,6 +268,7 @@ impl AiChatState {
             context_generation: 0,
             history: ChatHistoryState::default(),
             allow_edits,
+            yolo_mode: false,
             waiting: false,
             pending_job: None,
             scratch: None,

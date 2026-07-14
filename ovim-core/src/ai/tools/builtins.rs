@@ -23,6 +23,9 @@ pub struct ToolExecutionContext {
     pub capabilities: Capabilities,
     /// Session-approved path roots (outside-project and/or sensitive overrides).
     pub approved_path_roots: Vec<std::path::PathBuf>,
+    /// Whether the active chat explicitly bypasses interactive path approvals.
+    /// Scope and traversal checks still apply before tool execution.
+    pub bypass_path_approvals: bool,
     /// Contents of all open buffers, keyed by canonical path.
     /// Used by `read_file_at_path` to read from in-memory buffers
     /// instead of disk (which may be stale after edits).
@@ -204,7 +207,7 @@ fn ensure_non_sensitive_or_approved(
     ctx: &ToolExecutionContext,
 ) -> Result<(), ToolResult> {
     if let Some(reason) = sensitive_path_reason(path) {
-        if !is_path_approved(path, &ctx.approved_path_roots) {
+        if !ctx.bypass_path_approvals && !is_path_approved(path, &ctx.approved_path_roots) {
             return Err(ToolResult::Error(format!(
                 "Access blocked: {} ({})",
                 path.display(),
@@ -1372,6 +1375,7 @@ mod tests {
                 allow_mutations: true,
             },
             approved_path_roots: Vec::new(),
+            bypass_path_approvals: false,
             open_buffers: std::collections::HashMap::new(),
         }
     }
@@ -1591,6 +1595,7 @@ mod tests {
                 allow_mutations: true,
             },
             approved_path_roots: Vec::new(),
+            bypass_path_approvals: false,
             open_buffers: std::collections::HashMap::new(),
         }
     }
@@ -1731,6 +1736,26 @@ mod tests {
         match result {
             ToolResult::Success(s) => assert!(s.contains("API_KEY=secret")),
             ToolResult::Error(e) => panic!("expected success, got error: {e}"),
+        }
+    }
+
+    #[test]
+    fn read_file_at_path_allows_sensitive_in_yolo_mode() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path();
+        std::fs::write(root.join(".env"), "API_KEY=secret\n").unwrap();
+        let mut ctx = test_ctx_with_project("", root.to_path_buf());
+        ctx.bypass_path_approvals = true;
+
+        let result = execute_builtin(
+            "read_file_at_path",
+            &serde_json::json!({"path": ".env"}),
+            &ctx,
+        );
+
+        match result {
+            ToolResult::Success(s) => assert!(s.contains("API_KEY=secret")),
+            ToolResult::Error(e) => panic!("expected YOLO mode to bypass approval, got: {e}"),
         }
     }
 }

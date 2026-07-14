@@ -167,6 +167,9 @@ pub struct AiChatSnapshot {
     pub review_mode: bool,
     #[serde(default)]
     pub tree_panel_open: bool,
+    /// Per-chat bypass for Luna and interactive tool approval gates.
+    #[serde(default)]
+    pub yolo_mode: bool,
     #[serde(default)]
     pub pending_images: Vec<ImageAttachmentSnapshot>,
     pub pending_approval: Option<String>,

@@ -192,6 +192,7 @@ impl Editor {
             },
             capabilities: self.build_chat_capabilities(),
             approved_path_roots,
+            bypass_path_approvals: self.ai_chat_yolo_mode(),
             open_buffers,
         }
     }
@@ -301,6 +302,9 @@ impl Editor {
         approved_once_root: Option<&PathBuf>,
         original_active_target: Option<&Path>,
     ) -> Option<ToolApprovalRequest> {
+        if self.ai_chat_yolo_mode() {
+            return None;
+        }
         let mode = self.active_chat_tool_approval_mode();
         if mode == ToolApprovalMode::Auto {
             return None;
@@ -1505,6 +1509,47 @@ mod tests {
                 "an approval request must not open the proposed target"
             );
         });
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn yolo_mode_bypasses_outside_project_approval() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo = dir.path().join("repo");
+        fs::create_dir_all(repo.join(".git")).expect("repo marker");
+        let main = repo.join("main.rs");
+        let outside = dir.path().join("outside.rs");
+        fs::write(&main, "fn main() {}\n").expect("seed main");
+        fs::write(&outside, "outside\n").expect("seed outside");
+
+        let mut editor = Editor::default();
+        editor.open_file(&main).expect("open main");
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+        set_active_profile_project_scope(&mut editor);
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
+        assert!(editor.set_ai_chat_yolo_mode(true));
+
+        let call = ToolCallInfo {
+            id: "outside-read".into(),
+            name: "read_file_at_path".into(),
+            arguments: serde_json::json!({"path": outside}),
+        };
+        match editor.dispatch_tool_call_with_approval(&call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(result)) => {
+                assert!(result.contains("outside"), "{result}");
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                panic!("YOLO read failed: {error}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(request) => {
+                panic!("YOLO requested approval: {}", request.message);
+            }
+        }
     }
 
     #[test]
