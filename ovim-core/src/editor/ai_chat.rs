@@ -2902,6 +2902,48 @@ mod tests {
     }
 
     #[test]
+    fn sibling_fork_messages_switch_between_both_durable_branches() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (_, first_reply, _) = append_recorded_test_turn(&mut editor, "one", "a1");
+        let (main_user, _, _) = append_recorded_test_turn(&mut editor, "main", "a2");
+
+        assert!(editor.fork_ai_chat_runtime_from(first_reply));
+        let (fork_user, _, _) = append_recorded_test_turn(&mut editor, "fork", "b2");
+        assert_eq!(
+            editor.conversation().unwrap().sibling_navigation(fork_user),
+            Some((1, 2, main_user, main_user))
+        );
+
+        {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.viewport.follow_latest = false;
+            chat.viewport.row_scroll_from_bottom = 12;
+            chat.history.selected_node_id = Some(fork_user);
+        }
+
+        assert!(editor.switch_ai_chat_runtime_branch(main_user));
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(chat.viewport.follow_latest);
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 0);
+        assert!(chat.history.selected_node_id.is_none());
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content == "main"));
+        assert!(!editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content == "fork"));
+
+        assert!(editor.switch_ai_chat_runtime_branch(fork_user));
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content == "fork"));
+    }
+
+    #[test]
     fn history_selection_tracks_node_identity_across_appends() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);

@@ -98,6 +98,7 @@ fn tree_panel_width(chat_width: u16) -> u16 {
 pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
     editor.render_cache.ai_chat_history_area = None;
     editor.render_cache.ai_chat_image_thumbnails.clear();
+    editor.render_cache.ai_chat_branch_hitboxes.clear();
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -359,6 +360,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     // Render messages bottom-up with scroll
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
     let mut message_row_spans: Vec<(usize, usize)> = Vec::with_capacity(messages.len());
+    let mut branch_controls = Vec::new();
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected = focus == ChatFocus::MessageHistory && Some(idx) == selected_idx;
 
@@ -401,6 +403,11 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
         let child_count = node_id
             .and_then(|id| editor.conversation().map(|c| c.child_count(id)))
             .unwrap_or(0);
+        let branch_navigation = node_id.and_then(|id| {
+            editor
+                .conversation()
+                .and_then(|conversation| conversation.sibling_navigation(id))
+        });
 
         let bubble_lines = render_chat_bubble(
             msg,
@@ -409,9 +416,19 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             allow_edits,
             is_thinking_expanded,
             child_count,
+            branch_navigation.map(|(position, count, _, _)| (position, count)),
             theme,
         );
         let msg_row_start = rendered_lines.len();
+        if let Some((position, count, previous, next)) = branch_navigation {
+            branch_controls.push(BranchRenderControl {
+                row: msg_row_start,
+                position,
+                count,
+                previous,
+                next,
+            });
+        }
         for line in bubble_lines {
             rendered_lines.push((line, false));
         }
@@ -438,6 +455,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 allow_edits,
                 true,
                 0,
+                None,
                 theme,
             );
             for line in bubble_lines {
@@ -466,6 +484,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 allow_edits,
                 false,
                 0,
+                None,
                 theme,
             );
             for line in bubble_lines {
@@ -557,6 +576,36 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             line = highlight_chat_selection(&line, selection_start, selection_end);
         }
         frame.render_widget(Paragraph::new(vec![line]), r);
+        if let Some(control) = branch_controls
+            .iter()
+            .find(|control| control.row == line_idx)
+        {
+            let control_width = branch_control_text(control.position, control.count)
+                .chars()
+                .count() as u16;
+            if (control_width as usize) < card_text_width(area.width as usize, "\u{258d}") {
+                let x = area.x + area.width - control_width;
+                let left_width = control_width / 2;
+                editor.render_cache.ai_chat_branch_hitboxes.push((
+                    crate::key_convert::convert_ratatui_rect(Rect {
+                        x,
+                        y: r.y,
+                        width: left_width,
+                        height: 1,
+                    }),
+                    control.previous,
+                ));
+                editor.render_cache.ai_chat_branch_hitboxes.push((
+                    crate::key_convert::convert_ratatui_rect(Rect {
+                        x: x + left_width,
+                        y: r.y,
+                        width: control_width - left_width,
+                        height: 1,
+                    }),
+                    control.next,
+                ));
+            }
+        }
     }
 }
 
@@ -876,6 +925,15 @@ struct MessageRowStyle {
     body_bg: Color,
 }
 
+#[derive(Clone, Copy)]
+struct BranchRenderControl {
+    row: usize,
+    position: usize,
+    count: usize,
+    previous: ovim_core::ai::chat_types::NodeId,
+    next: ovim_core::ai::chat_types::NodeId,
+}
+
 fn message_row_style(role: ChatRole, allow_edits: bool, selected: bool) -> MessageRowStyle {
     let mut style = match role {
         ChatRole::User => MessageRowStyle {
@@ -985,6 +1043,56 @@ fn render_card_text_line(
     Line::from(spans)
 }
 
+fn branch_control_text(position: usize, count: usize) -> String {
+    format!("[‹ {}/{} ›]", position + 1, count)
+}
+
+fn render_card_header_line(
+    panel_width: usize,
+    accent_glyph: &str,
+    row_style: MessageRowStyle,
+    label: &str,
+    branch_position: Option<(usize, usize)>,
+) -> Line<'static> {
+    let width = card_text_width(panel_width, accent_glyph);
+    let control = branch_position
+        .map(|(position, count)| branch_control_text(position, count))
+        .filter(|text| text.chars().count() < width);
+    let control_width = control
+        .as_ref()
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    let label_width = width.saturating_sub(control_width + usize::from(control.is_some()));
+    let display_label = truncate_with_ellipsis(label, label_width);
+    let gap = width.saturating_sub(display_label.chars().count() + control_width);
+    let label_style = Style::default()
+        .fg(row_style.label_fg)
+        .bg(row_style.label_bg)
+        .add_modifier(Modifier::BOLD);
+    let mut spans = vec![
+        Span::styled(
+            accent_glyph.to_string(),
+            Style::default()
+                .fg(row_style.accent)
+                .bg(row_style.label_bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ", Style::default().bg(row_style.label_bg)),
+        Span::styled(display_label, label_style),
+        Span::styled(" ".repeat(gap), Style::default().bg(row_style.label_bg)),
+    ];
+    if let Some(control) = control {
+        spans.push(Span::styled(
+            control,
+            Style::default()
+                .fg(Color::Rgb(155, 205, 255))
+                .bg(Color::Rgb(38, 61, 88))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
 fn render_card_styled_line(
     panel_width: usize,
     accent_glyph: &str,
@@ -1035,6 +1143,7 @@ fn render_chat_bubble(
     allow_edits: bool,
     is_thinking_expanded: bool,
     child_count: usize,
+    branch_position: Option<(usize, usize)>,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
     let row_style = message_row_style(message.role.clone(), allow_edits, is_selected);
@@ -1061,15 +1170,12 @@ fn render_chat_bubble(
     } else {
         label
     };
-    lines.push(render_card_text_line(
+    lines.push(render_card_header_line(
         panel_width,
         accent_glyph,
-        row_style.accent,
-        row_style.label_bg,
+        row_style,
         &header,
-        Style::default()
-            .fg(row_style.label_fg)
-            .add_modifier(Modifier::BOLD),
+        branch_position,
     ));
 
     let inner_width = card_text_width(panel_width, accent_glyph);
@@ -1732,6 +1838,47 @@ mod tests {
             editor.render_cache.ai_chat_image_thumbnails[0].1,
             std::path::PathBuf::from("/tmp/preview.png")
         );
+    }
+
+    #[test]
+    fn forked_message_renders_clickable_sibling_control() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let (main_user, fork_user) = {
+            let chat = editor.ai_state.chat.as_ref().unwrap();
+            let key = (chat.origin_buffer_id, chat.opts.name.clone());
+            let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+            conversation.append_user_message("first".into());
+            let first_reply = conversation.append_assistant_message("reply".into(), "model".into());
+            let main_user = conversation.append_user_message("main continuation".into());
+            conversation.append_assistant_message("main reply".into(), "model".into());
+            conversation.fork_from(first_reply);
+            let fork_user = conversation.append_user_message("fork continuation".into());
+            conversation.append_assistant_message("fork reply".into(), "model".into());
+            (main_user, fork_user)
+        };
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+
+        let rendered = terminal.backend().buffer().content().to_vec();
+        let rendered_text = rendered
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered_text.contains("[‹ 2/2 ›]"));
+        assert_eq!(editor.render_cache.ai_chat_branch_hitboxes.len(), 2);
+        assert_eq!(editor.render_cache.ai_chat_branch_hitboxes[0].1, main_user);
+        assert_eq!(editor.render_cache.ai_chat_branch_hitboxes[1].1, main_user);
+        assert_ne!(main_user, fork_user);
     }
 
     #[test]

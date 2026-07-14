@@ -236,7 +236,12 @@ impl Editor {
         }
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.runtime_branch = target;
+            chat.viewport = super::ai_chat_state::ChatViewportState::default();
+            chat.history.selected_node_id = None;
+            chat.history.selected_queued_id = None;
         }
+        self.render_cache.ai_chat_text_selection = None;
+        self.render_cache.ai_chat_text_selecting = false;
         self.persist_selected_ai_branch();
         true
     }

@@ -330,6 +330,20 @@ impl ConversationTree {
             .unwrap_or(1)
     }
 
+    /// Position and cyclic neighbors for a node among its siblings.
+    /// Returns `None` when the node is not at a fork point.
+    pub fn sibling_navigation(&self, node_id: NodeId) -> Option<(usize, usize, NodeId, NodeId)> {
+        let parent_id = self.nodes.get(&node_id)?.parent?;
+        let siblings = &self.nodes.get(&parent_id)?.children;
+        if siblings.len() < 2 {
+            return None;
+        }
+        let position = siblings.iter().position(|id| *id == node_id)?;
+        let previous = siblings[(position + siblings.len() - 1) % siblings.len()];
+        let next = siblings[(position + 1) % siblings.len()];
+        Some((position, siblings.len(), previous, next))
+    }
+
     /// Number of direct children.
     pub fn child_count(&self, node_id: NodeId) -> usize {
         self.nodes
@@ -599,6 +613,22 @@ mod tests {
         assert_eq!(tree.sibling_count(child2), 2);
         // Root has no siblings (no parent)
         assert_eq!(tree.sibling_count(root_id), 1);
+    }
+
+    #[test]
+    fn sibling_navigation_reports_position_and_wraps() {
+        let mut tree = ConversationTree::new();
+        let root = tree.append_user_message("root".into());
+        let first = tree.append_assistant_message("first".into(), "m".into());
+        tree.fork_from(root);
+        let second = tree.append_assistant_message("second".into(), "m".into());
+        tree.fork_from(root);
+        let third = tree.append_assistant_message("third".into(), "m".into());
+
+        assert_eq!(tree.sibling_navigation(first), Some((0, 3, third, second)));
+        assert_eq!(tree.sibling_navigation(second), Some((1, 3, first, third)));
+        assert_eq!(tree.sibling_navigation(third), Some((2, 3, second, first)));
+        assert_eq!(tree.sibling_navigation(root), None);
     }
 
     #[test]

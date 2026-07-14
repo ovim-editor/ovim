@@ -68,6 +68,8 @@ pub struct RenderCache {
     pub terminal_image_support: bool,
     /// Render rectangles for clickable chat-image thumbnails.
     pub ai_chat_image_thumbnails: Vec<(crate::Rect, std::path::PathBuf)>,
+    /// Clickable previous/next controls for visible conversation forks.
+    pub ai_chat_branch_hitboxes: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
     /// Absolute 80ms animation bucket used by the AI chat working spinner.
     pub ai_chat_working_animation_tick: u128,
 }
