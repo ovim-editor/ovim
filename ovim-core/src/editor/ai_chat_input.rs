@@ -221,7 +221,10 @@ pub fn chat_input_cursor_row_col(
 ) -> (usize, usize) {
     let safe_cursor = cursor_byte.min(text.len());
     for (row_index, row) in rows.iter().enumerate() {
-        if safe_cursor <= row.end {
+        let shared_with_next_row = rows
+            .get(row_index + 1)
+            .is_some_and(|next| next.start == safe_cursor && safe_cursor == row.end);
+        if safe_cursor < row.end || (safe_cursor == row.end && !shared_with_next_row) {
             return (
                 row_index,
                 display_width(
@@ -393,5 +396,28 @@ mod tests {
         let (row, column) = chat_input_cursor_row_col(input, input.len(), &rows, 4);
         assert_eq!(row, 1);
         assert_eq!(column, 0);
+    }
+
+    #[test]
+    fn cursor_at_soft_wrap_boundary_belongs_to_the_continuation_row() {
+        let input = "alpha beta gamma";
+        let rows = wrap_chat_input_rows(input, 6, 4);
+        assert_eq!(&input[rows[0].start..rows[0].end], "alpha ");
+
+        let (row, column) = chat_input_cursor_row_col(input, rows[0].end, &rows, 4);
+
+        assert_eq!(row, 1);
+        assert_eq!(column, 0);
+    }
+
+    #[test]
+    fn capped_viewport_follows_cursor_across_soft_wrap_boundaries() {
+        let input = "one two three four five six seven eight nine ten";
+        let rows = wrap_chat_input_rows(input, 6, 4);
+        let cursor = rows[6].start;
+        let (cursor_row, _) = chat_input_cursor_row_col(input, cursor, &rows, 4);
+
+        assert_eq!(cursor_row, 6);
+        assert_eq!(chat_input_visible_start(rows.len(), cursor_row, 5), 2);
     }
 }
