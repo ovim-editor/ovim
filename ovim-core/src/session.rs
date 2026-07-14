@@ -43,6 +43,12 @@ pub struct SessionInfo {
     /// Process start time (system boot time + ticks) for PID verification
     /// This prevents PID reuse race conditions
     pub start_time: Option<u64>,
+
+    /// Logical viewport used by headless rendering and motion commands.
+    #[serde(default)]
+    pub viewport_width: Option<u16>,
+    #[serde(default)]
+    pub viewport_height: Option<u16>,
 }
 
 impl SessionInfo {
@@ -64,7 +70,25 @@ impl SessionInfo {
             session_name,
             lsp_ready: false,
             start_time,
+            viewport_width: None,
+            viewport_height: None,
         }
+    }
+
+    pub fn with_dimensions(mut self, width: u16, height: u16) -> Self {
+        self.viewport_width = Some(width);
+        self.viewport_height = Some(height);
+        self
+    }
+
+    pub fn dimensions(&self) -> Option<(u16, u16)> {
+        Some((self.viewport_width?, self.viewport_height?))
+    }
+
+    pub fn set_dimensions(&mut self, width: u16, height: u16) -> Result<()> {
+        self.viewport_width = Some(width);
+        self.viewport_height = Some(height);
+        self.write()
     }
 
     /// Get the session directory path

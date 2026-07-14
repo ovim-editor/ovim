@@ -637,7 +637,8 @@ fn cmd_send(session_name: &str, keys: &str) -> Result<()> {
         .send_keys(keys)
         .context("Failed to send keys to session")?;
 
-    match client.get_render_plain(120, 35) {
+    let (width, height) = session.dimensions().unwrap_or((120, 35));
+    match client.get_render_plain(width, height) {
         Ok(render) => print!("{}", render),
         Err(_) => println!("Keys sent to session '{}'", session.session_name),
     }

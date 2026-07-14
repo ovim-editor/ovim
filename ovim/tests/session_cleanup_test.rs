@@ -32,6 +32,8 @@ fn create_fake_session(name: &str, pid: u32, port: u16, age_secs: u64) -> Result
         session_name: name.to_string(),
         lsp_ready: false,
         start_time: None, // No start time = stale
+        viewport_width: None,
+        viewport_height: None,
     };
 
     session_info.write()?;
@@ -76,6 +78,8 @@ fn test_cleanup_stale_sessions() -> Result<()> {
         session_name: "stale_test1".to_string(),
         lsp_ready: false,
         start_time: None,
+        viewport_width: None,
+        viewport_height: None,
     };
 
     let session2 = SessionInfo {
@@ -88,6 +92,8 @@ fn test_cleanup_stale_sessions() -> Result<()> {
         session_name: "stale_test2".to_string(),
         lsp_ready: false,
         start_time: None,
+        viewport_width: None,
+        viewport_height: None,
     };
 
     // Write directly to files
@@ -157,6 +163,8 @@ fn test_cleanup_expired_sessions() -> Result<()> {
         session_name: "expired_test".to_string(),
         lsp_ready: false,
         start_time: None,
+        viewport_width: None,
+        viewport_height: None,
     };
     old_session.write()?;
 
@@ -236,6 +244,8 @@ fn test_cleanup_dry_run() -> Result<()> {
             session_name: session_name.clone(),
             lsp_ready: false,
             start_time: None,
+            viewport_width: None,
+            viewport_height: None,
         };
         session_info.write()?;
     }
@@ -295,6 +305,8 @@ fn test_session_is_expired() -> Result<()> {
         session_name: "test".to_string(),
         lsp_ready: false,
         start_time: None,
+        viewport_width: None,
+        viewport_height: None,
     };
 
     // Should be expired with 3 day threshold
@@ -330,6 +342,8 @@ fn test_session_age() -> Result<()> {
         session_name: "test".to_string(),
         lsp_ready: false,
         start_time: None,
+        viewport_width: None,
+        viewport_height: None,
     };
 
     let age = session.age();

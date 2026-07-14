@@ -60,6 +60,8 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
         .arg("--headless")
         .arg("--session")
         .arg(&session_name)
+        .arg("--dimension")
+        .arg("64x18")
         .env("OVIM_SESSION_DIR", &session_dir)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -105,6 +107,11 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
     let initial: Value = serde_json::from_slice(&initial_snapshot.stdout)
         .expect("snapshot wrapper should print JSON");
     assert_eq!(initial["buffer"]["content"], "first\nsecond\n");
+    let session_json: Value =
+        serde_json::from_slice(&fs::read(&session_file).expect("read registered session metadata"))
+            .expect("session metadata is JSON");
+    assert_eq!(session_json["viewport_width"], 64);
+    assert_eq!(session_json["viewport_height"], 18);
 
     let send = run_cli(&session_dir, &["send", "-s", &session_name, "j"]);
     assert!(
@@ -118,6 +125,33 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
         "send wrapper should print the plain editor render:\n{}",
         output_detail(&send)
     );
+    assert_eq!(
+        rendered.lines().count(),
+        18,
+        "send should use session height"
+    );
+    assert!(
+        rendered.lines().all(|line| line.chars().count() == 64),
+        "send should use session width"
+    );
+
+    let enter_insert = run_cli(&session_dir, &["send", "-s", &session_name, "i"]);
+    assert!(
+        enter_insert.status.success(),
+        "{}",
+        output_detail(&enter_insert)
+    );
+    let paste = run_cli(
+        &session_dir,
+        &["paste", "-s", &session_name, "héllo\\nworld"],
+    );
+    assert!(paste.status.success(), "{}", output_detail(&paste));
+    let leave_insert = run_cli(&session_dir, &["send", "-s", &session_name, "<Esc>"]);
+    assert!(
+        leave_insert.status.success(),
+        "{}",
+        output_detail(&leave_insert)
+    );
 
     let snapshot = run_cli(&session_dir, &["snapshot", "-s", &session_name]);
     assert!(
@@ -127,7 +161,7 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
     );
     let state: Value =
         serde_json::from_slice(&snapshot.stdout).expect("snapshot wrapper should print JSON");
-    assert_eq!(state["buffer"]["content"], "first\nsecond\n");
-    assert_eq!(state["cursor"]["line"], 1);
+    assert_eq!(state["buffer"]["content"], "first\nhéllo\nworldsecond\n");
+    assert_eq!(state["cursor"]["line"], 2);
     assert_eq!(state["mode"], "NORMAL");
 }

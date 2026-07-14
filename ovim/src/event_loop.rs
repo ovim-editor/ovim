@@ -664,6 +664,7 @@ pub async fn run_headless_loop(
     mut java_status_rx: mpsc::Receiver<String>,
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
+    initial_dimensions: (u16, u16),
 ) -> Result<()> {
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
@@ -676,6 +677,11 @@ pub async fn run_headless_loop(
     // skip the full ratatui+highlight pipeline (OV-00181).
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
     let mut last_edit = Instant::now();
+
+    // A TUI paints its first frame before a person can type. Establish the
+    // same layout and viewport contract before accepting headless requests.
+    handle_terminal_resize(editor, initial_dimensions.0, initial_dimensions.1)?;
+    let _ = render_cache.render(editor, initial_dimensions.0, initial_dimensions.1, false)?;
 
     loop {
         tokio::select! {
@@ -1024,6 +1030,11 @@ pub async fn run_event_loop(
                         }
                     }
                 }
+                // Offscreen API rendering shares the frame renderer, which
+                // updates geometry and hit-test caches. Repaint the real TUI
+                // before accepting more terminal input so those caches always
+                // describe the visible terminal surface.
+                editor.mark_dirty();
             }
 
             // Tick timer — background work (LSP, picker, animations)
@@ -1173,6 +1184,11 @@ async fn handle_api_request(
             let response = match handle_terminal_resize(editor, width, height) {
                 Ok(()) => {
                     editor.mark_dirty();
+                    if let Ok(mut session) = session_info.lock() {
+                        if session.port != 0 {
+                            let _ = session.set_dimensions(width, height);
+                        }
+                    }
                     ApiResponse::Success(SuccessResponse {
                         success: true,
                         message: Some(format!("Resized to {width}x{height}").into()),

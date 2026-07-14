@@ -211,7 +211,9 @@ async fn main() -> Result<()> {
         };
 
         let file_path = file_arg.map(|f| f.path);
-        let session_info = SessionInfo::new(port, file_path, session_name.clone());
+        let headless_dimensions = dimension.unwrap_or((120, 35));
+        let session_info = SessionInfo::new(port, file_path, session_name.clone())
+            .with_dimensions(headless_dimensions.0, headless_dimensions.1);
 
         if let Err(e) = session_info.write() {
             eprintln!("Warning: Failed to write session info: {}", e);
@@ -264,6 +266,7 @@ async fn main() -> Result<()> {
             java_status_rx,
             start_time,
             session_info_arc,
+            headless_dimensions,
         )
         .await?;
         sigint_handle.abort();
