@@ -42,20 +42,23 @@ configured. A rejected or revoked stored key reopens the setup dialog. Credit
 or budget exhaustion links to Exa's dashboard without discarding the key, and
 temporary rate limits and server failures receive one bounded retry. Web tools
 are read-only Ovim operations: they do not invoke a shell and do not require a
-Codex sandbox or Luna approval.
+Codex sandbox or Terra approval.
 
 Auto mode is the default. Read-only local inspection and tests run immediately;
-context-dependent commands are reviewed by subscription-backed Luna at low
-effort. Elevated privileges, credential access, outside-project effects,
-remote-code pipelines, ambiguous authorization, and classifier failures pause
-for you. Press Enter or Ctrl-Y to allow once, Ctrl-A to allow the requested
-folder for the chat, or Esc/Ctrl-N to deny. To opt out of auto mode, set
+context-dependent commands are reviewed by subscription-backed Terra at low
+effort. Terra treats routine project-local formatting, building, linting, and
+testing as authorized when they are reasonable steps toward your requested
+implementation objective. Elevated privileges, credential access,
+outside-project effects, remote-code pipelines, ambiguous authorization, and
+classifier failures pause for you. Press Enter or Ctrl-Y to allow once, Ctrl-A
+to allow the requested folder for the chat, or Esc/Ctrl-N to deny. To opt out
+of auto mode, set
 `tool_approval_mode = "sensitive_prompt"` or `"always_prompt"` in legacy
 `ai.toml`.
 
 For trusted work where approval interruptions are more costly than the safety
 gate, click `YOLO OFF` at the top right of the chat to switch it to `YOLO ON`.
-YOLO is opt-in per chat and defaults off. It bypasses Luna and interactive tool
+YOLO is opt-in per chat and defaults off. It bypasses Terra and interactive tool
 approval prompts, and immediately releases a request already waiting for
 approval. It does not disable malformed-input checks, `..` traversal rejection,
 project-context requirements, or durable-run ownership checks. Click again or

@@ -72,10 +72,10 @@ ovim send -s dev "inspect the project<Enter>"
 If auto mode pauses an Ovim tool for approval, the agent round remains blocked
 until the decision arrives. Inspect it with `ovim snapshot -s dev`, then
 send `<C-y>` (or `<Enter>`) to allow once, or `<C-n>` (or `<Esc>`) to deny. The
-50 ms headless background tick also polls Luna classifier completions; no
+50 ms headless background tick also polls Terra classifier completions; no
 renderer or attached terminal is required.
 
-For a trusted session, enter `/yolo on` in the chat composer to bypass Luna and
+For a trusted session, enter `/yolo on` in the chat composer to bypass Terra and
 interactive approvals for that chat; `/yolo off` restores normal policy. The
 snapshot's `ai_chat.yolo_mode` field reports the current setting.
 

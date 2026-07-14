@@ -278,10 +278,10 @@ mod tests {
     }
 
     #[test]
-    fn codex_profile_is_subscription_luna_low_and_toolless() {
+    fn codex_profile_is_subscription_terra_low_and_toolless() {
         let profile = CodexAutoModeClassifier::<CodexClassifierTransport>::profile();
         assert_eq!(profile.provider, "codex_subscription");
-        assert_eq!(profile.model, "gpt-5.6-luna");
+        assert_eq!(profile.model, "gpt-5.6-terra");
         assert_eq!(profile.reasoning_effort, "low");
         assert_eq!(profile.approval_policy, "never");
         assert_eq!(profile.sandbox, "read-only");

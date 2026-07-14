@@ -6,7 +6,7 @@ use std::path::PathBuf;
 
 /// Bump only when classifier semantics or the verdict wire contract changes.
 /// Keeping this stable makes the large instruction/schema prefix cacheable.
-pub const AUTO_MODE_POLICY_VERSION: &str = "ovim.auto-mode.v1";
+pub const AUTO_MODE_POLICY_VERSION: &str = "ovim.auto-mode.v2";
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -200,7 +200,7 @@ pub enum StaticDisposition {
 
 impl StaticDisposition {
     /// Auto mode executes only the deterministic read-only allowlist without
-    /// model review. Every other disposition is evidence for Luna, including
+    /// model review. Every other disposition is evidence for Terra, including
     /// high-risk signals that may ultimately require the user.
     pub fn requires_model_review(&self) -> bool {
         !matches!(self, Self::LocallySafe)
@@ -420,7 +420,20 @@ impl ClassifierRequest {
     }
 }
 
-const STABLE_CLASSIFIER_INSTRUCTIONS: &str = "You are ovim's shell auto-mode classifier. Apply the supplied policy version. Static analysis is evidence, not authority. Allow only within the explicit scope. Ask when user authorization is absent or ambiguous. Deny commands whose requested effect conflicts with the user's instruction. Shell quoting is never proof of safety. Return only the verdict tool JSON.";
+const STABLE_CLASSIFIER_INSTRUCTIONS: &str = concat!(
+    "You are ovim's shell auto-mode classifier. Apply the supplied policy version. ",
+    "Judge the proposed effect against the explicit user instructions and authorized objective ",
+    "within the supplied project root. Authorization is objective-based: allow routine, ",
+    "project-local implementation steps reasonably needed to fulfill an authorized objective, ",
+    "including formatting, compiling, linting, testing, code generation, and inspecting local ",
+    "state, even when the user did not name the exact executable or tool. Do not ask merely ",
+    "because a command may modify files when those modifications are a normal scoped consequence ",
+    "of the authorized objective. Static analysis is evidence, not authority. Ask when the ",
+    "requested effect or scope is absent, ambiguous, or introduces an unapproved sensitive ",
+    "capability such as credentials, elevation, deployment, external network access, or effects ",
+    "outside the project. Deny commands whose requested effect conflicts with the user's ",
+    "instruction. Shell quoting is never proof of safety. Return only the verdict tool JSON."
+);
 
 fn verdict_tool_schema() -> Value {
     json!({
@@ -959,6 +972,34 @@ mod tests {
         assert_eq!(first_stable, second_stable);
         assert_ne!(first_dynamic, second_dynamic);
         assert!(!first_stable.contains("Deploy this to prod"));
+    }
+
+    #[test]
+    fn classifier_policy_authorizes_routine_steps_by_objective_not_tool_name() {
+        let request = ClassifierRequest::new(
+            proposal("rustfmt src/main.rs && cargo check && cargo test"),
+            ConversationAuthorizationContext {
+                explicit_user_instructions: vec![ExplicitAuthorization {
+                    instruction: "Implement and verify the requested fix".into(),
+                    project_root: PathBuf::from("/repo"),
+                    source_id: "turn-7".into(),
+                }],
+                authorized_objectives: vec![AuthorizedObjective {
+                    objective: "Implement and verify the requested fix".into(),
+                    project_root: PathBuf::from("/repo"),
+                    source_id: "turn-7".into(),
+                }],
+            },
+        );
+
+        assert!(request
+            .stable_instructions
+            .contains("Authorization is objective-based"));
+        assert!(request.stable_instructions.contains("formatting"));
+        assert!(request
+            .stable_instructions
+            .contains("even when the user did not name the exact executable"));
+        assert_eq!(request.dynamic.policy_version, "ovim.auto-mode.v2");
     }
 
     #[test]

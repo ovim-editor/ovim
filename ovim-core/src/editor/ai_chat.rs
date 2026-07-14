@@ -915,7 +915,7 @@ impl Editor {
                         receiver: result_rx,
                     });
             }
-            self.set_lsp_status("Luna is reviewing the proposed shell program".into());
+            self.set_lsp_status("Terra is reviewing the proposed shell program".into());
         } else {
             debug_assert_eq!(
                 request.dynamic.static_analysis.disposition,
@@ -1627,7 +1627,7 @@ impl Editor {
     }
 
     /// Set the per-chat approval bypass. Enabling it also releases work that
-    /// is already blocked on a folder, tool, or Luna decision.
+    /// is already blocked on a folder, tool, or Terra decision.
     pub fn set_ai_chat_yolo_mode(&mut self, enabled: bool) -> bool {
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
@@ -1728,7 +1728,7 @@ impl Editor {
                 .and_then(serde_json::Value::as_str)
                 .unwrap_or("<missing shell program>");
             Some(format!(
-                "Command:\n{command}\n\nLuna: {}\nWorking directory: {}",
+                "Command:\n{command}\n\nTerra: {}\nWorking directory: {}",
                 pending.reason,
                 pending.requested_path.display()
             ))
@@ -2629,7 +2629,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn auto_mode_unauthorized_deploy_is_sent_to_luna_before_user_escalation() {
+    async fn auto_mode_unauthorized_deploy_is_sent_to_terra_before_user_escalation() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
         let file = dir.path().join("main.rs");
@@ -2929,7 +2929,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn enabling_yolo_releases_pending_luna_review_without_prompt() {
+    async fn enabling_yolo_releases_pending_terra_review_without_prompt() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let _response = attach_finished_classifier(&mut editor, Err("still reviewing".into()));
@@ -2954,7 +2954,7 @@ mod tests {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let verdict = crate::ai::auto_mode::ClassifierVerdict::parse_strict(
-            r#"{"policy_version":"ovim.auto-mode.v1","decision":"ask","scope":{"project_root":"/repo"},"reason":"the user did not authorize credential access","confidence":0.96,"expiry":{"kind":"after_command"}}"#,
+            r#"{"policy_version":"ovim.auto-mode.v2","decision":"ask","scope":{"project_root":"/repo"},"reason":"the user did not authorize credential access","confidence":0.96,"expiry":{"kind":"after_command"}}"#,
         )
         .unwrap();
         let mut response = attach_finished_classifier(&mut editor, Ok(verdict));
@@ -2971,7 +2971,7 @@ mod tests {
     }
 
     #[test]
-    fn shell_approval_summary_contains_full_command_and_luna_reason() {
+    fn shell_approval_summary_contains_full_command_and_terra_reason() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         editor.ai_state.chat.as_mut().unwrap().pending_tool_approval =
@@ -2996,7 +2996,7 @@ mod tests {
         let summary = editor.ai_chat_pending_tool_approval_summary().unwrap();
         assert!(summary.contains("git diff --check && cargo test"));
         assert!(summary.contains("printf 'complete\\n'"));
-        assert!(summary.contains("Luna: the requested write is not clearly authorized"));
+        assert!(summary.contains("Terra: the requested write is not clearly authorized"));
         assert!(summary.contains("Working directory: /repo"));
     }
 
@@ -3005,7 +3005,7 @@ mod tests {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let verdict = crate::ai::auto_mode::ClassifierVerdict::parse_strict(
-            r#"{"policy_version":"ovim.auto-mode.v1","decision":"deny","scope":{"project_root":"/repo"},"reason":"conflicts with objective","confidence":0.99,"expiry":{"kind":"after_command"}}"#,
+            r#"{"policy_version":"ovim.auto-mode.v2","decision":"deny","scope":{"project_root":"/repo"},"reason":"conflicts with objective","confidence":0.99,"expiry":{"kind":"after_command"}}"#,
         )
         .unwrap();
         let response = attach_finished_classifier(&mut editor, Ok(verdict));

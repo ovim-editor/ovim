@@ -11,7 +11,7 @@ use std::path::PathBuf;
 /// paths outside the active project boundary.
 pub struct PendingToolApproval {
     pub tool_call: ToolCallInfo,
-    /// The policy or Luna explanation that caused this escalation.
+    /// The policy or Terra explanation that caused this escalation.
     pub reason: String,
     pub runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
     pub remaining_tool_calls: Vec<ToolCallInfo>,
@@ -24,7 +24,7 @@ pub struct PendingToolApproval {
     pub dynamic_turn: Option<crate::agent_runtime::PendingTurnRef>,
 }
 
-/// A Luna auto-mode verdict in flight for a Codex dynamic bash request.
+/// A Terra auto-mode verdict in flight for a Codex dynamic bash request.
 pub struct PendingAutoModeClassification {
     pub tool_call: ToolCallInfo,
     pub runtime_tool: crate::agent_runtime::PendingToolRef,
@@ -175,7 +175,7 @@ pub struct AiChatState {
     pub history: ChatHistoryState,
     /// Whether assistant can suggest edits.
     pub allow_edits: bool,
-    /// Per-chat opt-in that executes tool requests without Luna or approval
+    /// Per-chat opt-in that executes tool requests without Terra or approval
     /// prompts. Hard path/integrity validation remains enforced.
     pub yolo_mode: bool,
     /// Waiting for AI response.

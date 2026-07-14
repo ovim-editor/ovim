@@ -21,7 +21,7 @@ const CLIENT_VERSION: &str = env!("CARGO_PKG_VERSION");
 const PROVIDER_SESSION_NAME: &str = "codex";
 const OVIM_TOOL_NAMESPACE: &str = "ovim";
 const PROVIDER_CONFIGURATION_VERSION: u32 = 1;
-pub(crate) const AUTO_MODE_CLASSIFIER_MODEL: &str = "gpt-5.6-luna";
+pub(crate) const AUTO_MODE_CLASSIFIER_MODEL: &str = "gpt-5.6-terra";
 pub(crate) const AUTO_MODE_CLASSIFIER_EFFORT: &str = "low";
 pub(crate) const AUTO_MODE_CLASSIFIER_EPHEMERAL_THREAD: bool = true;
 

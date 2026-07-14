@@ -167,7 +167,7 @@ pub struct AiChatSnapshot {
     pub review_mode: bool,
     #[serde(default)]
     pub tree_panel_open: bool,
-    /// Per-chat bypass for Luna and interactive tool approval gates.
+    /// Per-chat bypass for Terra and interactive tool approval gates.
     #[serde(default)]
     pub yolo_mode: bool,
     #[serde(default)]
