@@ -665,6 +665,7 @@ pub async fn run_headless_loop(
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
     initial_dimensions: (u16, u16),
+    mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let (preview_tx, mut preview_rx) =
         tokio::sync::mpsc::channel::<(String, editor::PreviewCache)>(100);
@@ -685,6 +686,9 @@ pub async fn run_headless_loop(
 
     loop {
         tokio::select! {
+            _ = shutdown_rx.recv() => {
+                break;
+            }
             Some(request) = api_rx.recv() => {
                 let version_before = editor.buffer().version();
                 handle_api_request(editor, request, start_time, &session_info, &mut render_cache).await;
@@ -947,12 +951,30 @@ fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
     (effective_width as usize).saturating_sub(gutter_width)
 }
 
+fn api_session_info(editor: &Editor) -> SessionInfo {
+    let file = editor.buffer().file_path().map(str::to_string);
+    let Some(name) = editor.active_session() else {
+        return SessionInfo::new(0, file, "tui".into());
+    };
+
+    let mut info = SessionInfo::read(name).unwrap_or_else(|_| {
+        SessionInfo::new(
+            editor.api_port().unwrap_or(0),
+            file.clone(),
+            name.to_string(),
+        )
+    });
+    info.file = file;
+    info
+}
+
 /// TUI event loop (optionally with API).
 pub async fn run_event_loop(
     ui: &mut UI,
     editor: &mut Editor,
     mut api_rx: Option<mpsc::Receiver<ApiRequest>>,
     mut java_status_rx: mpsc::Receiver<String>,
+    start_time: SystemTime,
 ) -> Result<()> {
     let mut last_edit = Instant::now();
     let debounce_delay = Duration::from_millis(200);
@@ -1013,10 +1035,9 @@ pub async fn run_event_loop(
             Some(request) = async {
                 if let Some(ref mut rx) = api_rx { rx.recv().await } else { std::future::pending().await }
             } => {
-                let dummy_start = SystemTime::now();
-                let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".into())));
+                let api_session = Arc::new(Mutex::new(api_session_info(editor)));
                 let version_before = editor.buffer().version();
-                handle_api_request(editor, request, dummy_start, &dummy_session, &mut render_cache).await;
+                handle_api_request(editor, request, start_time, &api_session, &mut render_cache).await;
                 if editor.buffer().version() != version_before {
                     last_edit = Instant::now();
                 }
@@ -1024,7 +1045,7 @@ pub async fn run_event_loop(
                 if let Some(ref mut rx) = api_rx {
                     while let Ok(req) = rx.try_recv() {
                         let version_before = editor.buffer().version();
-                        handle_api_request(editor, req, dummy_start, &dummy_session, &mut render_cache).await;
+                        handle_api_request(editor, req, start_time, &api_session, &mut render_cache).await;
                         if editor.buffer().version() != version_before {
                             last_edit = Instant::now();
                         }

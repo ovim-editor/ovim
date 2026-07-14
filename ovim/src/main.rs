@@ -195,6 +195,7 @@ async fn main() -> Result<()> {
 
     // Store API port in editor for :session start/stop commands
     editor.set_api_port(port);
+    let start_time = SystemTime::now();
 
     // Handle headless mode
     // Headless mode uses stderr for user feedback (no TUI), so eprintln! is safe
@@ -228,17 +229,14 @@ async fn main() -> Result<()> {
         let _session_guard = SessionGuard::new(session_info.clone());
 
         // Set up cleanup on exit - handle both SIGINT and SIGTERM
-        let session_info_for_sigint = session_info.clone();
+        let (shutdown_tx, shutdown_rx) = mpsc::channel(2);
+        let shutdown_tx_sigint = shutdown_tx.clone();
         let sigint_handle = tokio::spawn(async move {
             tokio::signal::ctrl_c().await.ok();
-            match session_info_for_sigint.delete() {
-                Ok(_) => eprintln!("\nSession cleaned up successfully (SIGINT)"),
-                Err(e) => eprintln!("\nError during session cleanup: {}", e),
-            }
-            std::process::exit(0);
+            let _ = shutdown_tx_sigint.send(()).await;
         });
 
-        let session_info_for_sigterm = session_info.clone();
+        let shutdown_tx_sigterm = shutdown_tx.clone();
         let sigterm_handle = tokio::spawn(async move {
             let mut sigterm = match signal(SignalKind::terminate()) {
                 Ok(s) => s,
@@ -248,15 +246,10 @@ async fn main() -> Result<()> {
                 }
             };
             sigterm.recv().await;
-            match session_info_for_sigterm.delete() {
-                Ok(_) => eprintln!("\nSession cleaned up successfully (SIGTERM)"),
-                Err(e) => eprintln!("\nError during session cleanup: {}", e),
-            }
-            std::process::exit(0);
+            let _ = shutdown_tx_sigterm.send(()).await;
         });
 
         // Store session info and start time for health checks
-        let start_time = SystemTime::now();
         let session_info_arc = Arc::new(Mutex::new(session_info));
 
         // Run in headless mode (API only, no TUI)
@@ -267,6 +260,7 @@ async fn main() -> Result<()> {
             start_time,
             session_info_arc,
             headless_dimensions,
+            shutdown_rx,
         )
         .await?;
         sigint_handle.abort();
@@ -294,7 +288,11 @@ async fn main() -> Result<()> {
     };
 
     // Main event loop with TUI (now with API support)
-    event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx).await?;
+    event_loop::run_event_loop(&mut ui, &mut editor, Some(rx), java_status_rx, start_time).await?;
+
+    if let Some(name) = editor.take_active_session() {
+        let _ = SessionInfo::new(port, None, name).delete();
+    }
 
     let code = editor.exit_code();
 

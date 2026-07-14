@@ -164,4 +164,25 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
     assert_eq!(state["buffer"]["content"], "first\nhéllo\nworldsecond\n");
     assert_eq!(state["cursor"]["line"], 2);
     assert_eq!(state["mode"], "NORMAL");
+
+    let terminate = Command::new("kill")
+        .args(["-TERM", &session.child.id().to_string()])
+        .status()
+        .expect("send SIGTERM to headless session");
+    assert!(terminate.success());
+    let shutdown_deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if session.child.try_wait().unwrap().is_some() {
+            break;
+        }
+        assert!(
+            Instant::now() < shutdown_deadline,
+            "headless session did not shut down gracefully after SIGTERM"
+        );
+        thread::sleep(Duration::from_millis(25));
+    }
+    assert!(
+        !session_file.exists(),
+        "session metadata should be removed during graceful shutdown"
+    );
 }
