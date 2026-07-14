@@ -7,8 +7,8 @@ use anyhow::{Context, Result};
 use serde_json::{json, Value};
 
 use crate::api::{
-    BufferInfo, CursorPosition, EditorSnapshot, HealthInfo, LspStatusInfo, OutlineInfo,
-    SymbolSearchInfo, TraceInfo,
+    BufferInfo, CursorPosition, EditorSnapshot, HealthInfo, LinesResponse, LspStatusInfo,
+    OutlineInfo, SymbolSearchInfo, TraceInfo,
 };
 use crate::session::SessionInfo;
 
@@ -19,6 +19,17 @@ pub struct OvimClient {
 }
 
 impl OvimClient {
+    fn ensure_success(response: reqwest::blocking::Response, action: &str) -> Result<Value> {
+        let status = response.status();
+        let body = response.text().context("Failed to read response")?;
+        let value = serde_json::from_str::<Value>(&body).unwrap_or_else(|_| json!({}));
+        if !status.is_success() || value.get("error").is_some() {
+            let message = value.get("error").and_then(Value::as_str).unwrap_or(&body);
+            anyhow::bail!("Failed to {action}: {message}");
+        }
+        Ok(value)
+    }
+
     /// Create a new client for the given session
     pub fn new(session: &SessionInfo) -> Self {
         Self {
@@ -189,6 +200,54 @@ impl OvimClient {
         }
 
         Ok(())
+    }
+
+    /// Replace a unique literal match in the live buffer.
+    pub fn edit(&self, line: Option<usize>, old: &str, new: &str) -> Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/edit", self.base_url))
+            .json(&json!({ "line": line, "old": old, "new": new }))
+            .send()
+            .context("Failed to send edit request")?;
+        Self::ensure_success(response, "edit buffer")?;
+        Ok(())
+    }
+
+    /// Insert lines in the live buffer.
+    pub fn insert(&self, after: Option<usize>, before: Option<usize>, text: &str) -> Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/insert", self.base_url))
+            .json(&json!({ "after": after, "before": before, "text": text }))
+            .send()
+            .context("Failed to send insert request")?;
+        Self::ensure_success(response, "insert lines")?;
+        Ok(())
+    }
+
+    /// Delete an inclusive 1-indexed line range in the live buffer.
+    pub fn delete_lines(&self, from: usize, to: usize) -> Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/delete-lines", self.base_url))
+            .json(&json!({ "from": from, "to": to }))
+            .send()
+            .context("Failed to send delete request")?;
+        Self::ensure_success(response, "delete lines")?;
+        Ok(())
+    }
+
+    /// Read an inclusive 1-indexed line range from the live buffer.
+    pub fn read_lines(&self, from: usize, to: usize) -> Result<LinesResponse> {
+        let response = self
+            .client
+            .get(format!("{}/lines", self.base_url))
+            .query(&[("from", from), ("to", to)])
+            .send()
+            .context("Failed to send read-lines request")?;
+        let value = Self::ensure_success(response, "read lines")?;
+        serde_json::from_value(value).context("Invalid read-lines response")
     }
 
     /// Get cursor position

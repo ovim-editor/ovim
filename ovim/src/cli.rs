@@ -120,6 +120,9 @@ pub enum Command {
         /// Replacement text (use \n for newlines)
         #[arg(long)]
         new: String,
+        /// Apply the edit to this live session instead of writing the file directly
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Insert text into a file
@@ -135,6 +138,9 @@ pub enum Command {
         /// Text to insert (use \n for newlines)
         #[arg(long)]
         text: String,
+        /// Apply the insertion to this live session instead of writing the file directly
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Delete lines from a file
@@ -147,6 +153,9 @@ pub enum Command {
         /// Last line to delete (1-indexed, inclusive)
         #[arg(long)]
         to: usize,
+        /// Apply the deletion to this live session instead of writing the file directly
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     /// Read lines from a file
@@ -162,6 +171,9 @@ pub enum Command {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Read from this live session instead of the file on disk
+        #[arg(short, long)]
+        session: Option<String>,
     },
 
     // ── Session Control ──────────────────────────────────────────────

@@ -171,20 +171,40 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
             line,
             old,
             new,
-        } => cmd_edit_file(&file, line, &old, &new),
+            session,
+        } => match session {
+            Some(session) => cmd_edit_session(&session, &file, line, &old, &new),
+            None => cmd_edit_file(&file, line, &old, &new),
+        },
         Command::Insert {
             file,
             after,
             before,
             text,
-        } => cmd_insert_file(&file, after, before, &text),
-        Command::DeleteLines { file, from, to } => cmd_delete_lines_file(&file, from, to),
+            session,
+        } => match session {
+            Some(session) => cmd_insert_session(&session, &file, after, before, &text),
+            None => cmd_insert_file(&file, after, before, &text),
+        },
+        Command::DeleteLines {
+            file,
+            from,
+            to,
+            session,
+        } => match session {
+            Some(session) => cmd_delete_lines_session(&session, &file, from, to),
+            None => cmd_delete_lines_file(&file, from, to),
+        },
         Command::ReadLines {
             file,
             from,
             to,
             json,
-        } => cmd_read_lines_file(&file, from, to, json),
+            session,
+        } => match session {
+            Some(session) => cmd_read_lines_session(&session, &file, from, to, json),
+            None => cmd_read_lines_file(&file, from, to, json),
+        },
 
         // Session control
         Command::Send { session, keys } => cmd_send(&session, &keys),
@@ -327,6 +347,93 @@ fn execute_session_command(command: SessionCommand) -> Result<()> {
 }
 
 // ─── File Operations (direct file I/O) ──────────────────────────────────────
+
+fn session_client_for_file(session_name: &str, file_path: &str) -> Result<OvimClient> {
+    let session = resolve_session(session_name)?;
+    let client = OvimClient::new(&session);
+    let active = client
+        .get_buffer()
+        .context("Failed to inspect the session buffer")?
+        .file_path
+        .context("The session buffer has no file path")?;
+
+    let requested = std::path::Path::new(file_path);
+    let active_path = std::path::Path::new(&active);
+    let matches = requested == active_path
+        || match (requested.canonicalize(), active_path.canonicalize()) {
+            (Ok(requested), Ok(active)) => requested == active,
+            _ => false,
+        };
+    if !matches {
+        anyhow::bail!(
+            "Session '{}' is editing '{}', not '{}'",
+            session_name,
+            active,
+            file_path
+        );
+    }
+    Ok(client)
+}
+
+fn cmd_edit_session(
+    session_name: &str,
+    file_path: &str,
+    line: Option<usize>,
+    old: &str,
+    new: &str,
+) -> Result<()> {
+    let client = session_client_for_file(session_name, file_path)?;
+    client.edit(line, &expand_escapes(old), &expand_escapes(new))?;
+    println!("Edited live session '{}' (not yet written)", session_name);
+    Ok(())
+}
+
+fn cmd_insert_session(
+    session_name: &str,
+    file_path: &str,
+    after: Option<usize>,
+    before: Option<usize>,
+    text: &str,
+) -> Result<()> {
+    let client = session_client_for_file(session_name, file_path)?;
+    client.insert(after, before, &expand_escapes(text))?;
+    println!("Edited live session '{}' (not yet written)", session_name);
+    Ok(())
+}
+
+fn cmd_delete_lines_session(
+    session_name: &str,
+    file_path: &str,
+    from: usize,
+    to: usize,
+) -> Result<()> {
+    let client = session_client_for_file(session_name, file_path)?;
+    client.delete_lines(from, to)?;
+    println!("Edited live session '{}' (not yet written)", session_name);
+    Ok(())
+}
+
+fn cmd_read_lines_session(
+    session_name: &str,
+    file_path: &str,
+    from: usize,
+    to: usize,
+    json_output: bool,
+) -> Result<()> {
+    let client = session_client_for_file(session_name, file_path)?;
+    let response = client.read_lines(from, to)?;
+    if json_output {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({ "lines": response.lines }))?
+        );
+    } else {
+        for line in response.lines {
+            println!("{:>4} | {}", line.number, line.text);
+        }
+    }
+    Ok(())
+}
 
 /// Replace text in a file (direct file I/O, no session needed)
 fn cmd_edit_file(file_path: &str, line: Option<usize>, old: &str, new: &str) -> Result<()> {

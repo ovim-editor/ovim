@@ -292,7 +292,7 @@ impl Editor {
 
     /// Checks if buffer is modified relative to last save
     pub fn is_modified(&self) -> bool {
-        !self.buffer().change_manager().is_at_save_point()
+        self.buffer().is_modified() || !self.buffer().change_manager().is_at_save_point()
     }
 
     /// Marks current state as saved

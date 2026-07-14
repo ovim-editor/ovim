@@ -54,6 +54,27 @@ fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
     };
 
     let old_path = editor.buffer().file_path().map(|s| s.to_string());
+
+    // Do not silently overwrite changes made by another process. Save-as to a
+    // different file remains valid, and the bang variants are the explicit
+    // escape hatch when the user intentionally wants the in-memory copy to win.
+    let targets_current_file = old_path.as_deref().is_some_and(|current| {
+        let current = std::path::Path::new(current);
+        let resolved = std::path::Path::new(&resolved);
+        current == resolved
+            || match (current.canonicalize(), resolved.canonicalize()) {
+                (Ok(current), Ok(resolved)) => current == resolved,
+                _ => false,
+            }
+    });
+    if !opts.force && targets_current_file {
+        match editor.buffer().check_external_modification() {
+            Ok(true) => return err("E211: File changed since editing started (add ! to override)"),
+            Ok(false) => {}
+            Err(error) => return err(format!("Failed to check file before saving: {error}")),
+        }
+    }
+
     match editor.buffer_mut().save_as(&resolved) {
         Ok(_) => {
             let new_path = editor.buffer().file_path().map(|s| s.to_string());
@@ -1982,4 +2003,40 @@ fn handle_debug_command(editor: &mut Editor, command: &str) -> CommandResult {
 /// This wrapper exists for backwards compatibility with any external callers.
 pub fn handle_set_command(editor: &mut Editor, args: &str) -> CommandResult {
     crate::cmd_set::handle_set_command(editor, args)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_command;
+    use crate::command_result::CommandResult;
+    use crate::editor::Editor;
+    use crate::unicode::CharCol;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn write_refuses_to_overwrite_external_changes_without_bang() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("conflict.txt");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let mut editor = Editor::new();
+        editor.load_file_async(&path).await.unwrap();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, CharCol::ZERO, "local ");
+
+        // Ensure even coarse filesystems observe a distinct modification time.
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&path, "external\n").unwrap();
+
+        let result = execute_command(&mut editor, "w");
+        assert!(
+            matches!(result, CommandResult::Error(ref error) if error.error.contains("E211")),
+            "unexpected result: {result:?}"
+        );
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "external\n");
+
+        let result = execute_command(&mut editor, "w!");
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "local original\n");
+    }
 }

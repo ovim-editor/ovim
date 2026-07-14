@@ -104,6 +104,39 @@ fn refresh_after_api_mutation(editor: &mut Editor, force_full_lsp_sync: bool) {
     refresh_after_input(editor);
 }
 
+/// Reload a clean buffer after an external write, but never discard local
+/// edits. This is shared by focus events and periodic polling so headless
+/// sessions have the same file-change behavior as the TUI.
+fn process_external_file_change(editor: &mut Editor) {
+    match editor.buffer().check_external_modification() {
+        Ok(false) | Err(_) => {}
+        Ok(true) if editor.is_modified() => {
+            let status = "File changed on disk; local changes were kept (use :e! to reload)";
+            if editor.lsp_status() != status {
+                editor.set_lsp_status(status.to_string());
+                editor.mark_dirty();
+            }
+        }
+        Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
+            Ok(true) => {
+                editor.mark_saved();
+                editor.mark_buffer_modified_force_send();
+                editor.request_diagnostics_refresh();
+                if editor.buffer().needs_rehighlight() {
+                    editor.process_viewport_rehighlight();
+                }
+                editor.set_lsp_status("File reloaded after external change".to_string());
+                editor.mark_dirty();
+            }
+            Ok(false) => {}
+            Err(error) => {
+                editor.set_lsp_status(format!("External file change: {error}"));
+                editor.mark_dirty();
+            }
+        },
+    }
+}
+
 /// Drain Java/Kotlin LSP status messages from the channel.
 fn process_java_status(editor: &mut Editor, java_status_rx: &mut mpsc::Receiver<String>) {
     while let Ok(status) = java_status_rx.try_recv() {
@@ -678,6 +711,7 @@ pub async fn run_headless_loop(
     // skip the full ratatui+highlight pipeline (OV-00181).
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
     let mut last_edit = Instant::now();
+    let mut last_external_file_check = Instant::now();
 
     // A TUI paints its first frame before a person can type. Establish the
     // same layout and viewport contract before accepting headless requests.
@@ -714,6 +748,10 @@ pub async fn run_headless_loop(
             }
             _ = lsp_interval.tick() => {
                 process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
+                if last_external_file_check.elapsed() >= Duration::from_millis(500) {
+                    process_external_file_change(editor);
+                    last_external_file_check = Instant::now();
+                }
                 if editor.buffer().needs_rehighlight()
                     && last_edit.elapsed() >= Duration::from_millis(200)
                 {
@@ -828,11 +866,7 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                 editor.startle_cat();
             }
             Event::FocusGained => {
-                if let Ok(true) = editor.buffer_mut().reload_if_changed_sync() {
-                    if editor.buffer().needs_rehighlight() {
-                        editor.process_viewport_rehighlight();
-                    }
-                }
+                process_external_file_change(editor);
             }
             Event::Mouse(mouse_event) => {
                 // Skip mouse-move events — they don't change editor state and
@@ -993,6 +1027,7 @@ pub async fn run_event_loop(
     // entire TUI session even when `api_rx` is `None` — cheap and keeps
     // the call sites uniform.
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
+    let mut last_external_file_check = Instant::now();
 
     while !editor.should_quit() {
         // Wait for input, API request, or tick — input has priority via `biased`
@@ -1062,6 +1097,10 @@ pub async fn run_event_loop(
             _ = tick_interval.tick() => {
                 process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
                 process_picker_results(editor, &mut preview_rx, &mut file_rx);
+                if last_external_file_check.elapsed() >= Duration::from_millis(500) {
+                    process_external_file_change(editor);
+                    last_external_file_check = Instant::now();
+                }
 
             }
         }

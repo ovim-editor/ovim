@@ -113,6 +113,56 @@ fn send_and_snapshot_wrappers_work_against_a_real_headless_process() {
     assert_eq!(session_json["viewport_width"], 64);
     assert_eq!(session_json["viewport_height"], 18);
 
+    let file_arg = file.to_string_lossy().into_owned();
+    let live_edit = run_cli(
+        &session_dir,
+        &[
+            "edit",
+            &file_arg,
+            "--line",
+            "1",
+            "--old",
+            "first",
+            "--new",
+            "FIRST",
+            "--session",
+            &session_name,
+        ],
+    );
+    assert!(live_edit.status.success(), "{}", output_detail(&live_edit));
+    let edited_snapshot = run_cli(&session_dir, &["snapshot", "-s", &session_name]);
+    let edited: Value = serde_json::from_slice(&edited_snapshot.stdout).unwrap();
+    assert_eq!(edited["buffer"]["content"], "FIRST\nsecond\n");
+    assert_eq!(
+        fs::read_to_string(&file).unwrap(),
+        "first\nsecond\n",
+        "session-aware edits should not bypass the live buffer"
+    );
+
+    let save = run_cli(&session_dir, &["exec", "-s", &session_name, "w"]);
+    assert!(save.status.success(), "{}", output_detail(&save));
+    assert_eq!(fs::read_to_string(&file).unwrap(), "FIRST\nsecond\n");
+
+    // A clean headless buffer should detect and reload an external write just
+    // like a focused TUI does, without requiring terminal focus events.
+    thread::sleep(Duration::from_millis(20));
+    fs::write(&file, "first\nsecond\n").unwrap();
+    let reload_deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let output = run_cli(&session_dir, &["snapshot", "-s", &session_name]);
+        if output.status.success() {
+            let snapshot: Value = serde_json::from_slice(&output.stdout).unwrap();
+            if snapshot["buffer"]["content"] == "first\nsecond\n" {
+                break;
+            }
+        }
+        assert!(
+            Instant::now() < reload_deadline,
+            "headless session did not reload the external file change"
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
+
     let send = run_cli(&session_dir, &["send", "-s", &session_name, "j"]);
     assert!(
         send.status.success(),
