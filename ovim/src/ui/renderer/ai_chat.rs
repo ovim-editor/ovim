@@ -157,19 +157,6 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     if editor.ai_chat_focus() == ChatFocus::ModelSelector {
         render_model_picker(frame, editor, main_area);
     }
-
-    // Show standalone waiting indicator only before first streaming chunk arrives.
-    if editor.ai_chat_waiting() {
-        let has_visible_streaming = editor
-            .ai_chat_streaming_content()
-            .is_some_and(|s| !s.is_empty())
-            || editor
-                .ai_chat_streaming_thinking()
-                .is_some_and(|s| !s.is_empty());
-        if !has_visible_streaming {
-            render_waiting_indicator(frame, messages_area);
-        }
-    }
 }
 
 /// Returns cursor (x, y) for the chat input, if focused.
@@ -391,6 +378,13 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 ));
             }
         }
+    }
+
+    // Progress belongs to the run, not to an assistant message. Keep it as a
+    // standalone animated row after the latest visible event for the entire
+    // time the agent is working.
+    if editor.ai_chat_waiting() {
+        rendered_lines.push((render_working_indicator(panel_width), false));
     }
 
     // Display from bottom of area. While pinned, keep viewport stable even
@@ -1128,28 +1122,29 @@ fn render_model_picker(frame: &mut Frame, editor: &Editor, area: Rect) {
 // Waiting Indicator
 // ---------------------------------------------------------------------------
 
-fn render_waiting_indicator(frame: &mut Frame, messages_area: Rect) {
-    if messages_area.height == 0 {
-        return;
-    }
-    let y = messages_area.y + messages_area.height - 1;
-    let dots = "  ···";
-    let line = Line::from(Span::styled(
-        dots,
+fn render_working_indicator(width: usize) -> Line<'static> {
+    const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
+    let frame = (std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 80) as usize;
+    let text = format!("  {} Working", FRAMES[frame % FRAMES.len()]);
+    let mut spans = vec![Span::styled(
+        text.clone(),
         Style::default()
             .fg(Color::Rgb(120, 140, 180))
             .bg(BG_PANEL)
             .add_modifier(Modifier::DIM),
-    ));
-    frame.render_widget(
-        Paragraph::new(vec![line]),
-        Rect {
-            x: messages_area.x,
-            y,
-            width: messages_area.width.min(dots.len() as u16),
-            height: 1,
-        },
-    );
+    )];
+    let used = text.chars().count();
+    if used < width {
+        spans.push(Span::styled(
+            " ".repeat(width - used),
+            Style::default().bg(BG_PANEL),
+        ));
+    }
+    Line::from(spans)
 }
 
 // ---------------------------------------------------------------------------

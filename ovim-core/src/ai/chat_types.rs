@@ -18,6 +18,12 @@ pub enum StreamChunk {
     Thinking(String),
     /// Response content tokens.
     Content(String),
+    /// The current provider-native assistant message item is complete.
+    ///
+    /// A single agent turn may contain several assistant messages separated by
+    /// tool work. Keeping this boundary lets the UI preserve that sequence
+    /// instead of presenting the whole turn as one synthetic message.
+    AgentMessageComplete,
     /// Tool call in progress (M4 — parsers ignore for now).
     ToolCall {
         id: String,

@@ -359,6 +359,7 @@ async fn run_prompt_step(
                 return Err(anyhow!("provider error: {}", err));
             }
             crate::ai::StreamChunk::Thinking(_)
+            | crate::ai::StreamChunk::AgentMessageComplete
             | crate::ai::StreamChunk::ToolCall { .. }
             | crate::ai::StreamChunk::ToolCallComplete { .. }
             | crate::ai::StreamChunk::DynamicToolRequest { .. } => {}

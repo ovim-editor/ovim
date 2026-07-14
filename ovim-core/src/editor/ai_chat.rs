@@ -307,6 +307,23 @@ impl Editor {
                     }
                     changed = true;
                 }
+                StreamChunk::AgentMessageComplete => {
+                    // Codex turns may contain multiple agentMessage items.
+                    // Commit each completed item independently while leaving
+                    // the turn in its working state for subsequent tools or
+                    // messages.
+                    self.flush_ai_runtime_stream_segments();
+                    self.commit_partial_streaming(&model_name);
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.streaming_content = Some(String::new());
+                        chat.streaming_thinking = None;
+                        chat.runtime_recorded_content_bytes = 0;
+                        chat.runtime_recorded_thinking_bytes = 0;
+                        chat.runtime_last_content_event = None;
+                        chat.runtime_last_reasoning_event = None;
+                    }
+                    changed = true;
+                }
                 StreamChunk::ToolCallComplete {
                     id,
                     name,
@@ -2019,6 +2036,48 @@ mod tests {
         assert!(!editor.ai_chat_has_pending_tool_approval());
         assert!(result_rx.await.unwrap().is_err());
         abort_handle.abort();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn completed_agent_items_become_separate_chat_messages() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("work in stages").unwrap();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.runtime_turn = Some(Box::new(turn.clone()));
+        chat.streaming_content = Some(String::new());
+        chat.waiting = true;
+        chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
+            receiver: rx,
+            task,
+            profile_name: "test".into(),
+            model_name: "test".into(),
+            turn: Box::new(turn),
+            branch_generation: 0,
+        });
+
+        tx.send(StreamChunk::Thinking("Inspecting first.".into()))
+            .unwrap();
+        tx.send(StreamChunk::Content("I found the cause.".into()))
+            .unwrap();
+        tx.send(StreamChunk::AgentMessageComplete).unwrap();
+        tx.send(StreamChunk::Content("The fix is verified.".into()))
+            .unwrap();
+        tx.send(StreamChunk::AgentMessageComplete).unwrap();
+        tx.send(StreamChunk::Done).unwrap();
+
+        assert!(editor.poll_pending_ai_chat_job());
+        let messages = editor.conversation().unwrap().messages();
+        assert_eq!(messages.len(), 3);
+        assert_eq!(messages[0].role, ChatRole::Thinking);
+        assert_eq!(messages[0].content, "Inspecting first.");
+        assert_eq!(messages[1].role, ChatRole::Assistant);
+        assert_eq!(messages[1].content, "I found the cause.");
+        assert_eq!(messages[2].role, ChatRole::Assistant);
+        assert_eq!(messages[2].content, "The fix is verified.");
+        assert!(!editor.ai_chat_waiting());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

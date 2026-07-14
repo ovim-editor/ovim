@@ -320,8 +320,13 @@ pub fn render_markdown(
                     }
 
                     // Fallback: plain green style
-                    let truncated = if code_line.len() > max_width.saturating_sub(2) {
-                        format!(" {}... ", &code_line[..max_width.saturating_sub(5)])
+                    let available = max_width.saturating_sub(2);
+                    let truncated = if code_line.chars().count() > available {
+                        let prefix: String = code_line
+                            .chars()
+                            .take(max_width.saturating_sub(5))
+                            .collect();
+                        format!(" {prefix}... ")
                     } else {
                         format!(" {} ", code_line)
                     };
@@ -439,5 +444,18 @@ mod tests {
         let lines = render_markdown(&elements, 80, None);
         // Should still render the code block, just without syntax colors
         assert!(!lines.is_empty());
+    }
+
+    #[test]
+    fn test_narrow_unicode_code_block_does_not_panic() {
+        let elements = parse_markdown("```text\nlet greeting = \"hei 👋 verden\";\n```");
+        let lines = render_markdown(&elements, 12, None);
+        assert!(!lines.is_empty());
+        let rendered = lines[0]
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("..."));
     }
 }

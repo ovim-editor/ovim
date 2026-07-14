@@ -437,7 +437,10 @@ pub(crate) struct AppServerClient {
 impl AppServerClient {
     pub(crate) async fn spawn(cwd: &Path) -> Result<Self> {
         let mut child = Command::new("codex")
-            .args(["app-server", "--stdio"])
+            // ovim owns user-facing progress and completion notifications. Do
+            // not inherit a user's Codex CLI `notify` hook (which may play a
+            // sound) into this embedded app-server process.
+            .args(["app-server", "--stdio", "-c", "notify=[]"])
             .current_dir(cwd)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -611,6 +614,7 @@ impl AppServerClient {
         turn_id: &str,
     ) -> Result<String> {
         let mut output = String::new();
+        let mut current_message_had_delta = false;
         loop {
             let message = self.next_message().await?;
             if message.get("method").and_then(Value::as_str) == Some("item/tool/call") {
@@ -622,6 +626,7 @@ impl AppServerClient {
                 Some("item/agentMessage/delta") => {
                     if let Some(delta) = message.pointer("/params/delta").and_then(Value::as_str) {
                         output.push_str(delta);
+                        current_message_had_delta = true;
                         if let Some(tx) = stream_tx.as_ref() {
                             let _ = tx.send(StreamChunk::Content(delta.to_string()));
                         }
@@ -636,17 +641,23 @@ impl AppServerClient {
                     }
                 }
                 Some("item/completed")
-                    if output.is_empty()
-                        && message.pointer("/params/item/type").and_then(Value::as_str)
-                            == Some("agentMessage") =>
+                    if message.pointer("/params/item/type").and_then(Value::as_str)
+                        == Some("agentMessage") =>
                 {
-                    if let Some(text) = message.pointer("/params/item/text").and_then(Value::as_str)
-                    {
-                        output.push_str(text);
-                        if let Some(tx) = stream_tx.as_ref() {
-                            let _ = tx.send(StreamChunk::Content(text.to_string()));
+                    if !current_message_had_delta {
+                        if let Some(text) =
+                            message.pointer("/params/item/text").and_then(Value::as_str)
+                        {
+                            output.push_str(text);
+                            if let Some(tx) = stream_tx.as_ref() {
+                                let _ = tx.send(StreamChunk::Content(text.to_string()));
+                            }
                         }
                     }
+                    if let Some(tx) = stream_tx.as_ref() {
+                        let _ = tx.send(StreamChunk::AgentMessageComplete);
+                    }
+                    current_message_had_delta = false;
                 }
                 Some("error") => {
                     let detail = message
