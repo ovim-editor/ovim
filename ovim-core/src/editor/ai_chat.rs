@@ -412,6 +412,10 @@ impl Editor {
                         return true;
                     }
                     self.record_tool_event_summary(&call, &result);
+                    let result_content = self.format_tool_result_with_target(&call, &result);
+                    if let Some(conv) = self.conversation_mut() {
+                        conv.append_tool_result(call.id.clone(), result_content);
+                    }
                     let wire_result = match &result {
                         crate::ai::tools::ToolResult::Success(text) => Ok(text.clone()),
                         crate::ai::tools::ToolResult::Error(text) => Err(text.clone()),
@@ -1165,6 +1169,10 @@ impl Editor {
             return;
         }
         self.record_tool_event_summary(call, &result);
+        let result_content = self.format_tool_result_with_target(call, &result);
+        if let Some(conv) = self.conversation_mut() {
+            conv.append_tool_result(call.id.clone(), result_content);
+        }
         let wire = match result {
             crate::ai::tools::ToolResult::Success(text) => Ok(text),
             crate::ai::tools::ToolResult::Error(text) => Err(text),
@@ -1681,6 +1689,27 @@ impl Editor {
             .map(|s| (s.kind, s.label.as_str()))
     }
 
+    /// Original call metadata for rendering expanded tool details.
+    pub fn ai_chat_tool_event_call(&self, tool_call_id: &str) -> Option<&ToolCallInfo> {
+        self.ai_chat_tool_event_summary(tool_call_id)
+            .map(|summary| &summary.call)
+    }
+
+    pub fn ai_chat_is_tool_event_expanded(&self, tool_call_id: &str) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.expanded_tool_events.contains(tool_call_id))
+    }
+
+    pub fn toggle_ai_chat_tool_event(&mut self, tool_call_id: &str) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            if !chat.expanded_tool_events.remove(tool_call_id) {
+                chat.expanded_tool_events.insert(tool_call_id.to_string());
+            }
+        }
+    }
+
     /// Whether a thinking message with the given node ID is expanded.
     pub fn ai_chat_is_thinking_expanded(&self, node_id: NodeId) -> bool {
         self.ai_state
@@ -1992,6 +2021,11 @@ mod tests {
             .position(|event| matches!(event.kind, EventKind::ToolIntent(_)))
             .unwrap();
         assert!(pre_tool_message < tool_intent);
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.role == ChatRole::Tool
+                && message.tool_call_id.as_deref() == Some("provider-call-1")));
         let _provider_result = result_rx.await.unwrap();
 
         tx.send(StreamChunk::Content("After tool.".into())).unwrap();

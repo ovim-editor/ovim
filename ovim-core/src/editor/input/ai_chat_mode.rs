@@ -347,8 +347,13 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
                 let node_id = node_ids[idx];
                 let role = messages[idx].role.clone();
+                let tool_call_id = messages[idx].tool_call_id.clone();
 
-                if role == ChatRole::Thinking {
+                if role == ChatRole::Tool {
+                    if let Some(tool_call_id) = tool_call_id.as_deref() {
+                        editor.toggle_ai_chat_tool_event(tool_call_id);
+                    }
+                } else if role == ChatRole::Thinking {
                     // Toggle thinking expand/collapse
                     if let Some(chat) = editor.ai_state.chat.as_mut() {
                         if !chat.expanded_thinking.remove(&node_id) {

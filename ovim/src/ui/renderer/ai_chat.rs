@@ -273,16 +273,24 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
 
         if msg.role == ChatRole::Tool {
             let msg_row_start = rendered_lines.len();
+            let tool_call_id = msg.tool_call_id.as_deref();
             let (kind, label) = msg
                 .tool_call_id
                 .as_deref()
                 .and_then(|id| editor.ai_chat_tool_event_summary_parts(id))
                 .map(|(k, l)| (k, l.to_string()))
                 .unwrap_or_else(|| fallback_tool_summary(msg));
+            let expanded = tool_call_id.is_some_and(|id| editor.ai_chat_is_tool_event_expanded(id));
             rendered_lines.push((
-                render_tool_event_row(panel_width, &label, kind, is_selected, false),
+                render_tool_event_row(panel_width, &label, kind, is_selected, false, expanded),
                 false,
             ));
+            if expanded {
+                let call = tool_call_id.and_then(|id| editor.ai_chat_tool_event_call(id));
+                for line in render_tool_event_details(panel_width, call, &msg.content) {
+                    rendered_lines.push((line, false));
+                }
+            }
             let msg_row_end = rendered_lines.len();
             message_row_spans.push((msg_row_start, msg_row_end));
             continue;
@@ -374,7 +382,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 let (kind, label) = summarize_streaming_tool_call(tc);
                 let status_text = format!("running {label}");
                 rendered_lines.push((
-                    render_tool_event_row(panel_width, &status_text, kind, false, true),
+                    render_tool_event_row(panel_width, &status_text, kind, false, true, false),
                     false,
                 ));
             }
@@ -490,6 +498,7 @@ fn render_tool_event_row(
     kind: ToolSummaryKind,
     selected: bool,
     pending: bool,
+    expanded: bool,
 ) -> Line<'static> {
     let color = if selected {
         ACCENT_SELECTED
@@ -510,7 +519,14 @@ fn render_tool_event_row(
         ToolSummaryKind::Error => "\u{00d7}",
         ToolSummaryKind::Other => "\u{2022}",
     };
-    let text = format!(" {prefix} {label}");
+    let disclosure = if pending {
+        " "
+    } else if expanded {
+        "▾"
+    } else {
+        "▸"
+    };
+    let text = format!(" {disclosure} {prefix} {label}");
     let display = compact_tool_text(&text, panel_width);
     let mut style = Style::default().fg(color).bg(bg);
     if pending {
@@ -525,6 +541,53 @@ fn render_tool_event_row(
         " ".repeat(panel_width.saturating_sub(display.chars().count()))
     );
     Line::from(Span::styled(padded, style))
+}
+
+fn render_tool_event_details(
+    panel_width: usize,
+    call: Option<&ToolCallInfo>,
+    result: &str,
+) -> Vec<Line<'static>> {
+    const MAX_DETAIL_LINES: usize = 80;
+    let detail_width = panel_width.saturating_sub(4).max(1);
+    let mut sections = Vec::new();
+    if let Some(call) = call {
+        sections.push(format!("tool: {}", call.name));
+        let arguments = serde_json::to_string_pretty(&call.arguments)
+            .unwrap_or_else(|_| call.arguments.to_string());
+        sections.push(format!("arguments:\n{arguments}"));
+    }
+    sections.push(format!("result:\n{result}"));
+
+    let mut detail_lines = Vec::new();
+    for section in sections {
+        for line in word_wrap(&section, detail_width) {
+            if detail_lines.len() == MAX_DETAIL_LINES {
+                detail_lines.push("… details truncated".to_string());
+                break;
+            }
+            detail_lines.push(line);
+        }
+        if detail_lines.len() > MAX_DETAIL_LINES {
+            break;
+        }
+    }
+
+    let style = Style::default()
+        .fg(TEXT_DIM)
+        .bg(tool_kind_background(ToolSummaryKind::Other));
+    detail_lines
+        .into_iter()
+        .map(|line| {
+            let text = format!("    {line}");
+            let display = truncate_with_ellipsis(&text, panel_width);
+            let padding = panel_width.saturating_sub(display.chars().count());
+            Line::from(Span::styled(
+                format!("{display}{}", " ".repeat(padding)),
+                style,
+            ))
+        })
+        .collect()
 }
 
 fn render_queued_input_row(
@@ -1436,7 +1499,7 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 mod tests {
     use super::{
         input_cursor_row_col, is_hidden_tool_only_assistant, render_queued_input_row,
-        wrap_input_rows,
+        render_tool_event_details, wrap_input_rows,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
     use ovim_core::editor::QueuedChatInputKind;
@@ -1508,6 +1571,25 @@ mod tests {
             .map(|span| span.content.as_ref())
             .collect::<String>();
         assert!(text.contains("/ command: /clear"));
+    }
+
+    #[test]
+    fn expanded_tool_details_include_arguments_and_result() {
+        let call = ToolCallInfo {
+            id: "call_1".to_string(),
+            name: "read_file".to_string(),
+            arguments: serde_json::json!({"path": "src/main.rs"}),
+        };
+        let lines = render_tool_event_details(80, Some(&call), "Target: src/main.rs\nfn main() {}");
+        let text = lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("tool: read_file"));
+        assert!(text.contains("src/main.rs"));
+        assert!(text.contains("fn main() {}"));
     }
 }
 

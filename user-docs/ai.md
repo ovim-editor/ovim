@@ -91,6 +91,10 @@ While an agent round is running, the composer remains editable:
 - Slash commands can also be queued; they run locally after the active round
   and are displayed as commands rather than user messages.
 
+Completed tool calls appear as compact summary rows in chat. Move focus into
+message history, select a tool row, and press Enter to expand or collapse its
+arguments and result.
+
 ## API-key providers
 
 Codex is the default hosted path. The following sections apply only when you

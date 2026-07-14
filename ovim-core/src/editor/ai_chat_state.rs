@@ -54,6 +54,7 @@ pub struct ShellExecutionObservation {
 pub struct ToolEventSummary {
     pub kind: ToolSummaryKind,
     pub label: String,
+    pub call: ToolCallInfo,
 }
 
 #[derive(Debug, Clone)]
@@ -163,6 +164,8 @@ pub struct AiChatState {
     pub runtime_last_reasoning_event: Option<crate::run_log::EventId>,
     /// Node IDs of thinking messages that are expanded in the UI.
     pub expanded_thinking: HashSet<NodeId>,
+    /// Tool call IDs whose arguments and results are expanded in the UI.
+    pub expanded_tool_events: HashSet<String>,
     /// Whether the tree panel sidebar is open.
     pub tree_panel_open: bool,
     /// Cursor index into the flattened DFS tree list.
@@ -234,6 +237,7 @@ impl AiChatState {
             runtime_last_content_event: None,
             runtime_last_reasoning_event: None,
             expanded_thinking: HashSet::new(),
+            expanded_tool_events: HashSet::new(),
             tree_panel_open: false,
             tree_panel_cursor: 0,
             streaming_tool_calls: Vec::new(),

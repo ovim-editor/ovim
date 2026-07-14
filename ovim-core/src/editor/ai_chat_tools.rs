@@ -860,7 +860,11 @@ impl Editor {
         }
     }
 
-    fn format_tool_result_with_target(&self, tc: &ToolCallInfo, result: &ToolResult) -> String {
+    pub(super) fn format_tool_result_with_target(
+        &self,
+        tc: &ToolCallInfo,
+        result: &ToolResult,
+    ) -> String {
         let target = tc
             .arguments
             .get("path")
@@ -886,6 +890,7 @@ impl Editor {
             return ToolEventSummary {
                 kind: ToolSummaryKind::Error,
                 label: format!("{} {}", tc.name, compact_tool_label(err)),
+                call: tc.clone(),
             };
         }
 
@@ -1140,6 +1145,7 @@ impl Editor {
         ToolEventSummary {
             kind,
             label: compact_tool_label(&label),
+            call: tc.clone(),
         }
     }
 }

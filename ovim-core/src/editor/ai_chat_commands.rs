@@ -96,6 +96,7 @@ impl Editor {
             chat.viewport = Default::default();
             chat.history = Default::default();
             chat.expanded_thinking.clear();
+            chat.expanded_tool_events.clear();
             chat.streaming_content = None;
             chat.streaming_thinking = None;
             chat.streaming_tool_calls.clear();
