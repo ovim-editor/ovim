@@ -326,6 +326,7 @@ async fn run_prompt_step(
         images: vec![],
         tool_calls: vec![],
         tool_call_id: None,
+        provider_state: vec![],
     }];
 
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -363,6 +364,7 @@ async fn run_prompt_step(
             | crate::ai::StreamChunk::AgentMessageComplete
             | crate::ai::StreamChunk::ToolCall { .. }
             | crate::ai::StreamChunk::ToolCallComplete { .. }
+            | crate::ai::StreamChunk::ProviderState(_)
             | crate::ai::StreamChunk::DynamicToolRequest { .. }
             | crate::ai::StreamChunk::SteerAccepted { .. }
             | crate::ai::StreamChunk::SteerRejected { .. } => {}

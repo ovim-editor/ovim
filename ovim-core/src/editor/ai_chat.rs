@@ -453,6 +453,7 @@ impl Editor {
                     if let Some(chat) = self.ai_state.chat.as_mut() {
                         chat.streaming_content = Some(String::new());
                         chat.streaming_thinking = None;
+                        chat.streaming_provider_state.clear();
                         chat.runtime_recorded_content_bytes = 0;
                         chat.runtime_recorded_thinking_bytes = 0;
                         chat.runtime_last_content_event = None;
@@ -471,6 +472,12 @@ impl Editor {
                             name,
                             arguments,
                         });
+                    }
+                    changed = true;
+                }
+                StreamChunk::ProviderState(items) => {
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.streaming_provider_state.extend(items);
                     }
                     changed = true;
                 }
@@ -584,6 +591,12 @@ impl Editor {
                         .as_mut()
                         .map(|c| std::mem::take(&mut c.streaming_tool_calls))
                         .unwrap_or_default();
+                    let provider_state = self
+                        .ai_state
+                        .chat
+                        .as_mut()
+                        .map(|c| std::mem::take(&mut c.streaming_provider_state))
+                        .unwrap_or_default();
                     let content = self
                         .ai_state
                         .chat
@@ -592,7 +605,12 @@ impl Editor {
                         .unwrap_or_default();
 
                     if !tool_calls.is_empty() {
-                        return self.process_tool_calls(tool_calls, content, &model_name);
+                        return self.process_tool_calls(
+                            tool_calls,
+                            content,
+                            provider_state,
+                            &model_name,
+                        );
                     }
 
                     // No tool calls — normal text-only commit
@@ -601,9 +619,14 @@ impl Editor {
                         // dynamic tool. Anchor the node at the current causal tip
                         // so forking from it includes the observed tool result.
                         let event_id = self.ai_runtime_current_tip();
-                        let node_id = self
-                            .conversation_mut()
-                            .map(|conv| conv.append_assistant_message(content, model_name.clone()));
+                        let node_id = self.conversation_mut().map(|conv| {
+                            conv.append_assistant_message_with_tools_and_state(
+                                content,
+                                model_name.clone(),
+                                Vec::new(),
+                                provider_state,
+                            )
+                        });
                         if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
                             self.record_ai_chat_node(node_id, event_id);
                         }

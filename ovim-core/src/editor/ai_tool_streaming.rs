@@ -112,6 +112,7 @@ impl Editor {
                 "For Ollama specifically: emit structured tool calls, not raw JSON in content."
             }
             crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::CodexAppServer
             | crate::ai::AiProviderKind::OpenAi
             | crate::ai::AiProviderKind::Anthropic => {
                 "Use the provider's structured tool-calling protocol for every tool invocation."
@@ -180,16 +181,19 @@ impl Editor {
             .or_else(|| Some(self.build_chat_system_prompt(&profile)))
         };
         // For remote providers, keep default context narrower to reduce accidental egress.
-        let system_prompt =
-            if remote_provider && profile.provider != crate::ai::AiProviderKind::Codex {
-                system_prompt
-            } else {
-                let project_ctx = crate::ai::project_context::load_project_context(
-                    &self.ai_state.config.project_context,
-                    self.buffers[self.current_buffer_index].file_path(),
-                );
-                system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx))
-            };
+        let system_prompt = if remote_provider
+            && !matches!(
+                profile.provider,
+                crate::ai::AiProviderKind::Codex | crate::ai::AiProviderKind::CodexAppServer
+            ) {
+            system_prompt
+        } else {
+            let project_ctx = crate::ai::project_context::load_project_context(
+                &self.ai_state.config.project_context,
+                self.buffers[self.current_buffer_index].file_path(),
+            );
+            system_prompt.map(|sp| crate::ai::append_project_context(&sp, &project_ctx))
+        };
         let system_prompt = match (system_prompt, tool_call_contract.as_deref()) {
             (Some(sp), Some(contract)) => Some(format!("{sp}\n\n{contract}")),
             (Some(sp), None) => Some(sp),
@@ -205,7 +209,7 @@ impl Editor {
         let working_file_path = self.buffers[self.current_buffer_index]
             .file_path()
             .map(ToString::to_string);
-        let codex_session_key = if profile.provider == crate::ai::AiProviderKind::Codex {
+        let codex_session_key = if profile.provider == crate::ai::AiProviderKind::CodexAppServer {
             let (buffer_id, conversation_name) = self.ai_chat_conversation_key();
             let branch_generation = self
                 .conversation()
@@ -223,7 +227,8 @@ impl Editor {
             .as_deref()
             .cloned()
             .ok_or_else(|| anyhow::anyhow!("no active agent turn"))?;
-        let durable_codex_session = if profile.provider == crate::ai::AiProviderKind::Codex {
+        let durable_codex_session = if profile.provider == crate::ai::AiProviderKind::CodexAppServer
+        {
             self.ai_state.durable_runs.as_ref().map(|services| {
                 crate::ai::DurableCodexSession::new(
                     services.catalog.clone(),
@@ -268,7 +273,8 @@ impl Editor {
         }
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        let (steer_tx, steer_rx) = if profile.provider == crate::ai::AiProviderKind::Codex {
+        let (steer_tx, steer_rx) = if profile.provider == crate::ai::AiProviderKind::CodexAppServer
+        {
             let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
             (Some(tx), Some(rx))
         } else {
@@ -281,11 +287,12 @@ impl Editor {
             } else {
                 Some(tool_schemas.as_slice())
             };
-            let provider_system_prompt = if profile.provider == crate::ai::AiProviderKind::Codex {
-                stable_system_prompt.as_deref()
-            } else {
-                system_prompt.as_deref()
-            };
+            let provider_system_prompt =
+                if profile.provider == crate::ai::AiProviderKind::CodexAppServer {
+                    stable_system_prompt.as_deref()
+                } else {
+                    system_prompt.as_deref()
+                };
             if let Err(e) = stream_ai_chat_with_codex_session(
                 &profile,
                 &messages,
@@ -322,6 +329,7 @@ impl Editor {
             }
             chat.streaming_content = Some(String::new());
             chat.streaming_thinking = None;
+            chat.streaming_provider_state.clear();
             chat.runtime_recorded_content_bytes = 0;
             chat.runtime_recorded_thinking_bytes = 0;
             chat.runtime_last_content_event = None;
@@ -442,6 +450,7 @@ impl Editor {
             }
             chat.streaming_content = None;
             chat.streaming_thinking = None;
+            chat.streaming_provider_state.clear();
             chat.runtime_recorded_content_bytes = 0;
             chat.runtime_recorded_thinking_bytes = 0;
             if chat.viewport.follow_latest {

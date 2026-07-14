@@ -213,7 +213,7 @@ fn auto_mode_classifier_profile() -> AiProfileConfig {
 
     AiProfileConfig {
         name: "codex_auto_mode".into(),
-        provider: AiProviderKind::Codex,
+        provider: AiProviderKind::CodexAppServer,
         model: AUTO_MODE_CLASSIFIER_MODEL.into(),
         base_url: None,
         api_key: None,
@@ -1228,7 +1228,7 @@ mod tests {
     fn profile() -> AiProfileConfig {
         AiProfileConfig {
             name: "codex_test".into(),
-            provider: AiProviderKind::Codex,
+            provider: AiProviderKind::CodexAppServer,
             model: "gpt-5.6-luna".into(),
             base_url: None,
             api_key: None,

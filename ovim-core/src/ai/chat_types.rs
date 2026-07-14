@@ -37,6 +37,9 @@ pub enum StreamChunk {
         name: String,
         arguments: serde_json::Value,
     },
+    /// Opaque provider output items that must be replayed on the next request.
+    /// The Ovim harness stores these but never interprets them as effects.
+    ProviderState(Vec<serde_json::Value>),
     /// A Codex app-server dynamic tool call that must execute against live editor state.
     DynamicToolRequest {
         call: ToolCallInfo,
@@ -108,6 +111,8 @@ pub struct ChatMessage {
     pub tool_calls: Vec<ToolCallInfo>,
     /// For Tool role: which tool call this is a result for.
     pub tool_call_id: Option<String>,
+    /// Provider-native items needed to continue this assistant message.
+    pub provider_state: Vec<serde_json::Value>,
 }
 
 pub type NodeId = u64;
@@ -197,6 +202,7 @@ impl ConversationTree {
             images,
             tool_calls: vec![],
             tool_call_id: None,
+            provider_state: vec![],
         })
     }
 
@@ -209,6 +215,7 @@ impl ConversationTree {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
+            provider_state: vec![],
         })
     }
 
@@ -218,6 +225,16 @@ impl ConversationTree {
         model: String,
         tool_calls: Vec<ToolCallInfo>,
     ) -> NodeId {
+        self.append_assistant_message_with_tools_and_state(content, model, tool_calls, Vec::new())
+    }
+
+    pub fn append_assistant_message_with_tools_and_state(
+        &mut self,
+        content: String,
+        model: String,
+        tool_calls: Vec<ToolCallInfo>,
+        provider_state: Vec<serde_json::Value>,
+    ) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Assistant,
             content,
@@ -226,6 +243,7 @@ impl ConversationTree {
             images: vec![],
             tool_calls,
             tool_call_id: None,
+            provider_state,
         })
     }
 
@@ -238,6 +256,7 @@ impl ConversationTree {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id),
+            provider_state: vec![],
         })
     }
 
@@ -250,6 +269,7 @@ impl ConversationTree {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
+            provider_state: vec![],
         })
     }
 
@@ -262,6 +282,7 @@ impl ConversationTree {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
+            provider_state: vec![],
         })
     }
 
@@ -500,6 +521,7 @@ pub fn apply_observation_mask(
                     images: vec![],
                     tool_calls: msg.tool_calls.clone(),
                     tool_call_id: msg.tool_call_id.clone(),
+                    provider_state: msg.provider_state.clone(),
                 }
             } else {
                 msg.clone()
@@ -717,6 +739,7 @@ mod tests {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
+            provider_state: vec![],
         }
     }
 
@@ -729,6 +752,7 @@ mod tests {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
+            provider_state: vec![],
         }
     }
 
@@ -741,6 +765,7 @@ mod tests {
             images: vec![],
             tool_calls: tc,
             tool_call_id: None,
+            provider_state: vec![],
         }
     }
 
@@ -753,6 +778,7 @@ mod tests {
             images: vec![],
             tool_calls: vec![],
             tool_call_id: Some(id.to_string()),
+            provider_state: vec![],
         }
     }
 

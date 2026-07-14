@@ -67,8 +67,8 @@ ovim send -s dev "  "
 ovim send -s dev "inspect the project<Enter>"
 ```
 
-If auto mode pauses a dynamic tool for approval, the Codex response remains
-blocked until the decision arrives. Inspect it with `ovim snapshot -s dev`, then
+If auto mode pauses an Ovim tool for approval, the agent round remains blocked
+until the decision arrives. Inspect it with `ovim snapshot -s dev`, then
 send `<C-y>` (or `<Enter>`) to allow once, or `<C-n>` (or `<Esc>`) to deny. The
 50 ms headless background tick also polls Luna classifier completions; no
 renderer or attached terminal is required.

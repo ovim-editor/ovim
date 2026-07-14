@@ -9,8 +9,11 @@ This guide covers practical AI configuration in ovim:
 
 ## Recommendation
 
-Install the Codex CLI and sign in with ChatGPT. ovim delegates authentication,
-token refresh, and subscription usage to the supported Codex app-server:
+Install the Codex CLI and sign in with ChatGPT once. Ovim imports that login on
+first use, stores its own refreshable credentials as `ovim/codex-auth.json` in
+the platform config directory (`~/.config` on Linux,
+`~/Library/Application Support` on macOS), and calls the Codex Responses
+transport directly:
 
 ```bash
 npm install -g @openai/codex
@@ -19,11 +22,12 @@ codex login status
 ```
 
 The built-in defaults use `gpt-5.6-sol` at medium effort for chat and
-`gpt-5.6-terra` at low effort for selection edits and read-only queries. Codex
-runs with its app-server sandbox read-only and approval policy set to `never`.
-For editable chats, ovim exposes its own durable mutation and raw-shell dynamic
-tools. Ovim records tool intent first, applies auto-mode policy, executes the
-approved effect in the repository, and returns the result to Codex.
+`gpt-5.6-terra` at low effort for selection edits and read-only queries. With
+the default `codex` provider, Ovim—not Codex app-server—is the agent harness.
+Ovim sends its own tool schemas, records tool intent, applies auto-mode policy,
+executes approved effects in the repository, and returns results for the next
+inference round. Codex's read-only workspace sandbox is therefore not involved
+in repository reads or writes.
 
 Auto mode is the default. Read-only local inspection and tests run immediately;
 context-dependent commands are reviewed by subscription-backed Luna at low
@@ -34,11 +38,10 @@ folder for the chat, or Esc/Ctrl-N to deny. To opt out of auto mode, set
 `tool_approval_mode = "sensitive_prompt"` or `"always_prompt"` in legacy
 `ai.toml`.
 
-Chat conversations retain a native Codex thread and reuse a shared app-server
-process. After the first message, ovim sends only the new user turn plus current
-editor context; Codex retains its prior turns and tool observations natively.
-Changing the model, project boundary, project instructions, or available tools
-starts a fresh Codex thread for that ovim conversation.
+Chat conversations are owned by Ovim. Each inference request replays the active
+conversation branch, tool calls and results, and provider-encrypted reasoning
+state. Forking or clearing a conversation therefore changes Ovim's branch
+without depending on a hidden provider thread.
 
 Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
@@ -70,7 +73,13 @@ vim.ai.setup({
 ```
 
 The `codex` provider does not accept an API key. To change accounts or repair
-authentication, use `codex logout` and `codex login` directly.
+authentication, remove Ovim's `codex-auth.json`, then use `codex logout` and
+`codex login` before opening Ovim again.
+
+To retain the previous Codex-owned harness explicitly, configure
+`provider = "codex_app_server"`. That strategy launches `codex app-server` and
+keeps its native threads, sandbox, and orchestration. Ovim never falls back to
+it silently when direct inference fails.
 
 In AI chat, Escape hides the panel without interrupting the agent or clearing
 the conversation. Open the same chat again to resume it with its input and view

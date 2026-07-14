@@ -184,6 +184,8 @@ pub struct AiChatState {
     pub tree_panel_cursor: usize,
     /// Tool calls accumulated during streaming.
     pub streaming_tool_calls: Vec<ToolCallInfo>,
+    /// Opaque inference-strategy items accumulated for the assistant message.
+    pub streaming_provider_state: Vec<serde_json::Value>,
     /// Number of individual tool calls executed in current turn.
     pub tool_call_count: u16,
     /// Paused tool call awaiting user approval for outside-project access.
@@ -256,6 +258,7 @@ impl AiChatState {
             tree_panel_open: false,
             tree_panel_cursor: 0,
             streaming_tool_calls: Vec::new(),
+            streaming_provider_state: Vec::new(),
             tool_call_count: 0,
             pending_tool_approval: None,
             pending_auto_mode_classification: None,

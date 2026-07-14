@@ -447,6 +447,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 images: vec![],
                 tool_calls: vec![],
                 tool_call_id: None,
+                provider_state: vec![],
             };
             let bubble_lines = render_chat_bubble(
                 &streaming_thinking_msg,
@@ -476,6 +477,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 images: vec![],
                 tool_calls: vec![],
                 tool_call_id: None,
+                provider_state: vec![],
             };
             let bubble_lines = render_chat_bubble(
                 &streaming_msg,
@@ -1895,6 +1897,7 @@ mod tests {
                 arguments: serde_json::json!({}),
             }],
             tool_call_id: None,
+            provider_state: vec![],
         };
         assert!(is_hidden_tool_only_assistant(&msg));
     }
@@ -1913,6 +1916,7 @@ mod tests {
                 arguments: serde_json::json!({}),
             }],
             tool_call_id: None,
+            provider_state: vec![],
         };
         assert!(!is_hidden_tool_only_assistant(&msg));
     }

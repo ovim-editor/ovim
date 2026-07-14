@@ -356,7 +356,7 @@ pub fn infer_provider(model: &str) -> AiProviderKind {
 /// Default API key environment variable for a given provider.
 pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
     match provider {
-        AiProviderKind::Codex => None,
+        AiProviderKind::Codex | AiProviderKind::CodexAppServer => None,
         AiProviderKind::OpenAi => Some("OPENAI_API_KEY".to_string()),
         AiProviderKind::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
         AiProviderKind::Ollama => None,
@@ -367,6 +367,7 @@ pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
 pub fn parse_provider_str(s: &str) -> Option<AiProviderKind> {
     match s.to_lowercase().as_str() {
         "codex" => Some(AiProviderKind::Codex),
+        "codex_app_server" => Some(AiProviderKind::CodexAppServer),
         "openai" => Some(AiProviderKind::OpenAi),
         "anthropic" => Some(AiProviderKind::Anthropic),
         "ollama" => Some(AiProviderKind::Ollama),
@@ -453,6 +454,10 @@ mod tests {
     #[test]
     fn codex_provider_is_parseable_and_needs_no_api_key() {
         assert_eq!(parse_provider_str("codex"), Some(AiProviderKind::Codex));
+        assert_eq!(
+            parse_provider_str("codex_app_server"),
+            Some(AiProviderKind::CodexAppServer)
+        );
         assert_eq!(infer_provider("gpt-5.6-sol"), AiProviderKind::Codex);
         assert_eq!(infer_provider("gpt-5.6-terra"), AiProviderKind::Codex);
         assert_eq!(default_api_key_env(AiProviderKind::Codex), None);

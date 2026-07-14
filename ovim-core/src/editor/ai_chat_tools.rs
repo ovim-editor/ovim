@@ -116,6 +116,7 @@ impl Editor {
 
         match profile.provider {
             crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::CodexAppServer
             | crate::ai::AiProviderKind::OpenAi
             | crate::ai::AiProviderKind::Ollama => schema::tools_to_openai_schema(&tools),
             crate::ai::AiProviderKind::Anthropic => schema::tools_to_anthropic_schema(&tools),
@@ -481,6 +482,7 @@ impl Editor {
         &mut self,
         tool_calls: Vec<ToolCallInfo>,
         content: String,
+        provider_state: Vec<serde_json::Value>,
         model_name: &str,
     ) -> bool {
         let used = self
@@ -529,10 +531,11 @@ impl Editor {
             .as_ref()
             .and_then(|chat| chat.runtime_last_content_event.clone());
         let node_id = self.conversation_mut().map(|conv| {
-            conv.append_assistant_message_with_tools(
+            conv.append_assistant_message_with_tools_and_state(
                 content,
                 model_name.to_string(),
                 tool_calls.clone(),
+                provider_state,
             )
         });
         if let (Some(node_id), Some(event_id)) = (node_id, event_id) {
