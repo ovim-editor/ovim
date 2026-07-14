@@ -53,6 +53,8 @@ pub struct WebToolOutcome {
     pub result: ToolResult,
     pub credential_rejected: bool,
     pub environment_override: bool,
+    /// Account/billing failures that benefit from reopening the clickable setup dialog.
+    pub setup_error: Option<String>,
 }
 
 pub fn credential() -> Option<Credential> {
@@ -121,6 +123,7 @@ pub fn execute(name: &str, arguments: &Value) -> WebToolOutcome {
             )),
             credential_rejected: false,
             environment_override: false,
+            setup_error: Some("Add an Exa API key to enable web access.".to_string()),
         };
     };
     let source = credential.source;
@@ -134,9 +137,21 @@ pub fn execute(name: &str, arguments: &Value) -> WebToolOutcome {
             result: ToolResult::Success(truncate_utf8_with_notice(&text, MAX_TOOL_OUTPUT)),
             credential_rejected: false,
             environment_override: source == CredentialSource::Environment,
+            setup_error: None,
         },
         Err(error) => {
             let rejected = matches!(error, ExaError::InvalidKey(_));
+            let setup_error = match &error {
+                ExaError::Credits(_) => Some(
+                    "Exa credits or an account budget are exhausted. Use the dashboard link to add credits or adjust the limit."
+                        .to_string(),
+                ),
+                ExaError::AccessDenied(_) => Some(
+                    "Exa denied web access for this key. Check the key and account in the dashboard."
+                        .to_string(),
+                ),
+                _ => None,
+            };
             if rejected {
                 let _ = mark_rejected(source);
             }
@@ -144,6 +159,7 @@ pub fn execute(name: &str, arguments: &Value) -> WebToolOutcome {
                 result: ToolResult::Error(error.user_message()),
                 credential_rejected: rejected,
                 environment_override: source == CredentialSource::Environment,
+                setup_error,
             }
         }
     }

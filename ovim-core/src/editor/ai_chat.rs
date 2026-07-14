@@ -1283,6 +1283,7 @@ impl Editor {
                         ),
                         credential_rejected: false,
                         environment_override: false,
+                        setup_error: None,
                     }
                 }
             }
@@ -1314,6 +1315,8 @@ impl Editor {
         }
         if received.credential_rejected {
             self.note_exa_credential_rejected(received.environment_override);
+        } else if let Some(error) = received.setup_error {
+            self.open_exa_setup_dialog(Some(error));
         }
         self.set_lsp_status(String::new());
         self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
