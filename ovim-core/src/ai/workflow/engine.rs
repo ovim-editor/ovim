@@ -362,7 +362,9 @@ async fn run_prompt_step(
             | crate::ai::StreamChunk::AgentMessageComplete
             | crate::ai::StreamChunk::ToolCall { .. }
             | crate::ai::StreamChunk::ToolCallComplete { .. }
-            | crate::ai::StreamChunk::DynamicToolRequest { .. } => {}
+            | crate::ai::StreamChunk::DynamicToolRequest { .. }
+            | crate::ai::StreamChunk::SteerAccepted { .. }
+            | crate::ai::StreamChunk::SteerRejected { .. } => {}
         }
     }
     let _ = task.await;

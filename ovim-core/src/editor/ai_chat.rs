@@ -138,8 +138,13 @@ impl Editor {
         };
 
         let input = chat.input.trim().to_string();
-        if input.is_empty() || chat.waiting {
+        if input.is_empty() {
             return Ok(());
+        }
+
+        if chat.runtime_turn.is_some() {
+            return self
+                .queue_current_ai_chat_input(super::ai_chat_state::QueuedChatInputKind::Steer);
         }
 
         if self.try_execute_ai_chat_slash_command(&input)? {
@@ -414,6 +419,16 @@ impl Editor {
                     let _ = response.send(wire_result);
                     changed = true;
                 }
+                StreamChunk::SteerAccepted { content } => {
+                    if let Err(error) = self.accept_provider_ai_chat_steer(content) {
+                        self.set_lsp_status(format!("Failed to record accepted steer: {error}"));
+                    }
+                    changed = true;
+                }
+                StreamChunk::SteerRejected { content, error } => {
+                    self.reject_provider_ai_chat_steer(&content, &error);
+                    changed = true;
+                }
                 StreamChunk::Done => {
                     self.flush_ai_runtime_stream_segments();
                     // Commit thinking (if any) as a Thinking message.
@@ -477,6 +492,11 @@ impl Editor {
 
                     self.ai_runtime_complete_turn();
                     self.clear_streaming_state();
+                    if let Err(error) = self.start_next_queued_ai_chat_input() {
+                        if let Some(conv) = self.conversation_mut() {
+                            conv.append_error(format!("Failed to run queued input: {error}"));
+                        }
+                    }
                     return true;
                 }
                 StreamChunk::Error(msg) => {
@@ -1826,6 +1846,7 @@ mod tests {
             model_name: "test".into(),
             turn: Box::new(turn),
             branch_generation,
+            steer_tx: None,
         });
         chat.waiting = true;
         abort_handle
@@ -1932,6 +1953,7 @@ mod tests {
                 model_name: "test".into(),
                 turn: Box::new(turn),
                 branch_generation: 0,
+                steer_tx: None,
             });
 
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
@@ -2017,6 +2039,7 @@ mod tests {
             model_name: "test".into(),
             turn: Box::new(turn),
             branch_generation: 0,
+            steer_tx: None,
         });
 
         let (result_tx, mut result_rx) = tokio::sync::oneshot::channel();
@@ -2074,6 +2097,7 @@ mod tests {
             model_name: "test".into(),
             turn: Box::new(turn),
             branch_generation: 0,
+            steer_tx: None,
         });
 
         tx.send(StreamChunk::Thinking("Inspecting first.".into()))

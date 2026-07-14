@@ -65,6 +65,7 @@ pub async fn request_ai_edit(
                     None,
                     None,
                     None,
+                    None,
                 )
                 .await?
             }
@@ -495,6 +496,7 @@ pub async fn stream_ai_chat(
         tx,
         registry,
         None,
+        None,
     )
     .await
 }
@@ -510,6 +512,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
     tx: UnboundedSender<StreamChunk>,
     registry: &HashMap<String, ApiKeyConfig>,
     durable_codex_session: Option<super::codex_app_server::DurableCodexSession>,
+    codex_steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) -> Result<()> {
     // No timeout — streaming connections are long-lived.
     let client = reqwest::Client::builder()
@@ -545,6 +548,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
                 Some(tx.clone()),
                 session_key,
                 durable_codex_session,
+                codex_steer_rx,
             )
             .await?;
             let _ = tx.send(StreamChunk::Done);

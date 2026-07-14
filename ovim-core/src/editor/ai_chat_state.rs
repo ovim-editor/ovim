@@ -3,6 +3,7 @@ use crate::ai::chat_types::{
 };
 use crate::buffer::BufferId;
 use crate::mode::Mode;
+use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -90,6 +91,22 @@ pub struct ChatHistoryState {
     pub selected_node_id: Option<NodeId>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum QueuedChatInputKind {
+    /// Join the active round at its next completed tool boundary.
+    Steer,
+    /// Start a new round after the active round completes.
+    FollowUp,
+    /// Execute an editor-owned slash command after the active round.
+    Command,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QueuedChatInput {
+    pub kind: QueuedChatInputKind,
+    pub content: String,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum ChatViewMode {
     #[default]
@@ -112,6 +129,8 @@ pub struct AiChatState {
     pub input: String,
     /// Byte offset cursor in input.
     pub input_cursor: usize,
+    /// User inputs submitted while an agent round is active.
+    pub queued_inputs: VecDeque<QueuedChatInput>,
     /// Which zone has focus.
     pub focus: ChatFocus,
     /// Viewport behavior for chat history.
@@ -197,6 +216,7 @@ impl AiChatState {
             active_buffer_id,
             input: String::new(),
             input_cursor: 0,
+            queued_inputs: VecDeque::new(),
             focus: ChatFocus::TextInput,
             viewport: ChatViewportState::default(),
             context_generation: 0,
@@ -245,6 +265,9 @@ pub struct PendingAiChatJob {
     pub turn: Box<crate::agent_runtime::PendingTurnRef>,
     /// Prevents late output from attaching to a newly selected UI branch.
     pub branch_generation: u64,
+    /// Codex app-server steering input. Other providers use ovim's local
+    /// post-tool continuation boundary and leave this unset.
+    pub steer_tx: Option<tokio::sync::mpsc::UnboundedSender<String>>,
 }
 
 pub struct ScratchBufferState {

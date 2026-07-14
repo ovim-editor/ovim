@@ -41,6 +41,11 @@ pub enum StreamChunk {
         call: ToolCallInfo,
         response: tokio::sync::oneshot::Sender<Result<String, String>>,
     },
+    /// A queued user steer was accepted by the active provider turn.
+    SteerAccepted { content: String },
+    /// The provider could not steer the active turn; ovim keeps it queued for
+    /// the next round instead of failing the current response.
+    SteerRejected { content: String, error: String },
     /// Stream finished successfully.
     Done,
     /// Stream error.

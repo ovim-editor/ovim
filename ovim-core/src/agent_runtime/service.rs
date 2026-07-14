@@ -1094,6 +1094,39 @@ impl AgentRuntime {
         self.append_message(turn, MessageRole::Agent, content.into())
     }
 
+    pub fn append_user_steering(
+        &mut self,
+        turn: &PendingTurnRef,
+        content: impl Into<String>,
+    ) -> Result<EventEnvelope, AgentRuntimeError> {
+        let content = content.into();
+        if content.trim().is_empty() {
+            return Err(AgentRuntimeError::EmptyUserMessage);
+        }
+        let (sink, state) = self.active_state(turn)?;
+        let previous = state.branches[&state.selected_branch].last_event.clone();
+        let event = append_for(
+            sink,
+            &state.reference,
+            Some(turn.turn_id.clone()),
+            Some(previous),
+            EventActor::User,
+            EventKind::Message(MessageEvent {
+                role: MessageRole::User,
+                content,
+            }),
+            None,
+            None,
+            Some(turn.branch_id.clone()),
+        )?;
+        state
+            .branches
+            .get_mut(&state.selected_branch)
+            .unwrap()
+            .last_event = event.event_id.clone();
+        Ok(event)
+    }
+
     fn append_message(
         &mut self,
         turn: &PendingTurnRef,

@@ -82,6 +82,15 @@ Chat slash commands are handled by ovim rather than sent to the provider:
 - `/model codex_sol` switches directly to a named profile.
 - `/clear` clears the current conversation and starts a fresh provider context.
 
+While an agent round is running, the composer remains editable:
+
+- Enter queues a steer for the active round. Ovim delivers it after the next
+  completed tool call. If the round finishes first, it becomes the next-round
+  follow-up.
+- Tab queues a message for the next round.
+- Slash commands can also be queued; they run locally after the active round
+  and are displayed as commands rather than user messages.
+
 ## API-key providers
 
 Codex is the default hosted path. The following sections apply only when you

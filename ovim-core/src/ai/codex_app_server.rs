@@ -61,6 +61,7 @@ pub(crate) async fn request(
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: Option<&str>,
     durable_session: Option<DurableCodexSession>,
+    steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) -> Result<String> {
     let cwd = request_cwd(file_path)?;
     if session_key.is_some() || durable_session.is_some() {
@@ -74,6 +75,7 @@ pub(crate) async fn request(
             stream_tx,
             session_key.unwrap_or("durable"),
             durable_session,
+            steer_rx,
         )
         .await;
     }
@@ -98,7 +100,7 @@ async fn request_ephemeral(
         .start_turn(profile, &thread_id, input, CodexTurnOptions::default())
         .await?;
     let output = client
-        .stream_turn(stream_tx, cwd, &thread_id, &turn.id)
+        .stream_turn(stream_tx, cwd, &thread_id, &turn.id, None)
         .await;
     client.stop().await;
     output
@@ -170,7 +172,9 @@ pub(crate) async fn request_auto_mode_classification(
                 },
             )
             .await?;
-        client.stream_turn(None, cwd, &thread_id, &turn.id).await
+        client
+            .stream_turn(None, cwd, &thread_id, &turn.id, None)
+            .await
     }
     .await;
     if client.is_alive() {
@@ -221,6 +225,7 @@ async fn request_persistent(
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: &str,
     durable_session: Option<DurableCodexSession>,
+    steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
 ) -> Result<String> {
     let configuration = provider_configuration_fingerprint(profile, instructions, cwd, tools)?;
     let runtime_key = durable_session
@@ -360,7 +365,7 @@ async fn request_persistent(
             }
         }
         client
-            .stream_turn(stream_tx, cwd, &thread_id, &turn.id)
+            .stream_turn(stream_tx, cwd, &thread_id, &turn.id, steer_rx)
             .await
     }
     .await;
@@ -616,6 +621,7 @@ impl AppServerClient {
         _cwd: &Path,
         thread_id: &str,
         turn_id: &str,
+        mut steer_rx: Option<tokio::sync::mpsc::UnboundedReceiver<String>>,
     ) -> Result<String> {
         let mut output = String::new();
         let mut current_message_had_delta = false;
@@ -624,6 +630,28 @@ impl AppServerClient {
             if message.get("method").and_then(Value::as_str) == Some("item/tool/call") {
                 self.respond_to_tool_call(&message, stream_tx.as_ref(), thread_id, turn_id)
                     .await?;
+                if let Some(rx) = steer_rx.as_mut() {
+                    while let Ok(content) = rx.try_recv() {
+                        match self
+                            .steer_turn(thread_id, turn_id, &content, stream_tx.as_ref())
+                            .await
+                        {
+                            Ok(()) => {
+                                if let Some(tx) = stream_tx.as_ref() {
+                                    let _ = tx.send(StreamChunk::SteerAccepted { content });
+                                }
+                            }
+                            Err(error) => {
+                                if let Some(tx) = stream_tx.as_ref() {
+                                    let _ = tx.send(StreamChunk::SteerRejected {
+                                        content,
+                                        error: error.to_string(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
                 continue;
             }
             match message.get("method").and_then(Value::as_str) {
@@ -692,6 +720,24 @@ impl AppServerClient {
     pub(crate) async fn stop(&mut self) {
         let _ = self.child.start_kill();
         let _ = self.child.wait().await;
+    }
+
+    async fn steer_turn(
+        &mut self,
+        thread_id: &str,
+        turn_id: &str,
+        content: &str,
+        stream_tx: Option<&UnboundedSender<StreamChunk>>,
+    ) -> Result<()> {
+        let request_id = self.request_id();
+        self.send(json!({
+            "method": "turn/steer",
+            "id": request_id,
+            "params": turn_steer_params(thread_id, turn_id, content),
+        }))
+        .await?;
+        self.wait_for_response(request_id, stream_tx).await?;
+        Ok(())
     }
 
     async fn respond_to_tool_call(
@@ -817,6 +863,14 @@ fn turn_start_params(
         params["clientUserMessageId"] = json!(client_user_message_id);
     }
     params
+}
+
+fn turn_steer_params(thread_id: &str, turn_id: &str, content: &str) -> Value {
+    json!({
+        "threadId": thread_id,
+        "expectedTurnId": turn_id,
+        "input": [{ "type": "text", "text": content }],
+    })
 }
 
 struct DynamicToolCall<'a> {
@@ -1074,6 +1128,18 @@ mod tests {
         assert_eq!(params["clientUserMessageId"], "operation-42");
         assert_eq!(params["outputSchema"], schema);
         assert_eq!(params["effort"], "low");
+    }
+
+    #[test]
+    fn turn_steer_fixture_targets_the_active_turn() {
+        assert_eq!(
+            turn_steer_params("thread-1", "turn-2", "change direction"),
+            serde_json::json!({
+                "threadId": "thread-1",
+                "expectedTurnId": "turn-2",
+                "input": [{ "type": "text", "text": "change direction" }],
+            })
+        );
     }
 
     #[test]

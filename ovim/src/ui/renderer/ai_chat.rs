@@ -1,6 +1,7 @@
 use crate::editor::Editor;
 use crate::syntax::Theme;
 use ovim_core::ai::chat_types::{ChatFocus, ChatMessage, ChatRole, ToolCallInfo, ToolSummaryKind};
+use ovim_core::editor::QueuedChatInputKind;
 use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
@@ -380,6 +381,14 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
         }
     }
 
+    // Follow-ups submitted during a run stay visible above the composer.
+    for queued in editor.ai_chat_queued_inputs() {
+        rendered_lines.push((
+            render_queued_input_row(panel_width, queued.kind, &queued.content),
+            false,
+        ));
+    }
+
     // Progress belongs to the run, not to an assistant message. Keep it as a
     // standalone animated row after the latest visible event for the entire
     // time the agent is working.
@@ -516,6 +525,43 @@ fn render_tool_event_row(
         " ".repeat(panel_width.saturating_sub(display.chars().count()))
     );
     Line::from(Span::styled(padded, style))
+}
+
+fn render_queued_input_row(
+    panel_width: usize,
+    kind: QueuedChatInputKind,
+    content: &str,
+) -> Line<'static> {
+    let (prefix, label, color, background) = match kind {
+        QueuedChatInputKind::Steer => (
+            "↳",
+            "steer",
+            Color::Rgb(115, 190, 255),
+            Color::Rgb(25, 45, 64),
+        ),
+        QueuedChatInputKind::FollowUp => (
+            "⌛",
+            "queued",
+            Color::Rgb(190, 170, 255),
+            Color::Rgb(44, 36, 62),
+        ),
+        QueuedChatInputKind::Command => (
+            "/",
+            "command",
+            Color::Rgb(255, 196, 105),
+            Color::Rgb(60, 45, 25),
+        ),
+    };
+    let text = format!(" {prefix} {label}: {}", content.replace('\n', " "));
+    let display = truncate_with_ellipsis(&text, panel_width);
+    let padding = panel_width.saturating_sub(display.chars().count());
+    Line::from(Span::styled(
+        format!("{display}{}", " ".repeat(padding)),
+        Style::default()
+            .fg(color)
+            .bg(background)
+            .add_modifier(Modifier::DIM),
+    ))
 }
 
 fn compact_tool_path(path: &str) -> String {
@@ -859,7 +905,6 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     }
 
     let focus = editor.ai_chat_focus();
-    let waiting = editor.ai_chat_waiting();
     let input = editor.ai_chat_input();
     let allow_edits = editor.ai_chat_allow_edits();
 
@@ -897,11 +942,16 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     let suffix_len = 2; // " │"
     let content_width = w.saturating_sub(prefix_total + suffix_len);
 
-    let input_fg = if waiting { TEXT_DIM } else { TEXT_NORMAL };
+    let show_active_hint = input.is_empty() && editor.ai_chat_round_active();
+    let input_fg = if show_active_hint {
+        TEXT_DIM
+    } else {
+        TEXT_NORMAL
+    };
     let input_style = Style::default().fg(input_fg).bg(BG_INPUT);
 
-    let display_input: &str = if waiting {
-        "Waiting for response..."
+    let display_input: &str = if show_active_hint {
+        "Enter steers after tool · Tab queues next round"
     } else {
         input
     };
@@ -1384,8 +1434,12 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{input_cursor_row_col, is_hidden_tool_only_assistant, wrap_input_rows};
+    use super::{
+        input_cursor_row_col, is_hidden_tool_only_assistant, render_queued_input_row,
+        wrap_input_rows,
+    };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
+    use ovim_core::editor::QueuedChatInputKind;
 
     #[test]
     fn wrap_input_rows_preserves_trailing_space() {
@@ -1443,6 +1497,17 @@ mod tests {
             tool_call_id: None,
         };
         assert!(!is_hidden_tool_only_assistant(&msg));
+    }
+
+    #[test]
+    fn queued_commands_are_labeled_distinctly() {
+        let line = render_queued_input_row(40, QueuedChatInputKind::Command, "/clear");
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(text.contains("/ command: /clear"));
     }
 }
 

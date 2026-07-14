@@ -299,6 +299,9 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         KeyCode::Enter => {
             editor.submit_ai_chat_message()?;
         }
+        KeyCode::Tab => {
+            editor.schedule_ai_chat_message()?;
+        }
         KeyCode::Char('g') if key_event.modifiers.contains(Modifiers::CONTROL) => {
             editor.open_chat_scratch_editor();
         }

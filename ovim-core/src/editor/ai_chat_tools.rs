@@ -817,6 +817,15 @@ impl Editor {
             chat.waiting = true;
         }
 
+        if let Err(error) = self.apply_local_ai_chat_steers() {
+            self.ai_runtime_fail_turn(format!("failed to apply queued steer: {error}"));
+            if let Some(conv) = self.conversation_mut() {
+                conv.append_error(format!("Failed to apply queued steer: {error}"));
+            }
+            self.clear_streaming_state();
+            return true;
+        }
+
         if let Err(e) = self.spawn_streaming_request() {
             self.ai_runtime_fail_turn(format!("failed to continue after tools: {e}"));
             if let Some(conv) = self.conversation_mut() {

@@ -3,6 +3,7 @@ mod ai_base_manifest;
 mod ai_chat;
 mod ai_chat_commands;
 mod ai_chat_mutations;
+mod ai_chat_queue;
 pub(crate) mod ai_chat_state;
 mod ai_chat_tools;
 mod ai_context;
@@ -81,6 +82,7 @@ pub use crate::change::{
     ApplyPos, Change, ChangeBuilder, ChangeManager, CursorPos, InsertEntryMode, Range,
     TextObjectType,
 };
+pub use ai_chat_state::{QueuedChatInput, QueuedChatInputKind};
 pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use build_state::PendingShellCommand;
 pub use command_context::CommandContext;

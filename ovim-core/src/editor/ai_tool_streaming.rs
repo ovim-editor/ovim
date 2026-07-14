@@ -268,6 +268,12 @@ impl Editor {
         }
 
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (steer_tx, steer_rx) = if profile.provider == crate::ai::AiProviderKind::Codex {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            (Some(tx), Some(rx))
+        } else {
+            (None, None)
+        };
         let tx_err = tx.clone();
         let task = tokio::spawn(async move {
             let tools_ref = if tool_schemas.is_empty() {
@@ -291,6 +297,7 @@ impl Editor {
                 tx.clone(),
                 &api_key_registry,
                 durable_codex_session,
+                steer_rx,
             )
             .await
             {
@@ -306,6 +313,7 @@ impl Editor {
                 model_name,
                 turn: Box::new(runtime_turn),
                 branch_generation,
+                steer_tx,
             });
             chat.pending_tool_approval = None;
             chat.pending_auto_mode_classification = None;
