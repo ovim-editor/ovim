@@ -1420,6 +1420,7 @@ impl Editor {
         let root = self
             .ai_effective_project_root()
             .unwrap_or_else(|| std::path::PathBuf::from("."));
+        let mut installed = false;
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.pending_tool_approval = Some(super::ai_chat_state::PendingToolApproval {
                 tool_call: call,
@@ -1435,6 +1436,11 @@ impl Editor {
             // Keep pending_job alive: its app-server task is blocked on the
             // dynamic response and resumes exactly once after this UI decision.
             chat.waiting = false;
+            installed = true;
+        }
+        if installed {
+            self.ai_state.ai_attention_generation =
+                self.ai_state.ai_attention_generation.saturating_add(1);
         }
         self.set_lsp_status(format!(
             "Shell approval required: {reason}. Press Ctrl-Y to allow once or Ctrl-N to deny."
@@ -1602,6 +1608,12 @@ impl Editor {
         self.ai_chat_waiting()
             || self.ai_chat_has_pending_tool_approval()
             || self.ai_chat_has_pending_no_repo_folder_approval()
+    }
+
+    /// Monotonic signal updated whenever an active agent pauses for approval.
+    /// UI and headless clients can use this to notify once per new prompt.
+    pub fn ai_chat_attention_generation(&self) -> u64 {
+        self.ai_state.ai_attention_generation
     }
 
     /// Whether a tool call is currently paused pending user approval.
@@ -2838,8 +2850,10 @@ mod tests {
         open_test_chat(&mut editor);
         let mut response = attach_finished_classifier(&mut editor, Err("protocol failed".into()));
 
+        assert_eq!(editor.ai_chat_attention_generation(), 0);
         assert!(editor.poll_pending_auto_mode_classification());
         assert!(editor.ai_chat_has_pending_tool_approval());
+        assert_eq!(editor.ai_chat_attention_generation(), 1);
         assert!(matches!(
             response.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)

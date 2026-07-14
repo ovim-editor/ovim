@@ -3,6 +3,7 @@ use crossterm::event::{self, Event, EventStream};
 use futures::StreamExt;
 use ovim::key_convert::{convert_key_event, convert_mouse_event};
 use std::collections::HashMap;
+use std::io::{self, Write};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio::sync::mpsc;
@@ -21,6 +22,33 @@ use ovim::mode::Mode;
 use ovim::session::SessionInfo;
 use ovim::syntax::{Language, LanguageRegistry, SyntaxHighlighter};
 use ovim::ui::UI;
+
+fn emit_agent_attention_bell(output: &mut impl Write) -> io::Result<()> {
+    output.write_all(b"\x07")?;
+    output.flush()
+}
+
+fn emit_new_agent_attention(
+    current: u64,
+    observed_generation: &mut u64,
+    output: &mut impl Write,
+) -> io::Result<bool> {
+    if current == *observed_generation {
+        return Ok(false);
+    }
+    *observed_generation = current;
+    emit_agent_attention_bell(output)?;
+    Ok(true)
+}
+
+fn notify_new_agent_attention(editor: &Editor, observed_generation: &mut u64) {
+    let mut stdout = io::stdout().lock();
+    let _ = emit_new_agent_attention(
+        editor.ai_chat_attention_generation(),
+        observed_generation,
+        &mut stdout,
+    );
+}
 
 fn apply_java_status(editor: &mut Editor, status: String) {
     let ready = status.trim().ends_with(": Ready");
@@ -1037,6 +1065,7 @@ pub async fn run_event_loop(
     // the call sites uniform.
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
     let mut last_external_file_check = Instant::now();
+    let mut observed_ai_attention_generation = editor.ai_chat_attention_generation();
 
     while !editor.should_quit() {
         // Wait for input, API request, or tick — input has priority via `biased`
@@ -1113,6 +1142,11 @@ pub async fn run_event_loop(
 
             }
         }
+
+        // Approval prompts are created by background polling as well as input
+        // dispatch. Notify on the core's edge signal, outside rendering, so a
+        // paused agent rings once even while the screen continues to redraw.
+        notify_new_agent_attention(editor, &mut observed_ai_attention_generation);
 
         // Execute pending shell command with full terminal access
         if let Some(pending) = editor.take_pending_shell_command() {
@@ -1589,6 +1623,7 @@ async fn handle_api_request(
 mod tests {
     use super::apply_java_status;
     use super::compute_text_width;
+    use super::emit_new_agent_attention;
     use super::find_char_positions;
     use super::handle_api_request;
     use super::handle_edit_line;
@@ -1610,6 +1645,19 @@ mod tests {
 
     fn test_session() -> Arc<Mutex<SessionInfo>> {
         Arc::new(Mutex::new(SessionInfo::new(0, None, "test".into())))
+    }
+
+    #[test]
+    fn agent_attention_bell_emits_once_for_each_generation() {
+        let mut observed = 0;
+        let mut output = Vec::new();
+
+        assert!(emit_new_agent_attention(1, &mut observed, &mut output).unwrap());
+        assert!(!emit_new_agent_attention(1, &mut observed, &mut output).unwrap());
+        assert!(emit_new_agent_attention(2, &mut observed, &mut output).unwrap());
+
+        assert_eq!(observed, 2);
+        assert_eq!(output, b"\x07\x07");
     }
 
     #[tokio::test]
@@ -2583,6 +2631,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
         .collect();
     Some(AiChatSnapshot {
         waiting: editor.ai_chat_waiting(),
+        attention_generation: editor.ai_chat_attention_generation(),
         input: editor.ai_chat_input().to_string(),
         input_cursor: editor.ai_chat_input_cursor(),
         focus: match editor.ai_chat_focus() {

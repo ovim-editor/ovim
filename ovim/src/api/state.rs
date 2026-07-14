@@ -152,6 +152,10 @@ pub struct ViewSnapshot {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiChatSnapshot {
     pub waiting: bool,
+    /// Changes whenever the agent presents a new blocking approval prompt.
+    /// Clients can use the edge to raise an audible or native notification.
+    #[serde(default)]
+    pub attention_generation: u64,
     pub input: String,
     #[serde(default)]
     pub input_cursor: usize,

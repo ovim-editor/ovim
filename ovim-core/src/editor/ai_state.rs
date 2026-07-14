@@ -127,6 +127,11 @@ pub struct AiState {
         Box<HashMap<(BufferId, String), HashMap<NodeId, ChatRuntimeNodeRef>>>,
     /// Registry of all available tools.
     pub tool_registry: ToolRegistry,
+    /// Monotonic signal that a running agent has paused for user attention.
+    /// Frontends compare this value with the last one they observed so a
+    /// single prompt can notify once without coupling sound playback to
+    /// polling or rendering.
+    pub ai_attention_generation: u64,
     /// Whether we've already asked for no-repo folder access in this process session.
     pub no_repo_session_prompted: bool,
     /// User-approved folder root for project-level AI tools when not in a git repo.
@@ -188,6 +193,7 @@ impl AiState {
             conversations: HashMap::new(),
             conversation_runtime_nodes: Box::new(HashMap::new()),
             tool_registry: ToolRegistry::new(),
+            ai_attention_generation: 0,
             no_repo_session_prompted: false,
             no_repo_session_allowed_root: None,
             workflows: HashMap::new(),

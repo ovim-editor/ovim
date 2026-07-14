@@ -907,12 +907,18 @@ impl Editor {
     }
 
     fn pause_for_tool_approval(&mut self, pending: PendingToolApproval) {
+        let mut installed = false;
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.pending_tool_approval = Some(pending);
             chat.waiting = false;
             chat.pending_job = None;
             chat.streaming_content = None;
             chat.streaming_thinking = None;
+            installed = true;
+        }
+        if installed {
+            self.ai_state.ai_attention_generation =
+                self.ai_state.ai_attention_generation.saturating_add(1);
         }
     }
 
@@ -1475,6 +1481,11 @@ mod tests {
                     panic!("expected approval request, got error: {err}");
                 }
             }
+
+            assert_eq!(editor.ai_chat_attention_generation(), 0);
+            assert!(editor.execute_tool_call_batch(vec![tool_call], "test".into()));
+            assert!(editor.ai_chat_has_pending_tool_approval());
+            assert_eq!(editor.ai_chat_attention_generation(), 1);
 
             assert_eq!(
                 editor.ai_state.chat.as_ref().unwrap().active_buffer_id,

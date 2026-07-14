@@ -53,6 +53,11 @@ folder for the chat, or Esc/Ctrl-N to deny. To opt out of auto mode, set
 `tool_approval_mode = "sensitive_prompt"` or `"always_prompt"` in legacy
 `ai.toml`.
 
+When an active agent pauses for one of these approval decisions, Ovim emits the
+terminal bell once. Whether that is audible, visual, or suppressed is controlled
+by the terminal's bell settings. The notification is tied to the new prompt,
+not to rendering, so an unattended prompt does not repeatedly ring.
+
 Chat conversations are owned by Ovim. Each inference request replays the active
 conversation branch, tool calls and results, and provider-encrypted reasoning
 state. Forking or clearing a conversation therefore changes Ovim's branch
