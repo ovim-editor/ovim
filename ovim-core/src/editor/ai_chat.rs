@@ -830,41 +830,38 @@ impl Editor {
             self.shell_authorization_context(&project_root),
         );
 
-        match request.dynamic.static_analysis.disposition {
-            StaticDisposition::LocallySafe => {
-                self.execute_dynamic_tool_after_policy(turn, tool, call, response);
+        if request
+            .dynamic
+            .static_analysis
+            .disposition
+            .requires_model_review()
+        {
+            let operation_id = tool.operation_id.clone();
+            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+            tokio::spawn(async move {
+                let result = CodexAutoModeClassifier::default()
+                    .classify(&request, &operation_id)
+                    .await
+                    .map_err(|error| format!("{error:#}"));
+                let _ = result_tx.send(result);
+            });
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.pending_auto_mode_classification =
+                    Some(super::ai_chat_state::PendingAutoModeClassification {
+                        tool_call: call,
+                        runtime_tool: tool,
+                        runtime_turn: turn,
+                        dynamic_response: response,
+                        receiver: result_rx,
+                    });
             }
-            StaticDisposition::UserConfirmationRequired => {
-                self.pause_dynamic_tool_for_approval(
-                    turn,
-                    tool,
-                    call,
-                    response,
-                    "static analysis requires explicit user confirmation".into(),
-                );
-            }
-            StaticDisposition::ModelReviewRequired => {
-                let operation_id = tool.operation_id.clone();
-                let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-                tokio::spawn(async move {
-                    let result = CodexAutoModeClassifier::default()
-                        .classify(&request, &operation_id)
-                        .await
-                        .map_err(|error| format!("{error:#}"));
-                    let _ = result_tx.send(result);
-                });
-                if let Some(chat) = self.ai_state.chat.as_mut() {
-                    chat.pending_auto_mode_classification =
-                        Some(super::ai_chat_state::PendingAutoModeClassification {
-                            tool_call: call,
-                            runtime_tool: tool,
-                            runtime_turn: turn,
-                            dynamic_response: response,
-                            receiver: result_rx,
-                        });
-                }
-                self.set_lsp_status("Luna is reviewing the proposed shell program".into());
-            }
+            self.set_lsp_status("Luna is reviewing the proposed shell program".into());
+        } else {
+            debug_assert_eq!(
+                request.dynamic.static_analysis.disposition,
+                StaticDisposition::LocallySafe
+            );
+            self.execute_dynamic_tool_after_policy(turn, tool, call, response);
         }
     }
 
@@ -2351,7 +2348,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn auto_mode_unauthorized_deploy_pauses_dynamic_codex_response() {
+    async fn auto_mode_unauthorized_deploy_is_sent_to_luna_before_user_escalation() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::create_dir(dir.path().join(".git")).unwrap();
         let file = dir.path().join("main.rs");
@@ -2390,7 +2387,14 @@ mod tests {
         .unwrap();
 
         assert!(editor.poll_pending_ai_chat_job());
-        assert!(editor.ai_chat_has_pending_tool_approval());
+        assert!(!editor.ai_chat_has_pending_tool_approval());
+        assert!(editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_auto_mode_classification
+            .is_some());
         assert!(matches!(
             result_rx.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
@@ -2403,15 +2407,15 @@ mod tests {
             .iter()
             .any(|event| matches!(event.kind, EventKind::ToolStarted(_))));
 
-        // Headless `/keys` routes through this same input dispatcher; no
-        // renderer state is involved in resolving the paused app-server call.
-        crate::editor::InputHandler::handle_key_event(
-            &mut editor,
-            crate::KeyEvent::new(crate::KeyCode::Char('n'), crate::Modifiers::CONTROL),
-        )
-        .unwrap();
-        assert!(!editor.ai_chat_has_pending_tool_approval());
-        assert!(result_rx.await.unwrap().is_err());
+        // The classifier task may still be connecting to app-server. Dropping
+        // its receiver is sufficient here; this test covers routing, while
+        // verdict handling is exercised by the focused classifier tests.
+        editor
+            .ai_state
+            .chat
+            .as_mut()
+            .unwrap()
+            .pending_auto_mode_classification = None;
         abort_handle.abort();
     }
 
@@ -2633,6 +2637,27 @@ mod tests {
 
         assert!(editor.poll_pending_auto_mode_classification());
         assert!(editor.ai_chat_has_pending_tool_approval());
+        assert!(matches!(
+            response.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+    }
+
+    #[tokio::test]
+    async fn classifier_ask_escalates_to_paused_user_approval() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let verdict = crate::ai::auto_mode::ClassifierVerdict::parse_strict(
+            r#"{"policy_version":"ovim.auto-mode.v1","decision":"ask","scope":{"project_root":"/repo"},"reason":"the user did not authorize credential access","confidence":0.96,"expiry":{"kind":"after_command"}}"#,
+        )
+        .unwrap();
+        let mut response = attach_finished_classifier(&mut editor, Ok(verdict));
+
+        assert!(editor.poll_pending_auto_mode_classification());
+        assert!(editor.ai_chat_has_pending_tool_approval());
+        assert!(editor
+            .lsp_status()
+            .contains("the user did not authorize credential access"));
         assert!(matches!(
             response.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)

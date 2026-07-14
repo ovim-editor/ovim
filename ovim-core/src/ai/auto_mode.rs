@@ -198,6 +198,15 @@ pub enum StaticDisposition {
     UserConfirmationRequired,
 }
 
+impl StaticDisposition {
+    /// Auto mode executes only the deterministic read-only allowlist without
+    /// model review. Every other disposition is evidence for Luna, including
+    /// high-risk signals that may ultimately require the user.
+    pub fn requires_model_review(&self) -> bool {
+        !matches!(self, Self::LocallySafe)
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ShellSyntaxFeature {
@@ -863,6 +872,13 @@ mod tests {
             analyze_shell_proposal(&outside, &Default::default()).disposition,
             StaticDisposition::UserConfirmationRequired
         );
+    }
+
+    #[test]
+    fn every_nontrivial_static_disposition_routes_through_model_review() {
+        assert!(!StaticDisposition::LocallySafe.requires_model_review());
+        assert!(StaticDisposition::ModelReviewRequired.requires_model_review());
+        assert!(StaticDisposition::UserConfirmationRequired.requires_model_review());
     }
 
     #[test]
