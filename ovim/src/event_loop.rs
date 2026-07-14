@@ -1410,11 +1410,26 @@ async fn handle_api_request(
 mod tests {
     use super::apply_java_status;
     use super::compute_text_width;
+    use super::create_snapshot;
     use super::find_char_positions;
     use super::handle_edit_line;
     use super::handle_terminal_resize;
     use super::ApiResponse;
     use ovim::editor::Editor;
+    use ovim_core::ai::chat_types::ChatOpts;
+
+    #[test]
+    fn snapshot_exposes_active_ai_chat_state() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+
+        let snapshot = create_snapshot(&editor);
+        let chat = snapshot.ai_chat.expect("active chat snapshot");
+        assert!(!chat.waiting);
+        assert!(chat.input.is_empty());
+        assert!(chat.queued.is_empty());
+        assert!(chat.messages.is_empty());
+    }
 
     #[test]
     fn resize_updates_viewport_and_wrap_map_and_keeps_cursor_visible() {
@@ -2173,8 +2188,55 @@ fn create_snapshot(editor: &Editor) -> EditorSnapshot {
         marks,
         picker,
         hover_info: editor.hover_info().map(|s| s.to_string()),
+        ai_chat: create_ai_chat_snapshot(editor),
         decorations,
     }
+}
+
+fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot> {
+    use ovim::api::{AiChatMessageSnapshot, AiChatSnapshot, QueuedChatSnapshot};
+    use ovim_core::ai::chat_types::ChatRole;
+    use ovim_core::editor::QueuedChatInputKind;
+
+    editor.ai_chat_state()?;
+    let pending_approval = editor
+        .ai_chat_pending_tool_approval_summary()
+        .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary());
+    let queued = editor
+        .ai_chat_queued_inputs()
+        .map(|item| QueuedChatSnapshot {
+            kind: match item.kind {
+                QueuedChatInputKind::Steer => "steer",
+                QueuedChatInputKind::FollowUp => "follow_up",
+                QueuedChatInputKind::Command => "command",
+            }
+            .to_string(),
+            content: item.content.clone(),
+        })
+        .collect();
+    let messages = editor
+        .ai_chat_messages()
+        .iter()
+        .map(|message| AiChatMessageSnapshot {
+            role: match message.role {
+                ChatRole::User => "user",
+                ChatRole::Assistant => "assistant",
+                ChatRole::Thinking => "thinking",
+                ChatRole::Tool => "tool",
+                ChatRole::Error => "error",
+            }
+            .to_string(),
+            content: message.content.clone(),
+            tool_call_id: message.tool_call_id.clone(),
+        })
+        .collect();
+    Some(AiChatSnapshot {
+        waiting: editor.ai_chat_waiting(),
+        input: editor.ai_chat_input().to_string(),
+        pending_approval,
+        queued,
+        messages,
+    })
 }
 
 /// Lightweight snapshot: skips buffer content, registers, marks, and picker.
@@ -2199,6 +2261,7 @@ fn create_snapshot_light(editor: &Editor) -> EditorSnapshot {
         marks: HashMap::new(),
         picker: None,
         hover_info: editor.hover_info().map(|s| s.to_string()),
+        ai_chat: create_ai_chat_snapshot(editor),
         // Lightweight snapshot deliberately omits decorations to keep polling
         // cheap; callers that need them should hit the full `/v1/snapshot`.
         decorations: Vec::new(),

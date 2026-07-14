@@ -21,6 +21,11 @@ ovim exec -s dev "w"
 ovim session kill -s dev
 ```
 
+JSON snapshots include an `ai_chat` object whenever a chat is active. It
+reports whether the agent is waiting, current composer text, pending approval,
+scheduled inputs, and message history so automation can monitor turns without
+parsing the rendered terminal grid.
+
 AI chat uses the same background poller and input dispatcher in headless mode
 as in the TUI. Open editable chat with `Space Space`, type a request, and submit
 with Enter:

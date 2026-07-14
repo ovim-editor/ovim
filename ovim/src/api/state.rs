@@ -100,6 +100,9 @@ pub struct EditorSnapshot {
     pub picker: Option<PickerInfo>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub hover_info: Option<String>,
+    /// Active AI chat state, including hidden chats that continue running.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ai_chat: Option<AiChatSnapshot>,
     /// Virtual-text decorations (inlay hints, diagnostic EOL markers) currently
     /// attached to the buffer. Emitted as a flat, position-sorted list rather
     /// than a per-line map so consumers can trivially `jq '.decorations'` it.
@@ -108,6 +111,29 @@ pub struct EditorSnapshot {
     /// arrive, or for file types without LSP support).
     #[serde(default)]
     pub decorations: Vec<DecorationInfo>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiChatSnapshot {
+    pub waiting: bool,
+    pub input: String,
+    pub pending_approval: Option<String>,
+    pub queued: Vec<QueuedChatSnapshot>,
+    pub messages: Vec<AiChatMessageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QueuedChatSnapshot {
+    pub kind: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AiChatMessageSnapshot {
+    pub role: String,
+    pub content: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tool_call_id: Option<String>,
 }
 
 /// A single virtual-text decoration projected for external consumers.

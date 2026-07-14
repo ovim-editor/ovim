@@ -698,6 +698,7 @@ mod tests {
             marks: HashMap::new(),
             picker: None,
             hover_info: hover.map(|s| s.to_string()),
+            ai_chat: None,
             decorations: Vec::new(),
         }
     }
