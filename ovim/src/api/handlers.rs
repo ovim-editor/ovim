@@ -72,6 +72,75 @@ pub async fn send_keys(
     }
 }
 
+/// Handler for POST /paste. Unlike `/keys`, pasted text is delivered as one
+/// bracketed-paste event so multiline and long AI prompts are not interpreted
+/// as Vim key notation.
+#[derive(Deserialize)]
+pub struct PasteRequest {
+    pub text: String,
+}
+
+pub async fn paste(
+    State(state): State<ApiState>,
+    JsonExtractor(payload): JsonExtractor<PasteRequest>,
+) -> Response {
+    if payload.text.len() > MAX_BUFFER_SIZE {
+        return validation_error(&format!(
+            "Paste input too large: {} bytes (max: {} bytes)",
+            payload.text.len(),
+            MAX_BUFFER_SIZE
+        ));
+    }
+
+    let (tx, rx) = oneshot::channel();
+    if state
+        .tx
+        .send(ApiRequest::Paste(payload.text, tx))
+        .await
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to paste text"),
+    }
+}
+
+/// Handler for POST /resize.
+#[derive(Deserialize)]
+pub struct ResizeRequest {
+    pub width: u16,
+    pub height: u16,
+}
+
+pub async fn resize(
+    State(state): State<ApiState>,
+    JsonExtractor(payload): JsonExtractor<ResizeRequest>,
+) -> Response {
+    if !(10..=500).contains(&payload.width) || !(3..=200).contains(&payload.height) {
+        return validation_error("Dimensions must be within 10x3 and 500x200");
+    }
+
+    let (tx, rx) = oneshot::channel();
+    if state
+        .tx
+        .send(ApiRequest::Resize {
+            width: payload.width,
+            height: payload.height,
+            tx,
+        })
+        .await
+        .is_err()
+    {
+        return error_response("Editor not available");
+    }
+    match rx.await {
+        Ok(response) => Json(response).into_response(),
+        Err(_) => error_response("Failed to resize editor"),
+    }
+}
+
 /// Convert a SendKeys API response into a plain-text HTTP response with metadata headers.
 fn send_keys_to_plain_text(response: ApiResponse) -> Response {
     match response {

@@ -175,6 +175,25 @@ pub enum Command {
         session: String,
     },
 
+    /// Paste literal text into a session
+    Paste {
+        /// Literal text to paste (use \\n for a newline)
+        text: String,
+        /// Session name (required)
+        #[arg(short, long)]
+        session: String,
+    },
+
+    /// Resize a session's logical viewport
+    Resize {
+        /// Viewport dimensions (for example 120x40)
+        #[arg(value_parser = parse_dimensions)]
+        dimension: (u16, u16),
+        /// Session name (required)
+        #[arg(short, long)]
+        session: String,
+    },
+
     /// Execute an ex command in a session
     Exec {
         /// Ex command (without leading colon)

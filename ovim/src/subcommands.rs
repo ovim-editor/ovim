@@ -188,6 +188,11 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
 
         // Session control
         Command::Send { session, keys } => cmd_send(&session, &keys),
+        Command::Paste { session, text } => cmd_paste(&session, &expand_escapes(&text)),
+        Command::Resize {
+            session,
+            dimension: (width, height),
+        } => cmd_resize(&session, width, height),
         Command::Exec { session, command } => cmd_exec(&session, &command),
         Command::Snapshot { session, format } => cmd_snapshot(&session, &format),
         Command::Buffer { session } => cmd_buffer(&session),
@@ -636,6 +641,18 @@ fn cmd_send(session_name: &str, keys: &str) -> Result<()> {
         Ok(render) => print!("{}", render),
         Err(_) => println!("Keys sent to session '{}'", session.session_name),
     }
+    Ok(())
+}
+
+fn cmd_paste(session_name: &str, text: &str) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    OvimClient::new(&session).paste(text)?;
+    Ok(())
+}
+
+fn cmd_resize(session_name: &str, width: u16, height: u16) -> Result<()> {
+    let session = resolve_session(session_name)?;
+    OvimClient::new(&session).resize(width, height)?;
     Ok(())
 }
 

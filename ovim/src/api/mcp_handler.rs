@@ -99,6 +99,65 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
                 Err(_) => Err(JsonRpcError::internal_error("Failed to send keys")),
             }
         }
+        "paste" => {
+            let text = arguments
+                .get("text")
+                .and_then(|v| v.as_str())
+                .ok_or_else(|| JsonRpcError::invalid_params("Missing 'text' argument"))?;
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::Paste(text.to_string(), tx))
+                .await
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+            match rx.await {
+                Ok(super::state::ApiResponse::Success(_)) => {
+                    Ok(mcp::tool_result(vec![mcp::text_content(
+                        "Text pasted successfully",
+                    )]))
+                }
+                Ok(super::state::ApiResponse::Error(error)) => {
+                    Ok(mcp::tool_result(vec![mcp::error_content(&error.error)]))
+                }
+                Ok(_) => Err(JsonRpcError::internal_error("Unexpected response type")),
+                Err(_) => Err(JsonRpcError::internal_error("Failed to paste text")),
+            }
+        }
+        "resize" => {
+            let width = arguments
+                .get("width")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u16::try_from(v).ok())
+                .ok_or_else(|| JsonRpcError::invalid_params("Invalid 'width' argument"))?;
+            let height = arguments
+                .get("height")
+                .and_then(|v| v.as_u64())
+                .and_then(|v| u16::try_from(v).ok())
+                .ok_or_else(|| JsonRpcError::invalid_params("Invalid 'height' argument"))?;
+            if !(10..=500).contains(&width) || !(3..=200).contains(&height) {
+                return Err(JsonRpcError::invalid_params(
+                    "Dimensions must be within 10x3 and 500x200",
+                ));
+            }
+            let (tx, rx) = oneshot::channel();
+            state
+                .tx
+                .send(ApiRequest::Resize { width, height, tx })
+                .await
+                .map_err(|_| JsonRpcError::internal_error("Editor not available"))?;
+            match rx.await {
+                Ok(super::state::ApiResponse::Success(_)) => {
+                    Ok(mcp::tool_result(vec![mcp::text_content(&format!(
+                        "Resized to {width}x{height}"
+                    ))]))
+                }
+                Ok(super::state::ApiResponse::Error(error)) => {
+                    Ok(mcp::tool_result(vec![mcp::error_content(&error.error)]))
+                }
+                Ok(_) => Err(JsonRpcError::internal_error("Unexpected response type")),
+                Err(_) => Err(JsonRpcError::internal_error("Failed to resize editor")),
+            }
+        }
         "get_buffer" => {
             let (tx, rx) = oneshot::channel();
             state

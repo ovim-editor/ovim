@@ -10,6 +10,12 @@ pub enum ApiRequest {
     /// Lightweight snapshot: returns mode, cursor, hover_info but skips buffer content
     GetSnapshotLight(oneshot::Sender<ApiResponse>),
     SendKeys(String, oneshot::Sender<ApiResponse>),
+    Paste(String, oneshot::Sender<ApiResponse>),
+    Resize {
+        width: u16,
+        height: u16,
+        tx: oneshot::Sender<ApiResponse>,
+    },
     GetBuffer(oneshot::Sender<ApiResponse>),
     SetBuffer(String, oneshot::Sender<ApiResponse>),
     GetCursor(oneshot::Sender<ApiResponse>),

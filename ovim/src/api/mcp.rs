@@ -180,6 +180,40 @@ pub fn get_tools() -> Vec<Tool> {
             }),
         },
         Tool {
+            name: "paste".to_string(),
+            description: "Paste literal text as one bracketed-paste event".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "text": {
+                        "type": "string",
+                        "description": "Literal text to paste, including multiline content"
+                    },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional session name"
+                    }
+                },
+                "required": ["text"]
+            }),
+        },
+        Tool {
+            name: "resize".to_string(),
+            description: "Resize the editor's logical viewport".to_string(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {
+                    "width": { "type": "integer", "minimum": 10, "maximum": 500 },
+                    "height": { "type": "integer", "minimum": 3, "maximum": 200 },
+                    "session": {
+                        "type": "string",
+                        "description": "Optional session name"
+                    }
+                },
+                "required": ["width", "height"]
+            }),
+        },
+        Tool {
             name: "get_buffer".to_string(),
             description: "Get the current buffer content".to_string(),
             input_schema: json!({

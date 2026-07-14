@@ -1111,6 +1111,42 @@ async fn handle_api_request(
             };
             let _ = tx.send(response);
         }
+        ApiRequest::Paste(text, tx) => {
+            let response = match editor.handle_paste_event(&text) {
+                Ok(()) => {
+                    if editor.buffer().needs_rehighlight() {
+                        editor.process_viewport_rehighlight();
+                    }
+                    editor.mark_dirty();
+                    editor.dispatch_pending_intents().await;
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some("Pasted text".into()),
+                        line_count: Some(editor.buffer().rope().len_lines()),
+                    })
+                }
+                Err(error) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to paste text: {error}"),
+                }),
+            };
+            let _ = tx.send(response);
+        }
+        ApiRequest::Resize { width, height, tx } => {
+            let response = match handle_terminal_resize(editor, width, height) {
+                Ok(()) => {
+                    editor.mark_dirty();
+                    ApiResponse::Success(SuccessResponse {
+                        success: true,
+                        message: Some(format!("Resized to {width}x{height}").into()),
+                        line_count: None,
+                    })
+                }
+                Err(error) => ApiResponse::Error(ErrorResponse {
+                    error: format!("Failed to resize editor: {error}"),
+                }),
+            };
+            let _ = tx.send(response);
+        }
         ApiRequest::GetBuffer(tx) => {
             let buffer_info = create_buffer_info(editor);
             let _ = tx.send(ApiResponse::Buffer(buffer_info));

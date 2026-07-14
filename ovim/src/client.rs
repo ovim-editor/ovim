@@ -63,6 +63,40 @@ impl OvimClient {
         Ok(())
     }
 
+    /// Deliver text as a single paste event.
+    pub fn paste(&self, text: &str) -> Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/paste", self.base_url))
+            .json(&json!({ "text": text }))
+            .send()
+            .context("Failed to send paste request")?;
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Failed to paste text: {}",
+                response.text().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
+    /// Resize the session's logical viewport.
+    pub fn resize(&self, width: u16, height: u16) -> Result<()> {
+        let response = self
+            .client
+            .post(format!("{}/resize", self.base_url))
+            .json(&json!({ "width": width, "height": height }))
+            .send()
+            .context("Failed to send resize request")?;
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Failed to resize editor: {}",
+                response.text().unwrap_or_default()
+            );
+        }
+        Ok(())
+    }
+
     /// Execute an ex command
     pub fn execute_command(&self, command: &str) -> Result<String> {
         let response = self
