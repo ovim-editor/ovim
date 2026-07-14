@@ -95,6 +95,11 @@ Completed tool calls appear as compact summary rows in chat. Move focus into
 message history, select a tool row, and press Enter to expand or collapse its
 arguments and result.
 
+Drag across text in message history to select it. Releasing the mouse copies
+the selection to the system clipboard; `Ctrl-Y`, `y` while history is focused,
+or `Cmd-C` also copies the active selection. Without a text selection,
+`Ctrl-Y` keeps copying the complete conversation.
+
 You can drag PNG, JPEG, GIF, or WebP files from the desktop into the chat
 composer. Ovim displays attached filenames above the input; press Backspace on
 an empty composer to remove the most recent image. Images submitted during an

@@ -389,6 +389,25 @@ fn should_ignore_click(mode: Mode) -> bool {
 fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<String>> {
     let mode = editor.mode();
 
+    if mode == Mode::AiChat {
+        if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.focus = crate::ai::chat_types::ChatFocus::MessageHistory;
+            }
+            editor.begin_ai_chat_text_selection(history_row, history_column);
+            return Ok(None);
+        }
+        if editor
+            .render_cache
+            .last_chat_area
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.render_cache.ai_chat_text_selection = None;
+            editor.render_cache.ai_chat_text_selecting = false;
+            return Ok(None);
+        }
+    }
+
     // Handle AI prompt panel clicks (model picker + prompt cursor placement).
     if mode == Mode::AiPrompt && handle_ai_prompt_click(editor, col, row)? {
         return Ok(None);
@@ -468,6 +487,13 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
+    if editor.render_cache.ai_chat_text_selecting {
+        if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
+            editor.update_ai_chat_text_selection(history_row, history_column);
+        }
+        return Ok(());
+    }
+
     if !editor.render_cache.mouse_state.is_dragging {
         return Ok(());
     }
@@ -499,8 +525,29 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 }
 
 fn handle_left_release(editor: &mut Editor) -> Result<()> {
+    if editor.render_cache.ai_chat_text_selecting {
+        editor.finish_ai_chat_text_selection();
+        return Ok(());
+    }
     editor.render_cache.mouse_state.is_dragging = false;
     Ok(())
+}
+
+fn ai_chat_screen_position(editor: &Editor, col: u16, row: u16) -> Option<(usize, usize)> {
+    let area = editor.render_cache.ai_chat_history_area?;
+    if !area.contains(col, row) {
+        return None;
+    }
+    let history_row = editor
+        .render_cache
+        .ai_chat_last_visible_start_row
+        .saturating_add((row - area.y) as usize);
+    if history_row >= editor.render_cache.ai_chat_last_visible_end_row
+        || history_row >= editor.render_cache.ai_chat_rendered_text_rows.len()
+    {
+        return None;
+    }
+    Some((history_row, (col - area.x) as usize))
 }
 
 fn handle_scroll(editor: &mut Editor, up: bool, col: u16, row: u16) -> Result<()> {
@@ -730,6 +777,54 @@ mod tests {
         });
         editor.render_cache.ai_chat_last_total_rows = 100;
         editor
+    }
+
+    #[test]
+    fn dragging_chat_text_highlights_and_copies_the_selection() {
+        let mut editor = editor_with_docked_chat();
+        editor.render_cache.ai_chat_history_area = Some(crate::Rect {
+            x: 40,
+            y: 1,
+            width: 40,
+            height: 4,
+        });
+        editor.render_cache.ai_chat_last_visible_start_row = 0;
+        editor.render_cache.ai_chat_last_visible_end_row = 2;
+        editor.render_cache.ai_chat_rendered_text_rows = vec![
+            "\u{258d} alpha   ".to_string(),
+            "\u{258d} beta    ".to_string(),
+        ];
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 42,
+                row: 1,
+            },
+        )
+        .unwrap();
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 45,
+                row: 2,
+            },
+        )
+        .unwrap();
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 45,
+                row: 2,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(editor.registers.get_clipboard(), "alpha\nbeta");
+        assert!(editor.ai_chat_has_text_selection());
     }
 
     #[test]

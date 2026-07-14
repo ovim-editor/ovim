@@ -1,3 +1,16 @@
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatTextPoint {
+    pub row: usize,
+    pub column: usize,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatTextSelection {
+    pub anchor: ChatTextPoint,
+    pub head: ChatTextPoint,
+    pub moved: bool,
+}
+
 /// Cached rendering state used by the UI layer and mouse input.
 ///
 /// Groups fields that bridge between the renderer and input handling:
@@ -25,6 +38,8 @@ pub struct RenderCache {
     pub ai_prompt_model_trigger_hitbox: Option<crate::Rect>,
     /// Cached AI chat panel area from last render (for mouse scroll hit-testing).
     pub last_chat_area: Option<crate::Rect>,
+    /// Cached AI chat message-history area from the last render.
+    pub ai_chat_history_area: Option<crate::Rect>,
     /// Cached AI chat total rendered row count from last render pass.
     pub ai_chat_last_total_rows: usize,
     /// Cached visible chat row window start (inclusive) from last render.
@@ -33,6 +48,12 @@ pub struct RenderCache {
     pub ai_chat_last_visible_end_row: usize,
     /// Cached row spans per message from last render (oldest..latest).
     pub ai_chat_last_message_row_spans: Vec<(usize, usize)>,
+    /// Plain text for every rendered history row, including off-screen rows.
+    pub ai_chat_rendered_text_rows: Vec<String>,
+    /// Mouse-selected range in absolute rendered-history coordinates.
+    pub ai_chat_text_selection: Option<ChatTextSelection>,
+    /// Whether a chat text-selection drag is currently active.
+    pub ai_chat_text_selecting: bool,
     /// Cached AI chat input area from last render.
     pub ai_chat_input_area: Option<crate::Rect>,
     /// Cached AI chat input cursor position from last render.

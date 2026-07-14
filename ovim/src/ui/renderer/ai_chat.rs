@@ -9,6 +9,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
+use unicode_width::UnicodeWidthChar;
 
 // ---------------------------------------------------------------------------
 // Colors (pub(crate) so conversation_tree can reuse them)
@@ -92,6 +93,7 @@ fn tree_panel_width(chat_width: u16) -> u16 {
 
 /// Render the full chat panel.
 pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
+    editor.render_cache.ai_chat_history_area = None;
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -218,12 +220,15 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
 // ---------------------------------------------------------------------------
 
 fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, theme: &Theme) {
+    editor.render_cache.ai_chat_history_area = Some(crate::key_convert::convert_ratatui_rect(area));
     let messages = editor.ai_chat_messages();
     if messages.is_empty() {
         editor.render_cache.ai_chat_last_total_rows = 0;
         editor.render_cache.ai_chat_last_visible_start_row = 0;
         editor.render_cache.ai_chat_last_visible_end_row = 0;
         editor.render_cache.ai_chat_last_message_row_spans.clear();
+        editor.render_cache.ai_chat_rendered_text_rows.clear();
+        editor.render_cache.ai_chat_text_selection = None;
 
         // Empty state
         let help = if editor.ai_chat_allow_edits() {
@@ -425,6 +430,15 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     editor.render_cache.ai_chat_last_visible_start_row = start;
     editor.render_cache.ai_chat_last_visible_end_row = end;
     editor.render_cache.ai_chat_last_message_row_spans = message_row_spans;
+    editor.render_cache.ai_chat_rendered_text_rows = rendered_lines
+        .iter()
+        .map(|(line, _)| {
+            line.spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>()
+        })
+        .collect();
 
     for (row_idx, line_idx) in (start..end).enumerate() {
         if row_idx >= visible_rows {
@@ -436,8 +450,53 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             width: area.width,
             height: 1,
         };
-        frame.render_widget(Paragraph::new(vec![rendered_lines[line_idx].0.clone()]), r);
+        let mut line = rendered_lines[line_idx].0.clone();
+        if let Some((selection_start, selection_end)) =
+            editor.ai_chat_text_selection_range(line_idx)
+        {
+            line = highlight_chat_selection(&line, selection_start, selection_end);
+        }
+        frame.render_widget(Paragraph::new(vec![line]), r);
     }
+}
+
+fn highlight_chat_selection(
+    line: &Line<'_>,
+    selection_start: usize,
+    selection_end: usize,
+) -> Line<'static> {
+    let mut output = Vec::new();
+    let mut display_column = 0usize;
+    for span in &line.spans {
+        let mut segment = String::new();
+        let mut segment_selected = None;
+        for character in span.content.chars() {
+            let width = character.width().unwrap_or(1).max(1);
+            let character_start = display_column;
+            let character_end = display_column.saturating_add(width);
+            display_column = character_end;
+            let selected = character_end > selection_start && character_start < selection_end;
+            if segment_selected.is_some_and(|current| current != selected) {
+                let style = if segment_selected == Some(true) {
+                    span.style.bg(Color::Rgb(74, 96, 145)).fg(Color::White)
+                } else {
+                    span.style
+                };
+                output.push(Span::styled(std::mem::take(&mut segment), style));
+            }
+            segment_selected = Some(selected);
+            segment.push(character);
+        }
+        if !segment.is_empty() {
+            let style = if segment_selected == Some(true) {
+                span.style.bg(Color::Rgb(74, 96, 145)).fg(Color::White)
+            } else {
+                span.style
+            };
+            output.push(Span::styled(segment, style));
+        }
+    }
+    Line::from(output)
 }
 
 fn is_hidden_tool_only_assistant(message: &ChatMessage) -> bool {
@@ -1537,11 +1596,15 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        input_cursor_row_col, is_hidden_tool_only_assistant, render_queued_input_row,
-        render_tool_event_details, wrap_input_rows,
+        highlight_chat_selection, input_cursor_row_col, is_hidden_tool_only_assistant,
+        render_queued_input_row, render_tool_event_details, wrap_input_rows,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
     use ovim_core::editor::QueuedChatInputKind;
+    use ratatui::{
+        style::{Color, Style},
+        text::{Line, Span},
+    };
 
     #[test]
     fn wrap_input_rows_preserves_trailing_space() {
@@ -1631,6 +1694,23 @@ mod tests {
         assert!(text.contains("tool: read_file"));
         assert!(text.contains("src/main.rs"));
         assert!(text.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn chat_text_selection_highlights_only_the_selected_columns() {
+        let line = Line::from(Span::styled("abcdef", Style::default().fg(Color::Green)));
+        let highlighted = highlight_chat_selection(&line, 2, 4);
+        assert_eq!(
+            highlighted
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>(),
+            "abcdef"
+        );
+        assert!(highlighted.spans.iter().any(|span| {
+            span.content == "cd" && span.style.bg == Some(Color::Rgb(74, 96, 145))
+        }));
     }
 }
 

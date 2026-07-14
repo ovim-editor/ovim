@@ -109,6 +109,13 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return handle_escape(editor, focus);
     }
 
+    if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::SUPER) {
+        if !editor.copy_ai_chat_text_selection() {
+            editor.copy_ai_chat_conversation();
+        }
+        return Ok(());
+    }
+
     if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::CONTROL) {
         editor.close_ai_chat();
         return Ok(());
@@ -132,7 +139,9 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
 
     // <C-y> copies conversation to clipboard (unless used for pending tool approval)
     if key_event.code == KeyCode::Char('y') && key_event.modifiers.contains(Modifiers::CONTROL) {
-        editor.copy_ai_chat_conversation();
+        if !editor.copy_ai_chat_text_selection() {
+            editor.copy_ai_chat_conversation();
+        }
         return Ok(());
     }
 
@@ -318,6 +327,9 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
 
 fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
+        KeyCode::Char('y') if editor.ai_chat_has_text_selection() => {
+            editor.copy_ai_chat_text_selection();
+        }
         KeyCode::Up | KeyCode::Char('k') => {
             editor.ai_chat_history_cursor_move_older(1);
         }

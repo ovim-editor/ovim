@@ -110,6 +110,9 @@ impl Editor {
         self.render_cache.ai_chat_last_visible_start_row = 0;
         self.render_cache.ai_chat_last_visible_end_row = 0;
         self.render_cache.ai_chat_last_message_row_spans.clear();
+        self.render_cache.ai_chat_rendered_text_rows.clear();
+        self.render_cache.ai_chat_text_selection = None;
+        self.render_cache.ai_chat_text_selecting = false;
         self.set_lsp_status("AI chat cleared".to_string());
         Ok(())
     }
