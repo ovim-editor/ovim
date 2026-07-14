@@ -21,10 +21,10 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Opti
             handle_left_release(editor)?;
         }
         MouseEventKind::ScrollUp => {
-            handle_scroll(editor, true, event.row)?;
+            handle_scroll(editor, true, event.column, event.row)?;
         }
         MouseEventKind::ScrollDown => {
-            handle_scroll(editor, false, event.row)?;
+            handle_scroll(editor, false, event.column, event.row)?;
         }
         MouseEventKind::Down(MouseButton::Middle) => {
             handle_middle_click(editor, event.column, event.row)?;
@@ -503,7 +503,7 @@ fn handle_left_release(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
-fn handle_scroll(editor: &mut Editor, up: bool, row: u16) -> Result<()> {
+fn handle_scroll(editor: &mut Editor, up: bool, col: u16, row: u16) -> Result<()> {
     const SCROLL_LINES: usize = 3;
 
     // In picker mode, scroll the picker results
@@ -524,7 +524,7 @@ fn handle_scroll(editor: &mut Editor, up: bool, row: u16) -> Result<()> {
     // In AiChat mode, scroll the chat message history if the mouse is over the chat area
     if editor.mode() == Mode::AiChat {
         if let Some(chat_rect) = editor.render_cache.last_chat_area {
-            if row >= chat_rect.y && row < chat_rect.y + chat_rect.height {
+            if chat_rect.contains(col, row) {
                 if up {
                     editor.ai_chat_scroll_viewport_up(SCROLL_LINES);
                 } else {
@@ -705,4 +705,62 @@ fn prompt_cursor_from_display_col_in_range(
 /// Returns true if the screen point (col, row) is inside the rect.
 fn rect_contains(rect: &crate::Rect, point: (u16, u16)) -> bool {
     rect.contains(point.0, point.1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::chat_types::ChatOpts;
+    use crate::editor::ai_chat_state::AiChatState;
+
+    fn editor_with_docked_chat() -> Editor {
+        let mut editor = Editor::default();
+        let buffer_id = editor.buffer().id();
+        editor.ai_state.chat = Some(AiChatState::new(
+            ChatOpts::default(),
+            buffer_id,
+            Mode::Normal,
+        ));
+        editor.set_mode(Mode::AiChat);
+        editor.render_cache.last_chat_area = Some(crate::Rect {
+            x: 40,
+            y: 0,
+            width: 40,
+            height: 20,
+        });
+        editor.render_cache.ai_chat_last_total_rows = 100;
+        editor
+    }
+
+    #[test]
+    fn scrolling_editor_side_does_not_scroll_docked_chat() {
+        let mut editor = editor_with_docked_chat();
+
+        handle_scroll(&mut editor, true, 10, 5).expect("scroll editor");
+
+        assert_eq!(
+            editor
+                .ai_chat_state()
+                .expect("chat")
+                .viewport
+                .row_scroll_from_bottom,
+            0
+        );
+    }
+
+    #[test]
+    fn scrolling_chat_side_scrolls_docked_chat() {
+        let mut editor = editor_with_docked_chat();
+
+        handle_scroll(&mut editor, true, 50, 5).expect("scroll chat");
+
+        assert_eq!(
+            editor
+                .ai_chat_state()
+                .expect("chat")
+                .viewport
+                .row_scroll_from_bottom,
+            3
+        );
+    }
 }
