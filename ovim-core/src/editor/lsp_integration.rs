@@ -1400,7 +1400,12 @@ impl Editor {
 
         // Poll completed results, then fire a new request if stale.
         let changed = self.poll_pending_diagnostic_refresh_response();
-        if self.lsp.slots.diagnostics.needs_refresh() {
+        let document_sync_dirty = self
+            .buffer()
+            .file_path()
+            .and_then(|path| self.lsp.state.document_sync.get(path))
+            .is_some_and(|state| state.is_modified());
+        if self.lsp.slots.diagnostics.needs_refresh() && !document_sync_dirty {
             self.spawn_diagnostic_cache_refresh();
         }
         changed
