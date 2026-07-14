@@ -966,6 +966,17 @@ impl Renderer {
         }
 
         self.terminal.autoresize()?;
+        if take_terminal_image_refresh(
+            &mut editor.render_cache,
+            self.image_renderer.is_enabled(),
+            self.image_renderer.rendered_last_frame(),
+        ) {
+            // Inline terminal images are owned by the terminal rather than by
+            // Ratatui's cell buffer. A tab/focus transition can invalidate or
+            // restore them independently, so reset both the physical surface
+            // and Ratatui's back buffer before re-emitting visible images.
+            self.terminal.clear()?;
+        }
         editor.render_cache.terminal_image_support = self.image_renderer.is_enabled();
 
         // Take the line cache out to avoid borrow conflict with terminal.draw()
@@ -990,6 +1001,16 @@ impl Renderer {
     }
 }
 
+fn take_terminal_image_refresh(
+    cache: &mut ovim_core::editor::RenderCache,
+    protocol_enabled: bool,
+    image_was_visible: bool,
+) -> bool {
+    std::mem::take(&mut cache.terminal_image_refresh_requested)
+        && protocol_enabled
+        && image_was_visible
+}
+
 #[cfg(test)]
 mod cursor_screen_position_tests {
     //! Regression coverage for the hardware-cursor screen row under soft wrap.
@@ -1001,11 +1022,29 @@ mod cursor_screen_position_tests {
     //! `scroll_subrow` rows below its real input point (regression of OV-00019,
     //! visible when many wrapped rows precede the cursor).
 
-    use super::Renderer;
+    use super::{take_terminal_image_refresh, Renderer};
     use crate::editor::Editor;
     use crate::ui::renderer::line_cache::LineRenderCache;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn focus_refresh_only_clears_when_terminal_image_was_visible() {
+        let mut cache = ovim_core::editor::RenderCache {
+            terminal_image_refresh_requested: true,
+            ..Default::default()
+        };
+        assert!(!take_terminal_image_refresh(&mut cache, true, false));
+        assert!(!cache.terminal_image_refresh_requested);
+
+        cache.terminal_image_refresh_requested = true;
+        assert!(!take_terminal_image_refresh(&mut cache, false, true));
+        assert!(!cache.terminal_image_refresh_requested);
+
+        cache.terminal_image_refresh_requested = true;
+        assert!(take_terminal_image_refresh(&mut cache, true, true));
+        assert!(!cache.terminal_image_refresh_requested);
+    }
 
     #[test]
     fn frame_without_chat_clears_stale_terminal_image_placements() {

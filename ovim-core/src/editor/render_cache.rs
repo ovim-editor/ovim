@@ -72,6 +72,10 @@ pub struct RenderCache {
     pub ai_chat_exa_input_cursor_pos: Option<(u16, u16)>,
     /// Whether the frontend selected a real terminal graphics protocol.
     pub terminal_image_support: bool,
+    /// Focus regain invalidated terminal-owned image placements. The TUI
+    /// consumes this before its next draw and forces a full surface refresh
+    /// when the previous frame actually contained an image.
+    pub terminal_image_refresh_requested: bool,
     /// Render rectangles for clickable chat-image thumbnails.
     pub ai_chat_image_thumbnails: Vec<(crate::Rect, std::path::PathBuf)>,
     /// Clickable previous/next controls for visible conversation forks.

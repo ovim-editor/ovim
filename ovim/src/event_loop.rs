@@ -903,6 +903,7 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<bool>
                 editor.startle_cat();
             }
             Event::FocusGained => {
+                editor.render_cache.terminal_image_refresh_requested = true;
                 process_external_file_change(editor);
             }
             Event::Mouse(mouse_event) => {
@@ -1628,6 +1629,7 @@ mod tests {
     use super::handle_api_request;
     use super::handle_edit_line;
     use super::handle_terminal_resize;
+    use super::process_input_events;
     use super::ApiRequest;
     use super::ApiResponse;
     use super::{
@@ -1658,6 +1660,16 @@ mod tests {
 
         assert_eq!(observed, 2);
         assert_eq!(output, b"\x07\x07");
+    }
+
+    #[test]
+    fn focus_gain_requests_terminal_image_surface_refresh() {
+        let mut editor = Editor::default();
+
+        process_input_events(&mut editor, vec![crossterm::event::Event::FocusGained])
+            .expect("focus event");
+
+        assert!(editor.render_cache.terminal_image_refresh_requested);
     }
 
     #[tokio::test]

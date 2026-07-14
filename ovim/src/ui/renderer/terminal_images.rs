@@ -19,6 +19,7 @@ struct CacheKey {
 pub struct TerminalImageRenderer {
     picker: Option<Picker>,
     protocols: HashMap<CacheKey, Protocol>,
+    rendered_last_frame: bool,
 }
 
 impl TerminalImageRenderer {
@@ -27,6 +28,7 @@ impl TerminalImageRenderer {
         return Self {
             picker: None,
             protocols: HashMap::new(),
+            rendered_last_frame: false,
         };
 
         #[cfg(not(test))]
@@ -35,6 +37,7 @@ impl TerminalImageRenderer {
                 return Self {
                     picker: None,
                     protocols: HashMap::new(),
+                    rendered_last_frame: false,
                 };
             }
             let picker = Picker::from_query_stdio()
@@ -43,6 +46,7 @@ impl TerminalImageRenderer {
             Self {
                 picker,
                 protocols: HashMap::new(),
+                rendered_last_frame: false,
             }
         }
     }
@@ -51,14 +55,19 @@ impl TerminalImageRenderer {
         self.picker.is_some()
     }
 
+    pub fn rendered_last_frame(&self) -> bool {
+        self.rendered_last_frame
+    }
+
     pub fn render(&mut self, frame: &mut Frame, editor: &Editor) {
+        self.rendered_last_frame = false;
         if self.picker.is_none() {
             return;
         }
 
         let thumbnails = editor.render_cache.ai_chat_image_thumbnails.clone();
         for (area, path) in thumbnails {
-            self.render_path(frame, &path, core_rect(area));
+            self.rendered_last_frame |= self.render_path(frame, &path, core_rect(area));
         }
 
         if let Some(path) = editor.ai_chat_image_modal_path() {
@@ -72,7 +81,7 @@ impl TerminalImageRenderer {
                     outer_width.saturating_sub(2),
                     outer_height.saturating_sub(2),
                 );
-                self.render_path(frame, path, area);
+                self.rendered_last_frame |= self.render_path(frame, path, area);
             }
         }
 
@@ -83,9 +92,9 @@ impl TerminalImageRenderer {
         }
     }
 
-    fn render_path(&mut self, frame: &mut Frame, path: &Path, area: Rect) {
+    fn render_path(&mut self, frame: &mut Frame, path: &Path, area: Rect) -> bool {
         if area.width == 0 || area.height == 0 {
-            return;
+            return false;
         }
         let key = CacheKey {
             path: path.to_path_buf(),
@@ -94,25 +103,28 @@ impl TerminalImageRenderer {
         };
         if !self.protocols.contains_key(&key) {
             let Some(picker) = self.picker.as_ref() else {
-                return;
+                return false;
             };
             let Ok(reader) = ImageReader::open(path) else {
-                return;
+                return false;
             };
             let Ok(image) = reader.decode() else {
-                return;
+                return false;
             };
             let Ok(protocol) = picker.new_protocol(
                 image,
                 Rect::new(0, 0, area.width, area.height),
                 Resize::Fit(None),
             ) else {
-                return;
+                return false;
             };
             self.protocols.insert(key.clone(), protocol);
         }
         if let Some(protocol) = self.protocols.get(&key) {
             frame.render_widget(Image::new(protocol), area);
+            true
+        } else {
+            false
         }
     }
 }
