@@ -127,14 +127,10 @@ fn handle_visual_leader_input(
 
     if keys.is_empty() {
         match c {
-            // <Space><Space> in visual mode: open chat with selection context.
+            // <Space><Space> in visual mode: edit the selection inline.
             ' ' => {
-                editor.start_ai_chat_from_visual()?;
+                editor.start_ai_prompt_from_visual()?;
                 editor.reset_input_state();
-            }
-            // <Space>a... visual leader prefix.
-            'a' => {
-                editor.set_input_state(InputState::Leader { keys: vec!['a'] });
             }
             _ => {
                 editor.reset_input_state();
@@ -143,16 +139,7 @@ fn handle_visual_leader_input(
         return Ok(());
     }
 
-    match (keys, c) {
-        // <Space>ai in visual mode: strict inline edit path.
-        (&['a'], 'i') => {
-            editor.start_ai_prompt_from_visual()?;
-            editor.reset_input_state();
-        }
-        _ => {
-            editor.reset_input_state();
-        }
-    }
+    editor.reset_input_state();
 
     Ok(())
 }

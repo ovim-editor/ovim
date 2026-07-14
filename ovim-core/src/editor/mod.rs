@@ -800,6 +800,28 @@ impl Editor {
         false
     }
 
+    /// Advance the AI chat working spinner. Returns true when its visible
+    /// frame changed and the TUI needs another render without user input.
+    pub fn tick_ai_chat_working_animation(&mut self) -> bool {
+        if self.mode() != Mode::AiChat || !self.ai_chat_waiting() {
+            return false;
+        }
+        let tick = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis()
+            / 80;
+        if self.render_cache.ai_chat_working_animation_tick == tick {
+            return false;
+        }
+        self.render_cache.ai_chat_working_animation_tick = tick;
+        true
+    }
+
+    pub fn ai_chat_working_animation_frame(&self) -> usize {
+        (self.render_cache.ai_chat_working_animation_tick % 8) as usize
+    }
+
     /// Gets the pending command
     pub fn pending_command(&self) -> Option<char> {
         self.input.pending_command

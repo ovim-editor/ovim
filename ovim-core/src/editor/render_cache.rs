@@ -37,4 +37,6 @@ pub struct RenderCache {
     pub ai_chat_input_area: Option<crate::Rect>,
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
+    /// Absolute 80ms animation bucket used by the AI chat working spinner.
+    pub ai_chat_working_animation_tick: u128,
 }

@@ -65,9 +65,7 @@ async fn process_editor_tick(
     update_file_list_cache_from_background(editor);
 
     // === Transient UI state ===
-    if editor.tick_cat_animation() | editor.tick_yank_flash() | editor.tick_toasts() {
-        editor.mark_dirty();
-    }
+    tick_transient_ui(editor);
 
     // === Lua ===
     let _ = editor.process_lua_commands();
@@ -86,6 +84,16 @@ async fn process_editor_tick(
     // File switches queue didClose outside the async input dispatcher. Drive
     // that lifecycle from the shared tick so headless and TUI sessions agree.
     editor.send_lsp_close_if_needed().await;
+}
+
+fn tick_transient_ui(editor: &mut Editor) {
+    if editor.tick_cat_animation()
+        | editor.tick_yank_flash()
+        | editor.tick_toasts()
+        | editor.tick_ai_chat_working_animation()
+    {
+        editor.mark_dirty();
+    }
 }
 
 /// Shared post-input refresh used by terminal and API input paths.
@@ -1587,7 +1595,9 @@ mod tests {
     use super::handle_terminal_resize;
     use super::ApiRequest;
     use super::ApiResponse;
-    use super::{create_snapshot, create_snapshot_with_dimensions, refresh_after_input};
+    use super::{
+        create_snapshot, create_snapshot_with_dimensions, refresh_after_input, tick_transient_ui,
+    };
     use ovim::api::SNAPSHOT_SCHEMA_VERSION;
     use ovim::editor::{Editor, InputHandler};
     use ovim::mode::Mode;
@@ -1714,6 +1724,19 @@ mod tests {
             .render(&mut via_api, dimensions.0, dimensions.1, true)
             .unwrap();
         assert_eq!(direct_render, api_render);
+    }
+
+    #[test]
+    fn working_animation_tick_invalidates_the_render_without_input() {
+        let mut editor = Editor::with_content("hello\n");
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        editor.ai_state.chat.as_mut().unwrap().waiting = true;
+        editor.render_cache.ai_chat_working_animation_tick = u128::MAX;
+        editor.mark_clean();
+
+        tick_transient_ui(&mut editor);
+
+        assert!(editor.is_dirty());
     }
 
     #[test]

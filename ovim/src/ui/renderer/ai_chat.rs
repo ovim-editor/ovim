@@ -401,7 +401,10 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     // standalone animated row after the latest visible event for the entire
     // time the agent is working.
     if editor.ai_chat_waiting() {
-        rendered_lines.push((render_working_indicator(panel_width), false));
+        rendered_lines.push((
+            render_working_indicator(panel_width, editor.ai_chat_working_animation_frame()),
+            false,
+        ));
     }
 
     // Display from bottom of area. While pinned, keep viewport stable even
@@ -1235,13 +1238,8 @@ fn render_model_picker(frame: &mut Frame, editor: &Editor, area: Rect) {
 // Waiting Indicator
 // ---------------------------------------------------------------------------
 
-fn render_working_indicator(width: usize) -> Line<'static> {
+fn render_working_indicator(width: usize, frame: usize) -> Line<'static> {
     const FRAMES: [&str; 8] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧"];
-    let frame = (std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis()
-        / 80) as usize;
     let text = format!("  {} Working", FRAMES[frame % FRAMES.len()]);
     let mut spans = vec![Span::styled(
         text.clone(),
