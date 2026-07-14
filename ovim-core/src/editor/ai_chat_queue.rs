@@ -308,4 +308,26 @@ mod tests {
         assert_eq!(chat.queued_inputs[0].kind, QueuedChatInputKind::FollowUp);
         assert_eq!(chat.queued_inputs[0].images.len(), 1);
     }
+
+    #[tokio::test]
+    async fn submitted_image_moves_from_composer_to_user_message() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "inspect this".into();
+        chat.input_cursor = chat.input.len();
+        chat.pending_images.push(ImageAttachment {
+            path: PathBuf::from("/tmp/sent.png"),
+            mime_type: "image/png".to_string(),
+            data: vec![1, 2, 3],
+        });
+
+        editor.submit_ai_chat_message().unwrap();
+
+        assert!(editor.ai_chat_pending_images().is_empty());
+        let message = editor.ai_chat_messages().first().unwrap();
+        assert_eq!(message.content, "inspect this");
+        assert_eq!(message.images.len(), 1);
+        assert_eq!(message.images[0].path, PathBuf::from("/tmp/sent.png"));
+    }
 }

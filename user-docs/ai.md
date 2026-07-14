@@ -143,6 +143,13 @@ an empty composer to remove the most recent image. Images submitted during an
 active agent round are kept together and queued for the next round. Each image
 may be up to 20 MiB, with a 40 MiB limit for the pending message.
 
+When the terminal supports image rendering, pending attachments appear above
+the composer. After submission, each thumbnail moves into the user message it
+was sent with. Ovim emits terminal image data only while that message's complete
+thumbnail is visible, so scrolling, new chat output, or hiding the chat cannot
+leave a historical image pinned over the current screen. Click a visible
+thumbnail to open its larger modal preview.
+
 Terminal drag-and-drop is handled as a pasted image path, so the same behavior
 is available headlessly with `ovim paste -s SESSION '/path/to/image.png'`.
 

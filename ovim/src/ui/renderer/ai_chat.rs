@@ -147,7 +147,11 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     let input_visible_start =
         chat_input_visible_start(input_rows.len(), cursor_row, visible_input_rows);
     let input_height = (1 + visible_input_rows) as u16;
-    let gallery_paths = editor.ai_chat_gallery_image_paths();
+    let gallery_paths = editor
+        .ai_chat_pending_images()
+        .iter()
+        .map(|image| image.path.clone())
+        .collect::<Vec<_>>();
     let gallery_height = chat_image_gallery_height(editor, main_area, &gallery_paths);
     let messages_height = main_area
         .height
@@ -229,7 +233,11 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
     let visible_start =
         chat_input_visible_start(wrapped_rows.len(), cursor_line, visible_input_rows);
     let input_height = (1 + visible_input_rows) as u16;
-    let gallery_paths = editor.ai_chat_gallery_image_paths();
+    let gallery_paths = editor
+        .ai_chat_pending_images()
+        .iter()
+        .map(|image| image.path.clone())
+        .collect::<Vec<_>>();
     let gallery_height = chat_image_gallery_height(editor, main_area, &gallery_paths);
     let messages_height = main_area
         .height
@@ -361,6 +369,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
     let mut message_row_spans: Vec<(usize, usize)> = Vec::with_capacity(messages.len());
     let mut branch_controls = Vec::new();
+    let mut inline_images = Vec::new();
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected = focus == ChatFocus::MessageHistory && Some(idx) == selected_idx;
 
@@ -409,7 +418,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 .and_then(|conversation| conversation.sibling_navigation(id))
         });
 
-        let bubble_lines = render_chat_bubble(
+        let bubble = render_chat_bubble(
             msg,
             panel_width,
             is_selected,
@@ -418,6 +427,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             child_count,
             branch_navigation.map(|(position, count, _, _)| (position, count)),
             theme,
+            editor.render_cache.terminal_image_support,
         );
         let msg_row_start = rendered_lines.len();
         if let Some((position, count, previous, next)) = branch_navigation {
@@ -429,7 +439,16 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 next,
             });
         }
-        for line in bubble_lines {
+        for image in bubble.images {
+            inline_images.push(HistoryImagePlacement {
+                row: msg_row_start + image.row,
+                x: image.x,
+                width: image.width,
+                height: image.height,
+                path: image.path,
+            });
+        }
+        for line in bubble.lines {
             rendered_lines.push((line, false));
         }
         let msg_row_end = rendered_lines.len();
@@ -449,7 +468,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 tool_call_id: None,
                 provider_state: vec![],
             };
-            let bubble_lines = render_chat_bubble(
+            let bubble = render_chat_bubble(
                 &streaming_thinking_msg,
                 panel_width,
                 false,
@@ -458,8 +477,9 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 0,
                 None,
                 theme,
+                false,
             );
-            for line in bubble_lines {
+            for line in bubble.lines {
                 rendered_lines.push((line, false));
             }
         }
@@ -479,7 +499,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 tool_call_id: None,
                 provider_state: vec![],
             };
-            let bubble_lines = render_chat_bubble(
+            let bubble = render_chat_bubble(
                 &streaming_msg,
                 panel_width,
                 false,
@@ -488,8 +508,9 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 0,
                 None,
                 theme,
+                false,
             );
-            for line in bubble_lines {
+            for line in bubble.lines {
                 rendered_lines.push((line, false));
             }
         }
@@ -560,6 +581,26 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 .collect::<String>()
         })
         .collect();
+
+    // Terminal graphics protocols are not clipped by the chat's logical
+    // history viewport. Only enqueue a thumbnail when its entire inner image
+    // rectangle belongs to the visible row window; the text-drawn box itself
+    // continues to clip normally at the viewport edges.
+    for image in inline_images {
+        let image_end = image.row.saturating_add(image.height as usize);
+        if image.row < start || image_end > end {
+            continue;
+        }
+        editor.render_cache.ai_chat_image_thumbnails.push((
+            crate::key_convert::convert_ratatui_rect(Rect {
+                x: area.x.saturating_add(image.x),
+                y: area.y.saturating_add((image.row - start) as u16),
+                width: image.width.min(area.width.saturating_sub(image.x)),
+                height: image.height,
+            }),
+            image.path,
+        ));
+    }
 
     for (row_idx, line_idx) in (start..end).enumerate() {
         if row_idx >= visible_rows {
@@ -936,6 +977,30 @@ struct BranchRenderControl {
     next: ovim_core::ai::chat_types::NodeId,
 }
 
+struct BubbleImagePlacement {
+    /// First inner image row relative to the message bubble.
+    row: usize,
+    /// Inner image column relative to the history panel.
+    x: u16,
+    width: u16,
+    height: u16,
+    path: std::path::PathBuf,
+}
+
+struct HistoryImagePlacement {
+    /// First inner image row in absolute rendered-history coordinates.
+    row: usize,
+    x: u16,
+    width: u16,
+    height: u16,
+    path: std::path::PathBuf,
+}
+
+struct ChatBubbleRender {
+    lines: Vec<Line<'static>>,
+    images: Vec<BubbleImagePlacement>,
+}
+
 fn message_row_style(role: ChatRole, allow_edits: bool, selected: bool) -> MessageRowStyle {
     let mut style = match role {
         ChatRole::User => MessageRowStyle {
@@ -1147,11 +1212,13 @@ fn render_chat_bubble(
     child_count: usize,
     branch_position: Option<(usize, usize)>,
     theme: &Theme,
-) -> Vec<Line<'static>> {
+    terminal_image_support: bool,
+) -> ChatBubbleRender {
     let row_style = message_row_style(message.role.clone(), allow_edits, is_selected);
     let accent_glyph = if is_selected { "\u{258c}" } else { "\u{258d}" };
     let text_style = Style::default().fg(row_style.text_fg);
     let mut lines = Vec::new();
+    let mut images = Vec::new();
 
     let label = match message.role {
         ChatRole::User => "You".to_string(),
@@ -1182,15 +1249,27 @@ fn render_chat_bubble(
 
     let inner_width = card_text_width(panel_width, accent_glyph);
 
-    for image in &message.images {
-        lines.push(render_card_text_line(
+    if terminal_image_support && !message.images.is_empty() {
+        let (image_lines, image_placements) = render_message_image_boxes(
+            &message.images,
             panel_width,
             accent_glyph,
-            row_style.accent,
-            row_style.body_bg,
-            &format!("📎 {}", image.file_name()),
-            Style::default().fg(ACCENT_USER).add_modifier(Modifier::DIM),
-        ));
+            row_style,
+            lines.len(),
+        );
+        lines.extend(image_lines);
+        images.extend(image_placements);
+    } else {
+        for image in &message.images {
+            lines.push(render_card_text_line(
+                panel_width,
+                accent_glyph,
+                row_style.accent,
+                row_style.body_bg,
+                &format!("📎 {}", image.file_name()),
+                Style::default().fg(ACCENT_USER).add_modifier(Modifier::DIM),
+            ));
+        }
     }
 
     // For thinking messages: collapsed vs expanded
@@ -1262,7 +1341,82 @@ fn render_chat_bubble(
         ));
     }
 
-    lines
+    ChatBubbleRender { lines, images }
+}
+
+fn render_message_image_boxes(
+    attachments: &[ovim_core::ai::chat_types::ImageAttachment],
+    panel_width: usize,
+    accent_glyph: &str,
+    row_style: MessageRowStyle,
+    first_row: usize,
+) -> (Vec<Line<'static>>, Vec<BubbleImagePlacement>) {
+    const THUMB_WIDTH: usize = 14;
+    const THUMB_HEIGHT: usize = 6;
+
+    let content_width = card_text_width(panel_width, accent_glyph);
+    let capacity = (content_width / THUMB_WIDTH).max(1);
+    let mut lines = Vec::new();
+    let mut placements = Vec::new();
+
+    for group in attachments.chunks(capacity) {
+        let group_row = first_row + lines.len();
+        for row in 0..THUMB_HEIGHT {
+            let mut content = String::new();
+            for image in group {
+                content.push_str(&thumbnail_box_row(
+                    &image.file_name(),
+                    THUMB_WIDTH.min(content_width),
+                    row,
+                    THUMB_HEIGHT,
+                ));
+            }
+            lines.push(render_card_text_line(
+                panel_width,
+                accent_glyph,
+                row_style.accent,
+                row_style.body_bg,
+                &content,
+                Style::default().fg(ACCENT_USER).add_modifier(Modifier::DIM),
+            ));
+        }
+
+        for (index, image) in group.iter().enumerate() {
+            let outer_x = index * THUMB_WIDTH;
+            let outer_width = THUMB_WIDTH.min(content_width.saturating_sub(outer_x));
+            if outer_width < 4 {
+                continue;
+            }
+            // Two columns precede card content: accent glyph and a space.
+            placements.push(BubbleImagePlacement {
+                row: group_row + 1,
+                x: (outer_x + 3) as u16,
+                width: outer_width.saturating_sub(2) as u16,
+                height: THUMB_HEIGHT.saturating_sub(2) as u16,
+                path: image.path.clone(),
+            });
+        }
+    }
+
+    (lines, placements)
+}
+
+fn thumbnail_box_row(name: &str, width: usize, row: usize, height: usize) -> String {
+    if width < 2 {
+        return " ".repeat(width);
+    }
+    let inner = width - 2;
+    if row == 0 {
+        let title = truncate_with_ellipsis(name, inner);
+        return format!(
+            "╭{title}{}╮",
+            "─".repeat(inner.saturating_sub(title.chars().count()))
+        );
+    }
+    if row + 1 == height {
+        return format!("╰{}╯", "─".repeat(inner));
+    }
+    format!("│{}│", " ".repeat(inner))
 }
 
 // ---------------------------------------------------------------------------
@@ -1748,7 +1902,7 @@ mod tests {
         chat_cursor_info, highlight_chat_selection, is_hidden_tool_only_assistant,
         render_queued_input_row, render_tool_event_details,
     };
-    use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
+    use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
     use ovim_core::editor::{Editor, QueuedChatInputKind};
     use ratatui::{
@@ -1758,6 +1912,24 @@ mod tests {
         text::{Line, Span},
         Terminal,
     };
+
+    fn append_user_image_message(editor: &mut Editor, path: &str, content: &str) {
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        let key = (chat.origin_buffer_id, chat.opts.name.clone());
+        editor
+            .ai_state
+            .conversations
+            .get_mut(&key)
+            .unwrap()
+            .append_user_message_with_images(
+                content.into(),
+                vec![ImageAttachment {
+                    path: std::path::PathBuf::from(path),
+                    mime_type: "image/png".into(),
+                    data: vec![1, 2, 3],
+                }],
+            );
+    }
 
     #[test]
     fn wrap_input_rows_preserves_trailing_space() {
@@ -1840,6 +2012,59 @@ mod tests {
             editor.render_cache.ai_chat_image_thumbnails[0].1,
             std::path::PathBuf::from("/tmp/preview.png")
         );
+    }
+
+    #[test]
+    fn sent_image_thumbnail_is_positioned_inside_its_visible_message() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.render_cache.terminal_image_support = true;
+        append_user_image_message(&mut editor, "/tmp/sent-preview.png", "inspect this");
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+
+        assert_eq!(editor.render_cache.ai_chat_image_thumbnails.len(), 1);
+        let (thumbnail, path) = &editor.render_cache.ai_chat_image_thumbnails[0];
+        assert_eq!(path, &std::path::PathBuf::from("/tmp/sent-preview.png"));
+        assert!(thumbnail.y < editor.render_cache.ai_chat_input_area.unwrap().y);
+        assert!(editor.ai_chat_pending_images().is_empty());
+    }
+
+    #[test]
+    fn offscreen_message_image_does_not_enqueue_terminal_rendering() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        editor.render_cache.terminal_image_support = true;
+        append_user_image_message(&mut editor, "/tmp/offscreen.png", "old image");
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        let key = (chat.origin_buffer_id, chat.opts.name.clone());
+        let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+        for index in 0..16 {
+            conversation
+                .append_assistant_message(format!("later response {index}"), "model".into());
+        }
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+
+        assert!(editor.render_cache.ai_chat_image_thumbnails.is_empty());
     }
 
     #[test]

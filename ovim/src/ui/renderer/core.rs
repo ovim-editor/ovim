@@ -846,6 +846,10 @@ impl Renderer {
         editor: &mut Editor,
         line_cache: &mut LineRenderCache,
     ) {
+        // Terminal graphics can outlive ordinary cell contents. Rebuild the
+        // visible thumbnail placements on every frame so hiding the chat or
+        // scrolling an image message away cannot replay stale image commands.
+        editor.render_cache.ai_chat_image_thumbnails.clear();
         init_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {
@@ -1001,6 +1005,29 @@ mod cursor_screen_position_tests {
     use crate::ui::renderer::line_cache::LineRenderCache;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn frame_without_chat_clears_stale_terminal_image_placements() {
+        let mut editor = Editor::default();
+        editor.render_cache.ai_chat_image_thumbnails.push((
+            ovim_core::Rect {
+                x: 1,
+                y: 1,
+                width: 8,
+                height: 4,
+            },
+            std::path::PathBuf::from("/tmp/stale.png"),
+        ));
+        let backend = TestBackend::new(40, 12);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut line_cache = LineRenderCache::new();
+
+        terminal
+            .draw(|frame| Renderer::render_to_frame(frame, &mut editor, &mut line_cache))
+            .unwrap();
+
+        assert!(editor.render_cache.ai_chat_image_thumbnails.is_empty());
+    }
 
     /// Renders `editor` to a `WIDTH x HEIGHT` test terminal and returns the
     /// hardware cursor's `y` coordinate (absolute terminal row).
