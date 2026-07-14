@@ -5,8 +5,12 @@ Headless mode is designed for tests, CI, and automation. It runs ovim without th
 ## Start a Session
 
 ```bash
-ovim path/to/file.rs --headless --session dev
+ovim path/to/file.rs --headless --session dev --dimension 100x30
 ```
+
+The logical viewport is initialized before the API starts accepting input.
+Motions, wrapping, scrolling, snapshots, and renders therefore use the same
+dimensions. Change it later with `ovim resize -s dev 120x40`.
 
 ## Inspect and Control Sessions
 
@@ -17,14 +21,42 @@ ovim session list
 ovim session health -s dev
 ovim snapshot -s dev --format pretty
 ovim send -s dev "iHello<Esc>"
+ovim paste -s dev 'literal text\nincluding newlines'
+ovim resize -s dev 120x40
 ovim exec -s dev "w"
 ovim session kill -s dev
 ```
 
-JSON snapshots include an `ai_chat` object whenever a chat is active. It
-reports whether the agent is waiting, current composer text, pending approval,
-scheduled inputs, and message history so automation can monitor turns without
-parsing the rendered terminal grid.
+JSON snapshots carry a `schema_version` and a `view` object containing viewport,
+scroll, tab, split, file-tree, command/search, and status state. They include an
+`ai_chat` object whenever a chat is active. It reports focus, streaming/review
+state, current composer text and cursor, pending approval, scheduled inputs,
+and message history. Completed tool messages expose a compact summary; their
+arguments appear when that tool row is expanded in the UI. Automation can
+therefore monitor turns without parsing the rendered terminal grid.
+
+`ovim send` accepts Unicode and Vim-style key names/modifiers. Use `ovim paste`
+for literal or multiline input so it is delivered as one bracketed-paste event.
+
+### Editing a live session
+
+The file-operation commands normally read or write the file directly. Add
+`--session` to operate on the live editor buffer instead:
+
+```bash
+ovim edit src/main.rs --old before --new after --session dev
+ovim insert src/main.rs --after 10 --text 'new line' --session dev
+ovim delete-lines src/main.rs --from 20 --to 22 --session dev
+ovim read-lines src/main.rs --from 1 --to 30 --session dev
+ovim exec -s dev w
+```
+
+The file argument must match the session's active buffer. Session-aware edits
+remain unsaved until `:w`, preserving undo, LSP synchronization, diagnostics,
+and render invalidation. A clean headless buffer automatically reloads external
+disk changes. If the buffer has local changes, ovim keeps them and refuses a
+plain `:w` rather than overwriting the external version; use `:e!` or `:w!` to
+make that choice explicitly.
 
 AI chat uses the same background poller and input dispatcher in headless mode
 as in the TUI. Open editable chat with `Space Space`, type a request, and submit
@@ -84,6 +116,12 @@ When headless, ovim exposes endpoints like:
 - `GET /health`
 - `GET /snapshot`
 - `POST /keys`
+- `POST /paste`
+- `POST /resize`
 - `POST /command`
+- `POST /edit`
+- `POST /insert`
+- `POST /delete-lines`
+- `GET /lines`
 
 Use `ovim snapshot -s <name>` instead of calling the API directly unless you need custom tooling.
