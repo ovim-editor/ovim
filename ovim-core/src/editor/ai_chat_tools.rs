@@ -15,6 +15,7 @@ use super::Editor;
 pub(super) struct ToolApprovalRequest {
     pub(super) requested_path: PathBuf,
     pub(super) approval_root: PathBuf,
+    pub(super) reason: String,
     pub(super) message: String,
 }
 
@@ -361,6 +362,7 @@ impl Editor {
         Some(ToolApprovalRequest {
             requested_path: requested_path.clone(),
             approval_root,
+            reason: reason.to_string(),
             message: format!(
                 "Approval required: {} ({}) for {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
                 tc.name,
@@ -662,6 +664,7 @@ impl Editor {
             ToolDispatchOutcome::ApprovalRequired(req) => {
                 self.pause_for_tool_approval(PendingToolApproval {
                     tool_call: pending.tool_call,
+                    reason: req.reason,
                     runtime_tool: pending.runtime_tool,
                     remaining_tool_calls: pending.remaining_tool_calls,
                     model_name: pending.model_name,
@@ -801,6 +804,7 @@ impl Editor {
                     }
                     self.pause_for_tool_approval(PendingToolApproval {
                         tool_call: tc.clone(),
+                        reason: req.reason,
                         runtime_tool: runtime_tool.map(|(_, tool)| tool),
                         remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
                         model_name,

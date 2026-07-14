@@ -1311,6 +1311,7 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.pending_tool_approval = Some(super::ai_chat_state::PendingToolApproval {
                 tool_call: call,
+                reason: reason.clone(),
                 runtime_tool: Some(tool),
                 remaining_tool_calls: Vec::new(),
                 model_name: String::new(),
@@ -1529,11 +1530,26 @@ impl Editor {
             .chat
             .as_ref()
             .and_then(|c| c.pending_tool_approval.as_ref())?;
-        Some(format!(
-            "Tool approval requested: {} ({})",
-            pending.tool_call.name,
-            pending.requested_path.display()
-        ))
+        if pending.tool_call.name == "bash" {
+            let command = pending
+                .tool_call
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("<missing shell program>");
+            Some(format!(
+                "Command:\n{command}\n\nLuna: {}\nWorking directory: {}",
+                pending.reason,
+                pending.requested_path.display()
+            ))
+        } else {
+            Some(format!(
+                "Tool: {}\nReason: {}\nPath: {}",
+                pending.tool_call.name,
+                pending.reason,
+                pending.requested_path.display()
+            ))
+        }
     }
 
     /// Whether chat allows edits.
@@ -2662,6 +2678,36 @@ mod tests {
             response.try_recv(),
             Err(tokio::sync::oneshot::error::TryRecvError::Empty)
         ));
+    }
+
+    #[test]
+    fn shell_approval_summary_contains_full_command_and_luna_reason() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        editor.ai_state.chat.as_mut().unwrap().pending_tool_approval =
+            Some(super::super::ai_chat_state::PendingToolApproval {
+                tool_call: ToolCallInfo {
+                    id: "approval-summary".into(),
+                    name: "bash".into(),
+                    arguments: serde_json::json!({
+                        "command": "git diff --check && cargo test\nprintf 'complete\\n'"
+                    }),
+                },
+                reason: "the requested write is not clearly authorized".into(),
+                runtime_tool: None,
+                remaining_tool_calls: Vec::new(),
+                model_name: "test".into(),
+                requested_path: std::path::PathBuf::from("/repo"),
+                approval_root: std::path::PathBuf::from("/repo"),
+                dynamic_response: None,
+                dynamic_turn: None,
+            });
+
+        let summary = editor.ai_chat_pending_tool_approval_summary().unwrap();
+        assert!(summary.contains("git diff --check && cargo test"));
+        assert!(summary.contains("printf 'complete\\n'"));
+        assert!(summary.contains("Luna: the requested write is not clearly authorized"));
+        assert!(summary.contains("Working directory: /repo"));
     }
 
     #[tokio::test]

@@ -11,6 +11,8 @@ use std::path::PathBuf;
 /// paths outside the active project boundary.
 pub struct PendingToolApproval {
     pub tool_call: ToolCallInfo,
+    /// The policy or Luna explanation that caused this escalation.
+    pub reason: String,
     pub runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
     pub remaining_tool_calls: Vec<ToolCallInfo>,
     pub model_name: String,

@@ -66,6 +66,7 @@ impl Editor {
                     return Ok(ToolPathResolution::NeedsApproval(ToolApprovalRequest {
                         requested_path: requested_path.clone(),
                         approval_root: requested_path.clone(),
+                        reason: format!("sensitive-path access: {reason}"),
                         message: format!(
                             "Approval required: {} wants sensitive-path access to {} ({}). Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
                             tool_name,
@@ -109,6 +110,7 @@ impl Editor {
         Ok(ToolPathResolution::NeedsApproval(ToolApprovalRequest {
             requested_path: requested_path.clone(),
             approval_root: approval_root.clone(),
+            reason: "the requested path is outside the active project".into(),
             message: format!(
                 "Approval required: {} wants outside-project access to {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
                 tool_name,

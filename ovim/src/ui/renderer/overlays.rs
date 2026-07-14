@@ -537,7 +537,17 @@ fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
     let width = ((full.width * 70) / 100)
         .clamp(48, 100)
         .min(full.width.saturating_sub(2));
-    let height = 9u16.min(full.height.saturating_sub(2)).max(7);
+    let content_width = width.saturating_sub(2).max(1) as usize;
+    let content_rows = lines
+        .iter()
+        .map(|(text, _)| {
+            text.split('\n')
+                .map(|line| UnicodeWidthStr::width(line).max(1).div_ceil(content_width))
+                .sum::<usize>()
+        })
+        .sum::<usize>();
+    let requested_height = content_rows.saturating_add(2).min(u16::MAX as usize) as u16;
+    let height = requested_height.clamp(7, full.height.saturating_sub(2));
     let area = centered_area(full, width, height);
 
     let c = &MODAL_COLORS;
