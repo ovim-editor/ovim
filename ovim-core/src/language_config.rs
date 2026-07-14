@@ -906,6 +906,23 @@ mod tests {
     }
 
     #[test]
+    fn embedded_config_includes_wgsl_syntax() {
+        let (languages, _companions) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let wgsl = languages
+            .iter()
+            .find(|language| language.id == "wgsl")
+            .expect("embedded WGSL language config");
+
+        assert_eq!(wgsl.extensions, ["wgsl"]);
+        assert_eq!(
+            wgsl.syntax.as_ref().map(|syntax| syntax.grammar.as_str()),
+            Some("tree-sitter-wgsl-bevy")
+        );
+        assert!(wgsl.lsp.is_none());
+    }
+
+    #[test]
     fn test_path_filename_detection() {
         let languages = vec![LanguageConfig {
             id: "ghostty".to_string(),

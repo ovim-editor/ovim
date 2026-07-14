@@ -44,6 +44,7 @@ These languages have full LSP support and will auto-install the language server 
 
 - Markdown (`.md`, `.markdown`)
 - HCL (`.hcl`, `.nomad`, `.vault`)
+- WGSL (`.wgsl`), including Bevy shader preprocessor directives
 
 ## Auto-Install
 

@@ -652,6 +652,22 @@ file = { path = "src/syntax/queries/terraform.scm" }
 # for Terraform-related HCL files. Users can configure project-specific LSP.
 
 # ============================================================================
+# WGSL (WebGPU Shading Language)
+# ============================================================================
+
+[[language]]
+id = "wgsl"
+name = "WGSL"
+extensions = ["wgsl"]
+
+[language.syntax]
+grammar = "tree-sitter-wgsl-bevy"
+file = { path = "src/syntax/queries/wgsl.scm" }
+
+# WGSL syntax highlighting is built in. No language server is configured by
+# default; users can add one with a language override if desired.
+
+# ============================================================================
 # Companion LSP Servers
 # ============================================================================
 # Companion servers provide additional LSP support alongside primary servers.

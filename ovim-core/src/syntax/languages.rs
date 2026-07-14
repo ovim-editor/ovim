@@ -29,6 +29,7 @@ pub enum Language {
     CSharp,
     Terraform,
     Hcl,
+    Wgsl,
     /// Tree-sitter query files (used for highlight queries, etc.)
     TreeSitterQuery,
 }
@@ -138,6 +139,9 @@ impl LanguageRegistry {
 
             // HCL (HashiCorp Configuration Language)
             "hcl" | "nomad" | "vault" => Some(Language::Hcl),
+
+            // WebGPU Shading Language
+            "wgsl" => Some(Language::Wgsl),
 
             _ => None,
         }
@@ -258,6 +262,7 @@ impl LanguageRegistry {
             Language::CSharp => tree_sitter_c_sharp::LANGUAGE.into(),
             Language::Terraform => tree_sitter_hcl::LANGUAGE.into(),
             Language::Hcl => tree_sitter_hcl::LANGUAGE.into(),
+            Language::Wgsl => tree_sitter_wgsl_bevy::LANGUAGE.into(),
             // Tree-sitter query: use Bash grammar fallback for now (still gives *some* structure).
             // TODO: add a dedicated tree-sitter-query grammar crate.
             Language::TreeSitterQuery => tree_sitter_bash::LANGUAGE.into(),
@@ -303,6 +308,7 @@ impl LanguageRegistry {
             // Terraform/HCL: Use custom query
             Language::Terraform => include_str!("queries/terraform.scm"),
             Language::Hcl => include_str!("queries/terraform.scm"),
+            Language::Wgsl => include_str!("queries/wgsl.scm"),
             // Tree-sitter query: basic fallback highlights.
             Language::TreeSitterQuery => include_str!("queries/tree_sitter_query.scm"),
         }
@@ -353,6 +359,7 @@ impl LanguageRegistry {
             Language::CSharp => Some("csharp"),
             Language::Terraform => Some("terraform"),
             Language::Hcl => Some("hcl"),
+            Language::Wgsl => None,
             Language::TreeSitterQuery => None,
         })
     }
@@ -444,8 +451,27 @@ impl LanguageRegistry {
             // Terraform / HCL
             "terraform" | "tf" => Some(Language::Terraform),
             "hcl" => Some(Language::Hcl),
+            "wgsl" => Some(Language::Wgsl),
 
             _ => None,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_wgsl_files_and_markdown_fences() {
+        assert_eq!(
+            LanguageRegistry::detect_from_path("assets/shaders/void.wgsl"),
+            Some(Language::Wgsl)
+        );
+        assert_eq!(
+            LanguageRegistry::from_info_string("wgsl"),
+            Some(Language::Wgsl)
+        );
+        assert_eq!(LanguageRegistry::get_lsp_language_id("shader.wgsl"), None);
     }
 }

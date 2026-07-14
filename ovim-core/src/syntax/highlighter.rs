@@ -781,6 +781,38 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_wgsl_highlighter_parses_standard_and_bevy_syntax() {
+        let mut highlighter =
+            SyntaxHighlighter::new(Language::Wgsl).expect("WGSL highlighter should be created");
+        let source = r#"#import bevy_core_pipeline::fullscreen_vertex_shader::FullscreenVertexOutput
+
+// Fullscreen shader
+@group(0) @binding(0) var screen_tex: texture_2d<f32>;
+
+@fragment
+fn fragment(in: FullscreenVertexOutput) -> @location(0) vec4<f32> {
+    let color = textureLoad(screen_tex, vec2<i32>(in.position.xy), 0);
+    return color;
+}
+"#;
+
+        highlighter.parse(source);
+        let tree = highlighter.tree().expect("WGSL parse tree");
+        assert!(!tree.root_node().has_error(), "{}", tree.root_node());
+
+        let highlights = highlighter.highlights_for_all_lines(source);
+        assert!(highlights.iter().any(|line| !line.is_empty()));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Function));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Comment));
+    }
+
+    #[test]
     fn test_tsx_highlighter() {
         let mut h =
             SyntaxHighlighter::new(Language::Tsx).expect("TSX highlighter should be created");
