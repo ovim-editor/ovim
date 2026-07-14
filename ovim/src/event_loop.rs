@@ -61,6 +61,12 @@ async fn process_editor_tick(
 
     // === Background tasks ===
     poll_background_tasks(editor).await;
+    update_file_list_cache_from_background(editor);
+
+    // === Transient UI state ===
+    if editor.tick_cat_animation() | editor.tick_yank_flash() | editor.tick_toasts() {
+        editor.mark_dirty();
+    }
 
     // === Lua ===
     let _ = editor.process_lua_commands();
@@ -75,6 +81,27 @@ async fn process_editor_tick(
     if editor.mode() == Mode::Picker {
         process_picker_tick(editor, preview_tx, file_tx);
     }
+
+    // File switches queue didClose outside the async input dispatcher. Drive
+    // that lifecycle from the shared tick so headless and TUI sessions agree.
+    editor.send_lsp_close_if_needed().await;
+}
+
+/// Shared post-input refresh used by terminal and API input paths.
+fn refresh_after_input(editor: &mut Editor) {
+    if editor.buffer().needs_rehighlight() {
+        editor.process_viewport_rehighlight();
+    }
+    editor.mark_dirty();
+}
+
+/// Shared post-mutation refresh for API endpoints that bypass key dispatch.
+fn refresh_after_api_mutation(editor: &mut Editor, force_full_lsp_sync: bool) {
+    if force_full_lsp_sync {
+        editor.mark_buffer_modified_force_send();
+    }
+    editor.request_diagnostics_refresh();
+    refresh_after_input(editor);
 }
 
 /// Drain Java/Kotlin LSP status messages from the channel.
@@ -648,25 +675,44 @@ pub async fn run_headless_loop(
     // Reused across `GetRender` requests so identical-dimension polls
     // skip the full ratatui+highlight pipeline (OV-00181).
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
+    let mut last_edit = Instant::now();
 
     loop {
         tokio::select! {
             Some(request) = api_rx.recv() => {
+                let version_before = editor.buffer().version();
                 handle_api_request(editor, request, start_time, &session_info, &mut render_cache).await;
+                if editor.buffer().version() != version_before {
+                    last_edit = Instant::now();
+                }
                 if editor.should_quit() { break; }
             }
             Some((path, cache)) = preview_rx.recv() => {
                 editor.insert_preview(path, cache);
-                // Note: headless mode doesn't need mark_dirty() since there's no UI to redraw
+                editor.mark_dirty();
             }
             Some(result) = file_rx.recv() => {
-                if let Some(picker) = editor.picker_mut() { picker.add_file_result(result); }
+                let added = if let Some(picker) = editor.picker_mut() {
+                    picker.add_file_result(result);
+                    true
+                } else {
+                    false
+                };
+                if added {
+                    editor.mark_dirty();
+                }
             }
             _ = lsp_interval.tick() => {
                 process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
+                if editor.buffer().needs_rehighlight()
+                    && last_edit.elapsed() >= Duration::from_millis(200)
+                {
+                    editor.process_pending_rehighlight().await;
+                }
             }
         }
     }
+    editor.close_current_file_lsp().await;
     Ok(())
 }
 
@@ -943,13 +989,9 @@ pub async fn run_event_loop(
                         last_edit = Instant::now();
                     }
 
-                    // Mark dirty ONCE after all events processed
-                    editor.mark_dirty();
-
-                    // Immediate viewport rehighlight
-                    if editor.buffer().needs_rehighlight() {
-                        editor.process_viewport_rehighlight();
-                    }
+                    // Mark dirty and immediately refresh the visible syntax
+                    // once after all events processed.
+                    refresh_after_input(editor);
 
                     // Immediately process LSP actions triggered by input
                     editor.dispatch_pending_intents().await;
@@ -967,11 +1009,19 @@ pub async fn run_event_loop(
             } => {
                 let dummy_start = SystemTime::now();
                 let dummy_session = Arc::new(Mutex::new(SessionInfo::new(0, None, "tui".into())));
+                let version_before = editor.buffer().version();
                 handle_api_request(editor, request, dummy_start, &dummy_session, &mut render_cache).await;
+                if editor.buffer().version() != version_before {
+                    last_edit = Instant::now();
+                }
                 // Drain remaining queued API requests
                 if let Some(ref mut rx) = api_rx {
                     while let Ok(req) = rx.try_recv() {
+                        let version_before = editor.buffer().version();
                         handle_api_request(editor, req, dummy_start, &dummy_session, &mut render_cache).await;
+                        if editor.buffer().version() != version_before {
+                            last_edit = Instant::now();
+                        }
                     }
                 }
             }
@@ -981,15 +1031,6 @@ pub async fn run_event_loop(
                 process_editor_tick(editor, &mut java_status_rx, &preview_tx, &file_tx, &syntax_tx, &mut syntax_rx).await;
                 process_picker_results(editor, &mut preview_rx, &mut file_rx);
 
-                if editor.tick_cat_animation() {
-                    editor.mark_dirty();
-                }
-                if editor.tick_yank_flash() {
-                    editor.mark_dirty();
-                }
-                if editor.tick_toasts() {
-                    editor.mark_dirty();
-                }
             }
         }
 
@@ -1014,8 +1055,6 @@ pub async fn run_event_loop(
         if editor.buffer().needs_rehighlight() && last_edit.elapsed() >= debounce_delay {
             editor.process_pending_rehighlight().await;
         }
-
-        editor.send_lsp_close_if_needed().await;
     }
 
     editor.close_current_file_lsp().await;
@@ -1045,11 +1084,13 @@ async fn handle_api_request(
                     let mut input_error = None;
 
                     for event in events {
-                        if let Err(error) = InputHandler::handle_key_event(editor, event) {
+                        if let Err(error) = InputHandler::handle_key_event_no_dirty(editor, event) {
                             input_error = Some(error.to_string());
                             break;
                         }
                     }
+
+                    refresh_after_input(editor);
 
                     // Process any LSP actions that were triggered by the keys
                     editor.dispatch_pending_intents().await;
@@ -1114,10 +1155,7 @@ async fn handle_api_request(
         ApiRequest::Paste(text, tx) => {
             let response = match editor.handle_paste_event(&text) {
                 Ok(()) => {
-                    if editor.buffer().needs_rehighlight() {
-                        editor.process_viewport_rehighlight();
-                    }
-                    editor.mark_dirty();
+                    refresh_after_input(editor);
                     editor.dispatch_pending_intents().await;
                     ApiResponse::Success(SuccessResponse {
                         success: true,
@@ -1153,6 +1191,7 @@ async fn handle_api_request(
         }
         ApiRequest::SetBuffer(content, tx) => {
             editor.buffer_mut().replace_all(&content);
+            refresh_after_api_mutation(editor, true);
             let line_count = editor.buffer().rope().len_lines();
 
             let response = ApiResponse::Success(SuccessResponse {
@@ -1197,7 +1236,14 @@ async fn handle_api_request(
                 }
             };
 
+            let old_mode = editor.mode();
+            if old_mode == Mode::Insert && new_mode != Mode::Insert {
+                editor.finalize_change_building();
+            } else if old_mode != Mode::Insert && new_mode == Mode::Insert {
+                editor.start_change_building(editor.cursor_position());
+            }
             editor.set_mode(new_mode);
+            editor.mark_dirty();
             let _ = tx.send(ApiResponse::Success(SuccessResponse {
                 success: true,
                 message: Some(format!("Mode set to {}", mode_str.to_uppercase()).into()),
@@ -1209,6 +1255,7 @@ async fn handle_api_request(
             // has parity with the command line (substitute, global, ranges, …),
             // not just the standard commands module.
             let response: ApiResponse = InputHandler::execute_command_api(editor, &command).into();
+            refresh_after_input(editor);
             let _ = tx.send(response);
         }
         ApiRequest::GetRender {
@@ -1420,6 +1467,9 @@ async fn handle_api_request(
         }
         ApiRequest::EditLine { line, old, new, tx } => {
             let response = handle_edit_line(editor, line, &old, &new);
+            if matches!(&response, ApiResponse::Success(_)) {
+                refresh_after_api_mutation(editor, false);
+            }
             let _ = tx.send(response);
         }
         ApiRequest::InsertLines {
@@ -1429,10 +1479,16 @@ async fn handle_api_request(
             tx,
         } => {
             let response = handle_insert_lines(editor, line, before, &text);
+            if matches!(&response, ApiResponse::Success(_)) {
+                refresh_after_api_mutation(editor, false);
+            }
             let _ = tx.send(response);
         }
         ApiRequest::DeleteLines { from, to, tx } => {
             let response = handle_delete_lines(editor, from, to);
+            if matches!(&response, ApiResponse::Success(_)) {
+                refresh_after_api_mutation(editor, false);
+            }
             let _ = tx.send(response);
         }
         ApiRequest::ReadLines { from, to, tx } => {
@@ -1448,11 +1504,74 @@ mod tests {
     use super::compute_text_width;
     use super::create_snapshot;
     use super::find_char_positions;
+    use super::handle_api_request;
     use super::handle_edit_line;
     use super::handle_terminal_resize;
+    use super::ApiRequest;
     use super::ApiResponse;
     use ovim::editor::Editor;
+    use ovim::mode::Mode;
+    use ovim::session::SessionInfo;
+    use ovim::ui::AnsiRenderCache;
     use ovim_core::ai::chat_types::ChatOpts;
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+    use tokio::sync::oneshot;
+
+    fn test_session() -> Arc<Mutex<SessionInfo>> {
+        Arc::new(Mutex::new(SessionInfo::new(0, None, "test".into())))
+    }
+
+    #[tokio::test]
+    async fn set_buffer_invalidates_cached_render() {
+        let mut editor = Editor::with_content("before\n");
+        let mut cache = AnsiRenderCache::new();
+        cache.render(&mut editor, 80, 20, true).unwrap();
+        assert!(cache.would_hit(&editor, 80, 20, true));
+
+        let (tx, rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::SetBuffer("PARITY_SENTINEL\n".into(), tx),
+            SystemTime::now(),
+            &test_session(),
+            &mut cache,
+        )
+        .await;
+        assert!(matches!(rx.await.unwrap(), ApiResponse::Success(_)));
+        assert!(!cache.would_hit(&editor, 80, 20, true));
+        let rendered = cache.render(&mut editor, 80, 20, true).unwrap();
+        assert!(rendered.contains("PARITY_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn paste_api_delivers_multiline_text_as_one_event() {
+        let mut editor = Editor::with_content("");
+        let mut cache = AnsiRenderCache::new();
+        let (mode_tx, mode_rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::SetMode("INSERT".into(), mode_tx),
+            SystemTime::now(),
+            &test_session(),
+            &mut cache,
+        )
+        .await;
+        assert!(matches!(mode_rx.await.unwrap(), ApiResponse::Success(_)));
+        assert_eq!(editor.mode(), Mode::Insert);
+
+        let (tx, rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::Paste("first\nsecond".into(), tx),
+            SystemTime::now(),
+            &test_session(),
+            &mut cache,
+        )
+        .await;
+        assert!(matches!(rx.await.unwrap(), ApiResponse::Success(_)));
+        assert_eq!(editor.buffer().rope().to_string(), "first\nsecond");
+    }
 
     #[test]
     fn snapshot_exposes_active_ai_chat_state() {
