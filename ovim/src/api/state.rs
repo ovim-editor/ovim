@@ -470,7 +470,10 @@ pub fn format_context_window(
     file_path: Option<&str>,
     mode: &str,
 ) -> String {
-    let lines: Vec<&str> = buffer_content.lines().collect();
+    // `str::lines` returns no items for an empty buffer and drops the logical
+    // empty line after a trailing newline. An editor buffer always has at
+    // least one logical line, so preserve those rows explicitly.
+    let lines: Vec<&str> = buffer_content.split('\n').collect();
     let total_lines = lines.len();
 
     // Calculate visible range: 10 lines above, current, 10 below
@@ -478,7 +481,7 @@ pub fn format_context_window(
     let end_line = (cursor_line + 11).min(total_lines);
 
     // Determine max line number width for padding
-    let max_line_num = (total_lines - 1).max(cursor_line);
+    let max_line_num = total_lines.saturating_sub(1).max(cursor_line);
     let line_num_width = max_line_num.to_string().len();
 
     // Build header
@@ -539,4 +542,23 @@ pub fn format_context_window(
     }
 
     result
+}
+
+#[cfg(test)]
+mod context_window_tests {
+    use super::format_context_window;
+
+    #[test]
+    fn empty_buffer_has_a_current_logical_line() {
+        let context = format_context_window("", 0, 0, Some("new.txt"), "NORMAL");
+        assert!(context.contains(">> 1 | \n"), "{context}");
+        assert!(context.contains('^'), "{context}");
+        assert!(context.contains("FILE END"), "{context}");
+    }
+
+    #[test]
+    fn trailing_newline_preserves_the_empty_final_line() {
+        let context = format_context_window("first\n", 1, 0, Some("file.txt"), "NORMAL");
+        assert!(context.contains(">> 2 | \n"), "{context}");
+    }
 }
