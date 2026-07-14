@@ -296,12 +296,24 @@ pub fn move_chat_input_cursor_vertical(
         let next = current_row.saturating_add(1);
         (next < rows.len()).then_some(next)?
     };
-    Some(chat_input_byte_for_display_column(
-        text,
-        rows[target_row],
-        column,
-        tab_width,
-    ))
+    let mut target = chat_input_byte_for_display_column(text, rows[target_row], column, tab_width);
+    // A byte offset shared by two soft-wrapped rows is rendered at the start
+    // of the continuation row. When vertical movement targets the visual end
+    // of the previous row, keep it on that row's final character instead of
+    // appearing not to move at all.
+    if target == rows[target_row].end
+        && rows
+            .get(target_row + 1)
+            .is_some_and(|next| next.start == target)
+        && target > rows[target_row].visible_start
+    {
+        target = text[..target]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+            .unwrap_or(target);
+    }
+    Some(target)
 }
 
 #[cfg(test)]
