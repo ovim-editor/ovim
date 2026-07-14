@@ -1,5 +1,6 @@
 use crate::editor::{Editor, ToastLevel};
 use crate::syntax::{Theme, UiGroup};
+use ovim_core::editor::ai_chat_input::{wrap_chat_input_rows_with_widths, ChatInputRow};
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -881,50 +882,19 @@ fn wrap_prompt_rows(
     prompt: &str,
     first_row_width: usize,
     continuation_row_width: usize,
+    tab_width: usize,
     max_rows: usize,
-) -> Vec<(usize, usize)> {
+) -> Vec<ChatInputRow> {
     if max_rows == 0 {
         return Vec::new();
     }
-
-    let mut rows = Vec::new();
-    let mut row_start = 0usize;
-    let first_limit = first_row_width.max(1);
-    let continuation_limit = continuation_row_width.max(1);
-    let mut row_limit = first_limit;
-
-    while row_start < prompt.len() && rows.len() < max_rows {
-        let mut row_end = row_start;
-        let mut row_display = 0usize;
-        for (rel_idx, ch) in prompt[row_start..].char_indices() {
-            let byte_idx = row_start + rel_idx;
-            let ch_width = crate::display::char_display_width(ch);
-
-            if row_end > row_start && row_display + ch_width > row_limit {
-                break;
-            }
-
-            row_display += ch_width;
-            row_end = byte_idx + ch.len_utf8();
-        }
-
-        if row_end == row_start {
-            if let Some(ch) = prompt[row_start..].chars().next() {
-                row_end = row_start + ch.len_utf8();
-            } else {
-                break;
-            }
-        }
-
-        rows.push((row_start, row_end));
-        row_start = row_end;
-        row_limit = continuation_limit;
-    }
-
-    if rows.is_empty() {
-        rows.push((0, 0));
-    }
-
+    let mut rows = wrap_chat_input_rows_with_widths(
+        prompt,
+        first_row_width,
+        continuation_row_width,
+        tab_width,
+    );
+    rows.truncate(max_rows);
     rows
 }
 
@@ -949,6 +919,7 @@ pub fn ai_prompt_panel_height(editor: &Editor, panel_width: u16, max_height: u16
         editor.ai_prompt_input(),
         first_row_width,
         continuation_row_width,
+        editor.options.tab_width,
         usize::MAX,
     )
     .len();
@@ -1152,10 +1123,11 @@ pub fn render_ai_prompt_line(
         prompt,
         first_row_width,
         continuation_row_width,
+        editor.options.tab_width,
         input_rows_area.height.max(1) as usize,
     );
 
-    for (idx, (start_byte, end_byte)) in wrapped_rows.iter().enumerate() {
+    for (idx, input_row) in wrapped_rows.iter().enumerate() {
         let row = Rect {
             x: input_rows_area.x,
             y: input_rows_area.y + idx as u16,
@@ -1186,7 +1158,7 @@ pub fn render_ai_prompt_line(
             }
         };
 
-        let row_text = &prompt[*start_byte..*end_byte];
+        let row_text = &prompt[input_row.visible_start..input_row.end];
         spans.push(Span::styled(
             row_text.to_string(),
             Style::default().fg(Color::White).bg(input_bg),
@@ -1206,7 +1178,9 @@ pub fn render_ai_prompt_line(
         frame.render_widget(Paragraph::new(Line::from(spans)), row);
 
         if input_rect.width > 0 {
-            layout.input_rows.push((input_rect, *start_byte, *end_byte));
+            layout
+                .input_rows
+                .push((input_rect, input_row.visible_start, input_row.end));
             if layout.input_area.is_none() {
                 layout.input_area = Some(input_rect);
             }
@@ -1374,21 +1348,39 @@ mod tests {
     #[test]
     fn test_wrap_prompt_rows_preserves_text_across_rows() {
         let prompt = "abcdefghij";
-        let rows = wrap_prompt_rows(prompt, 3, 4, 8);
+        let rows = wrap_prompt_rows(prompt, 3, 4, 4, 8);
 
-        assert_eq!(rows, vec![(0, 3), (3, 7), (7, 10)]);
+        assert_eq!(
+            rows.iter()
+                .map(|row| (row.start, row.end))
+                .collect::<Vec<_>>(),
+            vec![(0, 3), (3, 7), (7, 10)]
+        );
 
         let rebuilt = rows
             .iter()
-            .map(|(start, end)| &prompt[*start..*end])
+            .map(|row| &prompt[row.start..row.end])
             .collect::<String>();
         assert_eq!(rebuilt, prompt);
     }
 
     #[test]
     fn test_wrap_prompt_rows_handles_empty_input() {
-        let rows = wrap_prompt_rows("", 3, 4, 8);
-        assert_eq!(rows, vec![(0, 0)]);
+        let rows = wrap_prompt_rows("", 3, 4, 4, 8);
+        assert_eq!((rows[0].start, rows[0].end), (0, 0));
+    }
+
+    #[test]
+    fn prompt_wrap_moves_message_to_next_row_instead_of_splitting_it() {
+        let prompt = "Hey there. This is an example message that should wrap.";
+        let rows = wrap_prompt_rows(prompt, 35, 45, 4, 8);
+        let visible = rows
+            .iter()
+            .map(|row| &prompt[row.visible_start..row.end])
+            .collect::<Vec<_>>();
+
+        assert_eq!(visible[0], "Hey there. This is an example ");
+        assert!(visible[1].starts_with("message "), "{visible:?}");
     }
 
     #[test]

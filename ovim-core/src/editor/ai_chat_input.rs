@@ -14,6 +14,17 @@ pub struct ChatInputRow {
 /// cursor movement and mouse hit-testing. A word is split only when no
 /// whitespace boundary fits on the current row.
 pub fn wrap_chat_input_rows(text: &str, max_width: usize, tab_width: usize) -> Vec<ChatInputRow> {
+    wrap_chat_input_rows_with_widths(text, max_width, max_width, tab_width)
+}
+
+/// Word-aware composer wrapping with a distinct first-row width. Inline AI
+/// prompts use this because their prefix leaves less room on the first row.
+pub fn wrap_chat_input_rows_with_widths(
+    text: &str,
+    first_row_width: usize,
+    continuation_row_width: usize,
+    tab_width: usize,
+) -> Vec<ChatInputRow> {
     if text.is_empty() {
         return vec![ChatInputRow {
             start: 0,
@@ -22,12 +33,18 @@ pub fn wrap_chat_input_rows(text: &str, max_width: usize, tab_width: usize) -> V
         }];
     }
 
-    let width_limit = max_width.max(1);
+    let first_row_width = first_row_width.max(1);
+    let continuation_row_width = continuation_row_width.max(1);
     let tab_width = tab_width.max(1);
     let mut rows = Vec::new();
     let mut row_start = 0usize;
 
     while row_start < text.len() {
+        let width_limit = if rows.is_empty() {
+            first_row_width
+        } else {
+            continuation_row_width
+        };
         let soft_wrapped = row_start > 0 && text.as_bytes().get(row_start - 1) != Some(&b'\n');
         let visible_start = if soft_wrapped {
             let mut visible = row_start;
@@ -224,6 +241,13 @@ mod tests {
         let input = "alpha beta gamma";
         let rows = wrap_chat_input_rows(input, 11, 4);
         assert_eq!(text(&rows, input), vec!["alpha beta ", "gamma"]);
+    }
+
+    #[test]
+    fn varying_widths_move_whole_word_to_continuation_row() {
+        let input = "example message that fits";
+        let rows = wrap_chat_input_rows_with_widths(input, 12, 20, 4);
+        assert_eq!(text(&rows, input), vec!["example ", "message that fits"]);
     }
 
     #[test]
