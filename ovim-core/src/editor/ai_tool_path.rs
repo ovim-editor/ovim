@@ -1,4 +1,6 @@
-use crate::ai::path_policy::{has_parent_traversal, sensitive_path_reason};
+use crate::ai::path_policy::{
+    canonicalize_or_normalize, has_parent_traversal, sensitive_path_reason,
+};
 use std::path::{Path, PathBuf};
 
 use super::ai_chat_tools::{ToolApprovalRequest, ToolPathResolution};
@@ -80,6 +82,20 @@ impl Editor {
                 absolute_path: requested_path,
                 boundary_root,
             });
+        }
+
+        // Skill instructions are part of the agent harness, even though they
+        // intentionally live outside the opened project. Let the read-only
+        // file tool consume installed skill packages without turning every
+        // required SKILL.md into an approval prompt. This exception does not
+        // apply to navigation, directory listing, shell, or mutation tools.
+        if tool_name == "read_file_at_path" && sensitive_path_reason(&requested_path).is_none() {
+            if let Some(skill_root) = trusted_codex_skill_package_root(&requested_path) {
+                return Ok(ToolPathResolution::Allowed {
+                    absolute_path: requested_path,
+                    boundary_root: skill_root,
+                });
+            }
         }
 
         if let Some(root) = approved_once_root {
@@ -202,6 +218,85 @@ impl Editor {
     }
 }
 
+fn codex_home() -> Option<PathBuf> {
+    std::env::var_os("CODEX_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::home_dir().map(|home| home.join(".codex")))
+        .map(|path| {
+            if path.is_absolute() {
+                canonicalize_or_normalize(&path)
+            } else {
+                std::env::current_dir()
+                    .map(|cwd| canonicalize_or_normalize(&cwd.join(&path)))
+                    .unwrap_or_else(|_| canonicalize_or_normalize(&path))
+            }
+        })
+}
+
+/// Return the root of a genuine installed Codex skill package containing
+/// `requested_path`. A package is trusted only when its root contains a
+/// `SKILL.md`; merely putting a directory named `skills` elsewhere does not
+/// grant it outside-project read access.
+fn trusted_codex_skill_package_root(requested_path: &Path) -> Option<PathBuf> {
+    let home = codex_home()?;
+    trusted_codex_skill_package_root_in(&home, requested_path)
+}
+
+fn trusted_codex_skill_package_root_in(
+    codex_home: &Path,
+    requested_path: &Path,
+) -> Option<PathBuf> {
+    let requested_path = canonicalize_or_normalize(requested_path);
+    let codex_home = canonicalize_or_normalize(codex_home);
+
+    let personal_skills = codex_home.join("skills");
+    if let Some(root) = skill_package_root(&personal_skills, &requested_path, true) {
+        return Some(root);
+    }
+
+    let plugin_cache = codex_home.join("plugins").join("cache");
+    let relative = requested_path.strip_prefix(&plugin_cache).ok()?;
+    let mut prefix = plugin_cache;
+    let mut found_skills = false;
+    for component in relative.components() {
+        let std::path::Component::Normal(name) = component else {
+            return None;
+        };
+        prefix.push(name);
+        if found_skills {
+            return skill_root_if_valid(prefix, &requested_path);
+        }
+        found_skills = name == "skills";
+    }
+    None
+}
+
+fn skill_package_root(
+    skills_root: &Path,
+    requested_path: &Path,
+    system_namespace: bool,
+) -> Option<PathBuf> {
+    let relative = requested_path.strip_prefix(skills_root).ok()?;
+    let mut components = relative.components();
+    let std::path::Component::Normal(first) = components.next()? else {
+        return None;
+    };
+    let mut root = skills_root.join(first);
+    if system_namespace && first == ".system" {
+        let std::path::Component::Normal(package) = components.next()? else {
+            return None;
+        };
+        root.push(package);
+    }
+    skill_root_if_valid(root, requested_path)
+}
+
+fn skill_root_if_valid(root: PathBuf, requested_path: &Path) -> Option<PathBuf> {
+    let root = canonicalize_or_normalize(&root);
+    (root.join("SKILL.md").is_file() && requested_path.starts_with(&root)).then_some(root)
+}
+
 pub(super) fn normalize_path(path: &Path) -> PathBuf {
     crate::ai::path_policy::normalize_path(path)
 }
@@ -280,4 +375,71 @@ pub(super) fn compact_tool_label(text: &str) -> String {
         .collect();
     out.push('\u{2026}');
     out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+
+    fn seed_skill(root: &Path) -> PathBuf {
+        fs::create_dir_all(root.join("references")).expect("create skill directories");
+        fs::write(root.join("SKILL.md"), "# Test skill\n").expect("write SKILL.md");
+        let reference = root.join("references").join("guide.md");
+        fs::write(&reference, "guide\n").expect("write reference");
+        reference
+    }
+
+    #[test]
+    fn trusts_personal_and_system_skill_packages() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        let personal_root = codex_home.join("skills").join("cascade");
+        let system_root = codex_home.join("skills").join(".system").join("imagegen");
+        let personal_reference = seed_skill(&personal_root);
+        let system_reference = seed_skill(&system_root);
+
+        assert_eq!(
+            trusted_codex_skill_package_root_in(&codex_home, &personal_reference),
+            Some(canonicalize_or_normalize(&personal_root))
+        );
+        assert_eq!(
+            trusted_codex_skill_package_root_in(&codex_home, &system_reference),
+            Some(canonicalize_or_normalize(&system_root))
+        );
+    }
+
+    #[test]
+    fn trusts_skill_packages_installed_in_the_plugin_cache() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        let plugin_skill_root = codex_home.join("plugins/cache/curated/github/1.0/skills/yeet");
+        let reference = seed_skill(&plugin_skill_root);
+
+        assert_eq!(
+            trusted_codex_skill_package_root_in(&codex_home, &reference),
+            Some(canonicalize_or_normalize(&plugin_skill_root))
+        );
+    }
+
+    #[test]
+    fn rejects_lookalike_and_incomplete_skill_directories() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let codex_home = temp.path().join(".codex");
+        let lookalike = temp.path().join("project/skills/fake/SKILL.md");
+        fs::create_dir_all(lookalike.parent().unwrap()).expect("create lookalike");
+        fs::write(&lookalike, "not installed\n").expect("write lookalike");
+        let incomplete = codex_home.join("skills/incomplete/reference.md");
+        fs::create_dir_all(incomplete.parent().unwrap()).expect("create incomplete");
+        fs::write(&incomplete, "missing manifest\n").expect("write incomplete");
+
+        assert_eq!(
+            trusted_codex_skill_package_root_in(&codex_home, &lookalike),
+            None
+        );
+        assert_eq!(
+            trusted_codex_skill_package_root_in(&codex_home, &incomplete),
+            None
+        );
+    }
 }
