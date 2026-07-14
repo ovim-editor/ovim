@@ -67,7 +67,7 @@ fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandResult {
                 _ => false,
             }
     });
-    if !opts.force && targets_current_file {
+    if !opts.force && targets_current_file && editor.buffer().file_mtime().is_some() {
         match editor.buffer().check_external_modification() {
             Ok(true) => return err("E211: File changed since editing started (add ! to override)"),
             Ok(false) => {}
