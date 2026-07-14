@@ -1042,11 +1042,11 @@ async fn handle_api_request(
             let events_result = parse_key_string(&keys);
             let response = match events_result {
                 Ok(events) => {
-                    let mut success = true;
+                    let mut input_error = None;
 
                     for event in events {
-                        if InputHandler::handle_key_event(editor, event).is_err() {
-                            success = false;
+                        if let Err(error) = InputHandler::handle_key_event(editor, event) {
+                            input_error = Some(error.to_string());
                             break;
                         }
                     }
@@ -1067,7 +1067,7 @@ async fn handle_api_request(
                         }
                     }
 
-                    if success {
+                    if input_error.is_none() {
                         // Create context window showing the result of the key operation
                         let buffer = editor.buffer();
                         let cursor = buffer.cursor();
@@ -1098,7 +1098,10 @@ async fn handle_api_request(
                         })
                     } else {
                         ApiResponse::Error(ErrorResponse {
-                            error: "Failed to process keys".to_string(),
+                            error: format!(
+                                "Failed to process keys: {}",
+                                input_error.as_deref().unwrap_or("unknown input error")
+                            ),
                         })
                     }
                 }

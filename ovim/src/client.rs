@@ -45,8 +45,19 @@ impl OvimClient {
             .context("Failed to send request")?;
 
         if !response.status().is_success() {
-            let error: Value = response.json().unwrap_or(json!({"error": "Unknown error"}));
-            anyhow::bail!("Failed to send keys: {:?}", error);
+            let body = response
+                .text()
+                .unwrap_or_else(|_| "Unknown error".to_string());
+            let message = serde_json::from_str::<Value>(&body)
+                .ok()
+                .and_then(|value| {
+                    value
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or(body);
+            anyhow::bail!("Failed to send keys: {}", message);
         }
 
         Ok(())

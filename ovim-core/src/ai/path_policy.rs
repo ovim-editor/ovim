@@ -15,9 +15,35 @@ pub fn normalize_path(path: &Path) -> PathBuf {
     out
 }
 
-/// Canonicalize if possible, otherwise normalize syntactically.
+/// Canonicalize the existing portion of a path, preserving any not-yet-created
+/// suffix. This keeps new files under symlinked roots (for example macOS
+/// `/var` -> `/private/var`) comparable with canonical project roots.
 pub fn canonicalize_or_normalize(path: &Path) -> PathBuf {
-    path.canonicalize().unwrap_or_else(|_| normalize_path(path))
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    let normalized = normalize_path(path);
+    let mut existing = normalized.as_path();
+    let mut suffix = Vec::new();
+    while !existing.exists() {
+        let Some(name) = existing.file_name() else {
+            return normalized;
+        };
+        suffix.push(name.to_os_string());
+        let Some(parent) = existing.parent() else {
+            return normalized;
+        };
+        existing = parent;
+    }
+
+    let Ok(mut canonical) = existing.canonicalize() else {
+        return normalized;
+    };
+    for component in suffix.into_iter().rev() {
+        canonical.push(component);
+    }
+    canonical
 }
 
 /// Return true when `path` contains explicit `..` traversal components.
@@ -92,6 +118,18 @@ mod tests {
         assert!(is_sensitive_path(Path::new("/repo/.env")));
         assert!(is_sensitive_path(Path::new("/repo/.env.local")));
         assert!(!is_sensitive_path(Path::new("/repo/.envrc")));
+    }
+
+    #[test]
+    fn canonicalizes_existing_ancestor_for_new_nested_path() {
+        let directory = tempfile::tempdir().unwrap();
+        let canonical_root = directory.path().canonicalize().unwrap();
+        let new_path = directory.path().join("new").join("file.txt");
+
+        assert_eq!(
+            canonicalize_or_normalize(&new_path),
+            canonical_root.join("new").join("file.txt")
+        );
     }
 
     #[test]

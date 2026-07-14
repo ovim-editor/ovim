@@ -46,8 +46,17 @@ impl Editor {
             .or_else(|| self.ai_project_start_path())
             .or_else(|| std::env::current_dir().ok())
             .ok_or_else(|| anyhow!("no repository start path is available"))?;
-        let snapshot = RepositorySnapshot::capture(&start, crate::run_log::RepositoryId::new())
-            .context("AI chat requires a containing Git repository")?;
+        // New buffers commonly point at a file that has not been written yet.
+        // libgit2 cannot discover upward from a nonexistent path, so begin at
+        // its nearest existing ancestor while retaining the original path for
+        // conversation scoping below.
+        let repository_start = start
+            .ancestors()
+            .find(|candidate| candidate.exists())
+            .unwrap_or(start.as_path());
+        let snapshot =
+            RepositorySnapshot::capture(repository_start, crate::run_log::RepositoryId::new())
+                .context("AI chat requires a containing Git repository")?;
         let worktree = snapshot
             .local_paths
             .workdir
@@ -198,8 +207,8 @@ fn conversation_scope(
     let Some(path) = buffer.and_then(|buffer| buffer.file_path()) else {
         return Ok(ConversationScope::NoFile);
     };
-    let path = crate::ai::path_policy::normalize_path(Path::new(path));
-    let root = crate::ai::path_policy::normalize_path(worktree);
+    let path = crate::ai::path_policy::canonicalize_or_normalize(Path::new(path));
+    let root = crate::ai::path_policy::canonicalize_or_normalize(worktree);
     let relative = path
         .strip_prefix(&root)
         .with_context(|| format!("{} is outside {}", path.display(), root.display()))?;
@@ -313,6 +322,28 @@ mod tests {
         editor.open_file(file).unwrap();
         editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
         editor
+    }
+
+    #[test]
+    fn new_file_inside_repository_gets_durable_chat_identity() {
+        let directory = tempfile::tempdir().unwrap();
+        git2::Repository::init(directory.path()).unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state = Box::new(
+            AiState::with_run_storage_layout(RunStorageLayout::new(storage.path().join("runs")))
+                .unwrap(),
+        );
+        let new_file = directory.path().join("nested").join("README.md");
+        editor.set_file_path(new_file.to_string_lossy().into_owned());
+
+        let buffer_id = editor.buffer().id();
+        editor.prepare_durable_ai_chat(buffer_id, "chat").unwrap();
+
+        assert!(editor
+            .ai_state
+            .durable_chat_bindings
+            .contains_key(&(buffer_id, "chat".to_string())));
     }
 
     #[tokio::test(flavor = "multi_thread")]
