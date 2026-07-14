@@ -1152,7 +1152,7 @@ pub(crate) fn write_file_at_path_def() -> ToolDefinition {
     ToolDefinition {
         name: "write_file_at_path".to_string(),
         description: "Write full file content at path (create or overwrite). \
-            Path is relative to project root."
+            Path is relative to project root. Missing parent directories are created."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -1181,7 +1181,7 @@ pub(crate) fn create_file_def() -> ToolDefinition {
     ToolDefinition {
         name: "create_file".to_string(),
         description: "Create a new file at path and write full content. \
-            Fails if the target file already exists."
+            Missing parent directories are created. Fails if the target file already exists."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -1211,7 +1211,8 @@ pub(crate) fn apply_patch_at_path_def() -> ToolDefinition {
         name: "apply_patch_at_path".to_string(),
         description: "Apply a single-file apply_patch diff to the file at path. \
             Path is relative to project root; diff must contain *** Begin Patch / *** End Patch \
-            with exactly one file section."
+            with exactly one file section. An *** Add File section creates the file and any \
+            missing parent directories."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,

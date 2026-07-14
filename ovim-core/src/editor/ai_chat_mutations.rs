@@ -571,11 +571,21 @@ impl Editor {
     // -----------------------------------------------------------------
 
     fn force_save_current_buffer(&mut self, path_hint: &str) -> Result<String, ToolResult> {
-        if self.buffer().file_path().is_none() {
+        let Some(target_path) = self.buffer().file_path().map(std::path::PathBuf::from) else {
             self.record_ai_chat_save_outcome("save failed (target buffer has no file path)");
             return Err(ToolResult::Error(format!(
                 "cannot save '{path_hint}': target buffer has no file path"
             )));
+        };
+        if let Some(parent) = target_path.parent() {
+            if let Err(e) = std::fs::create_dir_all(parent) {
+                self.record_ai_chat_save_outcome(format!("save failed: {e}"));
+                return Err(ToolResult::Error(format!(
+                    "failed to create parent directory '{}': {}",
+                    parent.display(),
+                    e
+                )));
+            }
         }
         if let Err(e) = self.buffer_mut().save() {
             self.record_ai_chat_save_outcome(format!("save failed: {e}"));

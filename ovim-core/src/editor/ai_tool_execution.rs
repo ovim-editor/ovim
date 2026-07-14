@@ -347,6 +347,7 @@ impl Editor {
             .filter(|s| !s.is_empty());
         let original_active_target = self.active_chat_target_absolute_path();
         let mut mutation_target_for_policy = original_active_target.clone();
+        let mut target_to_prepare = None;
 
         if requires_path && raw_path.is_none() {
             return ToolDispatchOutcome::Completed(ToolResult::Error(
@@ -382,13 +383,11 @@ impl Editor {
                 )));
             }
 
-            let allow_create =
-                matches!(name, "write_file_at_path" | "create_file" | "restore_file");
-            if let Err(e) =
-                self.ensure_mutation_target_buffer_for_path(&absolute_path, allow_create)
-            {
-                return ToolDispatchOutcome::Completed(ToolResult::Error(e));
-            }
+            let allow_create = matches!(
+                name,
+                "write_file_at_path" | "create_file" | "apply_patch_at_path" | "restore_file"
+            );
+            target_to_prepare = Some((absolute_path, allow_create));
         }
 
         if let Some(req) = self.maybe_require_tool_policy_approval_with_original_target(
@@ -399,6 +398,16 @@ impl Editor {
             original_active_target.as_deref(),
         ) {
             return ToolDispatchOutcome::ApprovalRequired(req);
+        }
+
+        // Preparing a missing target changes editor state, so do it only after
+        // all path and tool-policy approvals have succeeded.
+        if let Some((absolute_path, allow_create)) = target_to_prepare {
+            if let Err(e) =
+                self.ensure_mutation_target_buffer_for_path(&absolute_path, allow_create)
+            {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(e));
+            }
         }
 
         ToolDispatchOutcome::Completed(self.execute_mutation_tool(&tc.name, &tc.arguments))
@@ -450,17 +459,10 @@ impl Editor {
             ));
         }
 
-        let Some(parent) = absolute_path.parent() else {
+        if absolute_path.parent().is_none() {
             return Err(format!(
                 "cannot create '{}': invalid target path",
                 absolute_path.display()
-            ));
-        };
-        if !parent.exists() || !parent.is_dir() {
-            return Err(format!(
-                "cannot create '{}': parent directory '{}' does not exist",
-                absolute_path.display(),
-                parent.display()
             ));
         }
 

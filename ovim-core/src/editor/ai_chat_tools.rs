@@ -1360,6 +1360,7 @@ mod tests {
 
             let mut editor = Editor::default();
             editor.open_file(&main).expect("open main");
+            let original_target = editor.buffer().id();
             editor
                 .open_ai_chat(ChatOpts {
                     name: "chat".to_string(),
@@ -1399,6 +1400,24 @@ mod tests {
                     panic!("expected approval request, got error: {err}");
                 }
             }
+
+            assert_eq!(
+                editor.ai_state.chat.as_ref().unwrap().active_buffer_id,
+                original_target,
+                "an approval request must not switch the chat target"
+            );
+            assert!(
+                editor
+                    .buffers
+                    .iter()
+                    .all(
+                        |buffer| buffer
+                            .file_path()
+                            .is_none_or(|path| normalize_path(std::path::Path::new(path))
+                                != normalize_path(&other))
+                    ),
+                "an approval request must not open the proposed target"
+            );
         });
     }
 
@@ -1473,7 +1492,7 @@ mod tests {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
         runtime.block_on(async {
             let dir = tempfile::tempdir().expect("tempdir");
-            let target = dir.path().join("new_module.rs");
+            let target = dir.path().join("planning/nested/new_module.rs");
 
             let mut editor = Editor::default();
             editor
@@ -1515,6 +1534,7 @@ mod tests {
 
             let content = fs::read_to_string(&target).expect("read target");
             assert!(content.contains("pub fn generated() {}"));
+            assert!(target.parent().unwrap().is_dir());
         });
     }
 
@@ -1625,6 +1645,54 @@ mod tests {
             let content = fs::read_to_string(&target).expect("read target");
             assert!(content.contains("new_call();"));
             assert!(!content.contains("old_call();"));
+        });
+    }
+
+    #[test]
+    fn apply_patch_at_path_adds_file_in_missing_directory() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let dir = tempfile::tempdir().expect("tempdir");
+            let target = dir.path().join("planning/notes/design.md");
+
+            let mut editor = Editor::default();
+            editor
+                .open_ai_chat(ChatOpts {
+                    name: "chat".to_string(),
+                    allow_edits: true,
+                    ..Default::default()
+                })
+                .expect("open chat");
+            set_active_profile_project_scope(&mut editor);
+            editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                chat.approved_external_roots.push(dir.path().to_path_buf());
+            }
+
+            let diff = format!(
+                "*** Begin Patch\n*** Add File: {}\n+Design notes\n*** End Patch\n",
+                target.to_string_lossy()
+            );
+            let tool_call = ToolCallInfo {
+                id: "call_add_patch".to_string(),
+                name: "apply_patch_at_path".to_string(),
+                arguments: serde_json::json!({
+                    "path": target.to_string_lossy().to_string(),
+                    "diff": diff
+                }),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+                ToolDispatchOutcome::Completed(ToolResult::Error(e)) => {
+                    panic!("unexpected add-file patch error: {e}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(req) => {
+                    panic!("unexpected approval request: {}", req.message);
+                }
+            }
+
+            assert_eq!(fs::read_to_string(&target).unwrap(), "Design notes\n");
         });
     }
 
