@@ -129,7 +129,7 @@ fn default_snapshot_schema_version() -> u32 {
     1
 }
 
-pub const SNAPSHOT_SCHEMA_VERSION: u32 = 2;
+pub const SNAPSHOT_SCHEMA_VERSION: u32 = 3;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct ViewSnapshot {
@@ -163,6 +163,8 @@ pub struct AiChatSnapshot {
     pub review_mode: bool,
     #[serde(default)]
     pub tree_panel_open: bool,
+    #[serde(default)]
+    pub pending_images: Vec<ImageAttachmentSnapshot>,
     pub pending_approval: Option<String>,
     pub queued: Vec<QueuedChatSnapshot>,
     pub messages: Vec<AiChatMessageSnapshot>,
@@ -172,6 +174,8 @@ pub struct AiChatSnapshot {
 pub struct QueuedChatSnapshot {
     pub kind: String,
     pub content: String,
+    #[serde(default)]
+    pub images: Vec<ImageAttachmentSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -182,6 +186,16 @@ pub struct AiChatMessageSnapshot {
     pub tool_call_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tool: Option<ToolCallSnapshot>,
+    #[serde(default)]
+    pub images: Vec<ImageAttachmentSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImageAttachmentSnapshot {
+    pub path: String,
+    pub name: String,
+    pub mime_type: String,
+    pub size_bytes: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

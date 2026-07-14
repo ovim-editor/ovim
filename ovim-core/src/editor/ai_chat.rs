@@ -138,7 +138,7 @@ impl Editor {
         };
 
         let input = chat.input.trim().to_string();
-        if input.is_empty() {
+        if input.is_empty() && chat.pending_images.is_empty() {
             return Ok(());
         }
 
@@ -147,13 +147,19 @@ impl Editor {
                 .queue_current_ai_chat_input(super::ai_chat_state::QueuedChatInputKind::Steer);
         }
 
-        if self.try_execute_ai_chat_slash_command(&input)? {
+        if chat.pending_images.is_empty() && self.try_execute_ai_chat_slash_command(&input)? {
             return Ok(());
         }
 
+        let runtime_input = if input.is_empty() {
+            "[Image attachment]".to_string()
+        } else {
+            input.clone()
+        };
+
         // Allocate stable ovim run/agent/turn identity before provider work.
         let runtime_turn = self
-            .begin_ai_runtime_turn(&input)
+            .begin_ai_runtime_turn(&runtime_input)
             .map_err(|error| anyhow::anyhow!("failed to start agent turn: {error}"))?;
         let user_event_id = runtime_turn.initiating_event.caused_by.clone();
         if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -161,9 +167,15 @@ impl Editor {
         }
 
         // Append user message to the UI projection.
+        let images = self
+            .ai_state
+            .chat
+            .as_mut()
+            .map(|chat| std::mem::take(&mut chat.pending_images))
+            .unwrap_or_default();
         let user_node = self
             .conversation_mut()
-            .map(|conv| conv.append_user_message(input.clone()));
+            .map(|conv| conv.append_user_message_with_images(input.clone(), images));
         if let (Some(node_id), Some(event_id)) = (user_node, user_event_id) {
             self.record_ai_chat_node(node_id, event_id);
         }

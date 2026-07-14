@@ -95,6 +95,15 @@ Completed tool calls appear as compact summary rows in chat. Move focus into
 message history, select a tool row, and press Enter to expand or collapse its
 arguments and result.
 
+You can drag PNG, JPEG, GIF, or WebP files from the desktop into the chat
+composer. Ovim displays attached filenames above the input; press Backspace on
+an empty composer to remove the most recent image. Images submitted during an
+active agent round are kept together and queued for the next round. Each image
+may be up to 20 MiB, with a 40 MiB limit for the pending message.
+
+Terminal drag-and-drop is handled as a pasted image path, so the same behavior
+is available headlessly with `ovim paste -s SESSION '/path/to/image.png'`.
+
 ## API-key providers
 
 Codex is the default hosted path. The following sections apply only when you
@@ -184,7 +193,7 @@ Built-in AI keybindings:
 
 - Normal mode `Space Space`: chat
 - Normal mode `Space ?`: read-only query
-- Visual mode `Space`: single-shot selection edit
+- Visual mode `Space Space`: single-shot selection edit
 
 ## Legacy `ai.toml` (Still Supported)
 

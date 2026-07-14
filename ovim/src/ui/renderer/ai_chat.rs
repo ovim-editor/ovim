@@ -330,6 +330,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 content: thinking.to_string(),
                 model: None,
                 timestamp: std::time::Instant::now(),
+                images: vec![],
                 tool_calls: vec![],
                 tool_call_id: None,
             };
@@ -357,6 +358,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 content: display,
                 model: None,
                 timestamp: std::time::Instant::now(),
+                images: vec![],
                 tool_calls: vec![],
                 tool_call_id: None,
             };
@@ -392,7 +394,12 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     // Follow-ups submitted during a run stay visible above the composer.
     for queued in editor.ai_chat_queued_inputs() {
         rendered_lines.push((
-            render_queued_input_row(panel_width, queued.kind, &queued.content),
+            render_queued_input_row(
+                panel_width,
+                queued.kind,
+                &queued.content,
+                queued.images.len(),
+            ),
             false,
         ));
     }
@@ -597,6 +604,7 @@ fn render_queued_input_row(
     panel_width: usize,
     kind: QueuedChatInputKind,
     content: &str,
+    image_count: usize,
 ) -> Line<'static> {
     let (prefix, label, color, background) = match kind {
         QueuedChatInputKind::Steer => (
@@ -618,7 +626,15 @@ fn render_queued_input_row(
             Color::Rgb(60, 45, 25),
         ),
     };
-    let text = format!(" {prefix} {label}: {}", content.replace('\n', " "));
+    let attachment = match image_count {
+        0 => String::new(),
+        1 => " [📎 image]".to_string(),
+        count => format!(" [📎 {count} images]"),
+    };
+    let text = format!(
+        " {prefix} {label}: {}{attachment}",
+        content.replace('\n', " ")
+    );
     let display = truncate_with_ellipsis(&text, panel_width);
     let padding = panel_width.saturating_sub(display.chars().count());
     Line::from(Span::styled(
@@ -889,6 +905,17 @@ fn render_chat_bubble(
 
     let inner_width = card_text_width(panel_width, accent_glyph);
 
+    for image in &message.images {
+        lines.push(render_card_text_line(
+            panel_width,
+            accent_glyph,
+            row_style.accent,
+            row_style.body_bg,
+            &format!("📎 {}", image.file_name()),
+            Style::default().fg(ACCENT_USER).add_modifier(Modifier::DIM),
+        ));
+    }
+
     // For thinking messages: collapsed vs expanded
     if message.role == ChatRole::Thinking && !is_thinking_expanded {
         let first_line = message.content.lines().next().unwrap_or("");
@@ -984,7 +1011,21 @@ fn render_text_input(frame: &mut Frame, editor: &Editor, area: Rect) {
     let w = area.width as usize;
 
     // Top border of input box
-    let top = format!("╭{}╮", "─".repeat(w.saturating_sub(2)));
+    let image_names = editor
+        .ai_chat_pending_images()
+        .iter()
+        .map(|image| image.file_name())
+        .collect::<Vec<_>>();
+    let top = if image_names.is_empty() {
+        format!("╭{}╮", "─".repeat(w.saturating_sub(2)))
+    } else {
+        let title = truncate_with_ellipsis(
+            &format!(" 📎 {} ", image_names.join(", ")),
+            w.saturating_sub(4),
+        );
+        let fill = w.saturating_sub(2 + title.chars().count());
+        format!("╭{title}{}╮", "─".repeat(fill))
+    };
     let top_line = Line::from(Span::styled(top, border_style));
     frame.render_widget(
         Paragraph::new(vec![top_line]),
@@ -1533,6 +1574,7 @@ mod tests {
             content: "  ".to_string(),
             model: Some("model".to_string()),
             timestamp: std::time::Instant::now(),
+            images: vec![],
             tool_calls: vec![ToolCallInfo {
                 id: "call_1".to_string(),
                 name: "read_file".to_string(),
@@ -1550,6 +1592,7 @@ mod tests {
             content: "done".to_string(),
             model: Some("model".to_string()),
             timestamp: std::time::Instant::now(),
+            images: vec![],
             tool_calls: vec![ToolCallInfo {
                 id: "call_1".to_string(),
                 name: "read_file".to_string(),
@@ -1562,7 +1605,7 @@ mod tests {
 
     #[test]
     fn queued_commands_are_labeled_distinctly() {
-        let line = render_queued_input_row(40, QueuedChatInputKind::Command, "/clear");
+        let line = render_queued_input_row(40, QueuedChatInputKind::Command, "/clear", 0);
         let text = line
             .spans
             .iter()

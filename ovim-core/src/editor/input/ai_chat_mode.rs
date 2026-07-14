@@ -209,6 +209,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Backspace => {
+            let mut remove_image = false;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 let pos = chat.input_cursor;
                 if pos > 0 {
@@ -219,7 +220,12 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                         .unwrap_or(0);
                     chat.input.remove(prev);
                     chat.input_cursor = prev;
+                } else if chat.input.is_empty() {
+                    remove_image = true;
                 }
+            }
+            if remove_image {
+                editor.remove_last_ai_chat_image();
             }
         }
         KeyCode::Delete => {

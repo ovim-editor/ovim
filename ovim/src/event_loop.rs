@@ -2551,6 +2551,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
             }
             .to_string(),
             content: item.content.clone(),
+            images: item.images.iter().map(image_snapshot).collect(),
         })
         .collect();
     let messages = editor
@@ -2577,6 +2578,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
                     arguments: expanded.then(|| summary.call.arguments.clone()),
                 })
             }),
+            images: message.images.iter().map(image_snapshot).collect(),
         })
         .collect();
     Some(AiChatSnapshot {
@@ -2593,10 +2595,26 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
         streaming: editor.ai_chat_is_streaming(),
         review_mode: editor.ai_chat_review_mode(),
         tree_panel_open: editor.ai_chat_tree_panel_open(),
+        pending_images: editor
+            .ai_chat_pending_images()
+            .iter()
+            .map(image_snapshot)
+            .collect(),
         pending_approval,
         queued,
         messages,
     })
+}
+
+fn image_snapshot(
+    image: &ovim_core::ai::chat_types::ImageAttachment,
+) -> ovim::api::ImageAttachmentSnapshot {
+    ovim::api::ImageAttachmentSnapshot {
+        path: image.path.to_string_lossy().to_string(),
+        name: image.file_name(),
+        mime_type: image.mime_type.clone(),
+        size_bytes: image.data.len(),
+    }
 }
 
 /// Lightweight snapshot: skips buffer content, registers, marks, and picker.

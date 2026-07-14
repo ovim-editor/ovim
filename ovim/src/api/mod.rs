@@ -10,10 +10,11 @@ pub use state::{
     format_context_window, parse_key_string, AiChatMessageSnapshot, AiChatSnapshot, ApiRequest,
     ApiResponse, ApiState, BufferInfo, ContextWindowInfo, CursorPosition, DecorationInfo,
     DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo,
-    LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo, MetricsInfo, ModeInfo, OutlineInfo,
-    OutlineSymbol, PickerInfo, PickerResultInfo, QueuedChatSnapshot, RenderInfo, SendKeysResult,
-    SuccessResponse, SymbolSearchInfo, SymbolSearchResult, ToolCallSnapshot, TraceInfo, TraceNode,
-    ViewSnapshot, VisualSelection, SNAPSHOT_SCHEMA_VERSION,
+    ImageAttachmentSnapshot, LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo,
+    MetricsInfo, ModeInfo, OutlineInfo, OutlineSymbol, PickerInfo, PickerResultInfo,
+    QueuedChatSnapshot, RenderInfo, SendKeysResult, SuccessResponse, SymbolSearchInfo,
+    SymbolSearchResult, ToolCallSnapshot, TraceInfo, TraceNode, ViewSnapshot, VisualSelection,
+    SNAPSHOT_SCHEMA_VERSION,
 };
 
 use anyhow::Result;

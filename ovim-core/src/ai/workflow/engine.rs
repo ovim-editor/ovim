@@ -323,6 +323,7 @@ async fn run_prompt_step(
         content: request.prompt,
         model: None,
         timestamp: std::time::Instant::now(),
+        images: vec![],
         tool_calls: vec![],
         tool_call_id: None,
     }];

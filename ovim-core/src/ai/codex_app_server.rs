@@ -57,6 +57,7 @@ pub(crate) async fn request(
     continuation_input: Option<&str>,
     instructions: &str,
     file_path: Option<&str>,
+    local_images: &[PathBuf],
     tools: Option<&[Value]>,
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: Option<&str>,
@@ -71,6 +72,7 @@ pub(crate) async fn request(
             continuation_input.unwrap_or(initial_input),
             instructions,
             &cwd,
+            local_images,
             tools.unwrap_or_default(),
             stream_tx,
             session_key.unwrap_or("durable"),
@@ -80,7 +82,16 @@ pub(crate) async fn request(
         .await;
     }
 
-    request_ephemeral(profile, initial_input, instructions, &cwd, tools, stream_tx).await
+    request_ephemeral(
+        profile,
+        initial_input,
+        instructions,
+        &cwd,
+        local_images,
+        tools,
+        stream_tx,
+    )
+    .await
 }
 
 async fn request_ephemeral(
@@ -88,6 +99,7 @@ async fn request_ephemeral(
     input: &str,
     instructions: &str,
     cwd: &Path,
+    local_images: &[PathBuf],
     tools: Option<&[Value]>,
     stream_tx: Option<UnboundedSender<StreamChunk>>,
 ) -> Result<String> {
@@ -97,7 +109,13 @@ async fn request_ephemeral(
         .start_thread(profile, instructions, cwd, tools.unwrap_or_default(), true)
         .await?;
     let turn = client
-        .start_turn(profile, &thread_id, input, CodexTurnOptions::default())
+        .start_turn(
+            profile,
+            &thread_id,
+            input,
+            local_images,
+            CodexTurnOptions::default(),
+        )
         .await?;
     let output = client
         .stream_turn(stream_tx, cwd, &thread_id, &turn.id, None)
@@ -166,6 +184,7 @@ pub(crate) async fn request_auto_mode_classification(
                 &profile,
                 &thread_id,
                 dynamic_payload,
+                &[],
                 CodexTurnOptions {
                     output_schema: Some(output_schema),
                     client_user_message_id: Some(client_user_message_id),
@@ -221,6 +240,7 @@ async fn request_persistent(
     continuation_input: &str,
     instructions: &str,
     cwd: &Path,
+    local_images: &[PathBuf],
     tools: &[Value],
     stream_tx: Option<UnboundedSender<StreamChunk>>,
     session_key: &str,
@@ -348,7 +368,13 @@ async fn request_persistent(
     };
     let result = async {
         let turn = client
-            .start_turn(profile, &thread_id, input, CodexTurnOptions::default())
+            .start_turn(
+                profile,
+                &thread_id,
+                input,
+                local_images,
+                CodexTurnOptions::default(),
+            )
             .await?;
         if let Some(session) = durable_session.as_ref() {
             if let Err(error) = session.catalog.upsert_provider_session(
@@ -546,9 +572,10 @@ impl AppServerClient {
         profile: &AiProfileConfig,
         thread_id: &str,
         input: &str,
+        local_images: &[PathBuf],
         options: CodexTurnOptions<'_>,
     ) -> Result<CodexTurn> {
-        let params = turn_start_params(profile, thread_id, input, options);
+        let params = turn_start_params(profile, thread_id, input, local_images, options);
         let request_id = self.request_id();
         self.send(json!({ "method": "turn/start", "id": request_id, "params": params }))
             .await?;
@@ -846,11 +873,19 @@ fn turn_start_params(
     profile: &AiProfileConfig,
     thread_id: &str,
     input: &str,
+    local_images: &[PathBuf],
     options: CodexTurnOptions<'_>,
 ) -> Value {
+    let mut turn_input = vec![json!({ "type": "text", "text": input })];
+    turn_input.extend(local_images.iter().map(|path| {
+        json!({
+            "type": "localImage",
+            "path": path,
+        })
+    }));
     let mut params = json!({
         "threadId": thread_id,
-        "input": [{ "type": "text", "text": input }],
+        "input": turn_input,
         "model": profile.model,
     });
     if let Some(effort) = profile.reasoning_effort.as_deref() {
@@ -1118,6 +1153,7 @@ mod tests {
             &profile(),
             "thread-7",
             "classify",
+            &[],
             CodexTurnOptions {
                 output_schema: Some(&schema),
                 client_user_message_id: Some("operation-42"),
@@ -1128,6 +1164,20 @@ mod tests {
         assert_eq!(params["clientUserMessageId"], "operation-42");
         assert_eq!(params["outputSchema"], schema);
         assert_eq!(params["effort"], "low");
+    }
+
+    #[test]
+    fn turn_start_fixture_includes_local_images() {
+        let params = turn_start_params(
+            &profile(),
+            "thread-7",
+            "inspect this",
+            &[PathBuf::from("/tmp/screenshot.png")],
+            CodexTurnOptions::default(),
+        );
+        assert_eq!(params["input"][0]["type"], "text");
+        assert_eq!(params["input"][1]["type"], "localImage");
+        assert_eq!(params["input"][1]["path"], "/tmp/screenshot.png");
     }
 
     #[test]

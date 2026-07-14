@@ -32,10 +32,15 @@ impl Editor {
         requested_kind: QueuedChatInputKind,
     ) -> Result<()> {
         let input = self.ai_chat_input().trim().to_string();
-        if input.is_empty() {
+        let has_images = !self.ai_chat_pending_images().is_empty();
+        if input.is_empty() && !has_images {
             return Ok(());
         }
-        let kind = if input.starts_with('/') {
+        let kind = if has_images {
+            // Codex steering currently accepts text items only. Keep image
+            // messages intact for the next complete provider round.
+            QueuedChatInputKind::FollowUp
+        } else if input.starts_with('/') {
             QueuedChatInputKind::Command
         } else {
             requested_kind
@@ -44,9 +49,11 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.input.clear();
             chat.input_cursor = 0;
+            let images = std::mem::take(&mut chat.pending_images);
             chat.queued_inputs.push_back(QueuedChatInput {
                 kind,
                 content: input.clone(),
+                images,
             });
             if kind == QueuedChatInputKind::Steer {
                 if let Some(tx) = chat
@@ -163,6 +170,7 @@ impl Editor {
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.input = item.content;
                 chat.input_cursor = chat.input.len();
+                chat.pending_images = item.images;
             }
             match item.kind {
                 QueuedChatInputKind::Command => {
@@ -187,7 +195,8 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::chat_types::ChatOpts;
+    use crate::ai::chat_types::{ChatOpts, ImageAttachment};
+    use std::path::PathBuf;
 
     fn editor_with_active_round() -> Editor {
         let mut editor = Editor::default();
@@ -245,5 +254,24 @@ mod tests {
         assert_eq!(queued[0].kind, QueuedChatInputKind::FollowUp);
         assert_eq!(queued[1].kind, QueuedChatInputKind::Command);
         assert_eq!(queued[1].content, "/clear");
+    }
+
+    #[test]
+    fn images_are_queued_for_the_next_round_instead_of_steered() {
+        let mut editor = editor_with_active_round();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.pending_images.push(ImageAttachment {
+            path: PathBuf::from("/tmp/screenshot.png"),
+            mime_type: "image/png".to_string(),
+            data: vec![1, 2, 3],
+        });
+
+        editor.submit_ai_chat_message().unwrap();
+
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(chat.pending_images.is_empty());
+        assert_eq!(chat.queued_inputs.len(), 1);
+        assert_eq!(chat.queued_inputs[0].kind, QueuedChatInputKind::FollowUp);
+        assert_eq!(chat.queued_inputs[0].images.len(), 1);
     }
 }

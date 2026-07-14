@@ -2,6 +2,7 @@ mod ai_agent;
 mod ai_base_manifest;
 mod ai_chat;
 mod ai_chat_commands;
+mod ai_chat_images;
 mod ai_chat_mutations;
 mod ai_chat_queue;
 pub(crate) mod ai_chat_state;
@@ -2007,6 +2008,9 @@ impl Editor {
     /// Handles a bracketed paste event (for all supported modes, including chat input).
     pub fn handle_paste_event(&mut self, text: &str) -> Result<()> {
         if text.is_empty() {
+            return Ok(());
+        }
+        if self.mode() == Mode::AiChat && self.try_attach_dropped_chat_images(text)? {
             return Ok(());
         }
 

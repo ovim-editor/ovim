@@ -64,6 +64,7 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.input.clear();
             chat.input_cursor = 0;
+            chat.pending_images.clear();
         }
     }
 
@@ -91,6 +92,7 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.input.clear();
             chat.input_cursor = 0;
+            chat.pending_images.clear();
             chat.focus = ChatFocus::TextInput;
             chat.context_generation = chat.context_generation.saturating_add(1);
             chat.viewport = Default::default();

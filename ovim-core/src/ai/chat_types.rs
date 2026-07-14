@@ -1,5 +1,6 @@
 use super::config::ChatContextConfig;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::time::Instant;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -71,6 +72,23 @@ pub enum ToolSummaryKind {
     Error,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ImageAttachment {
+    pub path: PathBuf,
+    pub mime_type: String,
+    pub data: Vec<u8>,
+}
+
+impl ImageAttachment {
+    pub fn file_name(&self) -> String {
+        self.path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("image")
+            .to_string()
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ChatMessage {
     pub role: ChatRole,
@@ -78,6 +96,8 @@ pub struct ChatMessage {
     /// Which model generated this (assistant messages only).
     pub model: Option<String>,
     pub timestamp: Instant,
+    /// Images attached to a user message.
+    pub images: Vec<ImageAttachment>,
     /// Tool calls made by this assistant message.
     pub tool_calls: Vec<ToolCallInfo>,
     /// For Tool role: which tool call this is a result for.
@@ -155,11 +175,20 @@ impl ConversationTree {
     // ------------------------------------------------------------------
 
     pub fn append_user_message(&mut self, content: String) -> NodeId {
+        self.append_user_message_with_images(content, Vec::new())
+    }
+
+    pub fn append_user_message_with_images(
+        &mut self,
+        content: String,
+        images: Vec<ImageAttachment>,
+    ) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::User,
             content,
             model: None,
             timestamp: Instant::now(),
+            images,
             tool_calls: vec![],
             tool_call_id: None,
         })
@@ -171,6 +200,7 @@ impl ConversationTree {
             content,
             model: Some(model),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         })
@@ -187,6 +217,7 @@ impl ConversationTree {
             content,
             model: Some(model),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls,
             tool_call_id: None,
         })
@@ -198,6 +229,7 @@ impl ConversationTree {
             content,
             model: None,
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id),
         })
@@ -209,6 +241,7 @@ impl ConversationTree {
             content,
             model: Some(model),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         })
@@ -220,6 +253,7 @@ impl ConversationTree {
             content,
             model: None,
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         })
@@ -443,6 +477,7 @@ pub fn apply_observation_mask(
                     content: masked_content,
                     model: msg.model.clone(),
                     timestamp: msg.timestamp,
+                    images: vec![],
                     tool_calls: msg.tool_calls.clone(),
                     tool_call_id: msg.tool_call_id.clone(),
                 }
@@ -643,6 +678,7 @@ mod tests {
             content: content.to_string(),
             model: None,
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         }
@@ -654,6 +690,7 @@ mod tests {
             content: content.to_string(),
             model: Some("m".to_string()),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         }
@@ -665,6 +702,7 @@ mod tests {
             content: content.to_string(),
             model: Some("m".to_string()),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: tc,
             tool_call_id: None,
         }
@@ -676,6 +714,7 @@ mod tests {
             content: content.to_string(),
             model: None,
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: Some(id.to_string()),
         }

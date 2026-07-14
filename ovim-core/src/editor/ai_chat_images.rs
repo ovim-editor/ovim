@@ -1,0 +1,183 @@
+use super::Editor;
+use crate::ai::chat_types::{ChatFocus, ImageAttachment};
+use anyhow::{bail, Context, Result};
+use std::path::{Path, PathBuf};
+
+const MAX_IMAGE_BYTES: u64 = 20 * 1024 * 1024;
+const MAX_TOTAL_IMAGE_BYTES: usize = 40 * 1024 * 1024;
+
+impl Editor {
+    pub fn ai_chat_pending_images(&self) -> &[ImageAttachment] {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|chat| chat.pending_images.as_slice())
+            .unwrap_or(&[])
+    }
+
+    /// Interpret a bracketed paste consisting entirely of image paths as a
+    /// terminal drag/drop. Ordinary text and mixed text/path pastes remain
+    /// ordinary composer input.
+    pub(crate) fn try_attach_dropped_chat_images(&mut self, text: &str) -> Result<bool> {
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            return Ok(false);
+        };
+        if chat.focus != ChatFocus::TextInput {
+            return Ok(false);
+        }
+
+        let Some(tokens) = shlex::split(text.trim()) else {
+            return Ok(false);
+        };
+        if tokens.is_empty() {
+            return Ok(false);
+        }
+
+        let paths: Vec<PathBuf> = tokens
+            .iter()
+            .filter_map(|token| dropped_path(token))
+            .collect();
+        if paths.len() != tokens.len()
+            || paths
+                .iter()
+                .any(|path| !path.is_file() || image_mime_type(path).is_none())
+        {
+            return Ok(false);
+        }
+
+        let mut images = Vec::with_capacity(paths.len());
+        for path in paths {
+            images.push(load_image(path)?);
+        }
+        let existing_bytes: usize = self
+            .ai_chat_pending_images()
+            .iter()
+            .map(|image| image.data.len())
+            .sum();
+        let new_bytes: usize = images.iter().map(|image| image.data.len()).sum();
+        if existing_bytes.saturating_add(new_bytes) > MAX_TOTAL_IMAGE_BYTES {
+            bail!("Chat image attachments exceed the 40 MiB total limit");
+        }
+
+        let mut added = 0usize;
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            for image in images {
+                if chat
+                    .pending_images
+                    .iter()
+                    .any(|existing| existing.path == image.path)
+                {
+                    continue;
+                }
+                chat.pending_images.push(image);
+                added += 1;
+            }
+        }
+        if added > 0 {
+            self.set_lsp_status(format!(
+                "Attached {added} image{}",
+                if added == 1 { "" } else { "s" }
+            ));
+        }
+        Ok(true)
+    }
+
+    /// Backspace on an empty composer removes the most recently attached image.
+    pub fn remove_last_ai_chat_image(&mut self) -> bool {
+        self.ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_images.pop())
+            .is_some()
+    }
+}
+
+fn dropped_path(token: &str) -> Option<PathBuf> {
+    let path = if token.starts_with("file://") {
+        url::Url::parse(token).ok()?.to_file_path().ok()?
+    } else {
+        PathBuf::from(token)
+    };
+    Some(path.canonicalize().unwrap_or(path))
+}
+
+fn image_mime_type(path: &Path) -> Option<&'static str> {
+    match path
+        .extension()
+        .and_then(|extension| extension.to_str())?
+        .to_ascii_lowercase()
+        .as_str()
+    {
+        "png" => Some("image/png"),
+        "jpg" | "jpeg" => Some("image/jpeg"),
+        "gif" => Some("image/gif"),
+        "webp" => Some("image/webp"),
+        _ => None,
+    }
+}
+
+fn load_image(path: PathBuf) -> Result<ImageAttachment> {
+    let metadata = std::fs::metadata(&path)
+        .with_context(|| format!("Failed to inspect dropped image: {}", path.display()))?;
+    if metadata.len() > MAX_IMAGE_BYTES {
+        bail!("Image exceeds the 20 MiB limit: {}", path.display());
+    }
+    let mime_type = image_mime_type(&path).context("Unsupported image format")?;
+    let data = std::fs::read(&path)
+        .with_context(|| format!("Failed to read dropped image: {}", path.display()))?;
+    if !has_image_signature(mime_type, &data) {
+        bail!(
+            "Dropped file is not a valid {mime_type} image: {}",
+            path.display()
+        );
+    }
+    Ok(ImageAttachment {
+        path,
+        mime_type: mime_type.to_string(),
+        data,
+    })
+}
+
+fn has_image_signature(mime_type: &str, data: &[u8]) -> bool {
+    match mime_type {
+        "image/png" => data.starts_with(b"\x89PNG\r\n\x1a\n"),
+        "image/jpeg" => data.starts_with(&[0xff, 0xd8, 0xff]),
+        "image/gif" => data.starts_with(b"GIF87a") || data.starts_with(b"GIF89a"),
+        "image/webp" => data.len() >= 12 && data.starts_with(b"RIFF") && &data[8..12] == b"WEBP",
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::chat_types::ChatOpts;
+
+    #[test]
+    fn image_path_paste_attaches_instead_of_typing() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("screen shot.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nminimal").unwrap();
+        let escaped = path.to_string_lossy().replace(' ', "\\ ");
+
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        assert!(editor.try_attach_dropped_chat_images(&escaped).unwrap());
+        assert!(editor.ai_chat_input().is_empty());
+        assert_eq!(editor.ai_chat_pending_images().len(), 1);
+        assert_eq!(
+            editor.ai_chat_pending_images()[0].file_name(),
+            "screen shot.png"
+        );
+    }
+
+    #[test]
+    fn ordinary_path_text_remains_a_normal_paste() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        assert!(!editor
+            .try_attach_dropped_chat_images("please inspect image.png")
+            .unwrap());
+        assert!(editor.ai_chat_pending_images().is_empty());
+    }
+}

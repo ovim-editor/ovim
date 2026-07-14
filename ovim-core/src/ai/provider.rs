@@ -61,6 +61,7 @@ pub async fn request_ai_edit(
                     None,
                     &current_system_prompt,
                     request.file_path.as_deref(),
+                    &[],
                     None,
                     None,
                     None,
@@ -521,6 +522,18 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
 
     match profile.provider {
         AiProviderKind::Codex => {
+            let local_images: Vec<std::path::PathBuf> = messages
+                .iter()
+                .rev()
+                .find(|message| message.role == super::chat_types::ChatRole::User)
+                .map(|message| {
+                    message
+                        .images
+                        .iter()
+                        .map(|image| image.path.clone())
+                        .collect()
+                })
+                .unwrap_or_default();
             let mut initial_input = render_codex_chat_input(messages);
             let mut continuation_input = messages
                 .iter()
@@ -544,6 +557,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
                 Some(&continuation_input),
                 instructions,
                 working_file_path,
+                &local_images,
                 tools,
                 Some(tx.clone()),
                 session_key,
@@ -616,11 +630,31 @@ fn render_codex_chat_input(messages: &[super::chat_types::ChatMessage]) -> Strin
 /// Serialize chat messages to OpenAI format.
 fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
     use super::chat_types::ChatRole;
+    use base64::Engine;
     messages
         .iter()
         .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
         .map(|m| match m.role {
-            ChatRole::User => json!({ "role": "user", "content": m.content }),
+            ChatRole::User => {
+                if m.images.is_empty() {
+                    json!({ "role": "user", "content": m.content })
+                } else {
+                    let mut content = Vec::new();
+                    if !m.content.is_empty() {
+                        content.push(json!({ "type": "text", "text": m.content }));
+                    }
+                    for image in &m.images {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&image.data);
+                        content.push(json!({
+                            "type": "image_url",
+                            "image_url": {
+                                "url": format!("data:{};base64,{encoded}", image.mime_type),
+                            }
+                        }));
+                    }
+                    json!({ "role": "user", "content": content })
+                }
+            }
             ChatRole::Assistant => {
                 if m.tool_calls.is_empty() {
                     json!({ "role": "assistant", "content": m.content })
@@ -665,6 +699,7 @@ fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> 
 /// - Function arguments are objects, not stringified JSON
 fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
     use super::chat_types::ChatRole;
+    use base64::Engine;
 
     // Build a map from tool_call_id → tool_name so we can emit `tool_name`
     // on Tool role messages (Ollama doesn't use `tool_call_id`).
@@ -681,7 +716,17 @@ fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> 
         .iter()
         .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
         .map(|m| match m.role {
-            ChatRole::User => json!({ "role": "user", "content": m.content }),
+            ChatRole::User => {
+                let mut message = json!({ "role": "user", "content": m.content });
+                if !m.images.is_empty() {
+                    message["images"] = json!(m
+                        .images
+                        .iter()
+                        .map(|image| base64::engine::general_purpose::STANDARD.encode(&image.data))
+                        .collect::<Vec<_>>());
+                }
+                message
+            }
             ChatRole::Assistant => {
                 if m.tool_calls.is_empty() {
                     json!({ "role": "assistant", "content": m.content })
@@ -725,6 +770,7 @@ fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> 
 /// Serialize chat messages to Anthropic format.
 fn chat_messages_to_anthropic_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
     use super::chat_types::ChatRole;
+    use base64::Engine;
 
     // Anthropic expects tool results as user messages containing tool_result blocks.
     // We need to merge consecutive Tool messages into a single user message.
@@ -739,7 +785,25 @@ fn chat_messages_to_anthropic_json(messages: &[super::chat_types::ChatMessage]) 
         let m = filtered[i];
         match m.role {
             ChatRole::User => {
-                result.push(json!({ "role": "user", "content": m.content }));
+                if m.images.is_empty() {
+                    result.push(json!({ "role": "user", "content": m.content }));
+                } else {
+                    let mut blocks = Vec::new();
+                    for image in &m.images {
+                        blocks.push(json!({
+                            "type": "image",
+                            "source": {
+                                "type": "base64",
+                                "media_type": image.mime_type,
+                                "data": base64::engine::general_purpose::STANDARD.encode(&image.data),
+                            }
+                        }));
+                    }
+                    if !m.content.is_empty() {
+                        blocks.push(json!({ "type": "text", "text": m.content }));
+                    }
+                    result.push(json!({ "role": "user", "content": blocks }));
+                }
             }
             ChatRole::Assistant => {
                 let mut content_blocks = Vec::new();
@@ -1143,7 +1207,8 @@ fn build_retry_messages(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::chat_types::{ChatMessage, ChatRole, ToolCallInfo};
+    use crate::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
+    use std::path::PathBuf;
     use std::time::Instant;
 
     fn user_msg(content: &str) -> ChatMessage {
@@ -1152,6 +1217,7 @@ mod tests {
             content: content.to_string(),
             model: None,
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         }
@@ -1163,6 +1229,7 @@ mod tests {
             content: content.to_string(),
             model: Some("test".to_string()),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: None,
         }
@@ -1174,7 +1241,24 @@ mod tests {
             content: content.to_string(),
             model: Some("test".to_string()),
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls,
+            tool_call_id: None,
+        }
+    }
+
+    fn image_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::User,
+            content: content.to_string(),
+            model: None,
+            timestamp: Instant::now(),
+            images: vec![ImageAttachment {
+                path: PathBuf::from("/tmp/screenshot.png"),
+                mime_type: "image/png".to_string(),
+                data: b"image bytes".to_vec(),
+            }],
+            tool_calls: vec![],
             tool_call_id: None,
         }
     }
@@ -1185,6 +1269,7 @@ mod tests {
             content: content.to_string(),
             model: None,
             timestamp: Instant::now(),
+            images: vec![],
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id.to_string()),
         }
@@ -1210,6 +1295,7 @@ mod tests {
                 content: "hmm".to_string(),
                 model: None,
                 timestamp: Instant::now(),
+                images: vec![],
                 tool_calls: vec![],
                 tool_call_id: None,
             },
@@ -1218,6 +1304,7 @@ mod tests {
                 content: "oops".to_string(),
                 model: None,
                 timestamp: Instant::now(),
+                images: vec![],
                 tool_calls: vec![],
                 tool_call_id: None,
             },
@@ -1225,6 +1312,26 @@ mod tests {
         ];
         let json = chat_messages_to_openai_json(&msgs);
         assert_eq!(json.len(), 2);
+    }
+
+    #[test]
+    fn openai_json_serializes_image_content_blocks() {
+        let json = chat_messages_to_openai_json(&[image_msg("inspect this")]);
+        assert_eq!(json[0]["content"][0]["type"], "text");
+        assert_eq!(json[0]["content"][0]["text"], "inspect this");
+        assert_eq!(json[0]["content"][1]["type"], "image_url");
+        assert!(json[0]["content"][1]["image_url"]["url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
+    }
+
+    #[test]
+    fn ollama_json_serializes_image_bytes() {
+        let json = chat_messages_to_ollama_json(&[image_msg("inspect this")]);
+        assert_eq!(json[0]["content"], "inspect this");
+        assert_eq!(json[0]["images"].as_array().unwrap().len(), 1);
+        assert!(!json[0]["images"][0].as_str().unwrap().is_empty());
     }
 
     #[test]
@@ -1273,6 +1380,15 @@ mod tests {
         assert_eq!(json[0]["role"], "user");
         assert_eq!(json[0]["content"], "hello");
         assert_eq!(json[1]["role"], "assistant");
+    }
+
+    #[test]
+    fn anthropic_json_serializes_image_content_blocks() {
+        let json = chat_messages_to_anthropic_json(&[image_msg("inspect this")]);
+        assert_eq!(json[0]["content"][0]["type"], "image");
+        assert_eq!(json[0]["content"][0]["source"]["media_type"], "image/png");
+        assert_eq!(json[0]["content"][1]["type"], "text");
+        assert_eq!(json[0]["content"][1]["text"], "inspect this");
     }
 
     #[test]

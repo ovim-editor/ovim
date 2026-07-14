@@ -1,5 +1,5 @@
 use crate::ai::chat_types::{
-    ChatFocus, ChatOpts, NodeId, StreamChunk, ToolCallInfo, ToolSummaryKind,
+    ChatFocus, ChatOpts, ImageAttachment, NodeId, StreamChunk, ToolCallInfo, ToolSummaryKind,
 };
 use crate::buffer::BufferId;
 use crate::mode::Mode;
@@ -106,6 +106,7 @@ pub enum QueuedChatInputKind {
 pub struct QueuedChatInput {
     pub kind: QueuedChatInputKind,
     pub content: String,
+    pub images: Vec<ImageAttachment>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -130,6 +131,8 @@ pub struct AiChatState {
     pub input: String,
     /// Byte offset cursor in input.
     pub input_cursor: usize,
+    /// Images dropped into the current composer.
+    pub pending_images: Vec<ImageAttachment>,
     /// User inputs submitted while an agent round is active.
     pub queued_inputs: VecDeque<QueuedChatInput>,
     /// Which zone has focus.
@@ -219,6 +222,7 @@ impl AiChatState {
             active_buffer_id,
             input: String::new(),
             input_cursor: 0,
+            pending_images: Vec::new(),
             queued_inputs: VecDeque::new(),
             focus: ChatFocus::TextInput,
             viewport: ChatViewportState::default(),
