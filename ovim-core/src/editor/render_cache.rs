@@ -56,6 +56,10 @@ pub struct RenderCache {
     pub ai_chat_text_selecting: bool,
     /// Cached AI chat input area from last render.
     pub ai_chat_input_area: Option<crate::Rect>,
+    /// Visible composer rows and their source byte ranges.
+    pub ai_chat_input_rows: Vec<(crate::Rect, usize, usize, usize)>,
+    /// Display width available to composer text on the last render.
+    pub ai_chat_input_content_width: usize,
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
     /// Absolute 80ms animation bucket used by the AI chat working spinner.

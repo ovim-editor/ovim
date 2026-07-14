@@ -91,6 +91,10 @@ While an agent round is running, the composer remains editable:
 - Slash commands can also be queued; they run locally after the active round
   and are displayed as commands rather than user messages.
 
+The composer wraps at word boundaries and keeps the cursor visible when input
+grows beyond five rows. Click any visible composer row to place the cursor;
+long words are split only when they cannot fit on a row by themselves.
+
 Completed tool calls appear as compact summary rows in chat. Move focus into
 message history, select a tool row, and press Enter to expand or collapse its
 arguments and result.

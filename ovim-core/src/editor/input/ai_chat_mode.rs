@@ -1,4 +1,5 @@
 use crate::ai::chat_types::{ChatFocus, ChatRole};
+use crate::editor::ai_chat_input::{move_chat_input_cursor_vertical, wrap_chat_input_rows};
 use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -283,14 +284,32 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         }
         KeyCode::Up => {
             let mut moved_to_history = false;
+            let wrap_width = editor.render_cache.ai_chat_input_content_width;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
-                let (line, _total) = cursor_line_info(&chat.input, chat.input_cursor);
-                if line == 0 {
-                    // First line — navigate to message history
-                    chat.focus = ChatFocus::MessageHistory;
-                    moved_to_history = true;
+                if wrap_width > 0 {
+                    let rows =
+                        wrap_chat_input_rows(&chat.input, wrap_width, editor.options.tab_width);
+                    if let Some(target) = move_chat_input_cursor_vertical(
+                        &chat.input,
+                        chat.input_cursor,
+                        &rows,
+                        -1,
+                        editor.options.tab_width,
+                    ) {
+                        chat.input_cursor = target;
+                    } else {
+                        chat.focus = ChatFocus::MessageHistory;
+                        moved_to_history = true;
+                    }
                 } else {
-                    chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, -1);
+                    let (line, _total) = cursor_line_info(&chat.input, chat.input_cursor);
+                    if line == 0 {
+                        chat.focus = ChatFocus::MessageHistory;
+                        moved_to_history = true;
+                    } else {
+                        chat.input_cursor =
+                            move_cursor_vertical(&chat.input, chat.input_cursor, -1);
+                    }
                 }
             }
             if moved_to_history {
@@ -298,10 +317,25 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         }
         KeyCode::Down => {
+            let wrap_width = editor.render_cache.ai_chat_input_content_width;
             if let Some(chat) = editor.ai_state.chat.as_mut() {
-                let (line, total) = cursor_line_info(&chat.input, chat.input_cursor);
-                if line < total - 1 {
-                    chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, 1);
+                if wrap_width > 0 {
+                    let rows =
+                        wrap_chat_input_rows(&chat.input, wrap_width, editor.options.tab_width);
+                    if let Some(target) = move_chat_input_cursor_vertical(
+                        &chat.input,
+                        chat.input_cursor,
+                        &rows,
+                        1,
+                        editor.options.tab_width,
+                    ) {
+                        chat.input_cursor = target;
+                    }
+                } else {
+                    let (line, total) = cursor_line_info(&chat.input, chat.input_cursor);
+                    if line < total - 1 {
+                        chat.input_cursor = move_cursor_vertical(&chat.input, chat.input_cursor, 1);
+                    }
                 }
             }
         }
@@ -665,5 +699,20 @@ mod tests {
                 .expect("esc");
             assert!(!editor.ai_chat_has_pending_tool_approval());
         });
+    }
+
+    #[test]
+    fn up_moves_within_soft_wrapped_composer_before_leaving_input() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        editor.render_cache.ai_chat_input_content_width = 7;
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "alpha beta gamma".to_string();
+        chat.input_cursor = chat.input.len();
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Up, Modifiers::NONE)).unwrap();
+
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
+        assert!(editor.ai_chat_input_cursor() < editor.ai_chat_input().len());
     }
 }

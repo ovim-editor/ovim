@@ -3,6 +3,7 @@ mod ai_base_manifest;
 mod ai_chat;
 mod ai_chat_commands;
 mod ai_chat_images;
+pub mod ai_chat_input;
 mod ai_chat_mutations;
 mod ai_chat_queue;
 pub(crate) mod ai_chat_state;

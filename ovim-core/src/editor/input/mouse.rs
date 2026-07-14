@@ -3,6 +3,7 @@ use crate::{MouseButton, MouseEvent, MouseEventKind};
 use anyhow::Result;
 
 use crate::display::{char_display_width, display_col_to_char_col};
+use crate::editor::ai_chat_input::{chat_input_byte_for_display_column, ChatInputRow};
 use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::unicode::{char_to_grapheme_col, grapheme_count, GraphemeCol};
@@ -397,6 +398,9 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.begin_ai_chat_text_selection(history_row, history_column);
             return Ok(None);
         }
+        if handle_ai_chat_input_click(editor, col, row) {
+            return Ok(None);
+        }
         if editor
             .render_cache
             .last_chat_area
@@ -484,6 +488,45 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
     }
 
     Ok(None)
+}
+
+fn handle_ai_chat_input_click(editor: &mut Editor, col: u16, row: u16) -> bool {
+    let Some(input_area) = editor.render_cache.ai_chat_input_area else {
+        return false;
+    };
+    if !input_area.contains(col, row) {
+        return false;
+    }
+
+    let hit = editor
+        .render_cache
+        .ai_chat_input_rows
+        .iter()
+        .find(|(rect, _, _, _)| rect.contains(col, row))
+        .copied();
+    let cursor = if let Some((rect, start, visible_start, end)) = hit {
+        let input = editor.ai_chat_input();
+        chat_input_byte_for_display_column(
+            input,
+            ChatInputRow {
+                start,
+                visible_start,
+                end,
+            },
+            col.saturating_sub(rect.x) as usize,
+            editor.options.tab_width,
+        )
+    } else {
+        editor.ai_chat_input().len()
+    };
+
+    if let Some(chat) = editor.ai_state.chat.as_mut() {
+        chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
+        chat.input_cursor = cursor;
+    }
+    editor.render_cache.ai_chat_text_selection = None;
+    editor.render_cache.ai_chat_text_selecting = false;
+    true
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
@@ -825,6 +868,47 @@ mod tests {
 
         assert_eq!(editor.registers.get_clipboard(), "alpha\nbeta");
         assert!(editor.ai_chat_has_text_selection());
+    }
+
+    #[test]
+    fn clicking_a_wrapped_chat_input_row_places_the_cursor() {
+        let mut editor = editor_with_docked_chat();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "first second".to_string();
+        chat.input_cursor = chat.input.len();
+        editor.render_cache.ai_chat_input_area = Some(crate::Rect {
+            x: 40,
+            y: 15,
+            width: 40,
+            height: 3,
+        });
+        editor.render_cache.ai_chat_input_rows = vec![(
+            crate::Rect {
+                x: 45,
+                y: 16,
+                width: 20,
+                height: 1,
+            },
+            6,
+            6,
+            12,
+        )];
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 47,
+                row: 16,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(editor.ai_chat_input_cursor(), 8);
+        assert_eq!(
+            editor.ai_chat_focus(),
+            crate::ai::chat_types::ChatFocus::TextInput
+        );
     }
 
     #[test]
