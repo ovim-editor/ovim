@@ -6,9 +6,6 @@ use crate::editor::ai_chat_input::{
 use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
-use std::time::Duration;
-
-const DOUBLE_ESC_THRESHOLD: Duration = Duration::from_millis(300);
 
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     if editor.ai_chat_has_exa_setup_dialog() {
@@ -57,14 +54,10 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             editor.ai_chat_accept_review();
             return Ok(());
         }
-        // Esc closes chat entirely from review mode
+        // Hiding review must not block background agent work. Accepting the
+        // review still waits for the turn to finish, but Esc simply returns
+        // control to the editor and preserves the live review state.
         if key_event.code == KeyCode::Esc {
-            if pending_work {
-                editor.set_lsp_status(
-                    "AI work is still pending. Wait before closing chat.".to_string(),
-                );
-                return Ok(());
-            }
             editor.close_ai_chat();
             return Ok(());
         }
@@ -186,27 +179,14 @@ fn handle_escape(editor: &mut Editor, focus: ChatFocus) -> Result<()> {
         // Return to text input
         if let Some(chat) = editor.ai_state.chat.as_mut() {
             chat.focus = ChatFocus::TextInput;
-            chat.last_escape = Some(std::time::Instant::now());
         }
         return Ok(());
     }
 
-    // Double-Esc detection for TextInput
-    let now = std::time::Instant::now();
-    let is_double = editor
-        .ai_state
-        .chat
-        .as_ref()
-        .and_then(|c| c.last_escape)
-        .map(|last| now.duration_since(last) < DOUBLE_ESC_THRESHOLD)
-        .unwrap_or(false);
-
-    if is_double {
-        editor.close_ai_chat();
-    } else if let Some(chat) = editor.ai_state.chat.as_mut() {
-        chat.last_escape = Some(now);
-    }
-
+    // Chat is a panel over a background-capable agent, not an editor-wide
+    // modal lock. A single Esc hides it and leaves the turn, draft, queue, and
+    // review state intact.
+    editor.close_ai_chat();
     Ok(())
 }
 
@@ -668,7 +648,7 @@ mod tests {
     }
 
     #[test]
-    fn review_mode_blocks_accept_and_close_while_pending() {
+    fn review_mode_blocks_accept_but_can_hide_while_pending() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
         let buffer_id = editor.buffer().id();
@@ -686,6 +666,22 @@ mod tests {
         let chat = editor.ai_state.chat.as_ref().expect("chat");
         assert!(chat.view_mode == crate::editor::ai_chat_state::ChatViewMode::ReviewFocused);
         assert_eq!(chat.agent_edits.total_edit_count(), 1);
+        assert_ne!(editor.mode(), crate::mode::Mode::AiChat);
+        assert!(editor.ai_chat_waiting());
+    }
+
+    #[test]
+    fn escape_hides_running_chat_on_first_press_without_stopping_it() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        editor.ai_state.chat.as_mut().unwrap().waiting = true;
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
+            .expect("esc");
+
+        assert_ne!(editor.mode(), crate::mode::Mode::AiChat);
+        assert!(editor.ai_chat_waiting());
+        assert!(editor.ai_state.chat.is_some());
     }
 
     #[test]

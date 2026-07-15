@@ -118,12 +118,14 @@ To retain the previous Codex-owned harness explicitly, configure
 keeps its native threads, sandbox, and orchestration. Ovim never falls back to
 it silently when direct inference fails.
 
-In AI chat, Escape hides the panel without interrupting the agent or clearing
-the conversation. Open the same chat again to resume it with its input and view
-state intact. While a hidden agent is running, a compact `AI working…` badge
-appears at the top right of the editor. Press Ctrl-C with the chat open to stop
-the current generation without closing or clearing the conversation; any
-partial response remains in history.
+In AI chat, a single Escape hides the panel without interrupting the agent or
+clearing the conversation—even while a review or approval is pending. You can
+navigate and edit the project normally while the turn continues. Open the same
+chat again to resume it with its input, queue, review, and view state intact.
+While a hidden agent is running, a compact `AI working…` badge appears at the
+top right of the editor; a paused approval uses an attention badge instead.
+Press Ctrl-C with the chat open to stop the current generation without closing
+or clearing the conversation; any partial response remains in history.
 
 Chat slash commands are handled by ovim rather than sent to the provider:
 

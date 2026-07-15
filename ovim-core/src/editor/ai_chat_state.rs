@@ -186,8 +186,6 @@ pub struct AiChatState {
     pub scratch: Option<ScratchBufferState>,
     /// Mode the editor was in before opening chat.
     pub mode_before_chat: Mode,
-    /// Timestamp of last Esc press (for double-Esc detection).
-    pub last_escape: Option<std::time::Instant>,
     /// Accumulated streaming content (committed on Done).
     pub streaming_content: Option<String>,
     /// Accumulated streaming thinking (committed on Done).
@@ -273,7 +271,6 @@ impl AiChatState {
             pending_job: None,
             scratch: None,
             mode_before_chat: mode_before,
-            last_escape: None,
             streaming_content: None,
             streaming_thinking: None,
             runtime_recorded_content_bytes: 0,
