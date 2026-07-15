@@ -3026,7 +3026,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         git2::Repository::init(dir.path()).unwrap();
         let file = dir.path().join("main.rs");
-        std::fs::write(&file, "fn main() {}\n").unwrap();
+        std::fs::write(&file, "fn main() {}\n// second line\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
         editor.ai_state = Box::new(
@@ -3036,6 +3036,7 @@ mod tests {
             .unwrap(),
         );
         editor.open_file(&file).unwrap();
+        editor.set_mode(crate::mode::Mode::Normal);
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("run the gated check").unwrap();
         let run_id = turn.run_id.clone();
@@ -3059,6 +3060,30 @@ mod tests {
             .unwrap()
             .pending_shell_execution
             .is_some());
+        assert_eq!(
+            editor.ai_chat_activity(),
+            super::super::AiChatActivity::RunningShell
+        );
+
+        // A live tool belongs to the chat, not to the chat panel. Hiding the
+        // panel must return input ownership to the editor while the tool keeps
+        // running in the background.
+        crate::editor::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Esc, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(editor.mode(), crate::mode::Mode::Normal);
+        crate::editor::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Char('j'), crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(editor.cursor_position().line, 1);
+        assert_eq!(
+            editor.ai_chat_activity(),
+            super::super::AiChatActivity::RunningShell
+        );
         assert!(!editor.poll_pending_ai_chat_job());
         assert!(matches!(
             response_rx.try_recv(),
