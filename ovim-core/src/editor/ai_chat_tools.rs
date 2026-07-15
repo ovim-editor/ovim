@@ -463,8 +463,10 @@ impl Editor {
                     | "snapshot_file"
                     | "restore_file"
             );
-        let project_scoped_without_open_file =
-            matches!(tc.name.as_str(), "list_files" | "search_project");
+        let project_scoped_without_open_file = matches!(
+            tc.name.as_str(),
+            "list_files" | "search_project" | "workspace_context"
+        );
 
         if !self.active_chat_target_has_file_path()
             && tc.name != "open_file"
@@ -2498,6 +2500,24 @@ mod tests {
             }
             ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
                 panic!("expected search_project success, got: {err}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(req) => {
+                panic!("unexpected approval request: {}", req.message);
+            }
+        }
+
+        let workspace_context_call = ToolCallInfo {
+            id: "call_workspace_context".to_string(),
+            name: "workspace_context".to_string(),
+            arguments: serde_json::json!({"include_git": false}),
+        };
+        match editor.dispatch_tool_call_with_approval(&workspace_context_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                assert!(output.contains("Workspace:"), "{output}");
+                assert!(output.contains("Active buffer:\n  [No Name]"), "{output}");
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Error(err)) => {
+                panic!("expected workspace_context success, got: {err}");
             }
             ToolDispatchOutcome::ApprovalRequired(req) => {
                 panic!("unexpected approval request: {}", req.message);
