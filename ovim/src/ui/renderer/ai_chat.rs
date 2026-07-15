@@ -106,6 +106,10 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     editor.render_cache.ai_chat_image_thumbnails.clear();
     editor.render_cache.ai_chat_branch_hitboxes.clear();
     editor.render_cache.ai_chat_yolo_hitbox = None;
+    editor
+        .render_cache
+        .ai_chat_slash_completion_hitboxes
+        .clear();
     if chat_area.width < 4 || chat_area.height < 3 {
         return;
     }
@@ -204,9 +208,108 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         );
     }
     render_text_input(frame, editor, input_area, &input_rows, input_visible_start);
+    render_slash_completion(frame, editor, input_area, messages_area.y);
     if editor.ai_chat_focus() == ChatFocus::ModelSelector {
         render_model_picker(frame, editor, main_area);
     }
+}
+
+fn render_slash_completion(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    input_area: Rect,
+    minimum_y: u16,
+) {
+    let completions = editor.ai_chat_slash_completions();
+    if completions.is_empty() || input_area.width < 12 {
+        return;
+    }
+    let available_height = input_area.y.saturating_sub(minimum_y);
+    if available_height < 3 {
+        return;
+    }
+
+    let selected = editor.ai_chat_slash_completion_selected();
+    let visible_count = completions
+        .len()
+        .min(6)
+        .min(available_height.saturating_sub(2) as usize);
+    if visible_count == 0 {
+        return;
+    }
+    let scroll_offset = if selected >= visible_count {
+        selected - visible_count + 1
+    } else {
+        0
+    };
+    let popup = Rect {
+        x: input_area.x.saturating_add(1),
+        y: input_area.y.saturating_sub(visible_count as u16 + 2),
+        width: input_area.width.saturating_sub(2),
+        height: visible_count as u16 + 2,
+    };
+    let items = completions
+        .iter()
+        .enumerate()
+        .skip(scroll_offset)
+        .take(visible_count)
+        .map(|(index, completion)| {
+            let is_selected = index == selected;
+            let background = if is_selected {
+                BG_SELECTED_ROW
+            } else {
+                BG_INPUT
+            };
+            ListItem::new(Line::from(vec![
+                Span::styled(
+                    if is_selected { "› " } else { "  " },
+                    Style::default().fg(ACCENT_SELECTED).bg(background),
+                ),
+                Span::styled(
+                    completion.usage,
+                    Style::default()
+                        .fg(if is_selected {
+                            ACCENT_SELECTED
+                        } else {
+                            ACCENT_USER
+                        })
+                        .bg(background)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("  {}", completion.description),
+                    Style::default().fg(TEXT_DIM).bg(background),
+                ),
+            ]))
+            .style(Style::default().bg(background))
+        })
+        .collect::<Vec<_>>();
+
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        List::new(items).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Commands ")
+                .border_style(Style::default().fg(ACCENT_USER))
+                .style(Style::default().bg(BG_INPUT)),
+        ),
+        popup,
+    );
+
+    editor.render_cache.ai_chat_slash_completion_hitboxes = (0..visible_count)
+        .map(|row| {
+            (
+                ovim_core::Rect {
+                    x: popup.x.saturating_add(1),
+                    y: popup.y.saturating_add(1 + row as u16),
+                    width: popup.width.saturating_sub(2),
+                    height: 1,
+                },
+                scroll_offset + row,
+            )
+        })
+        .collect();
 }
 
 /// Returns cursor (x, y) for the chat input, if focused.
@@ -1995,6 +2098,41 @@ mod tests {
         let area = Rect::new(0, 0, 100, 24);
         assert_eq!(compute_chat_split(area, true, None).1.width, 40);
         assert_eq!(compute_chat_split(area, false, None).1.width, 35);
+    }
+
+    #[test]
+    fn partial_slash_command_renders_completion_popup_and_hitboxes() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/".into();
+        chat.input_cursor = 1;
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Commands"));
+        assert!(rendered.contains("/clear"));
+        assert!(rendered.contains("/model [profile]"));
+        assert_eq!(
+            editor.render_cache.ai_chat_slash_completion_hitboxes.len(),
+            4
+        );
     }
 
     #[test]

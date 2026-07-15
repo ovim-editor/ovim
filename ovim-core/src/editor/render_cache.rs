@@ -72,6 +72,8 @@ pub struct RenderCache {
     pub ai_chat_input_content_width: usize,
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
+    /// Clickable rows in the slash-command completion popup.
+    pub ai_chat_slash_completion_hitboxes: Vec<(crate::Rect, usize)>,
     /// Click target for the Exa API-key dashboard in the setup dialog.
     pub ai_chat_exa_dashboard_hitbox: Option<crate::Rect>,
     /// Hardware cursor position for the Exa key field.

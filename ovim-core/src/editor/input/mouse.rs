@@ -415,6 +415,16 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.render_cache.ai_chat_text_selecting = false;
             return Ok(None);
         }
+        if let Some(index) = editor
+            .render_cache
+            .ai_chat_slash_completion_hitboxes
+            .iter()
+            .find(|(area, _)| area.contains(col, row))
+            .map(|(_, index)| *index)
+        {
+            editor.accept_ai_chat_slash_completion(Some(index));
+            return Ok(None);
+        }
         if editor
             .render_cache
             .ai_chat_yolo_hitbox
@@ -937,6 +947,35 @@ mod tests {
         )
         .unwrap();
         assert!(!editor.render_cache.ai_chat_separator_dragging);
+    }
+
+    #[test]
+    fn clicking_slash_completion_accepts_that_command() {
+        let mut editor = editor_with_docked_chat();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/".into();
+        chat.input_cursor = 1;
+        editor.render_cache.ai_chat_slash_completion_hitboxes = vec![(
+            crate::Rect {
+                x: 42,
+                y: 12,
+                width: 30,
+                height: 1,
+            },
+            2,
+        )];
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 50,
+                row: 12,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(editor.ai_chat_input(), "/model");
     }
 
     #[test]

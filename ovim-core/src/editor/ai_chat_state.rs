@@ -191,6 +191,8 @@ pub struct AiChatState {
     pub input: String,
     /// Byte offset cursor in input.
     pub input_cursor: usize,
+    /// Selected entry in the derived slash-command completion popup.
+    pub slash_completion_selected: usize,
     /// Images dropped into the current composer.
     pub pending_images: Vec<ImageAttachment>,
     /// Image currently expanded over the chat panel.
@@ -314,6 +316,7 @@ impl AiChatState {
             active_buffer_id,
             input: String::new(),
             input_cursor: 0,
+            slash_completion_selected: 0,
             pending_images: Vec::new(),
             image_modal: None,
             exa_setup: None,

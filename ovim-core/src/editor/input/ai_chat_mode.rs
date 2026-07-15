@@ -194,6 +194,27 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     let word_modifier = key_event
         .modifiers
         .intersects(Modifiers::ALT | Modifiers::CONTROL);
+
+    // Completion owns these keys only while the command-name fragment has
+    // candidates. All normal composer behavior remains the fallback.
+    if !editor.ai_chat_slash_completions().is_empty() {
+        match key_event.code {
+            KeyCode::Up | KeyCode::BackTab => {
+                editor.move_ai_chat_slash_completion(false);
+                return Ok(());
+            }
+            KeyCode::Down => {
+                editor.move_ai_chat_slash_completion(true);
+                return Ok(());
+            }
+            KeyCode::Tab | KeyCode::Enter if !key_event.modifiers.contains(Modifiers::SHIFT) => {
+                editor.accept_ai_chat_slash_completion(None);
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+
     match key_event.code {
         KeyCode::Char('v')
             if key_event.modifiers.contains(Modifiers::CONTROL)
@@ -204,6 +225,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 chat.input.insert_str(chat.input_cursor, &pasted);
                 chat.input_cursor += pasted.len();
             }
+            editor.reset_ai_chat_slash_completion();
         }
         KeyCode::Char(ch)
             if !key_event.modifiers.contains(Modifiers::CONTROL)
@@ -214,6 +236,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 chat.input.insert(pos, ch);
                 chat.input_cursor = pos + ch.len_utf8();
             }
+            editor.reset_ai_chat_slash_completion();
         }
         KeyCode::Backspace if word_modifier => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
@@ -222,6 +245,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 chat.input.drain(start..end);
                 chat.input_cursor = start;
             }
+            editor.reset_ai_chat_slash_completion();
         }
         KeyCode::Backspace => {
             let mut remove_image = false;
@@ -242,6 +266,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             if remove_image {
                 editor.remove_last_ai_chat_image();
             }
+            editor.reset_ai_chat_slash_completion();
         }
         KeyCode::Delete if word_modifier => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
@@ -249,6 +274,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 let end = next_chat_input_word_boundary(&chat.input, start);
                 chat.input.drain(start..end);
             }
+            editor.reset_ai_chat_slash_completion();
         }
         KeyCode::Delete => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
@@ -257,6 +283,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     chat.input.remove(pos);
                 }
             }
+            editor.reset_ai_chat_slash_completion();
         }
         KeyCode::Left if word_modifier => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
@@ -391,6 +418,7 @@ fn insert_chat_input_newline(editor: &mut Editor) {
         chat.input.insert(cursor, '\n');
         chat.input_cursor = cursor + 1;
     }
+    editor.reset_ai_chat_slash_completion();
 }
 
 fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
@@ -720,6 +748,40 @@ mod tests {
         assert_eq!(editor.ai_chat_input(), "hello\nworld");
         assert_eq!(editor.ai_chat_input_cursor(), 6);
         assert!(editor.ai_chat_messages().is_empty());
+    }
+
+    #[test]
+    fn slash_completion_navigates_before_history_and_accepts_without_executing() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/".into();
+        chat.input_cursor = 1;
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Down, Modifiers::NONE))
+            .expect("select next completion");
+        assert_eq!(editor.ai_chat_slash_completion_selected(), 1);
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+            .expect("accept completion");
+        assert_eq!(editor.ai_chat_input(), "/exa");
+        assert!(editor.ai_chat_messages().is_empty());
+    }
+
+    #[test]
+    fn slash_completion_tab_accepts_instead_of_scheduling() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/cl".into();
+        chat.input_cursor = 3;
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Tab, Modifiers::NONE))
+            .expect("accept completion");
+
+        assert_eq!(editor.ai_chat_input(), "/clear");
+        assert!(editor.ai_chat_queued_inputs().next().is_none());
     }
 
     #[test]

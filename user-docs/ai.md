@@ -133,6 +133,10 @@ or clearing the conversation; any partial response remains in history.
 
 Chat slash commands are handled by ovim rather than sent to the provider:
 
+Typing `/` or a partial command name opens an autocomplete popup. Use Up/Down
+to choose, then Tab or Enter to insert the command; click selection is also
+supported. Enter again executes a completed command.
+
 - `/model` opens the profile picker.
 - `/model codex_sol` switches directly to a named profile.
 - `/clear` clears the current conversation and starts a fresh provider context.

@@ -4,6 +4,52 @@ use crate::ai::chat_types::{ChatFocus, ConversationTree};
 
 use super::Editor;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AiChatSlashCommandKind {
+    Clear,
+    Exa,
+    Model,
+    Yolo,
+}
+
+/// Presentation metadata shared by parsing, composer completion, and the TUI.
+/// Keeping one registry prevents newly added commands from silently missing
+/// autocomplete or documentation in the popup.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AiChatSlashCompletion {
+    pub command: &'static str,
+    pub usage: &'static str,
+    pub description: &'static str,
+    kind: AiChatSlashCommandKind,
+}
+
+const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
+    AiChatSlashCompletion {
+        command: "/clear",
+        usage: "/clear",
+        description: "Clear this conversation",
+        kind: AiChatSlashCommandKind::Clear,
+    },
+    AiChatSlashCompletion {
+        command: "/exa",
+        usage: "/exa",
+        description: "Configure Exa web search",
+        kind: AiChatSlashCommandKind::Exa,
+    },
+    AiChatSlashCompletion {
+        command: "/model",
+        usage: "/model [profile]",
+        description: "Choose the chat model",
+        kind: AiChatSlashCommandKind::Model,
+    },
+    AiChatSlashCompletion {
+        command: "/yolo",
+        usage: "/yolo [on|off]",
+        description: "Set tool approval policy",
+        kind: AiChatSlashCommandKind::Yolo,
+    },
+];
+
 #[derive(Debug, PartialEq, Eq)]
 enum AiChatSlashCommand {
     Clear,
@@ -19,31 +65,127 @@ impl AiChatSlashCommand {
         let name = parts.next().unwrap_or_default();
         let arguments = parts.collect::<Vec<_>>();
 
-        let parsed = match name {
-            "clear" if arguments.is_empty() => Ok(Self::Clear),
-            "clear" => Err("Usage: /clear".to_string()),
-            "exa" if arguments.is_empty() => Ok(Self::Exa),
-            "exa" => Err("Usage: /exa".to_string()),
-            "model" if arguments.len() <= 1 => Ok(Self::Model {
+        let Some(spec) = AI_CHAT_SLASH_COMMANDS
+            .iter()
+            .find(|spec| spec.command.strip_prefix('/') == Some(name))
+        else {
+            return Some(if name.is_empty() {
+                Err("Enter a slash command after /".to_string())
+            } else {
+                Err(format!("Unknown AI chat command: /{name}"))
+            });
+        };
+
+        let parsed = match spec.kind {
+            AiChatSlashCommandKind::Clear if arguments.is_empty() => Ok(Self::Clear),
+            AiChatSlashCommandKind::Clear => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Exa if arguments.is_empty() => Ok(Self::Exa),
+            AiChatSlashCommandKind::Exa => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Model if arguments.len() <= 1 => Ok(Self::Model {
                 profile: arguments.first().map(|value| (*value).to_string()),
             }),
-            "model" => Err("Usage: /model [profile]".to_string()),
-            "yolo" if arguments.is_empty() => Ok(Self::Yolo { enabled: None }),
-            "yolo" if arguments == ["on"] => Ok(Self::Yolo {
+            AiChatSlashCommandKind::Model => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Yolo if arguments.is_empty() => {
+                Ok(Self::Yolo { enabled: None })
+            }
+            AiChatSlashCommandKind::Yolo if arguments == ["on"] => Ok(Self::Yolo {
                 enabled: Some(true),
             }),
-            "yolo" if arguments == ["off"] => Ok(Self::Yolo {
+            AiChatSlashCommandKind::Yolo if arguments == ["off"] => Ok(Self::Yolo {
                 enabled: Some(false),
             }),
-            "yolo" => Err("Usage: /yolo [on|off]".to_string()),
-            "" => Err("Enter a slash command after /".to_string()),
-            unknown => Err(format!("Unknown AI chat command: /{unknown}")),
+            AiChatSlashCommandKind::Yolo => Err(format!("Usage: {}", spec.usage)),
         };
         Some(parsed)
     }
 }
 
 impl Editor {
+    /// Slash commands matching the command-name fragment at the cursor.
+    /// Exact commands and argument text intentionally hide the popup so Enter
+    /// retains its normal execute/submit behavior.
+    pub fn ai_chat_slash_completions(&self) -> Vec<AiChatSlashCompletion> {
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            return Vec::new();
+        };
+        if chat.focus != ChatFocus::TextInput
+            || chat.input_cursor != chat.input.len()
+            || chat.input.contains('\n')
+        {
+            return Vec::new();
+        }
+        let Some(fragment) = chat.input.strip_prefix('/') else {
+            return Vec::new();
+        };
+        if fragment.chars().any(char::is_whitespace)
+            || AI_CHAT_SLASH_COMMANDS
+                .iter()
+                .any(|spec| spec.command.strip_prefix('/') == Some(fragment))
+        {
+            return Vec::new();
+        }
+        AI_CHAT_SLASH_COMMANDS
+            .iter()
+            .filter(|spec| {
+                spec.command
+                    .strip_prefix('/')
+                    .is_some_and(|name| name.starts_with(fragment))
+            })
+            .copied()
+            .collect()
+    }
+
+    pub fn ai_chat_slash_completion_selected(&self) -> usize {
+        let len = self.ai_chat_slash_completions().len();
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|chat| chat.slash_completion_selected.min(len.saturating_sub(1)))
+            .unwrap_or(0)
+    }
+
+    pub fn move_ai_chat_slash_completion(&mut self, forward: bool) -> bool {
+        let len = self.ai_chat_slash_completions().len();
+        if len == 0 {
+            return false;
+        }
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        let current = chat.slash_completion_selected.min(len - 1);
+        chat.slash_completion_selected = if forward {
+            (current + 1) % len
+        } else if current == 0 {
+            len - 1
+        } else {
+            current - 1
+        };
+        true
+    }
+
+    pub fn accept_ai_chat_slash_completion(&mut self, selected: Option<usize>) -> bool {
+        let completions = self.ai_chat_slash_completions();
+        if completions.is_empty() {
+            return false;
+        }
+        let index = selected
+            .unwrap_or_else(|| self.ai_chat_slash_completion_selected())
+            .min(completions.len() - 1);
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        chat.input = completions[index].command.to_string();
+        chat.input_cursor = chat.input.len();
+        chat.slash_completion_selected = 0;
+        true
+    }
+
+    pub fn reset_ai_chat_slash_completion(&mut self) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.slash_completion_selected = 0;
+        }
+    }
+
     /// Parse and execute editor-owned chat commands before provider submission.
     /// Returns `true` when the input was a slash command, including invalid ones.
     pub(super) fn try_execute_ai_chat_slash_command(&mut self, input: &str) -> Result<bool> {
@@ -86,6 +228,7 @@ impl Editor {
             chat.input.clear();
             chat.input_cursor = 0;
             chat.pending_images.clear();
+            chat.slash_completion_selected = 0;
         }
     }
 
@@ -189,6 +332,46 @@ mod tests {
             AiChatSlashCommand::parse("/unknown"),
             Some(Err(_))
         ));
+    }
+
+    #[test]
+    fn completion_is_derived_from_an_unfinished_command_name() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/".into();
+        chat.input_cursor = 1;
+        assert_eq!(editor.ai_chat_slash_completions().len(), 4);
+
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/cl".into();
+        chat.input_cursor = 3;
+        assert_eq!(editor.ai_chat_slash_completions()[0].command, "/clear");
+
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/clear".into();
+        chat.input_cursor = chat.input.len();
+        assert!(editor.ai_chat_slash_completions().is_empty());
+
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/model f".into();
+        chat.input_cursor = chat.input.len();
+        assert!(editor.ai_chat_slash_completions().is_empty());
+    }
+
+    #[test]
+    fn completion_acceptance_is_clamped_and_replaces_only_valid_fragments() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "/".into();
+        chat.input_cursor = 1;
+
+        assert!(editor.accept_ai_chat_slash_completion(Some(usize::MAX)));
+        assert_eq!(editor.ai_chat_input(), "/yolo");
+        assert_eq!(editor.ai_chat_input_cursor(), "/yolo".len());
+        assert!(editor.ai_chat_slash_completions().is_empty());
     }
 
     #[test]
