@@ -4,10 +4,7 @@ A fast, batteries-included terminal editor with Vim keybindings, built in Rust.
 
 ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI chat, sane defaults.
 
-<img width="1470" height="956" alt="Ovim - start screen" src="https://github.com/user-attachments/assets/683cc32c-4553-4900-a014-8d5bd970e00e" />
-<img width="1470" height="956" alt="Ovim - fuzzy finder" src="https://github.com/user-attachments/assets/9f4fc346-50ea-4733-9386-eeb4b0082822" />
-<img width="1470" height="956" alt="code-explanation-screenshot" src="https://github.com/user-attachments/assets/917f4647-df45-4600-a75f-b2cd72f79934" />
-
+<img alt="ovim start screen" src="https://github.com/user-attachments/assets/683cc32c-4553-4900-a014-8d5bd970e00e" />
 
 ## What You Get Out of the Box
 
@@ -18,21 +15,48 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
 - **Headless mode** — run without a terminal, control via REST API
 
-## Quick Start
+## Install
+
+```bash
+brew install ovim-editor/tap/ovim
+```
+
+<details>
+<summary>Build from source instead</summary>
 
 ```bash
 cargo build --release
+# binary at ./target/release/ovim
+```
 
+</details>
+
+## Quick Start
+
+```bash
 # Open a file
-./target/release/ovim file.rs
+ovim file.rs
 
 # Jump to a specific line and column
-./target/release/ovim src/main.rs:42:10
+ovim src/main.rs:42:10
 ```
 
 LSP starts automatically. Syntax highlighting works. No setup needed.
 
-> The rest of this README uses `ovim` assuming the binary is on your `PATH`.
+> This README uses `ovim` assuming the binary is on your `PATH`.
+
+## Screenshots
+
+<table>
+  <tr>
+    <td width="50%"><img alt="Fuzzy file finder" src="https://github.com/user-attachments/assets/9f4fc346-50ea-4733-9386-eeb4b0082822" /></td>
+    <td width="50%"><img alt="AI code walkthrough" src="https://github.com/user-attachments/assets/917f4647-df45-4600-a75f-b2cd72f79934" /></td>
+  </tr>
+  <tr>
+    <td align="center"><b>Fuzzy finder</b> — jump to any file, live preview</td>
+    <td align="center"><b>AI code walkthrough</b> — step-through explanations inline</td>
+  </tr>
+</table>
 
 ## Language Support
 
