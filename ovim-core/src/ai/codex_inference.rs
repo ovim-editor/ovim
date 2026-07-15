@@ -210,22 +210,13 @@ async fn stream_direct(request: CodexInferenceRequest<'_>) -> Result<()> {
         "tool_choice": "auto",
         "parallel_tool_calls": true,
     });
-    if let Some(verbosity) = request.profile.verbosity.as_deref() {
-        body["text"] = json!({ "verbosity": verbosity });
-    }
-    if let Some(effort) = request.profile.reasoning_effort.as_deref() {
-        body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
-    }
+    apply_direct_profile_options(&mut body, request.profile);
     if let Some(tools) = request.tools {
         body["tools"] = Value::Array(tools.iter().map(flatten_tool_schema).collect());
     }
     if let Some(key) = request.session_key {
         body["prompt_cache_key"] = json!(key);
     }
-    if let Some(max_tokens) = request.profile.max_tokens {
-        body["max_output_tokens"] = json!(max_tokens);
-    }
-
     let response = client
         .post(url)
         .headers(codex_headers(&credentials)?)
@@ -248,6 +239,19 @@ async fn stream_direct(request: CodexInferenceRequest<'_>) -> Result<()> {
         anyhow::bail!("Codex inference returned {status}: {detail}");
     }
     parse_responses_stream(Box::pin(response.bytes_stream()), request.tx).await
+}
+
+fn apply_direct_profile_options(body: &mut Value, profile: &AiProfileConfig) {
+    if let Some(verbosity) = profile.verbosity.as_deref() {
+        body["text"] = json!({ "verbosity": verbosity });
+    }
+    if let Some(effort) = profile.reasoning_effort.as_deref() {
+        body["reasoning"] = json!({ "effort": effort, "summary": "auto" });
+    }
+
+    // The ChatGPT subscription Codex endpoint rejects the public Responses
+    // API's `max_output_tokens` parameter. Leave output limiting to that
+    // endpoint; `max_tokens` remains available to the other providers.
 }
 
 fn flatten_tool_schema(tool: &Value) -> Value {
@@ -806,6 +810,22 @@ mod tests {
         );
         assert_eq!(value["name"], "read_file");
         assert!(value.get("function").is_none());
+    }
+
+    #[test]
+    fn direct_subscription_request_omits_unsupported_output_limit() {
+        let config = super::super::config::AiConfig::default();
+        let profile = config
+            .profiles
+            .get(super::super::types::PROFILE_LOCAL)
+            .expect("default profile has a max token limit");
+        assert!(profile.max_tokens.is_some());
+        let mut body = json!({});
+
+        apply_direct_profile_options(&mut body, profile);
+
+        assert!(body.get("max_output_tokens").is_none());
+        assert!(body.get("max_tokens").is_none());
     }
 
     #[tokio::test]

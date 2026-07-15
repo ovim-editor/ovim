@@ -642,6 +642,12 @@ impl Editor {
                         .unwrap_or_default();
 
                     if !tool_calls.is_empty() {
+                        // The provider stream has completed. Detach its job
+                        // before a local tool starts: asynchronous tools (Exa
+                        // in particular) can span event-loop ticks, and the
+                        // completed receiver would otherwise be observed as a
+                        // disconnected active stream on the next tick.
+                        self.finish_provider_stream_before_tools();
                         return self.process_tool_calls(
                             tool_calls,
                             content,
@@ -752,6 +758,12 @@ impl Editor {
         }
 
         changed
+    }
+
+    fn finish_provider_stream_before_tools(&mut self) {
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_job = None;
+        }
     }
 
     /// Commit any partial thinking/content that was streaming when an error occurred.
@@ -2741,6 +2753,18 @@ mod tests {
         assert_eq!(messages[2].role, ChatRole::Assistant);
         assert_eq!(messages[2].content, "The fix is verified.");
         assert!(!editor.ai_chat_waiting());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn completed_provider_job_is_detached_before_async_tool_work() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let turn = editor.begin_ai_runtime_turn("search the web").unwrap();
+        attach_pending_runtime_job(&mut editor, turn, 0);
+
+        editor.finish_provider_stream_before_tools();
+
+        assert!(editor.ai_state.chat.as_ref().unwrap().pending_job.is_none());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
