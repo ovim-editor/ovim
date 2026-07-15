@@ -7,7 +7,7 @@ use crate::ai::tools::{SideEffect, ToolResult};
 use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
 use std::path::{Path, PathBuf};
 
-use super::ai_chat_state::{PendingToolApproval, ToolEventSummary};
+use super::ai_chat_state::{CodeExplanationContinuation, PendingToolApproval, ToolEventSummary};
 use super::ai_tool_path::{compact_tool_label, compact_tool_path, normalize_path};
 use super::Editor;
 
@@ -108,7 +108,7 @@ impl Editor {
     ) -> Vec<serde_json::Value> {
         let caps = self.build_chat_capabilities();
         let direct_codex = profile.provider == crate::ai::AiProviderKind::Codex;
-        let tools = self
+        let mut tools = self
             .ai_state
             .tool_registry
             .tools_for_profile(profile, &caps)
@@ -116,7 +116,27 @@ impl Editor {
             .filter(|tool| {
                 direct_codex || !matches!(tool.name.as_str(), "web_search" | "web_fetch")
             })
+            .cloned()
             .collect::<Vec<_>>();
+        let safe_range = self.ai_code_explanation_safe_range_lines();
+        if let Some(tool) = tools
+            .iter_mut()
+            .find(|tool| tool.name == "explain_with_codebase")
+        {
+            tool.description.push_str(&format!(
+                " The current editor can reliably show at most {safe_range} code lines per step; every inclusive start_line..end_line range must stay within that limit. Keep each comment concise enough to display in at most 5 wrapped rows."
+            ));
+            if let Some(steps) = tool
+                .parameters
+                .iter_mut()
+                .find(|param| param.name == "steps")
+            {
+                steps.description = format!(
+                    "Ordered walkthrough steps. Each optional inclusive range may span at most {safe_range} code lines in the current viewport, and each comment may occupy at most 5 wrapped rows; split larger regions or explanations into focused conceptual steps."
+                );
+            }
+        }
+        let tools = tools.iter().collect::<Vec<_>>();
         // Codex itself remains `approvalPolicy: never` and read-only. Effects
         // are advertised only when the durable ovim harness granted the
         // corresponding capability; app-server calls them as dynamic tools and
@@ -838,7 +858,28 @@ impl Editor {
                 return true;
             }
 
-            match self.dispatch_tool_call_with_approval(tc, None) {
+            let outcome = if tc.name == "explain_with_codebase" {
+                let continuation = CodeExplanationContinuation::Batch {
+                    runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
+                    runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
+                    remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                    model_name: model_name.clone(),
+                };
+                match self.begin_code_explanation(tc.clone(), continuation) {
+                    Ok(()) => {
+                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                            chat.tool_call_count =
+                                chat.tool_call_count.saturating_add(executed_in_batch);
+                        }
+                        return true;
+                    }
+                    Err((result, _continuation)) => ToolDispatchOutcome::Completed(result),
+                }
+            } else {
+                self.dispatch_tool_call_with_approval(tc, None)
+            };
+
+            match outcome {
                 ToolDispatchOutcome::Completed(result) => {
                     if let Some((turn, tool)) = runtime_tool.as_ref() {
                         if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result) {
@@ -1103,6 +1144,18 @@ impl Editor {
                     .and_then(|v| v.as_u64())
                     .unwrap_or(1);
                 (ToolSummaryKind::Navigation, format!("{path}:{line}"))
+            }
+            "explain_with_codebase" => {
+                let count = tc
+                    .arguments
+                    .get("steps")
+                    .and_then(|steps| steps.as_array())
+                    .map(Vec::len)
+                    .unwrap_or(0);
+                (
+                    ToolSummaryKind::Navigation,
+                    format!("code walkthrough · {count} steps"),
+                )
             }
             "select_text" => {
                 let start = tc

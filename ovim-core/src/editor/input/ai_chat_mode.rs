@@ -18,6 +18,24 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         return Ok(());
     }
+    if editor.ai_chat_has_pending_code_explanation() {
+        match key_event.code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                editor.move_code_explanation(false);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                editor.move_code_explanation(true);
+            }
+            KeyCode::Enter => {
+                editor.advance_or_finish_code_explanation();
+            }
+            KeyCode::Esc => {
+                editor.finish_code_explanation(true);
+            }
+            _ => {}
+        }
+        return Ok(());
+    }
 
     // --- Review mode: explicit allowlist only (no normal-mode delegation) ---
     let review_mode = editor.ai_chat_review_mode();

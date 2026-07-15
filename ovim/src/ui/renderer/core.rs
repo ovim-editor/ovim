@@ -457,6 +457,9 @@ fn set_cursor_position(
     command_chunk: Rect,
     chat_area: Option<Rect>,
 ) {
+    if editor.ai_chat_has_pending_code_explanation() {
+        return;
+    }
     let layout = ctx.layout;
     let viewport_start = ctx.viewport_start;
     let cursor_pos = editor.buffer().cursor();
@@ -934,6 +937,7 @@ impl Renderer {
             viewport_start,
         };
         render_overlays(frame, editor, &theme, &ctx, areas.command_chunk);
+        super::overlays::render_ai_code_explanation(frame, editor);
         render_blocking_modals(frame, editor, &theme);
         set_cursor_position(frame, editor, &ctx, areas.command_chunk, areas.chat_area);
     }

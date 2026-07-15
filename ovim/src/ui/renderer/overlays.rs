@@ -4,7 +4,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Paragraph, Wrap},
     Frame,
 };
 use unicode_width::UnicodeWidthStr;
@@ -646,6 +646,75 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
             (hints, 'a'),
         ],
     );
+}
+
+/// Compact walkthrough card that leaves the selected code visible above it.
+pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
+    let Some((current, total, path, start, end, comment)) = editor.ai_code_explanation_summary()
+    else {
+        return;
+    };
+    let Some(cached) = editor.render_cache.last_buffer_area else {
+        return;
+    };
+    let buffer = Rect::new(cached.x, cached.y, cached.width, cached.height);
+    if buffer.width < 32 || buffer.height < 7 {
+        return;
+    }
+
+    let width = buffer.width.saturating_sub(2).min(100);
+    let comment_width = width.saturating_sub(2).max(1) as usize;
+    let comment_rows = ovim_core::editor::ai_chat_input::wrap_chat_input_rows(
+        &comment,
+        comment_width,
+        editor.options.tab_width,
+    )
+    .len() as u16;
+    let height = comment_rows
+        .saturating_add(4)
+        .clamp(7, 10)
+        .min(buffer.height);
+    let area = Rect::new(
+        buffer.x + buffer.width.saturating_sub(width) / 2,
+        buffer.bottom().saturating_sub(height),
+        width,
+        height,
+    );
+    let range = if start == end {
+        format!("{path}:{start}")
+    } else {
+        format!("{path}:{start}-{end}")
+    };
+    let title = format!(" Code walkthrough {current}/{total} · {range} ");
+    let content = vec![
+        Line::from(Span::styled(
+            comment,
+            Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
+        )),
+        Line::from(""),
+        Line::from(Span::styled(
+            "←/→ previous/next   Enter next/done   Esc dismiss",
+            Style::default()
+                .fg(MODAL_COLORS.action)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::BOLD),
+        )),
+    ];
+    let card = Paragraph::new(content).wrap(Wrap { trim: false }).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .border_type(ratatui::widgets::BorderType::Rounded)
+            .border_style(Style::default().fg(MODAL_COLORS.border).bg(MODAL_COLORS.bg))
+            .title(title)
+            .title_style(
+                Style::default()
+                    .fg(MODAL_COLORS.title)
+                    .bg(MODAL_COLORS.bg)
+                    .add_modifier(Modifier::BOLD),
+            ),
+    );
+    frame.render_widget(Clear, area);
+    frame.render_widget(card, area);
 }
 
 /// First-run and credential-recovery dialog for Exa-backed web search.

@@ -57,6 +57,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     // Navigation tools (dispatched via execute_navigation_tool — always allowed)
     registry.register(open_file_def());
     registry.register(select_text_def());
+    registry.register(explain_with_codebase_def());
     // External tools (dispatched via execute_external_tool)
     registry.register(bash_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
@@ -93,6 +94,10 @@ pub fn execute_builtin(
         "document_symbols" | "hover" | "goto_definition" => ToolResult::Error(format!(
             "'{name}' is an LSP tool — must be dispatched via execute_lsp_tool"
         )),
+        "explain_with_codebase" => ToolResult::Error(
+            "'explain_with_codebase' is an interactive navigation tool — must be dispatched by the editor"
+                .to_string(),
+        ),
         "bash" => ToolResult::Error(
             "'bash' is an external tool — must be dispatched via execute_external_tool".to_string(),
         ),
@@ -1085,6 +1090,26 @@ pub(crate) fn select_text_def() -> ToolDefinition {
                     .to_string(),
             },
         ],
+    }
+}
+
+pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "explain_with_codebase".to_string(),
+        description: "Present an ordered, interactive walkthrough of code in the user's editor. Use this when the user asks how code works or asks you to explain an implementation/change. Do not use it in the middle of implementation: the call blocks until the user finishes or dismisses the walkthrough. Prefer one precise anchor line; add end_line only for a cohesive block. Split large subsystems into several conceptual steps. Example: parser.rs:41-58 explains the entry point, store.rs:91 explains the handoff, then parser_test.rs:120-138 explains the proof."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Navigation,
+        parameters: vec![ToolParam {
+            name: "steps".to_string(),
+            param_type: ParamType::CodeExplanationSteps,
+            required: true,
+            description: "Ordered walkthrough steps.".to_string(),
+        }],
     }
 }
 

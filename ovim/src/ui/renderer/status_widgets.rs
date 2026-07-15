@@ -723,6 +723,9 @@ fn hidden_ai_chat_status_for(
         ovim_core::editor::AiChatActivity::WaitingFolderApproval => {
             Some((" AI folder approval ".to_string(), ToastLevel::Warning))
         }
+        ovim_core::editor::AiChatActivity::WaitingCodeExplanation => {
+            Some((" AI walkthrough ready ".to_string(), ToastLevel::Warning))
+        }
         _ => Some((" AI working… ".to_string(), ToastLevel::Info)),
     }
 }
@@ -1340,7 +1343,9 @@ fn truncate_middle(text: &str, max_chars: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{compact_path_hint, hidden_ai_chat_status_for, truncate_middle, wrap_prompt_rows};
+    use super::{
+        compact_path_hint, hidden_ai_chat_status_for, truncate_middle, wrap_prompt_rows, ToastLevel,
+    };
 
     #[test]
     fn test_wrap_prompt_rows_preserves_text_across_rows() {
@@ -1404,5 +1409,10 @@ mod tests {
         let (text, _) = hidden_ai_chat_status_for(false, AiChatActivity::RunningShell)
             .expect("hidden AI status");
         assert_eq!(text, " AI working… ");
+        let (text, level) =
+            hidden_ai_chat_status_for(false, AiChatActivity::WaitingCodeExplanation)
+                .expect("walkthrough status");
+        assert_eq!(text, " AI walkthrough ready ");
+        assert_eq!(level, ToastLevel::Warning);
     }
 }

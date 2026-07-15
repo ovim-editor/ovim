@@ -90,6 +90,36 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
                 "end": { "type": "integer" },
             },
         }),
+        ParamType::CodeExplanationSteps => json!({
+            "type": "array",
+            "description": description,
+            "minItems": 1,
+            "items": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "path": {
+                        "type": "string",
+                        "description": "Project-relative file path."
+                    },
+                    "start_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Required 1-indexed inclusive anchor line."
+                    },
+                    "end_line": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "description": "Optional 1-indexed inclusive end line for a cohesive block."
+                    },
+                    "comment": {
+                        "type": "string",
+                        "description": "What this location demonstrates and how it connects to the walkthrough."
+                    }
+                },
+                "required": ["path", "start_line", "comment"]
+            }
+        }),
     }
 }
 

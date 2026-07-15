@@ -27,6 +27,8 @@ pub enum ParamType {
     FilePath,
     LineNumber,
     LineRange,
+    /// Ordered code-walkthrough entries with a path, line range, and comment.
+    CodeExplanationSteps,
 }
 
 /// A single tool parameter.

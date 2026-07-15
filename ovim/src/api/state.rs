@@ -180,8 +180,21 @@ pub struct AiChatSnapshot {
     /// Blocking first-run/recovery setup currently shown by the chat UI.
     #[serde(default)]
     pub pending_setup: Option<String>,
+    /// Interactive code walkthrough currently blocking the agent tool call.
+    #[serde(default)]
+    pub code_explanation: Option<CodeExplanationSnapshot>,
     pub queued: Vec<QueuedChatSnapshot>,
     pub messages: Vec<AiChatMessageSnapshot>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CodeExplanationSnapshot {
+    pub current: usize,
+    pub total: usize,
+    pub path: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub comment: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

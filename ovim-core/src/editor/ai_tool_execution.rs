@@ -478,7 +478,7 @@ impl Editor {
         Ok(())
     }
 
-    fn handle_open_file_at_absolute_path(
+    pub(super) fn handle_open_file_at_absolute_path(
         &mut self,
         absolute_path: &Path,
         args: &serde_json::Value,

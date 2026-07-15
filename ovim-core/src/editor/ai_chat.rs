@@ -135,12 +135,20 @@ impl Editor {
                 || chat.pending_auto_mode_classification.is_some()
                 || chat.pending_shell_execution.is_some()
                 || chat.pending_web_execution.is_some()
+                || chat.pending_code_explanation.is_some()
         });
 
         self.flush_ai_runtime_stream_segments();
         self.commit_partial_streaming(&model_name);
 
-        let (pending_job, pending_approval, pending_classification, pending_shell, pending_web) = {
+        let (
+            pending_job,
+            pending_approval,
+            pending_classification,
+            pending_shell,
+            pending_web,
+            pending_explanation,
+        ) = {
             let chat = self.ai_state.chat.as_mut().expect("pending chat exists");
             (
                 chat.pending_job.take(),
@@ -148,6 +156,7 @@ impl Editor {
                 chat.pending_auto_mode_classification.take(),
                 chat.pending_shell_execution.take(),
                 chat.pending_web_execution.take(),
+                chat.pending_code_explanation.take(),
             )
         };
 
@@ -216,6 +225,50 @@ impl Editor {
                         .fail_tool(turn, tool, "cancelled by user")
                 {
                     crate::log_warn!("agent_runtime", "failed to cancel web tool: {error}");
+                }
+            }
+        }
+        if let Some(pending) = pending_explanation {
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.active_buffer_id = pending.original_active_buffer_id;
+            }
+            self.ai_state.active_selection = None;
+            match pending.continuation {
+                super::ai_chat_state::CodeExplanationContinuation::Dynamic {
+                    runtime_tool,
+                    runtime_turn,
+                    response,
+                } => {
+                    if let Err(error) = self.ai_state.agent_runtime.fail_tool(
+                        &runtime_turn,
+                        &runtime_tool,
+                        "cancelled by user",
+                    ) {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to cancel code walkthrough: {error}"
+                        );
+                    }
+                    let _ = response.send(Err("cancelled by user".into()));
+                }
+                super::ai_chat_state::CodeExplanationContinuation::Batch {
+                    runtime_tool,
+                    runtime_turn,
+                    ..
+                } => {
+                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
+                    {
+                        if let Err(error) =
+                            self.ai_state
+                                .agent_runtime
+                                .fail_tool(turn, tool, "cancelled by user")
+                        {
+                            crate::log_warn!(
+                                "agent_runtime",
+                                "failed to cancel code walkthrough: {error}"
+                            );
+                        }
+                    }
                 }
             }
         }
@@ -360,6 +413,7 @@ impl Editor {
                 || chat.pending_auto_mode_classification.is_some()
                 || chat.pending_shell_execution.is_some()
                 || chat.pending_web_execution.is_some()
+                || chat.pending_code_explanation.is_some()
         }) {
             if let Err(error) = self.heartbeat_ai_chat_lease() {
                 if self.fail_pending_shell_for_lost_lease(&error.to_string()) {
@@ -564,6 +618,39 @@ impl Editor {
                         self.ai_runtime_fail_turn(message);
                         self.clear_streaming_state();
                         return true;
+                    }
+                    if call.name == "explain_with_codebase" {
+                        let continuation =
+                            super::ai_chat_state::CodeExplanationContinuation::Dynamic {
+                                runtime_tool: tool.clone(),
+                                runtime_turn: turn.clone(),
+                                response,
+                            };
+                        match self.begin_code_explanation(call.clone(), continuation) {
+                            Ok(()) => {
+                                changed = true;
+                                continue;
+                            }
+                            Err((result, continuation)) => {
+                                let super::ai_chat_state::CodeExplanationContinuation::Dynamic {
+                                    runtime_tool,
+                                    runtime_turn,
+                                    response,
+                                } = *continuation
+                                else {
+                                    unreachable!("dynamic walkthrough retained batch continuation")
+                                };
+                                self.finish_dynamic_tool(
+                                    &runtime_turn,
+                                    &runtime_tool,
+                                    &call,
+                                    response,
+                                    result,
+                                );
+                                changed = true;
+                                continue;
+                            }
+                        }
                     }
                     let outcome = self.dispatch_tool_call_with_approval(&call, None);
                     let result = match outcome {
@@ -2797,6 +2884,94 @@ mod tests {
                 .count(),
             1
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn dynamic_code_walkthrough_blocks_provider_until_user_finishes() {
+        let repo = tempfile::tempdir().unwrap();
+        git2::Repository::init(repo.path()).unwrap();
+        let file = repo.path().join("main.rs");
+        std::fs::write(&file, "fn main() {\n    println!(\"hello\");\n}\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        open_test_chat(&mut editor);
+        let profile = editor.ai_state.active_profile.clone();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .get_mut(&profile)
+            .unwrap()
+            .scope
+            .files = crate::ai::FileScope::Project;
+        editor.set_viewport_height(24);
+
+        let turn = editor
+            .begin_ai_runtime_turn("explain the entry point")
+            .unwrap();
+        let run_id = turn.run_id.clone();
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let abort_handle = task.abort_handle();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.runtime_turn = Some(Box::new(turn.clone()));
+        chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
+            receiver: rx,
+            task,
+            profile_name: "test".into(),
+            model_name: "test".into(),
+            turn: Box::new(turn),
+            branch_generation: 0,
+            steer_tx: None,
+        });
+
+        let (response_tx, mut response_rx) = tokio::sync::oneshot::channel();
+        tx.send(StreamChunk::DynamicToolRequest {
+            call: ToolCallInfo {
+                id: "walkthrough-call".into(),
+                name: "explain_with_codebase".into(),
+                arguments: serde_json::json!({
+                    "steps": [{
+                        "path": "main.rs",
+                        "start_line": 1,
+                        "end_line": 3,
+                        "comment": "This is the executable entry point."
+                    }]
+                }),
+            },
+            response: response_tx,
+        })
+        .unwrap();
+
+        assert!(editor.poll_pending_ai_chat_job());
+        assert_eq!(
+            editor.ai_chat_activity(),
+            crate::editor::AiChatActivity::WaitingCodeExplanation
+        );
+        assert!(editor.ai_chat_has_pending_code_explanation());
+        assert!(matches!(
+            response_rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            events.last().unwrap().kind,
+            EventKind::ToolStarted(_)
+        ));
+
+        assert!(editor.finish_code_explanation(false));
+        let provider_result = response_rx.await.unwrap().unwrap();
+        assert!(provider_result.contains("completed the code walkthrough"));
+        assert!(!editor.ai_chat_has_pending_code_explanation());
+        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
+        assert!(matches!(
+            events.last().unwrap().kind,
+            EventKind::ToolResult(_)
+        ));
+
+        abort_handle.abort();
+        editor.discard_active_ai_chat("test cleanup");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

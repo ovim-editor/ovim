@@ -65,6 +65,38 @@ pub struct PendingWebExecution {
     pub task: tokio::task::JoinHandle<()>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeExplanationStep {
+    pub path: String,
+    pub absolute_path: PathBuf,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub comment: String,
+}
+
+pub enum CodeExplanationContinuation {
+    Batch {
+        runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+        runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,
+        remaining_tool_calls: Vec<ToolCallInfo>,
+        model_name: String,
+    },
+    Dynamic {
+        runtime_tool: crate::agent_runtime::PendingToolRef,
+        runtime_turn: crate::agent_runtime::PendingTurnRef,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    },
+}
+
+pub struct PendingCodeExplanation {
+    pub tool_call: ToolCallInfo,
+    pub steps: Vec<CodeExplanationStep>,
+    pub current: usize,
+    /// Tool navigation must not silently retarget later agent mutations.
+    pub original_active_buffer_id: BufferId,
+    pub continuation: CodeExplanationContinuation,
+}
+
 #[derive(Debug, Clone)]
 pub struct ExaSetupDialog {
     pub input: String,
@@ -156,6 +188,7 @@ pub enum AiChatActivity {
     RunningWeb,
     WaitingToolApproval,
     WaitingFolderApproval,
+    WaitingCodeExplanation,
 }
 
 impl AiChatActivity {
@@ -168,6 +201,7 @@ impl AiChatActivity {
             Self::RunningWeb => "running_web",
             Self::WaitingToolApproval => "waiting_tool_approval",
             Self::WaitingFolderApproval => "waiting_folder_approval",
+            Self::WaitingCodeExplanation => "waiting_code_explanation",
         }
     }
 
@@ -252,6 +286,8 @@ pub struct AiChatState {
     pub pending_auto_mode_classification: Option<PendingAutoModeClassification>,
     pub pending_shell_execution: Option<PendingShellExecution>,
     pub pending_web_execution: Option<PendingWebExecution>,
+    /// Interactive code walkthrough currently blocking the invoking tool.
+    pub pending_code_explanation: Option<PendingCodeExplanation>,
     /// First-chat-open prompt when session starts outside a git repo.
     pub pending_no_repo_folder_approval: Option<PathBuf>,
     /// Session-scoped roots explicitly approved for path-restricted tool access
@@ -288,6 +324,8 @@ impl AiChatState {
             AiChatActivity::WaitingToolApproval
         } else if self.pending_no_repo_folder_approval.is_some() {
             AiChatActivity::WaitingFolderApproval
+        } else if self.pending_code_explanation.is_some() {
+            AiChatActivity::WaitingCodeExplanation
         } else if self.pending_auto_mode_classification.is_some() {
             AiChatActivity::ClassifyingTool
         } else if self.pending_shell_execution.is_some() {
@@ -349,6 +387,7 @@ impl AiChatState {
             pending_auto_mode_classification: None,
             pending_shell_execution: None,
             pending_web_execution: None,
+            pending_code_explanation: None,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             tool_event_summaries: HashMap::new(),
