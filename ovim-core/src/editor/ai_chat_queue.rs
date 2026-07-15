@@ -189,40 +189,58 @@ impl Editor {
     /// follow-up. Any unconsumed steers become ordinary follow-ups when a turn
     /// completes without reaching another tool boundary.
     pub(crate) fn start_next_queued_ai_chat_input(&mut self) -> Result<bool> {
-        loop {
-            let item = self
-                .ai_state
-                .chat
-                .as_mut()
-                .and_then(|chat| chat.queued_inputs.pop_front());
-            let Some(mut item) = item else {
-                return Ok(false);
-            };
-            if item.kind == QueuedChatInputKind::Steer {
-                item.kind = QueuedChatInputKind::FollowUp;
-            }
-            if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.input = item.content;
-                chat.input_cursor = chat.input.len();
-                chat.pending_images = item.images;
-            }
-            match item.kind {
-                QueuedChatInputKind::Command => {
-                    let command = self.ai_chat_input().to_string();
-                    self.try_execute_ai_chat_slash_command(&command)?;
-                    // Invalid commands deliberately retain input for correction;
-                    // clear it before moving to the next scheduled item.
-                    if let Some(chat) = self.ai_state.chat.as_mut() {
-                        chat.input.clear();
-                        chat.input_cursor = 0;
+        let draft = self.ai_state.chat.as_mut().map(|chat| {
+            (
+                std::mem::take(&mut chat.input),
+                chat.input_cursor,
+                std::mem::take(&mut chat.pending_images),
+            )
+        });
+
+        let result = (|| {
+            loop {
+                let item = self
+                    .ai_state
+                    .chat
+                    .as_mut()
+                    .and_then(|chat| chat.queued_inputs.pop_front());
+                let Some(mut item) = item else {
+                    return Ok(false);
+                };
+                if item.kind == QueuedChatInputKind::Steer {
+                    item.kind = QueuedChatInputKind::FollowUp;
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.input = item.content;
+                    chat.input_cursor = chat.input.len();
+                    chat.pending_images = item.images;
+                }
+                match item.kind {
+                    QueuedChatInputKind::Command => {
+                        let command = self.ai_chat_input().to_string();
+                        self.try_execute_ai_chat_slash_command(&command)?;
+                        // A scheduled command has already been consumed. Clear
+                        // its temporary composer value before the next item.
+                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                            chat.input.clear();
+                            chat.input_cursor = 0;
+                        }
+                    }
+                    QueuedChatInputKind::FollowUp | QueuedChatInputKind::Steer => {
+                        self.submit_ai_chat_message()?;
+                        return Ok(true);
                     }
                 }
-                QueuedChatInputKind::FollowUp | QueuedChatInputKind::Steer => {
-                    self.submit_ai_chat_message()?;
-                    return Ok(true);
-                }
             }
+        })();
+
+        if let (Some(chat), Some((input, cursor, images))) = (self.ai_state.chat.as_mut(), draft) {
+            chat.input = input;
+            chat.input_cursor = cursor.min(chat.input.len());
+            chat.pending_images = images;
         }
+
+        result
     }
 }
 
@@ -329,5 +347,29 @@ mod tests {
         assert_eq!(message.content, "inspect this");
         assert_eq!(message.images.len(), 1);
         assert_eq!(message.images[0].path, PathBuf::from("/tmp/sent.png"));
+    }
+
+    #[tokio::test]
+    async fn starting_older_queued_follow_up_preserves_recalled_composer_draft() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "newer recalled draft".into();
+        chat.input_cursor = chat.input.len();
+        chat.queued_inputs.push_back(QueuedChatInput {
+            id: 1,
+            kind: QueuedChatInputKind::FollowUp,
+            content: "older queued follow-up".into(),
+            images: Vec::new(),
+        });
+
+        assert!(editor.start_next_queued_ai_chat_input().unwrap());
+
+        assert_eq!(editor.ai_chat_input(), "newer recalled draft");
+        assert_eq!(
+            editor.ai_chat_messages().last().unwrap().content,
+            "older queued follow-up"
+        );
+        editor.cancel_ai_chat_generation();
     }
 }
