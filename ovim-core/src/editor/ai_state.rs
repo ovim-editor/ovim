@@ -106,6 +106,9 @@ pub struct AiState {
     /// recovery, and leases use exactly the same event store as live appends.
     pub(crate) durable_runs: Option<Box<DurableRunServices>>,
     pub(crate) durable_chat_bindings: HashMap<(BufferId, String), DurableChatBinding>,
+    /// Persisted conversations are restored only when explicitly enabled by
+    /// the process entry point (`ovim --resume`).
+    pub(crate) resume_durable_conversations: bool,
     pub config: AiConfig,
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
@@ -177,6 +180,7 @@ impl AiState {
             run_storage_warning,
             durable_runs: durable_runs.map(Box::new),
             durable_chat_bindings: HashMap::new(),
+            resume_durable_conversations: false,
             config,
             prompt: AiPromptState::default(),
             active_selection: None,

@@ -15,6 +15,13 @@ use super::ai_state::DurableChatBinding;
 use super::Editor;
 
 impl Editor {
+    /// Controls whether opening a chat may restore persisted conversation
+    /// history. The default is false; the binary enables it only for
+    /// `ovim --resume`.
+    pub fn set_ai_conversation_resume_enabled(&mut self, enabled: bool) {
+        self.ai_state.resume_durable_conversations = enabled;
+    }
+
     /// Establish durable catalog identity and restore history before opening
     /// the UI. Buffer ids are deliberately absent from the runtime locator.
     pub(crate) fn prepare_durable_ai_chat(
@@ -73,7 +80,7 @@ impl Editor {
                 common_git_dir,
                 worktree_aliases: vec![worktree.clone()],
             })?;
-        let binding = services.catalog.open_conversation(
+        let mut binding = services.catalog.open_conversation(
             ConversationKey {
                 repository_id: repository.repository_id,
                 scope: conversation_scope(self.get_buffer_by_id(buffer_id), &worktree)?,
@@ -91,9 +98,18 @@ impl Editor {
             services.owner.clone(),
             services.lease_duration,
         )?;
+        let start_fresh = !self.ai_state.resume_durable_conversations
+            && !services.store.events(&binding.run_id)?.is_empty();
+        if start_fresh {
+            binding = services.catalog.restart_conversation(
+                &binding,
+                &services.owner,
+                services.lease_duration,
+            )?;
+        }
         let locator = ConversationLocator(format!("conversation:{}", binding.conversation_id));
         let prepared = (|| -> Result<Vec<EventEnvelope>> {
-            if stale {
+            if stale && !start_fresh {
                 let sink: Arc<dyn RunEventSink> = services.store.clone();
                 let plan = RecoveryPlanner::new(sink).plan(&binding.run_id)?;
                 apply_recovery(&plan, services.store.as_ref(), true)?;
@@ -161,6 +177,12 @@ impl Editor {
                 lease_renewed_at: std::time::Instant::now(),
             },
         );
+        if start_fresh {
+            self.set_lsp_status(
+                "Started a fresh AI conversation; launch ovim with --resume to restore history"
+                    .into(),
+            );
+        }
         Ok(())
     }
 
@@ -352,6 +374,7 @@ mod tests {
         let mut editor = Editor::default();
         editor.open_file(file).unwrap();
         editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
+        editor.set_ai_conversation_resume_enabled(true);
         editor
     }
 
@@ -417,6 +440,49 @@ mod tests {
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "inspect this");
         assert_eq!(messages[1].content, "It is small.");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn reopening_without_resume_starts_fresh_and_preserves_old_run() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        let old_run = {
+            let mut editor = durable_editor(&file, layout.clone());
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            let turn = editor.begin_ai_runtime_turn("expensive history").unwrap();
+            editor
+                .ai_state
+                .agent_runtime
+                .append_agent_message(&turn, "large answer")
+                .unwrap();
+            editor.ai_state.agent_runtime.complete_turn(&turn).unwrap();
+            turn.run_id
+        };
+
+        let mut reopened = durable_editor(&file, layout.clone());
+        reopened.set_ai_conversation_resume_enabled(false);
+        reopened.open_ai_chat(ChatOpts::default()).unwrap();
+        let fresh_run = reopened
+            .ai_state
+            .durable_chat_bindings
+            .get(&reopened.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .run_id
+            .clone();
+
+        assert_ne!(fresh_run, old_run);
+        assert!(reopened.ai_chat_messages().is_empty());
+        assert!(!reopened
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .unwrap()
+            .store
+            .events(&old_run)
+            .unwrap()
+            .is_empty());
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -131,6 +131,19 @@ top right of the editor; a paused approval uses an attention badge instead.
 Press Ctrl-C with the chat open to stop the current generation without closing
 or clearing the conversation; any partial response remains in history.
 
+Persisted conversations are not restored automatically when starting a new
+Ovim process. This avoids accidentally sending a large historical conversation
+to a provider. Start Ovim with `--resume` only when you explicitly want to
+restore the conversation associated with the file, repository, and chat name:
+
+```sh
+ovim --resume path/to/file.rs
+```
+
+Without `--resume`, opening AI chat creates a fresh durable conversation while
+preserving the previous run on disk. Hiding and reopening chat within the same
+Ovim process still keeps the live conversation as described above.
+
 Chat slash commands are handled by ovim rather than sent to the provider:
 
 Typing `/` or a partial command name opens an autocomplete popup. Use Up/Down

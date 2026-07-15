@@ -92,6 +92,7 @@ async fn main() -> Result<()> {
     let session_name = cli.session.clone();
     let dimension = cli.dimension;
     let render = cli.render;
+    let resume_conversations = cli.resume;
 
     // Track runtime mode for components that need different behavior in headless mode.
     if headless {
@@ -134,6 +135,7 @@ async fn main() -> Result<()> {
         // No file specified, start with empty buffer (dashboard will show)
         Editor::new()
     };
+    editor.set_ai_conversation_resume_enabled(resume_conversations);
     // Set up cat animation (concrete type lives in binary crate)
     editor.ui_panels.cat_animation = Some(Box::new(ovim::ui::CatAnimation::new()));
 

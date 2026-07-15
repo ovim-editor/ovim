@@ -18,6 +18,10 @@ pub struct Cli {
     #[arg(long)]
     pub session: Option<String>,
 
+    /// Resume persisted AI conversations instead of starting fresh chats
+    #[arg(long)]
+    pub resume: bool,
+
     /// Set viewport dimensions (e.g., 80x24)
     #[arg(long, value_parser = parse_dimensions)]
     pub dimension: Option<(u16, u16)>,
@@ -557,5 +561,14 @@ mod tests {
         let arg = FileArg::parse("file:0");
         assert_eq!(arg.path, "file:0");
         assert_eq!(arg.line, None);
+    }
+
+    #[test]
+    fn conversation_resume_is_opt_in() {
+        let fresh = Cli::try_parse_from(["ovim"]).unwrap();
+        assert!(!fresh.resume);
+
+        let resumed = Cli::try_parse_from(["ovim", "--resume"]).unwrap();
+        assert!(resumed.resume);
     }
 }
