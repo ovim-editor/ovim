@@ -68,6 +68,13 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
         .ok_or_else(|| JsonRpcError::invalid_params("Missing 'name' field"))?;
 
     let arguments = params.get("arguments").cloned().unwrap_or(json!({}));
+    if let Some(session_name) = arguments
+        .get("session")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+    {
+        return forward_tool_call_to_session(&session_name, tool_name, arguments).await;
+    }
 
     match tool_name {
         "send_keys" => {
@@ -565,6 +572,54 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
             tool_name
         ))),
     }
+}
+
+async fn forward_tool_call_to_session(
+    session_name: &str,
+    tool_name: &str,
+    mut arguments: Value,
+) -> Result<Value, JsonRpcError> {
+    let session = crate::session::SessionInfo::read(session_name).map_err(|error| {
+        JsonRpcError::invalid_params(&format!("Session '{session_name}' not found: {error}"))
+    })?;
+    if let Some(arguments) = arguments.as_object_mut() {
+        arguments.remove("session");
+    }
+    let response = reqwest::Client::new()
+        .post(format!("http://127.0.0.1:{}/v1/mcp", session.port))
+        .json(&json!({
+            "jsonrpc": "2.0",
+            "id": "ovim-session-forward",
+            "method": "tools/call",
+            "params": { "name": tool_name, "arguments": arguments },
+        }))
+        .send()
+        .await
+        .map_err(|error| {
+            JsonRpcError::internal_error(&format!(
+                "Failed to contact session '{session_name}': {error}"
+            ))
+        })?;
+    let value: Value = response.json().await.map_err(|error| {
+        JsonRpcError::internal_error(&format!(
+            "Session '{session_name}' returned invalid MCP JSON: {error}"
+        ))
+    })?;
+    if let Some(error) = value.get("error") {
+        return Err(JsonRpcError {
+            code: error.get("code").and_then(Value::as_i64).unwrap_or(-32603) as i32,
+            message: error
+                .get("message")
+                .and_then(Value::as_str)
+                .unwrap_or("Forwarded MCP request failed")
+                .to_string(),
+            data: error.get("data").cloned(),
+        });
+    }
+    value
+        .get("result")
+        .cloned()
+        .ok_or_else(|| JsonRpcError::internal_error("Forwarded MCP response omitted result"))
 }
 
 /// Handle resources/read method

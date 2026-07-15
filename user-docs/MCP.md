@@ -64,7 +64,7 @@ This tool is optimized for AI workflows - use it to get contextual information w
 
 ## Session Parameter
 
-All MCP tools (except `list_sessions`) support an optional `session` parameter to specify which session to target. This is useful when multiple ovim sessions are running:
+All MCP tools (except `list_sessions`) support an optional `session` parameter to specify which session to target. This works through both the stdio broker and a session's HTTP MCP endpoint, which forwards the call to the selected local session. It is useful when multiple ovim sessions are running:
 
 ```
 send_keys(keys="ggdd", session="my_session")
