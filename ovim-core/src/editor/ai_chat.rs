@@ -291,6 +291,11 @@ impl Editor {
             input.clone()
         };
 
+        // Queue, approval, and slash-command notices describe the previous
+        // interaction. Do not let them masquerade as the status of a newly
+        // submitted agent turn, especially in headless snapshots.
+        self.set_lsp_status(String::new());
+
         // Allocate stable ovim run/agent/turn identity before provider work.
         let runtime_turn = self
             .begin_ai_runtime_turn(&runtime_input)
@@ -2497,6 +2502,21 @@ mod tests {
             EventKind::TurnLifecycle(event)
                 if event.state == TurnLifecycleState::Interrupted
         ));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn submitting_new_turn_clears_stale_chat_notice() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        editor.set_lsp_status("Queued message moved back to the composer".into());
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "new request".into();
+        chat.input_cursor = chat.input.len();
+
+        editor.submit_ai_chat_message().unwrap();
+
+        assert_eq!(editor.lsp_status(), "");
+        editor.cancel_ai_chat_generation();
     }
 
     #[tokio::test(flavor = "current_thread")]
