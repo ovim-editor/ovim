@@ -6,6 +6,8 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 
 <img width="1470" height="956" alt="Ovim - start screen" src="https://github.com/user-attachments/assets/683cc32c-4553-4900-a014-8d5bd970e00e" />
 <img width="1470" height="956" alt="Ovim - fuzzy finder" src="https://github.com/user-attachments/assets/9f4fc346-50ea-4733-9386-eeb4b0082822" />
+<img width="1470" height="956" alt="code-explanation-screenshot" src="https://github.com/user-attachments/assets/917f4647-df45-4600-a75f-b2cd72f79934" />
+
 
 ## What You Get Out of the Box
 
@@ -99,6 +101,8 @@ vim.ai.setup({
 ```
 
 All `:set` options mirror Vim — `:set wrap`, `:set clipboard=unnamedplus`, `:set textwidth=80`, etc.
+
+To enable Exa for web searches in the AI chat, get an API key at https://exa.ai and set it up in ovim with `:exa`.
 
 See [Configuration](user-docs/configuration.md) and [Options Reference](user-docs/options.md) for the full list.
 
