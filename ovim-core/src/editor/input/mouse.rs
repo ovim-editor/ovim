@@ -11,6 +11,26 @@ use crate::unicode::{char_to_grapheme_col, grapheme_count, GraphemeCol};
 /// Top-level mouse event dispatcher.
 /// Returns `Ok(Some(url))` when a concealed markdown link was clicked and should be opened.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Option<String>> {
+    if editor.ai_chat_has_pending_code_explanation() {
+        // The walkthrough owns keyboard navigation and leaves the source pane
+        // visible only for reading. Never let a pointer gesture turn that pane
+        // into a Visual-mode selection. This also repairs mode corruption from
+        // a gesture that began before the walkthrough was rendered.
+        if editor.mode() != Mode::AiChat {
+            editor.set_mode(Mode::AiChat);
+        }
+        if matches!(
+            event.kind,
+            MouseEventKind::Down(MouseButton::Left)
+                | MouseEventKind::Drag(MouseButton::Left)
+                | MouseEventKind::Up(MouseButton::Left)
+        ) {
+            editor.render_cache.mouse_state.is_dragging = false;
+            editor.render_cache.mouse_state.drag_origin = None;
+            return Ok(None);
+        }
+    }
+
     match event.kind {
         MouseEventKind::Down(MouseButton::Left) => {
             return handle_left_click(editor, event.column, event.row);
@@ -389,16 +409,6 @@ fn should_ignore_click(mode: Mode) -> bool {
 
 fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<String>> {
     let mode = editor.mode();
-
-    // A walkthrough intentionally keeps AiChat mode alive while presenting the
-    // source buffer. Clicking that source is not an editor-mode transition: if
-    // we move the real cursor here, normal cursor visibility rules can fight a
-    // subsequent wheel scroll and pull the viewport away from the explained
-    // range. Keyboard walkthrough controls remain handled by ai_chat_mode;
-    // wheel events still flow through handle_scroll below.
-    if mode == Mode::AiChat && editor.ai_chat_has_pending_code_explanation() {
-        return Ok(None);
-    }
 
     if mode == Mode::AiChat {
         if editor.ai_chat_has_exa_setup_dialog() {

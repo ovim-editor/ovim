@@ -737,6 +737,77 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_controls_recover_after_visual_mode_corruption() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([
+            {
+                "path": "first.rs",
+                "start_line": 2,
+                "comment": "The entry point validates the request."
+            },
+            {
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "The handoff occurs here."
+            }
+        ]));
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+
+        // Before pointer gestures were made inert, dragging over walkthrough
+        // code could switch the editor to Visual mode and bypass AiChat input.
+        editor.set_mode(crate::mode::Mode::Visual);
+        crate::editor::input::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Right, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
+        assert_eq!(editor.ai_code_explanation_view().unwrap().current, 2);
+
+        editor.set_mode(crate::mode::Mode::Visual);
+        crate::editor::input::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Esc, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert!(!editor.ai_chat_has_pending_code_explanation());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_pointer_gestures_cannot_enter_visual_mode() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([{
+            "path": "first.rs",
+            "start_line": 2,
+            "comment": "The entry point validates the request."
+        }]));
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+
+        // Simulate a drag already in progress when the walkthrough takes over.
+        editor.set_mode(crate::mode::Mode::Visual);
+        editor.render_cache.mouse_state.is_dragging = true;
+        editor.render_cache.mouse_state.drag_origin = Some((0, 0));
+        crate::editor::input::mouse::handle_mouse_event(
+            &mut editor,
+            crate::MouseEvent {
+                kind: crate::MouseEventKind::Drag(crate::MouseButton::Left),
+                column: 10,
+                row: 5,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
+        assert!(!editor.render_cache.mouse_state.is_dragging);
+        assert!(editor.render_cache.mouse_state.drag_origin.is_none());
+        assert!(editor.ai_chat_has_pending_code_explanation());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn completed_walkthrough_replays_locally_without_changing_history() {
         let (_dir, mut editor, _first, _second) = setup_editor();
         let tool_call = call(json!([

@@ -135,6 +135,14 @@ impl InputHandler {
             return Ok(());
         }
 
+        // A walkthrough is a modal interaction even though its source buffer
+        // remains visible. Recover the owning mode before dispatch so a stale
+        // mouse drag or any other mode transition cannot strand the user in
+        // Visual/Normal mode with the walkthrough controls unreachable.
+        if editor.ai_chat_has_pending_code_explanation() && editor.mode() != Mode::AiChat {
+            editor.set_mode(Mode::AiChat);
+        }
+
         // Global keybindings (work in any mode)
         // Cmd+1 - toggle file tree
         if key_event.code == KeyCode::Char('1') && key_event.modifiers.contains(Modifiers::SUPER) {
