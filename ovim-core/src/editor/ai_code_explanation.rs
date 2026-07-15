@@ -21,7 +21,11 @@ impl Editor {
     /// The upper bound keeps the schema useful before the first render and on
     /// unusually tall terminals without encouraging broad, unfocused blocks.
     pub fn ai_code_explanation_safe_range_lines(&self) -> usize {
-        let viewport = self.viewport_height();
+        let viewport = self
+            .render_cache
+            .last_buffer_area
+            .map(|area| area.height as usize)
+            .unwrap_or_else(|| self.viewport_height());
         if viewport == 0 {
             FALLBACK_SAFE_RANGE_LINES
         } else {
@@ -341,12 +345,26 @@ impl Editor {
                     "step {step_number} start_line ({start_line}) exceeds '{path}' line count ({line_count})"
                 )));
             }
+            let end_line = end_line.min(line_count);
+            if self.options.wrap && self.render_cache.last_text_width > 0 {
+                let visual_rows = self.code_explanation_visual_rows(
+                    &absolute_path,
+                    start_line,
+                    end_line,
+                    self.render_cache.last_text_width,
+                );
+                if visual_rows > safe_range {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} wraps to {visual_rows} visual rows at the current editor width, but only {safe_range} fit above the walkthrough card; use a smaller range"
+                    )));
+                }
+            }
 
             steps.push(CodeExplanationStep {
                 path,
                 absolute_path,
                 start_line,
-                end_line: end_line.min(line_count),
+                end_line,
                 comment,
             });
         }
@@ -372,6 +390,46 @@ impl Editor {
                     .map(|content| content.lines().count().max(1))
             })
             .unwrap_or(1)
+    }
+
+    fn code_explanation_visual_rows(
+        &self,
+        path: &Path,
+        start_line: usize,
+        end_line: usize,
+        width: usize,
+    ) -> usize {
+        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+        if let Some(buffer) = self.buffers.iter().find(|buffer| {
+            buffer.file_path().is_some_and(|candidate| {
+                PathBuf::from(candidate)
+                    .canonicalize()
+                    .unwrap_or_else(|_| PathBuf::from(candidate))
+                    == canonical
+            })
+        }) {
+            return (start_line.saturating_sub(1)..end_line)
+                .map(|line| {
+                    crate::wrap::visual_line_count(
+                        buffer.line_text(line).as_deref().unwrap_or(""),
+                        width,
+                        self.options.tab_width,
+                    )
+                })
+                .sum();
+        }
+
+        let content = std::fs::read_to_string(path).unwrap_or_default();
+        let lines = content.lines().collect::<Vec<_>>();
+        (start_line.saturating_sub(1)..end_line)
+            .map(|line| {
+                crate::wrap::visual_line_count(
+                    lines.get(line).copied().unwrap_or(""),
+                    width,
+                    self.options.tab_width,
+                )
+            })
+            .sum()
     }
 
     fn show_current_code_explanation_step(&mut self) -> Result<(), ToolResult> {
@@ -402,6 +460,15 @@ impl Editor {
         if let ToolResult::Error(error) = selected {
             return Err(ToolResult::Error(error));
         }
+        // `select_text` centers the midpoint for general navigation. A
+        // walkthrough instead owns the bottom rows with its card, so pin the
+        // range's first line to the top and let the validated visual-row budget
+        // flow downward without being obscured.
+        self.buffer_mut().cursor_mut().set_position(
+            step.start_line.saturating_sub(1),
+            crate::unicode::GraphemeCol(0),
+        );
+        self.move_cursor_line_to_top_with_offset(0);
         Ok(())
     }
 }
@@ -503,6 +570,18 @@ mod tests {
         assert_eq!(editor.ai_code_explanation_safe_range_lines(), 14);
         editor.set_viewport_height(6);
         assert_eq!(editor.ai_code_explanation_safe_range_lines(), 1);
+        editor.set_last_layout(
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 18,
+            },
+            0,
+            72,
+            0,
+        );
+        assert_eq!(editor.ai_code_explanation_safe_range_lines(), 8);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -536,6 +615,7 @@ mod tests {
         assert_eq!(editor.ai_code_explanation_summary().unwrap().0, 1);
         let selection = editor.ai_state.active_selection.as_ref().unwrap();
         assert_eq!((selection.start_line, selection.end_line), (1, 3));
+        assert_eq!(editor.scroll_offset(), 1);
 
         assert!(editor.move_code_explanation(true));
         assert_eq!(
@@ -574,6 +654,47 @@ mod tests {
         };
         assert!(error.contains("safe range is 14"), "{error}");
         assert!(!editor.ai_chat_has_pending_code_explanation());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_rejects_logical_ranges_that_overflow_after_wrapping() {
+        let (dir, mut editor, _first, _second) = setup_editor();
+        let wrapped = dir.path().join("wrapped.rs");
+        std::fs::write(
+            &wrapped,
+            (1..=20)
+                .map(|line| format!("// line {line} has enough words to wrap several times\n"))
+                .collect::<String>(),
+        )
+        .unwrap();
+        editor.options.wrap = true;
+        editor.set_last_layout(
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 24,
+                height: 24,
+            },
+            4,
+            12,
+            0,
+        );
+        let tool_call = call(json!([{
+            "path": "wrapped.rs",
+            "start_line": 1,
+            "end_line": 4,
+            "comment": "A logically short but visually tall range."
+        }]));
+
+        let error = editor
+            .begin_code_explanation(tool_call, batch_continuation())
+            .expect_err("wrapped range should fail")
+            .0;
+        let ToolResult::Error(error) = error else {
+            panic!("expected tool error")
+        };
+        assert!(error.contains("visual rows"), "{error}");
+        assert!(error.contains("only 14 fit"), "{error}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -651,7 +772,7 @@ mod tests {
         assert!(schema["function"]["description"]
             .as_str()
             .unwrap()
-            .contains("at most 14 code lines"));
+            .contains("at most 14 visual code rows"));
         let steps = &schema["function"]["parameters"]["properties"]["steps"];
         assert_eq!(steps["type"], "array");
         assert_eq!(

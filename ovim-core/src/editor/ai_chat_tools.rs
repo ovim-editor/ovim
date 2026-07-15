@@ -124,7 +124,7 @@ impl Editor {
             .find(|tool| tool.name == "explain_with_codebase")
         {
             tool.description.push_str(&format!(
-                " The current editor can reliably show at most {safe_range} code lines per step; every inclusive start_line..end_line range must stay within that limit. Keep each comment concise enough to display in at most 5 wrapped rows."
+                " The current editor can reliably show at most {safe_range} visual code rows per step; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each comment concise enough to display in at most 5 wrapped rows."
             ));
             if let Some(steps) = tool
                 .parameters
@@ -132,7 +132,7 @@ impl Editor {
                 .find(|param| param.name == "steps")
             {
                 steps.description = format!(
-                    "Ordered walkthrough steps. Each optional inclusive range may span at most {safe_range} code lines in the current viewport, and each comment may occupy at most 5 wrapped rows; split larger regions or explanations into focused conceptual steps."
+                    "Ordered walkthrough steps. Each optional inclusive range may occupy at most {safe_range} visual code rows in the current viewport after soft wrapping, and each comment may occupy at most 5 wrapped rows; split larger regions or explanations into focused conceptual steps."
                 );
             }
         }
