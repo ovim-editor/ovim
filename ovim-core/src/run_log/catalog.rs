@@ -400,6 +400,98 @@ impl RunCatalog {
         Ok(binding)
     }
 
+    /// Atomically abandons a broken conversation binding in favor of a fresh
+    /// run. The prior run's event database is deliberately retained for
+    /// diagnosis; only the catalog pointer used for future chat opens changes.
+    ///
+    /// The caller must own the previous run's lease. Acquiring the replacement
+    /// lease in the same transaction prevents a second ovim process from
+    /// attaching to the fresh binding between restart and restore.
+    pub fn restart_conversation(
+        &self,
+        binding: &ConversationBinding,
+        owner: &LeaseOwner,
+        duration: Duration,
+    ) -> Result<ConversationBinding, CatalogError> {
+        validate_owner(owner)?;
+        let (scope_kind, scope_path) = normalized_scope(&binding.key.scope)?;
+        let now = self.clock.now_millis();
+        let expires = lease_expiry(now, duration)?;
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage("begin conversation restart", error))?;
+        let current = read_binding(&transaction, &binding.key, scope_kind, &scope_path)?
+            .ok_or_else(|| {
+                CatalogError::InvalidConversationKey("conversation binding disappeared".into())
+            })?;
+        if current != *binding {
+            return Err(CatalogError::InvalidConversationKey(
+                "conversation binding changed before restart".into(),
+            ));
+        }
+        match read_lease(&transaction, &binding.run_id)? {
+            Some(lease) if lease.owner.instance_id == owner.instance_id => {}
+            Some(lease) => return Err(CatalogError::LeaseNotOwned(lease)),
+            None => {
+                return Err(CatalogError::InvalidConversationKey(
+                    "run has no lease".into(),
+                ))
+            }
+        }
+
+        let fresh = ConversationBinding {
+            key: binding.key.clone(),
+            conversation_id: ConversationId::new(),
+            run_id: RunId::new(),
+            root_agent_id: AgentId::new(),
+            workspace_id: WorkspaceId::new(),
+            selected_branch_id: BranchId::new(),
+        };
+        transaction
+            .execute(
+                "DELETE FROM run_leases WHERE run_id=?1 AND instance_id=?2",
+                params![binding.run_id.as_str(), owner.instance_id],
+            )
+            .map_err(|error| storage("release broken conversation lease", error))?;
+        transaction
+            .execute(
+                "UPDATE conversation_bindings SET conversation_id=?5, run_id=?6, root_agent_id=?7, \
+                 workspace_id=?8, selected_branch_id=?9, updated_at_millis=?10 \
+                 WHERE repository_id=?1 AND scope_kind=?2 AND scope_path=?3 AND logical_name=?4",
+                params![
+                    fresh.key.repository_id.as_str(),
+                    scope_kind,
+                    scope_path,
+                    fresh.key.logical_name,
+                    fresh.conversation_id.as_str(),
+                    fresh.run_id.as_str(),
+                    fresh.root_agent_id.as_str(),
+                    fresh.workspace_id.as_str(),
+                    fresh.selected_branch_id.as_str(),
+                    now,
+                ],
+            )
+            .map_err(|error| storage("replace broken conversation binding", error))?;
+        transaction
+            .execute(
+                "INSERT INTO run_leases(run_id, instance_id, pid_marker, heartbeat_at_millis, expires_at_millis) \
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![
+                    fresh.run_id.as_str(),
+                    owner.instance_id,
+                    owner.pid_marker,
+                    now,
+                    expires,
+                ],
+            )
+            .map_err(|error| storage("acquire restarted conversation lease", error))?;
+        transaction
+            .commit()
+            .map_err(|error| storage("commit conversation restart", error))?;
+        Ok(fresh)
+    }
+
     pub fn update_selected_branch(
         &self,
         key: &ConversationKey,
@@ -1281,6 +1373,57 @@ mod tests {
                 .unwrap()
                 .selected_branch_id,
             selected
+        );
+    }
+
+    #[test]
+    fn restarting_a_conversation_replaces_its_binding_and_lease() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let clock = Arc::new(TestClock::new(1_000));
+        let catalog = RunCatalog::open_with_clock(&layout, clock).unwrap();
+        let repository = catalog.register_repository(registration("repo")).unwrap();
+        let key = ConversationKey {
+            repository_id: repository.repository_id,
+            scope: ConversationScope::NoFile,
+            logical_name: "chat".into(),
+        };
+        let original = catalog
+            .open_conversation(key.clone(), BranchId::new())
+            .unwrap();
+        let owner = LeaseOwner {
+            instance_id: "instance-a".into(),
+            pid_marker: Some(42),
+        };
+        catalog
+            .acquire_lease(
+                original.run_id.clone(),
+                owner.clone(),
+                Duration::from_secs(30),
+            )
+            .unwrap();
+
+        let fresh = catalog
+            .restart_conversation(&original, &owner, Duration::from_secs(30))
+            .unwrap();
+
+        assert_eq!(fresh.key, key);
+        assert_ne!(fresh.conversation_id, original.conversation_id);
+        assert_ne!(fresh.run_id, original.run_id);
+        assert_ne!(fresh.root_agent_id, original.root_agent_id);
+        assert_ne!(fresh.workspace_id, original.workspace_id);
+        assert_ne!(fresh.selected_branch_id, original.selected_branch_id);
+        assert_eq!(
+            catalog.lease_status(&original.run_id).unwrap(),
+            LeaseStatus::Missing
+        );
+        assert!(matches!(
+            catalog.lease_status(&fresh.run_id).unwrap(),
+            LeaseStatus::Active(lease) if lease.owner == owner
+        ));
+        assert_eq!(
+            catalog.open_conversation(key, BranchId::new()).unwrap(),
+            fresh
         );
     }
 

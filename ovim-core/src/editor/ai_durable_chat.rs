@@ -106,8 +106,39 @@ impl Editor {
             )?;
             Ok(events)
         })();
-        let events = match prepared {
-            Ok(events) => events,
+        let (binding, locator, events) = match prepared {
+            Ok(events) => (binding, locator, events),
+            Err(error)
+                if error
+                    .downcast_ref::<crate::agent_runtime::AgentRuntimeError>()
+                    .is_some_and(|error| {
+                        matches!(
+                            error,
+                            crate::agent_runtime::AgentRuntimeError::InvalidHistory(_)
+                        )
+                    }) =>
+            {
+                // A malformed historical causal chain must not block a new
+                // chat indefinitely. Keep its run database intact for
+                // diagnostics, but atomically point this conversation key at
+                // a fresh run that we already own.
+                let fresh = services.catalog.restart_conversation(
+                    &binding,
+                    &services.owner,
+                    services.lease_duration,
+                )?;
+                let fresh_locator =
+                    ConversationLocator(format!("conversation:{}", fresh.conversation_id));
+                self.ai_state.agent_runtime.restore_conversation(
+                    fresh_locator.clone(),
+                    fresh.clone(),
+                    Vec::new(),
+                )?;
+                self.set_lsp_status(
+                    "Previous AI chat history was invalid; started a fresh chat".into(),
+                );
+                (fresh, fresh_locator, Vec::new())
+            }
             Err(error) => {
                 let _ = services
                     .catalog
@@ -443,7 +474,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn failed_restore_releases_the_acquired_lease() {
+    async fn invalid_history_starts_a_fresh_chat_and_preserves_the_broken_run() {
         let (_repository, file) = repository_file();
         let storage = tempfile::tempdir().unwrap();
         let layout = RunStorageLayout::new(storage.path().join("runs"));
@@ -452,6 +483,7 @@ mod tests {
             RepositorySnapshot::capture(&file, crate::run_log::RepositoryId::new()).unwrap();
         let worktree = snapshot.local_paths.workdir.unwrap();
         let services = editor.ai_state.durable_runs.as_ref().unwrap();
+        let store = services.store.clone();
         let repository = services
             .catalog
             .register_repository(RepositoryRegistration {
@@ -484,11 +516,33 @@ mod tests {
                 },
             ))
             .unwrap();
-        let run_id = binding.run_id;
+        let broken_run_id = binding.run_id;
 
         let buffer_id = editor.buffer().id();
-        assert!(editor.prepare_durable_ai_chat(buffer_id, "chat").is_err());
+        editor.prepare_durable_ai_chat(buffer_id, "chat").unwrap();
+        let fresh_binding = editor
+            .ai_state
+            .durable_chat_bindings
+            .get(&(buffer_id, "chat".to_string()))
+            .unwrap()
+            .binding
+            .clone();
+        assert_ne!(fresh_binding.run_id, broken_run_id);
+        assert_eq!(store.events(&broken_run_id).unwrap().len(), 1);
+        assert!(store.events(&fresh_binding.run_id).unwrap().is_empty());
+        assert!(editor.durable_ai_mutations_available());
+
         let catalog = crate::run_log::RunCatalog::open(&layout).unwrap();
-        assert_eq!(catalog.lease_status(&run_id).unwrap(), LeaseStatus::Missing);
+        assert_eq!(
+            catalog.lease_status(&broken_run_id).unwrap(),
+            LeaseStatus::Missing
+        );
+        assert!(matches!(
+            catalog.lease_status(&fresh_binding.run_id).unwrap(),
+            LeaseStatus::Active(_)
+        ));
+
+        let turn = editor.begin_ai_runtime_turn("start fresh").unwrap();
+        assert_eq!(turn.run_id, fresh_binding.run_id);
     }
 }
