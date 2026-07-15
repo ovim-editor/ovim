@@ -215,6 +215,12 @@ impl Editor {
             .as_ref()
             .map(|c| c.approved_external_roots.clone())
             .unwrap_or_default();
+        let lsp_manager = self.lsp_manager();
+        let mut lsp_languages = lsp_manager
+            .as_ref()
+            .map(|manager| manager.active_server_languages())
+            .unwrap_or_default();
+        lsp_languages.sort();
 
         ToolExecutionContext {
             buffer_content,
@@ -234,6 +240,9 @@ impl Editor {
             open_buffers,
             open_buffer_revisions,
             open_buffer_states,
+            lsp_enabled: lsp_manager.is_some(),
+            lsp_languages,
+            lsp_status: self.lsp_status().to_string(),
         }
     }
 

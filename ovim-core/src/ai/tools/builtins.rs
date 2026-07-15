@@ -37,6 +37,106 @@ pub struct ToolExecutionContext {
     pub open_buffer_revisions: std::collections::HashMap<std::path::PathBuf, usize>,
     /// Concise editor state used by workspace-level orientation tools.
     pub open_buffer_states: Vec<OpenBufferState>,
+    /// Whether LSP support is enabled for this editor instance.
+    pub lsp_enabled: bool,
+    /// Active language-server IDs, captured without blocking on health checks.
+    pub lsp_languages: Vec<String>,
+    /// Current user-facing LSP status, when one is available.
+    pub lsp_status: String,
+}
+
+const WORKSPACE_GIT_STATUS_LIMIT: usize = 1_000;
+const WORKSPACE_PROJECT_SCAN_LIMIT: usize = 4_000;
+const WORKSPACE_PROJECT_RESULT_LIMIT: usize = 12;
+
+fn bounded_git_status_counts(root: &std::path::Path) -> Option<(usize, usize, bool)> {
+    use std::io::{BufRead, BufReader};
+    use std::process::{Command, Stdio};
+
+    let mut child = Command::new("git")
+        .args(["status", "--porcelain=v1", "--untracked-files=normal"])
+        .current_dir(root)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+    let stdout = child.stdout.take()?;
+    let mut modified = 0usize;
+    let mut untracked = 0usize;
+    let mut truncated = false;
+    for line in BufReader::new(stdout).lines() {
+        let line = line.ok()?;
+        if modified + untracked == WORKSPACE_GIT_STATUS_LIMIT {
+            truncated = true;
+            let _ = child.kill();
+            break;
+        }
+        if line.starts_with("??") {
+            untracked += 1;
+        } else {
+            modified += 1;
+        }
+    }
+    let status = child.wait().ok()?;
+    if !truncated && !status.success() {
+        return None;
+    }
+    Some((modified, untracked, truncated))
+}
+
+fn detect_workspace_projects(root: &std::path::Path) -> (Vec<String>, bool) {
+    let markers = [
+        ("Cargo.toml", "Rust, Cargo"),
+        ("package.json", "JavaScript/TypeScript, npm-compatible"),
+        ("pyproject.toml", "Python, pyproject"),
+        ("go.mod", "Go modules"),
+        ("build.gradle", "Java/Kotlin, Gradle"),
+        ("build.gradle.kts", "Java/Kotlin, Gradle"),
+        ("pom.xml", "Java, Maven"),
+    ];
+    let mut projects = Vec::new();
+    let mut scanned = 0usize;
+    let mut truncated = false;
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .max_depth(Some(5))
+        .build();
+
+    for entry in walker {
+        if scanned == WORKSPACE_PROJECT_SCAN_LIMIT {
+            truncated = true;
+            break;
+        }
+        scanned += 1;
+        let Ok(entry) = entry else { continue };
+        if !entry.file_type().is_some_and(|kind| kind.is_file()) {
+            continue;
+        }
+        let Some(name) = entry.path().file_name().and_then(|name| name.to_str()) else {
+            continue;
+        };
+        let Some((_, label)) = markers.iter().find(|(marker, _)| *marker == name) else {
+            continue;
+        };
+        let directory = entry
+            .path()
+            .parent()
+            .and_then(|path| path.strip_prefix(root).ok())
+            .filter(|path| !path.as_os_str().is_empty())
+            .map(|path| path.display().to_string());
+        let project = directory
+            .map(|directory| format!("{label} ({directory})"))
+            .unwrap_or_else(|| (*label).to_string());
+        if !projects.contains(&project) {
+            projects.push(project);
+            if projects.len() == WORKSPACE_PROJECT_RESULT_LIMIT {
+                truncated = true;
+                break;
+            }
+        }
+    }
+    (projects, truncated)
 }
 
 #[derive(Debug, Clone)]
@@ -344,6 +444,7 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         return ToolResult::Error("No approved workspace root is attached.".to_string());
     };
     let mut output = format!("Workspace: {}\n", root.display());
+    output.push_str(&format!("Attached roots: {}\n", root.display()));
 
     if bool_arg(args, "include_git") {
         let branch = std::process::Command::new("git")
@@ -369,25 +470,11 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         });
         if let Some(head) = head {
             output.push_str(&format!("Branch: {head}\n"));
-            if let Ok(status) = std::process::Command::new("git")
-                .args(["status", "--porcelain=v1"])
-                .current_dir(root)
-                .output()
-            {
-                if status.status.success() {
-                    let mut modified = 0usize;
-                    let mut untracked = 0usize;
-                    for line in String::from_utf8_lossy(&status.stdout).lines() {
-                        if line.starts_with("??") {
-                            untracked += 1;
-                        } else {
-                            modified += 1;
-                        }
-                    }
-                    output.push_str(&format!(
-                        "Git: {modified} modified, {untracked} untracked\n"
-                    ));
-                }
+            if let Some((modified, untracked, truncated)) = bounded_git_status_counts(root) {
+                let suffix = if truncated { "+ (scan bounded)" } else { "" };
+                output.push_str(&format!(
+                    "Git worktree: {modified}{suffix} modified, {untracked}{suffix} untracked\n"
+                ));
             }
         } else {
             output.push_str("Git: unavailable or not a repository\n");
@@ -433,20 +520,18 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
             ctx.open_buffer_states.len() - 20
         ));
     }
+    let unsaved = ctx
+        .open_buffer_states
+        .iter()
+        .filter(|buffer| buffer.modified)
+        .count();
+    output.push_str(&format!(
+        "Editor: {unsaved} unsaved buffer{}\n",
+        if unsaved == 1 { "" } else { "s" }
+    ));
 
     if bool_arg(args, "include_projects") {
-        let markers = [
-            ("Cargo.toml", "Rust, Cargo"),
-            ("package.json", "JavaScript/TypeScript, npm-compatible"),
-            ("pyproject.toml", "Python, pyproject"),
-            ("go.mod", "Go modules"),
-            ("build.gradle", "Java/Kotlin, Gradle"),
-            ("pom.xml", "Java, Maven"),
-        ];
-        let projects = markers
-            .iter()
-            .filter_map(|(marker, label)| root.join(marker).exists().then_some(*label))
-            .collect::<Vec<_>>();
+        let (projects, truncated) = detect_workspace_projects(root);
         output.push_str("\nDetected projects:\n");
         if projects.is_empty() {
             output.push_str("  none detected from root markers\n");
@@ -454,7 +539,23 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
             for project in projects {
                 output.push_str(&format!("  {project}\n"));
             }
+            if truncated {
+                output.push_str("  ... project scan bounded\n");
+            }
         }
+    }
+
+    output.push_str("\nLSP: ");
+    if !ctx.lsp_enabled {
+        output.push_str("disabled\n");
+    } else if ctx.lsp_languages.is_empty() {
+        output.push_str("enabled, no active servers");
+        if !ctx.lsp_status.is_empty() {
+            output.push_str(&format!(" ({})", ctx.lsp_status));
+        }
+        output.push('\n');
+    } else {
+        output.push_str(&format!("active ({})\n", ctx.lsp_languages.join(", ")));
     }
 
     if bool_arg(args, "include_diagnostics_summary") {
@@ -1683,6 +1784,9 @@ mod tests {
                 revision: 7,
                 active: true,
             }],
+            lsp_enabled: false,
+            lsp_languages: vec![],
+            lsp_status: String::new(),
         }
     }
 
@@ -1690,8 +1794,12 @@ mod tests {
     fn workspace_context_reports_editor_state_and_project_type() {
         let dir = tempfile::tempdir().unwrap();
         std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::create_dir_all(dir.path().join("apps/web")).unwrap();
+        std::fs::write(dir.path().join("apps/web/package.json"), "{}").unwrap();
         let mut ctx = test_ctx_with_project("", dir.path().to_path_buf());
         ctx.open_buffer_states[0].modified = true;
+        ctx.lsp_enabled = true;
+        ctx.lsp_languages = vec!["rust".to_string()];
         let result = execute_builtin(
             "workspace_context",
             &serde_json::json!({"include_git": false}),
@@ -1699,9 +1807,13 @@ mod tests {
         );
         match result {
             ToolResult::Success(output) => {
+                assert!(output.contains("Attached roots:"));
                 assert!(output.contains("Active buffer:"));
                 assert!(output.contains("modified, revision 7"));
+                assert!(output.contains("Editor: 1 unsaved buffer"));
                 assert!(output.contains("Rust, Cargo"));
+                assert!(output.contains("JavaScript/TypeScript, npm-compatible (apps/web)"));
+                assert!(output.contains("LSP: active (rust)"));
                 assert!(output.contains("Diagnostics:"));
             }
             ToolResult::Error(error) => panic!("expected success, got error: {error}"),
@@ -1959,6 +2071,9 @@ mod tests {
                 revision: 7,
                 active: true,
             }],
+            lsp_enabled: false,
+            lsp_languages: vec![],
+            lsp_status: String::new(),
         }
     }
 
