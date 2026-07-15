@@ -618,7 +618,7 @@ mod tests {
         .expect("first file");
         std::fs::write(
             &second,
-            (1..=20)
+            (1..=60)
                 .map(|line| format!("// second {line}\n"))
                 .collect::<String>(),
         )
@@ -773,6 +773,44 @@ mod tests {
         )
         .unwrap();
         assert!(!editor.ai_chat_has_pending_code_explanation());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn ignored_walkthrough_keys_preserve_the_pinned_viewport() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([
+            {
+                "path": "first.rs",
+                "start_line": 2,
+                "comment": "The entry point validates the request."
+            },
+            {
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "The handoff occurs here."
+            }
+        ]));
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+        crate::editor::input::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Right, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        let pinned_offset = editor.scroll_offset();
+        assert_eq!(pinned_offset, 6);
+
+        // Repeating an ignored key used to consume the initial viewport pin and
+        // then let the shared scrolloff pass pull the selection toward center.
+        for code in [crate::KeyCode::Up, crate::KeyCode::Down, crate::KeyCode::Up] {
+            crate::editor::input::InputHandler::handle_key_event(
+                &mut editor,
+                crate::KeyEvent::new(code, crate::Modifiers::NONE),
+            )
+            .unwrap();
+            assert_eq!(editor.scroll_offset(), pinned_offset);
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

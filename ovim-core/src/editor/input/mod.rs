@@ -57,6 +57,9 @@ mod ai_prompt_mode;
 /// AI chat mode handler
 mod ai_chat_mode;
 
+/// Modal code-walkthrough input policy
+mod code_explanation_mode;
+
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
@@ -135,13 +138,7 @@ impl InputHandler {
             return Ok(());
         }
 
-        // A walkthrough is a modal interaction even though its source buffer
-        // remains visible. Recover the owning mode before dispatch so a stale
-        // mouse drag or any other mode transition cannot strand the user in
-        // Visual/Normal mode with the walkthrough controls unreachable.
-        if editor.ai_chat_has_pending_code_explanation() && editor.mode() != Mode::AiChat {
-            editor.set_mode(Mode::AiChat);
-        }
+        code_explanation_mode::restore_owning_mode(editor);
 
         // Global keybindings (work in any mode)
         // Cmd+1 - toggle file tree

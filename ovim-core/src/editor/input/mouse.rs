@@ -8,27 +8,13 @@ use crate::editor::Editor;
 use crate::mode::Mode;
 use crate::unicode::{char_to_grapheme_col, grapheme_count, GraphemeCol};
 
+use super::code_explanation_mode;
+
 /// Top-level mouse event dispatcher.
 /// Returns `Ok(Some(url))` when a concealed markdown link was clicked and should be opened.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Option<String>> {
-    if editor.ai_chat_has_pending_code_explanation() {
-        // The walkthrough owns keyboard navigation and leaves the source pane
-        // visible only for reading. Never let a pointer gesture turn that pane
-        // into a Visual-mode selection. This also repairs mode corruption from
-        // a gesture that began before the walkthrough was rendered.
-        if editor.mode() != Mode::AiChat {
-            editor.set_mode(Mode::AiChat);
-        }
-        if matches!(
-            event.kind,
-            MouseEventKind::Down(MouseButton::Left)
-                | MouseEventKind::Drag(MouseButton::Left)
-                | MouseEventKind::Up(MouseButton::Left)
-        ) {
-            editor.render_cache.mouse_state.is_dragging = false;
-            editor.render_cache.mouse_state.drag_origin = None;
-            return Ok(None);
-        }
+    if code_explanation_mode::blocks_pointer_event(editor, &event.kind) {
+        return Ok(None);
     }
 
     match event.kind {

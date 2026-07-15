@@ -392,6 +392,15 @@ impl Editor {
         self.scroll_cursor_to_rows_below_top(rows_above);
     }
 
+    /// Keeps an explicitly positioned viewport stable through the shared
+    /// post-input cursor-visibility pass.
+    ///
+    /// Modal overlays use this when they render a source buffer for reading:
+    /// even an ignored key must not apply normal-mode `scrolloff` afterward.
+    pub(crate) fn preserve_viewport_after_input(&mut self) {
+        self.viewport.skip_scroll_update = true;
+    }
+
     /// Moves cursor line to bottom of viewport, respecting scrolloff (zb).
     pub fn move_cursor_line_to_bottom(&mut self) {
         self.move_cursor_line_to_bottom_with_offset(self.options.scrolloff);

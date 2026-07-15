@@ -7,6 +7,8 @@ use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
+use super::code_explanation_mode;
+
 pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     if editor.ai_chat_has_exa_setup_dialog() {
         editor.handle_exa_setup_key(key_event);
@@ -18,22 +20,7 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         return Ok(());
     }
-    if editor.ai_chat_has_pending_code_explanation() {
-        match key_event.code {
-            KeyCode::Left | KeyCode::Char('h') => {
-                editor.move_code_explanation(false);
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                editor.move_code_explanation(true);
-            }
-            KeyCode::Enter => {
-                editor.advance_or_finish_code_explanation();
-            }
-            KeyCode::Esc => {
-                editor.finish_code_explanation(true);
-            }
-            _ => {}
-        }
+    if code_explanation_mode::handle_key(editor, key_event) {
         return Ok(());
     }
 
