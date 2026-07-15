@@ -35,6 +35,16 @@ pub struct ToolExecutionContext {
     /// Revisions for the corresponding in-memory buffers. Disk-only files have
     /// no buffer revision.
     pub open_buffer_revisions: std::collections::HashMap<std::path::PathBuf, usize>,
+    /// Concise editor state used by workspace-level orientation tools.
+    pub open_buffer_states: Vec<OpenBufferState>,
+}
+
+#[derive(Debug, Clone)]
+pub struct OpenBufferState {
+    pub path: String,
+    pub modified: bool,
+    pub revision: usize,
+    pub active: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -49,6 +59,7 @@ pub struct ProjectDiagnosticFile {
 pub fn register_builtins(registry: &mut ToolRegistry) {
     // Read tools
     registry.register(read_file_def());
+    registry.register(workspace_context_def());
     registry.register(read_file_at_path_def());
     registry.register(view_image_def());
     registry.register(read_selection_def());
@@ -101,6 +112,7 @@ pub fn execute_builtin(
 ) -> ToolResult {
     match name {
         "read_file" => handle_read_file(args, ctx),
+        "workspace_context" => handle_workspace_context(args, ctx),
         "read_file_at_path" => handle_read_file_at_path(args, ctx),
         "view_image" => ToolResult::Error(
             "'view_image' must be dispatched by the editor so its image can be attached to the agent response"
@@ -282,6 +294,196 @@ fn resolve_project_relative_path(
     ensure_non_sensitive_or_approved(&normalized, ctx)?;
 
     Ok((normalized, root_normalized))
+}
+
+// ---------------------------------------------------------------------------
+// workspace_context
+// ---------------------------------------------------------------------------
+
+fn workspace_context_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "workspace_context".to_string(),
+        description: "Return a compact orientation snapshot: workspace root, Git state, active and open buffers, detected project types, selection, and diagnostic counts. Use this first when starting work in an unfamiliar workspace.".to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![
+            ToolParam {
+                name: "include_git".to_string(),
+                param_type: ParamType::Boolean,
+                required: false,
+                description: "Include bounded Git branch and worktree counts (default true).".to_string(),
+            },
+            ToolParam {
+                name: "include_diagnostics_summary".to_string(),
+                param_type: ParamType::Boolean,
+                required: false,
+                description: "Include diagnostic severity counts (default true).".to_string(),
+            },
+            ToolParam {
+                name: "include_projects".to_string(),
+                param_type: ParamType::Boolean,
+                required: false,
+                description: "Include project types detected from root marker files (default true).".to_string(),
+            },
+        ],
+    }
+}
+
+fn bool_arg(args: &serde_json::Value, name: &str) -> bool {
+    args.get(name)
+        .and_then(|value| value.as_bool())
+        .unwrap_or(true)
+}
+
+fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext) -> ToolResult {
+    let Some(root) = ctx.scope_context.project_root.as_ref() else {
+        return ToolResult::Error("No approved workspace root is attached.".to_string());
+    };
+    let mut output = format!("Workspace: {}\n", root.display());
+
+    if bool_arg(args, "include_git") {
+        let branch = std::process::Command::new("git")
+            .args(["symbolic-ref", "--quiet", "--short", "HEAD"])
+            .current_dir(root)
+            .output()
+            .ok()
+            .filter(|result| result.status.success())
+            .map(|result| String::from_utf8_lossy(&result.stdout).trim().to_string());
+        let head = branch.or_else(|| {
+            std::process::Command::new("git")
+                .args(["rev-parse", "--short", "HEAD"])
+                .current_dir(root)
+                .output()
+                .ok()
+                .filter(|result| result.status.success())
+                .map(|result| {
+                    format!(
+                        "detached at {}",
+                        String::from_utf8_lossy(&result.stdout).trim()
+                    )
+                })
+        });
+        if let Some(head) = head {
+            output.push_str(&format!("Branch: {head}\n"));
+            if let Ok(status) = std::process::Command::new("git")
+                .args(["status", "--porcelain=v1"])
+                .current_dir(root)
+                .output()
+            {
+                if status.status.success() {
+                    let mut modified = 0usize;
+                    let mut untracked = 0usize;
+                    for line in String::from_utf8_lossy(&status.stdout).lines() {
+                        if line.starts_with("??") {
+                            untracked += 1;
+                        } else {
+                            modified += 1;
+                        }
+                    }
+                    output.push_str(&format!(
+                        "Git: {modified} modified, {untracked} untracked\n"
+                    ));
+                }
+            }
+        } else {
+            output.push_str("Git: unavailable or not a repository\n");
+        }
+    }
+
+    let active = ctx.open_buffer_states.iter().find(|buffer| buffer.active);
+    output.push_str("\nActive buffer:\n");
+    if let Some(active) = active {
+        output.push_str(&format!(
+            "  {}:{}:{} [{}revision {}]\n",
+            active.path,
+            ctx.cursor.0 + 1,
+            ctx.cursor.1 + 1,
+            if active.modified { "modified, " } else { "" },
+            active.revision,
+        ));
+    } else {
+        output.push_str("  [No Name]\n");
+    }
+    if let Some((start_line, start_col, end_line, end_col)) = ctx.selection {
+        output.push_str(&format!(
+            "Selection: {}:{}-{}:{}\n",
+            start_line + 1,
+            start_col + 1,
+            end_line + 1,
+            end_col + 1,
+        ));
+    }
+
+    output.push_str("\nOpen buffers:\n");
+    for buffer in ctx.open_buffer_states.iter().take(20) {
+        output.push_str(&format!(
+            "  {} [{}revision {}]\n",
+            buffer.path,
+            if buffer.modified { "modified, " } else { "" },
+            buffer.revision,
+        ));
+    }
+    if ctx.open_buffer_states.len() > 20 {
+        output.push_str(&format!(
+            "  ... {} more\n",
+            ctx.open_buffer_states.len() - 20
+        ));
+    }
+
+    if bool_arg(args, "include_projects") {
+        let markers = [
+            ("Cargo.toml", "Rust, Cargo"),
+            ("package.json", "JavaScript/TypeScript, npm-compatible"),
+            ("pyproject.toml", "Python, pyproject"),
+            ("go.mod", "Go modules"),
+            ("build.gradle", "Java/Kotlin, Gradle"),
+            ("pom.xml", "Java, Maven"),
+        ];
+        let projects = markers
+            .iter()
+            .filter_map(|(marker, label)| root.join(marker).exists().then_some(*label))
+            .collect::<Vec<_>>();
+        output.push_str("\nDetected projects:\n");
+        if projects.is_empty() {
+            output.push_str("  none detected from root markers\n");
+        } else {
+            for project in projects {
+                output.push_str(&format!("  {project}\n"));
+            }
+        }
+    }
+
+    if bool_arg(args, "include_diagnostics_summary") {
+        let mut errors = 0usize;
+        let mut warnings = 0usize;
+        let mut total = 0usize;
+        for file in &ctx.project_diagnostics {
+            total += file.diagnostics.len();
+            for diagnostic in &file.diagnostics {
+                match diagnostic
+                    .severity
+                    .as_deref()
+                    .unwrap_or("")
+                    .to_ascii_lowercase()
+                    .as_str()
+                {
+                    "error" => errors += 1,
+                    "warning" => warnings += 1,
+                    _ => {}
+                }
+            }
+        }
+        output.push_str(&format!(
+            "\nDiagnostics: {errors} errors, {warnings} warnings, {total} total across {} files\n",
+            ctx.project_diagnostics.len(),
+        ));
+    }
+
+    ToolResult::Success(output)
 }
 
 // ---------------------------------------------------------------------------
@@ -1475,6 +1677,57 @@ mod tests {
             bypass_path_approvals: false,
             open_buffers: std::collections::HashMap::new(),
             open_buffer_revisions: std::collections::HashMap::new(),
+            open_buffer_states: vec![OpenBufferState {
+                path: "test.rs".to_string(),
+                modified: false,
+                revision: 7,
+                active: true,
+            }],
+        }
+    }
+
+    #[test]
+    fn workspace_context_reports_editor_state_and_project_type() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("Cargo.toml"), "[workspace]\n").unwrap();
+        let mut ctx = test_ctx_with_project("", dir.path().to_path_buf());
+        ctx.open_buffer_states[0].modified = true;
+        let result = execute_builtin(
+            "workspace_context",
+            &serde_json::json!({"include_git": false}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(output) => {
+                assert!(output.contains("Active buffer:"));
+                assert!(output.contains("modified, revision 7"));
+                assert!(output.contains("Rust, Cargo"));
+                assert!(output.contains("Diagnostics:"));
+            }
+            ToolResult::Error(error) => panic!("expected success, got error: {error}"),
+        }
+    }
+
+    #[test]
+    fn workspace_context_sections_can_be_disabled() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = test_ctx_with_project("", dir.path().to_path_buf());
+        let result = execute_builtin(
+            "workspace_context",
+            &serde_json::json!({
+                "include_git": false,
+                "include_projects": false,
+                "include_diagnostics_summary": false
+            }),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(output) => {
+                assert!(!output.contains("Branch:"));
+                assert!(!output.contains("Detected projects:"));
+                assert!(!output.contains("Diagnostics:"));
+            }
+            ToolResult::Error(error) => panic!("expected success, got error: {error}"),
         }
     }
 
@@ -1700,6 +1953,12 @@ mod tests {
             bypass_path_approvals: false,
             open_buffers: std::collections::HashMap::new(),
             open_buffer_revisions: std::collections::HashMap::new(),
+            open_buffer_states: vec![OpenBufferState {
+                path: "test.rs".to_string(),
+                modified: false,
+                revision: 7,
+                active: true,
+            }],
         }
     }
 

@@ -1,7 +1,7 @@
 use crate::ai::chat_types::{ToolCallInfo, ToolSummaryKind};
 use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::scope::{Capabilities, ScopeContext};
-use crate::ai::tools::builtins::ToolExecutionContext;
+use crate::ai::tools::builtins::{OpenBufferState, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{SideEffect, ToolResult};
 use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
@@ -191,7 +191,14 @@ impl Editor {
         // in-memory content instead of potentially stale disk files.
         let mut open_buffers = std::collections::HashMap::new();
         let mut open_buffer_revisions = std::collections::HashMap::new();
-        for b in &self.buffers {
+        let mut open_buffer_states = Vec::with_capacity(self.buffers.len());
+        for (index, b) in self.buffers.iter().enumerate() {
+            open_buffer_states.push(OpenBufferState {
+                path: b.file_path().unwrap_or("[No Name]").to_string(),
+                modified: b.is_modified(),
+                revision: b.version(),
+                active: index == target_index,
+            });
             if let Some(p) = b.file_path() {
                 let path = std::path::Path::new(p);
                 let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
@@ -226,6 +233,7 @@ impl Editor {
             bypass_path_approvals: self.ai_chat_yolo_mode(),
             open_buffers,
             open_buffer_revisions,
+            open_buffer_states,
         }
     }
 
