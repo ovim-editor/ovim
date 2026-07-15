@@ -69,14 +69,25 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     // External tools (dispatched via execute_external_tool)
     registry.register(bash_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
-    registry.register(edit_range_def());
-    registry.register(insert_lines_def());
-    registry.register(delete_lines_def());
-    registry.register(write_file_at_path_def());
-    registry.register(create_file_def());
-    registry.register(apply_patch_at_path_def());
+    registry.register(with_expected_revision(edit_range_def()));
+    registry.register(with_expected_revision(insert_lines_def()));
+    registry.register(with_expected_revision(delete_lines_def()));
+    registry.register(with_expected_revision(write_file_at_path_def()));
+    registry.register(with_expected_revision(create_file_def()));
+    registry.register(with_expected_revision(apply_patch_at_path_def()));
     registry.register(snapshot_file_def());
-    registry.register(restore_file_def());
+    registry.register(with_expected_revision(restore_file_def()));
+}
+
+fn with_expected_revision(mut definition: ToolDefinition) -> ToolDefinition {
+    definition.parameters.push(ToolParam {
+        name: "expected_revision".to_string(),
+        param_type: ParamType::Integer,
+        required: false,
+        description: "Buffer revision returned by the read this edit is based on. The edit is rejected if the buffer has advanced."
+            .to_string(),
+    });
+    definition
 }
 
 /// Dispatch a built-in tool call by name.

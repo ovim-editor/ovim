@@ -19,6 +19,27 @@ struct EditRangeArgs {
     new_text: String,
 }
 
+fn validate_expected_revision(
+    args: &serde_json::Value,
+    current_revision: usize,
+    file_label: &str,
+) -> Result<(), ToolResult> {
+    let Some(value) = args.get("expected_revision") else {
+        return Ok(());
+    };
+    let Some(expected_revision) = value.as_u64() else {
+        return Err(ToolResult::Error(
+            "'expected_revision' must be a non-negative integer".to_string(),
+        ));
+    };
+    if expected_revision > usize::MAX as u64 || expected_revision as usize != current_revision {
+        return Err(ToolResult::Error(format!(
+            "Edit not applied: {file_label} advanced from revision {expected_revision} to {current_revision}. Re-read the affected range and retry."
+        )));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Deserialize)]
 struct InsertLinesArgs {
     after_line: usize,
@@ -476,7 +497,14 @@ impl Editor {
 
         self.current_buffer_index = target;
 
-        let result = match name {
+        let revision_before = self.buffer().version();
+        let file_label = self.buffer().file_path().unwrap_or("[No Name]").to_string();
+        if let Err(error) = validate_expected_revision(args, revision_before, &file_label) {
+            self.current_buffer_index = original;
+            return error;
+        }
+
+        let mut result = match name {
             "edit_range" => match parse_args(args) {
                 Ok(a) => self.handle_edit_range(a),
                 Err(e) => e,
@@ -511,6 +539,13 @@ impl Editor {
             },
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
         };
+
+        if let ToolResult::Success(message) = &mut result {
+            let revision_after = self.buffer().version();
+            message.push_str(&format!(
+                "\nBuffer revision: {revision_before} -> {revision_after}."
+            ));
+        }
 
         // Only restore if active_buffer_id didn't change during the mutation
         // (e.g., open_file could have changed it)
@@ -1057,6 +1092,31 @@ mod tests {
         let bad_json = serde_json::json!({"start_line": 1});
         let result = parse_args::<EditRangeArgs>(&bad_json);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn expected_revision_accepts_current_buffer_revision() {
+        let args = serde_json::json!({"expected_revision": 12});
+        assert!(validate_expected_revision(&args, 12, "src/lib.rs").is_ok());
+    }
+
+    #[test]
+    fn expected_revision_rejects_stale_buffer_revision() {
+        let args = serde_json::json!({"expected_revision": 12});
+        let error = validate_expected_revision(&args, 14, "src/lib.rs").unwrap_err();
+        match error {
+            ToolResult::Error(message) => {
+                assert!(message.contains("advanced from revision 12 to 14"));
+                assert!(message.contains("Re-read"));
+            }
+            _ => panic!("expected ToolResult::Error"),
+        }
+    }
+
+    #[test]
+    fn expected_revision_must_be_non_negative_integer() {
+        let args = serde_json::json!({"expected_revision": -1});
+        assert!(validate_expected_revision(&args, 0, "src/lib.rs").is_err());
     }
 
     // ====================================================================
