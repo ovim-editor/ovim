@@ -1913,7 +1913,8 @@ fn render_working_indicator(width: usize, frame: usize) -> Line<'static> {
 // ---------------------------------------------------------------------------
 
 /// Wraps a styled `Line` (multi-span) into rows fitting within `max_width`.
-/// Preserves the style of each span across line breaks.
+/// Preserves span styles and moves a whole word to the next row whenever that
+/// word fits there. Only words wider than a complete row are split.
 fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'static>>> {
     if max_width == 0 {
         return vec![line
@@ -1923,69 +1924,43 @@ fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'sta
             .collect()];
     }
 
-    // Flatten spans into (char, Style) pairs for uniform processing
-    let mut chars_with_style: Vec<(char, Style)> = Vec::new();
+    let mut text = String::new();
+    let mut styled_ranges = Vec::new();
     for span in &line.spans {
-        for c in span.content.chars() {
-            chars_with_style.push((c, span.style));
+        let start = text.len();
+        text.push_str(span.content.as_ref());
+        if text.len() > start {
+            styled_ranges.push((start, text.len(), span.style));
         }
     }
 
-    if chars_with_style.is_empty() {
+    if text.is_empty() {
         return vec![vec![]];
     }
 
-    let mut rows: Vec<Vec<Span<'static>>> = Vec::new();
-    let mut current_row: Vec<Span<'static>> = Vec::new();
-    let mut current_width = 0usize;
-    let mut current_text = String::new();
-    let mut current_style = chars_with_style[0].1;
-
-    for &(ch, style) in &chars_with_style {
-        if ch == '\n' {
-            // Flush current span and start new row
-            if !current_text.is_empty() {
-                current_row.push(Span::styled(current_text.clone(), current_style));
-                current_text.clear();
-            }
-            rows.push(std::mem::take(&mut current_row));
-            current_width = 0;
-            current_style = style;
-            continue;
-        }
-
-        // Check if we need to wrap
-        if current_width >= max_width {
-            if !current_text.is_empty() {
-                current_row.push(Span::styled(current_text.clone(), current_style));
-                current_text.clear();
-            }
-            rows.push(std::mem::take(&mut current_row));
-            current_width = 0;
-        }
-
-        // Style change within the same row
-        if style != current_style && !current_text.is_empty() {
-            current_row.push(Span::styled(current_text.clone(), current_style));
-            current_text.clear();
-        }
-        current_style = style;
-        current_text.push(ch);
-        current_width += 1;
-    }
-
-    // Flush remaining
-    if !current_text.is_empty() {
-        current_row.push(Span::styled(current_text, current_style));
-    }
-    if !current_row.is_empty() {
-        rows.push(current_row);
-    }
-
-    if rows.is_empty() {
-        rows.push(vec![]);
-    }
-    rows
+    wrap_chat_input_rows(&text, max_width, 4)
+        .into_iter()
+        .map(|row| {
+            let row_text = &text[row.visible_start..row.end];
+            let trailing_whitespace = row_text
+                .char_indices()
+                .rev()
+                .take_while(|(_, character)| character.is_whitespace())
+                .map(|(index, _)| index)
+                .last();
+            let visible_end = trailing_whitespace
+                .map(|index| row.visible_start + index)
+                .unwrap_or(row.end);
+            styled_ranges
+                .iter()
+                .filter_map(|&(style_start, style_end, style)| {
+                    let start = row.visible_start.max(style_start);
+                    let end = visible_end.min(style_end);
+                    (start < end).then(|| Span::styled(text[start..end].to_string(), style))
+                })
+                .collect()
+        })
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -1993,59 +1968,16 @@ fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'sta
 // ---------------------------------------------------------------------------
 
 fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
-    if max_width == 0 {
-        return vec![text.to_string()];
-    }
-
-    let mut lines = Vec::new();
-    for paragraph in text.split('\n') {
-        if paragraph.is_empty() {
-            lines.push(String::new());
-            continue;
-        }
-        let mut current_line = String::new();
-        let mut current_width = 0usize;
-
-        for word in paragraph.split_whitespace() {
-            let word_width = word.chars().count();
-            if current_width == 0 {
-                // First word on line
-                if word_width > max_width {
-                    // Break long word
-                    let mut chars = word.chars();
-                    while current_width < word_width {
-                        let remaining = max_width.saturating_sub(current_width);
-                        let chunk: String = chars.by_ref().take(remaining).collect();
-                        if chunk.is_empty() {
-                            break;
-                        }
-                        current_line.push_str(&chunk);
-                        current_width += chunk.chars().count();
-                        if current_width >= max_width {
-                            lines.push(std::mem::take(&mut current_line));
-                            current_width = 0;
-                        }
-                    }
-                } else {
-                    current_line.push_str(word);
-                    current_width = word_width;
-                }
-            } else if current_width + 1 + word_width <= max_width {
-                current_line.push(' ');
-                current_line.push_str(word);
-                current_width += 1 + word_width;
-            } else {
-                lines.push(std::mem::take(&mut current_line));
-                current_line = word.to_string();
-                current_width = word_width;
-            }
-        }
-        lines.push(current_line);
-    }
-    if lines.is_empty() {
-        lines.push(String::new());
-    }
-    lines
+    let line = Line::from(Span::raw(text.to_string()));
+    styled_word_wrap_line(&line, max_width)
+        .into_iter()
+        .map(|spans| {
+            spans
+                .into_iter()
+                .map(|span| span.content.into_owned())
+                .collect::<String>()
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -2053,6 +1985,7 @@ mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
         is_hidden_tool_only_assistant, render_queued_input_row, render_tool_event_details,
+        styled_word_wrap_line, word_wrap,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2081,6 +2014,50 @@ mod tests {
                     data: vec![1, 2, 3],
                 }],
             );
+    }
+
+    fn styled_row_text(row: &[Span<'static>]) -> String {
+        row.iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>()
+    }
+
+    #[test]
+    fn conversation_wrap_keeps_words_intact_when_they_fit_a_row() {
+        assert_eq!(word_wrap("alpha beta gamma", 10), ["alpha beta", "gamma"]);
+        assert_eq!(word_wrap("abc defgh", 7), ["abc", "defgh"]);
+    }
+
+    #[test]
+    fn conversation_wrap_splits_only_words_wider_than_a_row() {
+        assert_eq!(
+            word_wrap("abc extraordinary tail", 5),
+            ["abc", "extra", "ordin", "ary", "tail"]
+        );
+    }
+
+    #[test]
+    fn styled_conversation_wrap_preserves_styles_across_word_boundaries() {
+        let first_style = Style::default().fg(Color::Red);
+        let second_style = Style::default().fg(Color::Blue);
+        let line = Line::from(vec![
+            Span::styled("alpha ", first_style),
+            Span::styled("beta", second_style),
+        ]);
+
+        let rows = styled_word_wrap_line(&line, 7);
+        assert_eq!(
+            rows.iter()
+                .map(|row| styled_row_text(row))
+                .collect::<Vec<_>>(),
+            ["alpha", "beta"]
+        );
+        assert_eq!(rows[1][0].style, second_style);
+    }
+
+    #[test]
+    fn conversation_wrap_uses_terminal_display_width() {
+        assert_eq!(word_wrap("ab 世界 cd", 5), ["ab", "世界", "cd"]);
     }
 
     #[test]
