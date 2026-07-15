@@ -114,7 +114,11 @@ impl Editor {
             .tools_for_profile(profile, &caps)
             .into_iter()
             .filter(|tool| {
-                direct_codex || !matches!(tool.name.as_str(), "web_search" | "web_fetch")
+                direct_codex
+                    || !matches!(
+                        tool.name.as_str(),
+                        "web_search" | "web_fetch" | "view_image"
+                    )
             })
             .cloned()
             .collect::<Vec<_>>();
@@ -432,6 +436,7 @@ impl Editor {
             && matches!(
                 tc.name.as_str(),
                 "read_file_at_path"
+                    | "view_image"
                     | "list_files"
                     | "edit_range"
                     | "insert_lines"
@@ -458,6 +463,9 @@ impl Editor {
 
         if tc.name == "read_file_at_path" {
             return self.execute_read_file_at_path_tool(tc, approved_once_root);
+        }
+        if tc.name == "view_image" {
+            return self.execute_view_image_tool(tc, approved_once_root);
         }
         if tc.name == "list_files" {
             return self.execute_list_files_tool(tc, approved_once_root);
@@ -526,6 +534,75 @@ impl Editor {
             None => ToolResult::Error(format!("unknown tool: {}", tc.name)),
         };
         ToolDispatchOutcome::Completed(result)
+    }
+
+    pub(super) fn execute_view_image_tool(
+        &mut self,
+        tc: &ToolCallInfo,
+        approved_once_root: Option<&PathBuf>,
+    ) -> ToolDispatchOutcome {
+        let Some(raw_path) = tc.arguments.get("path").and_then(|value| value.as_str()) else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' parameter is required and must be non-empty".to_string(),
+            ));
+        };
+        if raw_path.trim().is_empty() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "'path' parameter is required and must be non-empty".to_string(),
+            ));
+        }
+        let Some(tool) = self.ai_state.tool_registry.get("view_image") else {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "unknown tool: view_image".to_string(),
+            ));
+        };
+        if !self
+            .build_chat_capabilities()
+            .contains(&tool.required_scope)
+        {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "tool 'view_image' requires project file scope".to_string(),
+            ));
+        }
+
+        let resolution = match self.resolve_tool_path_policy(
+            raw_path,
+            false,
+            "view_image",
+            approved_once_root,
+        ) {
+            Ok(resolution) => resolution,
+            Err(error) => return ToolDispatchOutcome::Completed(ToolResult::Error(error)),
+        };
+        let absolute_path = match resolution {
+            ToolPathResolution::Allowed { absolute_path, .. } => absolute_path,
+            ToolPathResolution::NeedsApproval(request) => {
+                return ToolDispatchOutcome::ApprovalRequired(request)
+            }
+        };
+        if let Some(request) = self.maybe_require_tool_policy_approval(
+            tc,
+            Some(absolute_path.clone()),
+            false,
+            approved_once_root,
+        ) {
+            return ToolDispatchOutcome::ApprovalRequired(request);
+        }
+
+        match super::ai_chat_images::load_image(absolute_path) {
+            Ok(image) => {
+                let label = image.file_name();
+                if !tc.id.is_empty() {
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.tool_result_images.insert(tc.id.clone(), vec![image]);
+                    }
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Success(format!(
+                    "Image attached for visual inspection: {label}"
+                )))
+            }
+            Err(error) => ToolDispatchOutcome::Completed(ToolResult::Error(error.to_string())),
+        }
     }
 
     /// Execute tool calls from a completed stream response, record results,
@@ -892,8 +969,9 @@ impl Editor {
                     }
                     self.record_tool_event_summary(tc, &result);
                     let result_content = self.format_tool_result_with_target(tc, &result);
+                    let images = self.take_tool_result_images(&tc.id);
                     if let Some(conv) = self.conversation_mut() {
-                        conv.append_tool_result(tc.id.clone(), result_content);
+                        conv.append_tool_result_with_images(tc.id.clone(), result_content, images);
                     }
                     executed_in_batch = executed_in_batch.saturating_add(1);
                 }
@@ -972,6 +1050,17 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.tool_event_summaries.insert(tc.id.clone(), summary);
         }
+    }
+
+    fn take_tool_result_images(
+        &mut self,
+        tool_call_id: &str,
+    ) -> Vec<crate::ai::chat_types::ImageAttachment> {
+        self.ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.tool_result_images.remove(tool_call_id))
+            .unwrap_or_default()
     }
 
     pub(super) fn format_tool_result_with_target(
@@ -2157,6 +2246,80 @@ mod tests {
         assert!(names.contains(&"bash"), "schemas: {schemas:?}");
         assert!(names.contains(&"edit_range"), "schemas: {schemas:?}");
         assert!(names.contains(&"insert_lines"), "schemas: {schemas:?}");
+    }
+
+    #[test]
+    fn view_image_loads_a_project_image_for_the_tool_result() {
+        let runtime = tokio::runtime::Runtime::new().expect("runtime");
+        runtime.block_on(async {
+            let directory = tempfile::tempdir().unwrap();
+            git2::Repository::init(directory.path()).unwrap();
+            let source = directory.path().join("main.rs");
+            let image = directory.path().join("mockup.png");
+            fs::write(&source, "fn main() {}\n").unwrap();
+            fs::write(&image, b"\x89PNG\r\n\x1a\nminimal").unwrap();
+
+            let mut editor = Editor::default();
+            editor.open_file(&source).unwrap();
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            set_active_profile_project_scope(&mut editor);
+            let mut profile = editor
+                .ai_state
+                .config
+                .resolve_profile(&editor.ai_state.active_profile)
+                .unwrap()
+                .clone();
+            profile.provider = crate::ai::AiProviderKind::Codex;
+            profile.tools.clear();
+            let schemas = editor.build_tool_schemas_for_chat(&profile);
+            let schema_names = schemas
+                .iter()
+                .filter_map(|schema| schema.get("function"))
+                .filter_map(|function| function.get("name"))
+                .filter_map(serde_json::Value::as_str)
+                .collect::<Vec<_>>();
+            assert!(
+                schema_names.contains(&"view_image"),
+                "schemas: {schema_names:?}"
+            );
+            let call = ToolCallInfo {
+                id: "call_image".into(),
+                name: "view_image".into(),
+                arguments: serde_json::json!({"path":"mockup.png"}),
+            };
+
+            match editor.dispatch_tool_call_with_approval(&call, None) {
+                ToolDispatchOutcome::Completed(ToolResult::Success(message)) => {
+                    assert!(message.contains("mockup.png"));
+                }
+                ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                    panic!("unexpected image tool error: {error}");
+                }
+                ToolDispatchOutcome::ApprovalRequired(request) => {
+                    panic!("unexpected approval request: {}", request.message);
+                }
+            }
+
+            let images = editor.take_tool_result_images(&call.id);
+            assert_eq!(images.len(), 1);
+            assert_eq!(images[0].path, image.canonicalize().unwrap());
+            assert_eq!(images[0].mime_type, "image/png");
+            editor
+                .conversation_mut()
+                .unwrap()
+                .append_tool_result_with_images(call.id, "Image attached".into(), images);
+            assert_eq!(
+                editor
+                    .conversation()
+                    .unwrap()
+                    .messages()
+                    .last()
+                    .unwrap()
+                    .images
+                    .len(),
+                1
+            );
+        });
     }
 
     #[test]

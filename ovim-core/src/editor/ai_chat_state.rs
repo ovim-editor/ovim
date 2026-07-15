@@ -289,6 +289,8 @@ pub struct AiChatState {
     pub approved_external_roots: Vec<PathBuf>,
     /// Compact tool event summaries keyed by tool call id.
     pub tool_event_summaries: HashMap<String, ToolEventSummary>,
+    /// Images loaded by a tool and waiting to be attached to its tool result.
+    pub tool_result_images: HashMap<String, Vec<ImageAttachment>>,
     /// File snapshots captured by snapshot_file tool, keyed by snapshot id.
     pub file_snapshots: HashMap<String, FileSnapshot>,
     /// Monotonic counter for snapshot ids.
@@ -385,6 +387,7 @@ impl AiChatState {
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
             tool_event_summaries: HashMap::new(),
+            tool_result_images: HashMap::new(),
             file_snapshots: HashMap::new(),
             next_snapshot_id: 0,
             agent_edits: AgentEditTracker::new(),

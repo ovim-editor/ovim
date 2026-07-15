@@ -314,10 +314,23 @@ fn messages_to_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
             }
             ChatRole::Tool => {
                 let (call_id, _) = split_tool_id(message.tool_call_id.as_deref().unwrap_or(""));
+                let output = if message.images.is_empty() {
+                    Value::String(message.content.clone())
+                } else {
+                    let mut output = vec![json!({"type":"input_text", "text":message.content})];
+                    output.extend(message.images.iter().map(|image| {
+                        let encoded = base64::engine::general_purpose::STANDARD.encode(&image.data);
+                        json!({
+                            "type":"input_image",
+                            "image_url":format!("data:{};base64,{encoded}", image.mime_type),
+                        })
+                    }));
+                    Value::Array(output)
+                };
                 input.push(json!({
                     "type":"function_call_output",
                     "call_id":call_id,
-                    "output":message.content,
+                    "output":output,
                 }));
             }
             ChatRole::Thinking | ChatRole::Error => {}
@@ -801,6 +814,31 @@ mod tests {
             .iter()
             .any(|item| item.get("call_id") == Some(&json!("call_1"))
                 && item.get("type") == Some(&json!("function_call_output"))));
+    }
+
+    #[test]
+    fn direct_input_sends_tool_image_results_as_vision_content() {
+        let mut tool = message(
+            ChatRole::Tool,
+            "Image attached for visual inspection: mockup.png",
+        );
+        tool.tool_call_id = Some("call_image|fc_image".into());
+        tool.images.push(super::super::chat_types::ImageAttachment {
+            path: "mockup.png".into(),
+            mime_type: "image/png".into(),
+            data: b"image bytes".to_vec(),
+        });
+
+        let input = messages_to_responses_input(&[tool]);
+
+        assert_eq!(input[0]["type"], "function_call_output");
+        assert_eq!(input[0]["call_id"], "call_image");
+        assert_eq!(input[0]["output"][0]["type"], "input_text");
+        assert_eq!(input[0]["output"][1]["type"], "input_image");
+        assert!(input[0]["output"][1]["image_url"]
+            .as_str()
+            .unwrap()
+            .starts_with("data:image/png;base64,"));
     }
 
     #[test]

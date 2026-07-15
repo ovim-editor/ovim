@@ -246,6 +246,7 @@ mod tests {
         let reg = ToolRegistry::new();
         assert!(reg.get("read_file").is_some());
         assert!(reg.get("read_file_at_path").is_some());
+        assert!(reg.get("view_image").is_some());
         assert!(reg.get("read_selection").is_some());
         assert!(reg.get("read_diagnostics").is_some());
         assert!(reg.get("read_project_diagnostics").is_some());

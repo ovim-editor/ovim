@@ -43,6 +43,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     // Read tools
     registry.register(read_file_def());
     registry.register(read_file_at_path_def());
+    registry.register(view_image_def());
     registry.register(read_selection_def());
     registry.register(read_diagnostics_def());
     registry.register(read_project_diagnostics_def());
@@ -83,6 +84,10 @@ pub fn execute_builtin(
     match name {
         "read_file" => handle_read_file(args, ctx),
         "read_file_at_path" => handle_read_file_at_path(args, ctx),
+        "view_image" => ToolResult::Error(
+            "'view_image' must be dispatched by the editor so its image can be attached to the agent response"
+                .to_string(),
+        ),
         "read_selection" => handle_read_selection(args, ctx),
         "read_diagnostics" => handle_read_diagnostics(args, ctx),
         "read_project_diagnostics" => handle_read_project_diagnostics(args, ctx),
@@ -457,6 +462,31 @@ fn handle_read_file_at_path(args: &serde_json::Value, ctx: &ToolExecutionContext
         output.push_str(&format!("{:>4} | {}\n", start + i + 1, line));
     }
     ToolResult::Success(output)
+}
+
+// ---------------------------------------------------------------------------
+// view_image
+// ---------------------------------------------------------------------------
+
+fn view_image_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "view_image".to_string(),
+        description: "Read an image file by project-relative or approved absolute path and inspect its visual contents. Use for PNG, JPEG, GIF, or WebP screenshots, mockups, diagrams, and other image assets."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Project,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        parameters: vec![ToolParam {
+            name: "path".to_string(),
+            param_type: ParamType::FilePath,
+            required: true,
+            description: "Image path relative to the project root, or an approved absolute path."
+                .to_string(),
+        }],
+    }
 }
 
 // ---------------------------------------------------------------------------

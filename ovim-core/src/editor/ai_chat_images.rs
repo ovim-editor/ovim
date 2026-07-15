@@ -165,7 +165,7 @@ fn image_mime_type(path: &Path) -> Option<&'static str> {
     }
 }
 
-fn load_image(path: PathBuf) -> Result<ImageAttachment> {
+pub(crate) fn load_image(path: PathBuf) -> Result<ImageAttachment> {
     let metadata = std::fs::metadata(&path)
         .with_context(|| format!("Failed to inspect dropped image: {}", path.display()))?;
     if metadata.len() > MAX_IMAGE_BYTES {

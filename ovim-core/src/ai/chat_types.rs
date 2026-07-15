@@ -105,7 +105,7 @@ pub struct ChatMessage {
     /// Which model generated this (assistant messages only).
     pub model: Option<String>,
     pub timestamp: Instant,
-    /// Images attached to a user message.
+    /// Images attached to a user or tool-result message.
     pub images: Vec<ImageAttachment>,
     /// Tool calls made by this assistant message.
     pub tool_calls: Vec<ToolCallInfo>,
@@ -248,12 +248,21 @@ impl ConversationTree {
     }
 
     pub fn append_tool_result(&mut self, tool_call_id: String, content: String) -> NodeId {
+        self.append_tool_result_with_images(tool_call_id, content, Vec::new())
+    }
+
+    pub fn append_tool_result_with_images(
+        &mut self,
+        tool_call_id: String,
+        content: String,
+        images: Vec<ImageAttachment>,
+    ) -> NodeId {
         self.append_node(ChatMessage {
             role: ChatRole::Tool,
             content,
             model: None,
             timestamp: Instant::now(),
-            images: vec![],
+            images,
             tool_calls: vec![],
             tool_call_id: Some(tool_call_id),
             provider_state: vec![],

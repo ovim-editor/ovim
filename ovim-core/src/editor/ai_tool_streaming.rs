@@ -25,7 +25,11 @@ impl Editor {
             .tools_for_profile(profile, &caps)
             .into_iter()
             .filter(|tool| {
-                direct_codex || !matches!(tool.name.as_str(), "web_search" | "web_fetch")
+                direct_codex
+                    || !matches!(
+                        tool.name.as_str(),
+                        "web_search" | "web_fetch" | "view_image"
+                    )
             })
             .collect::<Vec<_>>();
 
