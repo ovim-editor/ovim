@@ -13,8 +13,9 @@ pub struct ViewportState {
     /// mirror of `Window::scroll_subrow`). Rows of the top wrapped line hidden
     /// above the top edge; always 0 when wrap is off.
     pub scroll_subrow: usize,
-    /// Skip scroll update flag - set by viewport commands (zz, zt, zb) to prevent auto-scroll
-    pub skip_scroll_update: bool,
+    /// One-shot post-input viewport policy. Kept private so commands express
+    /// intent through `preserve_after_input` rather than coordinating a flag.
+    preserve_after_input: bool,
     /// Wrap map for soft wrap rendering — the **no-window-manager fallback**
     /// slot (headless mode, the test harness). When a `WindowManager` exists,
     /// each `Window` owns its wrap map and `Editor::wrap_map()` /
@@ -27,13 +28,28 @@ pub struct ViewportState {
     pub wrap_decoration_generation: u64,
 }
 
+impl ViewportState {
+    pub(super) fn preserve_after_input(&mut self) {
+        self.preserve_after_input = true;
+    }
+
+    pub(super) fn should_preserve_after_input(&self) -> bool {
+        self.preserve_after_input
+    }
+
+    /// Consumes the one-shot policy at the shared post-input boundary.
+    pub(super) fn take_preserve_after_input(&mut self) -> bool {
+        std::mem::take(&mut self.preserve_after_input)
+    }
+}
+
 impl Default for ViewportState {
     fn default() -> Self {
         Self {
             viewport_height: 24,
             scroll_offset: 0,
             scroll_subrow: 0,
-            skip_scroll_update: false,
+            preserve_after_input: false,
             wrap_map: None,
             wrap_decoration_generation: 0,
         }

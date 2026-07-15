@@ -26,6 +26,31 @@ pub struct PendingToolApproval {
     pub dynamic_turn: Option<crate::agent_runtime::PendingTurnRef>,
 }
 
+impl AiTurnBlocker {
+    fn activity(self) -> AiChatActivity {
+        match self {
+            Self::ToolApproval => AiChatActivity::WaitingToolApproval,
+            Self::AutoModeClassification => AiChatActivity::ClassifyingTool,
+            Self::ShellExecution => AiChatActivity::RunningShell,
+            Self::WebExecution => AiChatActivity::RunningWeb,
+            Self::CodeExplanation => AiChatActivity::WaitingCodeExplanation,
+        }
+    }
+}
+
+/// Mutually exclusive reason an active provider turn is blocked or delegated.
+///
+/// `pending_job` is intentionally not part of this enum: app-server inference
+/// remains allocated while a dynamic tool waits for one of these interactions.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum AiTurnBlocker {
+    ToolApproval,
+    AutoModeClassification,
+    ShellExecution,
+    WebExecution,
+    CodeExplanation,
+}
+
 /// A Terra auto-mode verdict in flight for a Codex dynamic bash request.
 pub struct PendingAutoModeClassification {
     pub tool_call: ToolCallInfo,
@@ -313,21 +338,41 @@ pub struct AiChatState {
 }
 
 impl AiChatState {
+    pub(crate) fn turn_blocker(&self) -> Option<AiTurnBlocker> {
+        let blockers = [
+            self.pending_tool_approval
+                .as_ref()
+                .map(|_| AiTurnBlocker::ToolApproval),
+            self.pending_auto_mode_classification
+                .as_ref()
+                .map(|_| AiTurnBlocker::AutoModeClassification),
+            self.pending_shell_execution
+                .as_ref()
+                .map(|_| AiTurnBlocker::ShellExecution),
+            self.pending_web_execution
+                .as_ref()
+                .map(|_| AiTurnBlocker::WebExecution),
+            self.pending_code_explanation
+                .as_ref()
+                .map(|_| AiTurnBlocker::CodeExplanation),
+        ];
+        debug_assert!(
+            blockers.iter().flatten().count() <= 1,
+            "an AI turn cannot have multiple blockers"
+        );
+        blockers.into_iter().flatten().next()
+    }
+
     pub fn activity(&self) -> AiChatActivity {
         // Blocking user decisions take precedence over the provider job that
         // may be intentionally retained behind them.
-        if self.pending_tool_approval.is_some() {
+        let blocker = self.turn_blocker();
+        if blocker == Some(AiTurnBlocker::ToolApproval) {
             AiChatActivity::WaitingToolApproval
         } else if self.pending_no_repo_folder_approval.is_some() {
             AiChatActivity::WaitingFolderApproval
-        } else if self.pending_code_explanation.is_some() {
-            AiChatActivity::WaitingCodeExplanation
-        } else if self.pending_auto_mode_classification.is_some() {
-            AiChatActivity::ClassifyingTool
-        } else if self.pending_shell_execution.is_some() {
-            AiChatActivity::RunningShell
-        } else if self.pending_web_execution.is_some() {
-            AiChatActivity::RunningWeb
+        } else if let Some(blocker) = blocker {
+            blocker.activity()
         } else if self.pending_job.is_some() || self.runtime_turn.is_some() || self.waiting {
             AiChatActivity::Inference
         } else {

@@ -278,7 +278,7 @@ impl Editor {
         // We set the scroll explicitly — including a sub-row offset that
         // logical cursor-keeping can't express — so suppress the post-command
         // `update_scroll_offset`, which would otherwise snap the sub-row away.
-        self.viewport.skip_scroll_update = true;
+        self.viewport.preserve_after_input();
         true
     }
 
@@ -398,7 +398,7 @@ impl Editor {
     /// Modal overlays use this when they render a source buffer for reading:
     /// even an ignored key must not apply normal-mode `scrolloff` afterward.
     pub(crate) fn preserve_viewport_after_input(&mut self) {
-        self.viewport.skip_scroll_update = true;
+        self.viewport.preserve_after_input();
     }
 
     /// Moves cursor line to bottom of viewport, respecting scrolloff (zb).
@@ -429,7 +429,7 @@ impl Editor {
     }
 
     /// Scrolls the focused window so the cursor's line sits `rows_above` visual
-    /// rows below the viewport top, then pins the scroll (skip_scroll_update).
+    /// rows below the viewport top, then preserves that scroll after input.
     ///
     /// This is the shared engine for `zt`/`zz`/`zb`. It is wrap-aware: when soft
     /// wrap is on and a usable wrap map exists, `rows_above` is measured in
@@ -457,7 +457,7 @@ impl Editor {
         }
 
         // Skip automatic scroll update - we explicitly set the scroll position.
-        self.viewport.skip_scroll_update = true;
+        self.viewport.preserve_after_input();
     }
 
     /// Computes the top logical line so the cursor's line sits `rows_above` rows

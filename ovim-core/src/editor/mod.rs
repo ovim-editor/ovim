@@ -6,9 +6,16 @@ mod ai_chat_exa;
 mod ai_chat_images;
 pub mod ai_chat_input;
 mod ai_chat_mutations;
+mod ai_chat_presentation;
 mod ai_chat_queue;
+mod ai_chat_review;
+mod ai_chat_scratch;
+mod ai_chat_selection;
+mod ai_chat_session;
 pub(crate) mod ai_chat_state;
 mod ai_chat_tools;
+mod ai_chat_turn;
+mod ai_chat_viewport;
 mod ai_code_explanation;
 mod ai_context;
 mod ai_durable_chat;
@@ -1120,10 +1127,10 @@ impl Editor {
     /// Updates scroll offset to keep cursor visible
     ///
     /// Uses scrolloff for comfortable cursor positioning during normal movements.
-    /// Viewport commands (zt, zz, zb) can override this by setting skip_scroll_update.
+    /// Viewport commands (zt, zz, zb) can override this by requesting viewport preservation.
     pub fn update_scroll_offset(&mut self) {
         // Skip if viewport command just ran - it has full control over positioning
-        if self.viewport.skip_scroll_update {
+        if self.viewport.should_preserve_after_input() {
             return;
         }
 

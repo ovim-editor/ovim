@@ -212,17 +212,15 @@ impl InputHandler {
         }
 
         // When the mapping layer handled this key it already ran the scroll
-        // update on the inner (replayed) dispatch, consuming `skip_scroll_update`.
+        // update on the inner (replayed) dispatch, consuming the one-shot viewport policy.
         // Re-running it here would scroll a second time and, worse, undo a
         // deliberate sub-row scroll (e.g. Ctrl-E) whose cursor sits off-screen by
         // design. Only run the post-command scroll update at this (outer) level
         // when we handled the key directly.
         let is_viewport_pending = matches!(editor.pending_command(), Some('z') | Some('Z'));
-        if !editor.viewport.skip_scroll_update && !is_viewport_pending && !mapping_handled {
+        let preserve_viewport = editor.viewport.take_preserve_after_input();
+        if !preserve_viewport && !is_viewport_pending && !mapping_handled {
             editor.update_scroll_offset();
-        } else {
-            // Reset flag for next key event
-            editor.viewport.skip_scroll_update = false;
         }
 
         editor.ai_post_input_refresh();

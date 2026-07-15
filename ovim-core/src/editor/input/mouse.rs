@@ -424,7 +424,8 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         }
         if let Some(index) = editor
             .render_cache
-            .ai_chat_slash_completion_hitboxes
+            .ai_chat_interactions
+            .slash_completions
             .iter()
             .find(|(area, _)| area.contains(col, row))
             .map(|(_, index)| *index)
@@ -434,7 +435,8 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         }
         if editor
             .render_cache
-            .ai_chat_yolo_hitbox
+            .ai_chat_interactions
+            .yolo_toggle
             .is_some_and(|area| area.contains(col, row))
         {
             editor.toggle_ai_chat_yolo_mode();
@@ -452,7 +454,8 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         }
         if let Some(target) = editor
             .render_cache
-            .ai_chat_branch_hitboxes
+            .ai_chat_interactions
+            .branches
             .iter()
             .find(|(area, _)| area.contains(col, row))
             .map(|(_, target)| *target)
@@ -465,7 +468,8 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         }
         if let Some(tool_call_id) = editor
             .render_cache
-            .ai_chat_walkthrough_replay_hitboxes
+            .ai_chat_interactions
+            .walkthrough_replays
             .iter()
             .find(|(area, _)| area.contains(col, row))
             .map(|(_, tool_call_id)| tool_call_id.clone())
@@ -625,7 +629,7 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     }
 
     if editor.render_cache.ai_chat_text_selecting {
-        if let Some(area) = editor.render_cache.ai_chat_history_area {
+        if let Some(area) = editor.render_cache.ai_chat_interactions.history {
             let column = col.saturating_sub(area.x).min(area.width.saturating_sub(1)) as usize;
             if row < area.y {
                 editor.set_ai_chat_text_selection_autoscroll(
@@ -693,7 +697,7 @@ fn handle_left_release(editor: &mut Editor) -> Result<()> {
 }
 
 fn ai_chat_screen_position(editor: &Editor, col: u16, row: u16) -> Option<(usize, usize)> {
-    let area = editor.render_cache.ai_chat_history_area?;
+    let area = editor.render_cache.ai_chat_interactions.history?;
     if !area.contains(col, row) {
         return None;
     }
@@ -998,7 +1002,7 @@ mod tests {
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/".into();
         chat.input_cursor = 1;
-        editor.render_cache.ai_chat_slash_completion_hitboxes = vec![(
+        editor.render_cache.ai_chat_interactions.slash_completions = vec![(
             crate::Rect {
                 x: 42,
                 y: 12,
@@ -1024,7 +1028,7 @@ mod tests {
     #[test]
     fn dragging_chat_text_highlights_and_copies_the_selection() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_history_area = Some(crate::Rect {
+        editor.render_cache.ai_chat_interactions.history = Some(crate::Rect {
             x: 40,
             y: 1,
             width: 40,
@@ -1072,7 +1076,7 @@ mod tests {
     #[test]
     fn dragging_above_chat_history_keeps_scrolling_and_extending_selection() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_history_area = Some(crate::Rect {
+        editor.render_cache.ai_chat_interactions.history = Some(crate::Rect {
             x: 40,
             y: 5,
             width: 40,
@@ -1134,7 +1138,7 @@ mod tests {
     #[test]
     fn dragging_below_chat_history_scrolls_toward_latest_until_reentering() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_history_area = Some(crate::Rect {
+        editor.render_cache.ai_chat_interactions.history = Some(crate::Rect {
             x: 40,
             y: 5,
             width: 40,
@@ -1294,7 +1298,7 @@ mod tests {
     #[test]
     fn clicking_chat_yolo_toggle_changes_per_chat_policy() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_yolo_hitbox = Some(crate::Rect {
+        editor.render_cache.ai_chat_interactions.yolo_toggle = Some(crate::Rect {
             x: 69,
             y: 0,
             width: 11,
@@ -1327,7 +1331,7 @@ mod tests {
     #[test]
     fn clicking_branch_control_takes_priority_over_text_selection() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_branch_hitboxes = vec![(
+        editor.render_cache.ai_chat_interactions.branches = vec![(
             crate::Rect {
                 x: 70,
                 y: 4,
@@ -1360,7 +1364,7 @@ mod tests {
     #[test]
     fn clicking_walkthrough_replay_takes_priority_over_text_selection() {
         let mut editor = editor_with_docked_chat();
-        editor.render_cache.ai_chat_walkthrough_replay_hitboxes = vec![(
+        editor.render_cache.ai_chat_interactions.walkthrough_replays = vec![(
             crate::Rect {
                 x: 68,
                 y: 4,

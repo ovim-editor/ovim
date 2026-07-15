@@ -64,18 +64,8 @@ const TOOL_BG_OTHER: Color = Color::Rgb(36, 40, 50);
 
 /// Render the full chat panel.
 pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
-    editor.render_cache.ai_chat_history_area = None;
+    editor.render_cache.ai_chat_interactions.begin_frame();
     editor.render_cache.ai_chat_image_thumbnails.clear();
-    editor.render_cache.ai_chat_branch_hitboxes.clear();
-    editor
-        .render_cache
-        .ai_chat_walkthrough_replay_hitboxes
-        .clear();
-    editor.render_cache.ai_chat_yolo_hitbox = None;
-    editor
-        .render_cache
-        .ai_chat_slash_completion_hitboxes
-        .clear();
     let Some(layout) = ChatPanelLayout::resolve(
         chat_area,
         editor.ai_chat_tree_panel_open(),
@@ -102,7 +92,7 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     if layout.messages_area.height > 0 {
         render_message_history(frame, editor, layout.messages_area, theme);
     } else {
-        editor.render_cache.ai_chat_history_area = None;
+        editor.render_cache.ai_chat_interactions.history = None;
     }
     if let Some(gallery_area) = layout.gallery_area {
         render_chat_image_gallery(frame, editor, gallery_area, &gallery_paths);
@@ -203,7 +193,7 @@ fn render_slash_completion(
         popup,
     );
 
-    editor.render_cache.ai_chat_slash_completion_hitboxes = (0..visible_count)
+    editor.render_cache.ai_chat_interactions.slash_completions = (0..visible_count)
         .map(|row| {
             (
                 ovim_core::Rect {
@@ -260,9 +250,9 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
         Paragraph::new(Span::styled(label, style)).alignment(Alignment::Right),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    editor.render_cache.ai_chat_yolo_hitbox = Some(crate::key_convert::convert_ratatui_rect(
-        Rect::new(x, area.y, width, 1),
-    ));
+    editor.render_cache.ai_chat_interactions.yolo_toggle = Some(
+        crate::key_convert::convert_ratatui_rect(Rect::new(x, area.y, width, 1)),
+    );
 }
 
 fn render_chat_image_gallery(
@@ -319,7 +309,8 @@ fn render_chat_image_gallery(
 // ---------------------------------------------------------------------------
 
 fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, theme: &Theme) {
-    editor.render_cache.ai_chat_history_area = Some(crate::key_convert::convert_ratatui_rect(area));
+    editor.render_cache.ai_chat_interactions.history =
+        Some(crate::key_convert::convert_ratatui_rect(area));
     editor.render_cache.ai_chat_last_queued_row_spans.clear();
     let messages = editor.ai_chat_messages();
     if messages.is_empty() {
@@ -655,7 +646,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             if (control_width as usize) < card_text_width(area.width as usize, "\u{258d}") {
                 let x = area.x + area.width - control_width;
                 let left_width = control_width / 2;
-                editor.render_cache.ai_chat_branch_hitboxes.push((
+                editor.render_cache.ai_chat_interactions.branches.push((
                     crate::key_convert::convert_ratatui_rect(Rect {
                         x,
                         y: r.y,
@@ -664,7 +655,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                     }),
                     control.previous,
                 ));
-                editor.render_cache.ai_chat_branch_hitboxes.push((
+                editor.render_cache.ai_chat_interactions.branches.push((
                     crate::key_convert::convert_ratatui_rect(Rect {
                         x: x + left_width,
                         y: r.y,
@@ -683,7 +674,8 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
             if action_width < area.width {
                 editor
                     .render_cache
-                    .ai_chat_walkthrough_replay_hitboxes
+                    .ai_chat_interactions
+                    .walkthrough_replays
                     .push((
                         crate::key_convert::convert_ratatui_rect(Rect {
                             x: area.x + area.width - action_width,
@@ -2019,7 +2011,11 @@ mod tests {
         assert!(rendered.contains("/clear"));
         assert!(rendered.contains("/model [profile]"));
         assert_eq!(
-            editor.render_cache.ai_chat_slash_completion_hitboxes.len(),
+            editor
+                .render_cache
+                .ai_chat_interactions
+                .slash_completions
+                .len(),
             4
         );
     }
@@ -2131,7 +2127,11 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(header.contains("YOLO OFF"), "{header}");
-        let hitbox = editor.render_cache.ai_chat_yolo_hitbox.unwrap();
+        let hitbox = editor
+            .render_cache
+            .ai_chat_interactions
+            .yolo_toggle
+            .unwrap();
         assert_eq!(hitbox.y, 0);
         assert_eq!(hitbox.x + hitbox.width, 80);
 
@@ -2240,9 +2240,15 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(rendered_text.contains("[‹ 2/2 ›]"));
-        assert_eq!(editor.render_cache.ai_chat_branch_hitboxes.len(), 2);
-        assert_eq!(editor.render_cache.ai_chat_branch_hitboxes[0].1, main_user);
-        assert_eq!(editor.render_cache.ai_chat_branch_hitboxes[1].1, main_user);
+        assert_eq!(editor.render_cache.ai_chat_interactions.branches.len(), 2);
+        assert_eq!(
+            editor.render_cache.ai_chat_interactions.branches[0].1,
+            main_user
+        );
+        assert_eq!(
+            editor.render_cache.ai_chat_interactions.branches[1].1,
+            main_user
+        );
         assert_ne!(main_user, fork_user);
     }
 
@@ -2385,12 +2391,13 @@ mod tests {
         assert_eq!(
             editor
                 .render_cache
-                .ai_chat_walkthrough_replay_hitboxes
+                .ai_chat_interactions
+                .walkthrough_replays
                 .len(),
             1
         );
         assert_eq!(
-            editor.render_cache.ai_chat_walkthrough_replay_hitboxes[0].1,
+            editor.render_cache.ai_chat_interactions.walkthrough_replays[0].1,
             "walkthrough-call"
         );
     }

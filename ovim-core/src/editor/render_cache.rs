@@ -4,6 +4,24 @@ pub struct ChatTextPoint {
     pub column: usize,
 }
 
+/// Hit-test geometry produced atomically by the latest chat render pass.
+/// Keeping these targets together prevents input from mixing stale controls
+/// from one frame with current controls from another.
+#[derive(Default)]
+pub struct ChatInteractionGeometry {
+    pub yolo_toggle: Option<crate::Rect>,
+    pub history: Option<crate::Rect>,
+    pub slash_completions: Vec<(crate::Rect, usize)>,
+    pub branches: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
+    pub walkthrough_replays: Vec<(crate::Rect, String)>,
+}
+
+impl ChatInteractionGeometry {
+    pub fn begin_frame(&mut self) {
+        *self = Self::default();
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ChatTextSelection {
     pub anchor: ChatTextPoint,
@@ -57,10 +75,8 @@ pub struct RenderCache {
     pub ai_chat_separator_area: Option<crate::Rect>,
     /// Whether the chat separator currently owns the mouse drag gesture.
     pub ai_chat_separator_dragging: bool,
-    /// Click target for the per-chat YOLO policy toggle.
-    pub ai_chat_yolo_hitbox: Option<crate::Rect>,
-    /// Cached AI chat message-history area from the last render.
-    pub ai_chat_history_area: Option<crate::Rect>,
+    /// Coherent hit-test snapshot from the latest chat render pass.
+    pub ai_chat_interactions: ChatInteractionGeometry,
     /// Cached AI chat total rendered row count from last render pass.
     pub ai_chat_last_total_rows: usize,
     /// Cached visible chat row window start (inclusive) from last render.
@@ -88,8 +104,6 @@ pub struct RenderCache {
     pub ai_chat_input_content_width: usize,
     /// Cached AI chat input cursor position from last render.
     pub ai_chat_input_cursor_pos: Option<(u16, u16)>,
-    /// Clickable rows in the slash-command completion popup.
-    pub ai_chat_slash_completion_hitboxes: Vec<(crate::Rect, usize)>,
     /// Click target for the Exa API-key dashboard in the setup dialog.
     pub ai_chat_exa_dashboard_hitbox: Option<crate::Rect>,
     /// Hardware cursor position for the Exa key field.
@@ -102,10 +116,39 @@ pub struct RenderCache {
     pub terminal_image_refresh_requested: bool,
     /// Render rectangles for clickable chat-image thumbnails.
     pub ai_chat_image_thumbnails: Vec<(crate::Rect, std::path::PathBuf)>,
-    /// Clickable previous/next controls for visible conversation forks.
-    pub ai_chat_branch_hitboxes: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
-    /// Clickable replay actions for completed code-walkthrough history rows.
-    pub ai_chat_walkthrough_replay_hitboxes: Vec<(crate::Rect, String)>,
     /// Absolute 80ms animation bucket used by the AI chat working spinner.
     pub ai_chat_working_animation_tick: u128,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ChatInteractionGeometry;
+
+    fn rect() -> crate::Rect {
+        crate::Rect {
+            x: 1,
+            y: 2,
+            width: 3,
+            height: 4,
+        }
+    }
+
+    #[test]
+    fn chat_interactions_begin_frame_clears_every_hit_target() {
+        let mut interactions = ChatInteractionGeometry {
+            yolo_toggle: Some(rect()),
+            history: Some(rect()),
+            slash_completions: vec![(rect(), 1)],
+            branches: vec![(rect(), 2)],
+            walkthrough_replays: vec![(rect(), "call-1".into())],
+        };
+
+        interactions.begin_frame();
+
+        assert!(interactions.yolo_toggle.is_none());
+        assert!(interactions.history.is_none());
+        assert!(interactions.slash_completions.is_empty());
+        assert!(interactions.branches.is_empty());
+        assert!(interactions.walkthrough_replays.is_empty());
+    }
 }
