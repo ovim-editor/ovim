@@ -1726,7 +1726,16 @@ mod tests {
     #[test]
     fn snapshot_exposes_active_ai_chat_state() {
         let mut editor = Editor::default();
-        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        editor
+            .open_ai_chat(ChatOpts {
+                // Ovim is built as a dependency of this binary test, so its
+                // durable-history code is not compiled with `cfg(test)`. Use
+                // a fixture-specific conversation instead of accidentally
+                // restoring the user's real default chat.
+                name: "snapshot-schema-test".into(),
+                ..ChatOpts::default()
+            })
+            .unwrap();
 
         let snapshot = create_snapshot(&editor);
         assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
