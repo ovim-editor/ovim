@@ -596,17 +596,26 @@ impl Editor {
                 return true;
             };
             if allow {
-                self.execute_dynamic_tool_after_policy(turn, tool, pending.tool_call, response);
-                self.set_lsp_status("Approved shell program for this invocation".into());
+                let tool_name = pending.tool_call.name.clone();
+                self.execute_dynamic_tool_after_policy(
+                    turn,
+                    tool,
+                    pending.tool_call,
+                    response,
+                    Some(pending.approval_root),
+                    pending.runtime_tool_started,
+                );
+                self.set_lsp_status(format!("Approved {tool_name} for this invocation"));
             } else {
+                let tool_name = pending.tool_call.name.clone();
                 self.finish_dynamic_tool(
                     &turn,
                     &tool,
                     &pending.tool_call,
                     response,
-                    ToolResult::Error("user denied shell program".into()),
+                    ToolResult::Error(format!("user denied {tool_name}")),
                 );
-                self.set_lsp_status("Denied shell program".into());
+                self.set_lsp_status(format!("Denied {tool_name}"));
             }
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.waiting = true;
@@ -694,6 +703,7 @@ impl Editor {
                     tool_call: pending.tool_call,
                     reason: req.reason,
                     runtime_tool: pending.runtime_tool,
+                    runtime_tool_started: pending.runtime_tool_started,
                     remaining_tool_calls: pending.remaining_tool_calls,
                     model_name: pending.model_name,
                     requested_path: req.requested_path.clone(),
@@ -855,6 +865,7 @@ impl Editor {
                         tool_call: tc.clone(),
                         reason: req.reason,
                         runtime_tool: runtime_tool.map(|(_, tool)| tool),
+                        runtime_tool_started: true,
                         remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
                         model_name,
                         requested_path: req.requested_path,

@@ -704,28 +704,27 @@ pub fn render_top_right_toasts(
 fn hidden_ai_chat_status(editor: &Editor) -> Option<(String, ToastLevel)> {
     hidden_ai_chat_status_for(
         editor.mode() == crate::mode::Mode::AiChat,
-        editor.ai_chat_waiting(),
-        editor.ai_chat_has_pending_tool_approval(),
-        editor.ai_chat_has_pending_no_repo_folder_approval(),
+        editor.ai_chat_activity(),
     )
 }
 
 fn hidden_ai_chat_status_for(
     chat_open: bool,
-    waiting: bool,
-    tool_approval: bool,
-    folder_approval: bool,
+    activity: ovim_core::editor::AiChatActivity,
 ) -> Option<(String, ToastLevel)> {
     if chat_open {
         return None;
     }
-    if tool_approval {
-        return Some((" AI approval needed ".to_string(), ToastLevel::Warning));
+    match activity {
+        ovim_core::editor::AiChatActivity::Idle => None,
+        ovim_core::editor::AiChatActivity::WaitingToolApproval => {
+            Some((" AI approval needed ".to_string(), ToastLevel::Warning))
+        }
+        ovim_core::editor::AiChatActivity::WaitingFolderApproval => {
+            Some((" AI folder approval ".to_string(), ToastLevel::Warning))
+        }
+        _ => Some((" AI working… ".to_string(), ToastLevel::Info)),
     }
-    if folder_approval {
-        return Some((" AI folder approval ".to_string(), ToastLevel::Warning));
-    }
-    waiting.then(|| (" AI working… ".to_string(), ToastLevel::Info))
 }
 
 /// Renders contextual widgets in the left and right margins when textwidth centering
@@ -1399,9 +1398,11 @@ mod tests {
 
     #[test]
     fn hidden_running_chat_has_compact_top_right_status() {
-        assert!(hidden_ai_chat_status_for(true, true, false, false).is_none());
-        let (text, _) =
-            hidden_ai_chat_status_for(false, true, false, false).expect("hidden AI status");
+        use ovim_core::editor::AiChatActivity;
+
+        assert!(hidden_ai_chat_status_for(true, AiChatActivity::Inference).is_none());
+        let (text, _) = hidden_ai_chat_status_for(false, AiChatActivity::RunningShell)
+            .expect("hidden AI status");
         assert_eq!(text, " AI working… ");
     }
 }

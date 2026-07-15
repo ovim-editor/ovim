@@ -1740,6 +1740,7 @@ mod tests {
         let snapshot = create_snapshot(&editor);
         assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
         let chat = snapshot.ai_chat.expect("active chat snapshot");
+        assert_eq!(chat.activity, "idle");
         assert!(!chat.waiting);
         assert!(chat.input.is_empty());
         assert!(chat.queued.is_empty());
@@ -2651,6 +2652,7 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
         })
         .collect();
     Some(AiChatSnapshot {
+        activity: editor.ai_chat_activity().as_str().to_string(),
         waiting: editor.ai_chat_waiting(),
         attention_generation: editor.ai_chat_attention_generation(),
         input: editor.ai_chat_input().to_string(),

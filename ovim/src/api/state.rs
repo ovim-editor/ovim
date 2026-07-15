@@ -151,6 +151,10 @@ pub struct ViewSnapshot {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AiChatSnapshot {
+    /// Authoritative lifecycle state for headless clients. Prefer this over
+    /// reconstructing state from the compatibility booleans below.
+    #[serde(default)]
+    pub activity: String,
     pub waiting: bool,
     /// Changes whenever the agent presents a new blocking approval prompt.
     /// Clients can use the edge to raise an audible or native notification.

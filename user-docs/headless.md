@@ -31,11 +31,15 @@ JSON snapshots carry a `schema_version` and a `view` object containing viewport,
 scroll, tab, split, file-tree, command/search, and status state. They include an
 `ai_chat` object whenever a chat is active. It reports focus, streaming/review
 state, current composer text and cursor, pending approval, scheduled inputs,
-and message history. Its `attention_generation` increases for each new blocking
-agent approval, so a headless client can raise its own notification once per
-prompt. Completed tool messages expose a compact summary; their arguments
-appear when that tool row is expanded in the UI. Automation can therefore
-monitor turns without parsing the rendered terminal grid.
+and message history. The `activity` field is the authoritative lifecycle state:
+`idle`, `inference`, `classifying_tool`, `running_shell`, `running_web`,
+`waiting_tool_approval`, or `waiting_folder_approval`. Prefer it over inferring
+ownership from compatibility booleans such as `waiting` and `streaming`. The
+`attention_generation` value increases for each new blocking agent approval,
+so a headless client can raise its own notification once per prompt. Completed
+tool messages expose a compact summary; their arguments appear when that tool
+row is expanded in the UI. Automation can therefore monitor turns without
+parsing the rendered terminal grid.
 
 `ovim send` accepts Unicode and Vim-style key names/modifiers. Use `ovim paste`
 for literal or multiline input so it is delivered as one bracketed-paste event.

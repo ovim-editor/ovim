@@ -14,6 +14,8 @@ pub struct PendingToolApproval {
     /// The policy or Terra explanation that caused this escalation.
     pub reason: String,
     pub runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+    /// Whether ToolStarted was already recorded before policy paused it.
+    pub runtime_tool_started: bool,
     pub remaining_tool_calls: Vec<ToolCallInfo>,
     pub model_name: String,
     pub requested_path: PathBuf,
@@ -141,6 +143,39 @@ pub enum ChatViewMode {
     ReviewFocused,
 }
 
+/// Authoritative projection of the work currently owned by an AI chat.
+///
+/// Provider jobs may remain allocated while an app-server tool is paused, so
+/// consumers must not infer lifecycle from `pending_job` or `waiting` alone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AiChatActivity {
+    Idle,
+    Inference,
+    ClassifyingTool,
+    RunningShell,
+    RunningWeb,
+    WaitingToolApproval,
+    WaitingFolderApproval,
+}
+
+impl AiChatActivity {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Idle => "idle",
+            Self::Inference => "inference",
+            Self::ClassifyingTool => "classifying_tool",
+            Self::RunningShell => "running_shell",
+            Self::RunningWeb => "running_web",
+            Self::WaitingToolApproval => "waiting_tool_approval",
+            Self::WaitingFolderApproval => "waiting_folder_approval",
+        }
+    }
+
+    pub fn has_pending_work(self) -> bool {
+        self != Self::Idle
+    }
+}
+
 pub struct AiChatState {
     pub opts: ChatOpts,
     /// Buffer ID where the chat was originally opened.
@@ -241,6 +276,26 @@ pub struct AiChatState {
 }
 
 impl AiChatState {
+    pub fn activity(&self) -> AiChatActivity {
+        // Blocking user decisions take precedence over the provider job that
+        // may be intentionally retained behind them.
+        if self.pending_tool_approval.is_some() {
+            AiChatActivity::WaitingToolApproval
+        } else if self.pending_no_repo_folder_approval.is_some() {
+            AiChatActivity::WaitingFolderApproval
+        } else if self.pending_auto_mode_classification.is_some() {
+            AiChatActivity::ClassifyingTool
+        } else if self.pending_shell_execution.is_some() {
+            AiChatActivity::RunningShell
+        } else if self.pending_web_execution.is_some() {
+            AiChatActivity::RunningWeb
+        } else if self.pending_job.is_some() || self.runtime_turn.is_some() || self.waiting {
+            AiChatActivity::Inference
+        } else {
+            AiChatActivity::Idle
+        }
+    }
+
     /// Number of lines in the input text (at least 1).
     pub fn input_line_count(&self) -> usize {
         self.input.lines().count().max(1)

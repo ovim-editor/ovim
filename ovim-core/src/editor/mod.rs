@@ -85,7 +85,7 @@ pub use crate::change::{
     ApplyPos, Change, ChangeBuilder, ChangeManager, CursorPos, InsertEntryMode, Range,
     TextObjectType,
 };
-pub use ai_chat_state::{QueuedChatInput, QueuedChatInputKind};
+pub use ai_chat_state::{AiChatActivity, QueuedChatInput, QueuedChatInputKind};
 pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use build_state::PendingShellCommand;
 pub use command_context::CommandContext;
