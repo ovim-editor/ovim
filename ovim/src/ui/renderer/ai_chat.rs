@@ -62,13 +62,19 @@ const TOOL_BG_OTHER: Color = Color::Rgb(36, 40, 50);
 // ---------------------------------------------------------------------------
 
 /// Split content area into buffer (left) and chat panel (right).
-pub fn compute_chat_split(content_area: Rect, allow_edits: bool) -> (Rect, Rect) {
+pub fn compute_chat_split(
+    content_area: Rect,
+    allow_edits: bool,
+    preferred_percent: Option<u16>,
+) -> (Rect, Rect) {
     let total = content_area.width;
-    let chat_pct: u16 = if allow_edits { 40 } else { 35 };
+    let chat_pct = preferred_percent
+        .unwrap_or(if allow_edits { 40 } else { 35 })
+        .clamp(1, 99);
     let min_chat = 30u16;
     let min_buffer = 40u16;
 
-    let chat_width = (total * chat_pct / 100)
+    let chat_width = ((u32::from(total) * u32::from(chat_pct) / 100) as u16)
         .max(min_chat)
         .min(total.saturating_sub(min_buffer));
     let buffer_width = total.saturating_sub(chat_width);
@@ -1942,8 +1948,8 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_cursor_info, highlight_chat_selection, is_hidden_tool_only_assistant,
-        render_queued_input_row, render_tool_event_details,
+        chat_cursor_info, compute_chat_split, highlight_chat_selection,
+        is_hidden_tool_only_assistant, render_queued_input_row, render_tool_event_details,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -1972,6 +1978,23 @@ mod tests {
                     data: vec![1, 2, 3],
                 }],
             );
+    }
+
+    #[test]
+    fn chat_split_uses_user_width_and_preserves_minimum_buffer() {
+        let area = Rect::new(0, 0, 100, 24);
+        let (buffer, chat) = compute_chat_split(area, true, Some(55));
+        assert_eq!((buffer.width, chat.width), (45, 55));
+
+        let (buffer, chat) = compute_chat_split(area, true, Some(90));
+        assert_eq!((buffer.width, chat.width), (40, 60));
+    }
+
+    #[test]
+    fn chat_split_keeps_context_sensitive_default_without_user_resize() {
+        let area = Rect::new(0, 0, 100, 24);
+        assert_eq!(compute_chat_split(area, true, None).1.width, 40);
+        assert_eq!(compute_chat_split(area, false, None).1.width, 35);
     }
 
     #[test]

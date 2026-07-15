@@ -407,6 +407,16 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         }
         if editor
             .render_cache
+            .ai_chat_separator_area
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.render_cache.ai_chat_separator_dragging = true;
+            editor.render_cache.ai_chat_text_selection = None;
+            editor.render_cache.ai_chat_text_selecting = false;
+            return Ok(None);
+        }
+        if editor
+            .render_cache
             .ai_chat_yolo_hitbox
             .is_some_and(|area| area.contains(col, row))
         {
@@ -574,6 +584,13 @@ fn handle_ai_chat_input_click(editor: &mut Editor, col: u16, row: u16) -> bool {
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
+    if editor.render_cache.ai_chat_separator_dragging {
+        if let Some(split_area) = editor.render_cache.ai_chat_split_area {
+            editor.resize_ai_chat_panel(col, split_area);
+        }
+        return Ok(());
+    }
+
     if editor.render_cache.ai_chat_text_selecting {
         if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
             editor.update_ai_chat_text_selection(history_row, history_column);
@@ -612,6 +629,10 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 }
 
 fn handle_left_release(editor: &mut Editor) -> Result<()> {
+    if editor.render_cache.ai_chat_separator_dragging {
+        editor.render_cache.ai_chat_separator_dragging = false;
+        return Ok(());
+    }
     if editor.render_cache.ai_chat_text_selecting {
         editor.finish_ai_chat_text_selection();
         return Ok(());
@@ -865,6 +886,57 @@ mod tests {
         });
         editor.render_cache.ai_chat_last_total_rows = 100;
         editor
+    }
+
+    #[test]
+    fn dragging_chat_separator_resizes_panel_and_owns_gesture() {
+        let mut editor = editor_with_docked_chat();
+        editor.render_cache.ai_chat_split_area = Some(crate::Rect {
+            x: 0,
+            y: 0,
+            width: 100,
+            height: 20,
+        });
+        editor.render_cache.ai_chat_separator_area = Some(crate::Rect {
+            x: 60,
+            y: 0,
+            width: 1,
+            height: 20,
+        });
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 60,
+                row: 5,
+            },
+        )
+        .unwrap();
+        assert!(editor.render_cache.ai_chat_separator_dragging);
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 45,
+                row: 5,
+            },
+        )
+        .unwrap();
+        assert_eq!(editor.ai_chat_panel_width_percent(), Some(55));
+        assert!(!editor.ai_chat_has_text_selection());
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Up(MouseButton::Left),
+                column: 45,
+                row: 5,
+            },
+        )
+        .unwrap();
+        assert!(!editor.render_cache.ai_chat_separator_dragging);
     }
 
     #[test]

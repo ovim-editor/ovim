@@ -269,6 +269,9 @@ pub struct AiChatState {
     pub last_save_outcome: Option<String>,
     /// Chat panel view mode.
     pub view_mode: ChatViewMode,
+    /// User-selected width of the docked chat as a percentage of the shared
+    /// buffer/chat area. `None` keeps the context-sensitive default.
+    pub panel_width_percent: Option<u16>,
     /// Current undo group ID for grouping agent edits per turn.
     pub current_undo_group: Option<u64>,
     /// Next undo group ID to assign.
@@ -352,6 +355,7 @@ impl AiChatState {
             buffer_was_clean_at_chat_start: false,
             last_save_outcome: None,
             view_mode: ChatViewMode::DockedChat,
+            panel_width_percent: None,
             current_undo_group: None,
             next_undo_group_id: 0,
         }

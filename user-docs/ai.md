@@ -64,6 +64,10 @@ approval. It does not disable malformed-input checks, `..` traversal rejection,
 project-context requirements, or durable-run ownership checks. Click again or
 run `/yolo off` to restore normal policy.
 
+The docked chat width is adjustable: drag its left separator toward the editor
+to make the chat wider, or toward the right to give the buffer more room. Ovim
+keeps the chosen proportion for that chat as the terminal is resized.
+
 When an active agent pauses for one of these approval decisions, Ovim emits the
 terminal bell once. Whether that is audible, visual, or suppressed is controlled
 by the terminal's bell settings. The notification is tied to the new prompt,

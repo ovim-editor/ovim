@@ -1833,6 +1833,38 @@ impl Editor {
             .unwrap_or(true)
     }
 
+    /// Preferred width of the docked chat, as a percentage of the shared
+    /// buffer/chat area. The renderer still enforces its minimum widths.
+    pub fn ai_chat_panel_width_percent(&self) -> Option<u16> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.panel_width_percent)
+    }
+
+    /// Resize the docked chat from a separator position captured in the last
+    /// rendered split. Storing a percentage makes the choice survive terminal
+    /// resizes without pinning the panel to a stale column count.
+    pub fn resize_ai_chat_panel(&mut self, separator_column: u16, split_area: crate::Rect) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if split_area.width == 0 {
+            return false;
+        }
+        let right = split_area.x.saturating_add(split_area.width);
+        let separator = separator_column.clamp(split_area.x, right);
+        let chat_width = right.saturating_sub(separator);
+        let percent = ((u32::from(chat_width) * 100 + u32::from(split_area.width) / 2)
+            / u32::from(split_area.width)) as u16;
+        let percent = percent.clamp(1, 99);
+        if chat.panel_width_percent == Some(percent) {
+            return false;
+        }
+        chat.panel_width_percent = Some(percent);
+        true
+    }
+
     /// Human-readable save policy for AI chat mutations.
     pub fn ai_chat_save_policy_label(&self) -> Option<&'static str> {
         self.ai_state

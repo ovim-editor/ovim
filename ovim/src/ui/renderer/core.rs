@@ -140,8 +140,11 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
     let review_mode = editor.ai_chat_review_mode();
     let (effective_content, chat_area) = if is_ai_chat && !review_mode {
         let allow_edits = editor.ai_chat_allow_edits();
-        let (buffer_rect, chat_rect) =
-            super::ai_chat::compute_chat_split(content_area, allow_edits);
+        let (buffer_rect, chat_rect) = super::ai_chat::compute_chat_split(
+            content_area,
+            allow_edits,
+            editor.ai_chat_panel_width_percent(),
+        );
         (buffer_rect, Some(chat_rect))
     } else {
         (content_area, None)
@@ -895,10 +898,25 @@ impl Renderer {
         // Render chat panel (if in AiChat mode)
         if let Some(chat_area) = areas.chat_area {
             super::ai_chat::render_chat_panel(frame, editor, chat_area, &theme);
-            editor.render_cache.last_chat_area =
-                Some(crate::key_convert::convert_ratatui_rect(chat_area));
+            let chat_area = crate::key_convert::convert_ratatui_rect(chat_area);
+            editor.render_cache.last_chat_area = Some(chat_area);
+            editor.render_cache.ai_chat_separator_area = Some(ovim_core::Rect {
+                x: chat_area.x,
+                y: chat_area.y,
+                width: 1,
+                height: chat_area.height,
+            });
+            editor.render_cache.ai_chat_split_area = Some(ovim_core::Rect {
+                x: areas.buffer_chunk.x,
+                y: chat_area.y,
+                width: areas.buffer_chunk.width.saturating_add(chat_area.width),
+                height: chat_area.height,
+            });
         } else {
             editor.render_cache.last_chat_area = None;
+            editor.render_cache.ai_chat_separator_area = None;
+            editor.render_cache.ai_chat_split_area = None;
+            editor.render_cache.ai_chat_separator_dragging = false;
         }
 
         // Render debug panels (if visible)

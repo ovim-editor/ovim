@@ -38,6 +38,12 @@ pub struct RenderCache {
     pub ai_prompt_model_trigger_hitbox: Option<crate::Rect>,
     /// Cached AI chat panel area from last render (for mouse scroll hit-testing).
     pub last_chat_area: Option<crate::Rect>,
+    /// Shared buffer/chat area used to convert a separator drag into a ratio.
+    pub ai_chat_split_area: Option<crate::Rect>,
+    /// One-column drag target on the left edge of the docked chat.
+    pub ai_chat_separator_area: Option<crate::Rect>,
+    /// Whether the chat separator currently owns the mouse drag gesture.
+    pub ai_chat_separator_dragging: bool,
     /// Click target for the per-chat YOLO policy toggle.
     pub ai_chat_yolo_hitbox: Option<crate::Rect>,
     /// Cached AI chat message-history area from the last render.
