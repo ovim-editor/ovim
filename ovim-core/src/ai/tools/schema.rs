@@ -114,7 +114,7 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
                     },
                     "comment": {
                         "type": "string",
-                        "description": "What this location demonstrates and how it connects to the walkthrough."
+                        "description": "Explain why this location matters and how it connects to the walkthrough; do not merely paraphrase the code."
                     }
                 },
                 "required": ["path", "start_line", "comment"]

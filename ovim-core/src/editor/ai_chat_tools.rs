@@ -124,7 +124,7 @@ impl Editor {
             .find(|tool| tool.name == "explain_with_codebase")
         {
             tool.description.push_str(&format!(
-                " The current editor can reliably show at most {safe_range} visual code rows per step; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each comment concise enough to display in at most 5 wrapped rows."
+                " The current full-width walkthrough can reliably show at most {safe_range} visual code rows per step; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each comment concise enough to display in at most 5 wrapped rows. If validation rejects a range, use its suggested endpoint and longest-line measurements to choose a conceptual split, then retry."
             ));
             if let Some(steps) = tool
                 .parameters
@@ -132,7 +132,7 @@ impl Editor {
                 .find(|param| param.name == "steps")
             {
                 steps.description = format!(
-                    "Ordered walkthrough steps. Each optional inclusive range may occupy at most {safe_range} visual code rows in the current viewport after soft wrapping, and each comment may occupy at most 5 wrapped rows; split larger regions or explanations into focused conceptual steps."
+                    "Narratively ordered walkthrough steps using project-relative paths and 1-indexed inclusive lines. Each optional range may occupy at most {safe_range} visual code rows in the full-width walkthrough after soft wrapping, and each comment may occupy at most 5 wrapped rows. Use single-line anchors for handoffs or invariants; use ranges only for cohesive blocks; split larger explanations by concept."
                 );
             }
         }

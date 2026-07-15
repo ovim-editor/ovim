@@ -10,10 +10,11 @@ use super::code_explanation::{
 };
 use super::Editor;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct CodeExplanationSourceMetrics {
     line_count: usize,
     visual_rows: Option<usize>,
+    line_visual_rows: Option<Vec<(usize, usize)>>,
 }
 
 impl Editor {
@@ -266,7 +267,7 @@ impl Editor {
             .ok_or_else(|| ToolResult::Error(self.no_project_root_error()))?;
         let root = root.canonicalize().unwrap_or(root);
         let safe_range = self.ai_code_explanation_safe_range_lines();
-        let viewport_width = self.render_cache.last_buffer_area.map(|area| area.width);
+        let presentation_width = self.ai_code_explanation_presentation_width();
         let mut steps = Vec::with_capacity(raw_steps.len());
 
         for (index, raw) in raw_steps.iter().enumerate() {
@@ -279,7 +280,7 @@ impl Editor {
                 )));
             }
             let comment_rows =
-                comment_rows_for_viewport(viewport_width, &comment, self.options.tab_width);
+                comment_rows_for_viewport(presentation_width, &comment, self.options.tab_width);
             if comment_rows > MAX_WALKTHROUGH_COMMENT_ROWS {
                 return Err(ToolResult::Error(format!(
                     "step {step_number} comment wraps to {comment_rows} rows; keep it within {MAX_WALKTHROUGH_COMMENT_ROWS} rows or split the explanation into focused steps"
@@ -299,7 +300,7 @@ impl Editor {
             let range_lines = end_line - start_line + 1;
             if range_lines > safe_range {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} spans {range_lines} lines, but the current safe range is {safe_range}; split it into smaller conceptual steps"
+                    "step {step_number} '{path}:{start_line}-{end_line}' spans {range_lines} physical lines, but the current maximum is {safe_range}; split it into smaller conceptual steps"
                 )));
             }
 
@@ -325,8 +326,14 @@ impl Editor {
                     "step {step_number} path is not a file inside the project: {path}"
                 )));
             }
-            let wrap_width = (self.options.wrap && self.render_cache.last_text_width > 0)
-                .then_some(self.render_cache.last_text_width);
+            let wrap_width =
+                (self.options.wrap && self.render_cache.last_text_width > 0).then(|| {
+                    self.render_cache.last_text_width.saturating_add(
+                        self.render_cache
+                            .last_chat_area
+                            .map_or(0, |area| area.width as usize),
+                    )
+                });
             let metrics = self.code_explanation_source_metrics(
                 &absolute_path,
                 start_line,
@@ -342,8 +349,13 @@ impl Editor {
             let end_line = end_line.min(metrics.line_count);
             if let Some(visual_rows) = metrics.visual_rows {
                 if visual_rows > safe_range {
+                    let guidance = metrics
+                        .line_visual_rows
+                        .as_deref()
+                        .map(|rows| visual_overflow_guidance(rows, safe_range))
+                        .unwrap_or_default();
                     return Err(ToolResult::Error(format!(
-                        "step {step_number} wraps to {visual_rows} visual rows at the current editor width, but only {safe_range} fit above the walkthrough card; use a smaller range"
+                        "step {step_number} '{path}:{start_line}-{end_line}' occupies {visual_rows} visual rows after soft wrapping (maximum {safe_range}).{guidance} Split by concept rather than truncating the explanation arbitrarily."
                     )));
                 }
             }
@@ -357,6 +369,16 @@ impl Editor {
             });
         }
         Ok(steps)
+    }
+
+    fn ai_code_explanation_presentation_width(&self) -> Option<u16> {
+        self.render_cache.last_buffer_area.map(|buffer| {
+            buffer.width.saturating_add(
+                self.render_cache
+                    .last_chat_area
+                    .map_or(0, |chat| chat.width),
+            )
+        })
     }
 
     fn code_explanation_source_metrics(
@@ -376,40 +398,54 @@ impl Editor {
             })
         }) {
             let line_count = buffer.rope().len_lines();
-            let visual_rows = wrap_width.map(|width| {
+            let line_visual_rows = wrap_width.map(|width| {
                 (start_line.saturating_sub(1)..end_line.min(line_count))
                     .map(|line| {
-                        crate::wrap::visual_line_count(
-                            buffer.line_text(line).as_deref().unwrap_or(""),
-                            width,
-                            self.options.tab_width,
+                        (
+                            line + 1,
+                            crate::wrap::visual_line_count(
+                                buffer.line_text(line).as_deref().unwrap_or(""),
+                                width,
+                                self.options.tab_width,
+                            ),
                         )
                     })
-                    .sum()
+                    .collect::<Vec<_>>()
             });
+            let visual_rows = line_visual_rows
+                .as_ref()
+                .map(|rows| rows.iter().map(|(_, count)| count).sum());
             return CodeExplanationSourceMetrics {
                 line_count,
                 visual_rows,
+                line_visual_rows,
             };
         }
 
         let content = std::fs::read_to_string(path).unwrap_or_default();
         let lines = content.lines().collect::<Vec<_>>();
         let line_count = lines.len().max(1);
-        let visual_rows = wrap_width.map(|width| {
+        let line_visual_rows = wrap_width.map(|width| {
             (start_line.saturating_sub(1)..end_line.min(line_count))
                 .map(|line| {
-                    crate::wrap::visual_line_count(
-                        lines.get(line).copied().unwrap_or(""),
-                        width,
-                        self.options.tab_width,
+                    (
+                        line + 1,
+                        crate::wrap::visual_line_count(
+                            lines.get(line).copied().unwrap_or(""),
+                            width,
+                            self.options.tab_width,
+                        ),
                     )
                 })
-                .sum()
+                .collect::<Vec<_>>()
         });
+        let visual_rows = line_visual_rows
+            .as_ref()
+            .map(|rows| rows.iter().map(|(_, count)| count).sum());
         CodeExplanationSourceMetrics {
             line_count,
             visual_rows,
+            line_visual_rows,
         }
     }
 
@@ -452,6 +488,45 @@ impl Editor {
         self.move_cursor_line_to_top_with_offset(0);
         Ok(())
     }
+}
+
+fn visual_overflow_guidance(line_rows: &[(usize, usize)], safe_range: usize) -> String {
+    let mut used = 0usize;
+    let mut safe_endpoint = None;
+    for (line, rows) in line_rows {
+        if used.saturating_add(*rows) > safe_range {
+            break;
+        }
+        used = used.saturating_add(*rows);
+        safe_endpoint = Some(*line);
+    }
+
+    let endpoint = if let Some(line) = safe_endpoint {
+        format!(" Suggested safe endpoint from this start: line {line}.")
+    } else if let Some((line, rows)) = line_rows.first() {
+        format!(" No endpoint from this start fits: line {line} alone occupies {rows} visual rows.")
+    } else {
+        String::new()
+    };
+
+    let mut longest = line_rows
+        .iter()
+        .copied()
+        .filter(|(_, rows)| *rows > 1)
+        .collect::<Vec<_>>();
+    longest.sort_by_key(|(line, rows)| (std::cmp::Reverse(*rows), *line));
+    let longest = longest
+        .into_iter()
+        .take(3)
+        .map(|(line, rows)| format!("{line} ({rows} rows)"))
+        .collect::<Vec<_>>();
+    let longest = if longest.is_empty() {
+        String::new()
+    } else {
+        format!(" Longest wrapped lines: {}.", longest.join(", "))
+    };
+
+    format!("{endpoint}{longest}")
 }
 
 fn required_step_string(
@@ -633,7 +708,8 @@ mod tests {
         let ToolResult::Error(error) = error else {
             panic!("expected tool error")
         };
-        assert!(error.contains("safe range is 14"), "{error}");
+        assert!(error.contains("maximum is 14"), "{error}");
+        assert!(error.contains("first.rs:1-17"), "{error}");
         assert!(!editor.ai_chat_has_pending_code_explanation());
     }
 
@@ -675,7 +751,52 @@ mod tests {
             panic!("expected tool error")
         };
         assert!(error.contains("visual rows"), "{error}");
-        assert!(error.contains("only 14 fit"), "{error}");
+        assert!(error.contains("maximum 14"), "{error}");
+        assert!(error.contains("wrapped.rs:1-4"), "{error}");
+        assert!(error.contains("Suggested safe endpoint"), "{error}");
+        assert!(error.contains("Longest wrapped lines"), "{error}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_validation_uses_the_full_width_that_replaces_chat() {
+        let (dir, mut editor, _first, _second) = setup_editor();
+        let wide = dir.path().join("wide.rs");
+        std::fs::write(
+            &wide,
+            (1..=4)
+                .map(|line| format!("// {line} {}\n", "word ".repeat(10)))
+                .collect::<String>(),
+        )
+        .unwrap();
+        editor.options.wrap = true;
+        editor.set_last_layout(
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 30,
+                height: 24,
+            },
+            4,
+            10,
+            0,
+        );
+        editor.render_cache.last_chat_area = Some(crate::Rect {
+            x: 30,
+            y: 0,
+            width: 50,
+            height: 24,
+        });
+        let tool_call = call(json!([{
+            "path": "wide.rs",
+            "start_line": 1,
+            "end_line": 4,
+            "comment": "Four related declarations form one cohesive block."
+        }]));
+
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("full-width walkthrough should fit: {error:?}");
+        }
+        assert!(editor.ai_chat_has_pending_code_explanation());
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -768,6 +889,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("at most 14 visual code rows"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("hides chat"));
         let steps = &schema["function"]["parameters"]["properties"]["steps"];
         assert_eq!(steps["type"], "array");
         assert_eq!(
@@ -775,5 +900,13 @@ mod tests {
             json!(["path", "start_line", "comment"])
         );
         assert!(steps["items"]["properties"]["end_line"].is_object());
+        assert!(steps["description"]
+            .as_str()
+            .unwrap()
+            .contains("single-line anchors"));
+        assert!(steps["items"]["properties"]["comment"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("do not merely paraphrase"));
     }
 }

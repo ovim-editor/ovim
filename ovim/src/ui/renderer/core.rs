@@ -136,19 +136,23 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         1
     };
 
-    // In AiChat mode with review-focused mode off, split into buffer (left) + chat panel (right)
+    // Interactive walkthroughs temporarily dedicate the shared content width
+    // to code. The chat remains alive and resumes as soon as the walkthrough
+    // completes or is dismissed.
     let review_mode = editor.ai_chat_review_mode();
-    let (effective_content, chat_area) = if is_ai_chat && !review_mode {
-        let allow_edits = editor.ai_chat_allow_edits();
-        let (buffer_rect, chat_rect) = super::ai_chat::compute_chat_split(
-            content_area,
-            allow_edits,
-            editor.ai_chat_panel_width_percent(),
-        );
-        (buffer_rect, Some(chat_rect))
-    } else {
-        (content_area, None)
-    };
+    let walkthrough_open = editor.ai_chat_has_pending_code_explanation();
+    let (effective_content, chat_area) =
+        if should_dock_ai_chat(is_ai_chat, review_mode, walkthrough_open) {
+            let allow_edits = editor.ai_chat_allow_edits();
+            let (buffer_rect, chat_rect) = super::ai_chat::compute_chat_split(
+                content_area,
+                allow_edits,
+                editor.ai_chat_panel_width_percent(),
+            );
+            (buffer_rect, Some(chat_rect))
+        } else {
+            (content_area, None)
+        };
 
     let chunks = if has_progress {
         Layout::default()
@@ -194,6 +198,10 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
         debug_side_area,
         debug_output_area,
     })
+}
+
+fn should_dock_ai_chat(is_ai_chat: bool, review_mode: bool, walkthrough_open: bool) -> bool {
+    is_ai_chat && !review_mode && !walkthrough_open
 }
 
 /// Phase 3: Render the buffer area (split or single window), returning
@@ -1044,11 +1052,18 @@ mod cursor_screen_position_tests {
     //! `scroll_subrow` rows below its real input point (regression of OV-00019,
     //! visible when many wrapped rows precede the cursor).
 
-    use super::{take_terminal_image_refresh, Renderer};
+    use super::{should_dock_ai_chat, take_terminal_image_refresh, Renderer};
     use crate::editor::Editor;
     use crate::ui::renderer::line_cache::LineRenderCache;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
+
+    #[test]
+    fn code_walkthrough_temporarily_reclaims_the_docked_chat_width() {
+        assert!(should_dock_ai_chat(true, false, false));
+        assert!(!should_dock_ai_chat(true, false, true));
+        assert!(!should_dock_ai_chat(true, true, false));
+    }
 
     #[test]
     fn focus_refresh_only_clears_when_terminal_image_was_visible() {

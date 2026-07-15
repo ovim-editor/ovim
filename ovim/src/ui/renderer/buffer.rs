@@ -1362,7 +1362,9 @@ pub fn render_buffer(
     } else {
         None
     };
-    let ai_prompt_selection = if editor.mode() == crate::mode::Mode::AiPrompt {
+    let ai_selection = if editor.mode() == crate::mode::Mode::AiPrompt
+        || editor.ai_chat_has_pending_code_explanation()
+    {
         editor.ai_state.active_selection.as_ref()
     } else {
         None
@@ -1477,7 +1479,7 @@ pub fn render_buffer(
             let has_bracket = bracket_positions
                 .is_some_and(|((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
             let has_search = current_search.is_some();
-            let has_ai_prompt_selection_on_line = ai_prompt_selection
+            let has_ai_selection_on_line = ai_selection
                 .map(|selection| line_idx >= selection.start_line && line_idx <= selection.end_line)
                 .unwrap_or(false);
             let line_start_char = rope.line_to_char(line_idx);
@@ -1505,7 +1507,7 @@ pub fn render_buffer(
                 && !has_yank_flash
                 && !has_bracket
                 && !has_search
-                && !has_ai_prompt_selection_on_line
+                && !has_ai_selection_on_line
                 && !has_ai_lock_on_line
                 && !has_ai_generated_on_line;
 
@@ -1829,7 +1831,7 @@ pub fn render_buffer(
             let ai_lock_ranges = lock_ranges_for_line(buffer, &viewport_slice);
             let (ai_generated_ranges, ai_selected_ranges) =
                 ai_region_ranges_for_line(editor, &viewport_slice);
-            let ai_prompt_ranges = if let Some(selection) = ai_prompt_selection {
+            let ai_selection_ranges = if let Some(selection) = ai_selection {
                 if line_idx < selection.start_line || line_idx > selection.end_line {
                     Vec::new()
                 } else {
@@ -1923,7 +1925,7 @@ pub fn render_buffer(
                 || bracket_col.is_some()
                 || has_diagnostics
                 || yank_flash.is_some()
-                || !ai_prompt_ranges.is_empty()
+                || !ai_selection_ranges.is_empty()
                 || !ai_lock_ranges.is_empty()
                 || !ai_generated_ranges.is_empty()
                 || !ai_selected_ranges.is_empty()
@@ -1968,10 +1970,11 @@ pub fn render_buffer(
                     }
                 }
 
-                // Keep AI prompt selection visually distinct while typing the instruction.
-                let ai_prompt_bg = Color::Rgb(62, 70, 82);
-                for (start_col, end_col) in &ai_prompt_ranges {
-                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_prompt_bg);
+                // Keep AI prompt and walkthrough ranges distinct from ordinary
+                // cursor-line highlighting while preserving syntax colors.
+                let ai_selection_bg = Color::Rgb(62, 70, 82);
+                for (start_col, end_col) in &ai_selection_ranges {
+                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_selection_bg);
                 }
 
                 // Generated AI edits stay visible after completion with a muted background.

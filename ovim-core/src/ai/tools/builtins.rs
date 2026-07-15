@@ -1096,7 +1096,7 @@ pub(crate) fn select_text_def() -> ToolDefinition {
 pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
     ToolDefinition {
         name: "explain_with_codebase".to_string(),
-        description: "Present an ordered, interactive walkthrough of code in the user's editor. Use this when the user asks how code works or asks you to explain an implementation/change. Do not use it in the middle of implementation: the call blocks until the user finishes or dismisses the walkthrough. Prefer one precise anchor line; add end_line only for a cohesive block. Split large subsystems into several conceptual steps. Example: parser.rs:41-58 explains the entry point, store.rs:91 explains the handoff, then parser_test.rs:120-138 explains the proof."
+        description: "Present a finished explanation as an ordered, interactive code walkthrough. The editor hides chat, expands code to the available width, highlights each inclusive range, and lets the user move between steps. Use it when the user asks how code works, requests a tour of an implementation, or wants changes explained. Do not call it while implementation must continue: it blocks until the user completes or dismisses the walkthrough. Order steps as a narrative. Prefer one precise anchor line for a handoff or invariant; add end_line only when the entire cohesive block is needed to understand the comment. Comments should explain significance and connection to the next step instead of paraphrasing the code. Validation never truncates ranges; an overflow error reports measured visual rows and retry guidance. Example: parser.rs:41-58 establishes the entry point, store.rs:91 shows the handoff, then parser_test.rs:120-138 proves the behavior."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -1108,7 +1108,8 @@ pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
             name: "steps".to_string(),
             param_type: ParamType::CodeExplanationSteps,
             required: true,
-            description: "Ordered walkthrough steps.".to_string(),
+            description: "Narratively ordered walkthrough steps. Paths are project-relative and lines are 1-indexed and inclusive."
+                .to_string(),
         }],
     }
 }
