@@ -523,16 +523,9 @@ impl Editor {
             .as_ref()
             .map(|c| c.tool_call_count)
             .unwrap_or(0);
-        let max_tool_calls = self
-            .ai_state
-            .chat
-            .as_ref()
-            .and_then(|c| c.opts.profile.as_ref())
-            .and_then(|p| self.ai_state.config.resolve_profile(p))
-            .map(|p| p.agent_loop.max_tool_calls)
-            .unwrap_or(50);
+        let max_tool_calls = self.ai_chat_tool_call_limit();
 
-        if used >= max_tool_calls {
+        if max_tool_calls.is_some_and(|limit| used >= limit) {
             // Hit limit — commit what we have and stop
             if !content.is_empty() {
                 if let Some(conv) = self.conversation_mut() {
@@ -766,16 +759,9 @@ impl Editor {
         tool_calls: Vec<ToolCallInfo>,
         model_name: String,
     ) -> bool {
-        let max_tool_calls = self
-            .ai_state
-            .chat
-            .as_ref()
-            .and_then(|c| c.opts.profile.as_ref())
-            .and_then(|p| self.ai_state.config.resolve_profile(p))
-            .map(|p| p.agent_loop.max_tool_calls)
-            .unwrap_or(50);
+        let max_tool_calls = self.ai_chat_tool_call_limit();
 
-        let mut executed_in_batch: u16 = 0;
+        let mut executed_in_batch: u64 = 0;
 
         for (idx, tc) in tool_calls.iter().enumerate() {
             let used = self
@@ -784,7 +770,7 @@ impl Editor {
                 .as_ref()
                 .map(|c| c.tool_call_count)
                 .unwrap_or(0);
-            if used.saturating_add(executed_in_batch) >= max_tool_calls {
+            if max_tool_calls.is_some_and(|limit| used.saturating_add(executed_in_batch) >= limit) {
                 if let Some(conv) = self.conversation_mut() {
                     conv.append_error("Tool call iteration limit reached.".to_string());
                 }

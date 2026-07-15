@@ -143,12 +143,16 @@ impl Default for ContextGatheringPolicy {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AgentLoopConfig {
-    pub max_tool_calls: u16,
+    /// Optional per-turn tool-call ceiling. Long-running agent turns are
+    /// unlimited by default; callers can opt into a finite guardrail.
+    pub max_tool_calls: Option<u64>,
 }
 
 impl Default for AgentLoopConfig {
     fn default() -> Self {
-        Self { max_tool_calls: 50 }
+        Self {
+            max_tool_calls: None,
+        }
     }
 }
 

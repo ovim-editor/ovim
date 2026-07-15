@@ -71,7 +71,7 @@ pub struct LuaProfileConfig {
     pub context_diagnostics: Option<String>,
     pub context_related_slices: Option<bool>,
     pub context_budget: Option<usize>,
-    pub max_tool_calls: Option<u16>,
+    pub max_tool_calls: Option<u64>,
     pub edit_prompt: Option<String>,
     pub chat_prompt: Option<String>,
     pub chat_edit_prompt: Option<String>,
@@ -125,7 +125,7 @@ impl LuaProfileConfig {
         };
 
         let agent_loop = AgentLoopConfig {
-            max_tool_calls: self.max_tool_calls.unwrap_or(50),
+            max_tool_calls: self.max_tool_calls.filter(|limit| *limit > 0),
         };
 
         let retry = RetryPolicy {

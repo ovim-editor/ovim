@@ -293,14 +293,12 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
 
         if let Some(chat) = editor.ai_state.chat.as_ref() {
             if chat.tool_call_count > 0 {
-                let max_calls = chat
-                    .opts
-                    .profile
-                    .as_ref()
-                    .and_then(|p| editor.ai_state.config.resolve_profile(p))
-                    .map(|p| p.agent_loop.max_tool_calls)
-                    .unwrap_or(50);
-                let iter_text = format!(" \u{26A1}{}/{} ", chat.tool_call_count, max_calls);
+                let iter_text = match editor.ai_chat_tool_call_limit() {
+                    Some(max_calls) => {
+                        format!(" \u{26A1}{}/{} ", chat.tool_call_count, max_calls)
+                    }
+                    None => format!(" \u{26A1}{} ", chat.tool_call_count),
+                };
                 right_spans.push(Span::styled(
                     iter_text,
                     Style::default().fg(Color::Yellow).bg(status_bg),

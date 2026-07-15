@@ -392,7 +392,7 @@ fn parse_lua_profile(tbl: &Table) -> Result<LuaProfileConfig> {
         context_diagnostics: ctx_diagnostics,
         context_related_slices: ctx_related_slices,
         context_budget: ctx_budget,
-        max_tool_calls: tbl.get::<_, u16>("max_tool_calls").ok(),
+        max_tool_calls: tbl.get::<_, u64>("max_tool_calls").ok(),
         edit_prompt: tbl.get::<_, String>("edit_prompt").ok(),
         chat_prompt: tbl.get::<_, String>("chat_prompt").ok(),
         chat_edit_prompt: tbl.get::<_, String>("chat_edit_prompt").ok(),
@@ -494,8 +494,8 @@ fn parse_agent_loop_table(value: &Value) -> Result<AgentLoopConfig> {
         _ => return Err(mlua::Error::external("vim.ai.agent must be a table")),
     };
     let mut cfg = AgentLoopConfig::default();
-    if let Ok(v) = tbl.get::<_, u16>("max_tool_calls") {
-        cfg.max_tool_calls = v;
+    if let Ok(v) = tbl.get::<_, u64>("max_tool_calls") {
+        cfg.max_tool_calls = (v > 0).then_some(v);
     }
     Ok(cfg)
 }

@@ -1627,6 +1627,16 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Explicit tool-call guardrail for the effective chat profile. `None`
+    /// means the turn may continue for as many tool calls as it needs.
+    pub fn ai_chat_tool_call_limit(&self) -> Option<u64> {
+        let profile = self.ai_chat_effective_profile();
+        self.ai_state
+            .config
+            .resolve_profile(&profile)
+            .and_then(|profile| profile.agent_loop.max_tool_calls)
+    }
+
     /// Whether an AI turn still has pending work that can affect review flow.
     pub fn ai_chat_has_pending_work(&self) -> bool {
         self.ai_chat_waiting()
@@ -2517,6 +2527,26 @@ mod tests {
 
         assert_eq!(editor.lsp_status(), "");
         editor.cancel_ai_chat_generation();
+    }
+
+    #[test]
+    fn effective_profile_controls_optional_tool_call_limit() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        assert_eq!(editor.ai_chat_tool_call_limit(), None);
+
+        editor
+            .ai_state
+            .config
+            .profiles
+            .get_mut(crate::ai::PROFILE_LOCAL)
+            .unwrap()
+            .agent_loop
+            .max_tool_calls = Some(75);
+
+        // ChatOpts has no explicit profile, so this also proves the active
+        // profile is used rather than a hard-coded fallback.
+        assert_eq!(editor.ai_chat_tool_call_limit(), Some(75));
     }
 
     #[tokio::test(flavor = "current_thread")]

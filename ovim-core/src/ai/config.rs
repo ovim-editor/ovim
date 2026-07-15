@@ -126,7 +126,7 @@ struct AiTomlProfile {
     diagnostics: Option<String>,
     related_slices: Option<bool>,
     context_budget: Option<usize>,
-    max_tool_calls: Option<u16>,
+    max_tool_calls: Option<u64>,
     tools: Option<Vec<String>>,
     scope: Option<String>,
     scope_shell: Option<bool>,
@@ -226,7 +226,8 @@ impl AiConfig {
             };
 
             let agent_loop = AgentLoopConfig {
-                max_tool_calls: profile.max_tool_calls.unwrap_or(50),
+                // Treat the legacy value 0 as unlimited as well as omission.
+                max_tool_calls: profile.max_tool_calls.filter(|limit| *limit > 0),
             };
 
             let retry = RetryPolicy {
@@ -413,6 +414,19 @@ mod tests {
         assert_eq!(
             AiConfig::default().tool_approval_mode,
             ToolApprovalMode::Auto
+        );
+    }
+
+    #[test]
+    fn agent_turns_are_unlimited_by_default() {
+        assert_eq!(AgentLoopConfig::default().max_tool_calls, None);
+        assert_eq!(
+            AiConfig::default()
+                .resolve_profile(PROFILE_LOCAL)
+                .unwrap()
+                .agent_loop
+                .max_tool_calls,
+            None
         );
     }
 

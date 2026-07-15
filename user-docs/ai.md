@@ -74,6 +74,12 @@ conversation branch, tool calls and results, and provider-encrypted reasoning
 state. Forking or clearing a conversation therefore changes Ovim's branch
 without depending on a hidden provider thread.
 
+Agent turns have no tool-call ceiling by default; the lightning indicator in
+the status line is a count, not a countdown. A profile may opt into a finite
+guardrail with `max_tool_calls = 100`, in which case Ovim displays both the
+current count and limit. Omitting the setting—or setting it to `0` in legacy
+configuration—keeps long-running turns unlimited.
+
 Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
 `ai.toml` still works, but it is legacy compatibility.

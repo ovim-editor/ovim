@@ -211,7 +211,7 @@ pub struct AiChatState {
     /// Opaque inference-strategy items accumulated for the assistant message.
     pub streaming_provider_state: Vec<serde_json::Value>,
     /// Number of individual tool calls executed in current turn.
-    pub tool_call_count: u16,
+    pub tool_call_count: u64,
     /// Paused tool call awaiting user approval for outside-project access.
     pub pending_tool_approval: Option<PendingToolApproval>,
     pub pending_auto_mode_classification: Option<PendingAutoModeClassification>,
