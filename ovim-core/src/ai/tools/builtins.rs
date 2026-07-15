@@ -45,6 +45,23 @@ pub struct ToolExecutionContext {
     pub lsp_status: String,
 }
 
+fn format_lsp_versions(versions: &[i32]) -> String {
+    if versions.is_empty() {
+        "unversioned (exact analyzed revision unavailable)".to_string()
+    } else if versions.len() == 1 {
+        format!("document version {}", versions[0])
+    } else {
+        format!(
+            "mixed document versions {}",
+            versions
+                .iter()
+                .map(i32::to_string)
+                .collect::<Vec<_>>()
+                .join(", ")
+        )
+    }
+}
+
 const WORKSPACE_GIT_STATUS_LIMIT: usize = 1_000;
 const WORKSPACE_PROJECT_SCAN_LIMIT: usize = 4_000;
 const WORKSPACE_PROJECT_RESULT_LIMIT: usize = 12;
@@ -151,8 +168,11 @@ pub struct OpenBufferState {
 pub struct ProjectDiagnosticFile {
     pub path: String,
     pub diagnostics: Vec<DiagnosticFact>,
-    /// Buffer revision whose contents these diagnostics describe, when open.
+    /// Current revision of the corresponding open buffer, if any.
     pub buffer_revision: Option<usize>,
+    /// LSP document versions attached to the contributing diagnostics.
+    /// Empty means the server published unversioned diagnostics.
+    pub lsp_versions: Vec<i32>,
 }
 
 /// Register all built-in tools into the registry.
@@ -928,11 +948,24 @@ fn handle_read_diagnostics(args: &serde_json::Value, ctx: &ToolExecutionContext)
         let Some(file) = find_project_diagnostics_file(path, &ctx.project_diagnostics) else {
             return ToolResult::Success(format!("No diagnostics for {}.", path));
         };
-        return format_diagnostics_for_file(&file.path, &file.diagnostics, file.buffer_revision);
+        return format_diagnostics_for_file(
+            &file.path,
+            &file.diagnostics,
+            file.buffer_revision,
+            &file.lsp_versions,
+        );
     }
 
     let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
-    format_diagnostics_for_file(file_label, &ctx.diagnostics, Some(ctx.buffer_revision))
+    let lsp_versions = find_project_diagnostics_file(file_label, &ctx.project_diagnostics)
+        .map(|file| file.lsp_versions.as_slice())
+        .unwrap_or_default();
+    format_diagnostics_for_file(
+        file_label,
+        &ctx.diagnostics,
+        Some(ctx.buffer_revision),
+        lsp_versions,
+    )
 }
 
 fn read_project_diagnostics_def() -> ToolDefinition {
@@ -1039,7 +1072,13 @@ fn handle_read_project_diagnostics(
         ));
     }
     for file in files {
-        output.push_str(&format!("{} ({}):\n", file.path, file.diagnostics.len()));
+        let versions = format_lsp_versions(&file.lsp_versions);
+        output.push_str(&format!(
+            "{} ({}, LSP analysis {}):\n",
+            file.path,
+            file.diagnostics.len(),
+            versions
+        ));
         for d in file.diagnostics.iter().take(5) {
             let severity = d.severity.as_deref().unwrap_or("unknown");
             output.push_str(&format!(
@@ -1062,21 +1101,24 @@ fn format_diagnostics_for_file(
     file_label: &str,
     diagnostics: &[DiagnosticFact],
     buffer_revision: Option<usize>,
+    lsp_versions: &[i32],
 ) -> ToolResult {
     let revision = buffer_revision
         .map(|revision| revision.to_string())
         .unwrap_or_else(|| "not open".to_string());
     if diagnostics.is_empty() {
         return ToolResult::Success(format!(
-            "Diagnostics for {file_label}\nBuffer revision: {revision}\nNo diagnostics."
+            "Diagnostics for {file_label}\nCurrent buffer revision: {revision}\nLSP analysis: {}\nNo diagnostics.",
+            format_lsp_versions(lsp_versions)
         ));
     }
     let mut output = String::new();
     output.push_str(&format!(
-        "Diagnostics for {} ({} total)\nBuffer revision: {}\n",
+        "Diagnostics for {} ({} total)\nCurrent buffer revision: {}\nLSP analysis: {}\n",
         file_label,
         diagnostics.len(),
         revision,
+        format_lsp_versions(lsp_versions),
     ));
     for d in diagnostics {
         let severity = d.severity.as_deref().unwrap_or("unknown");
@@ -1103,7 +1145,9 @@ fn find_project_diagnostics_file<'a>(
     files.iter().find(|entry| {
         let candidate = entry.path.replace('\\', "/");
         let candidate = candidate.trim_start_matches("./");
-        candidate == normalized || candidate.ends_with(&format!("/{}", normalized))
+        candidate == normalized
+            || candidate.ends_with(&format!("/{}", normalized))
+            || normalized.ends_with(&format!("/{candidate}"))
     })
 }
 
@@ -1990,6 +2034,7 @@ mod tests {
                 end_character: 13,
             }],
             buffer_revision: Some(11),
+            lsp_versions: vec![7],
         }];
         let result = execute_builtin(
             "read_diagnostics",
@@ -2000,6 +2045,8 @@ mod tests {
             ToolResult::Success(s) => {
                 assert!(s.contains("type mismatch"));
                 assert!(s.contains("[error]"));
+                assert!(s.contains("Current buffer revision: 11"));
+                assert!(s.contains("LSP analysis: document version 7"));
             }
             ToolResult::Error(e) => panic!("expected success, got error: {e}"),
         }
@@ -2019,6 +2066,7 @@ mod tests {
                     end_character: 7,
                 }],
                 buffer_revision: Some(3),
+                lsp_versions: vec![4],
             },
             ProjectDiagnosticFile {
                 path: "src/lib.rs".to_string(),
@@ -2030,6 +2078,7 @@ mod tests {
                     end_character: 6,
                 }],
                 buffer_revision: None,
+                lsp_versions: vec![],
             },
         ];
 
@@ -2039,6 +2088,8 @@ mod tests {
                 assert!(s.contains("Project diagnostics"));
                 assert!(s.contains("src/main.rs"));
                 assert!(s.contains("src/lib.rs"));
+                assert!(s.contains("LSP analysis document version 4"));
+                assert!(s.contains("exact analyzed revision unavailable"));
             }
             ToolResult::Error(e) => panic!("expected success, got error: {e}"),
         }

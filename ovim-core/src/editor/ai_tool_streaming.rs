@@ -439,7 +439,7 @@ impl Editor {
         tokio::task::block_in_place(|| {
             let all = handle.block_on(async { lsp.list_all_diagnostics().await });
             let mut out = Vec::new();
-            for (uri, diagnostics) in all {
+            for (uri, diagnostics, lsp_versions) in all {
                 let Some(path) = crate::lsp::uri_to_file_path(&uri) else {
                     continue;
                 };
@@ -468,6 +468,7 @@ impl Editor {
                         buffer_revision: open_buffer_revisions
                             .get(&crate::ai::path_policy::normalize_path(&path))
                             .copied(),
+                        lsp_versions,
                     });
                 }
             }

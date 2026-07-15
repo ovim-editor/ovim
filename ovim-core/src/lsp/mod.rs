@@ -698,14 +698,22 @@ impl LspManager {
         (errors, warnings, info, hints)
     }
 
-    /// Gets merged diagnostics for all tracked URIs.
-    pub async fn list_all_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>)> {
+    /// Gets merged diagnostics and the LSP document versions they were
+    /// published for across all tracked URIs. An empty version list means all
+    /// contributing servers published unversioned diagnostics.
+    pub async fn list_all_diagnostics(&self) -> Vec<(Uri, Vec<Diagnostic>, Vec<i32>)> {
         let diagnostics = self.diagnostics.lock().await;
         let mut out = Vec::new();
         for (uri, server_map) in diagnostics.iter() {
             let merged = Self::merge_diagnostics(server_map);
             if !merged.is_empty() {
-                out.push((uri.clone(), merged));
+                let mut versions = server_map
+                    .values()
+                    .filter_map(|stored| stored.version)
+                    .collect::<Vec<_>>();
+                versions.sort_unstable();
+                versions.dedup();
+                out.push((uri.clone(), merged, versions));
             }
         }
         out.sort_by(|a, b| a.0.as_str().cmp(b.0.as_str()));
@@ -912,6 +920,21 @@ mod tests {
 
         // Verify stored
         assert_eq!(manager.get_diagnostics(&uri).await.len(), 0);
+    }
+
+    #[tokio::test]
+    async fn list_all_diagnostics_preserves_analysis_versions() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///versioned.rs".parse().unwrap();
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], Some(3))
+            .await;
+
+        let all = manager.list_all_diagnostics().await;
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].0, uri);
+        assert_eq!(all[0].1.len(), 1);
+        assert_eq!(all[0].2, vec![3]);
     }
 
     #[tokio::test]
