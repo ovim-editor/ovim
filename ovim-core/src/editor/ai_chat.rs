@@ -270,6 +270,7 @@ impl Editor {
                         }
                     }
                 }
+                super::ai_chat_state::CodeExplanationContinuation::Replay => {}
             }
         }
 
@@ -2292,6 +2293,12 @@ impl Editor {
     pub fn ai_chat_tool_event_call(&self, tool_call_id: &str) -> Option<&ToolCallInfo> {
         self.ai_chat_tool_event_summary(tool_call_id)
             .map(|summary| &summary.call)
+            .or_else(|| {
+                self.ai_chat_messages()
+                    .iter()
+                    .flat_map(|message| message.tool_calls.iter())
+                    .find(|call| call.id == tool_call_id)
+            })
     }
 
     pub fn ai_chat_is_tool_event_expanded(&self, tool_call_id: &str) -> bool {

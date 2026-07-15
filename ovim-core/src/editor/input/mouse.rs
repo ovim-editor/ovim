@@ -457,6 +457,19 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.switch_ai_chat_runtime_branch(target);
             return Ok(None);
         }
+        if let Some(tool_call_id) = editor
+            .render_cache
+            .ai_chat_walkthrough_replay_hitboxes
+            .iter()
+            .find(|(area, _)| area.contains(col, row))
+            .map(|(_, tool_call_id)| tool_call_id.clone())
+        {
+            editor.render_cache.ai_chat_text_selection = None;
+            editor.render_cache.ai_chat_text_selecting = false;
+            editor.clear_ai_chat_text_selection_autoscroll();
+            editor.replay_code_explanation(&tool_call_id);
+            return Ok(None);
+        }
         if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 chat.focus = crate::ai::chat_types::ChatFocus::MessageHistory;
@@ -1316,6 +1329,39 @@ mod tests {
                 height: 1,
             },
             42,
+        )];
+        editor.render_cache.ai_chat_text_selection = Some(ChatTextSelection {
+            anchor: ChatTextPoint { row: 0, column: 0 },
+            head: ChatTextPoint { row: 0, column: 1 },
+            moved: true,
+        });
+        editor.render_cache.ai_chat_text_selecting = true;
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 72,
+                row: 4,
+            },
+        )
+        .unwrap();
+
+        assert!(editor.render_cache.ai_chat_text_selection.is_none());
+        assert!(!editor.render_cache.ai_chat_text_selecting);
+    }
+
+    #[test]
+    fn clicking_walkthrough_replay_takes_priority_over_text_selection() {
+        let mut editor = editor_with_docked_chat();
+        editor.render_cache.ai_chat_walkthrough_replay_hitboxes = vec![(
+            crate::Rect {
+                x: 68,
+                y: 4,
+                width: 10,
+                height: 1,
+            },
+            "walkthrough-call".into(),
         )];
         editor.render_cache.ai_chat_text_selection = Some(ChatTextSelection {
             anchor: ChatTextPoint { row: 0, column: 0 },

@@ -67,6 +67,10 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
     editor.render_cache.ai_chat_history_area = None;
     editor.render_cache.ai_chat_image_thumbnails.clear();
     editor.render_cache.ai_chat_branch_hitboxes.clear();
+    editor
+        .render_cache
+        .ai_chat_walkthrough_replay_hitboxes
+        .clear();
     editor.render_cache.ai_chat_yolo_hitbox = None;
     editor
         .render_cache
@@ -364,6 +368,7 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
     let mut message_row_spans: Vec<(usize, usize)> = Vec::with_capacity(messages.len());
     let mut branch_controls = Vec::new();
+    let mut walkthrough_replay_controls = Vec::new();
     let mut inline_images = Vec::new();
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected = focus == ChatFocus::MessageHistory && Some(idx) == selected_idx;
@@ -384,10 +389,28 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 .map(|(k, l)| (k, l.to_string()))
                 .unwrap_or_else(|| fallback_tool_summary(msg));
             let expanded = tool_call_id.is_some_and(|id| editor.ai_chat_is_tool_event_expanded(id));
+            let replay_tool_call_id = tool_call_id
+                .filter(|id| {
+                    editor
+                        .ai_chat_tool_event_call(id)
+                        .is_some_and(|call| call.name == "explain_with_codebase")
+                })
+                .map(str::to_string);
             rendered_lines.push((
-                render_tool_event_row(panel_width, &label, kind, is_selected, false, expanded),
+                render_tool_event_row(
+                    panel_width,
+                    &label,
+                    kind,
+                    is_selected,
+                    false,
+                    expanded,
+                    replay_tool_call_id.is_some(),
+                ),
                 false,
             ));
+            if let Some(tool_call_id) = replay_tool_call_id {
+                walkthrough_replay_controls.push((msg_row_start, tool_call_id));
+            }
             if expanded {
                 let call = tool_call_id.and_then(|id| editor.ai_chat_tool_event_call(id));
                 for line in render_tool_event_details(panel_width, call, &msg.content) {
@@ -518,7 +541,15 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 let (kind, label) = summarize_streaming_tool_call(tc);
                 let status_text = format!("running {label}");
                 rendered_lines.push((
-                    render_tool_event_row(panel_width, &status_text, kind, false, true, false),
+                    render_tool_event_row(
+                        panel_width,
+                        &status_text,
+                        kind,
+                        false,
+                        true,
+                        false,
+                        false,
+                    ),
                     false,
                 ));
             }
@@ -644,6 +675,26 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 ));
             }
         }
+        if let Some((_, tool_call_id)) = walkthrough_replay_controls
+            .iter()
+            .find(|(row, _)| *row == line_idx)
+        {
+            let action_width = walkthrough_replay_action().chars().count() as u16;
+            if action_width < area.width {
+                editor
+                    .render_cache
+                    .ai_chat_walkthrough_replay_hitboxes
+                    .push((
+                        crate::key_convert::convert_ratatui_rect(Rect {
+                            x: area.x + area.width - action_width,
+                            y: r.y,
+                            width: action_width,
+                            height: 1,
+                        }),
+                        tool_call_id.clone(),
+                    ));
+            }
+        }
     }
 }
 
@@ -755,6 +806,7 @@ fn render_tool_event_row(
     selected: bool,
     pending: bool,
     expanded: bool,
+    replay_action: bool,
 ) -> Line<'static> {
     let color = if selected {
         ACCENT_SELECTED
@@ -782,8 +834,11 @@ fn render_tool_event_row(
     } else {
         "▸"
     };
+    let action = replay_action.then(walkthrough_replay_action);
+    let action_width = action.map_or(0, |action| action.chars().count());
+    let label_width = panel_width.saturating_sub(action_width);
     let text = format!(" {disclosure} {prefix} {label}");
-    let display = compact_tool_text(&text, panel_width);
+    let display = compact_tool_text(&text, label_width);
     let mut style = Style::default().fg(color).bg(bg);
     if pending {
         style = style.add_modifier(Modifier::DIM);
@@ -794,9 +849,23 @@ fn render_tool_event_row(
     let padded = format!(
         "{}{}",
         display,
-        " ".repeat(panel_width.saturating_sub(display.chars().count()))
+        " ".repeat(label_width.saturating_sub(display.chars().count()))
     );
-    Line::from(Span::styled(padded, style))
+    let mut spans = vec![Span::styled(padded, style)];
+    if let Some(action) = action {
+        spans.push(Span::styled(
+            action,
+            Style::default()
+                .fg(if selected { ACCENT_SELECTED } else { TOOL_NAV })
+                .bg(bg)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    Line::from(spans)
+}
+
+fn walkthrough_replay_action() -> &'static str {
+    "[↻ replay]"
 }
 
 fn render_tool_event_details(
@@ -1828,7 +1897,7 @@ mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
         is_hidden_tool_only_assistant, render_queued_input_row, render_tool_event_details,
-        styled_word_wrap_line, word_wrap,
+        render_tool_event_row, styled_word_wrap_line, word_wrap,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2250,6 +2319,80 @@ mod tests {
         assert!(text.contains("tool: read_file"));
         assert!(text.contains("src/main.rs"));
         assert!(text.contains("fn main() {}"));
+    }
+
+    #[test]
+    fn walkthrough_history_row_reserves_a_right_aligned_replay_action() {
+        let line = render_tool_event_row(
+            48,
+            "code walkthrough · 17 steps",
+            ovim_core::ai::chat_types::ToolSummaryKind::Navigation,
+            false,
+            false,
+            false,
+            true,
+        );
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text.chars().count(), 48);
+        assert!(text.ends_with("[↻ replay]"));
+        assert!(line
+            .spans
+            .last()
+            .unwrap()
+            .style
+            .add_modifier
+            .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn visible_walkthrough_history_row_registers_replay_hitbox() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        {
+            let chat = editor.ai_state.chat.as_ref().unwrap();
+            let key = (chat.origin_buffer_id, chat.opts.name.clone());
+            let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+            conversation.append_assistant_message_with_tools(
+                String::new(),
+                "model".into(),
+                vec![ToolCallInfo {
+                    id: "walkthrough-call".into(),
+                    name: "explain_with_codebase".into(),
+                    arguments: serde_json::json!({"steps": []}),
+                }],
+            );
+            conversation.append_tool_result(
+                "walkthrough-call".into(),
+                "User completed the code walkthrough (17 steps).".into(),
+            );
+        }
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+            })
+            .unwrap();
+
+        assert_eq!(
+            editor
+                .render_cache
+                .ai_chat_walkthrough_replay_hitboxes
+                .len(),
+            1
+        );
+        assert_eq!(
+            editor.render_cache.ai_chat_walkthrough_replay_hitboxes[0].1,
+            "walkthrough-call"
+        );
     }
 
     #[test]

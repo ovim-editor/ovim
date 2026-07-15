@@ -55,6 +55,38 @@ impl Editor {
             .is_some_and(|chat| chat.pending_code_explanation.is_some())
     }
 
+    /// Replay a completed walkthrough from its retained tool-call arguments.
+    /// This deliberately revalidates paths and ranges against the current
+    /// workspace so stale history fails clearly instead of navigating to the
+    /// wrong code.
+    pub fn replay_code_explanation(&mut self, tool_call_id: &str) -> bool {
+        if self.ai_chat_waiting() || self.ai_chat_has_pending_code_explanation() {
+            self.set_lsp_status(
+                "Finish the active agent work before replaying a code walkthrough".into(),
+            );
+            return false;
+        }
+        let Some(tool_call) = self
+            .ai_chat_tool_event_call(tool_call_id)
+            .filter(|call| call.name == "explain_with_codebase")
+            .cloned()
+        else {
+            self.set_lsp_status("That code walkthrough is no longer available to replay".into());
+            return false;
+        };
+
+        match self.begin_code_explanation(tool_call, CodeExplanationContinuation::Replay) {
+            Ok(()) => true,
+            Err((error, _)) => {
+                let message = match error {
+                    ToolResult::Success(message) | ToolResult::Error(message) => message,
+                };
+                self.set_lsp_status(format!("Could not replay code walkthrough: {message}"));
+                false
+            }
+        }
+    }
+
     pub(super) fn begin_code_explanation(
         &mut self,
         tool_call: ToolCallInfo,
@@ -178,7 +210,19 @@ impl Editor {
         }
         self.ai_state.active_selection = None;
 
-        let outcome = if dismissed {
+        let is_replay = matches!(&pending.continuation, CodeExplanationContinuation::Replay);
+        let outcome = if is_replay && dismissed {
+            format!(
+                "Dismissed replay at step {} of {}.",
+                pending.current + 1,
+                pending.steps.len()
+            )
+        } else if is_replay {
+            format!(
+                "Completed walkthrough replay ({} steps).",
+                pending.steps.len()
+            )
+        } else if dismissed {
             format!(
                 "User dismissed the code walkthrough at step {} of {}.",
                 pending.current + 1,
@@ -236,6 +280,7 @@ impl Editor {
                 }
                 self.execute_tool_call_batch(remaining_tool_calls, model_name);
             }
+            CodeExplanationContinuation::Replay => {}
         }
 
         self.set_lsp_status(outcome);
@@ -689,6 +734,45 @@ mod tests {
             original_target
         );
         assert!(editor.ai_state.active_selection.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn completed_walkthrough_replays_locally_without_changing_history() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([
+            {
+                "path": "first.rs",
+                "start_line": 2,
+                "end_line": 4,
+                "comment": "The entry point validates the request."
+            },
+            {
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "The handoff occurs here."
+            }
+        ]));
+        let conversation = editor.conversation_mut().unwrap();
+        conversation.append_assistant_message_with_tools(
+            String::new(),
+            "test".into(),
+            vec![tool_call.clone()],
+        );
+        conversation.append_tool_result(
+            tool_call.id.clone(),
+            "User completed the code walkthrough (2 steps).".into(),
+        );
+        let history_len = editor.ai_chat_messages().len();
+
+        assert!(editor.replay_code_explanation(&tool_call.id));
+        assert_eq!(editor.ai_code_explanation_view().unwrap().total, 2);
+        assert!(!editor.ai_chat_waiting());
+        assert!(editor.advance_or_finish_code_explanation());
+        assert!(editor.advance_or_finish_code_explanation());
+
+        assert!(!editor.ai_chat_has_pending_code_explanation());
+        assert_eq!(editor.ai_chat_messages().len(), history_len);
+        assert!(!editor.ai_chat_waiting());
     }
 
     #[tokio::test(flavor = "multi_thread")]

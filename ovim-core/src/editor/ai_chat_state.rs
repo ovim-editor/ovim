@@ -77,6 +77,9 @@ pub enum CodeExplanationContinuation {
         runtime_turn: crate::agent_runtime::PendingTurnRef,
         response: tokio::sync::oneshot::Sender<Result<String, String>>,
     },
+    /// A user-triggered replay of an already completed history item. It is
+    /// entirely local and must not write another tool result or resume inference.
+    Replay,
 }
 
 pub struct PendingCodeExplanation {
