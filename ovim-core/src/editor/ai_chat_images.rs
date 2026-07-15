@@ -62,21 +62,34 @@ impl Editor {
             return Ok(false);
         }
 
-        let Some(tokens) = shlex::split(text.trim()) else {
-            return Ok(false);
-        };
-        if tokens.is_empty() {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
             return Ok(false);
         }
 
-        let paths: Vec<PathBuf> = tokens
+        // Headless clients send paste payloads literally, so a valid single
+        // image path containing spaces should not need shell escaping. Keep
+        // shlex parsing as the fallback for terminal drag/drop and batches.
+        let paths = dropped_path(trimmed)
+            .filter(|path| path.is_file() && image_mime_type(path).is_some())
+            .map(|path| vec![path])
+            .or_else(|| {
+                let tokens = shlex::split(trimmed)?;
+                if tokens.is_empty() {
+                    return None;
+                }
+                let paths: Vec<PathBuf> = tokens
+                    .iter()
+                    .filter_map(|token| dropped_path(token))
+                    .collect();
+                (paths.len() == tokens.len()).then_some(paths)
+            });
+        let Some(paths) = paths else {
+            return Ok(false);
+        };
+        if paths
             .iter()
-            .filter_map(|token| dropped_path(token))
-            .collect();
-        if paths.len() != tokens.len()
-            || paths
-                .iter()
-                .any(|path| !path.is_file() || image_mime_type(path).is_none())
+            .any(|path| !path.is_file() || image_mime_type(path).is_none())
         {
             return Ok(false);
         }
@@ -204,6 +217,25 @@ mod tests {
         assert_eq!(
             editor.ai_chat_pending_images()[0].file_name(),
             "screen shot.png"
+        );
+    }
+
+    #[test]
+    fn literal_image_path_with_spaces_attaches_for_headless_paste() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("literal screen shot.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\nminimal").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        assert!(editor
+            .try_attach_dropped_chat_images(path.to_string_lossy().as_ref())
+            .unwrap());
+        assert!(editor.ai_chat_input().is_empty());
+        assert_eq!(editor.ai_chat_pending_images().len(), 1);
+        assert_eq!(
+            editor.ai_chat_pending_images()[0].file_name(),
+            "literal screen shot.png"
         );
     }
 

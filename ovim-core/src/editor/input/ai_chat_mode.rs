@@ -256,6 +256,22 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
             editor.reset_ai_chat_slash_completion();
         }
+        // Match the editor and conventional terminal composers: Ctrl-U
+        // removes everything between the cursor and the start of its logical
+        // line. This is especially useful for clearing an accidental slash
+        // command without closing (and therefore preserving) the chat.
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            if let Some(chat) = editor.ai_state.chat.as_mut() {
+                let end = chat.input_cursor;
+                let start = chat.input[..end]
+                    .rfind('\n')
+                    .map(|newline| newline + 1)
+                    .unwrap_or(0);
+                chat.input.drain(start..end);
+                chat.input_cursor = start;
+            }
+            editor.reset_ai_chat_slash_completion();
+        }
         KeyCode::Backspace if word_modifier => {
             if let Some(chat) = editor.ai_state.chat.as_mut() {
                 let end = chat.input_cursor;
@@ -1030,5 +1046,25 @@ mod tests {
 
         handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Right, Modifiers::ALT)).unwrap();
         assert_eq!(editor.ai_chat_input_cursor(), editor.ai_chat_input().len());
+    }
+
+    #[test]
+    fn control_u_deletes_to_logical_line_start() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            chat.input = "keep this\nremove this suffix".to_string();
+            chat.input_cursor = "keep this\nremove this".len();
+        }
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('u'), Modifiers::CONTROL),
+        )
+        .unwrap();
+
+        assert_eq!(editor.ai_chat_input(), "keep this\n suffix");
+        assert_eq!(editor.ai_chat_input_cursor(), "keep this\n".len());
     }
 }
