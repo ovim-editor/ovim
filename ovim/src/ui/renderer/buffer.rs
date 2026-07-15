@@ -555,6 +555,14 @@ struct GutterContext<'a> {
     line_num_width: usize,
     cursor_line: usize,
     blame_width: usize,
+    walkthrough_range: Option<(usize, usize)>,
+}
+
+const WALKTHROUGH_SELECTION_BG: Color = Color::Rgb(34, 57, 76);
+const WALKTHROUGH_GUTTER_FG: Color = Color::Rgb(96, 176, 255);
+
+fn line_is_in_walkthrough(range: Option<(usize, usize)>, line_idx: usize) -> bool {
+    range.is_some_and(|(start, end)| line_idx >= start && line_idx <= end)
 }
 
 fn build_gutter_line(
@@ -631,7 +639,9 @@ fn build_gutter_line(
         "  ".to_string()
     };
 
-    // Sign priority: breakpoint+exec > breakpoint > execution line > diagnostics > agent edits > git
+    // Sign priority: breakpoint+exec > breakpoint > execution line > diagnostics >
+    // walkthrough focus > agent edits > git. The walkthrough marker makes the
+    // explained block visible even on blank or very short lines.
     let line_1based = (line_idx + 1) as u64;
     let has_breakpoint = editor.has_breakpoint_at(line_1based);
     let is_exec_line = editor
@@ -643,6 +653,7 @@ fn build_gutter_line(
         .ai_chat_state()
         .map(|c| c.agent_edits.is_line_modified(buffer_id, line_idx))
         .unwrap_or(false);
+    let is_walkthrough_line = line_is_in_walkthrough(ctx.walkthrough_range, line_idx);
 
     let (sign_text, sign_color) = if has_breakpoint && is_exec_line {
         ("●▶", Color::Red)
@@ -653,6 +664,8 @@ fn build_gutter_line(
     } else if !line_diagnostics.is_empty() {
         let severity = line_diagnostics[0].severity;
         get_diagnostic_sign_style(severity)
+    } else if is_walkthrough_line {
+        ("▎ ", WALKTHROUGH_GUTTER_FG)
     } else if is_agent_edit {
         ("▎ ", Color::Rgb(82, 139, 255))
     } else {
@@ -1362,10 +1375,14 @@ pub fn render_buffer(
     } else {
         None
     };
-    let ai_selection = if editor.mode() == crate::mode::Mode::AiPrompt
-        || editor.ai_chat_has_pending_code_explanation()
-    {
+    let has_code_walkthrough = editor.ai_chat_has_pending_code_explanation();
+    let ai_selection = if editor.mode() == crate::mode::Mode::AiPrompt || has_code_walkthrough {
         editor.ai_state.active_selection.as_ref()
+    } else {
+        None
+    };
+    let walkthrough_range = if has_code_walkthrough {
+        ai_selection.map(|selection| (selection.start_line, selection.end_line))
     } else {
         None
     };
@@ -1445,6 +1462,7 @@ pub fn render_buffer(
         line_num_width,
         cursor_line: cursor_line_idx,
         blame_width,
+        walkthrough_range,
     };
 
     let is_md_file = buffer
@@ -1970,9 +1988,13 @@ pub fn render_buffer(
                     }
                 }
 
-                // Keep AI prompt and walkthrough ranges distinct from ordinary
-                // cursor-line highlighting while preserving syntax colors.
-                let ai_selection_bg = Color::Rgb(62, 70, 82);
+                // Preserve syntax colors while making an interactive walkthrough
+                // more prominent than an ordinary AI-prompt selection.
+                let ai_selection_bg = if walkthrough_range.is_some() {
+                    WALKTHROUGH_SELECTION_BG
+                } else {
+                    Color::Rgb(62, 70, 82)
+                };
                 for (start_col, end_col) in &ai_selection_ranges {
                     apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_selection_bg);
                 }
@@ -2495,6 +2517,17 @@ pub fn render_line_with_highlights(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn walkthrough_range_marks_every_inclusive_logical_line() {
+        let range = Some((4, 6));
+        assert!(!line_is_in_walkthrough(range, 3));
+        assert!(line_is_in_walkthrough(range, 4));
+        assert!(line_is_in_walkthrough(range, 5));
+        assert!(line_is_in_walkthrough(range, 6));
+        assert!(!line_is_in_walkthrough(range, 7));
+        assert!(!line_is_in_walkthrough(None, 5));
+    }
 
     #[test]
     fn test_split_line_wide_char_at_boundary() {

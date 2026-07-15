@@ -893,6 +893,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("hides chat"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("explain something about the code or codebase"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("revisit the same line or range"));
         let steps = &schema["function"]["parameters"]["properties"]["steps"];
         assert_eq!(steps["type"], "array");
         assert_eq!(
@@ -904,6 +912,10 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("single-line anchors"));
+        assert!(steps["description"]
+            .as_str()
+            .unwrap()
+            .contains("Repeating a range is encouraged"));
         assert!(steps["items"]["properties"]["comment"]["description"]
             .as_str()
             .unwrap()

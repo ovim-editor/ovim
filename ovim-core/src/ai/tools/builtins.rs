@@ -1096,7 +1096,7 @@ pub(crate) fn select_text_def() -> ToolDefinition {
 pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
     ToolDefinition {
         name: "explain_with_codebase".to_string(),
-        description: "Present a finished explanation as an ordered, interactive code walkthrough. The editor hides chat, expands code to the available width, highlights each inclusive range, and lets the user move between steps. Use it when the user asks how code works, requests a tour of an implementation, or wants changes explained. Do not call it while implementation must continue: it blocks until the user completes or dismisses the walkthrough. Order steps as a narrative. Prefer one precise anchor line for a handoff or invariant; add end_line only when the entire cohesive block is needed to understand the comment. Comments should explain significance and connection to the next step instead of paraphrasing the code. Validation never truncates ranges; an overflow error reports measured visual rows and retry guidance. Example: parser.rs:41-58 establishes the entry point, store.rs:91 shows the handoff, then parser_test.rs:120-138 proves the behavior."
+        description: "Present a finished explanation as an ordered, interactive code walkthrough. The editor hides chat, expands code to the available width, highlights each inclusive range, and lets the user move between steps. Use it when the user asks you to explain something about the code or codebase, requests a tour of an implementation, or wants changes explained. Do not call it while implementation must continue: it blocks until the user completes or dismisses the walkthrough. Build a narrative from bite-sized conceptual steps, usually one claim or relationship per step. You may revisit the same line or range in later steps when a new perspective advances the explanation; comparisons can deliberately move A to B to A to C. Prefer one precise anchor line for a handoff or invariant; add end_line only when the entire cohesive block is needed to understand the comment. Comments should explain significance and connection to the next step instead of paraphrasing the code. Validation never truncates ranges; an overflow error reports measured visual rows and retry guidance. Example: parser.rs:41-58 establishes the entry point, store.rs:91 shows the handoff, parser.rs:41-58 revisits the contract to expose a generalization, then parser_test.rs:120-138 proves the behavior."
             .to_string(),
         required_scope: RequiredScope {
             file_scope: FileScope::Project,
@@ -1108,7 +1108,7 @@ pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
             name: "steps".to_string(),
             param_type: ParamType::CodeExplanationSteps,
             required: true,
-            description: "Narratively ordered walkthrough steps. Paths are project-relative and lines are 1-indexed and inclusive."
+            description: "Narratively ordered, bite-sized walkthrough steps. Paths are project-relative and lines are 1-indexed and inclusive. A line or range may be revisited when the later step adds a distinct insight."
                 .to_string(),
         }],
     }
