@@ -70,16 +70,27 @@ impl Terminal {
         Ok(())
     }
 
-    /// Re-enter alternate screen and raw mode after `suspend()`.
-    pub fn resume(&mut self) -> Result<()> {
-        enable_raw_mode()?;
+    /// Reassert terminal modes needed for mouse, focus, and drag/drop input.
+    ///
+    /// These DEC private modes are terminal-global and can be cleared by a
+    /// child process, terminal integration, or a partially failed suspend.
+    /// Re-enabling them is idempotent, so the event loop uses this as a small
+    /// self-healing heartbeat.
+    pub fn ensure_interaction_modes(&mut self) -> Result<()> {
         execute!(
             io::stdout(),
-            EnterAlternateScreen,
             EnableBracketedPaste,
             EnableFocusChange,
             EnableMouseCapture,
         )?;
+        Ok(())
+    }
+
+    /// Re-enter alternate screen and raw mode after `suspend()`.
+    pub fn resume(&mut self) -> Result<()> {
+        enable_raw_mode()?;
+        execute!(io::stdout(), EnterAlternateScreen,)?;
+        self.ensure_interaction_modes()?;
         if self.keyboard_enhancement_enabled {
             let _ = execute!(
                 io::stdout(),

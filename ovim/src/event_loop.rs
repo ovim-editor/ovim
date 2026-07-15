@@ -1068,6 +1068,7 @@ pub async fn run_event_loop(
     let mut render_cache = ovim::ui::AnsiRenderCache::new();
     let mut last_external_file_check = Instant::now();
     let mut observed_ai_attention_generation = editor.ai_chat_attention_generation();
+    let mut last_terminal_mode_refresh = Instant::now();
 
     while !editor.should_quit() {
         // Wait for input, API request, or tick — input has priority via `biased`
@@ -1078,6 +1079,13 @@ pub async fn run_event_loop(
             maybe_event = event_stream.next() => {
                 if let Some(Ok(first_event)) = maybe_event {
                     last_input_time = Some(Instant::now());
+
+                    // A focus transition is a common time for terminal-global
+                    // mouse/bracketed-paste modes to have been disturbed. Do
+                    // this before handling the batch so a FocusGained event
+                    // repairs interaction modes before a following drop.
+                    let _ = ui.terminal_mut().ensure_interaction_modes();
+                    last_terminal_mode_refresh = Instant::now();
 
                     // Batch: collect first event + drain all queued events
                     let mut events = vec![first_event];
@@ -1149,6 +1157,16 @@ pub async fn run_event_loop(
         // dispatch. Notify on the core's edge signal, outside rendering, so a
         // paused agent rings once even while the screen continues to redraw.
         notify_new_agent_attention(editor, &mut observed_ai_attention_generation);
+
+        // Mouse capture and bracketed paste are terminal-global modes, not
+        // durable application state. If another terminal participant clears
+        // them, scrolling escapes into terminal scrollback and image drops
+        // arrive as ordinary keystrokes. Periodically reassert both so the TUI
+        // recovers without requiring a restart (or even an input event).
+        if last_terminal_mode_refresh.elapsed() >= Duration::from_secs(1) {
+            let _ = ui.terminal_mut().ensure_interaction_modes();
+            last_terminal_mode_refresh = Instant::now();
+        }
 
         // Execute pending shell command with full terminal access
         if let Some(pending) = editor.take_pending_shell_command() {
