@@ -1,9 +1,7 @@
 use crate::editor::Editor;
 use crate::syntax::Theme;
 use ovim_core::ai::chat_types::{ChatFocus, ChatMessage, ChatRole, ToolCallInfo, ToolSummaryKind};
-use ovim_core::editor::ai_chat_input::{
-    chat_input_cursor_row_col, chat_input_visible_start, wrap_chat_input_rows, ChatInputRow,
-};
+use ovim_core::editor::ai_chat_input::{wrap_chat_input_rows, ChatInputRow};
 use ovim_core::editor::QueuedChatInputKind;
 use ratatui::{
     layout::{Alignment, Rect},
@@ -13,6 +11,9 @@ use ratatui::{
     Frame,
 };
 use unicode_width::UnicodeWidthChar;
+
+pub use super::ai_chat_layout::compute_chat_split;
+use super::ai_chat_layout::ChatPanelLayout;
 
 // ---------------------------------------------------------------------------
 // Colors (pub(crate) so conversation_tree can reuse them)
@@ -61,45 +62,6 @@ const TOOL_BG_OTHER: Color = Color::Rgb(36, 40, 50);
 // Layout
 // ---------------------------------------------------------------------------
 
-/// Split content area into buffer (left) and chat panel (right).
-pub fn compute_chat_split(
-    content_area: Rect,
-    allow_edits: bool,
-    preferred_percent: Option<u16>,
-) -> (Rect, Rect) {
-    let total = content_area.width;
-    let chat_pct = preferred_percent
-        .unwrap_or(if allow_edits { 40 } else { 35 })
-        .clamp(1, 99);
-    let min_chat = 30u16;
-    let min_buffer = 40u16;
-
-    let chat_width = ((u32::from(total) * u32::from(chat_pct) / 100) as u16)
-        .max(min_chat)
-        .min(total.saturating_sub(min_buffer));
-    let buffer_width = total.saturating_sub(chat_width);
-
-    let buffer_rect = Rect {
-        x: content_area.x,
-        y: content_area.y,
-        width: buffer_width,
-        height: content_area.height,
-    };
-    let chat_rect = Rect {
-        x: content_area.x + buffer_width,
-        y: content_area.y,
-        width: chat_width,
-        height: content_area.height,
-    };
-    (buffer_rect, chat_rect)
-}
-
-/// Width of tree panel when open.
-fn tree_panel_width(chat_width: u16) -> u16 {
-    let quarter = chat_width / 4;
-    quarter.clamp(20, 36)
-}
-
 /// Render the full chat panel.
 pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
     editor.render_cache.ai_chat_history_area = None;
@@ -110,107 +72,47 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         .render_cache
         .ai_chat_slash_completion_hitboxes
         .clear();
-    if chat_area.width < 4 || chat_area.height < 3 {
+    let Some(layout) = ChatPanelLayout::resolve(
+        chat_area,
+        editor.ai_chat_tree_panel_open(),
+        editor.ai_chat_input(),
+        editor.ai_chat_input_cursor(),
+        editor.options.tab_width,
+        editor.render_cache.terminal_image_support,
+        editor.ai_chat_pending_images().len(),
+    ) else {
         return;
-    }
-
-    // Split for tree panel if open
-    let tree_open = editor.ai_chat_tree_panel_open();
-    let (tree_area, main_area) = if tree_open && chat_area.width > 40 {
-        let tw = tree_panel_width(chat_area.width);
-        let tree_rect = Rect {
-            x: chat_area.x,
-            y: chat_area.y,
-            width: tw,
-            height: chat_area.height,
-        };
-        let main_rect = Rect {
-            x: chat_area.x + tw,
-            y: chat_area.y,
-            width: chat_area.width.saturating_sub(tw),
-            height: chat_area.height,
-        };
-        (Some(tree_rect), main_rect)
-    } else {
-        (None, chat_area)
     };
 
     // Render tree panel if open
-    if let Some(tree_rect) = tree_area {
+    if let Some(tree_rect) = layout.tree_area {
         super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
     }
 
-    render_chat_header(frame, editor, main_area);
-    let main_area = Rect {
-        x: main_area.x,
-        y: main_area.y.saturating_add(1),
-        width: main_area.width,
-        height: main_area.height.saturating_sub(1),
-    };
-
-    // Layout: [message_history | input_bar(dynamic)]. `/model` opens a popup.
-    let input_content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
-    let input_rows = wrap_chat_input_rows(
-        editor.ai_chat_input(),
-        input_content_width.max(1),
-        editor.options.tab_width,
-    );
-    let (cursor_row, _) = chat_input_cursor_row_col(
-        editor.ai_chat_input(),
-        editor.ai_chat_input_cursor(),
-        &input_rows,
-        editor.options.tab_width,
-    );
-    let max_input_rows = 5usize.min(main_area.height.saturating_sub(1) as usize);
-    let visible_input_rows = input_rows.len().min(max_input_rows).max(1);
-    let input_visible_start =
-        chat_input_visible_start(input_rows.len(), cursor_row, visible_input_rows);
-    let input_height = (1 + visible_input_rows) as u16;
+    render_chat_header(frame, editor, layout.header_area);
     let gallery_paths = editor
         .ai_chat_pending_images()
         .iter()
         .map(|image| image.path.clone())
         .collect::<Vec<_>>();
-    let gallery_height = chat_image_gallery_height(editor, main_area, &gallery_paths);
-    let messages_height = main_area
-        .height
-        .saturating_sub(input_height)
-        .saturating_sub(gallery_height);
-
-    let messages_area = Rect {
-        x: main_area.x,
-        y: main_area.y,
-        width: main_area.width,
-        height: messages_height,
-    };
-    let input_area = Rect {
-        x: main_area.x,
-        y: main_area.y + messages_height + gallery_height,
-        width: main_area.width,
-        height: input_height,
-    };
-    if messages_area.height > 0 {
-        render_message_history(frame, editor, messages_area, theme);
+    if layout.messages_area.height > 0 {
+        render_message_history(frame, editor, layout.messages_area, theme);
     } else {
         editor.render_cache.ai_chat_history_area = None;
     }
-    if gallery_height > 0 {
-        render_chat_image_gallery(
-            frame,
-            editor,
-            Rect::new(
-                main_area.x,
-                main_area.y + messages_height,
-                main_area.width,
-                gallery_height,
-            ),
-            &gallery_paths,
-        );
+    if let Some(gallery_area) = layout.gallery_area {
+        render_chat_image_gallery(frame, editor, gallery_area, &gallery_paths);
     }
-    render_text_input(frame, editor, input_area, &input_rows, input_visible_start);
-    render_slash_completion(frame, editor, input_area, messages_area.y);
+    render_text_input(
+        frame,
+        editor,
+        layout.input_area,
+        &layout.input_rows,
+        layout.input_visible_start,
+    );
+    render_slash_completion(frame, editor, layout.input_area, layout.messages_area.y);
     if editor.ai_chat_focus() == ChatFocus::ModelSelector {
-        render_model_picker(frame, editor, main_area);
+        render_model_picker(frame, editor, layout.content_area);
     }
 }
 
@@ -319,67 +221,16 @@ pub fn chat_cursor_info(editor: &Editor, chat_area: Rect) -> Option<(u16, u16)> 
         return None;
     }
 
-    // Account for tree panel offset
-    let tree_open = editor.ai_chat_tree_panel_open();
-    let main_area = if tree_open && chat_area.width > 40 {
-        let tw = tree_panel_width(chat_area.width);
-        Rect {
-            x: chat_area.x + tw,
-            y: chat_area.y,
-            width: chat_area.width.saturating_sub(tw),
-            height: chat_area.height,
-        }
-    } else {
-        chat_area
-    };
-    let main_area = Rect {
-        x: main_area.x,
-        y: main_area.y.saturating_add(1),
-        width: main_area.width,
-        height: main_area.height.saturating_sub(1),
-    };
-
-    let content_width = (main_area.width as usize).saturating_sub(2 + 3 + 2); // "│ " + prompt + " │"
-    let input = editor.ai_chat_input();
-    let tab_width = editor.options.tab_width;
-    let wrapped_rows = wrap_chat_input_rows(input, content_width.max(1), tab_width);
-    let (cursor_line, col) = chat_input_cursor_row_col(
-        input,
+    let layout = ChatPanelLayout::resolve(
+        chat_area,
+        editor.ai_chat_tree_panel_open(),
+        editor.ai_chat_input(),
         editor.ai_chat_input_cursor(),
-        &wrapped_rows,
-        tab_width,
-    );
-    let max_input_rows = 5usize.min(main_area.height.saturating_sub(1) as usize);
-    if max_input_rows == 0 {
-        return None;
-    }
-    let visible_input_rows = wrapped_rows.len().min(max_input_rows).max(1);
-    let visible_start =
-        chat_input_visible_start(wrapped_rows.len(), cursor_line, visible_input_rows);
-    let input_height = (1 + visible_input_rows) as u16;
-    let gallery_paths = editor
-        .ai_chat_pending_images()
-        .iter()
-        .map(|image| image.path.clone())
-        .collect::<Vec<_>>();
-    let gallery_height = chat_image_gallery_height(editor, main_area, &gallery_paths);
-    let messages_height = main_area
-        .height
-        .saturating_sub(input_height)
-        .saturating_sub(gallery_height);
-    let input_y = main_area.y + messages_height + gallery_height;
-
-    // First line has "│ >> " prefix (border + space + prompt = 5), continuation lines same width
-    let prefix_len = 5u16;
-    let x = main_area
-        .x
-        .saturating_add(prefix_len)
-        .saturating_add(col as u16)
-        .min(main_area.x + main_area.width.saturating_sub(1));
-    // +1 for the top border row, then offset by cursor_line
-    let y = input_y + 1 + cursor_line.saturating_sub(visible_start) as u16;
-
-    Some((x, y))
+        editor.options.tab_width,
+        editor.render_cache.terminal_image_support,
+        editor.ai_chat_pending_images().len(),
+    )?;
+    Some(layout.cursor_position())
 }
 
 fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
@@ -408,14 +259,6 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     editor.render_cache.ai_chat_yolo_hitbox = Some(crate::key_convert::convert_ratatui_rect(
         Rect::new(x, area.y, width, 1),
     ));
-}
-
-fn chat_image_gallery_height(editor: &Editor, area: Rect, paths: &[std::path::PathBuf]) -> u16 {
-    if editor.render_cache.terminal_image_support && !paths.is_empty() && area.height >= 10 {
-        6
-    } else {
-        0
-    }
 }
 
 fn render_chat_image_gallery(
