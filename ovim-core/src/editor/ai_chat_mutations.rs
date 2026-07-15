@@ -25,7 +25,9 @@ fn validate_expected_revision(
     file_label: &str,
 ) -> Result<(), ToolResult> {
     let Some(value) = args.get("expected_revision") else {
-        return Ok(());
+        return Err(ToolResult::Error(format!(
+            "Edit not applied: 'expected_revision' is required for {file_label}. Re-read the target buffer and retry with its current revision."
+        )));
     };
     let Some(expected_revision) = value.as_u64() else {
         return Err(ToolResult::Error(
@@ -37,6 +39,7 @@ fn validate_expected_revision(
             "Edit not applied: {file_label} advanced from revision {expected_revision} to {current_revision}. Re-read the affected range and retry."
         )));
     }
+
     Ok(())
 }
 
@@ -499,11 +502,13 @@ impl Editor {
 
         let revision_before = self.buffer().version();
         let file_label = self.buffer().file_path().unwrap_or("[No Name]").to_string();
-        if let Err(error) = validate_expected_revision(args, revision_before, &file_label) {
+        let revision_error = (name != "snapshot_file")
+            .then(|| validate_expected_revision(args, revision_before, &file_label))
+            .and_then(Result::err);
+        if let Some(error) = revision_error {
             self.current_buffer_index = original;
             return error;
         }
-
         let mut result = match name {
             "edit_range" => match parse_args(args) {
                 Ok(a) => self.handle_edit_range(a),
@@ -1098,6 +1103,19 @@ mod tests {
     fn expected_revision_accepts_current_buffer_revision() {
         let args = serde_json::json!({"expected_revision": 12});
         assert!(validate_expected_revision(&args, 12, "src/lib.rs").is_ok());
+    }
+
+    #[test]
+    fn expected_revision_is_required() {
+        let error =
+            validate_expected_revision(&serde_json::json!({}), 12, "src/lib.rs").unwrap_err();
+        match error {
+            ToolResult::Error(message) => {
+                assert!(message.contains("'expected_revision' is required"));
+                assert!(message.contains("Re-read"));
+            }
+            _ => panic!("expected ToolResult::Error"),
+        }
     }
 
     #[test]

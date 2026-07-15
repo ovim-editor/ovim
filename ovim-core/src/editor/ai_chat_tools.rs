@@ -1583,7 +1583,8 @@ mod tests {
                 arguments: serde_json::json!({
                     "start_line": 1,
                     "end_line": 1,
-                    "new_text": "updated"
+                    "new_text": "updated",
+                    "expected_revision": 0
                 }),
             };
 
@@ -1599,6 +1600,49 @@ mod tests {
         });
     }
 
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn same_revision_mutations_conflict_deterministically() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let file = dir.path().join("main.rs");
+        fs::write(&file, "original\n").expect("seed");
+        let mut editor = Editor::default();
+        editor.open_file(&file).expect("open file");
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+        let expected_revision = editor.build_tool_execution_context().buffer_revision;
+        let call = |id: &str, new_text: &str| ToolCallInfo {
+            id: id.to_string(),
+            name: "edit_range".to_string(),
+            arguments: serde_json::json!({
+                "start_line": 1,
+                "end_line": 1,
+                "new_text": new_text,
+                "expected_revision": expected_revision
+            }),
+        };
+
+        assert!(matches!(
+            editor.dispatch_tool_call_with_approval(&call("first", "first"), None),
+            ToolDispatchOutcome::Completed(ToolResult::Success(_))
+        ));
+        match editor.dispatch_tool_call_with_approval(&call("second", "second"), None) {
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                assert!(error.contains("advanced from revision"), "{error}");
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                panic!("stale mutation unexpectedly succeeded: {output}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(request) => {
+                panic!("unexpected approval: {}", request.message);
+            }
+        }
+        assert!(editor.buffer().rope().to_string().starts_with("first\n"));
+    }
     #[test]
     fn edit_range_with_other_path_requires_approval_in_sensitive_mode() {
         let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -1629,7 +1673,8 @@ mod tests {
                     "path": other.to_string_lossy().to_string(),
                     "start_line": 1,
                     "end_line": 1,
-                    "new_text": "updated"
+                    "new_text": "updated",
+                    "expected_revision": 0
                 }),
             };
 
@@ -1815,7 +1860,8 @@ mod tests {
                 name: "write_file_at_path".to_string(),
                 arguments: serde_json::json!({
                     "path": target.to_string_lossy().to_string(),
-                    "content": "pub fn generated() {}\n"
+                    "content": "pub fn generated() {}\n",
+                    "expected_revision": 0
                 }),
             };
 
@@ -1833,6 +1879,46 @@ mod tests {
             assert!(content.contains("pub fn generated() {}"));
             assert!(target.parent().unwrap().is_dir());
         });
+    }
+
+    #[test]
+    fn missing_expected_revision_does_not_prepare_path_target() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let target = dir.path().join("not_opened.rs");
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        let tool_call = ToolCallInfo {
+            id: "call_write_without_revision".to_string(),
+            name: "write_file_at_path".to_string(),
+            arguments: serde_json::json!({
+                "path": target.to_string_lossy().to_string(),
+                "content": "must not be written\n"
+            }),
+        };
+        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                assert!(error.contains("'expected_revision' is required"));
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+                panic!("expected revision error, got success: {output}");
+            }
+            ToolDispatchOutcome::ApprovalRequired(request) => {
+                panic!("expected revision error, got approval: {}", request.message);
+            }
+        }
+        assert!(!target.exists());
+        assert!(editor.buffers.iter().all(|buffer| {
+            buffer
+                .file_path()
+                .is_none_or(|path| normalize_path(std::path::Path::new(path)) != target)
+        }));
     }
 
     #[test]
@@ -1869,7 +1955,8 @@ mod tests {
                     "path": target.to_string_lossy().to_string(),
                     "start_line": 1,
                     "end_line": 1,
-                    "new_text": "updated"
+                    "new_text": "updated",
+                    "expected_revision": 0
                 }),
             };
 
@@ -1925,7 +2012,8 @@ mod tests {
                 name: "apply_patch_at_path".to_string(),
                 arguments: serde_json::json!({
                     "path": target.to_string_lossy().to_string(),
-                    "diff": diff
+                    "diff": diff,
+                    "expected_revision": 0
                 }),
             };
 
@@ -1975,7 +2063,8 @@ mod tests {
                 name: "apply_patch_at_path".to_string(),
                 arguments: serde_json::json!({
                     "path": target.to_string_lossy().to_string(),
-                    "diff": diff
+                    "diff": diff,
+                    "expected_revision": 0
                 }),
             };
 
@@ -2051,7 +2140,8 @@ mod tests {
                     "path": target.to_string_lossy().to_string(),
                     "start_line": 1,
                     "end_line": 1,
-                    "new_text": "changed"
+                    "new_text": "changed",
+                    "expected_revision": 0
                 }),
             };
             match editor.dispatch_tool_call_with_approval(&edit_call, None) {
@@ -2064,12 +2154,14 @@ mod tests {
                 }
             }
 
+            let restore_revision = editor.build_tool_execution_context().buffer_revision;
             let restore_call = ToolCallInfo {
                 id: "call_restore".to_string(),
                 name: "restore_file".to_string(),
                 arguments: serde_json::json!({
                     "path": target.to_string_lossy().to_string(),
-                    "snapshot_id": snapshot_id
+                    "snapshot_id": snapshot_id,
+                    "expected_revision": restore_revision
                 }),
             };
             match editor.dispatch_tool_call_with_approval(&restore_call, None) {

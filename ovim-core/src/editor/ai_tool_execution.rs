@@ -354,6 +354,12 @@ impl Editor {
                 "'path' is required".to_string(),
             ));
         }
+        if name != "snapshot_file" && tc.arguments.get("expected_revision").is_none() {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(
+                "Edit not applied: 'expected_revision' is required. Re-read the target buffer and retry with its current revision."
+                    .to_string(),
+            ));
+        }
 
         if let Some(raw_path) = raw_path {
             let caps = self.build_chat_capabilities();

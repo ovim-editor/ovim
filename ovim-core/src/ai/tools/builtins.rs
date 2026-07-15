@@ -194,8 +194,8 @@ fn with_expected_revision(mut definition: ToolDefinition) -> ToolDefinition {
     definition.parameters.push(ToolParam {
         name: "expected_revision".to_string(),
         param_type: ParamType::Integer,
-        required: false,
-        description: "Buffer revision returned by the read this edit is based on. The edit is rejected if the buffer has advanced."
+        required: true,
+        description: "Buffer revision returned by the read this edit is based on. The edit is rejected if the buffer has advanced. Use 0 when creating a new file."
             .to_string(),
     });
     definition
@@ -1840,6 +1840,28 @@ mod tests {
                 assert!(!output.contains("Diagnostics:"));
             }
             ToolResult::Error(error) => panic!("expected success, got error: {error}"),
+        }
+    }
+
+    #[test]
+    fn mutation_schemas_require_expected_revision() {
+        let registry = ToolRegistry::new();
+        for name in [
+            "edit_range",
+            "insert_lines",
+            "delete_lines",
+            "write_file_at_path",
+            "create_file",
+            "apply_patch_at_path",
+            "restore_file",
+        ] {
+            let tool = registry.get(name).expect("registered mutation tool");
+            let revision = tool
+                .parameters
+                .iter()
+                .find(|parameter| parameter.name == "expected_revision")
+                .expect("expected_revision parameter");
+            assert!(revision.required, "{name} must require expected_revision");
         }
     }
 
