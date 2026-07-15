@@ -65,15 +65,6 @@ pub struct PendingWebExecution {
     pub task: tokio::task::JoinHandle<()>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeExplanationStep {
-    pub path: String,
-    pub absolute_path: PathBuf,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub comment: String,
-}
-
 pub enum CodeExplanationContinuation {
     Batch {
         runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
@@ -90,7 +81,7 @@ pub enum CodeExplanationContinuation {
 
 pub struct PendingCodeExplanation {
     pub tool_call: ToolCallInfo,
-    pub steps: Vec<CodeExplanationStep>,
+    pub steps: Vec<super::code_explanation::CodeExplanationStep>,
     pub current: usize,
     /// Tool navigation must not silently retarget later agent mutations.
     pub original_active_buffer_id: BufferId,

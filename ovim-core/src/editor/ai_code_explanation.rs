@@ -3,18 +3,18 @@ use crate::ai::tools::ToolResult;
 use serde_json::json;
 use std::path::{Component, Path, PathBuf};
 
-use super::ai_chat_input::wrap_chat_input_rows;
-use super::ai_chat_state::{
-    CodeExplanationContinuation, CodeExplanationStep, PendingCodeExplanation,
+use super::ai_chat_state::{CodeExplanationContinuation, PendingCodeExplanation};
+use super::code_explanation::{
+    comment_rows_for_viewport, safe_code_rows, CodeExplanationStep, CodeExplanationView,
+    MAX_WALKTHROUGH_COMMENT_BYTES, MAX_WALKTHROUGH_COMMENT_ROWS, MAX_WALKTHROUGH_STEPS,
 };
 use super::Editor;
 
-const FALLBACK_SAFE_RANGE_LINES: usize = 40;
-const WALKTHROUGH_CARD_RESERVED_ROWS: usize = 10;
-const MAX_WALKTHROUGH_STEPS: usize = 32;
-const MAX_COMMENT_BYTES: usize = 4 * 1024;
-const MAX_COMMENT_ROWS: usize = 5;
-const FALLBACK_COMMENT_WIDTH: usize = 76;
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CodeExplanationSourceMetrics {
+    line_count: usize,
+    visual_rows: Option<usize>,
+}
 
 impl Editor {
     /// Conservative range that remains visible above the walkthrough card.
@@ -26,18 +26,10 @@ impl Editor {
             .last_buffer_area
             .map(|area| area.height as usize)
             .unwrap_or_else(|| self.viewport_height());
-        if viewport == 0 {
-            FALLBACK_SAFE_RANGE_LINES
-        } else {
-            viewport
-                .saturating_sub(WALKTHROUGH_CARD_RESERVED_ROWS)
-                .clamp(1, FALLBACK_SAFE_RANGE_LINES)
-        }
+        safe_code_rows((viewport > 0).then_some(viewport))
     }
 
-    pub fn ai_code_explanation_summary(
-        &self,
-    ) -> Option<(usize, usize, String, usize, usize, String)> {
+    pub fn ai_code_explanation_view(&self) -> Option<CodeExplanationView> {
         let pending = self
             .ai_state
             .chat
@@ -45,14 +37,14 @@ impl Editor {
             .pending_code_explanation
             .as_ref()?;
         let step = pending.steps.get(pending.current)?;
-        Some((
-            pending.current + 1,
-            pending.steps.len(),
-            step.path.clone(),
-            step.start_line,
-            step.end_line,
-            step.comment.clone(),
-        ))
+        Some(CodeExplanationView {
+            current: pending.current + 1,
+            total: pending.steps.len(),
+            path: step.path.clone(),
+            start_line: step.start_line,
+            end_line: step.end_line,
+            comment: step.comment.clone(),
+        })
     }
 
     pub fn ai_chat_has_pending_code_explanation(&self) -> bool {
@@ -274,29 +266,23 @@ impl Editor {
             .ok_or_else(|| ToolResult::Error(self.no_project_root_error()))?;
         let root = root.canonicalize().unwrap_or(root);
         let safe_range = self.ai_code_explanation_safe_range_lines();
-        let comment_width = self
-            .render_cache
-            .last_buffer_area
-            // The card itself is capped at 100 columns with two border columns.
-            .map(|area| area.width.saturating_sub(4).min(98) as usize)
-            .filter(|width| *width > 0)
-            .unwrap_or(FALLBACK_COMMENT_WIDTH);
+        let viewport_width = self.render_cache.last_buffer_area.map(|area| area.width);
         let mut steps = Vec::with_capacity(raw_steps.len());
 
         for (index, raw) in raw_steps.iter().enumerate() {
             let step_number = index + 1;
             let path = required_step_string(raw, "path", step_number)?;
             let comment = required_step_string(raw, "comment", step_number)?;
-            if comment.len() > MAX_COMMENT_BYTES {
+            if comment.len() > MAX_WALKTHROUGH_COMMENT_BYTES {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} comment exceeds {MAX_COMMENT_BYTES} bytes"
+                    "step {step_number} comment exceeds {MAX_WALKTHROUGH_COMMENT_BYTES} bytes"
                 )));
             }
             let comment_rows =
-                wrap_chat_input_rows(&comment, comment_width, self.options.tab_width).len();
-            if comment_rows > MAX_COMMENT_ROWS {
+                comment_rows_for_viewport(viewport_width, &comment, self.options.tab_width);
+            if comment_rows > MAX_WALKTHROUGH_COMMENT_ROWS {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} comment wraps to {comment_rows} rows; keep it within {MAX_COMMENT_ROWS} rows or split the explanation into focused steps"
+                    "step {step_number} comment wraps to {comment_rows} rows; keep it within {MAX_WALKTHROUGH_COMMENT_ROWS} rows or split the explanation into focused steps"
                 )));
             }
             let start_line = required_step_line(raw, "start_line", step_number)?;
@@ -339,20 +325,22 @@ impl Editor {
                     "step {step_number} path is not a file inside the project: {path}"
                 )));
             }
-            let line_count = self.code_explanation_line_count(&absolute_path);
-            if start_line > line_count {
+            let wrap_width = (self.options.wrap && self.render_cache.last_text_width > 0)
+                .then_some(self.render_cache.last_text_width);
+            let metrics = self.code_explanation_source_metrics(
+                &absolute_path,
+                start_line,
+                end_line,
+                wrap_width,
+            );
+            if start_line > metrics.line_count {
                 return Err(ToolResult::Error(format!(
-                    "step {step_number} start_line ({start_line}) exceeds '{path}' line count ({line_count})"
+                    "step {step_number} start_line ({start_line}) exceeds '{path}' line count ({})",
+                    metrics.line_count
                 )));
             }
-            let end_line = end_line.min(line_count);
-            if self.options.wrap && self.render_cache.last_text_width > 0 {
-                let visual_rows = self.code_explanation_visual_rows(
-                    &absolute_path,
-                    start_line,
-                    end_line,
-                    self.render_cache.last_text_width,
-                );
+            let end_line = end_line.min(metrics.line_count);
+            if let Some(visual_rows) = metrics.visual_rows {
                 if visual_rows > safe_range {
                     return Err(ToolResult::Error(format!(
                         "step {step_number} wraps to {visual_rows} visual rows at the current editor width, but only {safe_range} fit above the walkthrough card; use a smaller range"
@@ -371,34 +359,13 @@ impl Editor {
         Ok(steps)
     }
 
-    fn code_explanation_line_count(&self, path: &Path) -> usize {
-        let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
-        self.buffers
-            .iter()
-            .find(|buffer| {
-                buffer.file_path().is_some_and(|candidate| {
-                    PathBuf::from(candidate)
-                        .canonicalize()
-                        .unwrap_or_else(|_| PathBuf::from(candidate))
-                        == canonical
-                })
-            })
-            .map(|buffer| buffer.rope().len_lines())
-            .or_else(|| {
-                std::fs::read_to_string(path)
-                    .ok()
-                    .map(|content| content.lines().count().max(1))
-            })
-            .unwrap_or(1)
-    }
-
-    fn code_explanation_visual_rows(
+    fn code_explanation_source_metrics(
         &self,
         path: &Path,
         start_line: usize,
         end_line: usize,
-        width: usize,
-    ) -> usize {
+        wrap_width: Option<usize>,
+    ) -> CodeExplanationSourceMetrics {
         let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
         if let Some(buffer) = self.buffers.iter().find(|buffer| {
             buffer.file_path().is_some_and(|candidate| {
@@ -408,28 +375,42 @@ impl Editor {
                     == canonical
             })
         }) {
-            return (start_line.saturating_sub(1)..end_line)
-                .map(|line| {
-                    crate::wrap::visual_line_count(
-                        buffer.line_text(line).as_deref().unwrap_or(""),
-                        width,
-                        self.options.tab_width,
-                    )
-                })
-                .sum();
+            let line_count = buffer.rope().len_lines();
+            let visual_rows = wrap_width.map(|width| {
+                (start_line.saturating_sub(1)..end_line.min(line_count))
+                    .map(|line| {
+                        crate::wrap::visual_line_count(
+                            buffer.line_text(line).as_deref().unwrap_or(""),
+                            width,
+                            self.options.tab_width,
+                        )
+                    })
+                    .sum()
+            });
+            return CodeExplanationSourceMetrics {
+                line_count,
+                visual_rows,
+            };
         }
 
         let content = std::fs::read_to_string(path).unwrap_or_default();
         let lines = content.lines().collect::<Vec<_>>();
-        (start_line.saturating_sub(1)..end_line)
-            .map(|line| {
-                crate::wrap::visual_line_count(
-                    lines.get(line).copied().unwrap_or(""),
-                    width,
-                    self.options.tab_width,
-                )
-            })
-            .sum()
+        let line_count = lines.len().max(1);
+        let visual_rows = wrap_width.map(|width| {
+            (start_line.saturating_sub(1)..end_line.min(line_count))
+                .map(|line| {
+                    crate::wrap::visual_line_count(
+                        lines.get(line).copied().unwrap_or(""),
+                        width,
+                        self.options.tab_width,
+                    )
+                })
+                .sum()
+        });
+        CodeExplanationSourceMetrics {
+            line_count,
+            visual_rows,
+        }
     }
 
     fn show_current_code_explanation_step(&mut self) -> Result<(), ToolResult> {
@@ -612,7 +593,7 @@ mod tests {
                 .unwrap(),
             first.canonicalize().unwrap()
         );
-        assert_eq!(editor.ai_code_explanation_summary().unwrap().0, 1);
+        assert_eq!(editor.ai_code_explanation_view().unwrap().current, 1);
         let selection = editor.ai_state.active_selection.as_ref().unwrap();
         assert_eq!((selection.start_line, selection.end_line), (1, 3));
         assert_eq!(editor.scroll_offset(), 1);
@@ -624,7 +605,7 @@ mod tests {
                 .unwrap(),
             second.canonicalize().unwrap()
         );
-        assert_eq!(editor.ai_code_explanation_summary().unwrap().0, 2);
+        assert_eq!(editor.ai_code_explanation_view().unwrap().current, 2);
 
         editor.finish_code_explanation(true);
         assert!(!editor.ai_chat_has_pending_code_explanation());
@@ -698,6 +679,20 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn source_metrics_prefer_unsaved_buffer_content_over_disk() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        editor
+            .buffer_mut()
+            .replace_all("an unsaved line that wraps\nsecond line\n");
+        let path = PathBuf::from(editor.buffer().file_path().unwrap());
+
+        let metrics = editor.code_explanation_source_metrics(&path, 1, 1, Some(8));
+
+        assert_eq!(metrics.line_count, 3);
+        assert!(metrics.visual_rows.unwrap() > 1);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn enter_advances_before_it_completes_the_walkthrough() {
         let (_dir, mut editor, _first, _second) = setup_editor();
         let tool_call = call(json!([
@@ -717,7 +712,7 @@ mod tests {
         }
 
         assert!(editor.advance_or_finish_code_explanation());
-        assert_eq!(editor.ai_code_explanation_summary().unwrap().0, 2);
+        assert_eq!(editor.ai_code_explanation_view().unwrap().current, 2);
         assert!(editor.ai_chat_has_pending_code_explanation());
 
         assert!(editor.advance_or_finish_code_explanation());

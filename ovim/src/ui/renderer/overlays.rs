@@ -650,45 +650,39 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
 
 /// Compact walkthrough card that leaves the selected code visible above it.
 pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
-    let Some((current, total, path, start, end, comment)) = editor.ai_code_explanation_summary()
-    else {
+    let Some(view) = editor.ai_code_explanation_view() else {
         return;
     };
     let Some(cached) = editor.render_cache.last_buffer_area else {
         return;
     };
     let buffer = Rect::new(cached.x, cached.y, cached.width, cached.height);
-    if buffer.width < 32 || buffer.height < 7 {
-        return;
-    }
-
-    let width = buffer.width.saturating_sub(2).min(100);
-    let comment_width = width.saturating_sub(2).max(1) as usize;
-    let comment_rows = ovim_core::editor::ai_chat_input::wrap_chat_input_rows(
-        &comment,
-        comment_width,
+    let Some(layout) = ovim_core::editor::CodeExplanationCardLayout::resolve(
+        buffer.width,
+        buffer.height,
+        &view.comment,
         editor.options.tab_width,
-    )
-    .len() as u16;
-    let height = comment_rows
-        .saturating_add(4)
-        .clamp(7, 10)
-        .min(buffer.height);
-    let area = Rect::new(
-        buffer.x + buffer.width.saturating_sub(width) / 2,
-        buffer.bottom().saturating_sub(height),
-        width,
-        height,
-    );
-    let range = if start == end {
-        format!("{path}:{start}")
-    } else {
-        format!("{path}:{start}-{end}")
+    ) else {
+        return;
     };
-    let title = format!(" Code walkthrough {current}/{total} · {range} ");
+    let area = Rect::new(
+        buffer.x + buffer.width.saturating_sub(layout.width) / 2,
+        buffer.bottom().saturating_sub(layout.height),
+        layout.width,
+        layout.height,
+    );
+    let range = if view.start_line == view.end_line {
+        format!("{}:{}", view.path, view.start_line)
+    } else {
+        format!("{}:{}-{}", view.path, view.start_line, view.end_line)
+    };
+    let title = format!(
+        " Code walkthrough {}/{} · {range} ",
+        view.current, view.total
+    );
     let content = vec![
         Line::from(Span::styled(
-            comment,
+            view.comment,
             Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
         )),
         Line::from(""),

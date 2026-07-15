@@ -2693,16 +2693,16 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
                     editor.ai_chat_exa_dashboard_url()
                 )
             }),
-        code_explanation: editor.ai_code_explanation_summary().map(
-            |(current, total, path, start_line, end_line, comment)| CodeExplanationSnapshot {
-                current,
-                total,
-                path,
-                start_line,
-                end_line,
-                comment,
-            },
-        ),
+        code_explanation: editor
+            .ai_code_explanation_view()
+            .map(|view| CodeExplanationSnapshot {
+                current: view.current,
+                total: view.total,
+                path: view.path,
+                start_line: view.start_line,
+                end_line: view.end_line,
+                comment: view.comment,
+            }),
         queued,
         messages,
     })
