@@ -11,6 +11,19 @@ pub struct ChatTextSelection {
     pub moved: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChatTextAutoscrollDirection {
+    Older,
+    Newer,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ChatTextAutoscroll {
+    pub direction: ChatTextAutoscrollDirection,
+    pub column: usize,
+    pub last_tick: u128,
+}
+
 /// Cached rendering state used by the UI layer and mouse input.
 ///
 /// Groups fields that bridge between the renderer and input handling:
@@ -64,6 +77,9 @@ pub struct RenderCache {
     pub ai_chat_text_selection: Option<ChatTextSelection>,
     /// Whether a chat text-selection drag is currently active.
     pub ai_chat_text_selecting: bool,
+    /// Continuous edge scrolling while a chat text selection is dragged
+    /// above or below the visible history viewport.
+    pub ai_chat_text_autoscroll: Option<ChatTextAutoscroll>,
     /// Cached AI chat input area from last render.
     pub ai_chat_input_area: Option<crate::Rect>,
     /// Visible composer rows and their source byte ranges.

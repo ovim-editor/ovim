@@ -413,6 +413,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             editor.render_cache.ai_chat_separator_dragging = true;
             editor.render_cache.ai_chat_text_selection = None;
             editor.render_cache.ai_chat_text_selecting = false;
+            editor.clear_ai_chat_text_selection_autoscroll();
             return Ok(None);
         }
         if let Some(index) = editor
@@ -452,6 +453,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         {
             editor.render_cache.ai_chat_text_selection = None;
             editor.render_cache.ai_chat_text_selecting = false;
+            editor.clear_ai_chat_text_selection_autoscroll();
             editor.switch_ai_chat_runtime_branch(target);
             return Ok(None);
         }
@@ -472,6 +474,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         {
             editor.render_cache.ai_chat_text_selection = None;
             editor.render_cache.ai_chat_text_selecting = false;
+            editor.clear_ai_chat_text_selection_autoscroll();
             return Ok(None);
         }
     }
@@ -590,6 +593,7 @@ fn handle_ai_chat_input_click(editor: &mut Editor, col: u16, row: u16) -> bool {
     }
     editor.render_cache.ai_chat_text_selection = None;
     editor.render_cache.ai_chat_text_selecting = false;
+    editor.clear_ai_chat_text_selection_autoscroll();
     true
 }
 
@@ -602,6 +606,24 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     }
 
     if editor.render_cache.ai_chat_text_selecting {
+        if let Some(area) = editor.render_cache.ai_chat_history_area {
+            let column = col.saturating_sub(area.x).min(area.width.saturating_sub(1)) as usize;
+            if row < area.y {
+                editor.set_ai_chat_text_selection_autoscroll(
+                    crate::editor::render_cache::ChatTextAutoscrollDirection::Older,
+                    column,
+                );
+                return Ok(());
+            }
+            if row >= area.y.saturating_add(area.height) {
+                editor.set_ai_chat_text_selection_autoscroll(
+                    crate::editor::render_cache::ChatTextAutoscrollDirection::Newer,
+                    column,
+                );
+                return Ok(());
+            }
+        }
+        editor.clear_ai_chat_text_selection_autoscroll();
         if let Some((history_row, history_column)) = ai_chat_screen_position(editor, col, row) {
             editor.update_ai_chat_text_selection(history_row, history_column);
         }
@@ -877,7 +899,9 @@ mod tests {
     use super::*;
     use crate::ai::chat_types::ChatOpts;
     use crate::editor::ai_chat_state::AiChatState;
-    use crate::editor::render_cache::{ChatTextPoint, ChatTextSelection};
+    use crate::editor::render_cache::{
+        ChatTextAutoscrollDirection, ChatTextPoint, ChatTextSelection,
+    };
 
     fn editor_with_docked_chat() -> Editor {
         let mut editor = Editor::default();
@@ -1024,6 +1048,148 @@ mod tests {
 
         assert_eq!(editor.registers.get_clipboard(), "alpha\nbeta");
         assert!(editor.ai_chat_has_text_selection());
+    }
+
+    #[test]
+    fn dragging_above_chat_history_keeps_scrolling_and_extending_selection() {
+        let mut editor = editor_with_docked_chat();
+        editor.render_cache.ai_chat_history_area = Some(crate::Rect {
+            x: 40,
+            y: 5,
+            width: 40,
+            height: 4,
+        });
+        editor.render_cache.ai_chat_last_visible_start_row = 40;
+        editor.render_cache.ai_chat_last_visible_end_row = 44;
+        editor.render_cache.ai_chat_rendered_text_rows =
+            (0..100).map(|row| format!("row {row}")).collect();
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 45,
+                row: 7,
+            },
+        )
+        .unwrap();
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 45,
+                row: 0,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            editor
+                .render_cache
+                .ai_chat_text_autoscroll
+                .expect("autoscroll")
+                .direction,
+            ChatTextAutoscrollDirection::Older
+        );
+        assert!(editor.tick_ai_chat_text_selection_autoscroll());
+        assert_eq!(
+            editor
+                .ai_state
+                .chat
+                .as_ref()
+                .expect("chat")
+                .viewport
+                .row_scroll_from_bottom,
+            1
+        );
+        assert_eq!(
+            editor
+                .render_cache
+                .ai_chat_text_selection
+                .expect("selection")
+                .head,
+            ChatTextPoint { row: 39, column: 5 }
+        );
+    }
+
+    #[test]
+    fn dragging_below_chat_history_scrolls_toward_latest_until_reentering() {
+        let mut editor = editor_with_docked_chat();
+        editor.render_cache.ai_chat_history_area = Some(crate::Rect {
+            x: 40,
+            y: 5,
+            width: 40,
+            height: 4,
+        });
+        editor.render_cache.ai_chat_last_visible_start_row = 40;
+        editor.render_cache.ai_chat_last_visible_end_row = 44;
+        editor.render_cache.ai_chat_rendered_text_rows =
+            (0..100).map(|row| format!("row {row}")).collect();
+        {
+            let viewport = &mut editor.ai_state.chat.as_mut().expect("chat").viewport;
+            viewport.follow_latest = false;
+            viewport.row_scroll_from_bottom = 10;
+            viewport.pinned_base_total_rows = Some(100);
+        }
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Down(MouseButton::Left),
+                column: 45,
+                row: 6,
+            },
+        )
+        .unwrap();
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 50,
+                row: 12,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            editor
+                .render_cache
+                .ai_chat_text_autoscroll
+                .expect("autoscroll")
+                .direction,
+            ChatTextAutoscrollDirection::Newer
+        );
+        assert!(editor.tick_ai_chat_text_selection_autoscroll());
+        assert_eq!(
+            editor
+                .render_cache
+                .ai_chat_text_selection
+                .expect("selection")
+                .head,
+            ChatTextPoint {
+                row: 44,
+                column: 10,
+            }
+        );
+
+        handle_mouse_event(
+            &mut editor,
+            MouseEvent {
+                kind: MouseEventKind::Drag(MouseButton::Left),
+                column: 47,
+                row: 7,
+            },
+        )
+        .unwrap();
+        assert!(editor.render_cache.ai_chat_text_autoscroll.is_none());
+        assert_eq!(
+            editor
+                .render_cache
+                .ai_chat_text_selection
+                .expect("selection")
+                .head,
+            ChatTextPoint { row: 42, column: 7 }
+        );
     }
 
     #[test]

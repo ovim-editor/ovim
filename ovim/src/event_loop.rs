@@ -119,6 +119,7 @@ fn tick_transient_ui(editor: &mut Editor) {
         | editor.tick_yank_flash()
         | editor.tick_toasts()
         | editor.tick_ai_chat_working_animation()
+        | editor.tick_ai_chat_text_selection_autoscroll()
     {
         editor.mark_dirty();
     }

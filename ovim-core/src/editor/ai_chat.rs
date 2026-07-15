@@ -2397,6 +2397,7 @@ impl Editor {
         use super::render_cache::{ChatTextPoint, ChatTextSelection};
 
         let point = ChatTextPoint { row, column };
+        self.render_cache.ai_chat_text_autoscroll = None;
         self.render_cache.ai_chat_text_selection = Some(ChatTextSelection {
             anchor: point,
             head: point,
@@ -2414,10 +2415,85 @@ impl Editor {
         selection.head = point;
     }
 
+    pub fn set_ai_chat_text_selection_autoscroll(
+        &mut self,
+        direction: super::render_cache::ChatTextAutoscrollDirection,
+        column: usize,
+    ) {
+        use super::render_cache::{ChatTextAutoscroll, ChatTextAutoscrollDirection};
+
+        let boundary_row = match direction {
+            ChatTextAutoscrollDirection::Older => self.render_cache.ai_chat_last_visible_start_row,
+            ChatTextAutoscrollDirection::Newer => self
+                .render_cache
+                .ai_chat_last_visible_end_row
+                .saturating_sub(1),
+        };
+        self.update_ai_chat_text_selection(boundary_row, column);
+
+        let current_tick = chat_text_autoscroll_tick();
+        let last_tick = self
+            .render_cache
+            .ai_chat_text_autoscroll
+            .filter(|autoscroll| autoscroll.direction == direction)
+            .map_or(current_tick.saturating_sub(1), |autoscroll| {
+                autoscroll.last_tick
+            });
+        self.render_cache.ai_chat_text_autoscroll = Some(ChatTextAutoscroll {
+            direction,
+            column,
+            last_tick,
+        });
+    }
+
+    pub fn clear_ai_chat_text_selection_autoscroll(&mut self) {
+        self.render_cache.ai_chat_text_autoscroll = None;
+    }
+
+    /// Advance an edge-drag selection by one rendered conversation row.
+    /// Called by the UI clock so selection keeps moving while the pointer is
+    /// held outside the history viewport without additional mouse events.
+    pub fn tick_ai_chat_text_selection_autoscroll(&mut self) -> bool {
+        use super::render_cache::ChatTextAutoscrollDirection;
+
+        if self.mode() != crate::mode::Mode::AiChat || !self.render_cache.ai_chat_text_selecting {
+            self.render_cache.ai_chat_text_autoscroll = None;
+            return false;
+        }
+        let tick = chat_text_autoscroll_tick();
+        let Some(autoscroll) = self.render_cache.ai_chat_text_autoscroll.as_mut() else {
+            return false;
+        };
+        if autoscroll.last_tick == tick {
+            return false;
+        }
+        autoscroll.last_tick = tick;
+        let direction = autoscroll.direction;
+        let column = autoscroll.column;
+        let start = self.render_cache.ai_chat_last_visible_start_row;
+        let end = self.render_cache.ai_chat_last_visible_end_row;
+        let total = self.render_cache.ai_chat_rendered_text_rows.len();
+
+        match direction {
+            ChatTextAutoscrollDirection::Older if start > 0 => {
+                self.ai_chat_scroll_viewport_up(1);
+                self.update_ai_chat_text_selection(start - 1, column);
+                true
+            }
+            ChatTextAutoscrollDirection::Newer if end < total => {
+                self.ai_chat_scroll_viewport_down(1);
+                self.update_ai_chat_text_selection(end, column);
+                true
+            }
+            _ => false,
+        }
+    }
+
     /// Finish a mouse selection and copy it immediately, matching terminal
     /// select-to-copy behavior. A click without a drag clears the selection.
     pub fn finish_ai_chat_text_selection(&mut self) -> bool {
         self.render_cache.ai_chat_text_selecting = false;
+        self.render_cache.ai_chat_text_autoscroll = None;
         if !self
             .render_cache
             .ai_chat_text_selection
@@ -2547,6 +2623,14 @@ impl Editor {
         let key = self.ai_chat_conversation_key();
         self.ai_state.conversations.get_mut(&key)
     }
+}
+
+fn chat_text_autoscroll_tick() -> u128 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_millis()
+        / 60
 }
 
 fn ordered_chat_selection(
