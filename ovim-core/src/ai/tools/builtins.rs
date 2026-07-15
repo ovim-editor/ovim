@@ -13,6 +13,8 @@ use super::{ParamType, SideEffect, ToolDefinition, ToolParam, ToolRegistry, Tool
 pub struct ToolExecutionContext {
     pub buffer_content: String,
     pub file_path: Option<String>,
+    /// Monotonic revision of the active editor buffer.
+    pub buffer_revision: usize,
     pub cursor: (usize, usize),
     /// (start_line, start_col, end_line, end_col) — 0-indexed.
     pub selection: Option<(usize, usize, usize, usize)>,
@@ -30,12 +32,17 @@ pub struct ToolExecutionContext {
     /// Used by `read_file_at_path` to read from in-memory buffers
     /// instead of disk (which may be stale after edits).
     pub open_buffers: std::collections::HashMap<std::path::PathBuf, String>,
+    /// Revisions for the corresponding in-memory buffers. Disk-only files have
+    /// no buffer revision.
+    pub open_buffer_revisions: std::collections::HashMap<std::path::PathBuf, usize>,
 }
 
 #[derive(Debug, Clone)]
 pub struct ProjectDiagnosticFile {
     pub path: String,
     pub diagnostics: Vec<DiagnosticFact>,
+    /// Buffer revision whose contents these diagnostics describe, when open.
+    pub buffer_revision: Option<usize>,
 }
 
 /// Register all built-in tools into the registry.
@@ -338,11 +345,12 @@ fn handle_read_file(args: &serde_json::Value, ctx: &ToolExecutionContext) -> Too
     let mut output = String::new();
     let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
     output.push_str(&format!(
-        "File: {} (lines {}-{} of {})\n",
+        "File: {} (lines {}-{} of {})\nBuffer revision: {}\n",
         file_label,
         start + 1,
         end,
-        total
+        total,
+        ctx.buffer_revision,
     ));
     for (i, line) in lines[start..end].iter().enumerate() {
         output.push_str(&format!("{:>4} | {}\n", start + i + 1, line));
@@ -410,13 +418,21 @@ fn handle_read_file_at_path(args: &serde_json::Value, ctx: &ToolExecutionContext
     let normalized_canonical = normalized
         .canonicalize()
         .unwrap_or_else(|_| normalized.clone());
-    let content = if let Some(buf_content) = ctx.open_buffers.get(&normalized) {
-        buf_content.clone()
+    let (content, buffer_revision) = if let Some(buf_content) = ctx.open_buffers.get(&normalized) {
+        (
+            buf_content.clone(),
+            ctx.open_buffer_revisions.get(&normalized).copied(),
+        )
     } else if let Some(buf_content) = ctx.open_buffers.get(&normalized_canonical) {
-        buf_content.clone()
+        (
+            buf_content.clone(),
+            ctx.open_buffer_revisions
+                .get(&normalized_canonical)
+                .copied(),
+        )
     } else if normalized.is_file() {
         match std::fs::read_to_string(&normalized) {
-            Ok(c) => c,
+            Ok(c) => (c, None),
             Err(e) => return ToolResult::Error(format!("failed to read '{}': {}", rel_path, e)),
         }
     } else {
@@ -452,11 +468,14 @@ fn handle_read_file_at_path(args: &serde_json::Value, ctx: &ToolExecutionContext
 
     let mut output = String::new();
     output.push_str(&format!(
-        "File: {} (lines {}-{} of {})\n",
+        "File: {} (lines {}-{} of {})\n{}",
         rel_path,
         start + 1,
         end,
-        total
+        total,
+        buffer_revision
+            .map(|revision| format!("Buffer revision: {revision}\n"))
+            .unwrap_or_else(|| "Buffer revision: not open (disk content)\n".to_string()),
     ));
     for (i, line) in lines[start..end].iter().enumerate() {
         output.push_str(&format!("{:>4} | {}\n", start + i + 1, line));
@@ -595,11 +614,11 @@ fn handle_read_diagnostics(args: &serde_json::Value, ctx: &ToolExecutionContext)
         let Some(file) = find_project_diagnostics_file(path, &ctx.project_diagnostics) else {
             return ToolResult::Success(format!("No diagnostics for {}.", path));
         };
-        return format_diagnostics_for_file(&file.path, &file.diagnostics);
+        return format_diagnostics_for_file(&file.path, &file.diagnostics, file.buffer_revision);
     }
 
     let file_label = ctx.file_path.as_deref().unwrap_or("[No Name]");
-    format_diagnostics_for_file(file_label, &ctx.diagnostics)
+    format_diagnostics_for_file(file_label, &ctx.diagnostics, Some(ctx.buffer_revision))
 }
 
 fn read_project_diagnostics_def() -> ToolDefinition {
@@ -725,15 +744,25 @@ fn handle_read_project_diagnostics(
     ToolResult::Success(output)
 }
 
-fn format_diagnostics_for_file(file_label: &str, diagnostics: &[DiagnosticFact]) -> ToolResult {
+fn format_diagnostics_for_file(
+    file_label: &str,
+    diagnostics: &[DiagnosticFact],
+    buffer_revision: Option<usize>,
+) -> ToolResult {
+    let revision = buffer_revision
+        .map(|revision| revision.to_string())
+        .unwrap_or_else(|| "not open".to_string());
     if diagnostics.is_empty() {
-        return ToolResult::Success("No diagnostics.".to_string());
+        return ToolResult::Success(format!(
+            "Diagnostics for {file_label}\nBuffer revision: {revision}\nNo diagnostics."
+        ));
     }
     let mut output = String::new();
     output.push_str(&format!(
-        "Diagnostics for {} ({} total):\n",
+        "Diagnostics for {} ({} total)\nBuffer revision: {}\n",
         file_label,
-        diagnostics.len()
+        diagnostics.len(),
+        revision,
     ));
     for d in diagnostics {
         let severity = d.severity.as_deref().unwrap_or("unknown");
@@ -1416,6 +1445,7 @@ mod tests {
         ToolExecutionContext {
             buffer_content: content.to_string(),
             file_path: Some("test.rs".to_string()),
+            buffer_revision: 7,
             cursor: (0, 0),
             selection: None,
             diagnostics: vec![],
@@ -1433,6 +1463,7 @@ mod tests {
             approved_path_roots: Vec::new(),
             bypass_path_approvals: false,
             open_buffers: std::collections::HashMap::new(),
+            open_buffer_revisions: std::collections::HashMap::new(),
         }
     }
 
@@ -1560,6 +1591,7 @@ mod tests {
                 start_character: 8,
                 end_character: 13,
             }],
+            buffer_revision: Some(11),
         }];
         let result = execute_builtin(
             "read_diagnostics",
@@ -1588,6 +1620,7 @@ mod tests {
                     start_character: 2,
                     end_character: 7,
                 }],
+                buffer_revision: Some(3),
             },
             ProjectDiagnosticFile {
                 path: "src/lib.rs".to_string(),
@@ -1598,6 +1631,7 @@ mod tests {
                     start_character: 1,
                     end_character: 6,
                 }],
+                buffer_revision: None,
             },
         ];
 
@@ -1636,6 +1670,7 @@ mod tests {
         ToolExecutionContext {
             buffer_content: content.to_string(),
             file_path: Some("test.rs".to_string()),
+            buffer_revision: 7,
             cursor: (0, 0),
             selection: None,
             diagnostics: vec![],
@@ -1653,6 +1688,7 @@ mod tests {
             approved_path_roots: Vec::new(),
             bypass_path_approvals: false,
             open_buffers: std::collections::HashMap::new(),
+            open_buffer_revisions: std::collections::HashMap::new(),
         }
     }
 

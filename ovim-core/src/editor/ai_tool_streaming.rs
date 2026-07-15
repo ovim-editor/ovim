@@ -424,6 +424,18 @@ impl Editor {
         };
 
         let project_root = self.ai_effective_project_root();
+        let open_buffer_revisions = self
+            .buffers
+            .iter()
+            .filter_map(|buffer| {
+                buffer.file_path().map(|path| {
+                    (
+                        crate::ai::path_policy::normalize_path(std::path::Path::new(path)),
+                        buffer.version(),
+                    )
+                })
+            })
+            .collect::<std::collections::HashMap<_, _>>();
         tokio::task::block_in_place(|| {
             let all = handle.block_on(async { lsp.list_all_diagnostics().await });
             let mut out = Vec::new();
@@ -453,6 +465,9 @@ impl Editor {
                     out.push(ProjectDiagnosticFile {
                         path: path_label,
                         diagnostics: facts,
+                        buffer_revision: open_buffer_revisions
+                            .get(&crate::ai::path_policy::normalize_path(&path))
+                            .copied(),
                     });
                 }
             }

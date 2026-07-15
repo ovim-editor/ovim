@@ -164,6 +164,7 @@ impl Editor {
         let buf = &self.buffers[target_index];
         let buffer_content = buf.rope().to_string();
         let file_path = buf.file_path().map(|p| p.to_string());
+        let buffer_revision = buf.version();
         let cursor = {
             let c = buf.cursor();
             (c.line(), c.col().0)
@@ -189,11 +190,16 @@ impl Editor {
         // Snapshot all open buffers so read_file_at_path can read
         // in-memory content instead of potentially stale disk files.
         let mut open_buffers = std::collections::HashMap::new();
+        let mut open_buffer_revisions = std::collections::HashMap::new();
         for b in &self.buffers {
             if let Some(p) = b.file_path() {
                 let path = std::path::Path::new(p);
                 let key = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
                 open_buffers.insert(key, b.rope().to_string());
+                open_buffer_revisions.insert(
+                    path.canonicalize().unwrap_or_else(|_| path.to_path_buf()),
+                    b.version(),
+                );
             }
         }
         let approved_path_roots = self
@@ -206,6 +212,7 @@ impl Editor {
         ToolExecutionContext {
             buffer_content,
             file_path,
+            buffer_revision,
             cursor,
             selection,
             diagnostics,
@@ -218,6 +225,7 @@ impl Editor {
             approved_path_roots,
             bypass_path_approvals: self.ai_chat_yolo_mode(),
             open_buffers,
+            open_buffer_revisions,
         }
     }
 
