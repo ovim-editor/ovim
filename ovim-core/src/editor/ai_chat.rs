@@ -730,6 +730,146 @@ mod tests {
         assert!(!dir.path().join("cancelled-marker").exists());
     }
 
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_shell_execution_kills_descendants_after_leader_exits() {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let runs = tempfile::tempdir().unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state = Box::new(
+            super::super::ai_state::AiState::with_run_storage_layout(
+                crate::run_log::RunStorageLayout::new(runs.path()),
+            )
+            .unwrap(),
+        );
+        editor.open_file(&file).unwrap();
+        open_test_chat(&mut editor);
+        let turn = editor
+            .begin_ai_runtime_turn("run the backgrounded command")
+            .unwrap();
+        let call = ToolCallInfo {
+            id: "bg-shell".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({
+                // The shell leader exits immediately; the backgrounded
+                // descendant inherits the output pipes, so the execution
+                // stays blocked on the drain long after the leader is gone.
+                "command": "(sleep 5; touch cancelled-marker) & echo started"
+            }),
+        };
+        let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx, None, false);
+
+        let kill = editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .as_ref()
+            .unwrap()
+            .kill
+            .clone();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let pid = loop {
+            if let Some(pid) = kill.published_child() {
+                break pid;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell child never spawned"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+        // Wait until the leader has exited and been reaped: the pid must stay
+        // published (it still names the live process group) or cancellation
+        // could not reach the descendant.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !kill.leader_reaped() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell leader never reaped"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(kill.published_child(), Some(pid));
+
+        assert!(editor.cancel_ai_chat_generation());
+
+        // The whole process group must die, so the descendant's trailing
+        // `touch` can never run.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell descendants survived cancellation"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        // The blocking execution resolves once the dead group releases the
+        // pipes (`clear_child` resets the reaped flag when the drain ends).
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while kill.leader_reaped() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "cancelled shell execution never resolved"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!dir.path().join("cancelled-marker").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_shell_drain_resolves_after_group_kill() {
+        let dir = tempfile::tempdir().unwrap();
+        let kill = std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default());
+        let task_kill = kill.clone();
+        let workdir = dir.path().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            super::super::ai_tool_execution::run_bash_program(
+                "(sleep 5; touch cancelled-marker) & echo started",
+                &workdir,
+                Some(&task_kill),
+            )
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !kill.leader_reaped() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell leader never reaped"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // The leader exited, but the backgrounded descendant holds the pipes:
+        // the execution is parked on the output drain.
+        assert!(
+            !worker.is_finished(),
+            "execution finished while the descendant still held the pipes"
+        );
+
+        kill.cancel();
+
+        // Cancellation SIGKILLs the group, which closes the pipes and lets
+        // the drain (and thus the whole execution) resolve well before the
+        // descendant's 5s sleep would have ended.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while !worker.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled shell drain did not resolve promptly"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        worker.join().unwrap();
+        assert!(!dir.path().join("cancelled-marker").exists());
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn submitting_new_turn_clears_stale_chat_notice() {
         let mut editor = Editor::default();

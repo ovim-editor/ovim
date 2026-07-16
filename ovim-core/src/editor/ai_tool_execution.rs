@@ -29,6 +29,40 @@ fn read_capped_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
     (retained, truncated)
 }
 
+/// Join an output-reader thread, bounding the wait once the execution has
+/// been cancelled.
+///
+/// The readers finish when every process holding a write end of the pipe
+/// exits. Cancellation SIGKILLs the whole process group, which closes the
+/// group's pipe ends and unblocks the readers promptly. If a descendant
+/// escaped the group (e.g. via `setsid`) and still holds a pipe end, the
+/// reader could block indefinitely; after cancellation we abandon it (the
+/// detached thread exits once the pipe finally closes) instead of blocking
+/// the execution forever — a cancelled result is discarded anyway.
+fn drain_reader(
+    task: std::thread::JoinHandle<(Vec<u8>, bool)>,
+    kill: Option<&super::ai_chat_state::ShellKillHandle>,
+) -> (Vec<u8>, bool) {
+    let Some(handle) = kill else {
+        return task.join().unwrap_or_default();
+    };
+    let mut abandon_at: Option<std::time::Instant> = None;
+    loop {
+        if task.is_finished() {
+            return task.join().unwrap_or_default();
+        }
+        if handle.is_cancelled() {
+            let deadline = *abandon_at.get_or_insert_with(|| {
+                std::time::Instant::now() + std::time::Duration::from_secs(2)
+            });
+            if std::time::Instant::now() >= deadline {
+                return (Vec::new(), true);
+            }
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
 pub(super) fn run_bash_program(
     command: &str,
     workdir: &Path,
@@ -77,16 +111,36 @@ pub(super) fn run_bash_program(
     let stderr = child.stderr.take().expect("piped stderr");
     let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
     let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
-    let status = child.wait();
+    let status = match child.wait() {
+        Ok(status) => {
+            if let Some(handle) = kill {
+                // Keep the pid published through the drain below: a
+                // backgrounded descendant may still hold the output pipes,
+                // and a cancel landing now must be able to `killpg` it. Only
+                // record that the leader was reaped so cancellation stops
+                // using the plain `kill(pid)` fallback (the pid may be
+                // reused once the whole group dies; the pgid may not while
+                // any member lives).
+                handle.mark_leader_reaped();
+            }
+            status
+        }
+        Err(error) => {
+            if let Some(handle) = kill {
+                // Reap state is unknown; forget the child rather than let a
+                // later cancel signal with stale information.
+                handle.clear_child();
+            }
+            return ToolResult::Error(format!("failed waiting for shell: {error}"));
+        }
+    };
+    let (stdout_bytes, stdout_truncated) = drain_reader(stdout_task, kill);
+    let (stderr_bytes, stderr_truncated) = drain_reader(stderr_task, kill);
     if let Some(handle) = kill {
+        // No group member can still hold the pipes; the execution is truly
+        // finished, so forget the pid/pgid before either can be reused.
         handle.clear_child();
     }
-    let status = match status {
-        Ok(status) => status,
-        Err(error) => return ToolResult::Error(format!("failed waiting for shell: {error}")),
-    };
-    let (stdout_bytes, stdout_truncated) = stdout_task.join().unwrap_or_default();
-    let (stderr_bytes, stderr_truncated) = stderr_task.join().unwrap_or_default();
     let stdout = String::from_utf8_lossy(&stdout_bytes);
     let stderr = String::from_utf8_lossy(&stderr_bytes);
     let mut body = String::new();

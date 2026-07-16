@@ -103,6 +103,12 @@ pub struct ShellKillHandle {
 #[derive(Default)]
 struct ShellKillState {
     child_pid: Option<u32>,
+    /// True once `wait()` reaped the shell leader. From that point the pid
+    /// may be reused by an unrelated process as soon as the whole process
+    /// group dies, so cancellation must only ever signal via `killpg` (the
+    /// pgid stays reserved while any group member lives, and `killpg` fails
+    /// with ESRCH harmlessly once none do).
+    leader_reaped: bool,
     cancelled: bool,
 }
 
@@ -112,14 +118,36 @@ impl ShellKillHandle {
     pub fn publish_child(&self, pid: u32) -> bool {
         let mut state = self.state.lock().expect("shell kill handle poisoned");
         state.child_pid = Some(pid);
+        state.leader_reaped = false;
         !state.cancelled
     }
 
-    /// Forget the child once it has been reaped so a later cancel cannot
-    /// signal a reused pid.
+    /// The blocking task reaped the shell leader via `wait()`. Keep the pid
+    /// published: it still names the process group while any descendant
+    /// lives (e.g. a backgrounded command holding the output pipes), so a
+    /// cancel during the output drain can still `killpg` the group. Plain
+    /// `kill(pid)` is no longer safe from here on.
+    pub fn mark_leader_reaped(&self) {
+        let mut state = self.state.lock().expect("shell kill handle poisoned");
+        state.leader_reaped = true;
+    }
+
+    /// True once the blocking task has reaped the shell leader. Reset by
+    /// `clear_child` when the execution (including the output drain) ends.
+    pub fn leader_reaped(&self) -> bool {
+        self.state
+            .lock()
+            .expect("shell kill handle poisoned")
+            .leader_reaped
+    }
+
+    /// Forget the child once the execution has fully finished — leader
+    /// reaped AND output pipes drained, i.e. no group member can still hold
+    /// them — so a later cancel cannot signal a reused pid or pgid.
     pub fn clear_child(&self) {
         let mut state = self.state.lock().expect("shell kill handle poisoned");
         state.child_pid = None;
+        state.leader_reaped = false;
     }
 
     /// True once the execution was cancelled; checked before spawning.
@@ -140,19 +168,27 @@ impl ShellKillHandle {
 
     /// Mark the execution cancelled and kill the published child, if any.
     pub fn cancel(&self) {
-        let pid = {
+        let (pid, leader_reaped) = {
             let mut state = self.state.lock().expect("shell kill handle poisoned");
             state.cancelled = true;
-            state.child_pid.take()
+            (state.child_pid.take(), state.leader_reaped)
         };
-        if let Some(pid) = pid {
+        let Some(pid) = pid else {
+            return;
+        };
+        if leader_reaped {
+            kill_shell_process_group_after_reap(pid);
+        } else {
             kill_shell_process_group(pid);
         }
     }
 }
 
-/// Kill `pid` and its process group. The shell child is spawned as a group
-/// leader, so this stops the command and everything it forked.
+/// Kill `pid` and its process group, for a child that has NOT been reaped
+/// yet. The shell child is spawned as a group leader, so this stops the
+/// command and everything it forked. The `kill(pid)` fallback is safe only
+/// here: the un-reaped child still holds the pid, so it cannot have been
+/// reused by an unrelated process.
 pub fn kill_shell_process_group(pid: u32) {
     #[cfg(unix)]
     {
@@ -162,6 +198,26 @@ pub fn kill_shell_process_group(pid: u32) {
         if killpg(target, Signal::SIGKILL).is_err() {
             let _ = kill(target, Signal::SIGKILL);
         }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
+}
+
+/// Kill the process group of a shell leader that has already been reaped.
+///
+/// Post-reap the pid may be reused by an unrelated process, but the pgid
+/// stays reserved while any group member (e.g. a backgrounded descendant
+/// still holding the output pipes) is alive. `killpg` therefore either hits
+/// our descendants or fails with ESRCH harmlessly; a plain `kill(pid)`
+/// fallback would risk signalling an unrelated reused pid, so there is none.
+fn kill_shell_process_group_after_reap(pid: u32) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{killpg, Signal};
+        use nix::unistd::Pid;
+        let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGKILL);
     }
     #[cfg(not(unix))]
     {
