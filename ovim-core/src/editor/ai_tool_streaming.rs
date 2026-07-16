@@ -631,15 +631,39 @@ impl Editor {
                 code_lines.push(formatted);
             }
 
-            // If we couldn't fit from the start, center on cursor
-            if truncated_after > 0 && cursor.line() >= render_start {
-                // Try centering on cursor
+            // If the visible viewport does not fit, rebuild the excerpt around
+            // the cursor. The cursor can temporarily be outside the viewport
+            // while scrolling state catches up, in which case the viewport
+            // excerpt must remain anchored at its start.
+            if truncated_after > 0 && render_start <= cursor.line() && cursor.line() < render_end {
                 let half = code_lines.len() / 2;
-                let cursor_offset = cursor.line().saturating_sub(render_start);
-                if cursor_offset > half {
-                    let skip = cursor_offset - half;
-                    truncated_before = skip;
-                    code_lines = code_lines[skip..].to_vec();
+                let centered_start = cursor
+                    .line()
+                    .saturating_sub(half)
+                    .max(render_start)
+                    .min(render_end);
+
+                if centered_start > render_start {
+                    code_lines.clear();
+                    code_len = 0;
+                    truncated_before = centered_start - render_start;
+                    truncated_after = 0;
+
+                    for line_idx in centered_start..render_end {
+                        let line_content = crate::display::line_content(rope, line_idx);
+                        let formatted = format!(
+                            "{:>width$} | {}\n",
+                            line_idx + 1,
+                            line_content,
+                            width = num_width
+                        );
+                        if code_len + formatted.len() > code_budget {
+                            truncated_after = render_end - line_idx;
+                            break;
+                        }
+                        code_len += formatted.len();
+                        code_lines.push(formatted);
+                    }
                 }
             }
 
@@ -704,5 +728,54 @@ impl Editor {
         }
 
         out
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::unicode::GraphemeCol;
+
+    fn editor_with_numbered_lines(line_count: usize) -> Editor {
+        let mut editor = Editor::default();
+        let text = (1..=line_count)
+            .map(|line| format!("line {line}: {}\n", "x".repeat(80)))
+            .collect::<String>();
+        editor.buffer_mut().replace_all(&text);
+        editor.set_file_path("/tmp/editor-state.rs".to_string());
+        editor.set_viewport_height(line_count);
+        editor
+    }
+
+    #[test]
+    fn editor_state_does_not_center_on_cursor_outside_viewport_excerpt() {
+        let mut editor = editor_with_numbered_lines(1_100);
+        editor.set_viewport_height(40);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(1_040, GraphemeCol::ZERO);
+
+        let context = editor.build_editor_state_context(2_500);
+
+        assert!(context.contains("Cursor: line 1041"));
+        assert!(context.contains("### Visible code (lines 1-"));
+        assert!(context.contains("1 | line 1:"));
+    }
+
+    #[test]
+    fn editor_state_centers_truncated_viewport_excerpt_on_visible_cursor() {
+        let mut editor = editor_with_numbered_lines(100);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(50, GraphemeCol::ZERO);
+
+        let context = editor.build_editor_state_context(2_500);
+
+        assert!(context.contains("Cursor: line 51"));
+        assert!(context.contains("line 51:"));
+        assert!(context.contains("more lines above"));
+        assert!(context.contains("more lines below"));
     }
 }
