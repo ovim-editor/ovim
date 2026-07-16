@@ -11,7 +11,8 @@ use ratatui::{
     Frame,
 };
 use std::hash::{Hash, Hasher};
-use unicode_width::UnicodeWidthChar;
+use unicode_segmentation::UnicodeSegmentation;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub use super::ai_chat_layout::compute_chat_split;
 use super::ai_chat_layout::ChatPanelLayout;
@@ -268,7 +269,7 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     }
     let enabled = editor.ai_chat_yolo_mode();
     let label = if enabled { " YOLO ON " } else { " YOLO OFF " };
-    let width = label.chars().count().min(area.width as usize) as u16;
+    let width = text_display_width(label).min(area.width as usize) as u16;
     let x = area.right().saturating_sub(width);
     let style = if enabled {
         Style::default()
@@ -748,9 +749,8 @@ fn render_message_history(
             .iter()
             .find(|control| control.row == line_idx)
         {
-            let control_width = branch_control_text(control.position, control.count)
-                .chars()
-                .count() as u16;
+            let control_width =
+                text_display_width(&branch_control_text(control.position, control.count)) as u16;
             if (control_width as usize) < card_text_width(area.width as usize, "\u{258d}") {
                 let x = area.x + area.width - control_width;
                 let left_width = control_width / 2;
@@ -1248,18 +1248,23 @@ fn message_row_style(role: ChatRole, allow_edits: bool, selected: bool) -> Messa
 
 fn card_text_width(panel_width: usize, accent_glyph: &str) -> usize {
     panel_width
-        .saturating_sub(accent_glyph.chars().count() + 1)
+        .saturating_sub(text_display_width(accent_glyph) + 1)
         .max(1)
 }
 
 /// Terminal display width of `text` in columns (wide chars occupy 2 columns).
+///
+/// Uses string-based measurement so multi-codepoint grapheme clusters (ZWJ
+/// emoji like 👩‍🔬, combining marks) count their rendered width instead of
+/// the sum of their component chars.
 fn text_display_width(text: &str) -> usize {
-    text.chars().map(|ch| ch.width().unwrap_or(1)).sum()
+    UnicodeWidthStr::width(text)
 }
 
 /// Truncates `text` to at most `max_width` display columns, appending an
 /// ellipsis when truncated. Column budgets must be measured in display width
-/// (not chars) or wide characters (CJK, emoji) overflow their span.
+/// (not chars) or wide characters (CJK, emoji) overflow their span. Truncation
+/// happens on grapheme boundaries so ZWJ emoji sequences are never split.
 fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
     if text_display_width(text) <= max_width {
         return text.to_string();
@@ -1270,12 +1275,12 @@ fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
     let budget = max_width - 1;
     let mut out = String::new();
     let mut used = 0usize;
-    for ch in text.chars() {
-        let width = ch.width().unwrap_or(1);
+    for grapheme in text.graphemes(true) {
+        let width = UnicodeWidthStr::width(grapheme);
         if used + width > budget {
             break;
         }
-        out.push(ch);
+        out.push_str(grapheme);
         used += width;
     }
     out.push('\u{2026}');
@@ -1292,7 +1297,7 @@ fn render_card_text_line(
 ) -> Line<'static> {
     let width = card_text_width(panel_width, accent_glyph);
     let display = truncate_with_ellipsis(text, width);
-    let padding = width.saturating_sub(display.chars().count());
+    let padding = width.saturating_sub(text_display_width(&display));
     let mut spans = Vec::with_capacity(3);
     spans.push(Span::styled(
         accent_glyph.to_string(),
@@ -1323,14 +1328,14 @@ fn render_card_header_line(
     let width = card_text_width(panel_width, accent_glyph);
     let control = branch_position
         .map(|(position, count)| branch_control_text(position, count))
-        .filter(|text| text.chars().count() < width);
+        .filter(|text| text_display_width(text) < width);
     let control_width = control
         .as_ref()
-        .map(|text| text.chars().count())
+        .map(|text| text_display_width(text))
         .unwrap_or(0);
     let label_width = width.saturating_sub(control_width + usize::from(control.is_some()));
     let display_label = truncate_with_ellipsis(label, label_width);
-    let gap = width.saturating_sub(display_label.chars().count() + control_width);
+    let gap = width.saturating_sub(text_display_width(&display_label) + control_width);
     let label_style = Style::default()
         .fg(row_style.label_fg)
         .bg(row_style.label_bg)
@@ -1609,7 +1614,7 @@ fn thumbnail_box_row(name: &str, width: usize, row: usize, height: usize) -> Str
         let title = truncate_with_ellipsis(name, inner);
         return format!(
             "╭{title}{}╮",
-            "─".repeat(inner.saturating_sub(title.chars().count()))
+            "─".repeat(inner.saturating_sub(text_display_width(&title)))
         );
     }
     if row + 1 == height {
@@ -1661,7 +1666,7 @@ fn render_text_input(
             &format!(" 📎 {} ", image_names.join(", ")),
             w.saturating_sub(4),
         );
-        let fill = w.saturating_sub(2 + title.chars().count());
+        let fill = w.saturating_sub(2 + text_display_width(&title));
         format!("╭{title}{}╮", "─".repeat(fill))
     };
     let top_line = Line::from(Span::styled(top, border_style));
@@ -1810,7 +1815,7 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
         } else {
             " ! tool approval pending "
         };
-        let label_w = label.chars().count();
+        let label_w = text_display_width(label);
         if used_width + label_w + 1 < w {
             spans.push(Span::styled(
                 label,
@@ -1833,7 +1838,7 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
         };
         let model_short: String = profile.model.chars().take(20).collect();
         let label = format!(" {}:{} ", name, model_short);
-        let label_w = label.chars().count();
+        let label_w = text_display_width(&label);
         if used_width + label_w + 1 > w {
             break;
         }
@@ -1873,7 +1878,7 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     } else {
         " [?] [Enter send] [PgUp/PgDn scroll code] [C-y copy] [Esc\u{00d7}2 close] "
     };
-    let hint_w = hint.chars().count();
+    let hint_w = text_display_width(hint);
     if used_width + hint_w < w {
         let gap = w.saturating_sub(used_width + hint_w);
         spans.push(Span::styled(" ".repeat(gap), Style::default().bg(BG_PANEL)));
@@ -1945,7 +1950,7 @@ fn render_working_indicator(width: usize, frame: usize) -> Line<'static> {
             .bg(BG_PANEL)
             .add_modifier(Modifier::DIM),
     )];
-    let used = text.chars().count();
+    let used = text_display_width(&text);
     if used < width {
         spans.push(Span::styled(
             " ".repeat(width - used),
@@ -2031,9 +2036,10 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
 mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
-        is_hidden_tool_only_assistant, render_queued_input_row, render_tool_event_details,
-        render_tool_event_row, styled_word_wrap_line, text_display_width, word_wrap,
-        LineRenderCache,
+        is_hidden_tool_only_assistant, render_card_header_line, render_card_text_line,
+        render_queued_input_row, render_tool_event_details, render_tool_event_row,
+        styled_word_wrap_line, text_display_width, truncate_with_ellipsis, word_wrap,
+        LineRenderCache, MessageRowStyle,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2602,6 +2608,82 @@ mod tests {
     }
 
     #[test]
+    fn wide_char_message_row_pads_to_exact_panel_width() {
+        // CJK text occupies two columns per character; padding must be
+        // computed from display width or the row overflows the panel.
+        for text in [
+            "日本語テキスト",
+            "短い",
+            "宽字符宽字符宽字符宽字符宽字符宽字符",
+        ] {
+            let line = render_card_text_line(
+                24,
+                "\u{258d}",
+                Color::White,
+                Color::Reset,
+                text,
+                Style::default(),
+            );
+            let rendered = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert_eq!(text_display_width(&rendered), 24, "text: {text}");
+        }
+    }
+
+    #[test]
+    fn wide_char_header_pads_to_exact_panel_width() {
+        let row_style = MessageRowStyle {
+            accent: Color::White,
+            label_fg: Color::White,
+            label_bg: Color::Reset,
+            text_fg: Color::White,
+            body_bg: Color::Reset,
+        };
+        for branch in [None, Some((0, 3))] {
+            let line = render_card_header_line(
+                24,
+                "\u{258d}",
+                row_style,
+                "日本語のラベルがとても長い場合",
+                branch,
+            );
+            let rendered = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert_eq!(
+                text_display_width(&rendered),
+                24,
+                "branch: {branch:?}, rendered: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn zwj_emoji_measures_as_single_grapheme_width() {
+        // "👩‍🔬" is woman + ZWJ + microscope: one grapheme, 2 columns.
+        // Summing per-char widths would report 4 and overpad the row.
+        assert_eq!(text_display_width("👩\u{200d}🔬"), 2);
+    }
+
+    #[test]
+    fn truncation_never_splits_zwj_emoji_sequence() {
+        let text = "👩\u{200d}🔬👩\u{200d}🔬";
+        // Wide enough: untouched.
+        assert_eq!(truncate_with_ellipsis(text, 4), text);
+        // Budget of 2 columns after the ellipsis: keeps the first full
+        // sequence, never a dangling "👩" or ZWJ.
+        assert_eq!(truncate_with_ellipsis(text, 3), "👩\u{200d}🔬\u{2026}");
+        // Budget too small for the sequence: drops it entirely.
+        assert_eq!(truncate_with_ellipsis(text, 2), "\u{2026}");
+        assert_eq!(truncate_with_ellipsis(text, 1), "\u{2026}");
+    }
+
+    #[test]
     fn visible_walkthrough_history_row_registers_replay_hitbox() {
         let mut editor = Editor::default();
         editor
@@ -2668,7 +2750,7 @@ mod tests {
 }
 
 fn center_text(text: &str, width: usize) -> String {
-    let text_len = text.chars().count();
+    let text_len = text_display_width(text);
     if text_len >= width {
         return text.to_string();
     }
