@@ -94,11 +94,7 @@ fn first_codeblock(text: &str) -> Option<&str> {
     let start = text.find("```")?;
     let mut body_start = start + 3;
 
-    if let Some(line_end) = text[body_start..].find('\n') {
-        body_start += line_end + 1;
-    } else {
-        return None;
-    }
+    body_start += text[body_start..].find('\n')? + 1;
 
     let body = &text[body_start..];
     let end = body.find("```")?;

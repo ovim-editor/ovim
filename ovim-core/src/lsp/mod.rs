@@ -592,7 +592,7 @@ impl LspManager {
         // Clean up diagnostics from this server
         {
             let mut diags = self.diagnostics.lock().await;
-            for (_uri, server_map) in diags.iter_mut() {
+            for server_map in diags.values_mut() {
                 server_map.remove(language);
             }
         }
