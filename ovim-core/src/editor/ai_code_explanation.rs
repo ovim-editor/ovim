@@ -1094,6 +1094,14 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("revisit the same line or range"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("easy-to-understand steps"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("prerequisites before consequences"));
         let steps = &schema["function"]["parameters"]["properties"]["steps"];
         assert_eq!(steps["type"], "array");
         assert_eq!(
@@ -1113,5 +1121,9 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("do not merely paraphrase"));
+        assert!(steps["items"]["properties"]["comment"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("easy-to-understand idea"));
     }
 }
