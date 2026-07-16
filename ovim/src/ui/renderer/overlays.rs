@@ -547,7 +547,11 @@ fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
         })
         .sum::<usize>();
     let requested_height = content_rows.saturating_add(2).min(u16::MAX as usize) as u16;
-    let height = requested_height.clamp(7, full.height.saturating_sub(2));
+    // Compute the max first and cap the min by it: for short terminals the
+    // preferred minimum (7) can exceed the available space, and
+    // `Ord::clamp` panics when min > max.
+    let max_height = full.height.saturating_sub(2).max(1);
+    let height = requested_height.clamp(7.min(max_height), max_height);
     let area = centered_area(full, width, height);
 
     let c = &MODAL_COLORS;
@@ -861,4 +865,29 @@ pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
         area,
     );
     // The terminal-graphics pass runs after Ratatui and fills the bordered area.
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{backend::TestBackend, Terminal};
+
+    /// Regression test: heights 7 and 8 used to panic in `render_modal_dialog`
+    /// because the clamp minimum (7) exceeded the available maximum
+    /// (`height - 2`). Height 6 exercises the too-small early return.
+    #[test]
+    fn modal_dialog_renders_without_panicking_on_short_terminals() {
+        for height in [6u16, 7, 8, 9, 24] {
+            let backend = TestBackend::new(80, height);
+            let mut terminal = Terminal::new(backend).unwrap();
+            terminal
+                .draw(|frame| {
+                    super::render_modal_dialog(
+                        frame,
+                        " Test ",
+                        &[("line one", 't'), ("line two", 's'), ("[y]es [n]o", 'a')],
+                    )
+                })
+                .unwrap();
+        }
+    }
 }

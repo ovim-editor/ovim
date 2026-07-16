@@ -778,7 +778,7 @@ fn render_message_history(
             .iter()
             .find(|(row, _)| *row == line_idx)
         {
-            let action_width = walkthrough_replay_action().chars().count() as u16;
+            let action_width = text_display_width(walkthrough_replay_action()) as u16;
             if action_width < area.width {
                 editor
                     .render_cache
@@ -935,7 +935,7 @@ fn render_tool_event_row(
         "▸"
     };
     let action = replay_action.then(walkthrough_replay_action);
-    let action_width = action.map_or(0, |action| action.chars().count());
+    let action_width = action.map_or(0, text_display_width);
     let label_width = panel_width.saturating_sub(action_width);
     let text = format!(" {disclosure} {prefix} {label}");
     let display = compact_tool_text(&text, label_width);
@@ -949,7 +949,7 @@ fn render_tool_event_row(
     let padded = format!(
         "{}{}",
         display,
-        " ".repeat(label_width.saturating_sub(display.chars().count()))
+        " ".repeat(label_width.saturating_sub(text_display_width(&display)))
     );
     let mut spans = vec![Span::styled(padded, style)];
     if let Some(action) = action {
@@ -1006,7 +1006,7 @@ fn render_tool_event_details(
         .map(|line| {
             let text = format!("    {line}");
             let display = truncate_with_ellipsis(&text, panel_width);
-            let padding = panel_width.saturating_sub(display.chars().count());
+            let padding = panel_width.saturating_sub(text_display_width(&display));
             Line::from(Span::styled(
                 format!("{display}{}", " ".repeat(padding)),
                 style,
@@ -1052,7 +1052,7 @@ fn render_queued_input_row(
         content.replace('\n', " ")
     );
     let display = truncate_with_ellipsis(&text, panel_width);
-    let padding = panel_width.saturating_sub(display.chars().count());
+    let padding = panel_width.saturating_sub(text_display_width(&display));
     let style = Style::default()
         .fg(color)
         .bg(if selected {
@@ -1082,21 +1082,13 @@ fn compact_tool_path(path: &str) -> String {
     compact_tool_text(&tail, 42)
 }
 
-fn compact_tool_text(text: &str, max_chars: usize) -> String {
+fn compact_tool_text(text: &str, max_width: usize) -> String {
     let single_line = text
         .split_whitespace()
         .collect::<Vec<_>>()
         .join(" ")
         .replace('\n', " ");
-    if single_line.chars().count() <= max_chars {
-        return single_line;
-    }
-    let mut out: String = single_line
-        .chars()
-        .take(max_chars.saturating_sub(1))
-        .collect();
-    out.push('…');
-    out
+    truncate_with_ellipsis(&single_line, max_width)
 }
 
 fn tool_kind_color(kind: ToolSummaryKind) -> Color {
@@ -1260,18 +1252,32 @@ fn card_text_width(panel_width: usize, accent_glyph: &str) -> usize {
         .max(1)
 }
 
-fn truncate_with_ellipsis(text: &str, max_chars: usize) -> String {
-    let len = text.chars().count();
-    if len <= max_chars {
+/// Terminal display width of `text` in columns (wide chars occupy 2 columns).
+fn text_display_width(text: &str) -> usize {
+    text.chars().map(|ch| ch.width().unwrap_or(1)).sum()
+}
+
+/// Truncates `text` to at most `max_width` display columns, appending an
+/// ellipsis when truncated. Column budgets must be measured in display width
+/// (not chars) or wide characters (CJK, emoji) overflow their span.
+fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
+    if text_display_width(text) <= max_width {
         return text.to_string();
     }
-    if max_chars == 0 {
+    if max_width == 0 {
         return String::new();
     }
-    if max_chars == 1 {
-        return "\u{2026}".to_string();
+    let budget = max_width - 1;
+    let mut out = String::new();
+    let mut used = 0usize;
+    for ch in text.chars() {
+        let width = ch.width().unwrap_or(1);
+        if used + width > budget {
+            break;
+        }
+        out.push(ch);
+        used += width;
     }
-    let mut out: String = text.chars().take(max_chars - 1).collect();
     out.push('\u{2026}');
     out
 }
@@ -1378,7 +1384,7 @@ fn render_card_styled_line(
             break;
         }
         let content = truncate_with_ellipsis(&span.content, remaining);
-        let span_width = content.chars().count();
+        let span_width = text_display_width(&content);
         if span_width == 0 {
             continue;
         }
@@ -2026,7 +2032,8 @@ mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
         is_hidden_tool_only_assistant, render_queued_input_row, render_tool_event_details,
-        render_tool_event_row, styled_word_wrap_line, word_wrap, LineRenderCache,
+        render_tool_event_row, styled_word_wrap_line, text_display_width, word_wrap,
+        LineRenderCache,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2539,6 +2546,59 @@ mod tests {
             .style
             .add_modifier
             .contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn wide_char_tool_row_pads_by_display_width_and_keeps_replay_visible() {
+        // CJK characters occupy two display columns each; the label span must
+        // be budgeted in columns so the right-aligned replay action still
+        // lands inside the panel (matching its click hitbox).
+        let line = render_tool_event_row(
+            48,
+            "代码漫游 · 十七个步骤的完整讲解流程",
+            ovim_core::ai::chat_types::ToolSummaryKind::Navigation,
+            false,
+            false,
+            false,
+            true,
+        );
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text_display_width(&text), 48);
+        assert!(text.ends_with("[↻ replay]"));
+    }
+
+    #[test]
+    fn wide_char_queued_row_pads_by_display_width() {
+        let line = render_queued_input_row(
+            24,
+            QueuedChatInputKind::FollowUp,
+            "日本語のテキストがとても長い場合",
+            0,
+            false,
+        );
+        let text = line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_eq!(text_display_width(&text), 24);
+    }
+
+    #[test]
+    fn wide_char_tool_details_pad_by_display_width() {
+        let lines = render_tool_event_details(20, None, "宽字符宽字符宽字符宽字符宽字符");
+        for line in lines {
+            let text = line
+                .spans
+                .iter()
+                .map(|span| span.content.as_ref())
+                .collect::<String>();
+            assert_eq!(text_display_width(&text), 20);
+        }
     }
 
     #[test]

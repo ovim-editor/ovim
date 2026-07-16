@@ -108,6 +108,13 @@ impl Editor {
         } else {
             Some(current_total_rows)
         };
+        // Clamp against the same cached geometry the render path uses, so
+        // over-scrolling past the top never accumulates invisible debt that
+        // later scroll-downs would have to burn off.
+        let visible_rows = self
+            .render_cache
+            .ai_chat_last_visible_end_row
+            .saturating_sub(self.render_cache.ai_chat_last_visible_start_row);
         if let Some(chat) = self.ai_state.chat.as_mut() {
             let current_offset = if chat.viewport.follow_latest {
                 0
@@ -121,7 +128,18 @@ impl Editor {
                 chat.viewport.row_scroll_from_bottom
             };
             chat.viewport.follow_latest = false;
-            chat.viewport.row_scroll_from_bottom = current_offset.saturating_add(rows);
+            let mut target = current_offset.saturating_add(rows);
+            if let Some(total_rows) = current_total {
+                if visible_rows > 0 {
+                    target = target.min(total_rows.saturating_sub(visible_rows));
+                }
+            }
+            chat.viewport.row_scroll_from_bottom = target;
+            if chat.viewport.row_scroll_from_bottom == 0 {
+                chat.viewport.follow_latest = true;
+                chat.viewport.pinned_base_total_rows = None;
+                return;
+            }
             if current_total.is_some() {
                 chat.viewport.pinned_base_total_rows = current_total;
             }
@@ -298,5 +316,80 @@ impl Editor {
                 None
             };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::ai::chat_types::ChatOpts;
+    use crate::editor::Editor;
+
+    fn editor_with_chat_geometry(total_rows: usize, visible_rows: usize) -> Editor {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+        editor.render_cache.ai_chat_last_total_rows = total_rows;
+        editor.render_cache.ai_chat_last_visible_start_row = total_rows - visible_rows;
+        editor.render_cache.ai_chat_last_visible_end_row = total_rows;
+        editor
+    }
+
+    #[test]
+    fn viewport_scroll_up_clamps_to_top_of_history() {
+        let mut editor = editor_with_chat_geometry(100, 20);
+
+        // Scroll far past the top: the stored offset must not exceed the
+        // maximum the render path would show (total - visible = 80).
+        editor.ai_chat_scroll_viewport_up(500);
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 80);
+        assert_eq!(editor.ai_chat_effective_message_scroll(100, 20), 80);
+    }
+
+    #[test]
+    fn viewport_scroll_down_responds_immediately_after_over_scroll() {
+        let mut editor = editor_with_chat_geometry(100, 20);
+
+        // Hold wheel-up well past the top, then a single wheel-down must move
+        // the viewport instead of burning off phantom over-scroll debt.
+        for _ in 0..30 {
+            editor.ai_chat_scroll_viewport_up(50);
+        }
+        assert!(!editor.ai_chat_scroll_viewport_down(3));
+        assert_eq!(editor.ai_chat_effective_message_scroll(100, 20), 77);
+    }
+
+    #[test]
+    fn viewport_scroll_up_is_a_no_op_when_everything_fits() {
+        let mut editor = editor_with_chat_geometry(10, 10);
+        editor.render_cache.ai_chat_last_visible_start_row = 0;
+
+        editor.ai_chat_scroll_viewport_up(5);
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(chat.viewport.follow_latest);
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 0);
+    }
+
+    #[test]
+    fn viewport_scroll_up_without_cached_geometry_still_scrolls() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".to_string(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .expect("open chat");
+
+        // No render pass yet: no geometry to clamp against, keep old behavior.
+        editor.ai_chat_scroll_viewport_up(7);
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(!chat.viewport.follow_latest);
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 7);
     }
 }
