@@ -9,6 +9,27 @@ use std::sync::{Arc, Mutex};
 /// The minimal append/read interface shared by transient and durable stores.
 pub trait RunEventSink: Send + Sync {
     fn append(&self, event: NewRunEvent) -> Result<EventEnvelope, RunLogError>;
+    /// Appends only while the run's last sequence still equals
+    /// `expected_last_sequence` (`None` for a run with no events), failing
+    /// with [`RunLogError::SequenceConflict`] otherwise. Stores that can be
+    /// shared between writers must override this so the check and the append
+    /// commit atomically; the default is check-then-append and is only safe
+    /// for single-writer stores.
+    fn append_if_last(
+        &self,
+        event: NewRunEvent,
+        expected_last_sequence: Option<u64>,
+    ) -> Result<EventEnvelope, RunLogError> {
+        let actual = self.last_sequence(&event.run_id)?;
+        if actual != expected_last_sequence {
+            return Err(RunLogError::SequenceConflict {
+                run_id: event.run_id,
+                expected: expected_last_sequence,
+                actual,
+            });
+        }
+        self.append(event)
+    }
     fn event(
         &self,
         run_id: &RunId,
@@ -51,13 +72,38 @@ impl EventClock for SystemEventClock {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RunLogError {
-    MissingCause { run_id: RunId, event_id: EventId },
-    DuplicateEventId { event_id: EventId },
-    SequenceExhausted { run_id: RunId },
-    Storage { operation: String, detail: String },
-    Serialization { operation: String, detail: String },
-    Corruption { detail: String },
-    Migration { version: u32, detail: String },
+    MissingCause {
+        run_id: RunId,
+        event_id: EventId,
+    },
+    DuplicateEventId {
+        event_id: EventId,
+    },
+    SequenceExhausted {
+        run_id: RunId,
+    },
+    /// A guarded append lost a race: the run advanced past the sequence the
+    /// caller observed. See [`RunEventSink::append_if_last`].
+    SequenceConflict {
+        run_id: RunId,
+        expected: Option<u64>,
+        actual: Option<u64>,
+    },
+    Storage {
+        operation: String,
+        detail: String,
+    },
+    Serialization {
+        operation: String,
+        detail: String,
+    },
+    Corruption {
+        detail: String,
+    },
+    Migration {
+        version: u32,
+        detail: String,
+    },
     Poisoned,
 }
 
@@ -75,6 +121,17 @@ impl fmt::Display for RunLogError {
             }
             Self::SequenceExhausted { run_id } => {
                 write!(formatter, "event sequence exhausted for run {run_id}")
+            }
+            Self::SequenceConflict {
+                run_id,
+                expected,
+                actual,
+            } => {
+                write!(
+                    formatter,
+                    "run {run_id} advanced concurrently: expected last sequence \
+                     {expected:?}, found {actual:?}"
+                )
             }
             Self::Storage { operation, detail } => {
                 write!(
@@ -146,16 +203,32 @@ impl Default for InMemoryRunEventSink {
     }
 }
 
-impl RunEventSink for InMemoryRunEventSink {
-    fn append(&self, event: NewRunEvent) -> Result<EventEnvelope, RunLogError> {
+impl InMemoryRunEventSink {
+    /// One lock spans the optional sequence guard and the append, so a
+    /// guarded append can never interleave with another writer.
+    fn append_guarded(
+        &self,
+        event: NewRunEvent,
+        expected_last_sequence: Option<Option<u64>>,
+    ) -> Result<EventEnvelope, RunLogError> {
         let mut state = self.state.lock().map_err(|_| RunLogError::Poisoned)?;
-        if let Some(cause) = &event.caused_by {
-            if state.event_runs.get(cause) != Some(&event.run_id) {
-                return Err(RunLogError::MissingCause {
+        if let Some(expected) = expected_last_sequence {
+            let actual = state.runs.get(&event.run_id).map(|run| run.last_sequence);
+            if actual != expected {
+                return Err(RunLogError::SequenceConflict {
                     run_id: event.run_id,
-                    event_id: cause.clone(),
+                    expected,
+                    actual,
                 });
             }
+        }
+        if let Some(cause) = &event.caused_by
+            && state.event_runs.get(cause) != Some(&event.run_id)
+        {
+            return Err(RunLogError::MissingCause {
+                run_id: event.run_id,
+                event_id: cause.clone(),
+            });
         }
 
         let event_id = self.id_generator.next_event_id();
@@ -211,6 +284,20 @@ impl RunEventSink for InMemoryRunEventSink {
             .event_runs
             .insert(envelope.event_id.clone(), envelope.run_id.clone());
         Ok(envelope)
+    }
+}
+
+impl RunEventSink for InMemoryRunEventSink {
+    fn append(&self, event: NewRunEvent) -> Result<EventEnvelope, RunLogError> {
+        self.append_guarded(event, None)
+    }
+
+    fn append_if_last(
+        &self,
+        event: NewRunEvent,
+        expected_last_sequence: Option<u64>,
+    ) -> Result<EventEnvelope, RunLogError> {
+        self.append_guarded(event, Some(expected_last_sequence))
     }
 
     fn event(
@@ -385,6 +472,30 @@ mod tests {
                 .collect::<Vec<_>>(),
             (1..=16).collect::<Vec<_>>()
         );
+    }
+
+    #[test]
+    fn guarded_append_commits_only_at_the_expected_sequence() {
+        let sink = InMemoryRunEventSink::new();
+        let run_id = RunId::new();
+        let first = sink.append_if_last(created(run_id.clone()), None).unwrap();
+        assert_eq!(first.sequence, 1);
+
+        let error = sink
+            .append_if_last(created(run_id.clone()), None)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            RunLogError::SequenceConflict {
+                run_id: run_id.clone(),
+                expected: None,
+                actual: Some(1),
+            }
+        );
+        assert_eq!(sink.events(&run_id).unwrap().len(), 1);
+
+        let second = sink.append_if_last(created(run_id), Some(1)).unwrap();
+        assert_eq!(second.sequence, 2);
     }
 
     #[test]

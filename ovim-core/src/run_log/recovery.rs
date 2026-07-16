@@ -246,6 +246,13 @@ struct ToolFold {
 /// Appends recovery facts; it never rewrites or deletes the crashed history.
 /// `exclusive_access_confirmed` must only be true after the caller has
 /// established that no live process can still append to this run.
+///
+/// Every append is guarded by the sequence this plan expects the run to be
+/// at, atomically inside the store. When two recoverers race — both having
+/// passed their liveness checks against the same snapshot — exactly one can
+/// win the first append; the other fails with [`RecoveryError::PlanStale`]
+/// before writing anything, so duplicate terminal events can never corrupt
+/// the run.
 pub fn apply_recovery(
     plan: &RecoveryPlan,
     sink: &dyn RunEventSink,
@@ -266,6 +273,7 @@ pub fn apply_recovery(
     }
 
     let mut branch_tips = plan.branch_tips.clone();
+    let mut expected_last_sequence = plan.observed_last_sequence;
     let mut appended = Vec::new();
 
     for tool in &plan.pending_tools {
@@ -287,6 +295,7 @@ pub fn apply_recovery(
             sink,
             &plan.run_id,
             &mut branch_tips,
+            &mut expected_last_sequence,
             tool.branch_id.clone(),
             tool.actor.clone(),
             tool.agent_id.clone(),
@@ -308,6 +317,7 @@ pub fn apply_recovery(
             sink,
             &plan.run_id,
             &mut branch_tips,
+            &mut expected_last_sequence,
             turn.branch_id.clone(),
             turn.actor.clone(),
             turn.agent_id.clone(),
@@ -328,6 +338,7 @@ pub fn apply_recovery(
             sink,
             &plan.run_id,
             &mut branch_tips,
+            &mut expected_last_sequence,
             agent.branch_id.clone(),
             agent.actor.clone(),
             Some(agent.agent_id.clone()),
@@ -375,7 +386,7 @@ pub fn apply_recovery(
         event.caused_by = cause;
         event.workspace_id = run.workspace_id.clone();
         event.branch_id = run.branch_id.clone();
-        let envelope = sink.append(event)?;
+        let envelope = guarded_append(sink, event, &mut expected_last_sequence)?;
         appended.push(envelope);
     }
 
@@ -387,6 +398,7 @@ fn append_recovery_event(
     sink: &dyn RunEventSink,
     run_id: &RunId,
     branch_tips: &mut BTreeMap<Option<BranchId>, EventId>,
+    expected_last_sequence: &mut Option<u64>,
     branch_id: Option<BranchId>,
     actor: EventActor,
     agent_id: Option<AgentId>,
@@ -395,7 +407,7 @@ fn append_recovery_event(
     operation_id: Option<OperationId>,
     provider_call_id: Option<String>,
     kind: EventKind,
-) -> Result<EventEnvelope, RunLogError> {
+) -> Result<EventEnvelope, RecoveryError> {
     let mut event = NewRunEvent::new(run_id.clone(), actor, kind);
     event.caused_by = branch_tips.get(&branch_id).cloned();
     event.agent_id = agent_id;
@@ -404,9 +416,29 @@ fn append_recovery_event(
     event.branch_id = branch_id.clone();
     event.operation_id = operation_id;
     event.provider_call_id = provider_call_id;
-    let envelope = sink.append(event)?;
+    let envelope = guarded_append(sink, event, expected_last_sequence)?;
     branch_tips.insert(branch_id, envelope.event_id.clone());
     Ok(envelope)
+}
+
+/// Appends atomically at the exact sequence recovery expects. Losing the
+/// race surfaces as `PlanStale`, the same recoverable signal callers already
+/// treat as "another writer owns this run".
+fn guarded_append(
+    sink: &dyn RunEventSink,
+    event: NewRunEvent,
+    expected_last_sequence: &mut Option<u64>,
+) -> Result<EventEnvelope, RecoveryError> {
+    match sink.append_if_last(event, *expected_last_sequence) {
+        Ok(envelope) => {
+            *expected_last_sequence = Some(envelope.sequence);
+            Ok(envelope)
+        }
+        Err(RunLogError::SequenceConflict {
+            expected, actual, ..
+        }) => Err(RecoveryError::PlanStale { expected, actual }),
+        Err(error) => Err(error.into()),
+    }
 }
 
 fn pending_tool(event: &EventEnvelope, tool_name: String) -> PendingToolRecovery {
@@ -714,6 +746,111 @@ mod tests {
             RecoveryError::ExclusiveAccessNotConfirmed
         );
         assert_eq!(sink.events(&run_id).unwrap().len(), before);
+    }
+
+    #[test]
+    fn a_second_recoverer_with_the_same_plan_is_rejected_after_the_first_applies() {
+        let (sink, run_id, _) = crashed_tool(true);
+        let first = RecoveryPlanner::new(sink.clone()).plan(&run_id).unwrap();
+        // Both recoverers built their plan from the same crashed snapshot.
+        let second = first.clone();
+        apply_recovery(&first, sink.as_ref(), true).unwrap();
+        let after_first = sink.events(&run_id).unwrap();
+
+        let error = apply_recovery(&second, sink.as_ref(), true).unwrap_err();
+        assert!(matches!(error, RecoveryError::PlanStale { .. }));
+        assert_eq!(sink.events(&run_id).unwrap(), after_first);
+    }
+
+    /// Simulates a recoverer whose staleness pre-check raced ahead of a
+    /// winner's commit: reads still report the pre-recovery state, while
+    /// appends land in the real (already recovered) store.
+    struct StaleReadSink {
+        inner: Arc<InMemoryRunEventSink>,
+        stale_last_sequence: Option<u64>,
+    }
+
+    impl RunEventSink for StaleReadSink {
+        fn append(
+            &self,
+            event: crate::run_log::NewRunEvent,
+        ) -> Result<EventEnvelope, crate::run_log::RunLogError> {
+            self.inner.append(event)
+        }
+
+        fn append_if_last(
+            &self,
+            event: crate::run_log::NewRunEvent,
+            expected_last_sequence: Option<u64>,
+        ) -> Result<EventEnvelope, crate::run_log::RunLogError> {
+            self.inner.append_if_last(event, expected_last_sequence)
+        }
+
+        fn event(
+            &self,
+            run_id: &RunId,
+            event_id: &EventId,
+        ) -> Result<Option<EventEnvelope>, crate::run_log::RunLogError> {
+            self.inner.event(run_id, event_id)
+        }
+
+        fn events(
+            &self,
+            run_id: &RunId,
+        ) -> Result<Vec<EventEnvelope>, crate::run_log::RunLogError> {
+            self.inner.events(run_id)
+        }
+
+        fn last_sequence(
+            &self,
+            _run_id: &RunId,
+        ) -> Result<Option<u64>, crate::run_log::RunLogError> {
+            Ok(self.stale_last_sequence)
+        }
+
+        fn runs(&self) -> Result<Vec<RunId>, crate::run_log::RunLogError> {
+            self.inner.runs()
+        }
+    }
+
+    #[test]
+    fn a_recoverer_that_passed_its_checks_before_the_winner_committed_appends_nothing() {
+        let (sink, run_id, operation_id) = crashed_tool(true);
+        let planner = RecoveryPlanner::new(sink.clone());
+        let winner_plan = planner.plan(&run_id).unwrap();
+        let loser_plan = winner_plan.clone();
+        let pre_recovery_sequence = sink.last_sequence(&run_id).unwrap();
+
+        apply_recovery(&winner_plan, sink.as_ref(), true).unwrap();
+        let after_winner = sink.events(&run_id).unwrap();
+
+        // The loser's `last_sequence` pre-check already passed before the
+        // winner committed; only the atomic per-append guard can stop it now.
+        let racing = StaleReadSink {
+            inner: sink.clone(),
+            stale_last_sequence: pre_recovery_sequence,
+        };
+        let error = apply_recovery(&loser_plan, &racing, true).unwrap_err();
+        assert!(matches!(error, RecoveryError::PlanStale { .. }));
+
+        // The loser wrote nothing: exactly one terminal result per operation.
+        assert_eq!(sink.events(&run_id).unwrap(), after_winner);
+        assert_eq!(
+            after_winner
+                .iter()
+                .filter(|event| event.operation_id.as_ref() == Some(&operation_id)
+                    && matches!(event.kind, EventKind::ToolResult(_)))
+                .count(),
+            1
+        );
+
+        // The run restores cleanly afterwards: nothing is left to recover.
+        let replanned = planner.plan(&run_id).unwrap();
+        assert!(replanned.is_empty());
+        assert!(apply_recovery(&replanned, sink.as_ref(), true)
+            .unwrap()
+            .appended
+            .is_empty());
     }
 
     #[test]

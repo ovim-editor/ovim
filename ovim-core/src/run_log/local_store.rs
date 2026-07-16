@@ -132,6 +132,18 @@ impl RunEventSink for LocalRunStore {
         sink.append(event)
     }
 
+    fn append_if_last(
+        &self,
+        event: NewRunEvent,
+        expected_last_sequence: Option<u64>,
+    ) -> Result<EventEnvelope, RunLogError> {
+        // Delegate so the guard stays atomic inside the SQLite transaction;
+        // the default check-then-append would reopen the race between
+        // cooperating processes.
+        let sink = self.sink_for_append(&event.run_id)?;
+        sink.append_if_last(event, expected_last_sequence)
+    }
+
     fn event(
         &self,
         run_id: &RunId,

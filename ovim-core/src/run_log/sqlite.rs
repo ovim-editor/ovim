@@ -76,16 +76,46 @@ impl SqliteRunEventSink {
     fn connection(&self) -> Result<MutexGuard<'_, Connection>, RunLogError> {
         self.connection.lock().map_err(|_| RunLogError::Poisoned)
     }
-}
 
-impl RunEventSink for SqliteRunEventSink {
-    fn append(&self, event: NewRunEvent) -> Result<EventEnvelope, RunLogError> {
+    /// The optional sequence guard is evaluated inside the same immediate
+    /// transaction that inserts the event, so no other connection can advance
+    /// the run between the check and the append.
+    fn append_guarded(
+        &self,
+        event: NewRunEvent,
+        expected_last_sequence: Option<Option<u64>>,
+    ) -> Result<EventEnvelope, RunLogError> {
         let event_id = self.id_generator.next_event_id();
         let recorded_at = self.clock.now();
         let mut connection = self.connection()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| storage("begin append transaction", error))?;
+
+        if let Some(expected) = expected_last_sequence {
+            let stored: Option<i64> = transaction
+                .query_row(
+                    "SELECT last_sequence FROM runs WHERE run_id = ?1",
+                    [event.run_id.as_str()],
+                    |row| row.get(0),
+                )
+                .optional()
+                .map_err(|error| storage("read guarded run sequence", error))?;
+            let actual = stored
+                .map(|value| {
+                    u64::try_from(value).map_err(|_| RunLogError::Corruption {
+                        detail: format!("run {} has negative last sequence {value}", event.run_id),
+                    })
+                })
+                .transpose()?;
+            if actual != expected {
+                return Err(RunLogError::SequenceConflict {
+                    run_id: event.run_id,
+                    expected,
+                    actual,
+                });
+            }
+        }
 
         if let Some(cause) = &event.caused_by {
             let cause_run: Option<String> = transaction
@@ -199,6 +229,20 @@ impl RunEventSink for SqliteRunEventSink {
             .commit()
             .map_err(|error| storage("commit append transaction", error))?;
         Ok(envelope)
+    }
+}
+
+impl RunEventSink for SqliteRunEventSink {
+    fn append(&self, event: NewRunEvent) -> Result<EventEnvelope, RunLogError> {
+        self.append_guarded(event, None)
+    }
+
+    fn append_if_last(
+        &self,
+        event: NewRunEvent,
+        expected_last_sequence: Option<u64>,
+    ) -> Result<EventEnvelope, RunLogError> {
+        self.append_guarded(event, Some(expected_last_sequence))
     }
 
     fn event(
@@ -613,6 +657,38 @@ mod tests {
         );
         assert_eq!(sink.append(message(second, "1")).unwrap().sequence, 1);
         assert_eq!(sink.append(message(first, "2")).unwrap().sequence, 2);
+    }
+
+    #[test]
+    fn guarded_append_rejects_a_stale_expected_sequence() {
+        let sink = SqliteRunEventSink::open_in_memory().unwrap();
+        let run = RunId::parse("run_guarded").unwrap();
+        assert_eq!(
+            sink.append_if_last(message(run.clone(), "first"), None)
+                .unwrap()
+                .sequence,
+            1
+        );
+
+        let error = sink
+            .append_if_last(message(run.clone(), "stale"), None)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            RunLogError::SequenceConflict {
+                run_id: run.clone(),
+                expected: None,
+                actual: Some(1),
+            }
+        );
+        assert_eq!(sink.events(&run).unwrap().len(), 1);
+
+        assert_eq!(
+            sink.append_if_last(message(run, "second"), Some(1))
+                .unwrap()
+                .sequence,
+            2
+        );
     }
 
     #[test]
