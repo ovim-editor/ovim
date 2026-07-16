@@ -30,7 +30,9 @@ fn read_capped_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
 }
 
 /// Join an output-reader thread, bounding the wait once the execution has
-/// been cancelled.
+/// been cancelled. Runs before the leader is reaped, so the kill handle
+/// stays armed (pid/pgid reserved by the un-reaped leader) for the whole
+/// drain.
 ///
 /// The readers finish when every process holding a write end of the pipe
 /// exits. Cancellation SIGKILLs the whole process group, which closes the
@@ -60,6 +62,33 @@ fn drain_reader(
             }
         }
         std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+}
+
+/// Reap the shell leader after the output drain has finished. This is
+/// reached on every path out of the drain (normal EOF, cancelled group
+/// kill, abandoned drain, panicked reader), so the zombie never leaks.
+///
+/// Reaping releases the leader's pid (and, once the group is empty, the
+/// pgid) for reuse, so it must be the very last step. Each non-blocking
+/// reap attempt runs under the kill-handle lock and forgets the pid in the
+/// same critical section, so a concurrent cancel either `killpg`s the
+/// still-reserved group or finds no pid at all. The poll loop (rather than
+/// a blocking `wait()` after disarming the handle) keeps a command that
+/// closed its output pipes early but kept running cancellable.
+fn reap_shell_leader(
+    child: &mut std::process::Child,
+    kill: Option<&super::ai_chat_state::ShellKillHandle>,
+) -> std::io::Result<std::process::ExitStatus> {
+    let Some(handle) = kill else {
+        return child.wait();
+    };
+    loop {
+        match handle.reap_locked(|| child.try_wait()) {
+            Ok(Some(status)) => return Ok(status),
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(10)),
+            Err(error) => return Err(error),
+        }
     }
 }
 
@@ -111,36 +140,19 @@ pub(super) fn run_bash_program(
     let stderr = child.stderr.take().expect("piped stderr");
     let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
     let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
-    let status = match child.wait() {
-        Ok(status) => {
-            if let Some(handle) = kill {
-                // Keep the pid published through the drain below: a
-                // backgrounded descendant may still hold the output pipes,
-                // and a cancel landing now must be able to `killpg` it. Only
-                // record that the leader was reaped so cancellation stops
-                // using the plain `kill(pid)` fallback (the pid may be
-                // reused once the whole group dies; the pgid may not while
-                // any member lives).
-                handle.mark_leader_reaped();
-            }
-            status
-        }
-        Err(error) => {
-            if let Some(handle) = kill {
-                // Reap state is unknown; forget the child rather than let a
-                // later cancel signal with stale information.
-                handle.clear_child();
-            }
-            return ToolResult::Error(format!("failed waiting for shell: {error}"));
-        }
-    };
+    // Drain the pipes BEFORE reaping the leader. While the leader is
+    // un-reaped (running or zombie) the kernel reserves its pid — and
+    // therefore its pgid — so a cancel landing anywhere in this window can
+    // safely `killpg` the group, even after every living group member has
+    // exited (e.g. when a descendant that left the group via setsid still
+    // holds the pipe ends). Reaping is the very last step and forgets the
+    // pid atomically, so cancel can never signal a reused id.
     let (stdout_bytes, stdout_truncated) = drain_reader(stdout_task, kill);
     let (stderr_bytes, stderr_truncated) = drain_reader(stderr_task, kill);
-    if let Some(handle) = kill {
-        // No group member can still hold the pipes; the execution is truly
-        // finished, so forget the pid/pgid before either can be reused.
-        handle.clear_child();
-    }
+    let status = match reap_shell_leader(&mut child, kill) {
+        Ok(status) => status,
+        Err(error) => return ToolResult::Error(format!("failed waiting for shell: {error}")),
+    };
     let stdout = String::from_utf8_lossy(&stdout_bytes);
     let stderr = String::from_utf8_lossy(&stderr_bytes);
     let mut body = String::new();

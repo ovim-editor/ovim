@@ -730,6 +730,19 @@ mod tests {
         assert!(!dir.path().join("cancelled-marker").exists());
     }
 
+    /// True while `pid` names a terminated-but-unreaped (zombie) process.
+    /// Used to observe the reap-last ordering: the shell leader must stay a
+    /// zombie — reserving its pid and pgid for `killpg` — for as long as
+    /// the execution is parked on the output drain.
+    #[cfg(unix)]
+    fn leader_is_zombie(pid: u32) -> bool {
+        std::process::Command::new("ps")
+            .args(["-o", "stat=", "-p", &pid.to_string()])
+            .output()
+            .map(|out| String::from_utf8_lossy(&out.stdout).contains('Z'))
+            .unwrap_or(false)
+    }
+
     #[cfg(unix)]
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn cancelling_shell_execution_kills_descendants_after_leader_exits() {
@@ -785,18 +798,23 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         };
-        // Wait until the leader has exited and been reaped: the pid must stay
-        // published (it still names the live process group) or cancellation
-        // could not reach the descendant.
+        // Wait until the leader has exited. It must remain an un-reaped
+        // zombie with its pid still published: the kernel then reserves the
+        // pid/pgid, which is what lets cancellation still reach the
+        // descendant through `killpg`.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !kill.leader_reaped() {
+        while !leader_is_zombie(pid) {
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "shell leader never reaped"
+                "shell leader never became an un-reaped zombie"
             );
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
         }
-        assert_eq!(kill.published_child(), Some(pid));
+        assert_eq!(
+            kill.published_child(),
+            Some(pid),
+            "pid must stay published while the drain is parked"
+        );
 
         assert!(editor.cancel_ai_chat_generation());
 
@@ -810,13 +828,14 @@ mod tests {
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
-        // The blocking execution resolves once the dead group releases the
-        // pipes (`clear_child` resets the reaped flag when the drain ends).
+        // Only the blocking execution reaps the leader, and it does so as
+        // its final step — so the zombie disappearing proves the pending
+        // execution resolved (and did not leak the zombie).
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
-        while kill.leader_reaped() {
+        while nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
             assert!(
                 tokio::time::Instant::now() < deadline,
-                "cancelled shell execution never resolved"
+                "cancelled shell execution never resolved (leader still un-reaped)"
             );
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         }
@@ -839,15 +858,27 @@ mod tests {
         });
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while !kill.leader_reaped() {
+        let pid = loop {
+            if let Some(pid) = kill.published_child() {
+                break pid;
+            }
             assert!(
                 std::time::Instant::now() < deadline,
-                "shell leader never reaped"
+                "shell child never spawned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        // The leader exits but stays an un-reaped zombie while the
+        // backgrounded descendant holds the pipes: the execution is parked
+        // on the output drain and reaping is deferred to the very end.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while !leader_is_zombie(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell leader never became an un-reaped zombie"
             );
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        // The leader exited, but the backgrounded descendant holds the pipes:
-        // the execution is parked on the output drain.
         assert!(
             !worker.is_finished(),
             "execution finished while the descendant still held the pipes"
@@ -867,7 +898,103 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
         worker.join().unwrap();
+        // The final reap ran: no zombie leader leaks.
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err(),
+            "shell leader was never reaped"
+        );
         assert!(!dir.path().join("cancelled-marker").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancelled_drain_with_group_escaped_descendant_resolves_without_stray_signals() {
+        // Needs an interpreter that can setsid() away from the shell's
+        // process group while keeping the inherited pipe ends open.
+        let perl_available = std::process::Command::new("perl")
+            .args(["-e", "1"])
+            .status()
+            .map(|status| status.success())
+            .unwrap_or(false);
+        if !perl_available {
+            return;
+        }
+
+        let dir = tempfile::tempdir().unwrap();
+        let kill = std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default());
+        let task_kill = kill.clone();
+        let workdir = dir.path().to_path_buf();
+        let worker = std::thread::spawn(move || {
+            // The perl descendant leaves the process group via setsid() but
+            // keeps the pipes. Once the shell leader exits, the group has NO
+            // living members — the window where the pgid would be reusable
+            // if the leader were reaped. sleep 15 so only the bounded
+            // post-cancel drain (a few seconds) can explain a prompt return.
+            super::super::ai_tool_execution::run_bash_program(
+                "perl -e 'use POSIX (); POSIX::setsid(); sleep 15' & echo started",
+                &workdir,
+                Some(&task_kill),
+            )
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        let pid = loop {
+            if let Some(pid) = kill.published_child() {
+                break pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell child never spawned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        };
+        // The un-reaped zombie leader is what keeps the pid/pgid reserved
+        // even though the group has no living members left.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !leader_is_zombie(pid) {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell leader never became an un-reaped zombie"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        // Wait until perl has actually setsid() away: only then is the group
+        // empty (killpg probe fails) while the pipes are still held — the
+        // exact window where a reaped leader's pgid would be reusable.
+        // Cancelling earlier would kill perl while it is still in the group
+        // and skip the scenario under test.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while nix::sys::signal::killpg(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "descendant never left the shell's process group"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(
+            !worker.is_finished(),
+            "execution finished while the escaped descendant still held the pipes"
+        );
+
+        // killpg on the reserved-but-empty group fails with ESRCH harmlessly;
+        // the requirement is that nothing else ever gets signalled and the
+        // execution still resolves via the bounded drain.
+        kill.cancel();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !worker.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "cancelled drain with an escaped descendant did not resolve"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        worker.join().unwrap();
+        // The final reap ran: no zombie leader leaks.
+        assert!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_err(),
+            "shell leader was never reaped"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
