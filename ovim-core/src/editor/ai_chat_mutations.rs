@@ -133,6 +133,74 @@ fn normalize_path_label(path: &str) -> String {
     path.replace('\\', "/").trim_start_matches("./").to_string()
 }
 
+#[derive(Debug, PartialEq, Eq)]
+struct MutationDiffstat {
+    added: usize,
+    removed: usize,
+    current_range: Option<(usize, usize)>,
+    deletion_point: Option<usize>,
+}
+
+fn mutation_diffstat(before: &str, after: &str) -> MutationDiffstat {
+    // Keep terminators so adding or removing the final newline is represented
+    // as a changed line rather than an empty diff.
+    let before_lines: Vec<_> = before.split_inclusive('\n').collect();
+    let after_lines: Vec<_> = after.split_inclusive('\n').collect();
+    let prefix = before_lines
+        .iter()
+        .zip(&after_lines)
+        .take_while(|(before, after)| before == after)
+        .count();
+
+    let max_suffix = before_lines
+        .len()
+        .saturating_sub(prefix)
+        .min(after_lines.len().saturating_sub(prefix));
+    let suffix = (0..max_suffix)
+        .take_while(|offset| {
+            before_lines[before_lines.len() - 1 - offset]
+                == after_lines[after_lines.len() - 1 - offset]
+        })
+        .count();
+    let removed = before_lines.len().saturating_sub(prefix + suffix);
+    let added = after_lines.len().saturating_sub(prefix + suffix);
+
+    MutationDiffstat {
+        added,
+        removed,
+        current_range: (added > 0).then_some((prefix + 1, prefix + added)),
+        deletion_point: (added == 0 && removed > 0).then_some(prefix + 1),
+    }
+}
+
+fn append_mutation_envelope(
+    message: &mut String,
+    tool_name: &str,
+    file_label: &str,
+    revision_before: usize,
+    revision_after: usize,
+    diffstat: &MutationDiffstat,
+    save_outcome: Option<&str>,
+) {
+    let changed_range = match (diffstat.current_range, diffstat.deletion_point) {
+        (Some((start, end)), _) => format!("lines {start}-{end}"),
+        (None, Some(line)) => format!("deletion point at line {line}"),
+        (None, None) => "none".to_string(),
+    };
+    let diagnostics = if revision_before == revision_after {
+        "unchanged"
+    } else {
+        "refresh requested"
+    };
+
+    message.push_str(&format!(
+        "\nMutation: {tool_name}\nFile: {file_label}\nChanged range: {changed_range}\nDiffstat: +{} -{}\nBuffer revision: {revision_before} -> {revision_after}\nDiagnostics: {diagnostics}\nSave: {}\nProvenance: agent\nRollback: editor undo",
+        diffstat.added,
+        diffstat.removed,
+        save_outcome.unwrap_or("not requested"),
+    ));
+}
+
 fn normalize_trailing_ws_and_lf(text: &str) -> String {
     text.replace("\r\n", "\n")
         .lines()
@@ -509,6 +577,10 @@ impl Editor {
             self.current_buffer_index = original;
             return error;
         }
+        let content_before = self.buffer().rope().to_string();
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.last_save_outcome = None;
+        }
         let mut result = match name {
             "edit_range" => match parse_args(args) {
                 Ok(a) => self.handle_edit_range(a),
@@ -547,9 +619,22 @@ impl Editor {
 
         if let ToolResult::Success(message) = &mut result {
             let revision_after = self.buffer().version();
-            message.push_str(&format!(
-                "\nBuffer revision: {revision_before} -> {revision_after}."
-            ));
+            let content_after = self.buffer().rope().to_string();
+            let diffstat = mutation_diffstat(&content_before, &content_after);
+            let save_outcome = self
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.last_save_outcome.as_deref());
+            append_mutation_envelope(
+                message,
+                name,
+                &file_label,
+                revision_before,
+                revision_after,
+                &diffstat,
+                save_outcome,
+            );
         }
 
         // Only restore if active_buffer_id didn't change during the mutation
@@ -1075,6 +1160,61 @@ mod tests {
 
     fn buf_content(editor: &Editor) -> String {
         editor.buffer().rope().to_string()
+    }
+
+    #[test]
+    fn mutation_diffstat_reports_single_changed_region() {
+        assert_eq!(
+            mutation_diffstat("one\ntwo\nthree\n", "one\nsecond\nthird\nthree\n"),
+            MutationDiffstat {
+                added: 2,
+                removed: 1,
+                current_range: Some((2, 3)),
+                deletion_point: None,
+            }
+        );
+    }
+
+    #[test]
+    fn mutation_diffstat_reports_pure_deletion_point() {
+        assert_eq!(
+            mutation_diffstat("one\ntwo\nthree\n", "one\nthree\n"),
+            MutationDiffstat {
+                added: 0,
+                removed: 1,
+                current_range: None,
+                deletion_point: Some(2),
+            }
+        );
+    }
+
+    #[test]
+    fn mutation_envelope_has_stable_fields() {
+        let mut message = "Inserted text.".to_string();
+        append_mutation_envelope(
+            &mut message,
+            "insert_lines",
+            "src/lib.rs",
+            7,
+            8,
+            &MutationDiffstat {
+                added: 2,
+                removed: 0,
+                current_range: Some((4, 5)),
+                deletion_point: None,
+            },
+            Some("auto-saved"),
+        );
+
+        assert!(message.contains("Mutation: insert_lines"));
+        assert!(message.contains("File: src/lib.rs"));
+        assert!(message.contains("Changed range: lines 4-5"));
+        assert!(message.contains("Diffstat: +2 -0"));
+        assert!(message.contains("Buffer revision: 7 -> 8"));
+        assert!(message.contains("Diagnostics: refresh requested"));
+        assert!(message.contains("Save: auto-saved"));
+        assert!(message.contains("Provenance: agent"));
+        assert!(message.contains("Rollback: editor undo"));
     }
 
     // ====================================================================
