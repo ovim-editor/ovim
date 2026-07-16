@@ -77,12 +77,22 @@ fn bounded_git_status_counts(root: &std::path::Path) -> Option<(usize, usize, bo
         .stderr(Stdio::null())
         .spawn()
         .ok()?;
-    let stdout = child.stdout.take()?;
+    let Some(stdout) = child.stdout.take() else {
+        // Reap the child on every early exit so it never lingers as a zombie.
+        let _ = child.kill();
+        let _ = child.wait();
+        return None;
+    };
     let mut modified = 0usize;
     let mut untracked = 0usize;
     let mut truncated = false;
+    let mut read_failed = false;
     for line in BufReader::new(stdout).lines() {
-        let line = line.ok()?;
+        let Ok(line) = line else {
+            read_failed = true;
+            let _ = child.kill();
+            break;
+        };
         if modified + untracked == WORKSPACE_GIT_STATUS_LIMIT {
             truncated = true;
             let _ = child.kill();
@@ -94,8 +104,9 @@ fn bounded_git_status_counts(root: &std::path::Path) -> Option<(usize, usize, bo
             modified += 1;
         }
     }
+    // Always wait so the child is reaped, even on failure paths.
     let status = child.wait().ok()?;
-    if !truncated && !status.success() {
+    if read_failed || (!truncated && !status.success()) {
         return None;
     }
     Some((modified, untracked, truncated))
@@ -491,9 +502,9 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         if let Some(head) = head {
             output.push_str(&format!("Branch: {head}\n"));
             if let Some((modified, untracked, truncated)) = bounded_git_status_counts(root) {
-                let suffix = if truncated { "+ (scan bounded)" } else { "" };
+                let suffix = if truncated { " (scan bounded)" } else { "" };
                 output.push_str(&format!(
-                    "Git worktree: {modified}{suffix} modified, {untracked}{suffix} untracked\n"
+                    "Git worktree: {modified} modified, {untracked} untracked{suffix}\n"
                 ));
             }
         } else {
@@ -516,12 +527,22 @@ fn handle_workspace_context(args: &serde_json::Value, ctx: &ToolExecutionContext
         output.push_str("  [No Name]\n");
     }
     if let Some((start_line, start_col, end_line, end_col)) = ctx.selection {
+        // `end_col` is an exclusive zero-based grapheme column (see
+        // `AiSelectionSnapshot`); this line reads as inclusive one-based
+        // coordinates (what `select_text` consumes), so the inclusive
+        // one-based end column is `end_col` itself. Guard the degenerate
+        // empty-selection case so the range never reads backwards.
+        let inclusive_end_col = if end_line == start_line {
+            end_col.max(start_col + 1)
+        } else {
+            end_col.max(1)
+        };
         output.push_str(&format!(
             "Selection: {}:{}-{}:{}\n",
             start_line + 1,
             start_col + 1,
             end_line + 1,
-            end_col + 1,
+            inclusive_end_col,
         ));
     }
 
@@ -1882,6 +1903,52 @@ mod tests {
                 assert!(!output.contains("Branch:"));
                 assert!(!output.contains("Detected projects:"));
                 assert!(!output.contains("Diagnostics:"));
+            }
+            ToolResult::Error(error) => panic!("expected success, got error: {error}"),
+        }
+    }
+
+    #[test]
+    fn workspace_context_selection_end_column_is_inclusive() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx_with_project("alpha beta\n", dir.path().to_path_buf());
+        // "alpha" selected: grapheme columns 0..5 (end exclusive). The report
+        // must print the inclusive one-based end column (5), which is what
+        // select_text consumes, not one past the last selected column (6).
+        ctx.selection = Some((0, 0, 0, 5));
+        let result = execute_builtin(
+            "workspace_context",
+            &serde_json::json!({"include_git": false, "include_projects": false}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(output) => {
+                assert!(
+                    output.contains("Selection: 1:1-1:5\n"),
+                    "unexpected selection line in: {output}"
+                );
+            }
+            ToolResult::Error(error) => panic!("expected success, got error: {error}"),
+        }
+    }
+
+    #[test]
+    fn workspace_context_empty_selection_never_reads_backwards() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut ctx = test_ctx_with_project("alpha beta\n", dir.path().to_path_buf());
+        // Degenerate empty selection (start == end, both exclusive-end 4).
+        ctx.selection = Some((0, 4, 0, 4));
+        let result = execute_builtin(
+            "workspace_context",
+            &serde_json::json!({"include_git": false, "include_projects": false}),
+            &ctx,
+        );
+        match result {
+            ToolResult::Success(output) => {
+                assert!(
+                    output.contains("Selection: 1:5-1:5\n"),
+                    "unexpected selection line in: {output}"
+                );
             }
             ToolResult::Error(error) => panic!("expected success, got error: {error}"),
         }
