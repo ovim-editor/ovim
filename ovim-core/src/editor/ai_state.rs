@@ -49,9 +49,12 @@ pub struct AiPromptState {
 #[derive(Debug, Clone)]
 pub struct AiSelectionSnapshot {
     pub start_line: usize,
+    /// Inclusive, zero-based grapheme column.
     pub start_col: usize,
     pub end_line: usize,
+    /// Exclusive, zero-based grapheme column.
     pub end_col: usize,
+    /// Half-open Rope character offsets for the selected text.
     pub start_char: usize,
     pub end_char: usize,
     pub anchor_line: usize,

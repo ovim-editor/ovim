@@ -450,7 +450,9 @@ impl Editor {
         let start_col = args.start_column.saturating_sub(1);
 
         let end_col = match args.end_column {
-            Some(n) => n.saturating_sub(1),
+            // The public value is the 1-indexed last included column. Its
+            // numeric value is therefore the zero-based exclusive boundary.
+            Some(n) => n,
             None => {
                 // Default to end of the end_line — grapheme count of the
                 // line *content* (terminator excluded), so the selection
@@ -1160,6 +1162,23 @@ mod tests {
 
     fn buf_content(editor: &Editor) -> String {
         editor.buffer().rope().to_string()
+    }
+
+    #[test]
+    fn select_text_explicit_end_column_is_inclusive_and_grapheme_safe() {
+        let mut editor = Editor::with_content("a🙂b\n");
+
+        let result = editor.handle_select_text(SelectTextArgs {
+            start_line: 1,
+            start_column: 2,
+            end_line: 1,
+            end_column: Some(2),
+        });
+
+        assert!(matches!(result, ToolResult::Success(_)));
+        let selection = editor.ai_state.active_selection.as_ref().unwrap();
+        assert_eq!(selection.selected_text, "🙂");
+        assert_eq!((selection.start_col, selection.end_col), (1, 2));
     }
 
     #[test]

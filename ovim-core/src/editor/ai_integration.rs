@@ -191,7 +191,7 @@ impl Editor {
         let rope = self.buffer().rope();
         let rope_len = rope.len_chars();
 
-        let (start_char, end_char) = match self.mode() {
+        let (start_col, end_col, start_char, end_char) = match self.mode() {
             Mode::VisualLine => {
                 let start = rope.line_to_char(start_line).min(rope_len);
                 let end = if end_line + 1 < self.buffer().raw_line_count() {
@@ -199,12 +199,23 @@ impl Editor {
                 } else {
                     rope_len
                 };
-                (start, end.min(rope_len))
+                let end_col =
+                    crate::unicode::grapheme_count(&crate::display::line_content(rope, end_line));
+                (0, end_col, start, end.min(rope_len))
             }
             _ => {
-                let start = (rope.line_to_char(start_line) + start_col).min(rope_len);
-                let end = (rope.line_to_char(end_line) + end_col + 1).min(rope_len);
-                (start, end)
+                let start_line_text = crate::display::line_content(rope, start_line);
+                let end_line_text = crate::display::line_content(rope, end_line);
+                let end_col = end_col.saturating_add(1);
+                let start = rope.line_to_char(start_line)
+                    + crate::unicode::grapheme_to_char_col(
+                        &start_line_text,
+                        GraphemeCol(start_col),
+                    )
+                    .0;
+                let end = rope.line_to_char(end_line)
+                    + crate::unicode::grapheme_to_char_col(&end_line_text, GraphemeCol(end_col)).0;
+                (start_col, end_col, start.min(rope_len), end.min(rope_len))
             }
         };
 
@@ -1083,8 +1094,11 @@ impl Editor {
         let rope = self.buffer().rope();
         let clamped = abs_char.min(rope.len_chars());
         let line = rope.char_to_line(clamped);
-        let col = clamped.saturating_sub(rope.line_to_char(line));
-        (line, col)
+        let char_col = clamped.saturating_sub(rope.line_to_char(line));
+        let line_text = crate::display::line_content(rope, line);
+        let grapheme_col =
+            crate::unicode::char_to_grapheme_col(&line_text, crate::unicode::CharCol(char_col));
+        (line, grapheme_col.0)
     }
 
     fn slice_text_by_chars(&self, start_char: usize, end_char: usize) -> Option<String> {
@@ -1194,6 +1208,8 @@ mod tests {
     };
     use crate::ai::{AiJobResult, AiProviderKind, EditFormat};
     use crate::edit::Edit;
+    use crate::mode::Mode;
+    use crate::unicode::GraphemeCol;
     use std::time::Instant;
 
     #[test]
@@ -1252,6 +1268,33 @@ mod tests {
         }];
         // Cursor inside deleted span should clamp to deletion start.
         assert_eq!(remap_abs_char_through_edits(13, &edits), 10);
+    }
+
+    #[test]
+    fn visual_ai_selection_uses_half_open_grapheme_columns() {
+        let mut editor = Editor::with_content("a👨‍👩‍👧‍👦b\n");
+        editor.set_visual_start(0, 1);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, GraphemeCol(1));
+        editor.set_mode(Mode::Visual);
+
+        assert!(editor.capture_ai_selection_from_visual().unwrap());
+
+        let selection = editor.ai_state.active_selection.as_ref().unwrap();
+        assert_eq!(selection.selected_text, "👨‍👩‍👧‍👦");
+        assert_eq!((selection.start_col, selection.end_col), (1, 2));
+        assert_eq!((selection.start_char, selection.end_char), (1, 8));
+    }
+
+    #[test]
+    fn absolute_char_cursor_conversion_returns_grapheme_column() {
+        let mut editor = Editor::with_content("a👨‍👩‍👧‍👦b\n");
+
+        editor.set_cursor_from_abs_char(8);
+
+        assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2));
     }
 
     #[test]
