@@ -902,7 +902,12 @@ mod tests {
         assert!(!dir.path().join("cancelled-marker").exists());
     }
 
-    #[cfg(unix)]
+    // macOS-only: the killpg(pgid, 0) probe below detects the "group empty
+    // while leader is an un-reaped zombie" window, and only BSD/macOS drop
+    // zombies from process-group signalling. Linux keeps the zombie leader
+    // signalable, so the probe never observes the window there (the kernel
+    // also keeps the pgid reserved, so the underlying hazard cannot occur).
+    #[cfg(target_os = "macos")]
     #[test]
     fn cancelled_drain_with_group_escaped_descendant_resolves_without_stray_signals() {
         // Needs an interpreter that can setsid() away from the shell's

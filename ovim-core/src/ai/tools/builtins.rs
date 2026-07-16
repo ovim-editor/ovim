@@ -1339,18 +1339,28 @@ fn handle_list_files(args: &serde_json::Value, ctx: &ToolExecutionContext) -> To
             continue;
         }
         files.push(rel_path);
-        if files.len() >= max_results {
-            break;
-        }
     }
 
     if files.is_empty() {
         return ToolResult::Success("No files found.".to_string());
     }
 
+    // Sort before capping so truncation keeps a deterministic (alphabetical)
+    // subset instead of whatever order the directory walk produced.
+    let total = files.len();
     files.sort();
+    files.truncate(max_results);
+
     let mut output = String::new();
-    output.push_str(&format!("{} file(s):\n", files.len()));
+    if total > files.len() {
+        output.push_str(&format!(
+            "{} file(s), showing first {} alphabetically (use path or max_results to narrow):\n",
+            total,
+            files.len()
+        ));
+    } else {
+        output.push_str(&format!("{} file(s):\n", files.len()));
+    }
     for f in &files {
         output.push_str(f);
         output.push('\n');

@@ -1870,6 +1870,9 @@ mod tests {
                 .expect("open chat");
             set_active_profile_project_scope(&mut editor);
             editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+            // Editor::default() loads the developer's real AI config; pin the
+            // approval mode so the test doesn't depend on the host machine.
+            editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
 
             let tool_call = ToolCallInfo {
                 id: "call_edit_other".to_string(),
@@ -2775,6 +2778,9 @@ mod tests {
             })
             .expect("open chat");
         set_active_profile_project_scope(&mut editor);
+        // Pin the approval mode; Editor::default() loads the developer's real
+        // AI config, and AlwaysPrompt would fail this test with an approval.
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
 
         let list_call = ToolCallInfo {
             id: "call_list".to_string(),
