@@ -355,7 +355,7 @@ impl TextObjects {
         let quote_positions: Vec<usize> = chars
             .iter()
             .enumerate()
-            .filter(|(i, &c)| c == quote_char && !is_escaped(*i))
+            .filter(|&(i, &c)| c == quote_char && !is_escaped(i))
             .map(|(i, _)| i)
             .collect();
 

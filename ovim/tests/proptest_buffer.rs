@@ -539,7 +539,7 @@ proptest! {
         for (i, op) in ops.iter().enumerate() {
             // Apply operation
             match op {
-                BufferOp::Insert { line, col, ref text } => {
+                BufferOp::Insert { line, col, text } => {
                     buffer.insert_text_at(*line, CharCol(*col), text);
                 }
                 BufferOp::Delete { start_line, start_col, end_line, end_col } => {

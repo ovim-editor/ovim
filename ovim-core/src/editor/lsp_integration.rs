@@ -1391,6 +1391,10 @@ impl Editor {
 
         self.refresh_current_lsp_sync_versions().await;
 
+        // Apply publications held during the post-edit settle window. Deferring
+        // rather than discarding ensures an empty update can clear old errors.
+        lsp_manager.apply_deferred_diagnostics().await;
+
         // Transfer cross-thread signal to the TrackedSlot's generation counter.
         // diagnostics_changed() is consumed-on-read (AtomicBool swap), but
         // invalidate() is a monotonic counter that can never be lost.

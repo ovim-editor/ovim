@@ -1,7 +1,7 @@
 pub mod auto_classifier;
 pub mod auto_mode;
-pub mod chat_types;
 pub mod change_set;
+pub mod chat_types;
 mod codex_app_server;
 mod codex_inference;
 mod config;

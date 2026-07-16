@@ -628,6 +628,10 @@ impl LspManager {
         self.last_sent_versions.lock().await.remove(&uri);
         self.change_debouncers.remove(&uri);
         self.last_local_edit.lock().await.remove(&uri);
+        self.deferred_diagnostics
+            .lock()
+            .await
+            .retain(|(pending_uri, _), _| pending_uri != &uri);
 
         Ok(())
     }

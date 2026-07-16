@@ -11,6 +11,7 @@ use ovim::lsp::companion_server_id;
 use ovim::lsp::uri_from_file_path;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -347,6 +348,11 @@ pub async fn initialize_lsp_for_file(editor: &mut Editor, file_path: &str) {
 }
 
 const KNOWN_FAILURE_REPAIR_COOLDOWN: Duration = Duration::from_secs(300);
+static HEADLESS_MODE: AtomicBool = AtomicBool::new(false);
+
+pub fn set_headless_mode(headless: bool) {
+    HEADLESS_MODE.store(headless, Ordering::Relaxed);
+}
 
 fn auto_install_on_missing_enabled(config: &AutoInstallConfig) -> bool {
     !matches!(config.policy, AutoInstallPolicy::ManualOnly)
@@ -360,12 +366,7 @@ fn is_auto_install_allowed_for_current_mode(config: &AutoInstallConfig) -> bool 
 }
 
 fn is_headless_mode() -> bool {
-    std::env::var("OVIM_HEADLESS")
-        .map(|value| {
-            let value = value.trim();
-            value == "1" || value.eq_ignore_ascii_case("true") || value.eq_ignore_ascii_case("yes")
-        })
-        .unwrap_or(false)
+    HEADLESS_MODE.load(Ordering::Relaxed)
 }
 
 fn should_attempt_known_failure_repair(

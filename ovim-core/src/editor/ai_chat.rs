@@ -948,7 +948,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn lost_durable_lease_blocks_approved_shell_effect() {
+    async fn another_editor_opening_the_chat_does_not_block_an_active_shell_effect() {
         let dir = tempfile::tempdir().unwrap();
         let repo = dir.path().join("repo");
         std::fs::create_dir_all(&repo).unwrap();
@@ -957,8 +957,9 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let runs = crate::run_log::RunStorageLayout::new(dir.path().join("runs"));
         let mut editor = Editor::default();
-        editor.ai_state =
-            Box::new(super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap());
+        editor.ai_state = Box::new(
+            super::super::ai_state::AiState::with_run_storage_layout(runs.clone()).unwrap(),
+        );
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("create the marker").unwrap();
@@ -968,36 +969,58 @@ mod tests {
             arguments: serde_json::json!({"command": "touch effect-marker"}),
         };
         let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
-        let key = editor.ai_chat_conversation_key();
-        let binding = editor.ai_state.durable_chat_bindings.get(&key).unwrap();
-        let run_id = binding.binding.run_id.clone();
-        let services = editor.ai_state.durable_runs.as_ref().unwrap();
-        let owner = services.owner.clone();
-        services.catalog.release_lease(&run_id, &owner).unwrap();
-        editor
+        let first_run = editor
             .ai_state
             .durable_chat_bindings
-            .get_mut(&key)
+            .get(&editor.ai_chat_conversation_key())
             .unwrap()
-            .lease_renewed_at = std::time::Instant::now() - std::time::Duration::from_secs(60);
+            .binding
+            .run_id
+            .clone();
+
+        let mut second = Editor::default();
+        second.ai_state =
+            Box::new(super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap());
+        second.open_file(&file).unwrap();
+        open_test_chat(&mut second);
+        let second_run = second
+            .ai_state
+            .durable_chat_bindings
+            .get(&second.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .run_id
+            .clone();
+        assert_ne!(first_run, second_run);
 
         let (response_tx, response_rx) = tokio::sync::oneshot::channel();
         editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx, None, false);
 
-        assert!(response_rx.await.unwrap().is_err());
-        assert!(!repo.join("effect-marker").exists());
-        let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
-        assert!(!events
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .is_some()
+        {
+            editor.poll_pending_ai_chat_job();
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell did not finish"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(response_rx.await.unwrap().is_ok());
+        assert!(repo.join("effect-marker").exists());
+        let events = editor.ai_state.agent_runtime.events(&first_run).unwrap();
+        assert!(events
             .iter()
             .any(|event| matches!(event.kind, EventKind::ToolStarted(_))));
         assert!(events
             .iter()
             .any(|event| matches!(event.kind, EventKind::ToolResult(_))));
-        assert!(events.iter().any(|event| matches!(
-            &event.kind,
-            EventKind::TurnLifecycle(lifecycle)
-                if lifecycle.state == TurnLifecycleState::Failed
-        )));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

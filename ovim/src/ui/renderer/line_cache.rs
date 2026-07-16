@@ -7,6 +7,36 @@
 
 use ratatui::text::Line;
 use std::collections::HashMap;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub(crate) struct ChatBubbleCacheKey {
+    pub conversation_id: u64,
+    pub node_id: u64,
+    pub panel_width: usize,
+    pub selected: bool,
+    pub allow_edits: bool,
+    pub thinking_expanded: bool,
+    pub child_count: usize,
+    pub branch_position: Option<(usize, usize)>,
+    pub theme_hash: u64,
+    pub terminal_image_support: bool,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedChatImage {
+    pub row: usize,
+    pub x: u16,
+    pub width: u16,
+    pub height: u16,
+    pub path: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct CachedChatBubble {
+    pub lines: Vec<Line<'static>>,
+    pub images: Vec<CachedChatImage>,
+}
 
 /// Key identifying a cached rendered line.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -63,6 +93,7 @@ struct CachedLine {
 ///   are rendered fresh each frame (marked `is_stable: false`).
 pub struct LineRenderCache {
     entries: HashMap<usize, (LineCacheKey, CachedLine)>,
+    chat_bubbles: HashMap<ChatBubbleCacheKey, CachedChatBubble>,
     /// Buffer version from the last render pass
     last_buffer_version: usize,
     /// Capacity limit to prevent unbounded growth
@@ -71,6 +102,8 @@ pub struct LineRenderCache {
     pub hits: usize,
     /// Stats: cache misses this frame
     pub misses: usize,
+    pub chat_hits: usize,
+    pub chat_misses: usize,
 }
 
 impl Default for LineRenderCache {
@@ -83,10 +116,13 @@ impl LineRenderCache {
     pub fn new() -> Self {
         Self {
             entries: HashMap::with_capacity(256),
+            chat_bubbles: HashMap::with_capacity(128),
             last_buffer_version: usize::MAX, // force miss on first frame
             max_entries: 1024,
             hits: 0,
             misses: 0,
+            chat_hits: 0,
+            chat_misses: 0,
         }
     }
 
@@ -99,6 +135,26 @@ impl LineRenderCache {
     pub fn reset_stats(&mut self) {
         self.hits = 0;
         self.misses = 0;
+        self.chat_hits = 0;
+        self.chat_misses = 0;
+    }
+
+    pub(crate) fn get_chat_bubble(&mut self, key: &ChatBubbleCacheKey) -> Option<CachedChatBubble> {
+        let cached = self.chat_bubbles.get(key).cloned();
+        if cached.is_some() {
+            self.chat_hits += 1;
+        } else {
+            self.chat_misses += 1;
+        }
+        cached
+    }
+
+    pub(crate) fn insert_chat_bubble(&mut self, key: ChatBubbleCacheKey, bubble: CachedChatBubble) {
+        const MAX_CHAT_BUBBLES: usize = 512;
+        if self.chat_bubbles.len() >= MAX_CHAT_BUBBLES {
+            self.chat_bubbles.clear();
+        }
+        self.chat_bubbles.insert(key, bubble);
     }
 
     /// Check if a rendered line is cached and still valid.

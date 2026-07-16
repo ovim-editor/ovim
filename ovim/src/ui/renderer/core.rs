@@ -908,7 +908,7 @@ impl Renderer {
 
         // Render chat panel (if in AiChat mode)
         if let Some(chat_area) = areas.chat_area {
-            super::ai_chat::render_chat_panel(frame, editor, chat_area, &theme);
+            super::ai_chat::render_chat_panel_cached(frame, editor, chat_area, &theme, line_cache);
             let chat_area = crate::key_convert::convert_ratatui_rect(chat_area);
             editor.render_cache.last_chat_area = Some(chat_area);
             editor.render_cache.ai_chat_separator_area = Some(ovim_core::Rect {

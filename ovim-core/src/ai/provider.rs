@@ -987,6 +987,14 @@ fn read_api_key(
     profile: &AiProfileConfig,
     registry: &HashMap<String, ApiKeyConfig>,
 ) -> Result<String> {
+    read_api_key_with(profile, registry, &read_env_var_with_diagnostics)
+}
+
+fn read_api_key_with(
+    profile: &AiProfileConfig,
+    registry: &HashMap<String, ApiKeyConfig>,
+    read_env: &dyn Fn(&str) -> Result<String>,
+) -> Result<String> {
     // If the profile references a named key in the registry, resolve it.
     if let Some(key_name) = &profile.api_key {
         let key_config = registry.get(key_name).ok_or_else(|| {
@@ -998,7 +1006,7 @@ fn read_api_key(
                 key_name,
             )
         })?;
-        return resolve_api_key_config(key_name, key_config);
+        return resolve_api_key_config(key_name, key_config, read_env);
     }
 
     // Fallback: use api_key_env (existing behavior).
@@ -1013,18 +1021,22 @@ fn read_api_key(
         })?,
     };
 
-    read_env_var_with_diagnostics(&env_var_name)
+    read_env(&env_var_name)
 }
 
 /// Resolve an API key from a registry entry: try env_var first, then file.
-fn resolve_api_key_config(key_name: &str, config: &ApiKeyConfig) -> Result<String> {
+fn resolve_api_key_config(
+    key_name: &str,
+    config: &ApiKeyConfig,
+    read_env: &dyn Fn(&str) -> Result<String>,
+) -> Result<String> {
     if let Some(ref env_var) = config.env_var {
-        if let Ok(val) = std::env::var(env_var) {
+        if let Ok(val) = read_env(env_var) {
             return Ok(val);
         }
         // If file is also set, fall through to try it.
         if config.file.is_none() {
-            return read_env_var_with_diagnostics(env_var);
+            return read_env(env_var);
         }
     }
 
@@ -1504,10 +1516,11 @@ mod tests {
         let mut profile = test_profile(AiProviderKind::OpenAi);
         profile.api_key = Some("test_key".to_string());
 
-        // Set the env var, read the key, then clean up.
-        std::env::set_var("OVIM_TEST_API_KEY_12345", "sk-secret");
-        let result = read_api_key(&profile, &registry);
-        std::env::remove_var("OVIM_TEST_API_KEY_12345");
+        let result = read_api_key_with(&profile, &registry, &|name| {
+            (name == "OVIM_TEST_API_KEY_12345")
+                .then(|| "sk-secret".to_string())
+                .ok_or_else(|| anyhow!("missing test environment variable `{name}`"))
+        });
 
         assert_eq!(result.unwrap(), "sk-secret");
     }
@@ -1534,9 +1547,11 @@ mod tests {
         profile.api_key = None;
         profile.api_key_env = Some("OVIM_TEST_FALLBACK_KEY_67890".to_string());
 
-        std::env::set_var("OVIM_TEST_FALLBACK_KEY_67890", "sk-fallback");
-        let result = read_api_key(&profile, &registry);
-        std::env::remove_var("OVIM_TEST_FALLBACK_KEY_67890");
+        let result = read_api_key_with(&profile, &registry, &|name| {
+            (name == "OVIM_TEST_FALLBACK_KEY_67890")
+                .then(|| "sk-fallback".to_string())
+                .ok_or_else(|| anyhow!("missing test environment variable `{name}`"))
+        });
 
         assert_eq!(result.unwrap(), "sk-fallback");
     }

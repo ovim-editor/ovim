@@ -10,10 +10,12 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, Paragraph},
     Frame,
 };
+use std::hash::{Hash, Hasher};
 use unicode_width::UnicodeWidthChar;
 
 pub use super::ai_chat_layout::compute_chat_split;
 use super::ai_chat_layout::ChatPanelLayout;
+use super::line_cache::{CachedChatBubble, CachedChatImage, ChatBubbleCacheKey, LineRenderCache};
 
 // ---------------------------------------------------------------------------
 // Colors (pub(crate) so conversation_tree can reuse them)
@@ -63,7 +65,34 @@ const TOOL_BG_OTHER: Color = Color::Rgb(36, 40, 50);
 // ---------------------------------------------------------------------------
 
 /// Render the full chat panel.
+#[cfg(test)]
 pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect, theme: &Theme) {
+    render_chat_panel_impl(frame, editor, chat_area, theme, None);
+}
+
+pub fn render_chat_panel_cached(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    chat_area: Rect,
+    theme: &Theme,
+    cache: &mut LineRenderCache,
+) {
+    let started = std::time::Instant::now();
+    let hits_before = cache.chat_hits;
+    let misses_before = cache.chat_misses;
+    render_chat_panel_impl(frame, editor, chat_area, theme, Some(cache));
+    editor.render_cache.ai_chat_last_render_micros = started.elapsed().as_micros();
+    editor.render_cache.ai_chat_last_cache_hits = cache.chat_hits.saturating_sub(hits_before);
+    editor.render_cache.ai_chat_last_cache_misses = cache.chat_misses.saturating_sub(misses_before);
+}
+
+fn render_chat_panel_impl(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    chat_area: Rect,
+    theme: &Theme,
+    mut cache: Option<&mut LineRenderCache>,
+) {
     editor.render_cache.ai_chat_interactions.begin_frame();
     editor.render_cache.ai_chat_image_thumbnails.clear();
     let Some(layout) = ChatPanelLayout::resolve(
@@ -90,7 +119,13 @@ pub fn render_chat_panel(frame: &mut Frame, editor: &mut Editor, chat_area: Rect
         .map(|image| image.path.clone())
         .collect::<Vec<_>>();
     if layout.messages_area.height > 0 {
-        render_message_history(frame, editor, layout.messages_area, theme);
+        render_message_history(
+            frame,
+            editor,
+            layout.messages_area,
+            theme,
+            cache.as_deref_mut(),
+        );
     } else {
         editor.render_cache.ai_chat_interactions.history = None;
     }
@@ -308,7 +343,13 @@ fn render_chat_image_gallery(
 // Message History
 // ---------------------------------------------------------------------------
 
-fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, theme: &Theme) {
+fn render_message_history(
+    frame: &mut Frame,
+    editor: &mut Editor,
+    area: Rect,
+    theme: &Theme,
+    mut cache: Option<&mut LineRenderCache>,
+) {
     editor.render_cache.ai_chat_interactions.history =
         Some(crate::key_convert::convert_ratatui_rect(area));
     editor.render_cache.ai_chat_last_queued_row_spans.clear();
@@ -354,6 +395,10 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
         .conversation()
         .map(|c| c.node_ids_for_active_branch().to_vec())
         .unwrap_or_default();
+    let conversation_id = editor
+        .conversation()
+        .map(|conversation| conversation.instance_id())
+        .unwrap_or(0);
 
     // Render messages bottom-up with scroll
     let mut rendered_lines: Vec<(Line, bool)> = Vec::new(); // (line, is_bubble_border)
@@ -427,17 +472,80 @@ fn render_message_history(frame: &mut Frame, editor: &mut Editor, area: Rect, th
                 .and_then(|conversation| conversation.sibling_navigation(id))
         });
 
-        let bubble = render_chat_bubble(
-            msg,
-            panel_width,
-            is_selected,
-            allow_edits,
-            is_thinking_expanded,
-            child_count,
-            branch_navigation.map(|(position, count, _, _)| (position, count)),
-            theme,
-            editor.render_cache.terminal_image_support,
-        );
+        let branch_position = branch_navigation.map(|(position, count, _, _)| (position, count));
+        let terminal_image_support = editor.render_cache.terminal_image_support;
+        let bubble = if let (Some(node_id), Some(cache)) = (node_id, cache.as_deref_mut()) {
+            let key = chat_bubble_cache_key(
+                conversation_id,
+                node_id,
+                panel_width,
+                is_selected,
+                allow_edits,
+                is_thinking_expanded,
+                child_count,
+                branch_position,
+                theme,
+                terminal_image_support,
+            );
+            if let Some(cached) = cache.get_chat_bubble(&key) {
+                ChatBubbleRender {
+                    lines: cached.lines,
+                    images: cached
+                        .images
+                        .into_iter()
+                        .map(|image| BubbleImagePlacement {
+                            row: image.row,
+                            x: image.x,
+                            width: image.width,
+                            height: image.height,
+                            path: image.path,
+                        })
+                        .collect(),
+                }
+            } else {
+                let bubble = render_chat_bubble(
+                    msg,
+                    panel_width,
+                    is_selected,
+                    allow_edits,
+                    is_thinking_expanded,
+                    child_count,
+                    branch_position,
+                    theme,
+                    terminal_image_support,
+                );
+                cache.insert_chat_bubble(
+                    key,
+                    CachedChatBubble {
+                        lines: bubble.lines.clone(),
+                        images: bubble
+                            .images
+                            .iter()
+                            .map(|image| CachedChatImage {
+                                row: image.row,
+                                x: image.x,
+                                width: image.width,
+                                height: image.height,
+                                path: image.path.clone(),
+                            })
+                            .collect(),
+                    },
+                );
+                bubble
+            }
+        } else {
+            render_chat_bubble(
+                msg,
+                panel_width,
+                is_selected,
+                allow_edits,
+                is_thinking_expanded,
+                child_count,
+                branch_position,
+                theme,
+                terminal_image_support,
+            )
+        };
         let msg_row_start = rendered_lines.len();
         if let Some((position, count, previous, next)) = branch_navigation {
             branch_controls.push(BranchRenderControl {
@@ -1050,6 +1158,35 @@ struct HistoryImagePlacement {
     width: u16,
     height: u16,
     path: std::path::PathBuf,
+}
+
+fn chat_bubble_cache_key(
+    conversation_id: u64,
+    node_id: u64,
+    panel_width: usize,
+    selected: bool,
+    allow_edits: bool,
+    thinking_expanded: bool,
+    child_count: usize,
+    branch_position: Option<(usize, usize)>,
+    theme: &Theme,
+    terminal_image_support: bool,
+) -> ChatBubbleCacheKey {
+    let mut theme_hasher = std::collections::hash_map::DefaultHasher::new();
+    theme.scheme().name.hash(&mut theme_hasher);
+
+    ChatBubbleCacheKey {
+        conversation_id,
+        node_id,
+        panel_width,
+        selected,
+        allow_edits,
+        thinking_expanded,
+        child_count,
+        branch_position,
+        theme_hash: theme_hasher.finish(),
+        terminal_image_support,
+    }
 }
 
 struct ChatBubbleRender {
@@ -1889,7 +2026,7 @@ mod tests {
     use super::{
         chat_cursor_info, compute_chat_split, highlight_chat_selection,
         is_hidden_tool_only_assistant, render_queued_input_row, render_tool_event_details,
-        render_tool_event_row, styled_word_wrap_line, word_wrap,
+        render_tool_event_row, styled_word_wrap_line, word_wrap, LineRenderCache,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2203,6 +2340,56 @@ mod tests {
             .unwrap();
 
         assert!(editor.render_cache.ai_chat_image_thumbnails.is_empty());
+    }
+
+    #[test]
+    fn completed_chat_bubbles_are_reused_across_frames() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        let key = (chat.origin_buffer_id, chat.opts.name.clone());
+        let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+        conversation.append_user_message("Explain this".into());
+        conversation.append_assistant_message(
+            "A **markdown** response with `code`.".into(),
+            "model".into(),
+        );
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+        let mut cache = LineRenderCache::new();
+
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel_cached(
+                    frame,
+                    &mut editor,
+                    Rect::new(40, 0, 40, 22),
+                    &theme,
+                    &mut cache,
+                )
+            })
+            .unwrap();
+        assert!(cache.chat_misses >= 2);
+
+        cache.reset_stats();
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel_cached(
+                    frame,
+                    &mut editor,
+                    Rect::new(40, 0, 40, 22),
+                    &theme,
+                    &mut cache,
+                )
+            })
+            .unwrap();
+
+        assert!(cache.chat_hits >= 2);
+        assert_eq!(cache.chat_misses, 0);
     }
 
     #[test]

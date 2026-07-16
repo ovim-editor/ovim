@@ -104,7 +104,7 @@ async fn diagnostics_appear_without_edits_on_initial_load() -> Result<()> {
         r#"[package]
 name = "ovim_diag_test"
 version = "0.1.0"
-edition = "2021"
+edition = "2024"
 "#,
     )
     .context("write Cargo.toml")?;

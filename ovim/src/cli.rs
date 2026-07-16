@@ -322,7 +322,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to check (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -333,7 +333,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -344,7 +344,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -355,7 +355,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -366,7 +366,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -377,7 +377,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -388,7 +388,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -401,7 +401,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use as workspace/root hint (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -412,7 +412,7 @@ pub enum LspCommand {
         session: Option<String>,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -426,7 +426,7 @@ pub enum LspCommand {
         timeout: u64,
 
         /// File to use (supports FILE:LINE:COL syntax)
-        #[arg(value_name = "FILE")]
+        #[arg(value_name = "FILE", conflicts_with = "session")]
         file: Option<String>,
     },
 
@@ -570,5 +570,19 @@ mod tests {
 
         let resumed = Cli::try_parse_from(["ovim", "--resume"]).unwrap();
         assert!(resumed.resume);
+    }
+
+    #[test]
+    fn lsp_file_and_session_are_mutually_exclusive() {
+        let result = Cli::try_parse_from([
+            "ovim",
+            "lsp",
+            "hover",
+            "--session",
+            "dev",
+            "src/main.rs:10:5",
+        ]);
+
+        assert!(result.is_err());
     }
 }

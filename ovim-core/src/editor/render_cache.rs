@@ -79,6 +79,12 @@ pub struct RenderCache {
     pub ai_chat_interactions: ChatInteractionGeometry,
     /// Cached AI chat total rendered row count from last render pass.
     pub ai_chat_last_total_rows: usize,
+    /// Wall-clock time spent rendering the chat panel on the last frame.
+    pub ai_chat_last_render_micros: u128,
+    /// Completed-message bubble cache hits on the last chat render.
+    pub ai_chat_last_cache_hits: usize,
+    /// Completed-message bubble cache misses on the last chat render.
+    pub ai_chat_last_cache_misses: usize,
     /// Cached visible chat row window start (inclusive) from last render.
     pub ai_chat_last_visible_start_row: usize,
     /// Cached visible chat row window end (exclusive) from last render.

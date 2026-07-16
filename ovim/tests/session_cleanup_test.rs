@@ -1,22 +1,17 @@
 use anyhow::Result;
-use ovim::session::{cleanup_stale_sessions, SessionInfo};
+use ovim::session::{cleanup_stale_sessions_in, SessionInfo};
 use std::fs;
-use std::path::PathBuf;
-use std::sync::Mutex;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-// Global mutex to ensure session cleanup tests don't run in parallel
-// (they all operate on the same session directory)
-static TEST_MUTEX: Mutex<()> = Mutex::new(());
-
-fn with_temp_session_dir() -> Result<tempfile::TempDir> {
-    let dir = tempfile::tempdir()?;
-    std::env::set_var("OVIM_SESSION_DIR", dir.path());
-    Ok(dir)
-}
-
 /// Helper to create a fake session file for testing
-fn create_fake_session(name: &str, pid: u32, port: u16, age_secs: u64) -> Result<PathBuf> {
+fn create_fake_session(
+    session_dir: &Path,
+    name: &str,
+    pid: u32,
+    port: u16,
+    age_secs: u64,
+) -> Result<PathBuf> {
     use std::time::SystemTime;
 
     let started_at = SystemTime::now()
@@ -36,13 +31,12 @@ fn create_fake_session(name: &str, pid: u32, port: u16, age_secs: u64) -> Result
         viewport_height: None,
     };
 
-    session_info.write()?;
-    session_info.session_file_path()
+    session_info.write_to_dir(session_dir)?;
+    Ok(session_info.session_file_path_in(session_dir))
 }
 
 /// Helper to create a corrupted session file
-fn create_corrupted_session(name: &str) -> Result<PathBuf> {
-    let session_dir = SessionInfo::session_dir()?;
+fn create_corrupted_session(session_dir: &Path, name: &str) -> Result<PathBuf> {
     let path = session_dir.join(format!("{}.json", name));
 
     fs::write(&path, "{ invalid json }")?;
@@ -57,13 +51,11 @@ fn create_corrupted_session(name: &str) -> Result<PathBuf> {
 fn test_cleanup_stale_sessions() -> Result<()> {
     use std::time::SystemTime;
 
-    // Lock to prevent parallel test execution
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let _temp_dir = with_temp_session_dir()?;
+    let temp_dir = tempfile::tempdir()?;
+    let session_dir = temp_dir.path();
 
     // Create fake stale sessions directly (bypass list_all auto-cleanup)
     let fake_pid = 999999; // Very unlikely to exist
-    let session_dir = SessionInfo::session_dir()?;
 
     // Ensure session directory exists
     fs::create_dir_all(&session_dir)?;
@@ -121,7 +113,7 @@ fn test_cleanup_stale_sessions() -> Result<()> {
     assert!(path2.exists(), "Session 2 should exist before cleanup");
 
     // Run cleanup
-    let result = cleanup_stale_sessions(None, false)?;
+    let result = cleanup_stale_sessions_in(session_dir, None, false)?;
 
     // Should have removed the stale sessions
     assert!(
@@ -142,9 +134,8 @@ fn test_cleanup_expired_sessions() -> Result<()> {
     use std::process;
     use std::time::SystemTime;
 
-    // Lock to prevent parallel test execution
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let _temp_dir = with_temp_session_dir()?;
+    let temp_dir = tempfile::tempdir()?;
+    let session_dir = temp_dir.path();
 
     // Use current process PID and start time so it passes the "alive" check
     let our_pid = process::id();
@@ -166,11 +157,11 @@ fn test_cleanup_expired_sessions() -> Result<()> {
         viewport_width: None,
         viewport_height: None,
     };
-    old_session.write()?;
+    old_session.write_to_dir(session_dir)?;
 
     // Run cleanup with 7 day max age
     let max_age = Duration::from_secs(7 * 24 * 60 * 60);
-    let result = cleanup_stale_sessions(Some(max_age), false)?;
+    let result = cleanup_stale_sessions_in(session_dir, Some(max_age), false)?;
 
     // Should have removed at least the expired one
     assert!(
@@ -184,17 +175,16 @@ fn test_cleanup_expired_sessions() -> Result<()> {
 
 #[test]
 fn test_cleanup_corrupted_sessions() -> Result<()> {
-    // Lock to prevent parallel test execution
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let _temp_dir = with_temp_session_dir()?;
+    let temp_dir = tempfile::tempdir()?;
+    let session_dir = temp_dir.path();
 
     // Create corrupted session file
-    let path = create_corrupted_session("corrupted_test")?;
+    let path = create_corrupted_session(session_dir, "corrupted_test")?;
 
     assert!(path.exists(), "Corrupted file should exist before cleanup");
 
     // Run cleanup
-    let result = cleanup_stale_sessions(None, false)?;
+    let result = cleanup_stale_sessions_in(session_dir, None, false)?;
 
     // Should have removed the corrupted file
     assert!(
@@ -214,9 +204,8 @@ fn test_cleanup_corrupted_sessions() -> Result<()> {
 
 #[test]
 fn test_cleanup_dry_run() -> Result<()> {
-    // Lock to prevent parallel test execution
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let _temp_dir = with_temp_session_dir()?;
+    let temp_dir = tempfile::tempdir()?;
+    let session_dir = temp_dir.path();
 
     // Create a fake stale session with unique name
     let fake_pid = 999997;
@@ -228,7 +217,7 @@ fn test_cleanup_dry_run() -> Result<()> {
             .as_millis()
     );
 
-    let path = create_fake_session(&session_name, fake_pid, 8084, 0)?;
+    let path = create_fake_session(session_dir, &session_name, fake_pid, 8084, 0)?;
 
     // Verify it exists
     let exists_before = path.exists();
@@ -247,11 +236,11 @@ fn test_cleanup_dry_run() -> Result<()> {
             viewport_width: None,
             viewport_height: None,
         };
-        session_info.write()?;
+        session_info.write_to_dir(session_dir)?;
     }
 
     // Run cleanup in dry-run mode
-    let result = cleanup_stale_sessions(None, true)?;
+    let result = cleanup_stale_sessions_in(session_dir, None, true)?;
 
     // In dry run, count might be 0 if the session was already cleaned up during listing
     // The key test is that dry_run doesn't crash and returns valid results
@@ -261,22 +250,21 @@ fn test_cleanup_dry_run() -> Result<()> {
     );
 
     // Clean up for real
-    cleanup_stale_sessions(None, false)?;
+    cleanup_stale_sessions_in(session_dir, None, false)?;
 
     Ok(())
 }
 
 #[test]
 fn test_cleanup_no_stale_sessions() -> Result<()> {
-    // Lock to prevent parallel test execution
-    let _lock = TEST_MUTEX.lock().unwrap();
-    let _temp_dir = with_temp_session_dir()?;
+    let temp_dir = tempfile::tempdir()?;
+    let session_dir = temp_dir.path();
 
     // First, clean up any existing stale sessions
-    cleanup_stale_sessions(None, false)?;
+    cleanup_stale_sessions_in(session_dir, None, false)?;
 
     // Run cleanup again - should find nothing or very few
-    let result = cleanup_stale_sessions(None, false)?;
+    let result = cleanup_stale_sessions_in(session_dir, None, false)?;
 
     // Just verify it doesn't crash (we can't guarantee 0 because other tests might leave files)
     assert!(

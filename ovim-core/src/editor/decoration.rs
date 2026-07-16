@@ -914,11 +914,11 @@ mod tests {
     fn no_op_replace_does_not_bump_generation() {
         let rope = test_rope();
         let mut map = DecorationMap::new();
-        let gen = map.generation;
+        let generation = map.generation;
 
         map.replace_source(DecorationSource::Diagnostic, vec![], &rope);
 
-        assert_eq!(map.generation, gen);
+        assert_eq!(map.generation, generation);
     }
 
     #[test]
@@ -1042,11 +1042,11 @@ mod tests {
     #[test]
     fn clear_on_empty_map_is_noop() {
         let mut map = DecorationMap::new();
-        let gen = map.generation;
+        let generation = map.generation;
 
         map.clear();
 
-        assert_eq!(map.generation, gen);
+        assert_eq!(map.generation, generation);
     }
 
     #[test]

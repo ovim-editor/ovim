@@ -130,13 +130,19 @@ impl TalkThroughChangesProposal {
 
         let mut operations_by_id = HashMap::new();
         let mut source_paths = HashSet::new();
-        let mut affected_paths = HashSet::new();
+        let mut affected_paths = HashMap::new();
         let mut payload_bytes = 0usize;
 
         for operation in &self.change_set.operations {
             let id = operation.id().trim();
             if id.is_empty() {
                 return Err("operation IDs must not be empty".to_string());
+            }
+            if id != operation.id() {
+                return Err(format!(
+                    "operation ID `{}` must not have leading or trailing whitespace",
+                    operation.id()
+                ));
             }
             if operations_by_id.insert(id, operation).is_some() {
                 return Err(format!("duplicate operation ID `{id}`"));
@@ -150,7 +156,18 @@ impl TalkThroughChangesProposal {
                     operation.source_path()
                 ));
             }
-            affected_paths.extend(operation.paths());
+            for path in operation.paths() {
+                if let Some(previous_id) = affected_paths.insert(path, id) {
+                    if previous_id == id {
+                        return Err(format!(
+                            "operation `{id}` uses `{path}` as both source and destination"
+                        ));
+                    }
+                    return Err(format!(
+                        "operations `{previous_id}` and `{id}` both affect path `{path}`"
+                    ));
+                }
+            }
             payload_bytes = payload_bytes.saturating_add(operation.payload_bytes());
         }
 
@@ -312,11 +329,58 @@ mod tests {
                 path: "src/handler.rs".to_string(),
                 expected_revision: 4,
             });
-        assert!(
-            proposal
-                .validate_structure()
-                .unwrap_err()
-                .contains("multiple content-changing operations target base path")
+        assert!(proposal
+            .validate_structure()
+            .unwrap_err()
+            .contains("multiple content-changing operations target base path"));
+    }
+
+    #[test]
+    fn rejects_destination_collisions_between_operations() {
+        let mut proposal = proposal();
+        proposal
+            .change_set
+            .operations
+            .push(ChangeSetOperation::Rename {
+                id: "rename-handler".to_string(),
+                from_path: "src/old_handler.rs".to_string(),
+                to_path: "src/validator.rs".to_string(),
+                expected_revision: 2,
+            });
+
+        assert_eq!(
+            proposal.validate_structure().unwrap_err(),
+            "operations `create-validator` and `rename-handler` both affect path `src/validator.rs`"
+        );
+    }
+
+    #[test]
+    fn rejects_rename_to_the_same_path() {
+        let mut proposal = proposal();
+        proposal.change_set.operations[0] = ChangeSetOperation::Rename {
+            id: "rename-handler".to_string(),
+            from_path: "src/handler.rs".to_string(),
+            to_path: "src/handler.rs".to_string(),
+            expected_revision: 4,
+        };
+
+        assert_eq!(
+            proposal.validate_structure().unwrap_err(),
+            "operation `rename-handler` uses `src/handler.rs` as both source and destination"
+        );
+    }
+
+    #[test]
+    fn rejects_operation_ids_with_outer_whitespace() {
+        let mut proposal = proposal();
+        let ChangeSetOperation::Modify { id, .. } = &mut proposal.change_set.operations[0] else {
+            panic!("expected modify operation");
+        };
+        *id = " modify-handler ".to_string();
+
+        assert_eq!(
+            proposal.validate_structure().unwrap_err(),
+            "operation ID ` modify-handler ` must not have leading or trailing whitespace"
         );
     }
 
@@ -327,12 +391,10 @@ mod tests {
             panic!("expected change step");
         };
         *operation_id = "missing".to_string();
-        assert!(
-            proposal
-                .validate_structure()
-                .unwrap_err()
-                .contains("references unknown operation `missing`")
-        );
+        assert!(proposal
+            .validate_structure()
+            .unwrap_err()
+            .contains("references unknown operation `missing`"));
     }
 
     #[test]
@@ -352,11 +414,9 @@ mod tests {
             panic!("expected code step");
         };
         *end_line = Some(9);
-        assert!(
-            proposal
-                .validate_structure()
-                .unwrap_err()
-                .contains("end_line must be greater than or equal to start_line")
-        );
+        assert!(proposal
+            .validate_structure()
+            .unwrap_err()
+            .contains("end_line must be greater than or equal to start_line"));
     }
 }

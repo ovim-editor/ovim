@@ -73,9 +73,6 @@ impl Editor {
         &mut self,
         user_message: &str,
     ) -> Result<PendingTurnRef, AgentRuntimeError> {
-        self.heartbeat_ai_chat_lease().map_err(|error| {
-            AgentRuntimeError::BindingMismatch(format!("durable run lease unavailable: {error}"))
-        })?;
         let locator = self.ai_runtime_conversation_locator();
         let branch = self
             .ai_state
@@ -253,12 +250,17 @@ impl Editor {
         let Some((_, branch)) = self.ai_state.agent_runtime.selected_branch(&entry.locator) else {
             return;
         };
+        let branch_id = branch.branch_id.clone();
         match services
             .catalog
-            .update_selected_branch(&entry.binding.key, branch.branch_id.clone())
+            .update_selected_branch(&entry.binding, branch_id.clone())
         {
-            Ok(Some(binding)) => entry.binding = binding,
-            Ok(None) => crate::log_warn!("agent_runtime", "catalog binding disappeared"),
+            Ok(true) => entry.binding.selected_branch_id = branch_id,
+            Ok(false) => {
+                // Another process started a newer run for this conversation.
+                // This editor keeps its immutable binding and remains usable.
+                entry.binding.selected_branch_id = branch_id;
+            }
             Err(error) => crate::log_warn!(
                 "agent_runtime",
                 "failed to persist selected agent branch: {error}"

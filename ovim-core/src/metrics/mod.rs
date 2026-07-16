@@ -207,7 +207,7 @@ lazy_static! {
 /// # Example
 ///
 /// ```rust
-/// let metrics_text = ovim::metrics::export_metrics();
+/// let metrics_text = ovim_core::metrics::export_metrics();
 /// println!("{}", metrics_text);
 /// ```
 ///

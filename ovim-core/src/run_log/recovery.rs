@@ -244,15 +244,15 @@ struct ToolFold {
 }
 
 /// Appends recovery facts; it never rewrites or deletes the crashed history.
-/// `lease_authorized` must only be true after the caller has established that
-/// no live owner can still append to this run.
+/// `exclusive_access_confirmed` must only be true after the caller has
+/// established that no live process can still append to this run.
 pub fn apply_recovery(
     plan: &RecoveryPlan,
     sink: &dyn RunEventSink,
-    lease_authorized: bool,
+    exclusive_access_confirmed: bool,
 ) -> Result<RecoveryReport, RecoveryError> {
-    if !lease_authorized {
-        return Err(RecoveryError::StaleOwnershipNotConfirmed);
+    if !exclusive_access_confirmed {
+        return Err(RecoveryError::ExclusiveAccessNotConfirmed);
     }
     let actual = sink.last_sequence(&plan.run_id)?;
     if actual != plan.observed_last_sequence {
@@ -494,7 +494,7 @@ fn run_is_active(state: &RunLifecycleState) -> bool {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecoveryError {
     Store(RunLogError),
-    StaleOwnershipNotConfirmed,
+    ExclusiveAccessNotConfirmed,
     PlanStale {
         expected: Option<u64>,
         actual: Option<u64>,
@@ -511,8 +511,8 @@ impl fmt::Display for RecoveryError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Store(error) => error.fmt(formatter),
-            Self::StaleOwnershipNotConfirmed => {
-                formatter.write_str("run recovery requires caller-confirmed stale ownership")
+            Self::ExclusiveAccessNotConfirmed => {
+                formatter.write_str("run recovery requires caller-confirmed exclusive access")
             }
             Self::PlanStale { expected, actual } => write!(
                 formatter,
@@ -705,13 +705,13 @@ mod tests {
     }
 
     #[test]
-    fn applying_without_stale_lease_authorization_writes_nothing() {
+    fn applying_without_exclusive_access_writes_nothing() {
         let (sink, run_id, _) = crashed_tool(false);
         let plan = RecoveryPlanner::new(sink.clone()).plan(&run_id).unwrap();
         let before = sink.events(&run_id).unwrap().len();
         assert_eq!(
             apply_recovery(&plan, sink.as_ref(), false).unwrap_err(),
-            RecoveryError::StaleOwnershipNotConfirmed
+            RecoveryError::ExclusiveAccessNotConfirmed
         );
         assert_eq!(sink.events(&run_id).unwrap().len(), before);
     }

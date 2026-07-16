@@ -92,39 +92,6 @@ impl Editor {
 
     /// Drain available streaming chunks. Returns true if state changed.
     pub fn poll_pending_ai_chat_job(&mut self) -> bool {
-        if self.ai_state.chat.as_ref().is_some_and(|chat| {
-            chat.waiting
-                || chat
-                    .pending_tool_approval
-                    .as_ref()
-                    .is_some_and(|pending| pending.dynamic_response.is_some())
-                || chat.pending_auto_mode_classification.is_some()
-                || chat.pending_shell_execution.is_some()
-                || chat.pending_web_execution.is_some()
-                || chat.pending_code_explanation.is_some()
-        }) {
-            if let Err(error) = self.heartbeat_ai_chat_lease() {
-                if self.fail_pending_shell_for_lost_lease(&error.to_string()) {
-                    return true;
-                }
-                if let Some(job) = self
-                    .ai_state
-                    .chat
-                    .as_mut()
-                    .and_then(|chat| chat.pending_job.take())
-                {
-                    job.task.abort();
-                }
-                self.ai_runtime_interrupt_turn(format!("durable run lease lost: {error}"));
-                if let Some(conversation) = self.conversation_mut() {
-                    conversation.append_error(format!(
-                        "Stopped agent because durable history ownership was lost: {error}"
-                    ));
-                }
-                self.clear_streaming_state();
-                return true;
-            }
-        }
         if self.poll_pending_auto_mode_classification() {
             return true;
         }
@@ -811,31 +778,6 @@ impl Editor {
         approved_once_root: Option<std::path::PathBuf>,
         tool_already_started: bool,
     ) {
-        if let Err(error) = self.heartbeat_ai_chat_lease() {
-            let result = crate::ai::tools::ToolResult::Error(format!(
-                "shell program was not executed because durable run ownership was lost: {error}"
-            ));
-            self.finish_dynamic_tool(&turn, &tool, &call, response, result);
-            self.fail_specific_dynamic_turn(
-                &turn,
-                format!("durable run ownership was lost: {error}"),
-            );
-            if let Some(job) = self
-                .ai_state
-                .chat
-                .as_mut()
-                .and_then(|chat| chat.pending_job.take())
-            {
-                job.task.abort();
-            }
-            if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.waiting = false;
-            }
-            self.set_lsp_status(format!(
-                "Blocked agent effect because durable run ownership was lost: {error}"
-            ));
-            return;
-        }
         if call.name == "bash" {
             let authorized =
                 self.ai_state
@@ -1133,48 +1075,6 @@ impl Editor {
         }
         self.set_lsp_status(String::new());
         self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
-    }
-
-    fn fail_pending_shell_for_lost_lease(&mut self, error: &str) -> bool {
-        let Some(pending) = self
-            .ai_state
-            .chat
-            .as_mut()
-            .and_then(|chat| chat.pending_shell_execution.take())
-        else {
-            return false;
-        };
-        pending.task.abort();
-        let unknown = format!(
-            "shell result and workspace effects are unknown because durable run ownership was lost: {error}"
-        );
-        if let Err(runtime_error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
-            &pending.runtime_turn,
-            &pending.runtime_tool,
-            unknown.clone(),
-        ) {
-            crate::log_warn!(
-                "agent_runtime",
-                "failed to record unknown shell outcome: {runtime_error}"
-            );
-        }
-        let _ = pending.dynamic_response.send(Err(unknown));
-        self.fail_specific_dynamic_turn(
-            &pending.runtime_turn,
-            format!("durable run ownership was lost: {error}"),
-        );
-        if let Some(job) = self
-            .ai_state
-            .chat
-            .as_mut()
-            .and_then(|chat| chat.pending_job.take())
-        {
-            job.task.abort();
-        }
-        self.set_lsp_status(format!(
-            "Stopped agent after durable run ownership was lost: {error}"
-        ));
-        true
     }
 
     fn fail_specific_dynamic_turn(

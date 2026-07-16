@@ -54,6 +54,14 @@ struct StoredDiagnostics {
     diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Clone, Debug)]
+struct DeferredDiagnostics {
+    diagnostics: Vec<Diagnostic>,
+    document_version: i32,
+    last_edit: Instant,
+    apply_after: Instant,
+}
+
 /// Maximum document size in bytes (10MB)
 /// Protects against OOM when opening/syncing large files
 const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
@@ -168,6 +176,11 @@ pub struct LspManager {
     /// it may refer to pre-change content and should be ignored.
     last_local_edit: Mutex<HashMap<Uri, Instant>>,
 
+    /// Latest unversioned diagnostics received during the post-edit settle window.
+    /// These are deferred rather than discarded so an empty publication can still
+    /// clear diagnostics from the previous document version.
+    deferred_diagnostics: Mutex<HashMap<(Uri, String), DeferredDiagnostics>>,
+
     /// Channel for receiving notifications from language servers (bounded to prevent memory issues)
     notification_tx: mpsc::Sender<LspNotification>,
     notification_rx: Mutex<mpsc::Receiver<LspNotification>>,
@@ -240,6 +253,7 @@ impl LspManager {
             document_versions: Mutex::new(HashMap::new()),
             last_sent_versions: Mutex::new(HashMap::new()),
             last_local_edit: Mutex::new(HashMap::new()),
+            deferred_diagnostics: Mutex::new(HashMap::new()),
             notification_tx,
             notification_rx: Mutex::new(notification_rx),
             change_debouncers: DashMap::new(),
@@ -780,14 +794,28 @@ impl LspManager {
 
                     // Unversioned diagnostics arriving too soon after local edits can
                     // still be for older content (server race with newer didChange).
+                    // Keep the latest publication and apply it after the settle window;
+                    // discarding it can leave old diagnostics cached forever when this
+                    // publication is the server's only clearing update.
                     let last_edit = self.last_local_edit.lock().await.get(&uri).copied();
                     if let Some(edit_time) = last_edit {
                         if edit_time.elapsed()
                             < Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS)
                         {
+                            let apply_after = edit_time
+                                + Duration::from_millis(UNVERSIONED_DIAGNOSTICS_SETTLE_MS);
+                            self.deferred_diagnostics.lock().await.insert(
+                                (uri.clone(), server_id.to_string()),
+                                DeferredDiagnostics {
+                                    diagnostics,
+                                    document_version: current_version,
+                                    last_edit: edit_time,
+                                    apply_after,
+                                },
+                            );
                             crate::lsp_debug!(
                                 "DIAGNOSTICS",
-                                "Dropping unversioned diagnostics (recent local edit): server={} elapsed_ms={} uri={}",
+                                "Deferring unversioned diagnostics (recent local edit): server={} elapsed_ms={} uri={}",
                                 server_id,
                                 edit_time.elapsed().as_millis(),
                                 uri.as_str()
@@ -798,6 +826,11 @@ impl LspManager {
                 }
             }
         }
+
+        self.deferred_diagnostics
+            .lock()
+            .await
+            .remove(&(uri.clone(), server_id.to_string()));
 
         let mut diags = self.diagnostics.lock().await;
         let uri_for_cache = uri.clone();
@@ -833,6 +866,46 @@ impl LspManager {
             cache.remove(&uri_for_cache);
         }
         self.diagnostics_changed.store(true, Ordering::SeqCst);
+    }
+
+    /// Apply unversioned diagnostics held during the post-edit settle window.
+    ///
+    /// The editor calls this once per tick. A deferred publication is discarded
+    /// only when a newer local edit superseded the document state it describes.
+    pub async fn apply_deferred_diagnostics(&self) {
+        let now = Instant::now();
+        let ready = {
+            let mut pending = self.deferred_diagnostics.lock().await;
+            let ready_keys: Vec<_> = pending
+                .iter()
+                .filter(|(_, value)| value.apply_after <= now)
+                .map(|(key, _)| key.clone())
+                .collect();
+
+            ready_keys
+                .into_iter()
+                .filter_map(|key| pending.remove(&key).map(|value| (key, value)))
+                .collect::<Vec<_>>()
+        };
+
+        for ((uri, server_id), deferred) in ready {
+            let current_version = self
+                .document_versions
+                .lock()
+                .await
+                .get(&uri)
+                .copied()
+                .unwrap_or(0);
+            let last_edit = self.last_local_edit.lock().await.get(&uri).copied();
+
+            if current_version != deferred.document_version || last_edit != Some(deferred.last_edit)
+            {
+                continue;
+            }
+
+            self.set_diagnostics(uri, &server_id, deferred.diagnostics, None)
+                .await;
+        }
     }
 
     /// Gets health information for all language servers
@@ -1031,6 +1104,46 @@ mod tests {
             .await;
 
         assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn deferred_empty_diagnostics_clear_previous_errors() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///stale.rs".parse().unwrap();
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", vec![Diagnostic::default()], None)
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+
+        manager
+            .document_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 2);
+        manager
+            .last_sent_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 2);
+        manager
+            .last_local_edit
+            .lock()
+            .await
+            .insert(uri.clone(), Instant::now());
+
+        manager
+            .set_diagnostics(uri.clone(), "rust", Vec::new(), None)
+            .await;
+        assert_eq!(manager.get_diagnostics(&uri).await.len(), 1);
+
+        tokio::time::sleep(Duration::from_millis(
+            UNVERSIONED_DIAGNOSTICS_SETTLE_MS + 10,
+        ))
+        .await;
+        manager.apply_deferred_diagnostics().await;
+
+        assert!(manager.get_diagnostics(&uri).await.is_empty());
     }
 
     #[tokio::test]

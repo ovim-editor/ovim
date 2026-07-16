@@ -2,14 +2,12 @@ use crate::agent_runtime::{BranchLocator, ConversationLocator};
 use crate::ai::chat_types::ConversationTree;
 use crate::buffer::BufferId;
 use crate::run_log::{
-    apply_recovery, BranchLifecycleEvent, ConversationKey, ConversationScope, EventEnvelope,
-    EventKind, LeaseStatus, MessageRole, RecoveryPlanner, RepositoryRegistration,
-    RepositorySnapshot, RunEventSink,
+    BranchLifecycleEvent, ConversationKey, ConversationScope, EventEnvelope, EventKind,
+    MessageRole, RepositoryRegistration, RepositorySnapshot, RunEventSink,
 };
 use anyhow::{anyhow, Context, Result};
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 
 use super::ai_state::DurableChatBinding;
 use super::Editor;
@@ -38,12 +36,7 @@ impl Editor {
         let Some(services) = self.ai_state.durable_runs.as_ref() else {
             return Ok(());
         };
-        if let Some(existing) = self.ai_state.durable_chat_bindings.get(&ui_key) {
-            services.catalog.renew_lease(
-                &existing.binding.run_id,
-                &services.owner,
-                services.lease_duration,
-            )?;
+        if self.ai_state.durable_chat_bindings.contains_key(&ui_key) {
             return Ok(());
         }
 
@@ -80,40 +73,28 @@ impl Editor {
                 common_git_dir,
                 worktree_aliases: vec![worktree.clone()],
             })?;
-        let mut binding = services.catalog.open_conversation(
-            ConversationKey {
-                repository_id: repository.repository_id,
-                scope: conversation_scope(self.get_buffer_by_id(buffer_id), &worktree)?,
-                logical_name: durable_name.to_owned(),
-            },
-            crate::run_log::BranchId::new(),
-        )?;
-
-        let stale = matches!(
-            services.catalog.lease_status(&binding.run_id)?,
-            LeaseStatus::Stale(_)
-        );
-        services.catalog.acquire_lease(
-            binding.run_id.clone(),
-            services.owner.clone(),
-            services.lease_duration,
-        )?;
-        let start_fresh = !self.ai_state.resume_durable_conversations
-            && !services.store.events(&binding.run_id)?.is_empty();
-        if start_fresh {
-            binding = services.catalog.restart_conversation(
-                &binding,
-                &services.owner,
-                services.lease_duration,
-            )?;
+        let conversation_key = ConversationKey {
+            repository_id: repository.repository_id,
+            scope: conversation_scope(self.get_buffer_by_id(buffer_id), &worktree)?,
+            logical_name: durable_name.to_owned(),
+        };
+        let resume = self.ai_state.resume_durable_conversations;
+        let mut binding = if resume {
+            services
+                .catalog
+                .open_conversation(conversation_key, crate::run_log::BranchId::new())?
+        } else {
+            services
+                .catalog
+                .start_conversation(conversation_key, crate::run_log::BranchId::new())?
+        };
+        if resume && services.store.events(&binding.run_id)?.is_empty() {
+            binding = services
+                .catalog
+                .start_conversation(binding.key.clone(), crate::run_log::BranchId::new())?;
         }
         let locator = ConversationLocator(format!("conversation:{}", binding.conversation_id));
         let prepared = (|| -> Result<Vec<EventEnvelope>> {
-            if stale && !start_fresh {
-                let sink: Arc<dyn RunEventSink> = services.store.clone();
-                let plan = RecoveryPlanner::new(sink).plan(&binding.run_id)?;
-                apply_recovery(&plan, services.store.as_ref(), true)?;
-            }
             let events = services.store.events(&binding.run_id)?;
             self.ai_state.agent_runtime.restore_conversation(
                 locator.clone(),
@@ -122,8 +103,8 @@ impl Editor {
             )?;
             Ok(events)
         })();
-        let (binding, locator, events) = match prepared {
-            Ok(events) => (binding, locator, events),
+        let (mut binding, locator, mut events, fallback_status) = match prepared {
+            Ok(events) => (binding, locator, events, None),
             Err(error)
                 if error
                     .downcast_ref::<crate::agent_runtime::AgentRuntimeError>()
@@ -131,18 +112,23 @@ impl Editor {
                         matches!(
                             error,
                             crate::agent_runtime::AgentRuntimeError::InvalidHistory(_)
+                                | crate::agent_runtime::AgentRuntimeError::UnrecoveredWork(_)
                         )
                     }) =>
             {
-                // A malformed historical causal chain must not block a new
-                // chat indefinitely. Keep its run database intact for
-                // diagnostics, but atomically point this conversation key at
-                // a fresh run that we already own.
-                let fresh = services.catalog.restart_conversation(
-                    &binding,
-                    &services.owner,
-                    services.lease_duration,
-                )?;
+                // Never mutate a run that may still have a live writer. Keep
+                // it intact for diagnosis and continue on an independent run.
+                let may_still_be_active = error
+                    .downcast_ref::<crate::agent_runtime::AgentRuntimeError>()
+                    .is_some_and(|error| {
+                        matches!(
+                            error,
+                            crate::agent_runtime::AgentRuntimeError::UnrecoveredWork(_)
+                        )
+                    });
+                let fresh = services
+                    .catalog
+                    .start_conversation(binding.key.clone(), crate::run_log::BranchId::new())?;
                 let fresh_locator =
                     ConversationLocator(format!("conversation:{}", fresh.conversation_id));
                 self.ai_state.agent_runtime.restore_conversation(
@@ -150,18 +136,58 @@ impl Editor {
                     fresh.clone(),
                     Vec::new(),
                 )?;
-                self.set_lsp_status(
-                    "Previous AI chat history was invalid; started a fresh chat".into(),
-                );
-                (fresh, fresh_locator, Vec::new())
+                let status = if may_still_be_active {
+                    "Previous AI run may still be active; started an independent chat"
+                } else {
+                    "Previous AI chat history was invalid; started a fresh chat"
+                };
+                (fresh, fresh_locator, Vec::new(), Some(status))
             }
-            Err(error) => {
-                let _ = services
-                    .catalog
-                    .release_lease(&binding.run_id, &services.owner);
-                return Err(error);
-            }
+            Err(error) => return Err(error),
         };
+
+        if resume && !events.is_empty() {
+            let source = self
+                .ai_state
+                .agent_runtime
+                .selected_branch(&locator)
+                .map(|(locator, _)| locator.clone())
+                .ok_or_else(|| anyhow!("resumed conversation has no selected branch"))?;
+            let source_tip = self
+                .ai_state
+                .agent_runtime
+                .selected_branch_tip(&locator)
+                .cloned()
+                .ok_or_else(|| anyhow!("resumed conversation has no branch tip"))?;
+            let target = BranchLocator(format!("resume-{}", crate::run_log::BranchId::new()));
+            self.ai_state.agent_runtime.fork_branch_at(
+                &locator,
+                &source,
+                target.clone(),
+                source_tip,
+            )?;
+            self.ai_state
+                .agent_runtime
+                .select_branch(&locator, &target)?;
+            let branch_id = self
+                .ai_state
+                .agent_runtime
+                .selected_branch(&locator)
+                .map(|(_, branch)| branch.branch_id.clone())
+                .ok_or_else(|| anyhow!("resumed branch was not selected"))?;
+            let catalog_updated = services
+                .catalog
+                .update_selected_branch(&binding, branch_id.clone())?;
+            binding.selected_branch_id = branch_id;
+            if !catalog_updated {
+                crate::log_debug!(
+                    "agent_runtime",
+                    "conversation catalog advanced in another process; continuing independent run {}",
+                    binding.run_id
+                );
+            }
+            events = services.store.events(&binding.run_id)?;
+        }
         let (conversation, nodes) = project_visible_messages(&events, &binding.selected_branch_id);
         self.ai_state
             .conversations
@@ -169,15 +195,12 @@ impl Editor {
         self.ai_state
             .conversation_runtime_nodes
             .insert(ui_key.clone(), nodes);
-        self.ai_state.durable_chat_bindings.insert(
-            ui_key,
-            DurableChatBinding {
-                binding,
-                locator,
-                lease_renewed_at: std::time::Instant::now(),
-            },
-        );
-        if start_fresh {
+        self.ai_state
+            .durable_chat_bindings
+            .insert(ui_key, DurableChatBinding { binding, locator });
+        if let Some(status) = fallback_status {
+            self.set_lsp_status(status.into());
+        } else if !resume {
             self.set_lsp_status(
                 "Started a fresh AI conversation; launch ovim with --resume to restore history"
                     .into(),
@@ -201,29 +224,6 @@ impl Editor {
                 .ai_state
                 .durable_chat_bindings
                 .contains_key(&self.ai_chat_conversation_key())
-    }
-
-    pub(crate) fn heartbeat_ai_chat_lease(&mut self) -> Result<()> {
-        let Some(services) = self.ai_state.durable_runs.as_ref() else {
-            return Ok(());
-        };
-        let key = self.ai_chat_conversation_key();
-        let binding = self
-            .ai_state
-            .durable_chat_bindings
-            .get(&key)
-            .ok_or_else(|| anyhow!("durable chat identity is unavailable"))?;
-        if binding.lease_renewed_at.elapsed() < services.lease_duration / 3 {
-            return Ok(());
-        }
-        let run_id = binding.binding.run_id.clone();
-        services
-            .catalog
-            .renew_lease(&run_id, &services.owner, services.lease_duration)?;
-        if let Some(binding) = self.ai_state.durable_chat_bindings.get_mut(&key) {
-            binding.lease_renewed_at = std::time::Instant::now();
-        }
-        Ok(())
     }
 
     /// Forget the provider-native thread while retaining ovim's durable audit log.
@@ -401,7 +401,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn reopening_same_repository_path_restores_messages_and_identity() {
+    async fn reopening_same_repository_path_restores_messages_on_a_new_branch() {
         let (_repository, file) = repository_file();
         let storage = tempfile::tempdir().unwrap();
         let layout = RunStorageLayout::new(storage.path().join("runs"));
@@ -436,10 +436,76 @@ mod tests {
             first_binding.conversation_id
         );
         assert_eq!(restored.binding.run_id, first_binding.run_id);
+        assert_ne!(
+            restored.binding.selected_branch_id,
+            first_binding.selected_branch_id
+        );
         let messages = reopened.conversation().unwrap().messages();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "inspect this");
         assert_eq!(messages[1].content, "It is small.");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn multiple_resumed_editors_continue_on_independent_branches() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        {
+            let mut original = durable_editor(&file, layout.clone());
+            original.open_ai_chat(ChatOpts::default()).unwrap();
+            let turn = original.begin_ai_runtime_turn("shared history").unwrap();
+            original
+                .ai_state
+                .agent_runtime
+                .append_agent_message(&turn, "base answer")
+                .unwrap();
+            original
+                .ai_state
+                .agent_runtime
+                .complete_turn(&turn)
+                .unwrap();
+        }
+
+        let mut first = durable_editor(&file, layout.clone());
+        first.open_ai_chat(ChatOpts::default()).unwrap();
+        let first_binding = first
+            .ai_state
+            .durable_chat_bindings
+            .get(&first.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .clone();
+
+        let mut second = durable_editor(&file, layout);
+        second.open_ai_chat(ChatOpts::default()).unwrap();
+        let second_binding = second
+            .ai_state
+            .durable_chat_bindings
+            .get(&second.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .clone();
+
+        assert_eq!(first_binding.run_id, second_binding.run_id);
+        assert_ne!(
+            first_binding.selected_branch_id,
+            second_binding.selected_branch_id
+        );
+
+        let first_turn = first.begin_ai_runtime_turn("first continuation").unwrap();
+        first
+            .ai_state
+            .agent_runtime
+            .complete_turn(&first_turn)
+            .unwrap();
+        let second_turn = second.begin_ai_runtime_turn("second continuation").unwrap();
+        second
+            .ai_state
+            .agent_runtime
+            .complete_turn(&second_turn)
+            .unwrap();
+        assert_ne!(first_turn.branch_id, second_turn.branch_id);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -521,22 +587,118 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn active_work_does_not_release_its_lease_on_drop() {
+    async fn opening_same_chat_elsewhere_does_not_interrupt_active_run() {
         let (_repository, file) = repository_file();
         let storage = tempfile::tempdir().unwrap();
         let layout = RunStorageLayout::new(storage.path().join("runs"));
         let mut first = durable_editor(&file, layout.clone());
-        let first_buffer = first.buffer().id();
-        first.prepare_durable_ai_chat(first_buffer, "chat").unwrap();
+        first.set_ai_conversation_resume_enabled(false);
+        first.open_ai_chat(ChatOpts::default()).unwrap();
         let turn = first.begin_ai_runtime_turn("unfinished").unwrap();
-        let run_id = turn.run_id;
-        drop(first);
+        let first_run = turn.run_id.clone();
+
+        let mut second = durable_editor(&file, layout.clone());
+        second.set_ai_conversation_resume_enabled(false);
+        second.open_ai_chat(ChatOpts::default()).unwrap();
+        let second_run = second
+            .ai_state
+            .durable_chat_bindings
+            .get(&second.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .run_id
+            .clone();
+
+        assert_ne!(first_run, second_run);
+        first
+            .ai_state
+            .agent_runtime
+            .append_agent_message(&turn, "still running")
+            .unwrap();
+        first.ai_state.agent_runtime.complete_turn(&turn).unwrap();
+        let first_events = first
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .unwrap()
+            .store
+            .events(&first_run)
+            .unwrap();
+        assert!(first_events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::Message(message) if message.content == "still running"
+        )));
 
         let catalog = crate::run_log::RunCatalog::open(&layout).unwrap();
-        assert!(matches!(
-            catalog.lease_status(&run_id).unwrap(),
-            LeaseStatus::Active(_)
-        ));
+        let discovered = catalog
+            .open_conversation(
+                second
+                    .ai_state
+                    .durable_chat_bindings
+                    .get(&second.ai_chat_conversation_key())
+                    .unwrap()
+                    .binding
+                    .key
+                    .clone(),
+                crate::run_log::BranchId::new(),
+            )
+            .unwrap();
+        assert_eq!(discovered.run_id, second_run);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_does_not_recover_or_mutate_a_possibly_active_run() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        let mut first = durable_editor(&file, layout.clone());
+        first.set_ai_conversation_resume_enabled(false);
+        first.open_ai_chat(ChatOpts::default()).unwrap();
+        let turn = first.begin_ai_runtime_turn("still working").unwrap();
+        let first_run = turn.run_id.clone();
+        let event_count_before = first
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .unwrap()
+            .store
+            .events(&first_run)
+            .unwrap()
+            .len();
+
+        let mut second = durable_editor(&file, layout);
+        second.open_ai_chat(ChatOpts::default()).unwrap();
+        let second_run = second
+            .ai_state
+            .durable_chat_bindings
+            .get(&second.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .run_id
+            .clone();
+        assert_ne!(first_run, second_run);
+        assert!(second
+            .lsp_status()
+            .contains("may still be active; started an independent chat"));
+        assert_eq!(
+            first
+                .ai_state
+                .durable_runs
+                .as_ref()
+                .unwrap()
+                .store
+                .events(&first_run)
+                .unwrap()
+                .len(),
+            event_count_before
+        );
+
+        first
+            .ai_state
+            .agent_runtime
+            .append_agent_message(&turn, "finished safely")
+            .unwrap();
+        first.ai_state.agent_runtime.complete_turn(&turn).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -600,13 +762,11 @@ mod tests {
 
         let catalog = crate::run_log::RunCatalog::open(&layout).unwrap();
         assert_eq!(
-            catalog.lease_status(&broken_run_id).unwrap(),
-            LeaseStatus::Missing
+            catalog
+                .open_conversation(fresh_binding.key.clone(), crate::run_log::BranchId::new())
+                .unwrap(),
+            fresh_binding
         );
-        assert!(matches!(
-            catalog.lease_status(&fresh_binding.run_id).unwrap(),
-            LeaseStatus::Active(_)
-        ));
 
         let turn = editor.begin_ai_runtime_turn("start fresh").unwrap();
         assert_eq!(turn.run_id, fresh_binding.run_id);

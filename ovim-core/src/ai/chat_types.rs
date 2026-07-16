@@ -1,7 +1,10 @@
 use super::config::ChatContextConfig;
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Instant;
+
+static NEXT_CONVERSATION_INSTANCE_ID: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ChatRole {
@@ -127,6 +130,7 @@ pub struct ChatNode {
 /// Conversation stored as a tree. Callers see `messages() -> &[ChatMessage]`
 /// which returns the cached active branch (root → active_leaf).
 pub struct ConversationTree {
+    instance_id: u64,
     nodes: HashMap<NodeId, ChatNode>,
     next_id: NodeId,
     root_id: Option<NodeId>,
@@ -142,6 +146,7 @@ pub struct ConversationTree {
 impl ConversationTree {
     pub fn new() -> Self {
         Self {
+            instance_id: NEXT_CONVERSATION_INSTANCE_ID.fetch_add(1, Ordering::Relaxed),
             nodes: HashMap::new(),
             next_id: 0,
             root_id: None,
@@ -154,6 +159,11 @@ impl ConversationTree {
 
     pub fn messages(&self) -> &[ChatMessage] {
         &self.branch_cache
+    }
+
+    /// Stable identity for renderer caches. Node IDs are unique only within a tree.
+    pub fn instance_id(&self) -> u64 {
+        self.instance_id
     }
 
     /// NodeIds corresponding to each message in `messages()`, same order/length.

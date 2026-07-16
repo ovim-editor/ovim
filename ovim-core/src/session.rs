@@ -12,7 +12,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process;
 use std::time::{Duration, SystemTime};
 
@@ -110,14 +110,26 @@ impl SessionInfo {
     /// Get the path for this session's file
     pub fn session_file_path(&self) -> Result<PathBuf> {
         let session_dir = Self::session_dir()?;
-        Ok(session_dir.join(format!("{}.json", self.session_name)))
+        Ok(self.session_file_path_in(&session_dir))
+    }
+
+    /// Get this session's file path in an explicit session directory.
+    pub fn session_file_path_in(&self, session_dir: &Path) -> PathBuf {
+        session_dir.join(format!("{}.json", self.session_name))
     }
 
     /// Write this session info to disk atomically
     pub fn write(&self) -> Result<()> {
+        let session_dir = Self::session_dir()?;
+        self.write_to_dir(&session_dir)
+    }
+
+    /// Write this session info atomically to an explicit session directory.
+    pub fn write_to_dir(&self, session_dir: &Path) -> Result<()> {
         use std::io::Write;
 
-        let path = self.session_file_path()?;
+        fs::create_dir_all(session_dir)?;
+        let path = self.session_file_path_in(session_dir);
         let json = serde_json::to_string_pretty(self)?;
 
         // Use atomic write: write to temp file, then rename
@@ -163,7 +175,13 @@ impl SessionInfo {
 
     /// Delete this session file
     pub fn delete(&self) -> Result<()> {
-        let path = self.session_file_path()?;
+        let session_dir = Self::session_dir()?;
+        self.delete_from_dir(&session_dir)
+    }
+
+    /// Delete this session's file from an explicit session directory.
+    pub fn delete_from_dir(&self, session_dir: &Path) -> Result<()> {
+        let path = self.session_file_path_in(session_dir);
 
         // Remove file directly without checking exists() first to avoid TOCTOU race.
         // An attacker could replace the file with a symlink between the check and removal.
@@ -178,13 +196,18 @@ impl SessionInfo {
     /// Read a session by name with helpful error messages
     pub fn read(session_name: &str) -> Result<Self> {
         let session_dir = Self::session_dir()?;
+        Self::read_from_dir(session_name, &session_dir)
+    }
+
+    /// Read a session by name from an explicit session directory.
+    pub fn read_from_dir(session_name: &str, session_dir: &Path) -> Result<Self> {
         let path = session_dir.join(format!("{}.json", session_name));
 
         // Try to read the file
         let json = fs::read_to_string(&path).context(format!(
             "Session '{}' not found.\n\nAvailable sessions:\n{}",
             session_name,
-            Self::format_available_sessions()
+            Self::format_available_sessions_from_dir(session_dir)
         ))?;
 
         // Try to parse JSON
@@ -204,16 +227,16 @@ impl SessionInfo {
                  Active sessions:\n{}",
                 session_name,
                 info.pid,
-                Self::format_available_sessions()
+                Self::format_available_sessions_from_dir(session_dir)
             );
         }
 
         Ok(info)
     }
 
-    /// Format available sessions as a helpful string for error messages
-    fn format_available_sessions() -> String {
-        match Self::list_all() {
+    /// Format sessions from a specific directory as a helpful error message.
+    fn format_available_sessions_from_dir(session_dir: &Path) -> String {
+        match Self::list_all_from_dir(session_dir) {
             Ok(sessions) if !sessions.is_empty() => {
                 let mut output = String::new();
                 for session in sessions {
@@ -232,6 +255,10 @@ impl SessionInfo {
     /// List all active sessions
     pub fn list_all() -> Result<Vec<SessionInfo>> {
         let session_dir = Self::session_dir()?;
+        Self::list_all_from_dir(&session_dir)
+    }
+
+    fn list_all_from_dir(session_dir: &Path) -> Result<Vec<SessionInfo>> {
         let mut sessions = Vec::new();
 
         for entry in fs::read_dir(session_dir)? {
@@ -489,7 +516,18 @@ impl CleanupResult {
 /// Default expiry should be conservative (7+ days). This is opt-in via --max-age.
 pub fn cleanup_stale_sessions(max_age: Option<Duration>, dry_run: bool) -> Result<CleanupResult> {
     let session_dir = SessionInfo::session_dir()?;
+    cleanup_stale_sessions_in(&session_dir, max_age, dry_run)
+}
 
+/// Clean stale session files in an explicit directory.
+///
+/// This is also useful for isolated callers and tests that must not mutate the
+/// process environment to redirect session storage.
+pub fn cleanup_stale_sessions_in(
+    session_dir: &Path,
+    max_age: Option<Duration>,
+    dry_run: bool,
+) -> Result<CleanupResult> {
     let mut result = CleanupResult {
         stale_removed: 0,
         expired_removed: 0,
@@ -645,12 +683,24 @@ pub fn cleanup_stale_sessions(max_age: Option<Duration>, dry_run: bool) -> Resul
 /// ```
 pub struct SessionGuard {
     session_info: SessionInfo,
+    session_dir: Option<PathBuf>,
 }
 
 impl SessionGuard {
     /// Create a new session guard
     pub fn new(session_info: SessionInfo) -> Self {
-        Self { session_info }
+        Self {
+            session_info,
+            session_dir: None,
+        }
+    }
+
+    /// Create a session guard that cleans up in an explicit session directory.
+    pub fn new_in(session_info: SessionInfo, session_dir: PathBuf) -> Self {
+        Self {
+            session_info,
+            session_dir: Some(session_dir),
+        }
     }
 }
 
@@ -661,7 +711,11 @@ impl Drop for SessionGuard {
         // 1. We're already panicking or exiting
         // 2. The file might already be cleaned up by signal handler
         // 3. Logging during drop/panic can cause issues
-        let _ = self.session_info.delete();
+        if let Some(session_dir) = &self.session_dir {
+            let _ = self.session_info.delete_from_dir(session_dir);
+        } else {
+            let _ = self.session_info.delete();
+        }
     }
 }
 
@@ -670,23 +724,14 @@ mod tests {
     use super::*;
     use std::panic;
 
-    fn init_test_session_dir() {
-        static SESSION_DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
-        SESSION_DIR.get_or_init(|| {
-            let dir = tempfile::tempdir().expect("tempdir");
-            std::env::set_var("OVIM_SESSION_DIR", dir.path());
-            dir
-        });
-    }
-
     #[test]
     fn test_session_guard_cleans_up_on_drop() {
-        init_test_session_dir();
+        let session_dir = tempfile::tempdir().expect("tempdir");
         let session_info =
             SessionInfo::new(9999, Some("test.txt".to_string()), "guard_test".to_string());
-        session_info.write().unwrap();
+        session_info.write_to_dir(session_dir.path()).unwrap();
 
-        let session_file_path = session_info.session_file_path().unwrap();
+        let session_file_path = session_info.session_file_path_in(session_dir.path());
         assert!(
             session_file_path.exists(),
             "Session file should exist before drop"
@@ -694,7 +739,7 @@ mod tests {
 
         // Create and immediately drop the guard
         {
-            let _guard = SessionGuard::new(session_info.clone());
+            let _guard = SessionGuard::new_in(session_info.clone(), session_dir.path().into());
         }
 
         // Give filesystem a moment
@@ -708,15 +753,15 @@ mod tests {
 
     #[test]
     fn test_session_guard_cleans_up_on_panic() {
-        init_test_session_dir();
+        let session_dir = tempfile::tempdir().expect("tempdir");
         let session_info = SessionInfo::new(
             9998,
             Some("panic_test.txt".to_string()),
             "panic_guard_test".to_string(),
         );
-        session_info.write().unwrap();
+        session_info.write_to_dir(session_dir.path()).unwrap();
 
-        let session_file_path = session_info.session_file_path().unwrap();
+        let session_file_path = session_info.session_file_path_in(session_dir.path());
         assert!(
             session_file_path.exists(),
             "Session file should exist before panic"
@@ -724,7 +769,7 @@ mod tests {
 
         // Trigger panic with guard in scope
         let result = panic::catch_unwind(|| {
-            let _guard = SessionGuard::new(session_info.clone());
+            let _guard = SessionGuard::new_in(session_info.clone(), session_dir.path().into());
             panic!("Test panic!");
         });
 
@@ -737,5 +782,19 @@ mod tests {
             !session_file_path.exists(),
             "Session file should be deleted after panic"
         );
+    }
+
+    #[test]
+    fn test_read_from_explicit_directory() {
+        let session_dir = tempfile::tempdir().expect("tempdir");
+        let session_info =
+            SessionInfo::new(9997, Some("explicit.txt".into()), "explicit-dir".into());
+        session_info.write_to_dir(session_dir.path()).unwrap();
+
+        let read = SessionInfo::read_from_dir("explicit-dir", session_dir.path()).unwrap();
+
+        assert_eq!(read.pid, session_info.pid);
+        assert_eq!(read.session_name, "explicit-dir");
+        assert_eq!(read.file.as_deref(), Some("explicit.txt"));
     }
 }

@@ -310,7 +310,7 @@ pub fn render_markdown(
                 // Add code block lines
                 for (line_idx, code_line) in code.lines().enumerate() {
                     // Try to render with syntax highlighting
-                    if let (Some(ref hl), Some(theme)) = (&highlights, theme) {
+                    if let (Some(hl), Some(theme)) = (&highlights, theme) {
                         if let Some(line_hl) = hl.get(line_idx) {
                             lines.push(render_code_line_with_highlights(
                                 code_line, line_hl, theme, max_width,

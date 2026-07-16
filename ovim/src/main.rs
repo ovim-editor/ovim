@@ -95,11 +95,7 @@ async fn main() -> Result<()> {
     let resume_conversations = cli.resume;
 
     // Track runtime mode for components that need different behavior in headless mode.
-    if headless {
-        std::env::set_var("OVIM_HEADLESS", "1");
-    } else {
-        std::env::remove_var("OVIM_HEADLESS");
-    }
+    lsp_init::set_headless_mode(headless);
 
     // Initialize LSP logging to file
     if let Err(e) = ovim::lsp::init_lsp_logging() {
