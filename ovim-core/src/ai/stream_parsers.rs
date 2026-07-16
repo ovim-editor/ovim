@@ -399,9 +399,13 @@ pub async fn parse_ollama_stream<E: Display>(
 
     let mut buf = SseLineBuffer::new();
     // Shadow copy of all content chunks — used at stream end to attempt
-    // tool-call extraction if no structured tool_calls were received.
-    // Content is always sent immediately so the user sees streaming output.
+    // tool-call extraction if no structured tool_calls were received. Normal
+    // prose still streams immediately; only protocol-looking prefixes wait.
     let mut accumulated_content = String::new();
+    // JSON-like prefixes are held until the stream finishes so models that
+    // print a tool call instead of using Ollama's structured field do not
+    // leak that protocol payload into visible conversation history.
+    let mut content_streaming_started = false;
     let mut got_structured_tool_calls = false;
 
     loop {
@@ -423,7 +427,13 @@ pub async fn parse_ollama_stream<E: Display>(
                         {
                             if !content.is_empty() {
                                 accumulated_content.push_str(content);
-                                let _ = tx.send(StreamChunk::Content(content.to_string()));
+                                if content_streaming_started {
+                                    let _ = tx.send(StreamChunk::Content(content.to_string()));
+                                } else if !may_be_tool_call_content(&accumulated_content) {
+                                    content_streaming_started = true;
+                                    let _ =
+                                        tx.send(StreamChunk::Content(accumulated_content.clone()));
+                                }
                             }
                         }
 
@@ -458,13 +468,12 @@ pub async fn parse_ollama_stream<E: Display>(
 
                         // Check if done
                         if value.get("done").and_then(|d| d.as_bool()) == Some(true) {
-                            // If no structured tool_calls were received, try to
-                            // parse the accumulated content as tool-call JSON.
-                            // Some models emit raw JSON in content instead of
-                            // using the structured tool_calls field.
-                            if !got_structured_tool_calls {
-                                emit_extracted_tool_calls(&accumulated_content, &tx);
-                            }
+                            finish_ollama_content(
+                                &accumulated_content,
+                                got_structured_tool_calls,
+                                content_streaming_started,
+                                &tx,
+                            );
                             let _ = tx.send(StreamChunk::Done);
                             return;
                         }
@@ -476,9 +485,12 @@ pub async fn parse_ollama_stream<E: Display>(
                 return;
             }
             None => {
-                if !got_structured_tool_calls {
-                    emit_extracted_tool_calls(&accumulated_content, &tx);
-                }
+                finish_ollama_content(
+                    &accumulated_content,
+                    got_structured_tool_calls,
+                    content_streaming_started,
+                    &tx,
+                );
                 let _ = tx.send(StreamChunk::Done);
                 return;
             }
@@ -487,10 +499,8 @@ pub async fn parse_ollama_stream<E: Display>(
 }
 
 /// Try to extract tool calls from accumulated content and send them as
-/// `ToolCallComplete` chunks. Content chunks were already sent to the
-/// consumer, so the consumer will see both — the `ToolCallComplete`
-/// presence causes the tool-call path to be taken and the raw text
-/// content is ignored for that turn.
+/// `ToolCallComplete` chunks. Returns whether at least one call was emitted,
+/// allowing the caller to suppress a buffered raw protocol payload.
 ///
 /// Supports:
 /// - `{"name": "tool", "arguments": {...}}`
@@ -498,10 +508,10 @@ pub async fn parse_ollama_stream<E: Display>(
 /// - `{"tool_calls": [...]}`
 /// - `{"function": {"name": "tool", "arguments": {...}}}`
 /// - Fenced code blocks wrapping any of the above
-fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) {
+fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) -> bool {
     let trimmed = content.trim();
     if trimmed.is_empty() {
-        return;
+        return false;
     }
 
     // Strip markdown code fence if present
@@ -512,11 +522,11 @@ fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) {
     };
 
     if !candidate.starts_with('{') && !candidate.starts_with('[') {
-        return;
+        return false;
     }
 
     let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate) else {
-        return;
+        return false;
     };
 
     let calls: Vec<&serde_json::Value> = if let Some(arr) = value.as_array() {
@@ -526,9 +536,10 @@ fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) {
     } else if value.is_object() {
         vec![&value]
     } else {
-        return;
+        return false;
     };
 
+    let mut emitted = false;
     for (i, tc) in calls.iter().enumerate() {
         // Accept {"name": ..., "arguments": ...},
         // {"tool": ..., "arguments": ...}, and
@@ -555,12 +566,34 @@ fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) {
         };
 
         if !name.is_empty() {
+            emitted = true;
             let _ = tx.send(StreamChunk::ToolCallComplete {
                 id: format!("ollama-content-tc-{}", i),
                 name: name.to_string(),
                 arguments,
             });
         }
+    }
+    emitted
+}
+
+fn may_be_tool_call_content(content: &str) -> bool {
+    matches!(
+        content.trim_start().chars().next(),
+        None | Some('{' | '[' | '`')
+    )
+}
+
+fn finish_ollama_content(
+    content: &str,
+    got_structured_tool_calls: bool,
+    content_streaming_started: bool,
+    tx: &UnboundedSender<StreamChunk>,
+) {
+    let extracted = !got_structured_tool_calls && emit_extracted_tool_calls(content, tx);
+    if !got_structured_tool_calls && !extracted && !content_streaming_started && !content.is_empty()
+    {
+        let _ = tx.send(StreamChunk::Content(content.to_string()));
     }
 }
 
@@ -1050,10 +1083,7 @@ mod tests {
         ]);
         parse_ollama_stream(stream, tx).await;
         let chunks = collect_chunks(&mut rx);
-        // Content is sent immediately (user sees streaming output),
-        // then ToolCallComplete is emitted at done. The consumer's
-        // tool-call path takes precedence over the content.
-        assert!(chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
+        assert!(!chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
         assert!(chunks.iter().any(
             |c| matches!(c, StreamChunk::ToolCallComplete { name, .. } if name == "read_file")
         ));
@@ -1092,6 +1122,27 @@ mod tests {
             .count();
         // No tool calls extracted — `Here is some code: {}` has no "name" field
         assert_eq!(tc_count, 0);
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::Content(content) if content == "Here is some code: {}")));
+    }
+
+    #[tokio::test]
+    async fn ollama_non_tool_json_is_released_at_stream_end() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"{\\\"answer\\\":\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\" \\\"ready\\\"}\"},\"done\":true}\n",
+        ]);
+
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+
+        assert!(matches!(
+            &chunks[0],
+            StreamChunk::Content(content) if content == "{\"answer\": \"ready\"}"
+        ));
+        assert!(matches!(chunks.last().unwrap(), StreamChunk::Done));
     }
 
     #[tokio::test]
@@ -1112,5 +1163,6 @@ mod tests {
             .collect();
         // Only the structured tool call, not the content-parsed one
         assert_eq!(tc_names, vec!["real_tool"]);
+        assert!(!chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
     }
 }
