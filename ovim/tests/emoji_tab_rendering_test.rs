@@ -1,12 +1,11 @@
 use ovim::editor::Editor;
-use ovim::ui::Renderer;
 use ovim::unicode::GraphemeCol;
 
 #[test]
 fn test_expand_tabs_basic() {
     // Test basic tab expansion with tab_width = 4
+    // (No Renderer here: constructing one needs a real TTY, which CI lacks.)
     let editor = Editor::with_content("hello\tworld");
-    let _renderer = Renderer::new();
 
     // Buffer adds trailing newline (Vim behavior)
     assert_eq!(editor.buffer().rope().to_string(), "hello\tworld\n");

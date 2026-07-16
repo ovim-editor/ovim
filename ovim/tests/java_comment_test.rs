@@ -73,14 +73,14 @@ public enum KeyUse {
     }
 
     // Lines 0-4 are the block comment
-    for line_idx in 0..5 {
-        let has_comment = highlights[line_idx]
+    for (line_idx, line_highlights) in highlights.iter().enumerate().take(5) {
+        let has_comment = line_highlights
             .iter()
             .any(|(_, g)| *g == HighlightGroup::Comment);
         assert!(
             has_comment,
             "Line {} should have Comment highlight, got: {:?}",
-            line_idx, highlights[line_idx]
+            line_idx, line_highlights
         );
     }
 }
@@ -149,14 +149,14 @@ fn test_java_multiline_block_comment() {
     let highlights = highlighter.highlights_for_all_lines(source);
 
     // All 3 comment lines should have Comment highlight
-    for line_idx in 0..3 {
-        let has_comment = highlights[line_idx]
+    for (line_idx, line_highlights) in highlights.iter().enumerate().take(3) {
+        let has_comment = line_highlights
             .iter()
             .any(|(_, g)| *g == HighlightGroup::Comment);
         assert!(
             has_comment,
             "Line {} should have Comment highlight, got: {:?}",
-            line_idx, highlights[line_idx]
+            line_idx, line_highlights
         );
     }
 }

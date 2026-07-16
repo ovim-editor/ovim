@@ -19,7 +19,7 @@ fn strip_ansi(input: &str) -> String {
         if c == '\u{1b}' {
             if matches!(chars.peek(), Some('[')) {
                 chars.next(); // '['
-                while let Some(x) = chars.next() {
+                for x in chars.by_ref() {
                     if x.is_ascii_alphabetic() {
                         break;
                     }

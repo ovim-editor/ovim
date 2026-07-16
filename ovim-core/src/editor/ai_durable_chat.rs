@@ -501,10 +501,9 @@ mod tests {
         git2::Repository::init(directory.path()).unwrap();
         let storage = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
+        *editor.ai_state =
             AiState::with_run_storage_layout(RunStorageLayout::new(storage.path().join("runs")))
-                .unwrap(),
-        );
+                .unwrap();
         let new_file = directory.path().join("nested").join("README.md");
         editor.set_file_path(new_file.to_string_lossy().into_owned());
 

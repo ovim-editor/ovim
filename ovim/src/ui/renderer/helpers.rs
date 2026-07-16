@@ -312,8 +312,8 @@ mod tests {
     #[test]
     fn test_char_mapping_plain_text() {
         let ExpandedLine { char_mapping, .. } = expand_tabs_with_mapping("hello", 4);
-        for i in 0..=5 {
-            assert_eq!(char_mapping[i], i); // 1:1 mapping for plain text
+        for (i, &mapped) in char_mapping.iter().enumerate().take(6) {
+            assert_eq!(mapped, i); // 1:1 mapping for plain text
         }
     }
 

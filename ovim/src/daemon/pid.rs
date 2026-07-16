@@ -33,8 +33,7 @@ pub(crate) fn get_proc_bsdinfo(pid: i32) -> Result<libc::proc_bsdinfo> {
 
     if bytes_written < 0 {
         return Err(std::io::Error::last_os_error())
-            .context("proc_pidinfo(PROC_PIDTBSDINFO) failed")
-            .map_err(Into::into);
+            .context("proc_pidinfo(PROC_PIDTBSDINFO) failed");
     }
 
     if bytes_written as usize != std::mem::size_of::<libc::proc_bsdinfo>() {
@@ -373,8 +372,7 @@ pub fn get_process_cmdline(pid: i32) -> Result<String> {
         if !output.status.success() {
             return Err(std::io::Error::last_os_error())
                 .context("sysctl(KERN_PROCARGS2) failed")
-                .context("ps command failed")
-                .map_err(Into::into);
+                .context("ps command failed");
         }
 
         let cmdline = String::from_utf8_lossy(&output.stdout).trim().to_string();
@@ -559,7 +557,7 @@ mod tests {
         // Test DD-HH:MM:SS format
         assert_eq!(
             parse_elapsed_time("1-03:20:10").unwrap(),
-            1 * 86400 + 3 * 3600 + 20 * 60 + 10
+            86400 + 3 * 3600 + 20 * 60 + 10
         );
 
         // Test with spaces (trim)

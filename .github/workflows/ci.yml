@@ -20,8 +20,6 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        # Advisory until the warning backlog (mostly collapsible_if) is cleared,
-        # then tighten to: cargo clippy --workspace --all-targets -- -D warnings
-        run: cargo clippy --workspace --all-targets
+        run: cargo clippy --workspace --all-targets -- -D warnings
       - name: Test
         run: cargo test --workspace

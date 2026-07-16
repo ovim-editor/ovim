@@ -608,7 +608,7 @@ fn render_picker_results(frame: &mut Frame, picker: &crate::editor::Picker, area
     let visible_results: Vec<Line> = visible_entries
         .iter()
         .enumerate()
-        .map(|(vis_idx, &(actual_idx, ref result))| {
+        .map(|(vis_idx, &(actual_idx, result))| {
             let is_selected = actual_idx == selected_idx;
 
             let max_display_len = result_width.saturating_sub(5);

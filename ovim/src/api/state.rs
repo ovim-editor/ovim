@@ -61,6 +61,8 @@ pub enum ApiRequest {
 }
 
 /// Response types that can be returned from the editor
+// One-shot responses sent over a channel; the size skew from Snapshot is harmless.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize)]
 #[serde(untagged)]
 pub enum ApiResponse {

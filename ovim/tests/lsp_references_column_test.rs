@@ -14,7 +14,6 @@
 use ovim::buffer::Buffer;
 use std::fs;
 use tempfile::TempDir;
-use tokio;
 
 #[tokio::test]
 async fn test_utf16_to_col_returns_zero_for_nonexistent_line() {
@@ -51,7 +50,7 @@ async fn test_column_preserved_when_jumping_to_longer_file() {
     let file_path = temp_dir.path().join("file.rs");
 
     // Create a file with text at various columns
-    let content = vec![
+    let content = [
         "// Line 0",
         "// Line 1",
         "// Line 2",

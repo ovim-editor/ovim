@@ -107,7 +107,9 @@ pub fn find_number_at_or_after(line: &str, col: CharCol) -> Option<(CharCol, Cha
             } else if is_binary {
                 ch == '0' || ch == '1'
             } else if is_octal {
-                ch.is_ascii_digit()
+                // Octal literals only contain 0-7; a trailing 8/9 is not part
+                // of the number (it would make from_str_radix(_, 8) fail).
+                ('0'..='7').contains(&ch)
             } else {
                 ch.is_ascii_digit()
             };

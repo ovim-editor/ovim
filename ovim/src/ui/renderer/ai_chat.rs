@@ -92,7 +92,7 @@ fn render_chat_panel_impl(
     editor: &mut Editor,
     chat_area: Rect,
     theme: &Theme,
-    mut cache: Option<&mut LineRenderCache>,
+    cache: Option<&mut LineRenderCache>,
 ) {
     editor.render_cache.ai_chat_interactions.begin_frame();
     editor.render_cache.ai_chat_image_thumbnails.clear();
@@ -120,13 +120,7 @@ fn render_chat_panel_impl(
         .map(|image| image.path.clone())
         .collect::<Vec<_>>();
     if layout.messages_area.height > 0 {
-        render_message_history(
-            frame,
-            editor,
-            layout.messages_area,
-            theme,
-            cache.as_deref_mut(),
-        );
+        render_message_history(frame, editor, layout.messages_area, theme, cache);
     } else {
         editor.render_cache.ai_chat_interactions.history = None;
     }
@@ -2032,6 +2026,20 @@ fn word_wrap(text: &str, max_width: usize) -> Vec<String> {
         .collect()
 }
 
+fn center_text(text: &str, width: usize) -> String {
+    let text_len = text_display_width(text);
+    if text_len >= width {
+        return text.to_string();
+    }
+    let padding = (width - text_len) / 2;
+    format!(
+        "{}{}{}",
+        " ".repeat(padding),
+        text,
+        " ".repeat(width - padding - text_len)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2747,18 +2755,4 @@ mod tests {
             span.content == "cd" && span.style.bg == Some(Color::Rgb(74, 96, 145))
         }));
     }
-}
-
-fn center_text(text: &str, width: usize) -> String {
-    let text_len = text_display_width(text);
-    if text_len >= width {
-        return text.to_string();
-    }
-    let padding = (width - text_len) / 2;
-    format!(
-        "{}{}{}",
-        " ".repeat(padding),
-        text,
-        " ".repeat(width - padding - text_len)
-    )
 }

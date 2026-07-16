@@ -8,6 +8,8 @@ use lsp_types::{Position, Range, TextEdit, WorkspaceEdit};
 mod helpers;
 use helpers::EditorTest;
 
+// Uri's interior mutability is an internal cache; it doesn't affect Hash/Eq.
+#[allow(clippy::mutable_key_type)]
 fn workspace_edit_for_path(path: &str, edit: TextEdit) -> WorkspaceEdit {
     let mut changes = std::collections::HashMap::new();
     let uri = ovim::lsp::uri_from_file_path(path).expect("uri_from_file_path");

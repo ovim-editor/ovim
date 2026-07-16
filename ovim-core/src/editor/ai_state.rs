@@ -117,7 +117,7 @@ pub struct AiState {
     pub conversations: HashMap<(BufferId, String), ConversationTree>,
     /// UI message-node projection onto durable event/branch identity.
     pub conversation_runtime_nodes:
-        Box<HashMap<(BufferId, String), HashMap<NodeId, ChatRuntimeNodeRef>>>,
+        HashMap<(BufferId, String), HashMap<NodeId, ChatRuntimeNodeRef>>,
     /// Registry of all available tools.
     pub tool_registry: ToolRegistry,
     /// Monotonic signal that a running agent has paused for user attention.
@@ -185,7 +185,7 @@ impl AiState {
             last_observed_buffer_version: 0,
             chat: None,
             conversations: HashMap::new(),
-            conversation_runtime_nodes: Box::new(HashMap::new()),
+            conversation_runtime_nodes: HashMap::new(),
             tool_registry: ToolRegistry::new(),
             ai_attention_generation: 0,
             no_repo_session_prompted: false,

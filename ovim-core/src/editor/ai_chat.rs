@@ -671,12 +671,10 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
-            super::super::ai_state::AiState::with_run_storage_layout(
-                crate::run_log::RunStorageLayout::new(runs.path()),
-            )
-            .unwrap(),
-        );
+        *editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .unwrap();
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor
@@ -752,12 +750,10 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
-            super::super::ai_state::AiState::with_run_storage_layout(
-                crate::run_log::RunStorageLayout::new(runs.path()),
-            )
-            .unwrap(),
-        );
+        *editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .unwrap();
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor
@@ -1472,9 +1468,8 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n").unwrap();
         let runs = crate::run_log::RunStorageLayout::new(dir.path().join("runs"));
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
-            super::super::ai_state::AiState::with_run_storage_layout(runs.clone()).unwrap(),
-        );
+        *editor.ai_state =
+            super::super::ai_state::AiState::with_run_storage_layout(runs.clone()).unwrap();
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         let turn = editor.begin_ai_runtime_turn("create the marker").unwrap();
@@ -1494,8 +1489,7 @@ mod tests {
             .clone();
 
         let mut second = Editor::default();
-        second.ai_state =
-            Box::new(super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap());
+        *second.ai_state = super::super::ai_state::AiState::with_run_storage_layout(runs).unwrap();
         second.open_file(&file).unwrap();
         open_test_chat(&mut second);
         let second_run = second
@@ -1546,12 +1540,10 @@ mod tests {
         std::fs::write(&file, "fn main() {}\n// second line\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
-            super::super::ai_state::AiState::with_run_storage_layout(
-                crate::run_log::RunStorageLayout::new(runs.path()),
-            )
-            .unwrap(),
-        );
+        *editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .unwrap();
         editor.open_file(&file).unwrap();
         editor.set_mode(crate::mode::Mode::Normal);
         open_test_chat(&mut editor);

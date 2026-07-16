@@ -121,7 +121,7 @@ fn expand_annotation(ann: &str, content_len: usize) -> String {
 
 fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
     assert!(
-        pairs.len() % 2 == 0,
+        pairs.len().is_multiple_of(2),
         "Fixture must have even number of strings (text + annotation per line). \
          Each content line needs a corresponding annotation line (can be empty string \"\")."
     );
@@ -290,11 +290,14 @@ fn parse_pairs_fixture(mode: Mode, pairs: &[&str]) -> Fixture {
     }
 }
 
+/// (visual_start, (selection_start, selection_end))
+type DerivedVisual = ((usize, usize), ((usize, usize), (usize, usize)));
+
 fn derive_visual_charwise(
     cursor: (usize, usize),
     anchor: Option<(usize, usize)>,
     selected_cells: &[(usize, usize)],
-) -> ((usize, usize), ((usize, usize), (usize, usize))) {
+) -> DerivedVisual {
     let (start, end) = if !selected_cells.is_empty() {
         let mut sorted = selected_cells.to_vec();
         sorted.sort_unstable();
@@ -327,7 +330,7 @@ fn derive_visual_linewise(
     cursor: (usize, usize),
     anchor: Option<(usize, usize)>,
     selected_lines: &[usize],
-) -> ((usize, usize), ((usize, usize), (usize, usize))) {
+) -> DerivedVisual {
     let mut lines = selected_lines.to_vec();
     lines.sort_unstable();
     lines.dedup();
@@ -362,7 +365,7 @@ fn derive_visual_block(
     cursor: (usize, usize),
     anchor: Option<(usize, usize)>,
     selected_cells: &[(usize, usize)],
-) -> ((usize, usize), ((usize, usize), (usize, usize))) {
+) -> DerivedVisual {
     let (min_line, max_line, min_col, max_col) = if !selected_cells.is_empty() {
         let mut min_line = usize::MAX;
         let mut max_line = 0;

@@ -565,7 +565,7 @@ proptest! {
             t.keys(keys);
 
             assert_editor_cursor_in_bounds(
-                &mut t,
+                &t,
                 &format!("operator sequence step {}: {}", i, keys),
             )?;
 

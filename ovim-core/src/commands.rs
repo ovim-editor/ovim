@@ -1120,7 +1120,7 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
                 };
                 let line = editor.buffer().cursor().line() + 1;
                 let total = editor.buffer().line_count();
-                let pct = if total == 0 { 0 } else { (line * 100) / total };
+                let pct = (line * 100).checked_div(total).unwrap_or(0);
                 ok(format!(
                     "{}{} line {} of {} --{}%--",
                     name, modified, line, total, pct

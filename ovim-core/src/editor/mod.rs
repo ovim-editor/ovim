@@ -160,20 +160,15 @@ pub enum MarginColor {
 }
 
 /// Controls LSP auto-install behavior
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum AutoInstallMode {
     /// Show a consent dialog before installing (default)
+    #[default]
     Prompt,
     /// Install automatically without asking
     Auto,
     /// Never auto-install, only show install hints
     Off,
-}
-
-impl Default for AutoInstallMode {
-    fn default() -> Self {
-        Self::Prompt
-    }
 }
 
 /// Editor options and settings
@@ -1782,9 +1777,7 @@ impl Editor {
         }
 
         // Load git branch name for the new file
-        self.git_branch = new_buffer
-            .file_path()
-            .and_then(|p| crate::git::branch_name(p));
+        self.git_branch = new_buffer.file_path().and_then(crate::git::branch_name);
 
         self.add_buffer(new_buffer);
 

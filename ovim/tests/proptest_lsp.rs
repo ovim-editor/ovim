@@ -485,7 +485,7 @@ proptest! {
         cjk_line in "[\\u{4E00}-\\u{4E10}]{5,10}",
         col in 0..15usize,
     ) {
-        let lines = vec![ascii_line.clone(), emoji_line.clone(), cjk_line.clone()];
+        let lines = [ascii_line.clone(), emoji_line.clone(), cjk_line.clone()];
 
         for (idx, line) in lines.iter().enumerate() {
             let char_count = line.chars().count();

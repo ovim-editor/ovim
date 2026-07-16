@@ -123,7 +123,6 @@ fn detect_workspace_projects(root: &std::path::Path) -> (Vec<String>, bool) {
         ("pom.xml", "Java, Maven"),
     ];
     let mut projects = Vec::new();
-    let mut scanned = 0usize;
     let mut truncated = false;
     let walker = ignore::WalkBuilder::new(root)
         .hidden(false)
@@ -131,12 +130,11 @@ fn detect_workspace_projects(root: &std::path::Path) -> (Vec<String>, bool) {
         .max_depth(Some(5))
         .build();
 
-    for entry in walker {
-        if scanned == WORKSPACE_PROJECT_SCAN_LIMIT {
+    for (index, entry) in walker.enumerate() {
+        if index == WORKSPACE_PROJECT_SCAN_LIMIT {
             truncated = true;
             break;
         }
-        scanned += 1;
         let Ok(entry) = entry else { continue };
         if !entry.file_type().is_some_and(|kind| kind.is_file()) {
             continue;

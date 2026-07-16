@@ -1811,7 +1811,7 @@ mod tests {
         let projection = AgentFollowProjection::rehydrate(&events).unwrap();
         assert_eq!(
             projection.children(&parent.agent_id),
-            &[child.agent_id.clone()]
+            std::slice::from_ref(&child.agent_id)
         );
         assert_eq!(
             projection.agents()[&child.agent_id].state,

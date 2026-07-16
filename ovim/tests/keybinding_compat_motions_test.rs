@@ -31,7 +31,7 @@ fn g0_gdollar_gm_work_on_wrapped_screen_line() {
     test.set_cursor(0, start_col);
     test.keys("g0");
     let g0_col = test.cursor().1;
-    assert!(g0_col % 5 == 0);
+    assert!(g0_col.is_multiple_of(5));
 
     test.set_cursor(0, start_col);
     test.keys("g$");

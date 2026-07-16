@@ -164,8 +164,8 @@ impl Editor {
         }
 
         let mut selected_rows = Vec::new();
-        for row_index in start.row..=end.row.min(rows.len() - 1) {
-            let row = &rows[row_index];
+        let last_row = end.row.min(rows.len() - 1);
+        for (row_index, row) in rows.iter().enumerate().take(last_row + 1).skip(start.row) {
             let (from, to) = if start.row == end.row {
                 (start.column, end.column.saturating_add(1))
             } else if row_index == start.row {

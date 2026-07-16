@@ -867,7 +867,7 @@ mod tests {
             .cursor_mut()
             .set_position(0, GraphemeCol(2));
 
-        let _ = move_to_screen_line_boundary(&mut editor, ScreenLineTarget::Start).unwrap();
+        move_to_screen_line_boundary(&mut editor, ScreenLineTarget::Start).unwrap();
 
         assert_eq!(editor.buffer().cursor().line(), 0);
         assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1));

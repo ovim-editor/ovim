@@ -1646,385 +1646,6 @@ async fn handle_api_request(
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::apply_java_status;
-    use super::compute_text_width;
-    use super::emit_new_agent_attention;
-    use super::find_char_positions;
-    use super::handle_api_request;
-    use super::handle_edit_line;
-    use super::handle_terminal_resize;
-    use super::process_input_events;
-    use super::ApiRequest;
-    use super::ApiResponse;
-    use super::{
-        create_snapshot, create_snapshot_with_dimensions, refresh_after_input, tick_transient_ui,
-    };
-    use ovim::api::SNAPSHOT_SCHEMA_VERSION;
-    use ovim::editor::{Editor, InputHandler};
-    use ovim::mode::Mode;
-    use ovim::session::SessionInfo;
-    use ovim::ui::AnsiRenderCache;
-    use ovim_core::ai::chat_types::ChatOpts;
-    use std::sync::{Arc, Mutex};
-    use std::time::SystemTime;
-    use tokio::sync::oneshot;
-
-    fn test_session() -> Arc<Mutex<SessionInfo>> {
-        Arc::new(Mutex::new(SessionInfo::new(0, None, "test".into())))
-    }
-
-    #[tokio::test]
-    async fn get_health_does_not_write_session_file_for_unregistered_session() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        // SAFETY: single-threaded mutation of a test-only variable; no other
-        // test in this binary reads OVIM_SESSION_DIR.
-        unsafe { std::env::set_var("OVIM_SESSION_DIR", dir.path()) };
-
-        let mut editor = Editor::default();
-        let mut cache = AnsiRenderCache::new();
-        // Port 0 is the placeholder for a TUI without a registered session.
-        let session = test_session();
-
-        let (tx, rx) = oneshot::channel();
-        handle_api_request(
-            &mut editor,
-            ApiRequest::GetHealth(tx),
-            SystemTime::now(),
-            &session,
-            &mut cache,
-        )
-        .await;
-
-        // The health response still works...
-        assert!(matches!(rx.await.unwrap(), ApiResponse::Health(_)));
-        // ...and the in-memory flag is updated (no LSP servers => ready)...
-        assert!(session.lock().unwrap().lsp_ready);
-        // ...but no phantom session file may appear on disk.
-        let entries: Vec<_> = std::fs::read_dir(dir.path())
-            .expect("read session dir")
-            .collect();
-        assert!(
-            entries.is_empty(),
-            "unregistered session must not be written to disk: {entries:?}"
-        );
-
-        // SAFETY: see above.
-        unsafe { std::env::remove_var("OVIM_SESSION_DIR") };
-    }
-
-    #[test]
-    fn agent_attention_bell_emits_once_for_each_generation() {
-        let mut observed = 0;
-        let mut output = Vec::new();
-
-        assert!(emit_new_agent_attention(1, &mut observed, &mut output).unwrap());
-        assert!(!emit_new_agent_attention(1, &mut observed, &mut output).unwrap());
-        assert!(emit_new_agent_attention(2, &mut observed, &mut output).unwrap());
-
-        assert_eq!(observed, 2);
-        assert_eq!(output, b"\x07\x07");
-    }
-
-    #[test]
-    fn focus_gain_requests_terminal_image_surface_refresh() {
-        let mut editor = Editor::default();
-
-        process_input_events(&mut editor, vec![crossterm::event::Event::FocusGained])
-            .expect("focus event");
-
-        assert!(editor.render_cache.terminal_image_refresh_requested);
-    }
-
-    #[tokio::test]
-    async fn set_buffer_invalidates_cached_render() {
-        let mut editor = Editor::with_content("before\n");
-        let mut cache = AnsiRenderCache::new();
-        cache.render(&mut editor, 80, 20, true).unwrap();
-        assert!(cache.would_hit(&editor, 80, 20, true));
-
-        let (tx, rx) = oneshot::channel();
-        handle_api_request(
-            &mut editor,
-            ApiRequest::SetBuffer("PARITY_SENTINEL\n".into(), tx),
-            SystemTime::now(),
-            &test_session(),
-            &mut cache,
-        )
-        .await;
-        assert!(matches!(rx.await.unwrap(), ApiResponse::Success(_)));
-        assert!(!cache.would_hit(&editor, 80, 20, true));
-        let rendered = cache.render(&mut editor, 80, 20, true).unwrap();
-        assert!(rendered.contains("PARITY_SENTINEL"));
-    }
-
-    #[tokio::test]
-    async fn paste_api_delivers_multiline_text_as_one_event() {
-        let mut editor = Editor::with_content("");
-        let mut cache = AnsiRenderCache::new();
-        let (mode_tx, mode_rx) = oneshot::channel();
-        handle_api_request(
-            &mut editor,
-            ApiRequest::SetMode("INSERT".into(), mode_tx),
-            SystemTime::now(),
-            &test_session(),
-            &mut cache,
-        )
-        .await;
-        assert!(matches!(mode_rx.await.unwrap(), ApiResponse::Success(_)));
-        assert_eq!(editor.mode(), Mode::Insert);
-
-        let (tx, rx) = oneshot::channel();
-        handle_api_request(
-            &mut editor,
-            ApiRequest::Paste("first\nsecond".into(), tx),
-            SystemTime::now(),
-            &test_session(),
-            &mut cache,
-        )
-        .await;
-        assert!(matches!(rx.await.unwrap(), ApiResponse::Success(_)));
-        assert_eq!(editor.buffer().rope().to_string(), "first\nsecond");
-    }
-
-    #[test]
-    fn snapshot_exposes_active_ai_chat_state() {
-        let mut editor = Editor::default();
-        editor
-            .open_ai_chat(ChatOpts {
-                // Ovim is built as a dependency of this binary test, so its
-                // durable-history code is not compiled with `cfg(test)`. Use
-                // a fixture-specific conversation instead of accidentally
-                // restoring the user's real default chat.
-                name: "snapshot-schema-test".into(),
-                ..ChatOpts::default()
-            })
-            .unwrap();
-
-        let snapshot = create_snapshot(&editor);
-        assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
-        let chat = snapshot.ai_chat.expect("active chat snapshot");
-        assert_eq!(chat.activity, "idle");
-        assert!(!chat.waiting);
-        assert!(chat.input.is_empty());
-        assert!(chat.queued.is_empty());
-        assert!(chat.messages.is_empty());
-        assert_eq!(chat.focus, "text_input");
-        assert_eq!(chat.input_cursor, 0);
-    }
-
-    #[tokio::test]
-    async fn api_keys_match_direct_input_state_and_render() {
-        let sequence = "jA!<Esc>gg0";
-        let dimensions = (72, 20);
-        let mut direct = Editor::with_content("alpha\nbeta\ngamma\n");
-        let mut via_api = Editor::with_content("alpha\nbeta\ngamma\n");
-        handle_terminal_resize(&mut direct, dimensions.0, dimensions.1).unwrap();
-        handle_terminal_resize(&mut via_api, dimensions.0, dimensions.1).unwrap();
-
-        for event in ovim::api::parse_key_string(sequence).unwrap() {
-            InputHandler::handle_key_event_no_dirty(&mut direct, event).unwrap();
-        }
-        refresh_after_input(&mut direct);
-
-        let (tx, rx) = oneshot::channel();
-        let mut api_cache = AnsiRenderCache::new();
-        let session = Arc::new(Mutex::new(
-            SessionInfo::new(12345, None, "parity".to_string())
-                .with_dimensions(dimensions.0, dimensions.1),
-        ));
-        handle_api_request(
-            &mut via_api,
-            ApiRequest::SendKeys(sequence.to_string(), tx),
-            SystemTime::now(),
-            &session,
-            &mut api_cache,
-        )
-        .await;
-        assert!(matches!(rx.await.unwrap(), ApiResponse::SendKeysResult(_)));
-
-        let direct_snapshot = create_snapshot_with_dimensions(&direct, Some(dimensions));
-        let api_snapshot = create_snapshot_with_dimensions(&via_api, Some(dimensions));
-        assert_eq!(
-            serde_json::to_value(direct_snapshot).unwrap(),
-            serde_json::to_value(api_snapshot).unwrap()
-        );
-
-        let mut direct_cache = AnsiRenderCache::new();
-        let direct_render = direct_cache
-            .render(&mut direct, dimensions.0, dimensions.1, true)
-            .unwrap();
-        let api_render = api_cache
-            .render(&mut via_api, dimensions.0, dimensions.1, true)
-            .unwrap();
-        assert_eq!(direct_render, api_render);
-    }
-
-    #[test]
-    fn working_animation_tick_invalidates_the_render_without_input() {
-        let mut editor = Editor::with_content("hello\n");
-        editor.open_ai_chat(ChatOpts::default()).unwrap();
-        editor.ai_state.chat.as_mut().unwrap().waiting = true;
-        editor.render_cache.ai_chat_working_animation_tick = u128::MAX;
-        editor.mark_clean();
-
-        tick_transient_ui(&mut editor);
-
-        assert!(editor.is_dirty());
-    }
-
-    #[test]
-    fn resize_updates_viewport_and_wrap_map_and_keeps_cursor_visible() {
-        // 200 logical lines, wide enough to exercise gutter sizing.
-        let content: String = (1..=200)
-            .map(|i| format!("line {i}: {}\n", "x".repeat(120)))
-            .collect();
-
-        let mut editor = Editor::with_content(&content);
-        editor.options.number = true;
-        editor.options.wrap = true;
-        editor.options.scrolloff = 0;
-
-        // Initial size.
-        handle_terminal_resize(&mut editor, 80, 20).unwrap();
-        assert_eq!(editor.viewport_height(), 18);
-
-        // Move cursor to EOF and ensure scroll offset is set.
-        let last_line = editor.buffer().line_count().saturating_sub(1);
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(last_line, ovim_core::unicode::GraphemeCol::ZERO);
-        editor.update_scroll_offset();
-
-        // Shrink the pane; cursor should remain visible in the new viewport.
-        handle_terminal_resize(&mut editor, 80, 10).unwrap();
-        assert_eq!(editor.viewport_height(), 8);
-
-        let cursor_line = editor.buffer().cursor().line();
-        let scroll_offset = editor.scroll_offset();
-        let visible = editor.viewport_height().max(1);
-        assert!(
-            cursor_line >= scroll_offset && cursor_line < scroll_offset + visible,
-            "cursor should remain visible after resize: cursor_line={cursor_line} scroll_offset={scroll_offset} viewport={visible}"
-        );
-
-        // Wrap map should match the new text width (buffer width minus gutter).
-        let wrap_width = editor.wrap_map().map(|m| m.wrap_width()).unwrap_or(0);
-        assert_eq!(wrap_width, compute_text_width(&editor, 80).max(1));
-    }
-
-    #[test]
-    fn java_ready_status_requests_diagnostics_refresh() {
-        let mut editor = Editor::with_content("class Test {}\n");
-
-        apply_java_status(&mut editor, "Java: Ready".to_string());
-
-        assert_eq!(editor.lsp_status(), "Java: Ready");
-        assert!(editor.take_diagnostics_refresh_request());
-    }
-
-    #[test]
-    fn kotlin_ready_status_requests_diagnostics_refresh() {
-        let mut editor = Editor::with_content("fun main() {}\n");
-
-        apply_java_status(&mut editor, "Kotlin: Ready".to_string());
-
-        assert_eq!(editor.lsp_status(), "Kotlin: Ready");
-        assert!(editor.take_diagnostics_refresh_request());
-    }
-
-    #[test]
-    fn java_non_ready_status_does_not_request_diagnostics_refresh() {
-        let mut editor = Editor::with_content("class Test {}\n");
-
-        apply_java_status(&mut editor, "Java: Starting Hyperion LSP...".to_string());
-
-        assert_eq!(editor.lsp_status(), "Java: Starting Hyperion LSP...");
-        assert!(!editor.take_diagnostics_refresh_request());
-    }
-
-    // ==================== OV-00243: byte/char mix in handle_edit_line ====================
-
-    #[test]
-    fn find_char_positions_returns_char_offsets_not_bytes() {
-        // `é` is 2 bytes in UTF-8 but 1 char. `str::find` returns byte offsets;
-        // this helper must convert them to char offsets so they're safe to feed
-        // into CharCol.
-        assert_eq!(find_char_positions("é bar", "bar"), vec![2]);
-        assert_eq!(find_char_positions("café bar baz", "ba"), vec![5, 9]);
-        assert_eq!(find_char_positions("ascii only", "only"), vec![6]);
-        assert_eq!(find_char_positions("nope", "missing"), Vec::<usize>::new());
-        assert_eq!(find_char_positions("anything", ""), Vec::<usize>::new());
-    }
-
-    #[test]
-    fn find_char_positions_handles_multi_byte_grapheme_prefix() {
-        // Family emoji is 1 grapheme but 25 bytes / 7 chars. The byte offset
-        // of "x" is 25; the char offset is 7.
-        let s = "👨‍👩‍👧‍👦x";
-        let positions = find_char_positions(s, "x");
-        assert_eq!(positions, vec![7]);
-    }
-
-    #[test]
-    fn handle_edit_line_replaces_match_after_non_ascii_prefix() {
-        // Pre-OV-00243: `find()` returned byte offset 3 for "bar" after "é ",
-        // and `CharCol(3)` pointed past the "b" — corrupting the substitution.
-        // Post-fix: char offset 2 is correct.
-        let mut editor = Editor::with_content("é bar baz\n");
-        let resp = handle_edit_line(&mut editor, Some(0), "bar", "qux");
-        assert!(matches!(resp, ApiResponse::Success(_)));
-        let line = editor.buffer().rope().line(0).to_string();
-        assert_eq!(line.trim_end_matches('\n'), "é qux baz");
-    }
-
-    #[test]
-    fn handle_edit_line_redo_lands_cursor_in_grapheme_space() {
-        // The recorded `cursor_after` on the undo entry is what redo restores.
-        // Pre-OV-00243: cursor_after was `GraphemeCol(byte_offset + byte_len)`
-        // — a byte-quantity smuggled into a grapheme newtype. After substituting
-        // "old" → "NEW" on a line prefixed with a 25-byte / 7-char / 1-grapheme
-        // family emoji, redo must place the cursor at grapheme col 1 + 3 = 4,
-        // not at byte 25 + 3 = 28 (off the end of the line).
-        let mut editor = Editor::with_content("👨‍👩‍👧‍👦old after\n");
-        let resp = handle_edit_line(&mut editor, Some(0), "old", "NEW");
-        assert!(matches!(resp, ApiResponse::Success(_)));
-        editor.undo();
-        editor.redo();
-        let cursor = editor.buffer().cursor();
-        assert_eq!(cursor.line(), 0);
-        assert_eq!(
-            cursor.col().0,
-            4,
-            "redo should place cursor at grapheme col 4 (1 emoji + 3 letters of 'NEW')"
-        );
-    }
-
-    #[test]
-    fn handle_edit_line_undo_restores_non_ascii_line() {
-        // Round-trip undo through a non-ASCII substitution: pre-OV-00243 this
-        // would corrupt the line because the recorded edit positions were
-        // wrong, so undo couldn't restore the original bytes correctly.
-        let original = "café déjà vu\n";
-        let mut editor = Editor::with_content(original);
-        let resp = handle_edit_line(&mut editor, Some(0), "déjà", "now");
-        assert!(matches!(resp, ApiResponse::Success(_)));
-        assert_eq!(
-            editor
-                .buffer()
-                .rope()
-                .line(0)
-                .to_string()
-                .trim_end_matches('\n'),
-            "café now vu"
-        );
-        editor.undo();
-        assert_eq!(editor.buffer().rope().line(0).to_string(), original);
-    }
-}
-
 /// Handle edit-line API request: find and replace text on a specific line or whole buffer
 /// Scan `haystack` for every occurrence of `needle` and return char-offset
 /// positions of each match.
@@ -2946,4 +2567,383 @@ async fn load_preview_async(file_path: &str) -> Option<editor::PreviewCache> {
         highlighted_lines: std::cell::RefCell::new(highlighted_lines),
         language,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::apply_java_status;
+    use super::compute_text_width;
+    use super::emit_new_agent_attention;
+    use super::find_char_positions;
+    use super::handle_api_request;
+    use super::handle_edit_line;
+    use super::handle_terminal_resize;
+    use super::process_input_events;
+    use super::ApiRequest;
+    use super::ApiResponse;
+    use super::{
+        create_snapshot, create_snapshot_with_dimensions, refresh_after_input, tick_transient_ui,
+    };
+    use ovim::api::SNAPSHOT_SCHEMA_VERSION;
+    use ovim::editor::{Editor, InputHandler};
+    use ovim::mode::Mode;
+    use ovim::session::SessionInfo;
+    use ovim::ui::AnsiRenderCache;
+    use ovim_core::ai::chat_types::ChatOpts;
+    use std::sync::{Arc, Mutex};
+    use std::time::SystemTime;
+    use tokio::sync::oneshot;
+
+    fn test_session() -> Arc<Mutex<SessionInfo>> {
+        Arc::new(Mutex::new(SessionInfo::new(0, None, "test".into())))
+    }
+
+    #[tokio::test]
+    async fn get_health_does_not_write_session_file_for_unregistered_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: single-threaded mutation of a test-only variable; no other
+        // test in this binary reads OVIM_SESSION_DIR.
+        unsafe { std::env::set_var("OVIM_SESSION_DIR", dir.path()) };
+
+        let mut editor = Editor::default();
+        let mut cache = AnsiRenderCache::new();
+        // Port 0 is the placeholder for a TUI without a registered session.
+        let session = test_session();
+
+        let (tx, rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::GetHealth(tx),
+            SystemTime::now(),
+            &session,
+            &mut cache,
+        )
+        .await;
+
+        // The health response still works...
+        assert!(matches!(rx.await.unwrap(), ApiResponse::Health(_)));
+        // ...and the in-memory flag is updated (no LSP servers => ready)...
+        assert!(session.lock().unwrap().lsp_ready);
+        // ...but no phantom session file may appear on disk.
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read session dir")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "unregistered session must not be written to disk: {entries:?}"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("OVIM_SESSION_DIR") };
+    }
+
+    #[test]
+    fn agent_attention_bell_emits_once_for_each_generation() {
+        let mut observed = 0;
+        let mut output = Vec::new();
+
+        assert!(emit_new_agent_attention(1, &mut observed, &mut output).unwrap());
+        assert!(!emit_new_agent_attention(1, &mut observed, &mut output).unwrap());
+        assert!(emit_new_agent_attention(2, &mut observed, &mut output).unwrap());
+
+        assert_eq!(observed, 2);
+        assert_eq!(output, b"\x07\x07");
+    }
+
+    #[test]
+    fn focus_gain_requests_terminal_image_surface_refresh() {
+        let mut editor = Editor::default();
+
+        process_input_events(&mut editor, vec![crossterm::event::Event::FocusGained])
+            .expect("focus event");
+
+        assert!(editor.render_cache.terminal_image_refresh_requested);
+    }
+
+    #[tokio::test]
+    async fn set_buffer_invalidates_cached_render() {
+        let mut editor = Editor::with_content("before\n");
+        let mut cache = AnsiRenderCache::new();
+        cache.render(&mut editor, 80, 20, true).unwrap();
+        assert!(cache.would_hit(&editor, 80, 20, true));
+
+        let (tx, rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::SetBuffer("PARITY_SENTINEL\n".into(), tx),
+            SystemTime::now(),
+            &test_session(),
+            &mut cache,
+        )
+        .await;
+        assert!(matches!(rx.await.unwrap(), ApiResponse::Success(_)));
+        assert!(!cache.would_hit(&editor, 80, 20, true));
+        let rendered = cache.render(&mut editor, 80, 20, true).unwrap();
+        assert!(rendered.contains("PARITY_SENTINEL"));
+    }
+
+    #[tokio::test]
+    async fn paste_api_delivers_multiline_text_as_one_event() {
+        let mut editor = Editor::with_content("");
+        let mut cache = AnsiRenderCache::new();
+        let (mode_tx, mode_rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::SetMode("INSERT".into(), mode_tx),
+            SystemTime::now(),
+            &test_session(),
+            &mut cache,
+        )
+        .await;
+        assert!(matches!(mode_rx.await.unwrap(), ApiResponse::Success(_)));
+        assert_eq!(editor.mode(), Mode::Insert);
+
+        let (tx, rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::Paste("first\nsecond".into(), tx),
+            SystemTime::now(),
+            &test_session(),
+            &mut cache,
+        )
+        .await;
+        assert!(matches!(rx.await.unwrap(), ApiResponse::Success(_)));
+        assert_eq!(editor.buffer().rope().to_string(), "first\nsecond");
+    }
+
+    #[test]
+    fn snapshot_exposes_active_ai_chat_state() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                // Ovim is built as a dependency of this binary test, so its
+                // durable-history code is not compiled with `cfg(test)`. Use
+                // a fixture-specific conversation instead of accidentally
+                // restoring the user's real default chat.
+                name: "snapshot-schema-test".into(),
+                ..ChatOpts::default()
+            })
+            .unwrap();
+
+        let snapshot = create_snapshot(&editor);
+        assert_eq!(snapshot.schema_version, SNAPSHOT_SCHEMA_VERSION);
+        let chat = snapshot.ai_chat.expect("active chat snapshot");
+        assert_eq!(chat.activity, "idle");
+        assert!(!chat.waiting);
+        assert!(chat.input.is_empty());
+        assert!(chat.queued.is_empty());
+        assert!(chat.messages.is_empty());
+        assert_eq!(chat.focus, "text_input");
+        assert_eq!(chat.input_cursor, 0);
+    }
+
+    #[tokio::test]
+    async fn api_keys_match_direct_input_state_and_render() {
+        let sequence = "jA!<Esc>gg0";
+        let dimensions = (72, 20);
+        let mut direct = Editor::with_content("alpha\nbeta\ngamma\n");
+        let mut via_api = Editor::with_content("alpha\nbeta\ngamma\n");
+        handle_terminal_resize(&mut direct, dimensions.0, dimensions.1).unwrap();
+        handle_terminal_resize(&mut via_api, dimensions.0, dimensions.1).unwrap();
+
+        for event in ovim::api::parse_key_string(sequence).unwrap() {
+            InputHandler::handle_key_event_no_dirty(&mut direct, event).unwrap();
+        }
+        refresh_after_input(&mut direct);
+
+        let (tx, rx) = oneshot::channel();
+        let mut api_cache = AnsiRenderCache::new();
+        let session = Arc::new(Mutex::new(
+            SessionInfo::new(12345, None, "parity".to_string())
+                .with_dimensions(dimensions.0, dimensions.1),
+        ));
+        handle_api_request(
+            &mut via_api,
+            ApiRequest::SendKeys(sequence.to_string(), tx),
+            SystemTime::now(),
+            &session,
+            &mut api_cache,
+        )
+        .await;
+        assert!(matches!(rx.await.unwrap(), ApiResponse::SendKeysResult(_)));
+
+        let direct_snapshot = create_snapshot_with_dimensions(&direct, Some(dimensions));
+        let api_snapshot = create_snapshot_with_dimensions(&via_api, Some(dimensions));
+        assert_eq!(
+            serde_json::to_value(direct_snapshot).unwrap(),
+            serde_json::to_value(api_snapshot).unwrap()
+        );
+
+        let mut direct_cache = AnsiRenderCache::new();
+        let direct_render = direct_cache
+            .render(&mut direct, dimensions.0, dimensions.1, true)
+            .unwrap();
+        let api_render = api_cache
+            .render(&mut via_api, dimensions.0, dimensions.1, true)
+            .unwrap();
+        assert_eq!(direct_render, api_render);
+    }
+
+    #[test]
+    fn working_animation_tick_invalidates_the_render_without_input() {
+        let mut editor = Editor::with_content("hello\n");
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        editor.ai_state.chat.as_mut().unwrap().waiting = true;
+        editor.render_cache.ai_chat_working_animation_tick = u128::MAX;
+        editor.mark_clean();
+
+        tick_transient_ui(&mut editor);
+
+        assert!(editor.is_dirty());
+    }
+
+    #[test]
+    fn resize_updates_viewport_and_wrap_map_and_keeps_cursor_visible() {
+        // 200 logical lines, wide enough to exercise gutter sizing.
+        let content: String = (1..=200)
+            .map(|i| format!("line {i}: {}\n", "x".repeat(120)))
+            .collect();
+
+        let mut editor = Editor::with_content(&content);
+        editor.options.number = true;
+        editor.options.wrap = true;
+        editor.options.scrolloff = 0;
+
+        // Initial size.
+        handle_terminal_resize(&mut editor, 80, 20).unwrap();
+        assert_eq!(editor.viewport_height(), 18);
+
+        // Move cursor to EOF and ensure scroll offset is set.
+        let last_line = editor.buffer().line_count().saturating_sub(1);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(last_line, ovim_core::unicode::GraphemeCol::ZERO);
+        editor.update_scroll_offset();
+
+        // Shrink the pane; cursor should remain visible in the new viewport.
+        handle_terminal_resize(&mut editor, 80, 10).unwrap();
+        assert_eq!(editor.viewport_height(), 8);
+
+        let cursor_line = editor.buffer().cursor().line();
+        let scroll_offset = editor.scroll_offset();
+        let visible = editor.viewport_height().max(1);
+        assert!(
+            cursor_line >= scroll_offset && cursor_line < scroll_offset + visible,
+            "cursor should remain visible after resize: cursor_line={cursor_line} scroll_offset={scroll_offset} viewport={visible}"
+        );
+
+        // Wrap map should match the new text width (buffer width minus gutter).
+        let wrap_width = editor.wrap_map().map(|m| m.wrap_width()).unwrap_or(0);
+        assert_eq!(wrap_width, compute_text_width(&editor, 80).max(1));
+    }
+
+    #[test]
+    fn java_ready_status_requests_diagnostics_refresh() {
+        let mut editor = Editor::with_content("class Test {}\n");
+
+        apply_java_status(&mut editor, "Java: Ready".to_string());
+
+        assert_eq!(editor.lsp_status(), "Java: Ready");
+        assert!(editor.take_diagnostics_refresh_request());
+    }
+
+    #[test]
+    fn kotlin_ready_status_requests_diagnostics_refresh() {
+        let mut editor = Editor::with_content("fun main() {}\n");
+
+        apply_java_status(&mut editor, "Kotlin: Ready".to_string());
+
+        assert_eq!(editor.lsp_status(), "Kotlin: Ready");
+        assert!(editor.take_diagnostics_refresh_request());
+    }
+
+    #[test]
+    fn java_non_ready_status_does_not_request_diagnostics_refresh() {
+        let mut editor = Editor::with_content("class Test {}\n");
+
+        apply_java_status(&mut editor, "Java: Starting Hyperion LSP...".to_string());
+
+        assert_eq!(editor.lsp_status(), "Java: Starting Hyperion LSP...");
+        assert!(!editor.take_diagnostics_refresh_request());
+    }
+
+    // ==================== OV-00243: byte/char mix in handle_edit_line ====================
+
+    #[test]
+    fn find_char_positions_returns_char_offsets_not_bytes() {
+        // `é` is 2 bytes in UTF-8 but 1 char. `str::find` returns byte offsets;
+        // this helper must convert them to char offsets so they're safe to feed
+        // into CharCol.
+        assert_eq!(find_char_positions("é bar", "bar"), vec![2]);
+        assert_eq!(find_char_positions("café bar baz", "ba"), vec![5, 9]);
+        assert_eq!(find_char_positions("ascii only", "only"), vec![6]);
+        assert_eq!(find_char_positions("nope", "missing"), Vec::<usize>::new());
+        assert_eq!(find_char_positions("anything", ""), Vec::<usize>::new());
+    }
+
+    #[test]
+    fn find_char_positions_handles_multi_byte_grapheme_prefix() {
+        // Family emoji is 1 grapheme but 25 bytes / 7 chars. The byte offset
+        // of "x" is 25; the char offset is 7.
+        let s = "👨‍👩‍👧‍👦x";
+        let positions = find_char_positions(s, "x");
+        assert_eq!(positions, vec![7]);
+    }
+
+    #[test]
+    fn handle_edit_line_replaces_match_after_non_ascii_prefix() {
+        // Pre-OV-00243: `find()` returned byte offset 3 for "bar" after "é ",
+        // and `CharCol(3)` pointed past the "b" — corrupting the substitution.
+        // Post-fix: char offset 2 is correct.
+        let mut editor = Editor::with_content("é bar baz\n");
+        let resp = handle_edit_line(&mut editor, Some(0), "bar", "qux");
+        assert!(matches!(resp, ApiResponse::Success(_)));
+        let line = editor.buffer().rope().line(0).to_string();
+        assert_eq!(line.trim_end_matches('\n'), "é qux baz");
+    }
+
+    #[test]
+    fn handle_edit_line_redo_lands_cursor_in_grapheme_space() {
+        // The recorded `cursor_after` on the undo entry is what redo restores.
+        // Pre-OV-00243: cursor_after was `GraphemeCol(byte_offset + byte_len)`
+        // — a byte-quantity smuggled into a grapheme newtype. After substituting
+        // "old" → "NEW" on a line prefixed with a 25-byte / 7-char / 1-grapheme
+        // family emoji, redo must place the cursor at grapheme col 1 + 3 = 4,
+        // not at byte 25 + 3 = 28 (off the end of the line).
+        let mut editor = Editor::with_content("👨‍👩‍👧‍👦old after\n");
+        let resp = handle_edit_line(&mut editor, Some(0), "old", "NEW");
+        assert!(matches!(resp, ApiResponse::Success(_)));
+        editor.undo();
+        editor.redo();
+        let cursor = editor.buffer().cursor();
+        assert_eq!(cursor.line(), 0);
+        assert_eq!(
+            cursor.col().0,
+            4,
+            "redo should place cursor at grapheme col 4 (1 emoji + 3 letters of 'NEW')"
+        );
+    }
+
+    #[test]
+    fn handle_edit_line_undo_restores_non_ascii_line() {
+        // Round-trip undo through a non-ASCII substitution: pre-OV-00243 this
+        // would corrupt the line because the recorded edit positions were
+        // wrong, so undo couldn't restore the original bytes correctly.
+        let original = "café déjà vu\n";
+        let mut editor = Editor::with_content(original);
+        let resp = handle_edit_line(&mut editor, Some(0), "déjà", "now");
+        assert!(matches!(resp, ApiResponse::Success(_)));
+        assert_eq!(
+            editor
+                .buffer()
+                .rope()
+                .line(0)
+                .to_string()
+                .trim_end_matches('\n'),
+            "café now vu"
+        );
+        editor.undo();
+        assert_eq!(editor.buffer().rope().line(0).to_string(), original);
+    }
 }

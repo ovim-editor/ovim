@@ -256,9 +256,10 @@ impl WrapMap {
     /// adding decoration widths column-by-column so mid-decoration wraps are
     /// tracked correctly.
     ///
-    /// `col` is a **flat display column** — the sum of content widths (characters
-    /// + decorations) from the line start, *without* padding from wide-char
-    /// pushes. This matches how callers compute it: `expanded_col + inline_offset`.
+    /// `col` is a **flat display column** — the sum of content widths
+    /// (characters plus decorations) from the line start, *without* padding
+    /// from wide-char pushes. This matches how callers compute it:
+    /// `expanded_col + inline_offset`.
     pub fn cursor_to_visual_with_decorations(
         &self,
         line: usize,
@@ -601,8 +602,8 @@ mod tests {
         assert_eq!(map.cursor_to_visual(0, 0, text), (0, 0));
         assert_eq!(map.cursor_to_visual(0, 4, text), (0, 4));
         // Col 5+ → sub_line 1
-        assert_eq!(map.cursor_to_visual(0, 5, text), (0 + 1, 0));
-        assert_eq!(map.cursor_to_visual(0, 9, text), (0 + 1, 4));
+        assert_eq!(map.cursor_to_visual(0, 5, text), (1, 0));
+        assert_eq!(map.cursor_to_visual(0, 9, text), (1, 4));
     }
 
     #[test]

@@ -202,7 +202,7 @@ impl Editor {
             return false;
         }
         let len_lines = self.buffer().rope().len_lines();
-        if !self.wrap_map().is_some_and(|m| m.line_count() >= len_lines) {
+        if self.wrap_map().is_none_or(|m| m.line_count() < len_lines) {
             return false;
         }
 

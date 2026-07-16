@@ -4,6 +4,9 @@ version = "0.1.6"
 edition = "2024"
 description = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, Lua config, LSP, and AI built in."
 
+[lints]
+workspace = true
+
 [dependencies]
 ovim-core = { path = "../ovim-core" }
 ratatui = "0.29"

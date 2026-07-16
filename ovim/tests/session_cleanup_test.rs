@@ -58,7 +58,7 @@ fn test_cleanup_stale_sessions() -> Result<()> {
     let fake_pid = 999999; // Very unlikely to exist
 
     // Ensure session directory exists
-    fs::create_dir_all(&session_dir)?;
+    fs::create_dir_all(session_dir)?;
 
     let session1 = SessionInfo {
         pid: fake_pid,
@@ -339,7 +339,7 @@ fn test_session_age() -> Result<()> {
     // Age should be approximately 2 days (allow some variance)
     let age_days = age.as_secs() / (24 * 60 * 60);
     assert!(
-        age_days >= 1 && age_days <= 3,
+        (1..=3).contains(&age_days),
         "Expected age ~2 days, got {} days",
         age_days
     );

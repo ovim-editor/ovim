@@ -1250,7 +1250,7 @@ impl Editor {
             let seeded_content = state
                 .last_queued_content
                 .clone()
-                .or_else(|| current_content.map(|content| Arc::from(content)));
+                .or_else(|| current_content.map(Arc::from));
             if let Some(content) = seeded_content {
                 state.mark_change_flushed(content, sent_version, current_content);
             }
@@ -1263,7 +1263,7 @@ impl Editor {
             let flushed_content = state
                 .last_queued_content
                 .clone()
-                .or_else(|| current_content.map(|content| Arc::from(content)));
+                .or_else(|| current_content.map(Arc::from));
             if let Some(content) = flushed_content {
                 state.mark_change_flushed(content, sent_version, current_content);
             }

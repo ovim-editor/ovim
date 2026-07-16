@@ -389,7 +389,7 @@ impl ReplaySession {
             ReplayBoundary::Event(id) => {
                 let sequence = *self
                     .event_sequences
-                    .get(&id)
+                    .get(id)
                     .ok_or_else(|| ReplayError::UnknownEventBoundary(id.clone()))?;
                 Ok(self
                     .transitions
@@ -398,7 +398,7 @@ impl ReplaySession {
             ReplayBoundary::Turn(id) => {
                 let sequence = *self
                     .turn_sequences
-                    .get(&id)
+                    .get(id)
                     .ok_or_else(|| ReplayError::UnknownTurnBoundary(id.clone()))?;
                 Ok(self
                     .transitions

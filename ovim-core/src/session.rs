@@ -568,7 +568,7 @@ pub fn cleanup_stale_sessions_in(
     };
 
     // Clean up session files
-    for entry in fs::read_dir(&session_dir)? {
+    for entry in fs::read_dir(session_dir)? {
         let entry = entry?;
         let path = entry.path();
 
@@ -672,7 +672,7 @@ pub fn cleanup_stale_sessions_in(
     // Clean up orphaned .tmp files older than 1 hour
     // These are created during atomic writes (write + rename) but can be left behind
     // if the process crashes or the write fails between creating the temp file and renaming it
-    for entry in fs::read_dir(&session_dir)? {
+    for entry in fs::read_dir(session_dir)? {
         let entry = entry?;
         let path = entry.path();
 

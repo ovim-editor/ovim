@@ -144,12 +144,10 @@ impl DebugAdapterClient {
             .await
             .map_err(|_| anyhow!("debug adapter stdin closed"))?;
 
-        let result = tokio::time::timeout(std::time::Duration::from_secs(30), rx)
+        tokio::time::timeout(std::time::Duration::from_secs(30), rx)
             .await
             .map_err(|_| anyhow!("DAP request '{}' timed out", command))?
-            .map_err(|_| anyhow!("debug adapter disconnected"))?;
-
-        result
+            .map_err(|_| anyhow!("debug adapter disconnected"))?
     }
 
     // ---- High-level request methods ----

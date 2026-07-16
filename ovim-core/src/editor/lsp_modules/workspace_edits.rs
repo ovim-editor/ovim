@@ -182,7 +182,7 @@ impl Editor {
         cursor: crate::change::CursorPos,
     ) -> Option<Change> {
         let mut snapshots = Vec::new();
-        for ((path, before_bytes), (_, after_bytes)) in before.into_iter().zip(after.into_iter()) {
+        for ((path, before_bytes), (_, after_bytes)) in before.into_iter().zip(after) {
             if before_bytes != after_bytes {
                 snapshots.push(Change::resource_snapshot(path, before_bytes, after_bytes));
             }

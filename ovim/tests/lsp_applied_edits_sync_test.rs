@@ -21,6 +21,8 @@ fn text_edit_replace_hello_with_world() -> TextEdit {
     }
 }
 
+// Uri's interior mutability is an internal cache; it doesn't affect Hash/Eq.
+#[allow(clippy::mutable_key_type)]
 fn workspace_edit_for_uri(uri: lsp_types::Uri, edit: TextEdit) -> WorkspaceEdit {
     let mut changes = std::collections::HashMap::new();
     changes.insert(uri, vec![edit]);

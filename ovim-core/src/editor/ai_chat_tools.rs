@@ -1076,33 +1076,39 @@ impl Editor {
                         Some(ToolDispatchOutcome::Completed(ToolResult::Error(
                             "'command' is required and must be non-empty".into(),
                         )))
-                    } else if workdir.is_none() {
-                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(
-                            self.no_project_root_error(),
-                        )))
-                    } else if artifact_store.is_none() {
-                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(
-                            "shell program was not executed because replay artifact storage is unavailable"
-                                .into(),
-                        )))
                     } else {
-                        if let Some(chat) = self.ai_state.chat.as_mut() {
-                            chat.tool_call_count =
-                                chat.tool_call_count.saturating_add(executed_in_batch);
+                        match (workdir, artifact_store) {
+                            (None, _) => Some(ToolDispatchOutcome::Completed(ToolResult::Error(
+                                self.no_project_root_error(),
+                            ))),
+                            (_, None) => Some(ToolDispatchOutcome::Completed(ToolResult::Error(
+                                "shell program was not executed because replay artifact storage is unavailable"
+                                    .into(),
+                            ))),
+                            (Some(workdir), Some(artifact_store)) => {
+                                if let Some(chat) = self.ai_state.chat.as_mut() {
+                                    chat.tool_call_count =
+                                        chat.tool_call_count.saturating_add(executed_in_batch);
+                                }
+                                self.start_pending_shell_execution(
+                                    tc.clone(),
+                                    super::ai_chat_state::ShellExecutionContinuation::Batch {
+                                        runtime_tool: runtime_tool
+                                            .as_ref()
+                                            .map(|(_, tool)| tool.clone()),
+                                        runtime_turn: runtime_tool
+                                            .as_ref()
+                                            .map(|(turn, _)| turn.clone()),
+                                        remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                                        model_name,
+                                    },
+                                    command,
+                                    workdir,
+                                    artifact_store,
+                                );
+                                return true;
+                            }
                         }
-                        self.start_pending_shell_execution(
-                            tc.clone(),
-                            super::ai_chat_state::ShellExecutionContinuation::Batch {
-                                runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
-                                runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
-                                remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
-                                model_name,
-                            },
-                            command,
-                            workdir.expect("checked above"),
-                            artifact_store.expect("checked above"),
-                        );
-                        return true;
                     }
                 }
             } else {
@@ -2904,12 +2910,10 @@ mod tests {
         fs::write(&file, "fn main() {}\n// second line\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
-            super::super::ai_state::AiState::with_run_storage_layout(
-                crate::run_log::RunStorageLayout::new(runs.path()),
-            )
-            .unwrap(),
-        );
+        *editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .unwrap();
         editor.open_file(&file).unwrap();
         editor
             .open_ai_chat(ChatOpts {
@@ -3067,12 +3071,10 @@ mod tests {
         fs::write(&file, "fn main() {}\n").unwrap();
         let runs = tempfile::tempdir().unwrap();
         let mut editor = Editor::default();
-        editor.ai_state = Box::new(
-            super::super::ai_state::AiState::with_run_storage_layout(
-                crate::run_log::RunStorageLayout::new(runs.path()),
-            )
-            .unwrap(),
-        );
+        *editor.ai_state = super::super::ai_state::AiState::with_run_storage_layout(
+            crate::run_log::RunStorageLayout::new(runs.path()),
+        )
+        .unwrap();
         editor.open_file(&file).unwrap();
         editor
             .open_ai_chat(ChatOpts {

@@ -639,7 +639,7 @@ where
         .iter()
         .map(|hint| {
             let line = hint.position.line as usize;
-            let utf16_col = hint.position.character as u32;
+            let utf16_col = hint.position.character;
             // Convert UTF-16 offset → char index.
             let text_for_line = line_text(line);
             let char_idx = crate::lsp::utf16_to_char_col(&text_for_line, utf16_col);

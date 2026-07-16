@@ -11,7 +11,7 @@ use tempfile::NamedTempFile;
 #[test]
 fn test_reload_clears_undo_history() {
     let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "original\n").unwrap();
+    writeln!(tmp, "original").unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     let mut test = EditorTest::new("original\n");
@@ -65,7 +65,7 @@ fn test_reload_resets_folds() {
 #[test]
 fn test_reload_bumps_version() {
     let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "content\n").unwrap();
+    writeln!(tmp, "content").unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     let mut test = EditorTest::new("content\n");
@@ -87,7 +87,7 @@ fn test_reload_bumps_version() {
 #[test]
 fn test_reload_clears_modified_flag() {
     let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "clean\n").unwrap();
+    writeln!(tmp, "clean").unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     let mut test = EditorTest::new("clean\n");
@@ -189,7 +189,7 @@ async fn test_save_preserves_file_permissions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_save_preserves_restrictive_permissions() {
     let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "secret=hunter2\n").unwrap();
+    writeln!(tmp, "secret=hunter2").unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     // Set restrictive permissions (0o600 — owner read/write only)
@@ -215,7 +215,7 @@ async fn test_save_preserves_restrictive_permissions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn test_e_bang_command_reloads_discarding_changes() {
     let mut tmp = NamedTempFile::new().unwrap();
-    write!(tmp, "original\n").unwrap();
+    writeln!(tmp, "original").unwrap();
     let path = tmp.path().to_string_lossy().to_string();
 
     let mut test = EditorTest::new("");
