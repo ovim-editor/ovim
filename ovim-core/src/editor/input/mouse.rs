@@ -856,7 +856,7 @@ fn handle_ai_prompt_click(editor: &mut Editor, col: u16, row: u16) -> Result<boo
 
     for (rect, profile_name) in editor.render_cache.ai_prompt_model_hitboxes.clone() {
         if rect.contains(col, row) {
-            let _ = editor.ai_set_profile(&profile_name);
+            editor.ai_set_profile(&profile_name);
             editor.ai_close_model_picker();
             return Ok(true);
         }

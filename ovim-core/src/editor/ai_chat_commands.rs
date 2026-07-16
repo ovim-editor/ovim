@@ -209,8 +209,6 @@ impl Editor {
             }) => {
                 if self.ai_set_profile(&profile) {
                     self.clear_ai_chat_input();
-                } else {
-                    self.set_lsp_status(format!("Unknown AI profile: {profile}"));
                 }
             }
             Ok(AiChatSlashCommand::Yolo { enabled }) => {

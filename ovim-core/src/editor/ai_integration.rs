@@ -19,9 +19,10 @@ impl Editor {
         names
     }
 
-    /// Select a specific AI profile. Returns false when profile is unknown.
+    /// Select a specific AI profile. Reports and returns false when unknown.
     pub fn ai_set_profile(&mut self, profile_name: &str) -> bool {
         let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
+            self.set_lsp_status(format!("Unknown AI profile: {profile_name}"));
             return false;
         };
         self.ai_state.active_profile = profile_name.to_string();
@@ -47,6 +48,7 @@ impl Editor {
     pub fn ai_cycle_profile(&mut self, forward: bool) {
         let names = self.ai_profile_names_sorted();
         if names.is_empty() {
+            self.set_lsp_status("No AI profiles configured".to_string());
             return;
         }
 
@@ -63,7 +65,8 @@ impl Editor {
             current_idx - 1
         };
 
-        let _ = self.ai_set_profile(&names[next_idx]);
+        let selected = self.ai_set_profile(&names[next_idx]);
+        debug_assert!(selected, "profile came from the active configuration");
     }
 
     /// Opens the AI prompt model picker and highlights the current profile.
@@ -127,6 +130,7 @@ impl Editor {
     pub fn ai_apply_model_picker_selection(&mut self) {
         let names = self.ai_profile_names_sorted();
         if names.is_empty() {
+            self.set_lsp_status("No AI profiles configured".to_string());
             self.ai_close_model_picker();
             return;
         }
@@ -136,7 +140,8 @@ impl Editor {
             .prompt
             .model_picker_index
             .min(names.len().saturating_sub(1));
-        let _ = self.ai_set_profile(&names[idx]);
+        let selected = self.ai_set_profile(&names[idx]);
+        debug_assert!(selected, "profile came from the active configuration");
         self.ai_close_model_picker();
     }
 
@@ -1295,6 +1300,17 @@ mod tests {
         editor.set_cursor_from_abs_char(8);
 
         assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2));
+    }
+
+    #[test]
+    fn unknown_profile_selection_is_visible_and_preserves_active_profile() {
+        let mut editor = Editor::default();
+        let active = editor.ai_state.active_profile.clone();
+
+        assert!(!editor.ai_set_profile("missing-profile"));
+
+        assert_eq!(editor.ai_state.active_profile, active);
+        assert_eq!(editor.lsp_status(), "Unknown AI profile: missing-profile");
     }
 
     #[test]
