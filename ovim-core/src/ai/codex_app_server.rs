@@ -468,6 +468,11 @@ pub(crate) struct AppServerClient {
     stdin: ChildStdin,
     stdout: BufReader<ChildStdout>,
     next_request_id: i64,
+    /// Messages read while awaiting a specific response (e.g. `turn/steer`).
+    /// They are replayed FIFO by `next_message` so in-flight turn traffic —
+    /// deltas, server-to-client tool requests, `turn/completed` — is never
+    /// dropped.
+    pending_messages: std::collections::VecDeque<Value>,
 }
 
 impl AppServerClient {
@@ -505,6 +510,25 @@ impl AppServerClient {
             stdin,
             stdout: BufReader::new(stdout),
             next_request_id: 1,
+            pending_messages: std::collections::VecDeque::new(),
+        })
+    }
+
+    /// Test seam: wraps an already-spawned process that speaks the app-server
+    /// protocol on its stdio.
+    #[cfg(test)]
+    fn from_child(mut child: Child) -> Result<Self> {
+        let stdin = child.stdin.take().context("fake app-server has no stdin")?;
+        let stdout = child
+            .stdout
+            .take()
+            .context("fake app-server has no stdout")?;
+        Ok(Self {
+            child,
+            stdin,
+            stdout: BufReader::new(stdout),
+            next_request_id: 1,
+            pending_messages: std::collections::VecDeque::new(),
         })
     }
 
@@ -608,6 +632,15 @@ impl AppServerClient {
     }
 
     async fn next_message(&mut self) -> Result<Value> {
+        if let Some(message) = self.pending_messages.pop_front() {
+            return Ok(message);
+        }
+        self.read_message().await
+    }
+
+    /// Reads the next message directly from the app-server, bypassing
+    /// `pending_messages`.
+    async fn read_message(&mut self) -> Result<Value> {
         let mut line = String::new();
         let read = self
             .stdout
@@ -627,8 +660,19 @@ impl AppServerClient {
         stream_tx: Option<&UnboundedSender<StreamChunk>>,
     ) -> Result<Value> {
         loop {
-            let message = self.next_message().await?;
-            if message.get("id").and_then(Value::as_i64) == Some(id) {
+            // A response can only arrive after its request was sent, so
+            // nothing already buffered in `pending_messages` can match `id`;
+            // read from the wire and buffer every non-matching message for
+            // `next_message`. Dropping them instead would lose deltas, leave
+            // server-to-client tool requests unanswered, and could swallow
+            // `turn/completed`, hanging the turn.
+            let message = self.read_message().await?;
+            // A server-to-client request (e.g. `item/tool/call`) carries both
+            // a `method` and its own id namespace — only an id WITHOUT a
+            // method is a response to us.
+            if message.get("method").is_none()
+                && message.get("id").and_then(Value::as_i64) == Some(id)
+            {
                 if let Some(error) = message.get("error") {
                     let detail = error
                         .get("message")
@@ -639,6 +683,7 @@ impl AppServerClient {
                 return Ok(message);
             }
             emit_delta(&message, stream_tx);
+            self.pending_messages.push_back(message);
         }
     }
 
@@ -1656,5 +1701,135 @@ mod tests {
         apply_provider_steer_update(&mut pending, ProviderSteerUpdate::Cancel { id: 7 });
 
         assert!(pending.is_empty());
+    }
+
+    #[tokio::test]
+    async fn steer_wait_preserves_interleaved_turn_traffic() {
+        use crate::ai::chat_types::ProviderSteerUpdate;
+        use std::time::Duration;
+
+        let dir = tempdir().unwrap();
+        let fixture = dir.path().join("server-output.jsonl");
+        // Scripted app-server output. While the client waits for its
+        // `turn/steer` response (client request ids start at 1), the server
+        // interleaves an agent-message delta and another tool-call REQUEST.
+        // That request deliberately reuses JSON-RPC id 1 — the same id as the
+        // client's steer request — to prove a server-to-client request is
+        // never mistaken for the steer response.
+        let script_messages = [
+            json!({
+                "method": "item/tool/call",
+                "id": 100,
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "namespace": "ovim",
+                    "callId": "call-1",
+                    "tool": "read_file",
+                    "arguments": {}
+                }
+            }),
+            json!({
+                "method": "item/agentMessage/delta",
+                "params": { "threadId": "thread-1", "turnId": "turn-1", "delta": "hello" }
+            }),
+            json!({
+                "method": "item/tool/call",
+                "id": 1,
+                "params": {
+                    "threadId": "thread-1",
+                    "turnId": "turn-1",
+                    "namespace": "ovim",
+                    "callId": "call-2",
+                    "tool": "read_file",
+                    "arguments": {}
+                }
+            }),
+            json!({ "id": 1, "result": {} }),
+            json!({
+                "method": "turn/completed",
+                "params": {
+                    "threadId": "thread-1",
+                    "turn": { "id": "turn-1", "status": "completed" }
+                }
+            }),
+        ];
+        let body = script_messages
+            .iter()
+            .map(|message| message.to_string())
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(&fixture, format!("{body}\n")).unwrap();
+
+        // Replay the scripted output, then keep consuming stdin so the
+        // client's own writes (tool results, turn/steer) never hit a broken
+        // pipe.
+        let child = Command::new("sh")
+            .arg("-c")
+            .arg(format!("cat '{}'; cat >/dev/null", fixture.display()))
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .spawn()
+            .unwrap();
+        let mut client = AppServerClient::from_child(child).unwrap();
+
+        let (steer_tx, steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        steer_tx
+            .send(ProviderSteerUpdate::Queue {
+                id: 7,
+                content: "steer".into(),
+            })
+            .unwrap();
+        let (stream_tx, mut stream_rx) = tokio::sync::mpsc::unbounded_channel();
+        let observer = tokio::spawn(async move {
+            let mut events = Vec::new();
+            while let Some(chunk) = stream_rx.recv().await {
+                match chunk {
+                    StreamChunk::DynamicToolRequest { call, response } => {
+                        let _ = response.send(Ok("tool output".into()));
+                        events.push(format!("tool:{}", call.id));
+                    }
+                    StreamChunk::Content(text) => events.push(format!("content:{text}")),
+                    StreamChunk::SteerAccepted { .. } => events.push("steer-accepted".into()),
+                    StreamChunk::SteerRejected { error, .. } => {
+                        events.push(format!("steer-rejected:{error}"));
+                    }
+                    _ => {}
+                }
+            }
+            events
+        });
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(10),
+            client.stream_turn(
+                Some(stream_tx),
+                Path::new("."),
+                "thread-1",
+                "turn-1",
+                Some(steer_rx),
+            ),
+        )
+        .await
+        .expect("stream_turn hung: in-flight turn traffic was lost while steering")
+        .unwrap();
+
+        // The delta swallowed-while-steering must still reach the output and
+        // the stream; the interleaved tool request must be answered; the turn
+        // must complete.
+        assert_eq!(output, "hello");
+        let events = observer.await.unwrap();
+        assert_eq!(
+            events,
+            vec![
+                "tool:call-1".to_string(),
+                "steer-accepted".to_string(),
+                "content:hello".to_string(),
+                "tool:call-2".to_string(),
+            ]
+        );
+        drop(steer_tx);
     }
 }
