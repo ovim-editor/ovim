@@ -172,10 +172,10 @@ pub fn wrap_chat_input_rows_with_widths(
                 Some('\n') => {
                     rows.push(ChatInputRow {
                         start: row_start,
-                        visible_start: row_start,
-                        end: row_start,
+                        visible_start,
+                        end: visible_start,
                     });
-                    row_start += 1;
+                    row_start = visible_start + 1;
                     continue;
                 }
                 Some(character) => row_end = visible_start + character.len_utf8(),
@@ -364,6 +364,28 @@ mod tests {
         let input = "abc \ndef";
         let rows = wrap_chat_input_rows(input, 20, 4);
         assert_eq!(text(&rows, input), vec!["abc ", "def"]);
+    }
+
+    #[test]
+    fn soft_wrapped_separator_before_newline_uses_one_empty_row() {
+        let input = "hello \nworld";
+        let rows = wrap_chat_input_rows(input, 5, 4);
+
+        assert_eq!(text(&rows, input), vec!["hello", " ", "world"]);
+        assert_eq!(&input[rows[1].visible_start..rows[1].end], "");
+    }
+
+    #[test]
+    fn unicode_separator_before_newline_preserves_utf8_boundaries() {
+        let input = "hello\u{2003}\nworld";
+        let rows = wrap_chat_input_rows(input, 5, 4);
+
+        assert_eq!(text(&rows, input), vec!["hello", "\u{2003}", "world"]);
+        assert!(rows.iter().all(|row| {
+            input.is_char_boundary(row.start)
+                && input.is_char_boundary(row.visible_start)
+                && input.is_char_boundary(row.end)
+        }));
     }
 
     #[test]
