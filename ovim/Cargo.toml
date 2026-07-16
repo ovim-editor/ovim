@@ -1,6 +1,6 @@
 [package]
 name = "ovim"
-version = "0.1.5"
+version = "0.1.6"
 edition = "2024"
 description = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, Lua config, LSP, and AI built in."
 
@@ -44,6 +44,8 @@ sysinfo = "0.32"
 default = ["lua"]
 lua = ["mlua", "ovim-core/lua"]
 metrics = ["prometheus", "ovim-core/metrics"]
+# Statically link OpenSSL for portable release binaries
+vendored = ["ovim-core/vendored", "reqwest/native-tls-vendored"]
 
 [dev-dependencies]
 tree-sitter = "0.25"
