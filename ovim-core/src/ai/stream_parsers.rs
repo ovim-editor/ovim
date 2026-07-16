@@ -481,6 +481,16 @@ pub async fn parse_ollama_stream<E: Display>(
                 }
             }
             Some(Err(e)) => {
+                // A transport failure must not swallow held-back content:
+                // release it (or keep suppressing it when structured tool
+                // calls already arrived) exactly like a normal end of stream
+                // before reporting the error.
+                finish_ollama_content(
+                    &accumulated_content,
+                    got_structured_tool_calls,
+                    content_streaming_started,
+                    &tx,
+                );
                 let _ = tx.send(StreamChunk::Error(e.to_string()));
                 return;
             }
@@ -578,10 +588,37 @@ fn emit_extracted_tool_calls(content: &str, tx: &UnboundedSender<StreamChunk>) -
 }
 
 fn may_be_tool_call_content(content: &str) -> bool {
-    matches!(
-        content.trim_start().chars().next(),
-        None | Some('{' | '[' | '`')
-    )
+    let trimmed = content.trim_start();
+    match trimmed.chars().next() {
+        None => true,
+        Some('{' | '[') => true,
+        Some('`') => fenced_content_may_be_tool_call(trimmed),
+        _ => false,
+    }
+}
+
+/// Backtick-prefixed replies are held back only while they can still be a
+/// ```json (or bare ```) fence wrapping an echoed tool-call payload. As soon
+/// as the fence reveals another language (```rust, ```python, …) or a
+/// non-JSON body, the reply is an ordinary code answer and must stream.
+fn fenced_content_may_be_tool_call(content: &str) -> bool {
+    let backticks = content.bytes().take_while(|&b| b == b'`').count();
+    if backticks < 3 {
+        // Inline code (` or ``) is never a tool-call fence; release as soon
+        // as a non-backtick character proves the run stopped short of ```.
+        return content.len() == backticks;
+    }
+    let after_fence = &content[backticks..];
+    let Some((info, body)) = after_fence.split_once('\n') else {
+        // The fence info string is still streaming; hold only while it can
+        // still become ```json.
+        return "json".starts_with(after_fence.trim().to_ascii_lowercase().as_str());
+    };
+    let info = info.trim();
+    if !info.is_empty() && !info.eq_ignore_ascii_case("json") {
+        return false;
+    }
+    matches!(body.trim_start().chars().next(), None | Some('{' | '['))
 }
 
 fn finish_ollama_content(
@@ -1163,6 +1200,96 @@ mod tests {
             .collect();
         // Only the structured tool call, not the content-parsed one
         assert_eq!(tc_names, vec!["real_tool"]);
+        assert!(!chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
+    }
+
+    #[tokio::test]
+    async fn ollama_transport_error_releases_buffered_content() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // JSON-looking prefix is held back; the stream then dies mid-answer.
+        let stream = make_error_stream(vec![
+            Ok("{\"message\":{\"content\":\"{\\\"answer\\\":\"},\"done\":false}\n"),
+            Err("connection reset"),
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 2);
+        assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "{\"answer\":"));
+        assert!(matches!(&chunks[1], StreamChunk::Error(s) if s == "connection reset"));
+    }
+
+    #[tokio::test]
+    async fn ollama_rust_fence_streams_incrementally() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"```rust\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\\nfn main() {}\\n\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"```\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        // The fence info string rules out tool JSON before the body even
+        // arrives, so every delta streams as its own chunk.
+        assert_eq!(chunks.len(), 4);
+        assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "```rust"));
+        assert!(matches!(&chunks[1], StreamChunk::Content(s) if s == "\nfn main() {}\n"));
+        assert!(matches!(&chunks[2], StreamChunk::Content(s) if s == "```"));
+        assert!(matches!(&chunks[3], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn ollama_inline_code_prefix_streams_immediately() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"`foo`\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\" is a variable\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert_eq!(chunks.len(), 3);
+        assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "`foo`"));
+        assert!(matches!(&chunks[1], StreamChunk::Content(s) if s == " is a variable"));
+        assert!(matches!(&chunks[2], StreamChunk::Done));
+    }
+
+    #[tokio::test]
+    async fn ollama_json_fence_tool_echo_still_suppressed() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Model echoes the tool call inside a ```json fence AND sends the
+        // structured tool_calls field — the echo must stay suppressed.
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"```json\\n{\\\"name\\\": \\\"wrong_tool\\\", \\\"arguments\\\": {}}\\n```\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\",\"tool_calls\":[{\"function\":{\"name\":\"real_tool\",\"arguments\":{}}}]},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        let tc_names: Vec<&str> = chunks
+            .iter()
+            .filter_map(|c| match c {
+                StreamChunk::ToolCallComplete { name, .. } => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(tc_names, vec!["real_tool"]);
+        assert!(!chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
+    }
+
+    #[tokio::test]
+    async fn ollama_json_fence_tool_echo_extracted_without_structured_calls() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        // Fenced tool JSON with no structured tool_calls: extracted at end,
+        // never leaked as visible content.
+        let stream = make_stream(vec![
+            "{\"message\":{\"content\":\"```json\\n{\\\"name\\\": \\\"read_file\\\", \\\"arguments\\\": {\\\"path\\\": \\\"a.rs\\\"}}\\n```\"},\"done\":false}\n",
+            "{\"message\":{\"content\":\"\"},\"done\":true}\n",
+        ]);
+        parse_ollama_stream(stream, tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(chunks.iter().any(
+            |c| matches!(c, StreamChunk::ToolCallComplete { name, .. } if name == "read_file")
+        ));
         assert!(!chunks.iter().any(|c| matches!(c, StreamChunk::Content(_))));
     }
 }

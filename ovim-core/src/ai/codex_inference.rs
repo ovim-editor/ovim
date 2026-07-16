@@ -417,7 +417,7 @@ async fn parse_responses_stream<E: std::fmt::Display>(
                                     {
                                         call.arguments = value.to_owned();
                                     }
-                                    emit_call(call, &tx);
+                                    emit_call(call, &tx)?;
                                 }
                             }
                             "reasoning" if kind.ends_with(".done") => {
@@ -460,8 +460,15 @@ async fn parse_responses_stream<E: std::fmt::Display>(
                             }
                         }
                     }
-                    for call in calls.values_mut() {
-                        emit_call(call, &tx);
+                    // Fallback sweep for calls that never got an
+                    // `output_item.done`, in output_index order so retries
+                    // and transcripts are deterministic.
+                    let mut indices: Vec<u64> = calls.keys().copied().collect();
+                    indices.sort_unstable();
+                    for index in indices {
+                        if let Some(call) = calls.get_mut(&index) {
+                            emit_call(call, &tx)?;
+                        }
                     }
                     if !provider_state.is_empty() {
                         let _ = tx.send(StreamChunk::ProviderState(provider_state.clone()));
@@ -493,11 +500,23 @@ async fn parse_responses_stream<E: std::fmt::Display>(
     }
 }
 
-fn emit_call(call: &mut FunctionCallAccumulator, tx: &UnboundedSender<StreamChunk>) {
+fn emit_call(call: &mut FunctionCallAccumulator, tx: &UnboundedSender<StreamChunk>) -> Result<()> {
     if call.emitted || call.name.is_empty() || call.call_id.is_empty() {
-        return;
+        return Ok(());
     }
-    let arguments = serde_json::from_str(&call.arguments).unwrap_or_else(|_| json!({}));
+    // No argument payload at all is a legitimate zero-argument call, but a
+    // payload that fails to parse (e.g. truncated before `.done` arrived)
+    // must never silently execute the tool with `{}`.
+    let arguments = if call.arguments.trim().is_empty() {
+        json!({})
+    } else {
+        serde_json::from_str(&call.arguments).map_err(|error| {
+            anyhow!(
+                "Codex sent malformed arguments for tool '{}': {error}",
+                call.name
+            )
+        })?
+    };
     let id = if call.id.is_empty() {
         call.call_id.clone()
     } else {
@@ -509,6 +528,7 @@ fn emit_call(call: &mut FunctionCallAccumulator, tx: &UnboundedSender<StreamChun
         arguments,
     });
     call.emitted = true;
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -890,6 +910,78 @@ mod tests {
         assert!(chunks.iter().any(|chunk| matches!(
             chunk,
             StreamChunk::ProviderState(items) if items[0]["id"] == "r_1"
+        )));
+        assert!(chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::Done)));
+    }
+
+    #[tokio::test]
+    async fn responses_stream_rejects_truncated_tool_arguments() {
+        // `response.completed` arrives while the tool arguments are still
+        // partial JSON — the call must surface a protocol error, never
+        // execute with empty arguments.
+        let events = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"delete_lines\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"from\\\": 4\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+        );
+        let stream = TestStream(VecDeque::from([Ok(Bytes::from_static(events.as_bytes()))]));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let error = parse_responses_stream(Box::pin(stream), tx)
+            .await
+            .expect_err("truncated tool arguments must fail the stream");
+        assert!(error.to_string().contains("delete_lines"), "{error}");
+        let chunks: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(!chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::ToolCallComplete { .. })));
+        assert!(!chunks
+            .iter()
+            .any(|chunk| matches!(chunk, StreamChunk::Done)));
+    }
+
+    #[tokio::test]
+    async fn responses_stream_emits_leftover_calls_in_output_index_order() {
+        // Three calls that never receive `output_item.done`, registered out
+        // of order — the completion sweep must emit them by output_index.
+        let events = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":3,\"item\":{\"type\":\"function_call\",\"id\":\"fc_3\",\"call_id\":\"call_3\",\"name\":\"tool_3\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_0\",\"call_id\":\"call_0\",\"name\":\"tool_0\"}}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":2,\"item\":{\"type\":\"function_call\",\"id\":\"fc_2\",\"call_id\":\"call_2\",\"name\":\"tool_2\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":3,\"delta\":\"{}\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{}\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":2,\"delta\":\"{}\"}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+        );
+        let stream = TestStream(VecDeque::from([Ok(Bytes::from_static(events.as_bytes()))]));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        parse_responses_stream(Box::pin(stream), tx).await.unwrap();
+        let names: Vec<String> = std::iter::from_fn(|| rx.try_recv().ok())
+            .filter_map(|chunk| match chunk {
+                StreamChunk::ToolCallComplete { name, .. } => Some(name),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(names, vec!["tool_0", "tool_2", "tool_3"]);
+    }
+
+    #[tokio::test]
+    async fn responses_stream_treats_missing_arguments_as_empty_object() {
+        // A call with no argument payload at all is a legitimate
+        // zero-argument invocation, not a protocol error.
+        let events = concat!(
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"id\":\"fc_1\",\"call_id\":\"call_1\",\"name\":\"read_diagnostics\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"output\":[]}}\n\n"
+        );
+        let stream = TestStream(VecDeque::from([Ok(Bytes::from_static(events.as_bytes()))]));
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        parse_responses_stream(Box::pin(stream), tx).await.unwrap();
+        let chunks: Vec<_> = std::iter::from_fn(|| rx.try_recv().ok()).collect();
+        assert!(chunks.iter().any(|chunk| matches!(
+            chunk,
+            StreamChunk::ToolCallComplete { name, arguments, .. }
+                if name == "read_diagnostics" && arguments == &serde_json::json!({})
         )));
         assert!(chunks
             .iter()
