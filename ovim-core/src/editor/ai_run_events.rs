@@ -98,9 +98,7 @@ impl Editor {
         &mut self,
         content: &str,
     ) -> Option<crate::run_log::EventId> {
-        let Some(turn) = self.active_ai_runtime_turn() else {
-            return None;
-        };
+        let turn = self.active_ai_runtime_turn()?;
         match self
             .ai_state
             .agent_runtime
@@ -121,9 +119,7 @@ impl Editor {
         &mut self,
         content: &str,
     ) -> Option<crate::run_log::EventId> {
-        let Some(turn) = self.active_ai_runtime_turn() else {
-            return None;
-        };
+        let turn = self.active_ai_runtime_turn()?;
         match self
             .ai_state
             .agent_runtime

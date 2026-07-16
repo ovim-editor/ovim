@@ -707,10 +707,7 @@ impl Editor {
             return false;
         };
 
-        if pending.dynamic_response.is_some() {
-            let response = pending
-                .dynamic_response
-                .expect("dynamic approval has response sender");
+        if let Some(response) = pending.dynamic_response {
             let Some(turn) = pending.dynamic_turn else {
                 let _ = response.send(Err("dynamic approval lost its runtime turn".into()));
                 return true;

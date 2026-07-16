@@ -34,8 +34,10 @@ pub async fn request_ai_edit(
 
     for attempt in 0..=retry_max {
         // On final attempt with fallback configured: switch format and rebuild system prompt.
-        if attempt > 0 && attempt == retry_max && profile.retry.fallback.is_some() {
-            let fb_name = profile.retry.fallback.as_ref().unwrap();
+        if let (true, Some(fb_name)) = (
+            attempt > 0 && attempt == retry_max,
+            profile.retry.fallback.as_ref(),
+        ) {
             current_format = crate::ai::parse_edit_format_str(fb_name);
             let base_prompt = resolve_edit_system_prompt(
                 profile,

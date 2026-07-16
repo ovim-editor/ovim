@@ -727,9 +727,9 @@ fn safe_multi_tool_invocations(words: &[String], commands: &[String]) -> bool {
             .enumerate()
             .filter(|(_, word)| word.as_str() == "cargo")
             .any(|(index, _)| {
-                words.get(index + 1).map_or(true, |subcommand| {
-                    !safe_cargo.contains(&subcommand.as_str())
-                })
+                words
+                    .get(index + 1)
+                    .is_none_or(|subcommand| !safe_cargo.contains(&subcommand.as_str()))
             })
     {
         return false;
@@ -741,7 +741,7 @@ fn safe_multi_tool_invocations(words: &[String], commands: &[String]) -> bool {
             .enumerate()
             .filter(|(_, word)| word.as_str() == "git")
             .any(|(index, _)| {
-                words.get(index + 1).map_or(true, |subcommand| {
+                words.get(index + 1).is_none_or(|subcommand| {
                     !safe_git.contains(&subcommand.replace('-', "_").as_str())
                 })
             })

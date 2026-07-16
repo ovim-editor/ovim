@@ -1168,7 +1168,7 @@ fn read_project_file(root: &Path, arguments: &Value) -> Result<String> {
     Ok(content
         .lines()
         .enumerate()
-        .filter(|(index, _)| index + 1 >= start && index + 1 <= end)
+        .filter(|(index, _)| index + 1 >= start && *index < end)
         .map(|(index, line)| format!("{:>6}  {line}", index + 1))
         .collect::<Vec<_>>()
         .join("\n"))

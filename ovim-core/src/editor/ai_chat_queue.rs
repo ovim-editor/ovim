@@ -142,9 +142,7 @@ impl Editor {
     }
 
     fn remove_queued_ai_chat_input(&mut self, id: u64) -> Option<QueuedChatInput> {
-        let Some(chat) = self.ai_state.chat.as_mut() else {
-            return None;
-        };
+        let chat = self.ai_state.chat.as_mut()?;
         if let Some(index) = chat.queued_inputs.iter().position(|item| item.id == id) {
             let removed = chat.queued_inputs.remove(index);
             if chat.history.selected_queued_id == Some(id) {
