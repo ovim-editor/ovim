@@ -1,5 +1,20 @@
 use super::Editor;
 
+fn anchored_scroll_offset(
+    row_scroll_from_bottom: usize,
+    pinned_base_total_rows: Option<usize>,
+    current_total_rows: usize,
+) -> usize {
+    let Some(base) = pinned_base_total_rows else {
+        return row_scroll_from_bottom;
+    };
+    if current_total_rows >= base {
+        row_scroll_from_bottom.saturating_add(current_total_rows - base)
+    } else {
+        row_scroll_from_bottom.saturating_sub(base - current_total_rows)
+    }
+}
+
 impl Editor {
     /// Selected message index in current conversation.
     pub fn ai_chat_history_selected_index(&self) -> Option<usize> {
@@ -73,13 +88,13 @@ impl Editor {
         if viewport.follow_latest || viewport.row_scroll_from_bottom == 0 {
             return 0;
         }
-        let base = viewport.pinned_base_total_rows.unwrap_or(total_rows);
-        let growth = total_rows.saturating_sub(base);
         let max_scroll = total_rows.saturating_sub(visible_rows);
-        viewport
-            .row_scroll_from_bottom
-            .saturating_add(growth)
-            .min(max_scroll)
+        anchored_scroll_offset(
+            viewport.row_scroll_from_bottom,
+            viewport.pinned_base_total_rows,
+            total_rows,
+        )
+        .min(max_scroll)
     }
 
     /// Scroll chat history viewport toward older rows.
@@ -87,21 +102,29 @@ impl Editor {
         if rows == 0 {
             return;
         }
-        let baseline_rows = self.render_cache.ai_chat_last_total_rows;
-        let baseline = if baseline_rows == 0 {
+        let current_total_rows = self.render_cache.ai_chat_last_total_rows;
+        let current_total = if current_total_rows == 0 {
             None
         } else {
-            Some(baseline_rows)
+            Some(current_total_rows)
         };
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            if chat.viewport.follow_latest {
-                chat.viewport.follow_latest = false;
-                chat.viewport.pinned_base_total_rows = baseline;
-            } else if chat.viewport.pinned_base_total_rows.is_none() {
-                chat.viewport.pinned_base_total_rows = baseline;
+            let current_offset = if chat.viewport.follow_latest {
+                0
+            } else if let Some(total_rows) = current_total {
+                anchored_scroll_offset(
+                    chat.viewport.row_scroll_from_bottom,
+                    chat.viewport.pinned_base_total_rows,
+                    total_rows,
+                )
+            } else {
+                chat.viewport.row_scroll_from_bottom
+            };
+            chat.viewport.follow_latest = false;
+            chat.viewport.row_scroll_from_bottom = current_offset.saturating_add(rows);
+            if current_total.is_some() {
+                chat.viewport.pinned_base_total_rows = current_total;
             }
-            chat.viewport.row_scroll_from_bottom =
-                chat.viewport.row_scroll_from_bottom.saturating_add(rows);
         }
     }
 
@@ -116,13 +139,28 @@ impl Editor {
                 .as_ref()
                 .is_some_and(|c| c.viewport.row_scroll_from_bottom == 0);
         }
+        let current_total_rows = self.render_cache.ai_chat_last_total_rows;
+        let current_total = (current_total_rows > 0).then_some(current_total_rows);
         if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.viewport.row_scroll_from_bottom =
-                chat.viewport.row_scroll_from_bottom.saturating_sub(rows);
+            let current_offset = if chat.viewport.follow_latest {
+                0
+            } else if let Some(total_rows) = current_total {
+                anchored_scroll_offset(
+                    chat.viewport.row_scroll_from_bottom,
+                    chat.viewport.pinned_base_total_rows,
+                    total_rows,
+                )
+            } else {
+                chat.viewport.row_scroll_from_bottom
+            };
+            chat.viewport.row_scroll_from_bottom = current_offset.saturating_sub(rows);
             if chat.viewport.row_scroll_from_bottom == 0 {
                 chat.viewport.follow_latest = true;
                 chat.viewport.pinned_base_total_rows = None;
                 return true;
+            }
+            if current_total.is_some() {
+                chat.viewport.pinned_base_total_rows = current_total;
             }
         }
         false

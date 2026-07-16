@@ -1530,6 +1530,65 @@ mod tests {
     }
 
     #[test]
+    fn pinned_message_scroll_tracks_both_stream_growth_and_shrinkage() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.viewport.follow_latest = false;
+            chat.viewport.row_scroll_from_bottom = 20;
+            chat.viewport.pinned_base_total_rows = Some(100);
+        }
+
+        assert_eq!(editor.ai_chat_effective_message_scroll(115, 20), 35);
+        assert_eq!(editor.ai_chat_effective_message_scroll(90, 20), 10);
+    }
+
+    #[test]
+    fn scrolling_down_during_streaming_does_not_jump_to_latest() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        editor.render_cache.ai_chat_last_total_rows = 120;
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.viewport.follow_latest = false;
+            chat.viewport.row_scroll_from_bottom = 3;
+            chat.viewport.pinned_base_total_rows = Some(100);
+        }
+
+        assert!(!editor.ai_chat_scroll_viewport_down(3));
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(!chat.viewport.follow_latest);
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 20);
+        assert_eq!(chat.viewport.pinned_base_total_rows, Some(120));
+        assert_eq!(editor.ai_chat_effective_message_scroll(120, 20), 20);
+
+        assert!(editor.ai_chat_scroll_viewport_down(20));
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(chat.viewport.follow_latest);
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 0);
+    }
+
+    #[test]
+    fn scrolling_up_during_streaming_rebases_the_pinned_offset() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+
+        editor.render_cache.ai_chat_last_total_rows = 120;
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.viewport.follow_latest = false;
+            chat.viewport.row_scroll_from_bottom = 3;
+            chat.viewport.pinned_base_total_rows = Some(100);
+        }
+
+        editor.ai_chat_scroll_viewport_up(3);
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert_eq!(chat.viewport.row_scroll_from_bottom, 26);
+        assert_eq!(chat.viewport.pinned_base_total_rows, Some(120));
+        assert_eq!(editor.ai_chat_effective_message_scroll(120, 20), 26);
+    }
+
+    #[test]
     fn conversation_history_survives_buffer_index_shift() {
         let mut editor = Editor::default();
 
