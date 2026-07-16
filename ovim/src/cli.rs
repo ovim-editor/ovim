@@ -2,6 +2,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
+#[command(version)]
 #[command(about = "Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings", long_about = None)]
 pub struct Cli {
     #[command(subcommand)]
@@ -570,6 +571,14 @@ mod tests {
 
         let resumed = Cli::try_parse_from(["ovim", "--resume"]).unwrap();
         assert!(resumed.resume);
+    }
+
+    #[test]
+    fn version_flag_reports_the_package_version() {
+        let error = Cli::try_parse_from(["ovim", "--version"]).unwrap_err();
+
+        assert_eq!(error.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(error.to_string().contains(env!("CARGO_PKG_VERSION")));
     }
 
     #[test]
