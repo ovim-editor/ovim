@@ -594,7 +594,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
 fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> Vec<Value> {
     use super::chat_types::ChatRole;
     use base64::Engine;
-    messages
+    let mut result: Vec<Value> = messages
         .iter()
         .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
         .map(|m| match m.role {
@@ -652,7 +652,106 @@ fn chat_messages_to_openai_json(messages: &[super::chat_types::ChatMessage]) -> 
             }
             ChatRole::Error | ChatRole::Thinking => unreachable!(),
         })
-        .collect()
+        .collect();
+    repair_dangling_openai_tool_calls(&mut result);
+    result
+}
+
+/// Inject a synthetic tool message for every assistant `tool_calls` entry that
+/// has no matching `role: tool` response. Cancelled or interrupted turns can
+/// commit the assistant message without results, and OpenAI-style endpoints
+/// reject such requests.
+fn repair_dangling_openai_tool_calls(messages: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < messages.len() {
+        let ids: Vec<String> = if messages[i]["role"] == "assistant" {
+            messages[i]["tool_calls"]
+                .as_array()
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .filter_map(|call| call["id"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if ids.is_empty() {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut present = std::collections::HashSet::new();
+        while j < messages.len() && messages[j]["role"] == "tool" {
+            if let Some(id) = messages[j]["tool_call_id"].as_str() {
+                present.insert(id.to_string());
+            }
+            j += 1;
+        }
+        for id in ids {
+            if present.contains(&id) {
+                continue;
+            }
+            messages.insert(
+                j,
+                json!({
+                    "role": "tool",
+                    "content": "cancelled before execution",
+                    "tool_call_id": id,
+                }),
+            );
+            j += 1;
+        }
+        i = j;
+    }
+}
+
+/// Same repair as [`repair_dangling_openai_tool_calls`], keyed by function
+/// name because Ollama tool responses carry `tool_name` instead of an id.
+fn repair_dangling_ollama_tool_calls(messages: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < messages.len() {
+        let names: Vec<String> = if messages[i]["role"] == "assistant" {
+            messages[i]["tool_calls"]
+                .as_array()
+                .map(|calls| {
+                    calls
+                        .iter()
+                        .filter_map(|call| call["function"]["name"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if names.is_empty() {
+            i += 1;
+            continue;
+        }
+        let mut j = i + 1;
+        let mut remaining = names;
+        while j < messages.len() && messages[j]["role"] == "tool" {
+            if let Some(name) = messages[j]["tool_name"].as_str() {
+                if let Some(pos) = remaining.iter().position(|n| n == name) {
+                    remaining.remove(pos);
+                }
+            }
+            j += 1;
+        }
+        for name in remaining {
+            messages.insert(
+                j,
+                json!({
+                    "role": "tool",
+                    "content": "cancelled before execution",
+                    "tool_name": name,
+                }),
+            );
+            j += 1;
+        }
+        i = j;
+    }
 }
 
 /// Serialize chat messages to Ollama native `/api/chat` format.
@@ -675,7 +774,7 @@ fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> 
         }
     }
 
-    messages
+    let mut result: Vec<Value> = messages
         .iter()
         .filter(|m| m.role != ChatRole::Error && m.role != ChatRole::Thinking)
         .map(|m| match m.role {
@@ -727,7 +826,9 @@ fn chat_messages_to_ollama_json(messages: &[super::chat_types::ChatMessage]) -> 
             }
             ChatRole::Error | ChatRole::Thinking => unreachable!(),
         })
-        .collect()
+        .collect();
+    repair_dangling_ollama_tool_calls(&mut result);
+    result
 }
 
 /// Serialize chat messages to Anthropic format.
@@ -805,7 +906,77 @@ fn chat_messages_to_anthropic_json(messages: &[super::chat_types::ChatMessage]) 
         }
         i += 1;
     }
+    repair_dangling_anthropic_tool_uses(&mut result);
     result
+}
+
+/// Inject a synthetic `tool_result` for every assistant `tool_use` block with
+/// no matching result in the following user message. Cancelled or interrupted
+/// turns can commit the `tool_use` without a result, and Anthropic rejects
+/// such requests with a 400.
+fn repair_dangling_anthropic_tool_uses(messages: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < messages.len() {
+        let ids: Vec<String> = if messages[i]["role"] == "assistant" {
+            messages[i]["content"]
+                .as_array()
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|block| block["type"] == "tool_use")
+                        .filter_map(|block| block["id"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            Vec::new()
+        };
+        if ids.is_empty() {
+            i += 1;
+            continue;
+        }
+        let next_has_tool_results = messages.get(i + 1).is_some_and(|m| {
+            m["role"] == "user"
+                && m["content"]
+                    .as_array()
+                    .is_some_and(|blocks| blocks.iter().any(|block| block["type"] == "tool_result"))
+        });
+        let present: std::collections::HashSet<String> = if next_has_tool_results {
+            messages[i + 1]["content"]
+                .as_array()
+                .map(|blocks| {
+                    blocks
+                        .iter()
+                        .filter(|block| block["type"] == "tool_result")
+                        .filter_map(|block| block["tool_use_id"].as_str().map(String::from))
+                        .collect()
+                })
+                .unwrap_or_default()
+        } else {
+            std::collections::HashSet::new()
+        };
+        let synthetic: Vec<Value> = ids
+            .into_iter()
+            .filter(|id| !present.contains(id))
+            .map(|id| {
+                json!({
+                    "type": "tool_result",
+                    "tool_use_id": id,
+                    "content": "cancelled before execution",
+                })
+            })
+            .collect();
+        if !synthetic.is_empty() {
+            if next_has_tool_results {
+                if let Some(blocks) = messages[i + 1]["content"].as_array_mut() {
+                    blocks.extend(synthetic);
+                }
+            } else {
+                messages.insert(i + 1, json!({ "role": "user", "content": synthetic }));
+            }
+        }
+        i += 1;
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1497,6 +1668,127 @@ mod tests {
         assert_eq!(content[1]["type"], "tool_use");
         assert_eq!(content[1]["id"], "toolu_1");
         assert_eq!(content[1]["name"], "read_file");
+    }
+
+    fn error_msg(content: &str) -> ChatMessage {
+        ChatMessage {
+            role: ChatRole::Error,
+            content: content.to_string(),
+            model: None,
+            timestamp: Instant::now(),
+            images: vec![],
+            tool_calls: vec![],
+            tool_call_id: None,
+            provider_state: vec![],
+        }
+    }
+
+    fn tool_call(id: &str, name: &str) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.to_string(),
+            name: name.to_string(),
+            arguments: serde_json::json!({}),
+        }
+    }
+
+    #[test]
+    fn anthropic_json_repairs_tool_use_with_no_results() {
+        // A cancelled turn commits tool_use blocks, then only an Error
+        // message (which serialization filters out).
+        let msgs = vec![
+            user_msg("run it"),
+            assistant_msg_with_tools("", vec![tool_call("toolu_1", "bash")]),
+            error_msg("Generation stopped by user."),
+            user_msg("continue"),
+        ];
+        let json = chat_messages_to_anthropic_json(&msgs);
+        assert_eq!(json.len(), 4); // user, assistant, synthetic tool_result, user
+        assert_eq!(json[2]["role"], "user");
+        let blocks = json[2]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["type"], "tool_result");
+        assert_eq!(blocks[0]["tool_use_id"], "toolu_1");
+        assert_eq!(blocks[0]["content"], "cancelled before execution");
+        assert_eq!(json[3]["content"], "continue");
+    }
+
+    #[test]
+    fn anthropic_json_repairs_partially_answered_tool_uses() {
+        let msgs = vec![
+            assistant_msg_with_tools(
+                "",
+                vec![
+                    tool_call("toolu_1", "bash"),
+                    tool_call("toolu_2", "read_file"),
+                ],
+            ),
+            tool_msg("toolu_1", "shell output"),
+        ];
+        let json = chat_messages_to_anthropic_json(&msgs);
+        assert_eq!(json.len(), 2);
+        let blocks = json[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 2);
+        assert_eq!(blocks[0]["tool_use_id"], "toolu_1");
+        assert_eq!(blocks[0]["content"], "shell output");
+        assert_eq!(blocks[1]["tool_use_id"], "toolu_2");
+        assert_eq!(blocks[1]["content"], "cancelled before execution");
+    }
+
+    #[test]
+    fn anthropic_json_does_not_touch_fully_answered_tool_uses() {
+        let msgs = vec![
+            assistant_msg_with_tools("", vec![tool_call("toolu_1", "bash")]),
+            tool_msg("toolu_1", "shell output"),
+        ];
+        let json = chat_messages_to_anthropic_json(&msgs);
+        assert_eq!(json.len(), 2);
+        let blocks = json[1]["content"].as_array().unwrap();
+        assert_eq!(blocks.len(), 1);
+        assert_eq!(blocks[0]["content"], "shell output");
+    }
+
+    #[test]
+    fn openai_json_repairs_dangling_tool_calls() {
+        let msgs = vec![
+            assistant_msg_with_tools(
+                "",
+                vec![
+                    tool_call("call_1", "bash"),
+                    tool_call("call_2", "read_file"),
+                ],
+            ),
+            tool_msg("call_1", "shell output"),
+            user_msg("continue"),
+        ];
+        let json = chat_messages_to_openai_json(&msgs);
+        assert_eq!(json.len(), 4);
+        assert_eq!(json[1]["role"], "tool");
+        assert_eq!(json[1]["tool_call_id"], "call_1");
+        assert_eq!(json[2]["role"], "tool");
+        assert_eq!(json[2]["tool_call_id"], "call_2");
+        assert_eq!(json[2]["content"], "cancelled before execution");
+        assert_eq!(json[3]["role"], "user");
+    }
+
+    #[test]
+    fn ollama_json_repairs_dangling_tool_calls() {
+        let msgs = vec![
+            assistant_msg_with_tools(
+                "",
+                vec![
+                    tool_call("call_1", "bash"),
+                    tool_call("call_2", "read_file"),
+                ],
+            ),
+            tool_msg("call_1", "shell output"),
+        ];
+        let json = chat_messages_to_ollama_json(&msgs);
+        assert_eq!(json.len(), 3);
+        assert_eq!(json[1]["role"], "tool");
+        assert_eq!(json[1]["tool_name"], "bash");
+        assert_eq!(json[2]["role"], "tool");
+        assert_eq!(json[2]["tool_name"], "read_file");
+        assert_eq!(json[2]["content"], "cancelled before execution");
     }
 
     // -----------------------------------------------------------------------
