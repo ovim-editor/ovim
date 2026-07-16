@@ -61,12 +61,27 @@ pub struct PendingAutoModeClassification {
         tokio::sync::oneshot::Receiver<Result<crate::ai::auto_mode::ClassifierVerdict, String>>,
 }
 
+/// How an authorized shell effect resumes once its background task finishes.
+pub enum ShellExecutionContinuation {
+    /// A provider-owned dynamic tool call waiting on its response channel.
+    Dynamic {
+        runtime_tool: crate::agent_runtime::PendingToolRef,
+        runtime_turn: crate::agent_runtime::PendingTurnRef,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    },
+    /// A completed provider response whose local tool batch is being drained.
+    Batch {
+        runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+        runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,
+        remaining_tool_calls: Vec<ToolCallInfo>,
+        model_name: String,
+    },
+}
+
 /// An authorized shell effect running off the editor/event-loop thread.
 pub struct PendingShellExecution {
     pub tool_call: ToolCallInfo,
-    pub runtime_tool: crate::agent_runtime::PendingToolRef,
-    pub runtime_turn: crate::agent_runtime::PendingTurnRef,
-    pub dynamic_response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    pub continuation: ShellExecutionContinuation,
     pub receiver: tokio::sync::oneshot::Receiver<ShellExecutionObservation>,
     pub task: tokio::task::JoinHandle<()>,
 }

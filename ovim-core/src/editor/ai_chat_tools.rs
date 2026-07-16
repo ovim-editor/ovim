@@ -789,6 +789,14 @@ impl Editor {
             }
         }
 
+        if pending.tool_call.name == "bash" {
+            // Approved batch shell must run through the same asynchronous,
+            // workspace-captured parking path as unprompted batch shell calls.
+            // Dispatching synchronously would block the editor thread and
+            // escape the run log entirely.
+            return self.resume_approved_batch_shell(pending);
+        }
+
         let outcome =
             self.dispatch_tool_call_with_approval(&pending.tool_call, Some(&pending.approval_root));
         match outcome {
@@ -836,6 +844,94 @@ impl Editor {
                 true
             }
         }
+    }
+
+    /// Resume an approved batch `bash` tool call by parking it on
+    /// `pending_shell_execution`, exactly like the unprompted batch path in
+    /// `execute_tool_call_batch`. The user already approved, so no policy
+    /// re-check happens here.
+    fn resume_approved_batch_shell(&mut self, pending: PendingToolApproval) -> bool {
+        let authorized = self
+            .ai_state
+            .tool_registry
+            .get(&pending.tool_call.name)
+            .is_some_and(|definition| {
+                let capabilities = self.build_chat_capabilities();
+                capabilities.allows_side_effect(definition.side_effect)
+                    && capabilities.contains(&definition.required_scope)
+            });
+        let command = pending
+            .tool_call
+            .arguments
+            .get("command")
+            .and_then(serde_json::Value::as_str)
+            .map(str::trim)
+            .unwrap_or_default()
+            .to_string();
+        let workdir = self.ai_effective_project_root();
+        let runtime_turn = self.active_ai_runtime_turn();
+        let artifact_store = runtime_turn.as_ref().and_then(|turn| {
+            self.ai_state.durable_runs.as_ref().and_then(|services| {
+                services
+                    .store
+                    .layout()
+                    .ensure_run_directory(&turn.run_id)
+                    .ok()?;
+                crate::run_log::ArtifactStore::open(
+                    services.store.layout().artifact_directory(&turn.run_id),
+                )
+                .ok()
+            })
+        });
+
+        let error = if !authorized {
+            Some("shell access is not authorized for this chat".to_string())
+        } else if command.is_empty() {
+            Some("'command' is required and must be non-empty".to_string())
+        } else if workdir.is_none() {
+            Some(self.no_project_root_error())
+        } else if artifact_store.is_none() {
+            Some(
+                "shell program was not executed because replay artifact storage is unavailable"
+                    .to_string(),
+            )
+        } else {
+            None
+        };
+        if let Some(error) = error {
+            let result = ToolResult::Error(error);
+            if let (Some(turn), Some(runtime_tool)) =
+                (runtime_turn.as_ref(), pending.runtime_tool.as_ref())
+            {
+                if let Err(error) = self.ai_runtime_finish_tool(turn, runtime_tool, &result) {
+                    crate::log_warn!("agent_runtime", "failed to record approved tool: {error}");
+                }
+            }
+            self.record_tool_event_summary(&pending.tool_call, &result);
+            let result_content = self.format_tool_result_with_target(&pending.tool_call, &result);
+            if let Some(conv) = self.conversation_mut() {
+                conv.append_tool_result(pending.tool_call.id.clone(), result_content);
+            }
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+                chat.waiting = true;
+            }
+            return self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name);
+        }
+
+        self.start_pending_shell_execution(
+            pending.tool_call,
+            super::ai_chat_state::ShellExecutionContinuation::Batch {
+                runtime_tool: pending.runtime_tool,
+                runtime_turn,
+                remaining_tool_calls: pending.remaining_tool_calls,
+                model_name: pending.model_name,
+            },
+            command,
+            workdir.expect("checked above"),
+            artifact_store.expect("checked above"),
+        );
+        true
     }
 
     /// On first chat open in a no-repo session, ask once whether project tools
@@ -902,6 +998,7 @@ impl Editor {
                 .map(|c| c.tool_call_count)
                 .unwrap_or(0);
             if max_tool_calls.is_some_and(|limit| used.saturating_add(executed_in_batch) >= limit) {
+                self.append_synthetic_tool_results(&tool_calls[idx..], "Tool call limit reached");
                 if let Some(conv) = self.conversation_mut() {
                     conv.append_error("Tool call iteration limit reached.".to_string());
                 }
@@ -929,6 +1026,87 @@ impl Editor {
                     }
                 },
                 None => None,
+            };
+
+            let shell_outcome = if tc.name == "bash" {
+                if let Some(request) = self.maybe_require_tool_policy_approval(
+                    tc,
+                    self.active_chat_target_absolute_path(),
+                    false,
+                    None,
+                ) {
+                    Some(ToolDispatchOutcome::ApprovalRequired(request))
+                } else {
+                    let authorized =
+                        self.ai_state
+                            .tool_registry
+                            .get(&tc.name)
+                            .is_some_and(|definition| {
+                                let capabilities = self.build_chat_capabilities();
+                                capabilities.allows_side_effect(definition.side_effect)
+                                    && capabilities.contains(&definition.required_scope)
+                            });
+                    let command = tc
+                        .arguments
+                        .get("command")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::trim)
+                        .unwrap_or_default()
+                        .to_string();
+                    let workdir = self.ai_effective_project_root();
+                    let artifact_store = runtime_tool.as_ref().and_then(|(turn, _)| {
+                        self.ai_state.durable_runs.as_ref().and_then(|services| {
+                            services
+                                .store
+                                .layout()
+                                .ensure_run_directory(&turn.run_id)
+                                .ok()?;
+                            crate::run_log::ArtifactStore::open(
+                                services.store.layout().artifact_directory(&turn.run_id),
+                            )
+                            .ok()
+                        })
+                    });
+
+                    if !authorized {
+                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(
+                            "shell access is not authorized for this chat".into(),
+                        )))
+                    } else if command.is_empty() {
+                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(
+                            "'command' is required and must be non-empty".into(),
+                        )))
+                    } else if workdir.is_none() {
+                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(
+                            self.no_project_root_error(),
+                        )))
+                    } else if artifact_store.is_none() {
+                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(
+                            "shell program was not executed because replay artifact storage is unavailable"
+                                .into(),
+                        )))
+                    } else {
+                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                            chat.tool_call_count =
+                                chat.tool_call_count.saturating_add(executed_in_batch);
+                        }
+                        self.start_pending_shell_execution(
+                            tc.clone(),
+                            super::ai_chat_state::ShellExecutionContinuation::Batch {
+                                runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
+                                runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
+                                remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                                model_name,
+                            },
+                            command,
+                            workdir.expect("checked above"),
+                            artifact_store.expect("checked above"),
+                        );
+                        return true;
+                    }
+                }
+            } else {
+                None
             };
 
             if matches!(tc.name.as_str(), "web_search" | "web_fetch")
@@ -959,7 +1137,9 @@ impl Editor {
                 return true;
             }
 
-            let outcome = if tc.name == "explain_with_codebase" {
+            let outcome = if let Some(outcome) = shell_outcome {
+                outcome
+            } else if tc.name == "explain_with_codebase" {
                 let continuation = CodeExplanationContinuation::Batch {
                     runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
                     runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
@@ -1063,6 +1243,28 @@ impl Editor {
         if installed {
             self.ai_state.ai_attention_generation =
                 self.ai_state.ai_attention_generation.saturating_add(1);
+        }
+    }
+
+    /// Close out tool calls that will never execute (cancelled, unknown
+    /// outcome, limit reached) with synthetic error results. An assistant
+    /// message with `tool_use` blocks and no matching `tool_result` bricks
+    /// the conversation on the next provider request.
+    pub(super) fn append_synthetic_tool_results(
+        &mut self,
+        tool_calls: &[ToolCallInfo],
+        detail: &str,
+    ) {
+        for tc in tool_calls {
+            if tc.id.is_empty() {
+                continue;
+            }
+            let result = ToolResult::Error(detail.to_string());
+            self.record_tool_event_summary(tc, &result);
+            let content = self.format_tool_result_with_target(tc, &result);
+            if let Some(conv) = self.conversation_mut() {
+                conv.append_tool_result(tc.id.clone(), content);
+            }
         }
     }
 
@@ -2692,5 +2894,280 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(labels, ["intent", "started", "result"]);
         editor.close_ai_chat();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn completed_bash_tool_batch_does_not_block_editor_polling() {
+        let repo = tempfile::tempdir().unwrap();
+        git2::Repository::init(repo.path()).unwrap();
+        let file = repo.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n// second line\n").unwrap();
+        let runs = tempfile::tempdir().unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state = Box::new(
+            super::super::ai_state::AiState::with_run_storage_layout(
+                crate::run_log::RunStorageLayout::new(runs.path()),
+            )
+            .unwrap(),
+        );
+        editor.open_file(&file).unwrap();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".into(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .unwrap();
+        editor.ai_state.chat.as_mut().unwrap().yolo_mode = true;
+        let turn = editor
+            .begin_ai_runtime_turn("run the browser checks")
+            .unwrap();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+
+        let started = std::time::Instant::now();
+        assert!(editor.execute_tool_call_batch(
+            vec![ToolCallInfo {
+                id: "batch-shell".into(),
+                name: "bash".into(),
+                arguments: serde_json::json!({
+                    "command": "while [ ! -f release-gate ]; do sleep 0.01; done; touch batch-finished"
+                }),
+            }],
+            "test".into(),
+        ));
+        assert!(started.elapsed() < std::time::Duration::from_millis(100));
+        assert_eq!(
+            editor.ai_chat_activity(),
+            super::super::AiChatActivity::RunningShell
+        );
+        assert!(!editor.poll_pending_ai_chat_job());
+
+        editor.set_mode(crate::mode::Mode::Normal);
+        crate::editor::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Char('j'), crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(editor.cursor_position().line, 1);
+
+        fs::write(repo.path().join("release-gate"), "go").unwrap();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        while editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .is_some()
+        {
+            editor.poll_pending_ai_chat_job();
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "batch shell did not finish"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(repo.path().join("batch-finished").exists());
+        editor.close_ai_chat();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
+        use crate::ai::chat_types::ChatRole;
+
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".into(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .unwrap();
+
+        let shell_call = ToolCallInfo {
+            id: "shell-1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "true" }),
+        };
+        let follow_up = ToolCallInfo {
+            id: "read-2".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        };
+        // Commit the assistant tool_use blocks like process_tool_calls does.
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message_with_tools(
+                String::new(),
+                "test".into(),
+                vec![shell_call.clone(), follow_up.clone()],
+            );
+
+        // Park a batch shell whose sender is dropped: the observation channel
+        // closes without a result and the outcome is unknown.
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel::<
+            super::super::ai_chat_state::ShellExecutionObservation,
+        >();
+        drop(result_tx);
+        let task = tokio::spawn(async {});
+        if let Some(chat) = editor.ai_state.chat.as_mut() {
+            chat.pending_shell_execution =
+                Some(super::super::ai_chat_state::PendingShellExecution {
+                    tool_call: shell_call,
+                    continuation: super::super::ai_chat_state::ShellExecutionContinuation::Batch {
+                        runtime_tool: None,
+                        runtime_turn: None,
+                        remaining_tool_calls: vec![follow_up],
+                        model_name: "test".into(),
+                    },
+                    receiver: result_rx,
+                    task,
+                });
+            chat.waiting = true;
+        }
+
+        assert!(editor.poll_pending_ai_chat_job());
+
+        let chat = editor.ai_state.chat.as_ref().unwrap();
+        assert!(
+            !chat.waiting,
+            "unknown batch shell outcome must not re-arm the waiting spinner"
+        );
+        assert!(chat.pending_shell_execution.is_none());
+        assert!(chat.pending_job.is_none());
+        assert!(!editor.ai_chat_has_pending_work());
+
+        // Every committed tool_use got a closing tool_result, and the failure
+        // itself is surfaced as an error message.
+        let messages = editor.conversation().unwrap().messages();
+        let tool_ids: Vec<_> = messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .filter_map(|m| m.tool_call_id.as_deref())
+            .collect();
+        assert_eq!(tool_ids, ["shell-1", "read-2"]);
+        assert!(messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .all(|m| m.content.contains("Outcome unknown")));
+        assert!(messages.iter().any(|m| m.role == ChatRole::Error));
+        editor.close_ai_chat();
+    }
+
+    async fn run_batch_shell_to_completion(yolo: bool) -> String {
+        use crate::ai::chat_types::ChatRole;
+
+        let repo = tempfile::tempdir().unwrap();
+        git2::Repository::init(repo.path()).unwrap();
+        let file = repo.path().join("main.rs");
+        fs::write(&file, "fn main() {}\n").unwrap();
+        let runs = tempfile::tempdir().unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state = Box::new(
+            super::super::ai_state::AiState::with_run_storage_layout(
+                crate::run_log::RunStorageLayout::new(runs.path()),
+            )
+            .unwrap(),
+        );
+        editor.open_file(&file).unwrap();
+        editor
+            .open_ai_chat(ChatOpts {
+                name: "chat".into(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .unwrap();
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
+        editor.ai_state.chat.as_mut().unwrap().yolo_mode = yolo;
+        let turn = editor.begin_ai_runtime_turn("run a shell check").unwrap();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+
+        let call = ToolCallInfo {
+            id: "batch-shell".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "printf 'approved path check'" }),
+        };
+        let started = std::time::Instant::now();
+        assert!(editor.execute_tool_call_batch(vec![call], "test".into()));
+
+        if !yolo {
+            // SensitivePrompt mode: batch shell pauses for approval and must
+            // resume through the asynchronous parking path, not a synchronous
+            // dispatch on the editor thread.
+            assert!(editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .pending_tool_approval
+                .is_some());
+            assert!(editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .pending_shell_execution
+                .is_none());
+            assert!(editor.ai_chat_resolve_pending_tool_approval(true, false));
+        }
+        assert!(
+            editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .pending_shell_execution
+                .is_some(),
+            "batch shell must park on pending_shell_execution"
+        );
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(500),
+            "shell execution must not block the editor thread"
+        );
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .is_some()
+        {
+            editor.poll_pending_ai_chat_job();
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "batch shell did not finish"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert_eq!(editor.ai_state.chat.as_ref().unwrap().tool_call_count, 1);
+        let envelope = editor
+            .conversation()
+            .unwrap()
+            .messages()
+            .iter()
+            .find(|m| m.role == ChatRole::Tool && m.tool_call_id.as_deref() == Some("batch-shell"))
+            .map(|m| m.content.clone())
+            .expect("tool result recorded");
+        editor.close_ai_chat();
+        envelope
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn approved_batch_shell_parks_and_matches_yolo_result_envelope() {
+        let yolo_envelope = run_batch_shell_to_completion(true).await;
+        let approved_envelope = run_batch_shell_to_completion(false).await;
+        // The first line carries the target path (tempdir-specific); the rest
+        // of the envelope must be identical to the unprompted yolo path.
+        let body = |envelope: &str| {
+            envelope
+                .split_once('\n')
+                .map(|(_, rest)| rest.to_string())
+                .unwrap_or_default()
+        };
+        assert!(body(&yolo_envelope).contains("approved path check"));
+        assert_eq!(body(&yolo_envelope), body(&approved_envelope));
     }
 }

@@ -856,51 +856,17 @@ impl Editor {
                     return;
                 }
             };
-            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-            let task = tokio::task::spawn_blocking(move || {
-                let observation = match crate::run_log::capture_workspace(&workdir, &artifact_store) {
-                    Ok(before) => {
-                        let result = super::ai_tool_execution::run_bash_program(&command, &workdir);
-                        match crate::run_log::capture_workspace(&workdir, &artifact_store) {
-                            Ok(after) => super::ai_chat_state::ShellExecutionObservation {
-                                result,
-                                delta: Some(before.diff(after)),
-                                capture_error: None,
-                                outcome_unknown: false,
-                            },
-                            Err(error) => super::ai_chat_state::ShellExecutionObservation {
-                                result,
-                                delta: None,
-                                capture_error: Some(format!(
-                                    "shell completed, but after-state capture failed: {error}"
-                                )),
-                                outcome_unknown: true,
-                            },
-                        }
-                    }
-                    Err(error) => super::ai_chat_state::ShellExecutionObservation {
-                        result: crate::ai::tools::ToolResult::Error(format!(
-                            "shell program was not executed because before-state capture failed: {error}"
-                        )),
-                        delta: None,
-                        capture_error: Some(error),
-                        outcome_unknown: false,
-                    },
-                };
-                let _ = result_tx.send(observation);
-            });
-            if let Some(chat) = self.ai_state.chat.as_mut() {
-                chat.pending_shell_execution = Some(super::ai_chat_state::PendingShellExecution {
-                    tool_call: call,
+            self.start_pending_shell_execution(
+                call,
+                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
                     runtime_tool: tool,
                     runtime_turn: turn,
-                    dynamic_response: response,
-                    receiver: result_rx,
-                    task,
-                });
-                chat.waiting = true;
-            }
-            self.set_lsp_status("Agent shell program is running".into());
+                    response,
+                },
+                command,
+                workdir,
+                artifact_store,
+            );
             return;
         }
         let result = {
@@ -915,6 +881,59 @@ impl Editor {
             }
         };
         self.finish_dynamic_tool(&turn, &tool, &call, response, result);
+    }
+
+    pub(super) fn start_pending_shell_execution(
+        &mut self,
+        call: ToolCallInfo,
+        continuation: super::ai_chat_state::ShellExecutionContinuation,
+        command: String,
+        workdir: std::path::PathBuf,
+        artifact_store: crate::run_log::ArtifactStore,
+    ) {
+        let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::task::spawn_blocking(move || {
+            let observation = match crate::run_log::capture_workspace(&workdir, &artifact_store) {
+                Ok(before) => {
+                    let result = super::ai_tool_execution::run_bash_program(&command, &workdir);
+                    match crate::run_log::capture_workspace(&workdir, &artifact_store) {
+                        Ok(after) => super::ai_chat_state::ShellExecutionObservation {
+                            result,
+                            delta: Some(before.diff(after)),
+                            capture_error: None,
+                            outcome_unknown: false,
+                        },
+                        Err(error) => super::ai_chat_state::ShellExecutionObservation {
+                            result,
+                            delta: None,
+                            capture_error: Some(format!(
+                                "shell completed, but after-state capture failed: {error}"
+                            )),
+                            outcome_unknown: true,
+                        },
+                    }
+                }
+                Err(error) => super::ai_chat_state::ShellExecutionObservation {
+                    result: crate::ai::tools::ToolResult::Error(format!(
+                        "shell program was not executed because before-state capture failed: {error}"
+                    )),
+                    delta: None,
+                    capture_error: Some(error),
+                    outcome_unknown: false,
+                },
+            };
+            let _ = result_tx.send(observation);
+        });
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.pending_shell_execution = Some(super::ai_chat_state::PendingShellExecution {
+                tool_call: call,
+                continuation,
+                receiver: result_rx,
+                task,
+            });
+            chat.waiting = true;
+        }
+        self.set_lsp_status("Agent shell program is running".into());
     }
 
     fn poll_pending_shell_execution(&mut self) -> bool {
@@ -951,65 +970,164 @@ impl Editor {
             .and_then(|chat| chat.pending_shell_execution.take())
             .expect("pending shell exists");
         let observation = received.expect("shell result");
+        let (runtime_turn, runtime_tool) = match &pending.continuation {
+            super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                runtime_turn,
+                runtime_tool,
+                ..
+            } => (Some(runtime_turn), Some(runtime_tool)),
+            super::ai_chat_state::ShellExecutionContinuation::Batch {
+                runtime_turn,
+                runtime_tool,
+                ..
+            } => (runtime_turn.as_ref(), runtime_tool.as_ref()),
+        };
         if let Some(delta) = observation.delta {
-            for mutation in delta.mutations {
-                if let Err(error) = self.ai_state.agent_runtime.record_tool_file_mutation(
-                    &pending.runtime_turn,
-                    &pending.runtime_tool,
-                    mutation,
-                ) {
-                    crate::log_warn!("agent_runtime", "failed to record shell mutation: {error}");
+            if let (Some(turn), Some(tool)) = (runtime_turn, runtime_tool) {
+                for mutation in delta.mutations {
+                    if let Err(error) = self
+                        .ai_state
+                        .agent_runtime
+                        .record_tool_file_mutation(turn, tool, mutation)
+                    {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to record shell mutation: {error}"
+                        );
+                    }
                 }
-            }
-            for issue in delta.issues {
-                if let Err(error) = self.ai_state.agent_runtime.record_tool_capture_issue(
-                    &pending.runtime_turn,
-                    &pending.runtime_tool,
-                    issue,
-                ) {
-                    crate::log_warn!("agent_runtime", "failed to record capture issue: {error}");
+                for issue in delta.issues {
+                    if let Err(error) = self
+                        .ai_state
+                        .agent_runtime
+                        .record_tool_capture_issue(turn, tool, issue)
+                    {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to record capture issue: {error}"
+                        );
+                    }
                 }
             }
         }
         if let Some(error) = observation.capture_error.as_ref() {
-            if let Err(record_error) = self.ai_state.agent_runtime.record_tool_capture_issue(
-                &pending.runtime_turn,
-                &pending.runtime_tool,
-                error.clone(),
-            ) {
-                crate::log_warn!(
-                    "agent_runtime",
-                    "failed to record capture failure: {record_error}"
-                );
+            if let (Some(turn), Some(tool)) = (runtime_turn, runtime_tool) {
+                if let Err(record_error) =
+                    self.ai_state
+                        .agent_runtime
+                        .record_tool_capture_issue(turn, tool, error.clone())
+                {
+                    crate::log_warn!(
+                        "agent_runtime",
+                        "failed to record capture failure: {record_error}"
+                    );
+                }
             }
         }
         if observation.outcome_unknown {
             let detail = observation
                 .capture_error
                 .unwrap_or_else(|| "shell result and workspace effects are unknown".into());
-            if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
-                &pending.runtime_turn,
-                &pending.runtime_tool,
-                detail.clone(),
-            ) {
-                crate::log_warn!(
-                    "agent_runtime",
-                    "failed to record unknown shell outcome: {error}"
-                );
+            if let (Some(turn), Some(tool)) = (runtime_turn, runtime_tool) {
+                if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
+                    turn,
+                    tool,
+                    detail.clone(),
+                ) {
+                    crate::log_warn!(
+                        "agent_runtime",
+                        "failed to record unknown shell outcome: {error}"
+                    );
+                }
             }
-            let _ = pending.dynamic_response.send(Err(detail));
-            self.fail_specific_dynamic_turn(
-                &pending.runtime_turn,
-                "shell execution could not be durably observed".into(),
-            );
+            match pending.continuation {
+                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                    runtime_turn,
+                    response,
+                    ..
+                } => {
+                    let _ = response.send(Err(detail));
+                    self.fail_specific_dynamic_turn(
+                        &runtime_turn,
+                        "shell execution could not be durably observed".into(),
+                    );
+                }
+                super::ai_chat_state::ShellExecutionContinuation::Batch {
+                    runtime_turn,
+                    remaining_tool_calls,
+                    ..
+                } => {
+                    if let Some(turn) = runtime_turn.as_ref() {
+                        self.fail_specific_dynamic_turn(
+                            turn,
+                            "shell execution could not be durably observed".into(),
+                        );
+                    }
+                    // Every committed tool_use must get a tool_result, or the
+                    // next provider request is rejected as malformed.
+                    let mut unresolved = vec![pending.tool_call.clone()];
+                    unresolved.extend(remaining_tool_calls);
+                    self.append_synthetic_tool_results(
+                        &unresolved,
+                        &format!("Outcome unknown: {detail}"),
+                    );
+                    if let Some(conversation) = self.conversation_mut() {
+                        conversation.append_error(detail);
+                    }
+                    self.clear_streaming_state();
+                    self.set_lsp_status(String::new());
+                    // No job, stream, or pending state is left to complete this
+                    // turn — falling through would re-arm the waiting spinner
+                    // forever. Only the Dynamic arm may fall through (its
+                    // provider stream is still live).
+                    return true;
+                }
+            }
         } else {
-            self.finish_dynamic_tool(
-                &pending.runtime_turn,
-                &pending.runtime_tool,
-                &pending.tool_call,
-                pending.dynamic_response,
-                observation.result,
-            );
+            match pending.continuation {
+                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                    runtime_turn,
+                    runtime_tool,
+                    response,
+                } => self.finish_dynamic_tool(
+                    &runtime_turn,
+                    &runtime_tool,
+                    &pending.tool_call,
+                    response,
+                    observation.result,
+                ),
+                super::ai_chat_state::ShellExecutionContinuation::Batch {
+                    runtime_turn,
+                    runtime_tool,
+                    remaining_tool_calls,
+                    model_name,
+                } => {
+                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
+                    {
+                        if let Err(error) =
+                            self.ai_runtime_finish_tool(turn, tool, &observation.result)
+                        {
+                            self.ai_runtime_fail_turn(format!(
+                                "failed to record shell tool result: {error}"
+                            ));
+                            self.clear_streaming_state();
+                            return true;
+                        }
+                    }
+                    self.record_tool_event_summary(&pending.tool_call, &observation.result);
+                    let result_content = self
+                        .format_tool_result_with_target(&pending.tool_call, &observation.result);
+                    if let Some(conversation) = self.conversation_mut() {
+                        conversation
+                            .append_tool_result(pending.tool_call.id.clone(), result_content);
+                    }
+                    if let Some(chat) = self.ai_state.chat.as_mut() {
+                        chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+                    }
+                    self.set_lsp_status(String::new());
+                    return self.execute_tool_call_batch(remaining_tool_calls, model_name);
+                }
+            }
         }
         self.set_lsp_status(String::new());
         if let Some(chat) = self.ai_state.chat.as_mut() {

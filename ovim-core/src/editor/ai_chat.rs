@@ -198,16 +198,44 @@ impl Editor {
         }
         if let Some(pending) = pending_shell {
             pending.task.abort();
-            if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
-                &pending.runtime_turn,
-                &pending.runtime_tool,
-                "cancelled by user before the shell result was observed",
-            ) {
-                crate::log_warn!("agent_runtime", "failed to cancel shell tool: {error}");
+            let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation {
+                super::ai_chat_state::ShellExecutionContinuation::Dynamic {
+                    runtime_turn,
+                    runtime_tool,
+                    response,
+                } => (
+                    Some(runtime_turn),
+                    Some(runtime_tool),
+                    Some(response),
+                    Vec::new(),
+                ),
+                super::ai_chat_state::ShellExecutionContinuation::Batch {
+                    runtime_turn,
+                    runtime_tool,
+                    remaining_tool_calls,
+                    ..
+                } => {
+                    // The tool_use blocks for this shell call and the rest of
+                    // the batch are already committed; close them out so the
+                    // next provider request stays well-formed.
+                    let mut unresolved = vec![pending.tool_call.clone()];
+                    unresolved.extend(remaining_tool_calls);
+                    (runtime_turn, runtime_tool, None, unresolved)
+                }
+            };
+            if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref()) {
+                if let Err(error) = self.ai_state.agent_runtime.mark_tool_outcome_unknown(
+                    turn,
+                    tool,
+                    "cancelled by user before the shell result was observed",
+                ) {
+                    crate::log_warn!("agent_runtime", "failed to cancel shell tool: {error}");
+                }
             }
-            let _ = pending
-                .dynamic_response
-                .send(Err("cancelled by user".into()));
+            if let Some(response) = response {
+                let _ = response.send(Err("cancelled by user".into()));
+            }
+            self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
         }
         if let Some(pending) = pending_web {
             pending.task.abort();
