@@ -545,18 +545,21 @@ pub fn parse_key_string(s: &str) -> Result<Vec<KeyEvent>, String> {
 
 /// Parse special key names like "CR", "Esc", "C-w"
 fn parse_special_key(key_name: &str) -> Option<KeyEvent> {
-    let parts: Vec<&str> = key_name.split('-').collect();
-    let (modifier_parts, base_name) = parts.split_at(parts.len().saturating_sub(1));
-    let base_name = *base_name.first()?;
+    // Strip modifier prefixes from the front rather than splitting on '-',
+    // so a literal '-' base key survives (e.g. `<C-->`, `<C-S-->`, `<->`).
     let mut modifiers = Modifiers::NONE;
-    for modifier in modifier_parts {
-        modifiers |= match *modifier {
+    let mut base_name = key_name;
+    while let Some((head, tail)) = base_name.split_once('-') {
+        let modifier = match head {
             "C" | "Ctrl" => Modifiers::CONTROL,
             "S" | "Shift" => Modifiers::SHIFT,
             "A" | "M" | "Alt" => Modifiers::ALT,
             "D" | "Cmd" | "Super" => Modifiers::SUPER,
-            _ => return None,
+            // Not a modifier: the rest (including this '-') is the base key.
+            _ => break,
         };
+        modifiers |= modifier;
+        base_name = tail;
     }
 
     // Handle function keys: F1-F12
@@ -712,6 +715,46 @@ mod context_window_tests {
         assert_eq!(events[2].code, KeyCode::Char('1'));
         assert!(events[2].modifiers.contains(Modifiers::SUPER));
         assert_eq!(events[3].code, KeyCode::BackTab);
+    }
+
+    #[test]
+    fn parses_minus_as_base_key_with_modifiers() {
+        // <C--> is Ctrl+minus; a trailing '-' must not be eaten by the
+        // modifier split (regression: OV key-sequence rewrite).
+        let events = parse_key_string("<C-->").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code, KeyCode::Char('-'));
+        assert_eq!(events[0].modifiers, Modifiers::CONTROL);
+
+        let events = parse_key_string("<C-S-->").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code, KeyCode::Char('-'));
+        assert!(events[0].modifiers.contains(Modifiers::CONTROL));
+        assert!(events[0].modifiers.contains(Modifiers::SHIFT));
+
+        // Bare <-> parses like any other single-character key name (<a>).
+        let events = parse_key_string("<->").unwrap();
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].code, KeyCode::Char('-'));
+        assert_eq!(events[0].modifiers, Modifiers::NONE);
+    }
+
+    #[test]
+    fn existing_special_key_forms_still_parse() {
+        let events = parse_key_string("<C-w><Esc><CR><S-Tab><A-Left>").unwrap();
+        assert_eq!(events.len(), 5);
+        assert_eq!(events[0].code, KeyCode::Char('w'));
+        assert_eq!(events[0].modifiers, Modifiers::CONTROL);
+        assert_eq!(events[1].code, KeyCode::Esc);
+        assert_eq!(events[2].code, KeyCode::Enter);
+        assert_eq!(events[3].code, KeyCode::BackTab);
+        assert_eq!(events[4].code, KeyCode::Left);
+        assert_eq!(events[4].modifiers, Modifiers::ALT);
+
+        // Unknown names still degrade to literal text.
+        let events = parse_key_string("<X-y>").unwrap();
+        assert_eq!(events.len(), 5); // '<', 'X', '-', 'y', '>'
+        assert_eq!(events[0].code, KeyCode::Char('<'));
     }
 
     #[test]

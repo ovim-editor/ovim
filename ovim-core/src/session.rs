@@ -193,6 +193,30 @@ impl SessionInfo {
         }
     }
 
+    /// Validate a session name before it is used as a file stem.
+    ///
+    /// Session creation (headless `--session` and `:session start`) only
+    /// ever produces names made of alphanumerics, underscores, and hyphens,
+    /// capped at 64 characters. Enforcing the same rule on read prevents
+    /// path traversal via names like `../../evil` that would otherwise
+    /// escape the session directory.
+    pub fn validate_session_name(session_name: &str) -> Result<()> {
+        let valid = !session_name.is_empty()
+            && session_name.chars().count() <= 64
+            && session_name
+                .chars()
+                .all(|c| c.is_alphanumeric() || c == '_' || c == '-');
+        if valid {
+            Ok(())
+        } else {
+            anyhow::bail!(
+                "Invalid session name '{}': session names may only contain \
+                 alphanumeric characters, underscores, and hyphens (max 64 characters)",
+                session_name
+            )
+        }
+    }
+
     /// Read a session by name with helpful error messages
     pub fn read(session_name: &str) -> Result<Self> {
         let session_dir = Self::session_dir()?;
@@ -201,6 +225,7 @@ impl SessionInfo {
 
     /// Read a session by name from an explicit session directory.
     pub fn read_from_dir(session_name: &str, session_dir: &Path) -> Result<Self> {
+        Self::validate_session_name(session_name)?;
         let path = session_dir.join(format!("{}.json", session_name));
 
         // Try to read the file
@@ -782,6 +807,30 @@ mod tests {
             !session_file_path.exists(),
             "Session file should be deleted after panic"
         );
+    }
+
+    #[test]
+    fn test_read_rejects_path_traversal_names() {
+        let session_dir = tempfile::tempdir().expect("tempdir");
+
+        for name in ["../../x", "..", "a/b", "evil\\name", "", "dev.json"] {
+            let error = SessionInfo::read_from_dir(name, session_dir.path())
+                .expect_err("traversal-capable name must be rejected");
+            assert!(
+                error.to_string().contains("Invalid session name"),
+                "unexpected error for {name:?}: {error}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_validate_session_name_accepts_written_names() {
+        for name in ["default", "dev", "my_session-2", "TUI", "a"] {
+            SessionInfo::validate_session_name(name).expect("valid name rejected");
+        }
+
+        let too_long = "x".repeat(65);
+        assert!(SessionInfo::validate_session_name(&too_long).is_err());
     }
 
     #[test]

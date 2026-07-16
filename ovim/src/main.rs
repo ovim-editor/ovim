@@ -12,6 +12,7 @@ use ovim::mode::Mode;
 use ovim::session::{SessionGuard, SessionInfo};
 use ovim::subcommands;
 use ovim::ui::UI;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 use tokio::signal::unix::{signal, SignalKind};
@@ -60,6 +61,28 @@ fn sanitize_session_name(name: &str) -> String {
         .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
         .take(64) // Limit length
         .collect()
+}
+
+/// React to a SIGINT/SIGTERM in headless mode with escalation.
+///
+/// The first signal requests a graceful shutdown through the channel (the
+/// event loop breaks out of its select and cleans up). A second signal means
+/// the loop is likely wedged in a long await and will never consume the
+/// channel, so delete the session file and exit immediately with 130
+/// (terminated by signal), matching the pre-channel behavior.
+#[allow(clippy::print_stderr)] // headless-only path; no TUI to corrupt
+fn handle_shutdown_signal(
+    signal_count: &AtomicUsize,
+    shutdown_tx: &mpsc::Sender<()>,
+    session_info: &SessionInfo,
+) {
+    if signal_count.fetch_add(1, Ordering::SeqCst) == 0 {
+        let _ = shutdown_tx.try_send(());
+    } else {
+        eprintln!("Received second signal; forcing shutdown.");
+        let _ = session_info.delete();
+        std::process::exit(130);
+    }
 }
 
 #[tokio::main]
@@ -226,15 +249,32 @@ async fn main() -> Result<()> {
         // Create a guard to ensure cleanup on panic
         let _session_guard = SessionGuard::new(session_info.clone());
 
-        // Set up cleanup on exit - handle both SIGINT and SIGTERM
+        // Set up cleanup on exit - handle both SIGINT and SIGTERM.
+        // First signal: graceful shutdown via the channel. Second signal:
+        // the event loop may be wedged in a long await and never see the
+        // channel, so force cleanup (delete the session file) and exit.
         let (shutdown_tx, shutdown_rx) = mpsc::channel(2);
+        let signal_count = Arc::new(AtomicUsize::new(0));
+
         let shutdown_tx_sigint = shutdown_tx.clone();
+        let signal_count_sigint = Arc::clone(&signal_count);
+        let session_for_sigint = session_info.clone();
         let sigint_handle = tokio::spawn(async move {
-            tokio::signal::ctrl_c().await.ok();
-            let _ = shutdown_tx_sigint.send(()).await;
+            loop {
+                if tokio::signal::ctrl_c().await.is_err() {
+                    return;
+                }
+                handle_shutdown_signal(
+                    &signal_count_sigint,
+                    &shutdown_tx_sigint,
+                    &session_for_sigint,
+                );
+            }
         });
 
         let shutdown_tx_sigterm = shutdown_tx.clone();
+        let signal_count_sigterm = Arc::clone(&signal_count);
+        let session_for_sigterm = session_info.clone();
         let sigterm_handle = tokio::spawn(async move {
             let mut sigterm = match signal(SignalKind::terminate()) {
                 Ok(s) => s,
@@ -243,8 +283,13 @@ async fn main() -> Result<()> {
                     return;
                 }
             };
-            sigterm.recv().await;
-            let _ = shutdown_tx_sigterm.send(()).await;
+            while sigterm.recv().await.is_some() {
+                handle_shutdown_signal(
+                    &signal_count_sigterm,
+                    &shutdown_tx_sigterm,
+                    &session_for_sigterm,
+                );
+            }
         });
 
         // Store session info and start time for health checks

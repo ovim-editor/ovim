@@ -1475,9 +1475,16 @@ async fn handle_api_request(
             // Determine if the system is ready
             let ready = lsp_servers.values().all(|s| s == "ready") || lsp_servers.is_empty();
 
-            // Update session info with LSP ready status
+            // Update session info with LSP ready status. Sessions are opt-in:
+            // port 0 marks the placeholder used when no session is registered
+            // (plain TUI), and writing it would fabricate a phantom session
+            // file on disk. Same gate as the Resize handler.
             if let Ok(mut session) = session_info.lock() {
-                let _ = session.set_lsp_ready(ready);
+                if session.port != 0 {
+                    let _ = session.set_lsp_ready(ready);
+                } else {
+                    session.lsp_ready = ready;
+                }
             }
 
             let health_info = HealthInfo {
@@ -1666,6 +1673,45 @@ mod tests {
 
     fn test_session() -> Arc<Mutex<SessionInfo>> {
         Arc::new(Mutex::new(SessionInfo::new(0, None, "test".into())))
+    }
+
+    #[tokio::test]
+    async fn get_health_does_not_write_session_file_for_unregistered_session() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // SAFETY: single-threaded mutation of a test-only variable; no other
+        // test in this binary reads OVIM_SESSION_DIR.
+        unsafe { std::env::set_var("OVIM_SESSION_DIR", dir.path()) };
+
+        let mut editor = Editor::default();
+        let mut cache = AnsiRenderCache::new();
+        // Port 0 is the placeholder for a TUI without a registered session.
+        let session = test_session();
+
+        let (tx, rx) = oneshot::channel();
+        handle_api_request(
+            &mut editor,
+            ApiRequest::GetHealth(tx),
+            SystemTime::now(),
+            &session,
+            &mut cache,
+        )
+        .await;
+
+        // The health response still works...
+        assert!(matches!(rx.await.unwrap(), ApiResponse::Health(_)));
+        // ...and the in-memory flag is updated (no LSP servers => ready)...
+        assert!(session.lock().unwrap().lsp_ready);
+        // ...but no phantom session file may appear on disk.
+        let entries: Vec<_> = std::fs::read_dir(dir.path())
+            .expect("read session dir")
+            .collect();
+        assert!(
+            entries.is_empty(),
+            "unregistered session must not be written to disk: {entries:?}"
+        );
+
+        // SAFETY: see above.
+        unsafe { std::env::remove_var("OVIM_SESSION_DIR") };
     }
 
     #[test]

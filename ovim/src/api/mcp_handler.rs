@@ -574,18 +574,41 @@ async fn handle_tool_call(state: ApiState, params: Value) -> Result<Value, JsonR
     }
 }
 
+/// How long to wait for a TCP connection to a forwarded session.
+const FORWARD_CONNECT_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+/// Total round-trip budget for a forwarded tool call. Tool calls can
+/// legitimately take a while (LSP waits, renders), but a session whose
+/// event loop is wedged must not hang the caller's MCP request forever.
+const FORWARD_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+
+/// Build the HTTP client used to forward tool calls to another session.
+fn forwarding_client() -> Result<reqwest::Client, reqwest::Error> {
+    reqwest::Client::builder()
+        .connect_timeout(FORWARD_CONNECT_TIMEOUT)
+        .timeout(FORWARD_TOTAL_TIMEOUT)
+        .build()
+}
+
 async fn forward_tool_call_to_session(
     session_name: &str,
     tool_name: &str,
     mut arguments: Value,
 ) -> Result<Value, JsonRpcError> {
+    // The session name flows into a file path inside the session directory;
+    // reject traversal-capable names before touching the filesystem.
+    crate::session::SessionInfo::validate_session_name(session_name)
+        .map_err(|error| JsonRpcError::invalid_params(&error.to_string()))?;
     let session = crate::session::SessionInfo::read(session_name).map_err(|error| {
         JsonRpcError::invalid_params(&format!("Session '{session_name}' not found: {error}"))
     })?;
     if let Some(arguments) = arguments.as_object_mut() {
         arguments.remove("session");
     }
-    let response = reqwest::Client::new()
+    let client = forwarding_client().map_err(|error| {
+        JsonRpcError::internal_error(&format!("Failed to build forwarding HTTP client: {error}"))
+    })?;
+    let response = client
         .post(format!("http://127.0.0.1:{}/v1/mcp", session.port))
         .json(&json!({
             "jsonrpc": "2.0",
@@ -801,6 +824,34 @@ mod tests {
     use std::sync::Arc;
     use std::sync::Mutex;
     use tokio::sync::mpsc;
+
+    #[tokio::test]
+    async fn forwarding_rejects_path_traversal_session_names() {
+        for name in ["../../etc/passwd", "..", "a/b", "dev.json"] {
+            let error = forward_tool_call_to_session(name, "send_keys", json!({}))
+                .await
+                .expect_err("traversal-capable session name must be rejected");
+            assert_eq!(error.code, -32602, "expected invalid params for {name:?}");
+            let reason = error
+                .data
+                .as_ref()
+                .and_then(|data| data.get("reason"))
+                .and_then(Value::as_str)
+                .unwrap_or_default();
+            assert!(
+                reason.contains("Invalid session name"),
+                "unexpected error for {name:?}: {reason}"
+            );
+        }
+    }
+
+    #[test]
+    fn forwarding_client_is_constructed_with_timeouts() {
+        // The timeouts themselves are compile-time constants; this guards
+        // against the builder combination becoming invalid.
+        forwarding_client().expect("forwarding client must build");
+        assert!(FORWARD_CONNECT_TIMEOUT < FORWARD_TOTAL_TIMEOUT);
+    }
 
     fn snapshot_with(mode: &str, hover: Option<&str>) -> EditorSnapshot {
         EditorSnapshot {
