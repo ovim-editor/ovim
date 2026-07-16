@@ -453,7 +453,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         ('Z', KeyCode::Char('Z')) => {
             if editor.is_chat_scratch_buffer() {
-                let _ = editor.finish_chat_scratch(true);
+                if let Err(error) = editor.finish_chat_scratch(true) {
+                    editor.set_lsp_status(format!("Could not finish chat scratch: {error}"));
+                }
             } else {
                 if editor.buffer().file_path().is_some()
                     && tokio::runtime::Handle::try_current().is_ok()

@@ -462,8 +462,8 @@ pub struct PendingAiChatJob {
 }
 
 pub struct ScratchBufferState {
-    pub scratch_buffer_index: usize,
-    pub original_buffer_index: usize,
+    pub scratch_buffer_id: BufferId,
+    pub original_buffer_id: BufferId,
     pub original_input: String,
 }
 

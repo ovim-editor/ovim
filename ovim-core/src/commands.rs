@@ -186,12 +186,16 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
     if editor.is_chat_scratch_buffer() {
         match command {
             "w" | "write" | "wq" | "x" => {
-                let _ = editor.finish_chat_scratch(true);
-                return ok("Scratch content transferred to chat input");
+                return match editor.finish_chat_scratch(true) {
+                    Ok(()) => ok("Scratch content transferred to chat input"),
+                    Err(error) => err(format!("Could not finish chat scratch: {error}")),
+                };
             }
             "q!" | "quit!" | "bd!" | "bdelete!" | "q" | "quit" => {
-                let _ = editor.finish_chat_scratch(false);
-                return ok("Scratch buffer discarded");
+                return match editor.finish_chat_scratch(false) {
+                    Ok(()) => ok("Scratch buffer discarded"),
+                    Err(error) => err(format!("Could not discard chat scratch: {error}")),
+                };
             }
             _ => {}
         }
