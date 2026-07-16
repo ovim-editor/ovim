@@ -55,14 +55,6 @@ fn install_panic_hook() {
     }));
 }
 
-/// Sanitize session name to prevent path traversal attacks
-fn sanitize_session_name(name: &str) -> String {
-    name.chars()
-        .filter(|c| c.is_alphanumeric() || *c == '_' || *c == '-')
-        .take(64) // Limit length
-        .collect()
-}
-
 /// React to a SIGINT/SIGTERM in headless mode with escalation.
 ///
 /// The first signal requests a graceful shutdown through the channel (the
@@ -224,7 +216,17 @@ async fn main() -> Result<()> {
     if headless {
         // Require --session NAME for headless mode
         let session_name = match session_name {
-            Some(name) => sanitize_session_name(&name),
+            Some(name) => {
+                // Reject invalid names outright (same rule reads enforce)
+                // instead of silently sanitizing into a different or empty
+                // name that could not be targeted later.
+                if let Err(e) = SessionInfo::validate_session_name(&name) {
+                    eprintln!("Error: {}", e);
+                    eprintln!("Usage: ovim <file> --headless --session <name>");
+                    std::process::exit(1);
+                }
+                name
+            }
             None => {
                 eprintln!("Error: --headless requires --session NAME");
                 eprintln!("Usage: ovim <file> --headless --session <name>");

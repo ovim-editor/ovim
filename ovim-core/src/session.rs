@@ -125,9 +125,14 @@ impl SessionInfo {
     }
 
     /// Write this session info atomically to an explicit session directory.
+    ///
+    /// Rejects names that [`Self::validate_session_name`] would refuse on
+    /// read, so a session can never be created that is impossible to read
+    /// back or target later.
     pub fn write_to_dir(&self, session_dir: &Path) -> Result<()> {
         use std::io::Write;
 
+        Self::validate_session_name(&self.session_name)?;
         fs::create_dir_all(session_dir)?;
         let path = self.session_file_path_in(session_dir);
         let json = serde_json::to_string_pretty(self)?;
@@ -195,11 +200,12 @@ impl SessionInfo {
 
     /// Validate a session name before it is used as a file stem.
     ///
-    /// Session creation (headless `--session` and `:session start`) only
-    /// ever produces names made of alphanumerics, underscores, and hyphens,
-    /// capped at 64 characters. Enforcing the same rule on read prevents
-    /// path traversal via names like `../../evil` that would otherwise
-    /// escape the session directory.
+    /// Names must be non-empty, at most 64 characters, and contain only
+    /// alphanumerics, underscores, and hyphens. This is the single source
+    /// of truth for session names: creation paths (headless `--session`,
+    /// `:session start`, and [`Self::write_to_dir`]) and read paths all
+    /// enforce it, so any session that can be created can also be read,
+    /// and traversal-capable names like `../../evil` are rejected.
     pub fn validate_session_name(session_name: &str) -> Result<()> {
         let valid = !session_name.is_empty()
             && session_name.chars().count() <= 64
@@ -831,6 +837,44 @@ mod tests {
 
         let too_long = "x".repeat(65);
         assert!(SessionInfo::validate_session_name(&too_long).is_err());
+    }
+
+    #[test]
+    fn test_write_rejects_names_that_reads_would_refuse() {
+        let session_dir = tempfile::tempdir().expect("tempdir");
+
+        // Overlong (65 chars), punctuation-only, empty, traversal-capable:
+        // all must fail at creation, not sanitize into a different name.
+        let too_long = "x".repeat(65);
+        for name in [too_long.as_str(), "!!!...", "", "../../evil"] {
+            let info = SessionInfo::new(9990, None, name.to_string());
+            let error = info
+                .write_to_dir(session_dir.path())
+                .expect_err("unreadable name must be rejected at write");
+            assert!(
+                error.to_string().contains("Invalid session name"),
+                "unexpected error for {name:?}: {error}"
+            );
+            assert!(
+                !info.session_file_path_in(session_dir.path()).exists(),
+                "no session file should be written for {name:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_max_length_name_round_trips() {
+        let session_dir = tempfile::tempdir().expect("tempdir");
+        let name = "y".repeat(64);
+
+        let info = SessionInfo::new(9991, Some("max.txt".into()), name.clone());
+        info.write_to_dir(session_dir.path())
+            .expect("64-char name must be accepted at write");
+
+        let read = SessionInfo::read_from_dir(&name, session_dir.path())
+            .expect("64-char name must be readable after creation");
+        assert_eq!(read.session_name, name);
+        assert_eq!(read.file.as_deref(), Some("max.txt"));
     }
 
     #[test]

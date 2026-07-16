@@ -1862,12 +1862,10 @@ fn handle_session_command(editor: &mut Editor, command: &str) -> CommandResult {
                 return err("Usage: :session start NAME");
             }
 
-            // Validate session name (alphanumeric, underscore, hyphen only)
-            if !name
-                .chars()
-                .all(|c| c.is_alphanumeric() || c == '_' || c == '-')
-            {
-                return err("Session name must contain only alphanumeric characters, underscores, and hyphens");
+            // Validate with the same rule reads enforce (charset + 64-char cap),
+            // so a registered session can always be read back and targeted.
+            if let Err(e) = SessionInfo::validate_session_name(name) {
+                return err(e.to_string());
             }
 
             // Check if already registered
@@ -2042,5 +2040,44 @@ mod tests {
         let result = execute_command(&mut editor, "w!");
         assert!(matches!(result, CommandResult::Success(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "local original\n");
+    }
+
+    #[test]
+    fn session_start_rejects_overlong_name() {
+        let mut editor = Editor::new();
+        let name = "x".repeat(65);
+
+        let result = execute_command(&mut editor, &format!("session start {name}"));
+        assert!(
+            matches!(result, CommandResult::Error(ref e) if e.error.contains("Invalid session name")),
+            "65-char name must be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn session_start_rejects_punctuation_only_name() {
+        let mut editor = Editor::new();
+
+        let result = execute_command(&mut editor, "session start !!!...");
+        assert!(
+            matches!(result, CommandResult::Error(ref e) if e.error.contains("Invalid session name")),
+            "punctuation-only name must be rejected, got: {result:?}"
+        );
+    }
+
+    #[test]
+    fn session_start_accepts_valid_names_past_validation() {
+        // No API port is set, so a valid name proceeds past validation and
+        // fails on the API-server check instead — proving the name itself
+        // was accepted without touching the real session directory.
+        let max_len = "y".repeat(64);
+        for name in ["dev", "my_session-2", max_len.as_str()] {
+            let mut editor = Editor::new();
+            let result = execute_command(&mut editor, &format!("session start {name}"));
+            assert!(
+                matches!(result, CommandResult::Error(ref e) if e.error.contains("API server not running")),
+                "valid name {name:?} must pass validation, got: {result:?}"
+            );
+        }
     }
 }
