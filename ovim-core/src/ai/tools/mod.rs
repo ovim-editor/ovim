@@ -29,6 +29,10 @@ pub enum ParamType {
     LineRange,
     /// Ordered code-walkthrough entries with a path, line range, and comment.
     CodeExplanationSteps,
+    /// Atomic file operations staged for an explained change set.
+    ChangeSet,
+    /// Ordered source-reference and proposed-change walkthrough entries.
+    TalkThroughChangesSteps,
 }
 
 /// A single tool parameter.

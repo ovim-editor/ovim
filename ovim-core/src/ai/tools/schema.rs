@@ -120,7 +120,136 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
                 "required": ["path", "start_line", "comment"]
             }
         }),
+        ParamType::ChangeSet => change_set_schema(description),
+        ParamType::TalkThroughChangesSteps => talk_through_changes_steps_schema(description),
     }
+}
+
+fn change_set_schema(description: &str) -> serde_json::Value {
+    let operation = |properties: serde_json::Value, required: serde_json::Value| {
+        json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": properties,
+            "required": required,
+        })
+    };
+    let common_id = json!({
+        "type": "string",
+        "minLength": 1,
+        "description": "Stable ID referenced by one or more change walkthrough steps."
+    });
+    let path = json!({ "type": "string", "minLength": 1 });
+    let revision = json!({
+        "type": "integer",
+        "minimum": 0,
+        "description": "Authoritative buffer revision on which this operation is based."
+    });
+
+    json!({
+        "type": "object",
+        "description": description,
+        "additionalProperties": false,
+        "properties": {
+            "operations": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": crate::ai::change_set::MAX_CHANGE_SET_OPERATIONS,
+                "items": {
+                    "oneOf": [
+                        operation(
+                            json!({
+                                "id": common_id,
+                                "type": { "const": "modify" },
+                                "path": path,
+                                "expected_revision": revision,
+                                "patch": { "type": "string", "minLength": 1 }
+                            }),
+                            json!(["id", "type", "path", "expected_revision", "patch"]),
+                        ),
+                        operation(
+                            json!({
+                                "id": common_id,
+                                "type": { "const": "create" },
+                                "path": path,
+                                "expected_revision": revision,
+                                "content": { "type": "string" }
+                            }),
+                            json!(["id", "type", "path", "expected_revision", "content"]),
+                        ),
+                        operation(
+                            json!({
+                                "id": common_id,
+                                "type": { "const": "delete" },
+                                "path": path,
+                                "expected_revision": revision
+                            }),
+                            json!(["id", "type", "path", "expected_revision"]),
+                        ),
+                        operation(
+                            json!({
+                                "id": common_id,
+                                "type": { "const": "rename" },
+                                "from_path": path,
+                                "to_path": path,
+                                "expected_revision": revision
+                            }),
+                            json!(["id", "type", "from_path", "to_path", "expected_revision"]),
+                        )
+                    ]
+                }
+            }
+        },
+        "required": ["operations"]
+    })
+}
+
+fn talk_through_changes_steps_schema(description: &str) -> serde_json::Value {
+    json!({
+        "type": "array",
+        "description": description,
+        "minItems": 1,
+        "maxItems": crate::ai::change_set::MAX_TALK_THROUGH_STEPS,
+        "items": {
+            "oneOf": [
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "code" },
+                        "path": { "type": "string", "minLength": 1 },
+                        "revision": { "type": "integer", "minimum": 0 },
+                        "start_line": { "type": "integer", "minimum": 1 },
+                        "end_line": { "type": "integer", "minimum": 1 },
+                        "comment": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Teach why this base-code reference constrains or motivates a proposed change."
+                        }
+                    },
+                    "required": ["type", "path", "revision", "start_line", "comment"]
+                },
+                {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "type": { "const": "change" },
+                        "operation_id": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "ID of an operation in change_set.operations."
+                        },
+                        "comment": {
+                            "type": "string",
+                            "minLength": 1,
+                            "description": "Teach how and why this proposed edit responds to the established constraint."
+                        }
+                    },
+                    "required": ["type", "operation_id", "comment"]
+                }
+            ]
+        }
+    })
 }
 
 #[cfg(test)]
@@ -233,5 +362,31 @@ mod tests {
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["start"].is_object());
         assert!(schema["properties"]["end"].is_object());
+    }
+
+    #[test]
+    fn change_set_schema_discriminates_all_operation_types() {
+        let schema = param_type_to_schema(&ParamType::ChangeSet, "staged operations");
+        let operations = &schema["properties"]["operations"];
+        assert_eq!(operations["maxItems"], 12);
+        let variants = operations["items"]["oneOf"].as_array().unwrap();
+        assert_eq!(variants.len(), 4);
+        assert_eq!(variants[0]["properties"]["type"]["const"], "modify");
+        assert_eq!(variants[1]["properties"]["type"]["const"], "create");
+        assert_eq!(variants[2]["properties"]["type"]["const"], "delete");
+        assert_eq!(variants[3]["properties"]["type"]["const"], "rename");
+        assert_eq!(variants[0]["properties"]["expected_revision"]["minimum"], 0);
+    }
+
+    #[test]
+    fn talk_through_schema_separates_code_and_change_steps() {
+        let schema = param_type_to_schema(&ParamType::TalkThroughChangesSteps, "pedagogical steps");
+        assert_eq!(schema["maxItems"], 20);
+        let variants = schema["items"]["oneOf"].as_array().unwrap();
+        assert_eq!(variants.len(), 2);
+        assert_eq!(variants[0]["properties"]["type"]["const"], "code");
+        assert_eq!(variants[1]["properties"]["type"]["const"], "change");
+        assert!(variants[0]["properties"]["start_line"].is_object());
+        assert!(variants[1]["properties"]["operation_id"].is_object());
     }
 }
