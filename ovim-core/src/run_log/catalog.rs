@@ -68,6 +68,39 @@ pub struct ConversationBinding {
     pub selected_branch_id: BranchId,
 }
 
+/// Outcome of starting a fresh run without displacing prior history.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FreshConversationStart {
+    /// No conversation existed for the key; the fresh run is now the one
+    /// discovered by future opens.
+    Bound(ConversationBinding),
+    /// A prior conversation exists and remains discoverable; the fresh run is
+    /// visible only to the process that created it.
+    Unbound(ConversationBinding),
+}
+
+impl FreshConversationStart {
+    pub fn is_bound(&self) -> bool {
+        matches!(self, Self::Bound(_))
+    }
+
+    pub fn into_binding(self) -> ConversationBinding {
+        match self {
+            Self::Bound(binding) | Self::Unbound(binding) => binding,
+        }
+    }
+}
+
+/// A process that registered itself as a writer of a run. The PID plus the
+/// process start time mirror the stale-session detection in `crate::session`:
+/// a reused PID with a different start time is not mistaken for a live owner.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunOwner {
+    pub pid: u32,
+    pub process_start_time: Option<u64>,
+    pub registered_at_millis: i64,
+}
+
 /// Opaque coordinates for provider-owned resumable state.
 ///
 /// These coordinates refer to ovim identities, but the provider thread and
@@ -430,6 +463,138 @@ impl RunCatalog {
         Ok(fresh)
     }
 
+    /// Creates an independent run for the key without ever displacing an
+    /// existing conversation. When no conversation exists the fresh run is
+    /// bound and becomes discoverable by future opens; otherwise the prior
+    /// binding — and therefore its history — stays reachable through
+    /// [`Self::open_conversation`], and the fresh run remains unbound.
+    pub fn start_fresh_conversation(
+        &self,
+        key: ConversationKey,
+        initial_branch_id: BranchId,
+    ) -> Result<FreshConversationStart, CatalogError> {
+        let (scope_kind, scope_path) = normalized_scope(&key.scope)?;
+        if key.logical_name.trim().is_empty() {
+            return Err(CatalogError::InvalidConversationKey(
+                "logical name is empty".into(),
+            ));
+        }
+        let now = self.clock.now_millis();
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(|error| storage("begin fresh conversation start", error))?;
+        let exists: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM repositories WHERE repository_id = ?1)",
+                [key.repository_id.as_str()],
+                |row| row.get(0),
+            )
+            .map_err(|error| storage("validate conversation repository", error))?;
+        if !exists {
+            return Err(CatalogError::UnknownRepository(key.repository_id));
+        }
+
+        let fresh = ConversationBinding {
+            key,
+            conversation_id: ConversationId::new(),
+            run_id: RunId::new(),
+            root_agent_id: AgentId::new(),
+            workspace_id: WorkspaceId::new(),
+            selected_branch_id: initial_branch_id,
+        };
+        let inserted = transaction
+            .execute(
+                "INSERT INTO conversation_bindings(\
+                 repository_id, scope_kind, scope_path, logical_name, conversation_id, run_id, \
+                 root_agent_id, workspace_id, selected_branch_id, updated_at_millis) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10) \
+                 ON CONFLICT(repository_id, scope_kind, scope_path, logical_name) DO NOTHING",
+                params![
+                    fresh.key.repository_id.as_str(),
+                    scope_kind,
+                    scope_path,
+                    fresh.key.logical_name,
+                    fresh.conversation_id.as_str(),
+                    fresh.run_id.as_str(),
+                    fresh.root_agent_id.as_str(),
+                    fresh.workspace_id.as_str(),
+                    fresh.selected_branch_id.as_str(),
+                    now,
+                ],
+            )
+            .map_err(|error| storage("store fresh unbound conversation", error))?;
+        transaction
+            .commit()
+            .map_err(|error| storage("commit fresh conversation start", error))?;
+        Ok(if inserted == 1 {
+            FreshConversationStart::Bound(fresh)
+        } else {
+            FreshConversationStart::Unbound(fresh)
+        })
+    }
+
+    /// Records the calling process as a live writer of the run so a later
+    /// crash recovery can prove whether any writer is still alive.
+    pub fn register_run_owner(
+        &self,
+        run_id: &RunId,
+        pid: u32,
+        process_start_time: Option<u64>,
+    ) -> Result<(), CatalogError> {
+        let now = self.clock.now_millis();
+        let connection = self.connection()?;
+        connection
+            .execute(
+                "INSERT INTO run_owners(run_id, pid, process_start_time, registered_at_millis) \
+                 VALUES (?1, ?2, ?3, ?4) \
+                 ON CONFLICT(run_id, pid) DO UPDATE SET \
+                 process_start_time=excluded.process_start_time, \
+                 registered_at_millis=excluded.registered_at_millis",
+                params![
+                    run_id.as_str(),
+                    i64::from(pid),
+                    process_start_time.map(|value| i64::try_from(value).unwrap_or(i64::MAX)),
+                    now,
+                ],
+            )
+            .map_err(|error| storage("register run owner", error))?;
+        Ok(())
+    }
+
+    /// Every process that registered itself as a writer of the run. An empty
+    /// result means ownership was never recorded (for example a store written
+    /// before owner tracking existed) and liveness cannot be proven.
+    pub fn run_owners(&self, run_id: &RunId) -> Result<Vec<RunOwner>, CatalogError> {
+        let connection = self.connection()?;
+        let mut statement = connection
+            .prepare(
+                "SELECT pid, process_start_time, registered_at_millis FROM run_owners \
+                 WHERE run_id = ?1 ORDER BY pid",
+            )
+            .map_err(|error| storage("prepare run owner read", error))?;
+        let owners = statement
+            .query_map([run_id.as_str()], |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<i64>>(1)?,
+                    row.get::<_, i64>(2)?,
+                ))
+            })
+            .map_err(|error| storage("read run owners", error))?
+            .map(|row| {
+                row.map_err(|error| storage("decode run owner", error)).map(
+                    |(pid, start, registered)| RunOwner {
+                        pid: u32::try_from(pid).unwrap_or(u32::MAX),
+                        process_start_time: start.and_then(|value| u64::try_from(value).ok()),
+                        registered_at_millis: registered,
+                    },
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(owners)
+    }
+
     pub fn update_selected_branch(
         &self,
         binding: &ConversationBinding,
@@ -749,6 +914,19 @@ fn migrate(connection: &mut Connection) -> Result<(), CatalogError> {
             )
             .map_err(|error| migration(2, error))?;
     }
+    // Owner liveness markers are created outside the versioned migrations so
+    // stores remain readable by binaries that predate run-owner tracking
+    // (the retained `run_leases` table follows the same precedent). The
+    // statement is idempotent and tolerates stores created before this table
+    // existed.
+    transaction
+        .execute_batch(
+            "CREATE TABLE IF NOT EXISTS run_owners(\
+             run_id TEXT NOT NULL, pid INTEGER NOT NULL, process_start_time INTEGER,\
+             registered_at_millis INTEGER NOT NULL,\
+             PRIMARY KEY(run_id, pid));",
+        )
+        .map_err(|error| migration(LATEST_MIGRATION, error))?;
     transaction.commit().map_err(|error| migration(0, error))
 }
 
@@ -1191,6 +1369,88 @@ mod tests {
         assert_eq!(
             catalog.open_conversation(key, BranchId::new()).unwrap(),
             fresh
+        );
+    }
+
+    #[test]
+    fn fresh_conversation_start_binds_only_when_no_conversation_exists() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let catalog = RunCatalog::open(&layout).unwrap();
+        let repository = catalog.register_repository(registration("repo")).unwrap();
+        let key = ConversationKey {
+            repository_id: repository.repository_id,
+            scope: ConversationScope::NoFile,
+            logical_name: "chat".into(),
+        };
+
+        let first = catalog
+            .start_fresh_conversation(key.clone(), BranchId::new())
+            .unwrap();
+        assert!(first.is_bound());
+        let first = first.into_binding();
+        assert_eq!(
+            catalog
+                .open_conversation(key.clone(), BranchId::new())
+                .unwrap(),
+            first
+        );
+
+        let second = catalog
+            .start_fresh_conversation(key.clone(), BranchId::new())
+            .unwrap();
+        assert!(!second.is_bound());
+        let second = second.into_binding();
+        assert_ne!(second.run_id, first.run_id);
+        assert_ne!(second.conversation_id, first.conversation_id);
+        // The prior conversation stays discoverable across reopen.
+        drop(catalog);
+        assert_eq!(
+            RunCatalog::open(&layout)
+                .unwrap()
+                .open_conversation(key, BranchId::new())
+                .unwrap(),
+            first
+        );
+    }
+
+    #[test]
+    fn run_owner_markers_roundtrip_and_upsert_per_process() {
+        let temporary = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(temporary.path().join("runs"));
+        let clock = Arc::new(TestClock::new(9_000));
+        let catalog = RunCatalog::open_with_clock(&layout, clock).unwrap();
+        let run_id = RunId::new();
+        assert!(catalog.run_owners(&run_id).unwrap().is_empty());
+
+        catalog
+            .register_run_owner(&run_id, 41, Some(1_234))
+            .unwrap();
+        catalog.register_run_owner(&run_id, 42, None).unwrap();
+        // Re-registering the same PID replaces its marker.
+        catalog
+            .register_run_owner(&run_id, 41, Some(5_678))
+            .unwrap();
+        drop(catalog);
+
+        let owners = RunCatalog::open(&layout)
+            .unwrap()
+            .run_owners(&run_id)
+            .unwrap();
+        assert_eq!(
+            owners,
+            vec![
+                RunOwner {
+                    pid: 41,
+                    process_start_time: Some(5_678),
+                    registered_at_millis: 9_000,
+                },
+                RunOwner {
+                    pid: 42,
+                    process_start_time: None,
+                    registered_at_millis: 9_000,
+                },
+            ]
         );
     }
 

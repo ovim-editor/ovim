@@ -79,16 +79,29 @@ impl Editor {
             logical_name: durable_name.to_owned(),
         };
         let resume = self.ai_state.resume_durable_conversations;
+        // Tracks whether the run this editor writes to is discoverable by a
+        // later `ovim --resume`; unbound runs are process-local and never
+        // displace previously persisted history.
+        let mut fresh_run_is_unbound = false;
         let mut binding = if resume {
             services
                 .catalog
                 .open_conversation(conversation_key, crate::run_log::BranchId::new())?
         } else {
-            services
+            match services
                 .catalog
-                .start_conversation(conversation_key, crate::run_log::BranchId::new())?
+                .start_fresh_conversation(conversation_key, crate::run_log::BranchId::new())?
+            {
+                crate::run_log::FreshConversationStart::Bound(binding) => binding,
+                crate::run_log::FreshConversationStart::Unbound(binding) => {
+                    fresh_run_is_unbound = true;
+                    binding
+                }
+            }
         };
         if resume && services.store.events(&binding.run_id)?.is_empty() {
+            // An empty run has no history to preserve, so rebinding to a
+            // fresh run cannot orphan anything.
             binding = services
                 .catalog
                 .start_conversation(binding.key.clone(), crate::run_log::BranchId::new())?;
@@ -116,9 +129,7 @@ impl Editor {
                         )
                     }) =>
             {
-                // Never mutate a run that may still have a live writer. Keep
-                // it intact for diagnosis and continue on an independent run.
-                let may_still_be_active = error
+                let unrecovered_work = error
                     .downcast_ref::<crate::agent_runtime::AgentRuntimeError>()
                     .is_some_and(|error| {
                         matches!(
@@ -126,22 +137,61 @@ impl Editor {
                             crate::agent_runtime::AgentRuntimeError::UnrecoveredWork(_)
                         )
                     });
-                let fresh = services
-                    .catalog
-                    .start_conversation(binding.key.clone(), crate::run_log::BranchId::new())?;
-                let fresh_locator =
-                    ConversationLocator(format!("conversation:{}", fresh.conversation_id));
-                self.ai_state.agent_runtime.restore_conversation(
-                    fresh_locator.clone(),
-                    fresh.clone(),
-                    Vec::new(),
-                )?;
-                let status = if may_still_be_active {
-                    "Previous AI run may still be active; started an independent chat"
+                let recovered = if unrecovered_work {
+                    // Nonterminal work is only sealed when every process that
+                    // registered as a writer of this run is provably dead.
+                    recover_run_with_no_live_owner(
+                        services,
+                        &mut self.ai_state.agent_runtime,
+                        &binding,
+                        &locator,
+                    )?
                 } else {
-                    "Previous AI chat history was invalid; started a fresh chat"
+                    None
                 };
-                (fresh, fresh_locator, Vec::new(), Some(status))
+                if let Some(events) = recovered {
+                    (
+                        binding,
+                        locator,
+                        events,
+                        Some("Recovered an interrupted AI conversation after a crash"),
+                    )
+                } else {
+                    // Never mutate a run that may still have a live writer.
+                    // Keep it intact — and, for possibly-active runs, still
+                    // discoverable — and continue on an independent run.
+                    let fresh = if unrecovered_work {
+                        services
+                            .catalog
+                            .start_fresh_conversation(
+                                binding.key.clone(),
+                                crate::run_log::BranchId::new(),
+                            )?
+                            .into_binding()
+                    } else {
+                        // Invalid history can never be restored; rebinding
+                        // keeps future opens working while the broken run
+                        // stays on disk for diagnosis.
+                        services.catalog.start_conversation(
+                            binding.key.clone(),
+                            crate::run_log::BranchId::new(),
+                        )?
+                    };
+                    let fresh_locator =
+                        ConversationLocator(format!("conversation:{}", fresh.conversation_id));
+                    self.ai_state.agent_runtime.restore_conversation(
+                        fresh_locator.clone(),
+                        fresh.clone(),
+                        Vec::new(),
+                    )?;
+                    let status = if unrecovered_work {
+                        "Previous AI run may still be active; started an independent chat \
+                         that will not be resumable"
+                    } else {
+                        "Previous AI chat history was invalid; started a fresh chat"
+                    };
+                    (fresh, fresh_locator, Vec::new(), Some(status))
+                }
             }
             Err(error) => return Err(error),
         };
@@ -188,6 +238,12 @@ impl Editor {
             }
             events = services.store.events(&binding.run_id)?;
         }
+        // Record this process as a live writer so a later resume can prove
+        // whether a crashed run's owner is really gone before recovering it.
+        let (owner_pid, owner_start_time) = crate::run_log::current_process_liveness();
+        services
+            .catalog
+            .register_run_owner(&binding.run_id, owner_pid, owner_start_time)?;
         let (conversation, nodes) = project_visible_messages(&events, &binding.selected_branch_id);
         self.ai_state
             .conversations
@@ -201,10 +257,14 @@ impl Editor {
         if let Some(status) = fallback_status {
             self.set_lsp_status(status.into());
         } else if !resume {
-            self.set_lsp_status(
-                "Started a fresh AI conversation; launch ovim with --resume to restore history"
-                    .into(),
-            );
+            self.set_lsp_status(if fresh_run_is_unbound {
+                "Started a fresh AI conversation that will not be resumable; the previous \
+                 conversation is still available via ovim --resume"
+                    .into()
+            } else {
+                "Started a fresh AI conversation; launch ovim with --resume to restore it later"
+                    .into()
+            });
         }
         Ok(())
     }
@@ -250,6 +310,63 @@ impl Editor {
         )
         .invalidate()?;
         Ok(())
+    }
+}
+
+/// Attempts append-only crash recovery for a resumed run whose restore failed
+/// with nonterminal work. Returns the restored events only when every
+/// registered owner of the run is provably dead (PID plus process-start-time
+/// marker, mirroring stale-session detection), sealing succeeded, and the
+/// recovered history restored cleanly. Any other outcome — no recorded owners
+/// (stores that predate owner tracking), a possibly-live owner, or a concurrent
+/// writer detected while sealing — leaves the run untouched and returns `None`.
+fn recover_run_with_no_live_owner(
+    services: &super::ai_state::DurableRunServices,
+    runtime: &mut crate::agent_runtime::AgentRuntime,
+    binding: &crate::run_log::ConversationBinding,
+    locator: &ConversationLocator,
+) -> Result<Option<Vec<EventEnvelope>>> {
+    let owners = services.catalog.run_owners(&binding.run_id)?;
+    if owners.is_empty()
+        || owners
+            .iter()
+            .any(|owner| crate::run_log::process_is_alive(owner.pid, owner.process_start_time))
+    {
+        return Ok(None);
+    }
+    let sink: std::sync::Arc<dyn RunEventSink> = services.store.clone();
+    let plan = match crate::run_log::RecoveryPlanner::new(sink).plan(&binding.run_id) {
+        Ok(plan) => plan,
+        Err(error) => {
+            crate::log_debug!(
+                "agent_runtime",
+                "crash recovery for run {} could not be planned: {error}",
+                binding.run_id
+            );
+            return Ok(None);
+        }
+    };
+    if let Err(error) = crate::run_log::apply_recovery(&plan, services.store.as_ref(), true) {
+        // A stale plan means another process appended concurrently, so the
+        // run is not exclusively ours after all; leave it intact.
+        crate::log_debug!(
+            "agent_runtime",
+            "crash recovery for run {} was not applied: {error}",
+            binding.run_id
+        );
+        return Ok(None);
+    }
+    let events = services.store.events(&binding.run_id)?;
+    match runtime.restore_conversation(locator.clone(), binding.clone(), events.clone()) {
+        Ok(_) => Ok(Some(events)),
+        Err(error) => {
+            crate::log_debug!(
+                "agent_runtime",
+                "recovered run {} still failed to restore: {error}",
+                binding.run_id
+            );
+            Ok(None)
+        }
     }
 }
 
@@ -549,6 +666,92 @@ mod tests {
             .events(&old_run)
             .unwrap()
             .is_empty());
+        drop(reopened);
+
+        // The old conversation must remain reachable, not merely present on
+        // disk: a later resume restores the original history.
+        let mut resumed = durable_editor(&file, layout);
+        resumed.open_ai_chat(ChatOpts::default()).unwrap();
+        let restored = resumed
+            .ai_state
+            .durable_chat_bindings
+            .get(&resumed.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .clone();
+        assert_eq!(restored.run_id, old_run);
+        let messages = resumed.conversation().unwrap().messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "expensive history");
+        assert_eq!(messages[1].content, "large answer");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_after_default_open_restores_the_original_history() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        let original = {
+            let mut editor = durable_editor(&file, layout.clone());
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            for (question, answer) in [
+                ("first question", "first answer"),
+                ("second question", "second answer"),
+            ] {
+                let turn = editor.begin_ai_runtime_turn(question).unwrap();
+                editor
+                    .ai_state
+                    .agent_runtime
+                    .append_agent_message(&turn, answer)
+                    .unwrap();
+                editor.ai_state.agent_runtime.complete_turn(&turn).unwrap();
+            }
+            editor
+                .ai_state
+                .durable_chat_bindings
+                .get(&editor.ai_chat_conversation_key())
+                .unwrap()
+                .binding
+                .clone()
+        };
+
+        // A default (non-resume) open starts fresh without displacing the
+        // discovery of the long conversation.
+        {
+            let mut default_open = durable_editor(&file, layout.clone());
+            default_open.set_ai_conversation_resume_enabled(false);
+            default_open.open_ai_chat(ChatOpts::default()).unwrap();
+            assert!(default_open.ai_chat_messages().is_empty());
+            assert!(default_open.lsp_status().contains("--resume"));
+        }
+
+        let mut resumed = durable_editor(&file, layout);
+        resumed.open_ai_chat(ChatOpts::default()).unwrap();
+        let restored = resumed
+            .ai_state
+            .durable_chat_bindings
+            .get(&resumed.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .clone();
+        assert_eq!(restored.conversation_id, original.conversation_id);
+        assert_eq!(restored.run_id, original.run_id);
+        let contents: Vec<_> = resumed
+            .conversation()
+            .unwrap()
+            .messages()
+            .iter()
+            .map(|message| message.content.clone())
+            .collect();
+        assert_eq!(
+            contents,
+            [
+                "first question",
+                "first answer",
+                "second question",
+                "second answer"
+            ]
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -643,7 +846,9 @@ mod tests {
                 crate::run_log::BranchId::new(),
             )
             .unwrap();
-        assert_eq!(discovered.run_id, second_run);
+        // The second open never displaces discovery of the run that is still
+        // being written; its own run stays process-local.
+        assert_eq!(discovered.run_id, first_run);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -666,7 +871,7 @@ mod tests {
             .unwrap()
             .len();
 
-        let mut second = durable_editor(&file, layout);
+        let mut second = durable_editor(&file, layout.clone());
         second.open_ai_chat(ChatOpts::default()).unwrap();
         let second_run = second
             .ai_state
@@ -699,6 +904,85 @@ mod tests {
             .append_agent_message(&turn, "finished safely")
             .unwrap();
         first.ai_state.agent_runtime.complete_turn(&turn).unwrap();
+
+        // The possibly-active run keeps its binding: once its owner is gone
+        // a later resume can still discover and restore it.
+        let key = second
+            .ai_state
+            .durable_chat_bindings
+            .get(&second.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .key
+            .clone();
+        let discovered = crate::run_log::RunCatalog::open(&layout)
+            .unwrap()
+            .open_conversation(key, crate::run_log::BranchId::new())
+            .unwrap();
+        assert_eq!(discovered.run_id, first_run);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resume_recovers_and_restores_a_run_whose_owner_provably_died() {
+        let (_repository, file) = repository_file();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        let crashed_run = {
+            let mut editor = durable_editor(&file, layout.clone());
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            let turn = editor.begin_ai_runtime_turn("crashed question").unwrap();
+            editor
+                .ai_state
+                .agent_runtime
+                .append_agent_message(&turn, "partial answer")
+                .unwrap();
+            // The process "crashes" here: the turn never becomes terminal.
+            turn.run_id
+        };
+
+        // Rewrite the recorded owner marker so the writer is provably dead:
+        // the PID exists (this test process) but its start time can never
+        // match the marker.
+        crate::run_log::RunCatalog::open(&layout)
+            .unwrap()
+            .register_run_owner(&crashed_run, std::process::id(), Some(1))
+            .unwrap();
+
+        let mut resumed = durable_editor(&file, layout);
+        resumed.open_ai_chat(ChatOpts::default()).unwrap();
+        let restored = resumed
+            .ai_state
+            .durable_chat_bindings
+            .get(&resumed.ai_chat_conversation_key())
+            .unwrap()
+            .binding
+            .clone();
+        assert_eq!(restored.run_id, crashed_run);
+        assert!(resumed.lsp_status().contains("Recovered"));
+        let messages = resumed.conversation().unwrap().messages();
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].content, "crashed question");
+        assert_eq!(messages[1].content, "partial answer");
+
+        // The crashed turn was sealed append-only rather than rewritten.
+        let events = resumed
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .unwrap()
+            .store
+            .events(&crashed_run)
+            .unwrap();
+        assert!(events.iter().any(|event| matches!(
+            &event.kind,
+            EventKind::TurnLifecycle(lifecycle)
+                if lifecycle.state == crate::run_log::TurnLifecycleState::Interrupted
+        )));
+
+        // The recovered conversation accepts new turns on the same run.
+        let turn = resumed.begin_ai_runtime_turn("continue here").unwrap();
+        assert_eq!(turn.run_id, crashed_run);
+        resumed.ai_state.agent_runtime.complete_turn(&turn).unwrap();
     }
 
     #[tokio::test(flavor = "multi_thread")]
