@@ -78,15 +78,41 @@ fn observe_process(pid: u32) -> ProcessObservation {
 
 #[cfg(windows)]
 fn observe_process(pid: u32) -> ProcessObservation {
-    use sysinfo::{Pid, System};
+    use sysinfo::{Pid, ProcessesToUpdate, System};
 
     let mut system = System::new();
-    system.refresh_processes();
-    match system.process(Pid::from_u32(pid)) {
-        // A full enumeration without the PID is the strongest available proof
-        // of nonexistence on Windows.
-        None => ProcessObservation::NotFound,
-        Some(process) => ProcessObservation::ExistsWithStartTime(process.start_time()),
+    system.refresh_processes(ProcessesToUpdate::All, true);
+    let table_is_populated = !system.processes().is_empty();
+    let owner_entry = system
+        .process(Pid::from_u32(pid))
+        .map(|process| process.start_time());
+    observation_from_full_process_table(table_is_populated, owner_entry)
+}
+
+/// Maps a full process-table enumeration (sysinfo on Windows) to an
+/// observation. Platform-independent so the mapping is unit-testable on the
+/// unix hosts that build this crate, even though only the Windows branch
+/// feeds it.
+///
+/// Conservative on two sysinfo failure modes:
+/// - When `NtQuerySystemInformation` fails, sysinfo's refresh returns 0 and
+///   leaves the process table empty, so an empty table is indistinguishable
+///   from a failed enumeration and never proves nonexistence. Only a
+///   populated table that lacks the PID counts as proof of death.
+/// - When sysinfo cannot open a process handle (e.g. access denied), it
+///   records a start time of 0 rather than failing, so a zero start time
+///   means "present but unreadable" — the EPERM analogue — and must not be
+///   compared against the recorded marker.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn observation_from_full_process_table(
+    table_is_populated: bool,
+    owner_entry: Option<u64>,
+) -> ProcessObservation {
+    match owner_entry {
+        Some(0) => ProcessObservation::ExistsStartTimeUnknown,
+        Some(start_time) => ProcessObservation::ExistsWithStartTime(start_time),
+        None if table_is_populated => ProcessObservation::NotFound,
+        None => ProcessObservation::ExistsStartTimeUnknown,
     }
 }
 
@@ -132,12 +158,14 @@ fn get_process_start_time(pid: u32) -> Option<u64> {
 
 #[cfg(target_os = "windows")]
 fn get_process_start_time(pid: u32) -> Option<u64> {
-    use sysinfo::{Pid, System};
+    use sysinfo::{Pid, ProcessesToUpdate, System};
 
     let mut system = System::new();
-    system.refresh_processes();
-    let process = system.process(Pid::from_u32(pid))?;
-    Some(process.start_time())
+    system.refresh_processes(ProcessesToUpdate::Some(&[Pid::from_u32(pid)]), true);
+    let start_time = system.process(Pid::from_u32(pid))?.start_time();
+    // sysinfo records 0 when it cannot open the process handle; an unreadable
+    // start time must stay `None` so it is never mistaken for a real marker.
+    (start_time != 0).then_some(start_time)
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "macos", target_os = "windows")))]
@@ -221,6 +249,43 @@ mod tests {
             ProcessObservation::ExistsWithStartTime(100),
             None
         ));
+    }
+
+    #[test]
+    fn an_empty_process_table_never_proves_death() {
+        // On Windows, a failed NtQuerySystemInformation leaves sysinfo's
+        // table empty; that is an observation failure, not proof the PID is
+        // gone, so recovery must be declined even with a recorded marker.
+        let observation = observation_from_full_process_table(false, None);
+        assert_eq!(observation, ProcessObservation::ExistsStartTimeUnknown);
+        assert!(liveness_decision(observation, Some(100)));
+        assert!(liveness_decision(observation, None));
+    }
+
+    #[test]
+    fn a_populated_process_table_without_the_pid_proves_death() {
+        let observation = observation_from_full_process_table(true, None);
+        assert_eq!(observation, ProcessObservation::NotFound);
+        assert!(!liveness_decision(observation, Some(100)));
+        assert!(!liveness_decision(observation, None));
+    }
+
+    #[test]
+    fn a_table_entry_with_a_readable_start_time_feeds_the_reuse_check() {
+        let observation = observation_from_full_process_table(true, Some(100));
+        assert_eq!(observation, ProcessObservation::ExistsWithStartTime(100));
+        assert!(liveness_decision(observation, Some(100)));
+        assert!(!liveness_decision(observation, Some(500)));
+    }
+
+    #[test]
+    fn a_zero_start_time_entry_is_unreadable_not_a_mismatch() {
+        // sysinfo records start_time 0 when the process handle could not be
+        // opened (access denied). A live but unreadable owner must not be
+        // declared dead via a bogus 0-vs-marker mismatch.
+        let observation = observation_from_full_process_table(true, Some(0));
+        assert_eq!(observation, ProcessObservation::ExistsStartTimeUnknown);
+        assert!(liveness_decision(observation, Some(100)));
     }
 
     #[cfg(unix)]
