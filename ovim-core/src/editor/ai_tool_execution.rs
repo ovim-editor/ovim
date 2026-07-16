@@ -29,18 +29,32 @@ fn read_capped_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
     (retained, truncated)
 }
 
-pub(super) fn run_bash_program(command: &str, workdir: &Path) -> ToolResult {
+pub(super) fn run_bash_program(
+    command: &str,
+    workdir: &Path,
+    kill: Option<&super::ai_chat_state::ShellKillHandle>,
+) -> ToolResult {
+    if kill.is_some_and(super::ai_chat_state::ShellKillHandle::is_cancelled) {
+        return ToolResult::Error("Execution cancelled".into());
+    }
     let shell = std::env::var_os("SHELL")
         .filter(|value| !value.is_empty())
         .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
-    let mut child = match Command::new(&shell)
+    let mut builder = Command::new(&shell);
+    builder
         .arg("-lc")
         .arg(command)
         .current_dir(workdir)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
+        .stderr(Stdio::piped());
+    #[cfg(unix)]
     {
+        // Make the child a process-group leader so cancellation can kill the
+        // whole command tree, not just the shell.
+        use std::os::unix::process::CommandExt;
+        builder.process_group(0);
+    }
+    let mut child = match builder.spawn() {
         Ok(child) => child,
         Err(err) => {
             return ToolResult::Error(format!(
@@ -50,11 +64,24 @@ pub(super) fn run_bash_program(command: &str, workdir: &Path) -> ToolResult {
             ))
         }
     };
+    if let Some(handle) = kill {
+        if !handle.publish_child(child.id()) {
+            // Cancelled between the pre-spawn check and the spawn: the cancel
+            // side never saw a pid, so reap the child here.
+            super::ai_chat_state::kill_shell_process_group(child.id());
+            let _ = child.wait();
+            return ToolResult::Error("Execution cancelled".into());
+        }
+    }
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
     let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
     let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
-    let status = match child.wait() {
+    let status = child.wait();
+    if let Some(handle) = kill {
+        handle.clear_child();
+    }
+    let status = match status {
         Ok(status) => status,
         Err(error) => return ToolResult::Error(format!("failed waiting for shell: {error}")),
     };

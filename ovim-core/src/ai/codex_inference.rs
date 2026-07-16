@@ -336,7 +336,52 @@ fn messages_to_responses_input(messages: &[ChatMessage]) -> Vec<Value> {
             ChatRole::Thinking | ChatRole::Error => {}
         }
     }
+    repair_dangling_codex_function_calls(&mut input);
     input
+}
+
+/// Inject a synthetic `function_call_output` for every `function_call` item
+/// that has no matching output. Cancelled or interrupted turns can commit the
+/// assistant tool calls without results, and the Responses API rejects such
+/// requests. Mirrors the per-provider repairs in `provider.rs`.
+fn repair_dangling_codex_function_calls(input: &mut Vec<Value>) {
+    let mut i = 0;
+    while i < input.len() {
+        if input[i]["type"] != "function_call" {
+            i += 1;
+            continue;
+        }
+        let mut ids = Vec::new();
+        let mut j = i;
+        while j < input.len() && input[j]["type"] == "function_call" {
+            if let Some(id) = input[j]["call_id"].as_str() {
+                ids.push(id.to_string());
+            }
+            j += 1;
+        }
+        let mut present = std::collections::HashSet::new();
+        while j < input.len() && input[j]["type"] == "function_call_output" {
+            if let Some(id) = input[j]["call_id"].as_str() {
+                present.insert(id.to_string());
+            }
+            j += 1;
+        }
+        for id in ids {
+            if present.contains(&id) {
+                continue;
+            }
+            input.insert(
+                j,
+                json!({
+                    "type": "function_call_output",
+                    "call_id": id,
+                    "output": "cancelled before execution",
+                }),
+            );
+            j += 1;
+        }
+        i = j;
+    }
 }
 
 #[derive(Default)]
@@ -834,6 +879,56 @@ mod tests {
             .iter()
             .any(|item| item.get("call_id") == Some(&json!("call_1"))
                 && item.get("type") == Some(&json!("function_call_output"))));
+    }
+
+    #[test]
+    fn direct_input_repairs_dangling_function_calls() {
+        // A cancelled batch commits the assistant tool calls without results;
+        // the serializer must synthesize outputs or the Responses API rejects
+        // the next request.
+        let mut assistant = message(ChatRole::Assistant, "");
+        assistant
+            .tool_calls
+            .push(super::super::chat_types::ToolCallInfo {
+                id: "call_1|fc_1".into(),
+                name: "bash".into(),
+                arguments: json!({"command":"true"}),
+            });
+        assistant
+            .tool_calls
+            .push(super::super::chat_types::ToolCallInfo {
+                id: "call_2|fc_2".into(),
+                name: "read_file".into(),
+                arguments: json!({"path":"src/main.rs"}),
+            });
+        let mut tool = message(ChatRole::Tool, "done");
+        tool.tool_call_id = Some("call_1|fc_1".into());
+
+        let input = messages_to_responses_input(&[
+            message(ChatRole::User, "run it"),
+            assistant,
+            tool,
+            message(ChatRole::User, "why did you stop?"),
+        ]);
+
+        let outputs: Vec<(&str, &Value)> = input
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .map(|item| (item["call_id"].as_str().unwrap(), &item["output"]))
+            .collect();
+        assert_eq!(outputs.len(), 2);
+        assert_eq!(outputs[0], ("call_1", &json!("done")));
+        assert_eq!(outputs[1], ("call_2", &json!("cancelled before execution")));
+        // The synthetic output must precede the next user message.
+        let synthetic_index = input
+            .iter()
+            .position(|item| item["type"] == "function_call_output" && item["call_id"] == "call_2")
+            .unwrap();
+        let last_user_index = input
+            .iter()
+            .rposition(|item| item["role"] == "user")
+            .unwrap();
+        assert!(synthetic_index < last_user_index);
     }
 
     #[test]

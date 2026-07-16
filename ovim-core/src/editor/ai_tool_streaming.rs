@@ -345,6 +345,7 @@ impl Editor {
             chat.pending_tool_approval = None;
             chat.pending_auto_mode_classification = None;
             if let Some(pending) = chat.pending_shell_execution.take() {
+                pending.kill.cancel();
                 pending.task.abort();
             }
             if let Some(pending) = chat.pending_web_execution.take() {
@@ -485,6 +486,7 @@ impl Editor {
             chat.pending_tool_approval = None;
             chat.pending_auto_mode_classification = None;
             if let Some(pending) = chat.pending_shell_execution.take() {
+                pending.kill.cancel();
                 pending.task.abort();
             }
             if let Some(pending) = chat.pending_web_execution.take() {

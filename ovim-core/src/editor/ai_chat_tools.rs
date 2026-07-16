@@ -3023,6 +3023,9 @@ mod tests {
                     },
                     receiver: result_rx,
                     task,
+                    kill: std::sync::Arc::new(
+                        super::super::ai_chat_state::ShellKillHandle::default(),
+                    ),
                 });
             chat.waiting = true;
         }

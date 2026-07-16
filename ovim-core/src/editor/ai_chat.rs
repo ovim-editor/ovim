@@ -180,8 +180,18 @@ impl Editor {
                     crate::log_warn!("agent_runtime", "failed to cancel pending tool: {error}");
                 }
             }
-            if let Some(response) = pending.dynamic_response {
-                let _ = response.send(Err("cancelled by user".into()));
+            match pending.dynamic_response {
+                Some(response) => {
+                    let _ = response.send(Err("cancelled by user".into()));
+                }
+                None => {
+                    // Batch approvals pause after the assistant tool_use blocks
+                    // were committed; close out the paused call and the rest of
+                    // the batch so the next provider request stays well-formed.
+                    let mut unresolved = vec![pending.tool_call.clone()];
+                    unresolved.extend(pending.remaining_tool_calls);
+                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
+                }
             }
         }
         if let Some(pending) = pending_classification {
@@ -197,6 +207,10 @@ impl Editor {
                 .send(Err("cancelled by user".into()));
         }
         if let Some(pending) = pending_shell {
+            // Aborting a started `spawn_blocking` task does not stop it; the
+            // command itself must be killed or it keeps mutating the workspace
+            // after the UI reports the cancellation.
+            pending.kill.cancel();
             pending.task.abort();
             let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation {
                 super::ai_chat_state::ShellExecutionContinuation::Dynamic {
@@ -250,6 +264,12 @@ impl Editor {
                     crate::log_warn!("agent_runtime", "failed to cancel web tool: {error}");
                 }
             }
+            // Web execution only parks from the batch path, so this call and
+            // the remainder of the batch are already committed as tool_use
+            // blocks; close them out.
+            let mut unresolved = vec![pending.tool_call.clone()];
+            unresolved.extend(pending.remaining_tool_calls);
+            self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
         }
         if let Some(pending) = pending_explanation {
             if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -277,6 +297,7 @@ impl Editor {
                 super::ai_chat_state::CodeExplanationContinuation::Batch {
                     runtime_tool,
                     runtime_turn,
+                    remaining_tool_calls,
                     ..
                 } => {
                     if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
@@ -292,6 +313,11 @@ impl Editor {
                             );
                         }
                     }
+                    // The walkthrough call and the rest of its batch are
+                    // committed tool_use blocks; close them out.
+                    let mut unresolved = vec![pending.tool_call.clone()];
+                    unresolved.extend(remaining_tool_calls);
+                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
                 }
                 super::ai_chat_state::CodeExplanationContinuation::Replay => {}
             }
@@ -330,6 +356,15 @@ impl Editor {
             .and_then(|chat| chat.pending_web_execution.as_ref())
         {
             web.task.abort();
+        }
+        if let Some(shell) = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_shell_execution.as_ref())
+        {
+            shell.kill.cancel();
+            shell.task.abort();
         }
         self.ai_runtime_interrupt_turn(reason);
         if let Some(mut chat) = self.ai_state.chat.take() {
@@ -508,6 +543,191 @@ mod tests {
             EventKind::TurnLifecycle(event)
                 if event.state == TurnLifecycleState::Interrupted
         ));
+    }
+
+    /// Committed tool_use blocks must all have a closing tool_result after a
+    /// cancel, or the next provider request is rejected as malformed.
+    fn assert_cancelled_tool_results(editor: &Editor, expected_ids: &[&str]) {
+        let messages = editor.conversation().unwrap().messages();
+        let tool_ids: Vec<_> = messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .filter_map(|m| m.tool_call_id.as_deref())
+            .collect();
+        assert_eq!(tool_ids, expected_ids);
+        assert!(messages
+            .iter()
+            .filter(|m| m.role == ChatRole::Tool)
+            .all(|m| m.content.contains("Execution cancelled")));
+    }
+
+    fn committed_tool_batch(editor: &mut Editor) -> (ToolCallInfo, ToolCallInfo) {
+        let first = ToolCallInfo {
+            id: "tool-1".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "true" }),
+        };
+        let follow_up = ToolCallInfo {
+            id: "tool-2".into(),
+            name: "read_file".into(),
+            arguments: serde_json::json!({}),
+        };
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message_with_tools(
+                String::new(),
+                "test".into(),
+                vec![first.clone(), follow_up.clone()],
+            );
+        (first, follow_up)
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_pending_batch_approval_closes_committed_tool_calls() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (first, follow_up) = committed_tool_batch(&mut editor);
+        editor.ai_state.chat.as_mut().unwrap().pending_tool_approval =
+            Some(super::super::ai_chat_state::PendingToolApproval {
+                tool_call: first,
+                reason: "sensitive command".into(),
+                runtime_tool: None,
+                runtime_tool_started: false,
+                remaining_tool_calls: vec![follow_up],
+                model_name: "test".into(),
+                requested_path: std::path::PathBuf::from("."),
+                approval_root: std::path::PathBuf::from("."),
+                dynamic_response: None,
+                dynamic_turn: None,
+            });
+
+        assert!(editor.cancel_ai_chat_generation());
+
+        assert_cancelled_tool_results(&editor, &["tool-1", "tool-2"]);
+        editor.close_ai_chat();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_web_execution_closes_committed_tool_calls() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (first, follow_up) = committed_tool_batch(&mut editor);
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async {});
+        editor.ai_state.chat.as_mut().unwrap().pending_web_execution =
+            Some(super::super::ai_chat_state::PendingWebExecution {
+                tool_call: first,
+                runtime_tool: None,
+                runtime_turn: None,
+                remaining_tool_calls: vec![follow_up],
+                model_name: "test".into(),
+                receiver: result_rx,
+                task,
+            });
+
+        assert!(editor.cancel_ai_chat_generation());
+
+        assert_cancelled_tool_results(&editor, &["tool-1", "tool-2"]);
+        editor.close_ai_chat();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn cancelling_parked_code_explanation_closes_committed_tool_calls() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (first, follow_up) = committed_tool_batch(&mut editor);
+        let buffer_id = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
+        editor
+            .ai_state
+            .chat
+            .as_mut()
+            .unwrap()
+            .pending_code_explanation = Some(super::super::ai_chat_state::PendingCodeExplanation {
+            tool_call: first,
+            steps: Vec::new(),
+            current: 0,
+            original_active_buffer_id: buffer_id,
+            continuation: super::super::ai_chat_state::CodeExplanationContinuation::Batch {
+                runtime_tool: None,
+                runtime_turn: None,
+                remaining_tool_calls: vec![follow_up],
+                model_name: "test".into(),
+            },
+        });
+
+        assert!(editor.cancel_ai_chat_generation());
+
+        assert_cancelled_tool_results(&editor, &["tool-1", "tool-2"]);
+        editor.close_ai_chat();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelling_shell_execution_kills_the_running_command() {
+        let dir = tempfile::tempdir().unwrap();
+        git2::Repository::init(dir.path()).unwrap();
+        let file = dir.path().join("main.rs");
+        std::fs::write(&file, "fn main() {}\n").unwrap();
+        let runs = tempfile::tempdir().unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state = Box::new(
+            super::super::ai_state::AiState::with_run_storage_layout(
+                crate::run_log::RunStorageLayout::new(runs.path()),
+            )
+            .unwrap(),
+        );
+        editor.open_file(&file).unwrap();
+        open_test_chat(&mut editor);
+        let turn = editor
+            .begin_ai_runtime_turn("run the slow command")
+            .unwrap();
+        let call = ToolCallInfo {
+            id: "slow-shell".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({
+                "command": "touch shell-started; sleep 5; touch cancelled-marker"
+            }),
+        };
+        let tool = editor.ai_runtime_record_tool_intent(&turn, &call).unwrap();
+        let (response_tx, _response_rx) = tokio::sync::oneshot::channel();
+        editor.execute_dynamic_tool_after_policy(turn, tool, call, response_tx, None, false);
+
+        let kill = editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .as_ref()
+            .unwrap()
+            .kill
+            .clone();
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
+        let pid = loop {
+            if let Some(pid) = kill.published_child() {
+                break pid;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell child never spawned"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        };
+
+        assert!(editor.cancel_ai_chat_generation());
+
+        // The blocking task reaps the killed child; once the pid is gone the
+        // command (and its trailing `touch cancelled-marker`) can never run.
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+        while nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid as i32), None).is_ok() {
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "shell child survived cancellation"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(!dir.path().join("cancelled-marker").exists());
     }
 
     #[tokio::test(flavor = "current_thread")]

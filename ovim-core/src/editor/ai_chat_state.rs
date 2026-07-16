@@ -84,6 +84,89 @@ pub struct PendingShellExecution {
     pub continuation: ShellExecutionContinuation,
     pub receiver: tokio::sync::oneshot::Receiver<ShellExecutionObservation>,
     pub task: tokio::task::JoinHandle<()>,
+    /// Kills the spawned command itself: aborting a started `spawn_blocking`
+    /// task never stops the closure, so cancellation must reach the child.
+    pub kill: std::sync::Arc<ShellKillHandle>,
+}
+
+/// Cross-thread cancellation handle for a running shell effect.
+///
+/// The blocking shell task publishes the spawned child's process id, and the
+/// editor thread requests a kill on cancel. Publication is checked against
+/// the cancelled flag so a cancel that lands before the child spawns still
+/// prevents the command from running (or reaps it immediately).
+#[derive(Default)]
+pub struct ShellKillHandle {
+    state: std::sync::Mutex<ShellKillState>,
+}
+
+#[derive(Default)]
+struct ShellKillState {
+    child_pid: Option<u32>,
+    cancelled: bool,
+}
+
+impl ShellKillHandle {
+    /// Record the freshly spawned child. Returns `false` when cancellation
+    /// already happened, in which case the caller must kill the child itself.
+    pub fn publish_child(&self, pid: u32) -> bool {
+        let mut state = self.state.lock().expect("shell kill handle poisoned");
+        state.child_pid = Some(pid);
+        !state.cancelled
+    }
+
+    /// Forget the child once it has been reaped so a later cancel cannot
+    /// signal a reused pid.
+    pub fn clear_child(&self) {
+        let mut state = self.state.lock().expect("shell kill handle poisoned");
+        state.child_pid = None;
+    }
+
+    /// True once the execution was cancelled; checked before spawning.
+    pub fn is_cancelled(&self) -> bool {
+        self.state
+            .lock()
+            .expect("shell kill handle poisoned")
+            .cancelled
+    }
+
+    /// The pid last published by the blocking task, if the child is alive.
+    pub fn published_child(&self) -> Option<u32> {
+        self.state
+            .lock()
+            .expect("shell kill handle poisoned")
+            .child_pid
+    }
+
+    /// Mark the execution cancelled and kill the published child, if any.
+    pub fn cancel(&self) {
+        let pid = {
+            let mut state = self.state.lock().expect("shell kill handle poisoned");
+            state.cancelled = true;
+            state.child_pid.take()
+        };
+        if let Some(pid) = pid {
+            kill_shell_process_group(pid);
+        }
+    }
+}
+
+/// Kill `pid` and its process group. The shell child is spawned as a group
+/// leader, so this stops the command and everything it forked.
+pub fn kill_shell_process_group(pid: u32) {
+    #[cfg(unix)]
+    {
+        use nix::sys::signal::{kill, killpg, Signal};
+        use nix::unistd::Pid;
+        let target = Pid::from_raw(pid as i32);
+        if killpg(target, Signal::SIGKILL).is_err() {
+            let _ = kill(target, Signal::SIGKILL);
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = pid;
+    }
 }
 
 pub struct ShellExecutionObservation {

@@ -892,10 +892,16 @@ impl Editor {
         artifact_store: crate::run_log::ArtifactStore,
     ) {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let kill = std::sync::Arc::new(super::ai_chat_state::ShellKillHandle::default());
+        let kill_for_task = kill.clone();
         let task = tokio::task::spawn_blocking(move || {
             let observation = match crate::run_log::capture_workspace(&workdir, &artifact_store) {
                 Ok(before) => {
-                    let result = super::ai_tool_execution::run_bash_program(&command, &workdir);
+                    let result = super::ai_tool_execution::run_bash_program(
+                        &command,
+                        &workdir,
+                        Some(&kill_for_task),
+                    );
                     match crate::run_log::capture_workspace(&workdir, &artifact_store) {
                         Ok(after) => super::ai_chat_state::ShellExecutionObservation {
                             result,
@@ -930,6 +936,7 @@ impl Editor {
                 continuation,
                 receiver: result_rx,
                 task,
+                kill,
             });
             chat.waiting = true;
         }
