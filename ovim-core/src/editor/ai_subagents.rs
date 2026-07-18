@@ -26,7 +26,7 @@ use crate::run_log::{
     AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, EventKind, LocalRunStore,
     ManifestId, RepoPath, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
@@ -103,6 +103,39 @@ pub(crate) struct AiSubagentRun {
     pub workspace_manager: AgentWorkspaceManager,
     pub input_factory: Arc<SnapshotAgentLoopInputFactory>,
     manifest_registry: BaseManifestRegistry,
+    delegation_registry: PreparedDelegationRegistry,
+    repository_root: PathBuf,
+}
+
+const PREPARED_DELEGATION_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+struct DurablePreparedDelegation {
+    version: u32,
+    manifest_id: ManifestId,
+    envelope: DelegationEnvelope,
+    timeout_millis: u64,
+    max_provider_events: usize,
+    max_tool_calls: usize,
+    symbols: Vec<SnapshotSymbol>,
+    diagnostics: Vec<SnapshotDiagnostic>,
+}
+
+impl DurablePreparedDelegation {
+    fn budget(&self) -> Result<AgentLoopBudget, String> {
+        if self.version != PREPARED_DELEGATION_VERSION
+            || self.timeout_millis == 0
+            || self.max_provider_events == 0
+            || self.max_tool_calls == 0
+        {
+            return Err("prepared delegation has an unsupported version or empty budget".into());
+        }
+        Ok(AgentLoopBudget {
+            timeout: std::time::Duration::from_millis(self.timeout_millis),
+            max_provider_events: self.max_provider_events,
+            max_tool_calls: self.max_tool_calls,
+        })
+    }
 }
 
 impl AiSubagentService {
@@ -184,13 +217,17 @@ impl AiSubagentService {
         run_id: RunId,
         root_agent_id: AgentId,
         repository_id: RepositoryId,
+        repository_root: PathBuf,
     ) -> Result<Arc<AiSubagentRun>, String> {
         let mut runs = self
             .runs
             .lock()
             .map_err(|_| "subagent run registry is poisoned".to_string())?;
         if let Some(run) = runs.get(&run_id) {
-            if run.root_agent_id != root_agent_id || run.repository_id != repository_id {
+            if run.root_agent_id != root_agent_id
+                || run.repository_id != repository_id
+                || run.repository_root != repository_root
+            {
                 return Err("subagent run identity changed after initialization".into());
             }
             return Ok(run.clone());
@@ -206,13 +243,6 @@ impl AiSubagentService {
                     EventKind::AgentLifecycle(lifecycle) if lifecycle.dispatch_spec.is_some()
                 )
             });
-        if has_prior_child_history {
-            return Err(
-                "this resumed run contains delegated-agent history; the read-only preview preserves it but conservatively refuses to reconstruct child provider sessions after restart"
-                    .into(),
-            );
-        }
-
         store
             .layout()
             .ensure_run_directory(&run_id)
@@ -230,15 +260,27 @@ impl AiSubagentService {
             self.provider.clone(),
             approval_broker.clone(),
         ));
-        let supervisor = AgentSupervisor::new(
-            run_id.clone(),
-            root_agent_id.clone(),
-            sink,
-            self.catalog()?,
-            input_factory.clone(),
-            supervisor_config(&self.startup_policy),
-        )
+        let supervisor = if has_prior_child_history {
+            AgentSupervisor::rehydrate(
+                run_id.clone(),
+                root_agent_id.clone(),
+                sink,
+                self.catalog()?,
+                input_factory.clone(),
+                supervisor_config(&self.startup_policy),
+            )
+        } else {
+            AgentSupervisor::new(
+                run_id.clone(),
+                root_agent_id.clone(),
+                sink,
+                self.catalog()?,
+                input_factory.clone(),
+                supervisor_config(&self.startup_policy),
+            )
+        }
         .map_err(|error| error.to_string())?;
+        let run_directory = store.layout().run_directory(&run_id);
         let run = Arc::new(AiSubagentRun {
             root_agent_id,
             repository_id,
@@ -247,11 +289,39 @@ impl AiSubagentService {
             artifact_store,
             workspace_manager,
             input_factory,
-            manifest_registry: BaseManifestRegistry::new(
-                store.layout().run_directory(&run_id).join("manifests"),
-            ),
+            manifest_registry: BaseManifestRegistry::new(run_directory.join("manifests")),
+            delegation_registry: PreparedDelegationRegistry::new(run_directory.join("delegations")),
+            repository_root,
         });
+        if has_prior_child_history {
+            run.restore_prepared_dispatches();
+        }
         runs.insert(run_id, run.clone());
+        if has_prior_child_history
+            && run
+                .supervisor
+                .dispatches()
+                .map_err(|error| error.to_string())?
+                .iter()
+                .any(|record| record.state == crate::agent_runtime::DispatchState::Queued)
+        {
+            let supervisor = run.supervisor.clone();
+            if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                runtime.spawn(async move {
+                    if let Err(error) = supervisor.start_recovered().await {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "could not restart durable queued children: {error}"
+                        );
+                    }
+                });
+            } else {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "durable queued children require an async runtime before restart"
+                );
+            }
+        }
         Ok(run)
     }
 }
@@ -275,6 +345,141 @@ impl AiSubagentRun {
             .register_read_only(manifest_id, manifest, repository_start)
             .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    fn register_prepared_delegation(
+        &self,
+        manifest_id: ManifestId,
+        envelope: DelegationEnvelope,
+        budget: AgentLoopBudget,
+        symbols: Vec<SnapshotSymbol>,
+        diagnostics: Vec<SnapshotDiagnostic>,
+    ) -> Result<(), String> {
+        let timeout_millis = u64::try_from(budget.timeout.as_millis())
+            .map_err(|_| "delegated-agent timeout does not fit durable storage".to_string())?;
+        let prepared = DurablePreparedDelegation {
+            version: PREPARED_DELEGATION_VERSION,
+            manifest_id: manifest_id.clone(),
+            envelope: envelope.clone(),
+            timeout_millis,
+            max_provider_events: budget.max_provider_events,
+            max_tool_calls: budget.max_tool_calls,
+            symbols: symbols.clone(),
+            diagnostics: diagnostics.clone(),
+        };
+        // Publish the complete restart contract before a scheduler identity can
+        // be allocated. A crash may leave an unreferenced prepared record, but
+        // can never leave a queued child whose context existed only in memory.
+        self.delegation_registry
+            .register(&manifest_id, &prepared)
+            .map_err(|error| error.to_string())?;
+        self.workspace_manager
+            .register_snapshot_adapters(
+                &manifest_id,
+                Arc::new(CapturedSnapshotSymbolIndex::new(
+                    manifest_id.clone(),
+                    symbols,
+                )),
+                Arc::new(CapturedSnapshotDiagnostics::new(
+                    manifest_id.clone(),
+                    diagnostics,
+                )),
+            )
+            .map_err(|error| error.to_string())?;
+        self.input_factory
+            .register_prepared(manifest_id, envelope, Some(budget))
+    }
+
+    fn restore_prepared_dispatches(&self) {
+        let records = match self.supervisor.dispatches() {
+            Ok(records) => records,
+            Err(error) => {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "could not inspect recovered child dispatches: {error}"
+                );
+                return;
+            }
+        };
+        for record in records {
+            let WorkspaceStrategy::ReadOnlySnapshot {
+                manifest_id: Some(manifest_id),
+            } = &record.handle.workspace.strategy
+            else {
+                continue;
+            };
+            if let Err(error) = self.restore_prepared_dispatch(&record, manifest_id) {
+                // A queued child with missing/corrupt context will be started
+                // only far enough for the input factory to fail closed and
+                // record a validated terminal handoff. Terminal history still
+                // remains inspectable even when an old preview predates this
+                // registry.
+                crate::log_warn!(
+                    "agent_runtime",
+                    "could not restore delegation context for {}: {error}",
+                    record.handle.agent_id
+                );
+            }
+        }
+    }
+
+    fn restore_prepared_dispatch(
+        &self,
+        record: &crate::agent_runtime::AgentDispatchRecord,
+        manifest_id: &ManifestId,
+    ) -> Result<(), String> {
+        let manifest = self
+            .manifest_registry
+            .load(manifest_id)
+            .map_err(|error| error.to_string())?;
+        if manifest.repository.repository_id != self.repository_id {
+            return Err("captured manifest belongs to another repository".into());
+        }
+        let prepared = self
+            .delegation_registry
+            .load(manifest_id)
+            .map_err(|error| error.to_string())?;
+        if prepared.manifest_id != *manifest_id
+            || prepared.envelope.task_name != record.task_name
+            || (record.turn_generation == 0 && prepared.envelope.objective != record.objective)
+        {
+            return Err("prepared delegation disagrees with durable dispatch identity".into());
+        }
+        let identity = prepared
+            .envelope
+            .identity
+            .as_deref()
+            .ok_or_else(|| "prepared delegation has no durable identity".to_string())?;
+        if identity.run_id != record.handle.run_id
+            || identity.workspace_id != record.handle.workspace.workspace_id
+            || identity.manifest_id != *manifest_id
+            || record.parent_agent_id.as_ref() != Some(&identity.parent_agent_id)
+        {
+            return Err("prepared delegation changed run, parent, workspace, or manifest".into());
+        }
+        let budget = prepared.budget()?;
+        self.workspace_manager
+            .register_read_only(
+                manifest_id.clone(),
+                manifest,
+                self.repository_root.as_path(),
+            )
+            .map_err(|error| error.to_string())?;
+        self.workspace_manager
+            .register_snapshot_adapters(
+                manifest_id,
+                Arc::new(CapturedSnapshotSymbolIndex::new(
+                    manifest_id.clone(),
+                    prepared.symbols,
+                )),
+                Arc::new(CapturedSnapshotDiagnostics::new(
+                    manifest_id.clone(),
+                    prepared.diagnostics,
+                )),
+            )
+            .map_err(|error| error.to_string())?;
+        self.input_factory
+            .register_prepared(manifest_id.clone(), prepared.envelope, Some(budget))
     }
 
     #[cfg(test)]
@@ -384,6 +589,7 @@ impl Editor {
             root.run_id,
             root.root_agent_id.clone(),
             root.repository_id,
+            root.repository_root.clone(),
         )?;
         match call.name.as_str() {
             WAIT_AGENT_TOOL => {
@@ -599,6 +805,7 @@ impl Editor {
             root.run_id,
             root.root_agent_id.clone(),
             root.repository_id,
+            root.repository_root,
         )?;
         let mailbox = run
             .supervisor
@@ -686,6 +893,7 @@ impl Editor {
             root.run_id.clone(),
             root.root_agent_id.clone(),
             root.repository_id.clone(),
+            root.repository_root.clone(),
         )?;
         let manifest_id = ManifestId::new();
         let base_manifest_id = BaseManifestId::new();
@@ -702,19 +910,6 @@ impl Editor {
         let symbols = self.capture_snapshot_symbols(&root.repository_root);
         let diagnostics = self.capture_snapshot_diagnostics();
         run.register_manifest(manifest_id.clone(), capture.manifest, &root.repository_root)?;
-        run.workspace_manager
-            .register_snapshot_adapters(
-                &manifest_id,
-                Arc::new(CapturedSnapshotSymbolIndex::new(
-                    manifest_id.clone(),
-                    symbols,
-                )),
-                Arc::new(CapturedSnapshotDiagnostics::new(
-                    manifest_id.clone(),
-                    diagnostics,
-                )),
-            )
-            .map_err(|error| error.to_string())?;
 
         let agent_kind = match args.agent_kind.as_str() {
             "explorer" => DelegatedAgentKind::Explorer,
@@ -773,10 +968,10 @@ impl Editor {
                 })
                 .collect(),
         };
-        run.input_factory.register_prepared(
+        run.register_prepared_delegation(
             manifest_id.clone(),
             envelope,
-            Some(AgentLoopBudget {
+            AgentLoopBudget {
                 timeout: std::time::Duration::from_secs(args.timeout_seconds),
                 max_provider_events: self
                     .ai_state
@@ -790,7 +985,9 @@ impl Editor {
                     .policy()
                     .budgets
                     .max_tool_calls_per_agent,
-            }),
+            },
+            symbols,
+            diagnostics,
         )?;
         let handle = run
             .supervisor
@@ -842,6 +1039,7 @@ impl Editor {
             root.run_id,
             root.root_agent_id.clone(),
             root.repository_id,
+            root.repository_root,
         )?;
         let recipient_agent_id =
             AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
@@ -870,6 +1068,7 @@ impl Editor {
             root.run_id,
             root.root_agent_id.clone(),
             root.repository_id,
+            root.repository_root,
         )?;
         let pending = run
             .supervisor
@@ -1216,6 +1415,74 @@ impl BaseManifestRegistry {
     }
 }
 
+#[derive(Clone)]
+struct PreparedDelegationRegistry {
+    root: PathBuf,
+}
+
+impl PreparedDelegationRegistry {
+    fn new(root: PathBuf) -> Self {
+        Self { root }
+    }
+
+    fn register(
+        &self,
+        manifest_id: &ManifestId,
+        prepared: &DurablePreparedDelegation,
+    ) -> Result<(), DelegationRegistryError> {
+        ensure_private_directory(&self.root).map_err(DelegationRegistryError::Manifest)?;
+        let destination = self.path(manifest_id);
+        if destination.exists() {
+            let existing = self.load(manifest_id)?;
+            return if &existing == prepared {
+                Ok(())
+            } else {
+                Err(DelegationRegistryError::Conflict(manifest_id.clone()))
+            };
+        }
+        let bytes = serde_json::to_vec(prepared)
+            .map_err(|error| DelegationRegistryError::Serialization(error.to_string()))?;
+        let temporary = self.root.join(format!(
+            ".{}.{}.tmp",
+            encoded_manifest_component(manifest_id),
+            std::process::id()
+        ));
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)
+            .map_err(DelegationRegistryError::Io)?;
+        let result = (|| {
+            file.write_all(&bytes)?;
+            file.flush()?;
+            file.sync_all()?;
+            drop(file);
+            fs::rename(&temporary, &destination)?;
+            let directory = OpenOptions::new().read(true).open(&self.root)?;
+            directory.sync_all()?;
+            Ok::<_, std::io::Error>(())
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+        }
+        result.map_err(DelegationRegistryError::Io)
+    }
+
+    fn load(
+        &self,
+        manifest_id: &ManifestId,
+    ) -> Result<DurablePreparedDelegation, DelegationRegistryError> {
+        let bytes = fs::read(self.path(manifest_id)).map_err(DelegationRegistryError::Io)?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| DelegationRegistryError::Serialization(error.to_string()))
+    }
+
+    fn path(&self, manifest_id: &ManifestId) -> PathBuf {
+        self.root
+            .join(format!("{}.json", encoded_manifest_component(manifest_id)))
+    }
+}
+
 fn encoded_manifest_component(manifest_id: &ManifestId) -> String {
     let mut encoded = String::with_capacity(manifest_id.as_str().len() * 2);
     for byte in manifest_id.as_str().as_bytes() {
@@ -1258,11 +1525,35 @@ impl std::fmt::Display for ManifestRegistryError {
 
 impl std::error::Error for ManifestRegistryError {}
 
+#[derive(Debug)]
+enum DelegationRegistryError {
+    Io(std::io::Error),
+    Serialization(String),
+    Conflict(ManifestId),
+    Manifest(ManifestRegistryError),
+}
+
+impl std::fmt::Display for DelegationRegistryError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(formatter, "delegation registry I/O: {error}"),
+            Self::Serialization(error) => write!(formatter, "delegation registry JSON: {error}"),
+            Self::Conflict(id) => write!(
+                formatter,
+                "prepared delegation for manifest {id} was already registered differently"
+            ),
+            Self::Manifest(error) => write!(formatter, "delegation registry directory: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DelegationRegistryError {}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::agent_runtime::fake_provider::FakeProviderAdapter;
-    use crate::agent_runtime::AgentLoopInputFactory;
+    use crate::agent_runtime::{AgentDispatchScheduler, AgentLoopInputFactory};
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
     use crate::ai::{AiProviderKind, PROFILE_LOCAL};
     use crate::editor::ai_state::AiState;
@@ -1387,10 +1678,17 @@ mod tests {
                 run_id.clone(),
                 root.clone(),
                 repository.clone(),
+                directory.path().to_path_buf(),
             )
             .unwrap();
         let reopened = service
-            .run(store.clone(), run_id.clone(), root, repository.clone())
+            .run(
+                store.clone(),
+                run_id.clone(),
+                root,
+                repository.clone(),
+                directory.path().to_path_buf(),
+            )
             .unwrap();
         assert!(Arc::ptr_eq(&first, &reopened));
 
@@ -1409,7 +1707,13 @@ mod tests {
             .is_some());
 
         assert!(service
-            .run(store, run_id, AgentId::new(), RepositoryId::new())
+            .run(
+                store,
+                run_id,
+                AgentId::new(),
+                RepositoryId::new(),
+                directory.path().to_path_buf(),
+            )
             .is_err());
     }
 
@@ -1611,7 +1915,7 @@ mod tests {
         let (_repository, _storage, mut editor) = enabled_editor();
         let mut service = AiSubagentService::new(&editor.ai_state.config);
         service.provider = Arc::new(
-            FakeProviderAdapter::new("delayed_completion")
+            FakeProviderAdapter::new("restart")
                 .with_tick_duration(std::time::Duration::from_millis(100)),
         );
         *editor.ai_state.subagents = service;
@@ -1746,6 +2050,200 @@ mod tests {
         assert_eq!(
             listed["agents"][0]["followup_turn_id"],
             payload["followup_turn_id"]
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn followup_rejects_a_child_that_is_still_live() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        service.provider = Arc::new(
+            FakeProviderAdapter::new("delayed_completion")
+                .with_tick_duration(std::time::Duration::from_millis(100)),
+        );
+        *editor.ai_state.subagents = service;
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("still_live"))
+        else {
+            panic!("spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        let agent_id = AgentId::parse(spawned["agent_id"].as_str().unwrap()).unwrap();
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        loop {
+            if matches!(
+                run.supervisor.state(&agent_id).unwrap(),
+                Some(
+                    crate::agent_runtime::DispatchState::Starting
+                        | crate::agent_runtime::DispatchState::Running
+                )
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let followup = ToolCallInfo {
+            id: "tool-followup-live".into(),
+            name: FOLLOWUP_AGENT_TOOL.into(),
+            arguments: json!({
+                "agent_id": agent_id,
+                "objective": "This must not overlap the current turn."
+            }),
+        };
+        let result = editor
+            .prepare_ai_subagent_async_control(&followup)
+            .unwrap()
+            .execute()
+            .await;
+        assert!(matches!(result, ToolResult::Error(_)));
+        run.supervisor
+            .interrupt(&agent_id, "test cleanup")
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn resumed_editor_run_reconstructs_and_retries_a_durable_queued_child() {
+        let (repository, _storage, mut editor) = enabled_editor();
+        attach_root_turn(&mut editor);
+        let root = editor.active_subagent_root().unwrap();
+        let config = editor.ai_state.config.clone();
+        let original = editor
+            .ai_state
+            .subagents
+            .run(
+                root.store.clone(),
+                root.run_id.clone(),
+                root.root_agent_id.clone(),
+                root.repository_id.clone(),
+                root.repository_root.clone(),
+            )
+            .unwrap();
+        let manifest_id = ManifestId::new();
+        let workspace_id = WorkspaceId::new();
+        original
+            .register_manifest(
+                manifest_id.clone(),
+                manifest(root.repository_id.clone()),
+                repository.path(),
+            )
+            .unwrap();
+        let budget = AgentLoopBudget {
+            timeout: std::time::Duration::from_secs(2),
+            max_provider_events: 32,
+            max_tool_calls: 8,
+        };
+        original
+            .register_prepared_delegation(
+                manifest_id.clone(),
+                DelegationEnvelope {
+                    version: 1,
+                    task_name: "queued_restart".into(),
+                    objective: "Inspect the durable queued snapshot".into(),
+                    agent_kind: DelegatedAgentKind::Explorer,
+                    context_mode: DelegationContextMode::Brief,
+                    expected_output: DelegationExpectedOutput::Analysis,
+                    done_when: vec!["A validated handoff is recorded".into()],
+                    non_goals: vec!["Do not mutate".into()],
+                    relevant_paths: vec!["lib.rs".into()],
+                    parent_brief: None,
+                    identity: Some(Box::new(DelegationIdentity {
+                        run_id: root.run_id.clone(),
+                        parent_agent_id: root.root_agent_id.clone(),
+                        causing_turn_id: root.turn_id.clone(),
+                        causing_event_id: root.caused_by_event.clone(),
+                        workspace_id: workspace_id.clone(),
+                        manifest_id: manifest_id.clone(),
+                    })),
+                    effective_capabilities: vec!["read".into()],
+                    timeout_seconds: 2,
+                    workspace_warnings: Vec::new(),
+                },
+                budget,
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let sink: Arc<dyn RunEventSink> = root.store.clone();
+        let mut scheduler = AgentDispatchScheduler::new(
+            root.run_id.clone(),
+            sink,
+            editor.ai_state.subagents.catalog().unwrap(),
+        );
+        scheduler.set_external_parent(root.root_agent_id.clone());
+        let handle = scheduler
+            .dispatch(DispatchRequest {
+                task_name: "queued_restart".into(),
+                objective: "Inspect the durable queued snapshot".into(),
+                role: AgentRoleTemplate {
+                    name: AgentKindName::Explorer,
+                    instructions: "Read only".into(),
+                    capabilities: BTreeSet::from([AgentCapability::Read]),
+                    workspace_policy: WorkspacePolicy::ReadOnlyProjection,
+                    completion_contract: CompletionContract::ReviewReport,
+                },
+                requested_route: RequestedModelRoute::exact(
+                    crate::agent_runtime::catalog_model_id(PROFILE_LOCAL, "test-model"),
+                    ReasoningEffort::high(),
+                ),
+                parent_agent_id: Some(root.root_agent_id.clone()),
+                causing_turn_id: Some(root.turn_id.clone()),
+                caused_by_event: Some(root.caused_by_event.clone()),
+                workspace: WorkspaceAssignment {
+                    workspace_id,
+                    strategy: WorkspaceStrategy::ReadOnlySnapshot {
+                        manifest_id: Some(manifest_id.clone()),
+                    },
+                },
+            })
+            .unwrap();
+        drop(scheduler);
+        drop(original);
+        drop(editor);
+
+        let mut recovered_service = AiSubagentService::new(&config);
+        recovered_service.provider = Arc::new(FakeProviderAdapter::new("delayed_completion"));
+        let recovered = recovered_service
+            .run(
+                root.store,
+                root.run_id,
+                root.root_agent_id.clone(),
+                root.repository_id,
+                root.repository_root,
+            )
+            .unwrap();
+        assert!(recovered
+            .supervisor
+            .wait_for_idle(std::time::Duration::from_secs(2))
+            .await
+            .unwrap());
+        assert_eq!(
+            recovered.supervisor.state(&handle.agent_id).unwrap(),
+            Some(crate::agent_runtime::DispatchState::Completed)
+        );
+        let record = recovered.supervisor.dispatches().unwrap().remove(0);
+        assert_eq!(record.handle.agent_id, handle.agent_id);
+        assert_eq!(record.handle.workspace, handle.workspace);
+        assert!(recovered.input_factory.build(&record).is_ok());
+        assert_eq!(
+            recovered
+                .supervisor
+                .mailbox(root.root_agent_id)
+                .unwrap()
+                .pending()
+                .unwrap()
+                .len(),
+            1
         );
     }
 }

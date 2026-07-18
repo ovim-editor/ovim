@@ -16,6 +16,7 @@ use crate::run_log::{
     EventKind, ManifestId, OperationId, RunId, ToolIntentEvent, ToolOutcome, ToolResultEvent,
     ToolSideEffect, ToolStartedEvent, TurnId, WorkspaceId, AGENT_PROVIDER_EVENT_VERSION,
 };
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -32,7 +33,7 @@ use tokio::time::Instant;
 
 pub type AgentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationEnvelope {
     pub version: u32,
     pub task_name: String,
@@ -50,7 +51,8 @@ pub struct DelegationEnvelope {
     pub workspace_warnings: Vec<AgentWorkspaceWarning>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DelegatedAgentKind {
     Explorer,
     Reviewer,
@@ -65,7 +67,8 @@ impl DelegatedAgentKind {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DelegationContextMode {
     Brief,
 }
@@ -76,7 +79,8 @@ impl DelegationContextMode {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum DelegationExpectedOutput {
     Analysis,
     ReviewReport,
@@ -93,7 +97,7 @@ impl DelegationExpectedOutput {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct DelegationIdentity {
     pub run_id: RunId,
     pub parent_agent_id: crate::run_log::AgentId,

@@ -638,6 +638,36 @@ impl AgentDispatchScheduler {
             )?;
         }
 
+        // A never-started child may be retried only if the current catalog
+        // still resolves the exact effective route recorded at dispatch.
+        // Configuration drift must not silently reroute durable queued work.
+        let invalid_queued_routes = scheduler
+            .agents
+            .values()
+            .filter(|agent| agent.state == DispatchState::Queued)
+            .filter_map(|agent| {
+                let current = scheduler
+                    .model_catalog
+                    .resolve(&agent.requested_route, !agent.role.capabilities.is_empty());
+                match current {
+                    Ok(current) if same_effective_route(&current, &agent.resolved_route) => None,
+                    Ok(_) => Some((
+                        agent.handle.clone(),
+                        "queued child route changed under the current model catalog".to_string(),
+                    )),
+                    Err(error) => Some((
+                        agent.handle.clone(),
+                        format!(
+                            "queued child route is unavailable under the current model catalog: {error}"
+                        ),
+                    )),
+                }
+            })
+            .collect::<Vec<_>>();
+        for (handle, detail) in invalid_queued_routes {
+            scheduler.terminate_conservatively(&handle, HandoffStatus::Interrupted, &detail)?;
+        }
+
         for agent in scheduler.agents.values() {
             if agent.state.is_terminal()
                 || !agent.role.can_write()
@@ -1282,9 +1312,14 @@ impl AgentDispatchScheduler {
                 envelope.event_id, followup.agent_id
             ))
         })?;
-        let expected_parent = agent.parent_agent_id.as_ref().ok_or_else(|| {
-            DispatchError::InvalidHistory("follow-up agent has no durable parent".into())
-        })?;
+        // Standalone schedulers may use an external parent that is supplied
+        // by the supervisor rather than persisted in the original child spec.
+        // In that case the durable follow-up event and its validated parent
+        // event are the recovery authority.
+        let expected_parent = agent
+            .parent_agent_id
+            .as_ref()
+            .unwrap_or(&followup.parent_agent_id);
         if envelope.agent_id.as_ref() != Some(&followup.agent_id)
             || envelope.turn_id.as_ref() != Some(&followup.followup_turn_id)
             || envelope.workspace_id.as_ref() != Some(&agent.handle.workspace.workspace_id)
@@ -3051,6 +3086,38 @@ mod tests {
             restored.state(&handle.agent_id),
             Some(&DispatchState::Completed)
         );
+    }
+
+    #[test]
+    fn rehydrate_retries_queued_work_only_when_exact_route_is_still_available() {
+        let (mut scheduler, sink) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_catalog_recovery").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        drop(scheduler);
+
+        let mut changed = AiConfig::default();
+        changed.profiles.get_mut("local").unwrap().model = "different-model".into();
+        let changed_catalog = Arc::new(SubagentModelCatalog::from_config(&changed).unwrap());
+        let recovered =
+            AgentDispatchScheduler::rehydrate(handle.run_id.clone(), sink.clone(), changed_catalog)
+                .unwrap();
+
+        assert_eq!(
+            recovered.state(&handle.agent_id),
+            Some(&DispatchState::Interrupted)
+        );
+        assert!(sink.events(&handle.run_id).unwrap().iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::AgentHandoff(recorded)
+                    if recorded.handoff.as_handoff().summary.contains("current model catalog")
+            )
+        }));
     }
 
     #[test]

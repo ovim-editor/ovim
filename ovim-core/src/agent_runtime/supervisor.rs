@@ -675,24 +675,33 @@ impl AgentSupervisor {
                 _ => None,
             })
             .collect::<BTreeSet<_>>();
-        for record in self.dispatches()? {
-            if !record.state.is_terminal() {
-                continue;
-            }
-            let terminal = events.iter().rev().find(|event| {
-                event.agent_id.as_ref() == Some(&record.handle.agent_id)
-                    && matches!(
-                        event.kind,
-                        EventKind::AgentLifecycle(ref lifecycle)
-                            if matches!(
-                                lifecycle.state,
-                                crate::run_log::AgentLifecycleState::Completed
-                                    | crate::run_log::AgentLifecycleState::Failed
-                                    | crate::run_log::AgentLifecycleState::Interrupted
-                            )
+        let records = self
+            .dispatches()?
+            .into_iter()
+            .map(|record| (record.handle.agent_id.clone(), record))
+            .collect::<BTreeMap<_, _>>();
+        // One stable AgentId may have several terminal generations. Recover
+        // every missing handoff notification, not only the latest terminal
+        // event, while the mailbox projection prevents duplicate consumption.
+        for terminal in events.iter().filter(|event| {
+            matches!(
+                event.kind,
+                EventKind::AgentLifecycle(ref lifecycle)
+                    if matches!(
+                        lifecycle.state,
+                        crate::run_log::AgentLifecycleState::Completed
+                            | crate::run_log::AgentLifecycleState::Failed
+                            | crate::run_log::AgentLifecycleState::Interrupted
                     )
-            });
-            let Some(terminal) = terminal else { continue };
+            )
+        }) {
+            let Some(record) = terminal
+                .agent_id
+                .as_ref()
+                .and_then(|agent_id| records.get(agent_id))
+            else {
+                continue;
+            };
             let Some(handoff_id) = terminal.caused_by.as_ref() else {
                 continue;
             };
