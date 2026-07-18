@@ -375,23 +375,29 @@ impl AgentSupervisor {
         let mut descendants = descendants_including(&records, agent_id);
         descendants.sort();
         descendants.reverse();
-        let live = self.inner.live.lock().await;
-        let mut queued = Vec::new();
-        for current in &descendants {
-            if let Some(handle) = live.get(current) {
-                handle.cancellation.cancel(reason.clone());
-            } else if records.iter().any(|record| {
-                &record.handle.agent_id == current && record.state == DispatchState::Queued
-            }) {
-                queued.push(current.clone());
-            }
-        }
-        drop(live);
-        for current in queued {
-            let terminal = {
-                let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
+        // Classify and terminate under `live` held for the whole pass, matching
+        // drain_ready's live -> scheduler order. Because promotion holds `live`
+        // across Queued -> Starting, any descendant absent from the live map
+        // here is provably not mid-start: if it is still non-terminal it is safe
+        // to terminate before it ever reaches the provider. Terminal records are
+        // collected and notified after the locks are released.
+        let mut terminals = Vec::new();
+        {
+            let live = self.inner.live.lock().await;
+            let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
+            for current in &descendants {
+                if let Some(handle) = live.get(current) {
+                    handle.cancellation.cancel(reason.clone());
+                    continue;
+                }
+                let Some(state) = scheduler.state(current) else {
+                    continue;
+                };
+                if state.is_terminal() {
+                    continue;
+                }
                 let record = scheduler
-                    .dispatch_record(&current)
+                    .dispatch_record(current)
                     .ok_or_else(|| AgentSupervisorError::UnknownAgent(current.clone()))?;
                 let terminal = scheduler.finish_with_handoff(
                     &record.handle,
@@ -400,9 +406,11 @@ impl AgentSupervisor {
                         format!("cancelled before provider start: {reason}"),
                     )?,
                 )?;
-                (record, terminal)
-            };
-            self.notify_terminal(&terminal.0, &terminal.1)?;
+                terminals.push((record, terminal));
+            }
+        }
+        for (record, terminal) in terminals {
+            self.notify_terminal(&record, &terminal)?;
         }
         self.inner.changed.notify_waiters();
         Ok(descendants)
@@ -438,6 +446,14 @@ impl AgentSupervisor {
                 Ok(permit) => permit,
                 Err(_) => break,
             };
+            // Hold `live` across the entire Queued -> Starting promotion and the
+            // live-map insertion. A child is therefore present in `live` for the
+            // whole time it is not Queued, closing the window where interrupt()
+            // could observe a Starting child that is absent from the map (and so
+            // neither cancel nor terminate it while still reporting it stopped).
+            // Lock order is live -> scheduler everywhere; the gate below still
+            // prevents provider execution until after publication.
+            let mut live = self.inner.live.lock().await;
             let record = {
                 let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
                 let Some(record) = scheduler.queued_dispatches().into_iter().next() else {
@@ -461,7 +477,7 @@ impl AgentSupervisor {
                 let _permit = permit;
                 supervisor.run_one(task_record, task_cancellation).await;
             });
-            self.inner.live.lock().await.insert(
+            live.insert(
                 record.handle.agent_id.clone(),
                 LiveAgentHandle {
                     dispatch: record.handle,
@@ -469,6 +485,9 @@ impl AgentSupervisor {
                     abort_handle: task.abort_handle(),
                 },
             );
+            // Publish before releasing the gate so the spawned task cannot reach
+            // run_one (and its own `live` access) until the handle is in place.
+            drop(live);
             let _ = launch.send(());
         }
         Ok(())
@@ -1693,6 +1712,91 @@ mod tests {
             supervisor.state(&parent.agent_id).unwrap(),
             Some(DispatchState::Interrupted)
         );
+        assert_eq!(
+            supervisor.state(&child.agent_id).unwrap(),
+            Some(DispatchState::Interrupted)
+        );
+    }
+
+    #[tokio::test]
+    async fn parent_interrupt_terminalizes_a_not_yet_live_descendant() {
+        // Saturate the single provider slot with the parent so its child stays
+        // queued (not live), then interrupt the subtree. interrupt() must
+        // terminalize the not-yet-live child as interrupted under the same
+        // live->scheduler lock ordering as promotion, so that when the parent's
+        // permit frees moments later, drain_ready does not promote and run it.
+        // This guards the interrupt classification rewrite; the exact
+        // Starting-but-not-live window needs a drain-boundary hook to hit
+        // deterministically and is covered by reasoning, not this test.
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        // A long per-tick duration pins the parent live for the whole test; the
+        // loop runner cancels it via select!, so interrupt still lands promptly.
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_secs(10)));
+        let config = AgentSupervisorConfig {
+            max_depth: 1,
+            max_concurrent: 1,
+            ..AgentSupervisorConfig::default()
+        };
+        let (supervisor, run_id, _) = supervisor_with(sink.clone(), factory, config);
+        let mut parent_request = request("parent delayed");
+        parent_request.role = AgentKind::built_in(AgentKindName::Planner);
+        let parent = supervisor.dispatch(parent_request).await.unwrap();
+        while supervisor.live_handles().await.is_empty() {
+            tokio::task::yield_now().await;
+        }
+        let turn_id = TurnId::new();
+        let last_parent = sink
+            .events(&run_id)
+            .unwrap()
+            .into_iter()
+            .rev()
+            .find(|event| event.agent_id.as_ref() == Some(&parent.agent_id))
+            .unwrap();
+        let cause = sink
+            .append(NewRunEvent {
+                run_id: run_id.clone(),
+                caused_by: Some(last_parent.event_id),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::Agent(parent.agent_id.clone()),
+                agent_id: Some(parent.agent_id.clone()),
+                turn_id: Some(turn_id.clone()),
+                workspace_id: Some(parent.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: EventKind::Message(MessageEvent {
+                    role: MessageRole::Agent,
+                    content: "dispatch child".into(),
+                }),
+            })
+            .unwrap();
+        let mut child_request = request("child delayed");
+        child_request.parent_agent_id = Some(parent.agent_id.clone());
+        child_request.causing_turn_id = Some(turn_id);
+        child_request.caused_by_event = Some(cause.event_id);
+        let child = supervisor.dispatch(child_request).await.unwrap();
+
+        // The single provider slot is held by the parent, so the child is queued.
+        assert_eq!(supervisor.live_handles().await.len(), 1);
+        assert_eq!(
+            supervisor.state(&child.agent_id).unwrap(),
+            Some(DispatchState::Queued)
+        );
+
+        let interrupted = supervisor
+            .interrupt(&parent.agent_id, "stop subtree")
+            .await
+            .unwrap();
+        assert_eq!(interrupted.len(), 2);
+        assert!(supervisor
+            .wait_for_idle(Duration::from_secs(2))
+            .await
+            .unwrap());
+        assert_eq!(
+            supervisor.state(&parent.agent_id).unwrap(),
+            Some(DispatchState::Interrupted)
+        );
+        // The child ends interrupted rather than being promoted-and-run once the
+        // parent's permit freed, proving interrupt terminalized it in place.
         assert_eq!(
             supervisor.state(&child.agent_id).unwrap(),
             Some(DispatchState::Interrupted)
