@@ -139,7 +139,9 @@ impl Editor {
     /// Monotonic signal updated whenever an active agent pauses for approval.
     /// UI and headless clients can use this to notify once per new prompt.
     pub fn ai_chat_attention_generation(&self) -> u64 {
-        self.ai_state.ai_attention_generation
+        self.ai_state
+            .ai_attention_generation
+            .saturating_add(self.ai_state.subagents.attention_generation())
     }
 
     /// Whether a tool call is currently paused pending user approval.

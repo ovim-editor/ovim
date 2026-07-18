@@ -1196,6 +1196,22 @@ mod tests {
         }
     }
 
+    struct CapturingApprovalClient {
+        decision: AgentApprovalDecision,
+        requests: Arc<Mutex<Vec<AgentApprovalRequest>>>,
+    }
+
+    impl AgentApprovalClient for CapturingApprovalClient {
+        fn request(
+            &self,
+            request: AgentApprovalRequest,
+        ) -> AgentFuture<'_, Result<AgentApprovalDecision, String>> {
+            self.requests.lock().unwrap().push(request);
+            let decision = self.decision.clone();
+            Box::pin(async move { Ok(decision) })
+        }
+    }
+
     struct RecordingHarness {
         sink: Arc<InMemoryRunEventSink>,
         last_event: Mutex<Option<EventId>>,
@@ -1420,6 +1436,97 @@ mod tests {
         assert_eq!(unknown.outcome, ToolOutcome::Failed);
         assert!(unknown.summary.unwrap().contains("outside"));
         assert_eq!(calls.load(Ordering::Acquire), 0);
+    }
+
+    #[tokio::test]
+    async fn attributed_approval_allows_only_the_scoped_operation_and_denial_is_a_tool_error() {
+        for (decision, expected_outcome, expected_calls) in [
+            (AgentApprovalDecision::Allowed, ToolOutcome::Completed, 1),
+            (
+                AgentApprovalDecision::Denied {
+                    reason: "user denied this exact write".into(),
+                },
+                ToolOutcome::Failed,
+                0,
+            ),
+        ] {
+            let harness = Arc::new(RecordingHarness::new());
+            let calls = Arc::new(AtomicUsize::new(0));
+            let requests = Arc::new(Mutex::new(Vec::new()));
+            let mut input = input(
+                "delayed_completion",
+                harness.clone(),
+                AgentCancellationToken::new(),
+            );
+            input.handle.workspace.strategy = WorkspaceStrategy::SharedWorkspace;
+            input.workspace.assignment = input.handle.workspace.clone();
+            input.workspace.read_only = false;
+            input.workspace.root = Some(PathBuf::from("/tmp/ovim-loop-approval"));
+            input.tool_view = ScopedToolView::new([ScopedTool {
+                name: "write_file".into(),
+                description: "Write one workspace-relative file.".into(),
+                input_schema: crate::ai::tools::StrictJsonSchema::new(serde_json::json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": { "path": { "type": "string", "minLength": 1 } },
+                    "required": ["path"]
+                }))
+                .unwrap(),
+                side_effect: ToolSideEffect::Mutation,
+                required_capability: AgentCapability::WorkspaceWrite,
+                requires_approval: true,
+            }])
+            .unwrap();
+            input.tool_executor = Arc::new(CountingToolExecutor {
+                calls: calls.clone(),
+            });
+            input.approval_client = Arc::new(CapturingApprovalClient {
+                decision: decision.clone(),
+                requests: requests.clone(),
+            });
+
+            let result = execute_tool_request(
+                &input,
+                Some("provider-call".into()),
+                "tool-call".into(),
+                "write_file".into(),
+                serde_json::json!({ "path": "src/lib.rs" }),
+                Instant::now() + Duration::from_secs(1),
+            )
+            .await
+            .expect("user denial is a normal scoped tool result");
+            assert_eq!(result.outcome, expected_outcome);
+            assert_eq!(calls.load(Ordering::Acquire), expected_calls);
+            if matches!(decision, AgentApprovalDecision::Denied { .. }) {
+                assert_eq!(
+                    result.summary.as_deref(),
+                    Some("user denied this exact write")
+                );
+            }
+
+            let requests = requests.lock().unwrap();
+            assert_eq!(requests.len(), 1);
+            let request = &requests[0];
+            assert_eq!(request.handle, input.handle);
+            assert_eq!(request.workspace, input.workspace);
+            assert_eq!(request.tool_name, "write_file");
+            assert_eq!(request.normalized_effect, ToolSideEffect::Mutation);
+            assert_eq!(request.required_capability, AgentCapability::WorkspaceWrite);
+            let events = harness.sink.events(&input.handle.run_id).unwrap();
+            let intent = events
+                .iter()
+                .find(|event| matches!(event.kind, EventKind::ToolIntent(_)))
+                .unwrap();
+            assert_eq!(request.tool_intent_event_id, intent.event_id);
+            assert_eq!(
+                request.operation_id.as_str(),
+                intent.operation_id.as_ref().unwrap().as_str()
+            );
+            assert!(events.iter().any(|event| {
+                event.operation_id.as_ref() == Some(&request.operation_id)
+                    && matches!(event.kind, EventKind::ToolResult(_))
+            }));
+        }
     }
 
     fn result_event_run(harness: &RecordingHarness) -> RunId {

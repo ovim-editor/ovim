@@ -5,10 +5,10 @@
 //! worktree or editor state after construction.
 
 use super::{
-    AgentCapability, AgentFuture, AgentLoopDependencies, AgentLoopInputFactory,
-    AgentProviderAdapter, AgentToolCall, AgentToolError, AgentToolExecutor, AgentToolResult,
-    AgentWorkspaceDescriptor, DelegationEnvelope, DenyAllAgentApprovals, ScopedTool,
-    ScopedToolView, WorkspaceStrategy,
+    AgentApprovalBroker, AgentApprovalContext, AgentCapability, AgentCapabilityCeiling,
+    AgentFuture, AgentLoopDependencies, AgentLoopInputFactory, AgentProviderAdapter, AgentToolCall,
+    AgentToolError, AgentToolExecutor, AgentToolResult, AgentWorkspaceDescriptor,
+    DelegationEnvelope, DenyAllAgentApprovals, ScopedTool, ScopedToolView, WorkspaceStrategy,
 };
 use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::tools::StrictJsonSchema;
@@ -1129,6 +1129,7 @@ impl AgentToolExecutor for SnapshotToolExecutor {
 pub struct SnapshotAgentLoopInputFactory {
     manager: AgentWorkspaceManager,
     provider: Arc<dyn AgentProviderAdapter>,
+    approval_broker: Option<Arc<AgentApprovalBroker>>,
     envelopes: Mutex<HashMap<ManifestId, PreparedDelegation>>,
 }
 
@@ -1143,6 +1144,20 @@ impl SnapshotAgentLoopInputFactory {
         Self {
             manager,
             provider,
+            approval_broker: None,
+            envelopes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn with_approval_broker(
+        manager: AgentWorkspaceManager,
+        provider: Arc<dyn AgentProviderAdapter>,
+        approval_broker: Arc<AgentApprovalBroker>,
+    ) -> Self {
+        Self {
+            manager,
+            provider,
+            approval_broker: Some(approval_broker),
             envelopes: Mutex::new(HashMap::new()),
         }
     }
@@ -1213,17 +1228,45 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
         envelope.workspace_warnings = warnings.clone();
         let executor = SnapshotToolExecutor::with_adapters(workspace, adapters);
         let tool_view = executor.scoped_view_with_adapters();
+        let workspace = AgentWorkspaceDescriptor {
+            assignment: dispatch.handle.workspace.clone(),
+            root: None,
+            read_only: true,
+            warnings: warnings.clone(),
+        };
+        let approval_client = if let Some(broker) = &self.approval_broker {
+            let effective = dispatch.role.capabilities.clone();
+            let mut ceiling = AgentCapabilityCeiling::uniform(effective);
+            ceiling.profile_allowlist = tool_view
+                .tools()
+                .into_iter()
+                .map(|tool| tool.required_capability)
+                .collect();
+            ceiling.workspace_policy =
+                BTreeSet::from([AgentCapability::Read, AgentCapability::Navigate]);
+            broker
+                .scoped_client(
+                    AgentApprovalContext {
+                        handle: dispatch.handle.clone(),
+                        task_name: dispatch.task_name.clone(),
+                        ancestry: dispatch.parent_agent_id.clone().into_iter().collect(),
+                        role: dispatch.role.name.to_string(),
+                        model: dispatch.resolved_route.model.clone(),
+                        reasoning_effort: dispatch.resolved_route.reasoning_effort.as_str().into(),
+                        workspace: workspace.clone(),
+                    },
+                    ceiling,
+                )
+                .map_err(|error| error.to_string())?
+        } else {
+            Arc::new(DenyAllAgentApprovals)
+        };
         Ok(AgentLoopDependencies {
             provider: self.provider.clone(),
             tool_view,
             tool_executor: Arc::new(executor),
-            approval_client: Arc::new(DenyAllAgentApprovals),
-            workspace: AgentWorkspaceDescriptor {
-                assignment: dispatch.handle.workspace.clone(),
-                root: None,
-                read_only: true,
-                warnings: warnings.clone(),
-            },
+            approval_client,
+            workspace,
             envelope,
             budget: prepared.budget,
         })

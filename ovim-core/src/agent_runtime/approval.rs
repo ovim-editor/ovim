@@ -1326,6 +1326,41 @@ mod tests {
             wrong_agent,
             Err(AgentApprovalError::WrongAgent(_))
         ));
+
+        let deny_operation = OperationId::parse("op_responses_deny").unwrap();
+        let deny_intent = append_intent(&sink, &context, &deny_operation, ToolSideEffect::Mutation);
+        let deny_task = start_request(
+            broker
+                .scoped_client(
+                    context.clone(),
+                    AgentCapabilityCeiling::uniform(all_capabilities()),
+                )
+                .unwrap(),
+            request(
+                &context,
+                deny_operation,
+                deny_intent,
+                ToolSideEffect::Mutation,
+                AgentCapability::WorkspaceWrite,
+                Duration::from_secs(5),
+            ),
+        )
+        .await;
+        let pending = broker.pending().unwrap().remove(0);
+        let deny = AgentApprovalResponse {
+            key: pending.key,
+            request_event_id: pending.request_event_id,
+            decision: AgentApprovalResponseDecision::Deny {
+                reason: Some("denied once".into()),
+            },
+        };
+        let expected = AgentApprovalDecision::Denied {
+            reason: "denied once".into(),
+        };
+        assert_eq!(broker.respond(deny.clone()).unwrap(), expected);
+        assert_eq!(broker.respond(deny).unwrap(), expected);
+        assert_eq!(deny_task.await.unwrap().unwrap(), expected);
+        assert_eq!(broker.resolved().unwrap().len(), 2);
     }
 
     #[tokio::test]

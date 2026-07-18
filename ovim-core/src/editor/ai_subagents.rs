@@ -5,13 +5,13 @@
 //! exact durable run sink and configured provider profiles.
 
 use crate::agent_runtime::{
-    AgentCapability, AgentKindName, AgentLoopBudget, AgentProviderAdapter, AgentRoleTemplate,
-    AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
-    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegationContextMode,
-    DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
-    ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort, RequestedModelRoute,
-    SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog,
-    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
+    AgentApprovalBroker, AgentCapability, AgentKindName, AgentLoopBudget, AgentProviderAdapter,
+    AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager,
+    CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex, CompletionContract,
+    DelegatedAgentKind, DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput,
+    DelegationIdentity, DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider,
+    ReasoningEffort, RequestedModelRoute, SnapshotAgentLoopInputFactory, SnapshotDiagnostic,
+    SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -83,6 +83,7 @@ pub(crate) struct AiSubagentRun {
     pub root_agent_id: AgentId,
     pub repository_id: RepositoryId,
     pub supervisor: AgentSupervisor,
+    pub approval_broker: Arc<AgentApprovalBroker>,
     pub artifact_store: ArtifactStore,
     pub workspace_manager: AgentWorkspaceManager,
     pub input_factory: Arc<SnapshotAgentLoopInputFactory>,
@@ -127,6 +128,17 @@ impl AiSubagentService {
         } else {
             BTreeSet::new()
         }
+    }
+
+    pub fn attention_generation(&self) -> u64 {
+        self.runs
+            .lock()
+            .map(|runs| {
+                runs.values().fold(0_u64, |generation, run| {
+                    generation.saturating_add(run.approval_broker.attention_generation())
+                })
+            })
+            .unwrap_or_default()
     }
 
     /// Running supervisors keep the exact startup policy/profile snapshot.
@@ -193,11 +205,16 @@ impl AiSubagentService {
         let artifact_store = ArtifactStore::open(store.layout().artifact_directory(&run_id))
             .map_err(|error| error.to_string())?;
         let workspace_manager = AgentWorkspaceManager::new(artifact_store.clone());
-        let input_factory = Arc::new(SnapshotAgentLoopInputFactory::new(
+        let sink: Arc<dyn RunEventSink> = store.clone();
+        let approval_broker = Arc::new(
+            AgentApprovalBroker::new(run_id.clone(), sink.clone())
+                .map_err(|error| error.to_string())?,
+        );
+        let input_factory = Arc::new(SnapshotAgentLoopInputFactory::with_approval_broker(
             workspace_manager.clone(),
             self.provider.clone(),
+            approval_broker.clone(),
         ));
-        let sink: Arc<dyn RunEventSink> = store.clone();
         let supervisor = AgentSupervisor::new(
             run_id.clone(),
             root_agent_id.clone(),
@@ -211,6 +228,7 @@ impl AiSubagentService {
             root_agent_id,
             repository_id,
             supervisor,
+            approval_broker,
             artifact_store,
             workspace_manager,
             input_factory,
@@ -771,6 +789,30 @@ impl Editor {
             .map_err(|error| error.to_string())?
             .pending()
             .map_err(|error| error.to_string())?;
+        let pending_approvals = run
+            .approval_broker
+            .pending()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|approval| {
+                json!({
+                    "request_event_id": approval.request_event_id,
+                    "agent_id": approval.key.agent_id,
+                    "operation_id": approval.key.operation_id,
+                    "task_name": approval.request.task_name,
+                    "ancestry": approval.request.ancestry,
+                    "role": approval.request.role,
+                    "model": approval.request.model,
+                    "reasoning_effort": approval.request.reasoning_effort,
+                    "tool": approval.request.tool_name,
+                    "effect": approval.request.normalized_effect,
+                    "workspace": approval.request.workspace,
+                    "reason": approval.request.reason,
+                    "created_at": approval.request.created_at,
+                    "deadline_at": approval.request.deadline_at,
+                })
+            })
+            .collect::<Vec<_>>();
         let records = run
             .supervisor
             .dispatches()
@@ -793,9 +835,11 @@ impl Editor {
                 })
             })
             .collect::<Vec<_>>();
+        let pending_attention = pending.len() + pending_approvals.len();
         Ok(json!({
             "agents": records,
-            "pending_attention": pending.len(),
+            "pending_approvals": pending_approvals,
+            "pending_attention": pending_attention,
         }))
     }
 
@@ -1334,6 +1378,7 @@ mod tests {
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
         assert_eq!(listed["agents"][0]["task_name"], "inspect_snapshot");
         assert_eq!(listed["agents"][0]["reasoning_effort"], "high");
+        assert_eq!(listed["pending_approvals"], json!([]));
         let run = editor
             .ai_state
             .subagents
@@ -1380,6 +1425,8 @@ mod tests {
             payload_json["updates"][0]["notification"]["type"],
             "handoff"
         );
+        assert!(run.approval_broker.pending().unwrap().is_empty());
+        assert!(run.approval_broker.resolved().unwrap().is_empty());
         editor.consume_ai_subagent_updates(&payload).unwrap();
     }
 
