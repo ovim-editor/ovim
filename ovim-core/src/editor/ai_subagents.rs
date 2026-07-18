@@ -382,18 +382,18 @@ impl Editor {
         (),
         (
             ToolResult,
-            super::ai_chat_state::SubagentControlContinuation,
+            Box<super::ai_chat_state::SubagentControlContinuation>,
         ),
     > {
         if self.ai_state.chat.is_none() {
             return Err((
                 ToolResult::Error("no active chat session".into()),
-                continuation,
+                Box::new(continuation),
             ));
         }
         let prepared = match self.prepare_ai_subagent_async_control(&call) {
             Ok(prepared) => prepared,
-            Err(error) => return Err((ToolResult::Error(error), continuation)),
+            Err(error) => return Err((ToolResult::Error(error), Box::new(continuation))),
         };
         let (sender, receiver) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
@@ -1047,7 +1047,7 @@ mod tests {
         profile.reasoning_effort = Some("high".into());
         let mut service = AiSubagentService::new(&editor.ai_state.config);
         service.provider = Arc::new(FakeProviderAdapter::new("delayed_completion"));
-        editor.ai_state.subagents = Box::new(service);
+        *editor.ai_state.subagents = service;
         editor.open_ai_chat(ChatOpts::default()).unwrap();
         (repository, storage, editor)
     }
@@ -1286,7 +1286,7 @@ mod tests {
             FakeProviderAdapter::new("delayed_completion")
                 .with_tick_duration(std::time::Duration::from_millis(100)),
         );
-        editor.ai_state.subagents = Box::new(service);
+        *editor.ai_state.subagents = service;
         attach_root_turn(&mut editor);
         let ToolResult::Success(spawned) =
             editor.execute_ai_subagent_control_tool(&spawn_call("interrupt_me"))

@@ -84,6 +84,71 @@ guardrail with `max_tool_calls = 100`, in which case Ovim displays both the
 current count and limit. Omitting the setting—or setting it to `0` in legacy
 configuration—keeps long-running turns unlimited.
 
+## Read-only delegated agents (preview)
+
+Ovim can dispatch bounded explorer and reviewer children from an active AI
+chat. The feature is disabled by default and is currently configured only in
+legacy `ai.toml`. When enabled, the root model receives four controls:
+`spawn_agent`, `list_agents`, `wait_agent`, and `interrupt_agent`. They appear
+only while the editor owns an active durable root turn in a Git repository;
+they are not ordinary profile tools and are never exposed to a child.
+
+Every spawn must name both a catalog model and a reasoning effort. Ovim builds
+those choices from configured profiles and rejects an unknown or unsupported
+pair before allocating an agent, manifest, workspace, or lifecycle record.
+The catalog ID is `profile/model`, for example `codex_sol/gpt-5.6-sol`.
+`codex_app_server` profiles are not child routes because their nested provider
+session cannot be safely reconstructed inside Ovim's child harness.
+
+```toml
+[subagents]
+enabled = true
+max_concurrent = 3
+max_queued = 8
+max_children_per_parent = 4
+max_total_per_run = 8
+max_depth = 1
+default_timeout_seconds = 600
+allow_writes = false
+allow_network = false
+allowed_models = ["codex_sol/gpt-5.6-sol", "codex_terra/gpt-5.6-terra"]
+allowed_agent_kinds = ["explorer", "reviewer"]
+allowed_reasoning_efforts = ["low", "medium"]
+
+[subagents.budgets]
+max_provider_events_per_agent = 256
+max_tool_calls_per_agent = 48
+max_total_provider_events = 1024
+max_total_tool_calls = 160
+max_estimated_cost = 5.0
+```
+
+An empty model or effort allowlist accepts every otherwise eligible catalog
+choice; the live tool schema still advertises only exact supported pairs. The
+preview rejects writes, network access, depth other than one, empty limits, and
+duplicate allowlist entries. Changing subagent policy or provider profiles
+while Ovim is running requires an editor restart instead of silently changing
+authority beneath queued children.
+
+Children see an immutable content-addressed snapshot captured at dispatch,
+including authoritative unsaved editor buffers. Later edits in the root
+worktree cannot change what an already-running child reads. A child receives
+only bounded snapshot read, list, search, and unsaved-buffer tools—no shell,
+network, navigation, mutation, approval, or further dispatch capability.
+
+`spawn_agent` returns the durable task, agent, workspace, manifest, route, and
+state immediately; the root should keep working while the child runs.
+`list_agents` reports routing and lifecycle state without waiting. `wait_agent`
+parks only that provider tool call, not the editor event loop, and completes on
+a validated handoff, timeout, or new user steering. Delivered mailbox entries
+are acknowledged durably after the wait result wins. `interrupt_agent`
+interrupts the named child hierarchy while preserving partial run history.
+
+The current preview does not attempt to resume an in-flight child provider
+session after restarting Ovim. Existing child history remains intact, but the
+resumed run fails closed for new delegated controls rather than guessing which
+provider effects completed.
+
 Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
 `ai.toml` still works, but it is legacy compatibility.

@@ -298,7 +298,7 @@ impl Editor {
                                     runtime_tool,
                                     runtime_turn,
                                     response,
-                                } = continuation
+                                } = *continuation
                                 else {
                                     unreachable!()
                                 };
