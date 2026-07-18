@@ -92,6 +92,26 @@ impl StrictJsonSchema {
     pub fn as_value(&self) -> &Value {
         &self.0
     }
+
+    /// Validate one provider-supplied argument object against this schema.
+    ///
+    /// Tool schemas are trusted configuration, while instances are untrusted
+    /// model output. Keeping validation on the prevalidated schema makes it
+    /// difficult for a caller to accidentally execute malformed arguments.
+    pub fn validate_instance(&self, instance: &Value) -> Result<(), String> {
+        let validator = jsonschema::validator_for(&self.0)
+            .map_err(|error| format!("invalid registered tool schema: {error}"))?;
+        let errors = validator
+            .iter_errors(instance)
+            .map(|error| error.to_string())
+            .take(4)
+            .collect::<Vec<_>>();
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
 }
 
 fn validate_strict_object_schemas(schema: &Value, path: String) -> Result<(), ToolSchemaError> {

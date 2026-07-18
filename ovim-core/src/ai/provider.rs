@@ -514,6 +514,36 @@ pub async fn stream_ai_chat(
     .await
 }
 
+/// Child-agent variant of the shared stream path. Unlike root chat, an EOF
+/// without a provider terminal marker is an error because a truncated tool or
+/// handoff must never be accepted as completion.
+pub(crate) async fn stream_ai_chat_strict(
+    profile: &AiProfileConfig,
+    messages: &[super::chat_types::ChatMessage],
+    system_prompt: Option<&str>,
+    working_file_path: Option<&str>,
+    session_key: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
+    tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
+) -> Result<()> {
+    stream_ai_chat_inner(
+        profile,
+        messages,
+        system_prompt,
+        working_file_path,
+        session_key,
+        None,
+        tools,
+        tx,
+        registry,
+        None,
+        None,
+        true,
+    )
+    .await
+}
+
 pub(crate) async fn stream_ai_chat_with_codex_session(
     profile: &AiProfileConfig,
     messages: &[super::chat_types::ChatMessage],
@@ -528,6 +558,39 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
     codex_steer_rx: Option<
         tokio::sync::mpsc::UnboundedReceiver<crate::ai::chat_types::ProviderSteerUpdate>,
     >,
+) -> Result<()> {
+    stream_ai_chat_inner(
+        profile,
+        messages,
+        system_prompt,
+        working_file_path,
+        session_key,
+        turn_context,
+        tools,
+        tx,
+        registry,
+        durable_codex_session,
+        codex_steer_rx,
+        false,
+    )
+    .await
+}
+
+async fn stream_ai_chat_inner(
+    profile: &AiProfileConfig,
+    messages: &[super::chat_types::ChatMessage],
+    system_prompt: Option<&str>,
+    working_file_path: Option<&str>,
+    session_key: Option<&str>,
+    turn_context: Option<&str>,
+    tools: Option<&[serde_json::Value]>,
+    tx: UnboundedSender<StreamChunk>,
+    registry: &HashMap<String, ApiKeyConfig>,
+    durable_codex_session: Option<super::codex_app_server::DurableCodexSession>,
+    codex_steer_rx: Option<
+        tokio::sync::mpsc::UnboundedReceiver<crate::ai::chat_types::ProviderSteerUpdate>,
+    >,
+    strict_stream: bool,
 ) -> Result<()> {
     // No timeout — streaming connections are long-lived.
     let client = reqwest::Client::builder()
@@ -560,6 +623,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
                 tools,
                 tx,
                 registry,
+                strict_stream,
             )
             .await
         }
@@ -572,6 +636,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
                 tools,
                 tx,
                 registry,
+                strict_stream,
             )
             .await
         }
@@ -584,6 +649,7 @@ pub(crate) async fn stream_ai_chat_with_codex_session(
                 tools,
                 tx,
                 registry,
+                strict_stream,
             )
             .await
         }
@@ -1028,6 +1094,7 @@ async fn stream_openai_chat(
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
     registry: &HashMap<String, ApiKeyConfig>,
+    strict_stream: bool,
 ) -> Result<()> {
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     let mut api_messages = Vec::new();
@@ -1044,7 +1111,11 @@ async fn stream_openai_chat(
     apply_optional_params(&mut body, profile, tools);
 
     let stream = send_streaming(client, profile, &body, registry).await?;
-    stream_parsers::parse_openai_stream(stream, tx).await;
+    if strict_stream {
+        stream_parsers::parse_openai_stream_strict(stream, tx).await;
+    } else {
+        stream_parsers::parse_openai_stream(stream, tx).await;
+    }
     Ok(())
 }
 
@@ -1056,6 +1127,7 @@ async fn stream_anthropic_chat(
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
     registry: &HashMap<String, ApiKeyConfig>,
+    strict_stream: bool,
 ) -> Result<()> {
     let mut body = json!({
         "model": profile.model,
@@ -1070,7 +1142,11 @@ async fn stream_anthropic_chat(
     apply_optional_params(&mut body, profile, tools);
 
     let stream = send_streaming(client, profile, &body, registry).await?;
-    stream_parsers::parse_anthropic_stream(stream, tx).await;
+    if strict_stream {
+        stream_parsers::parse_anthropic_stream_strict(stream, tx).await;
+    } else {
+        stream_parsers::parse_anthropic_stream(stream, tx).await;
+    }
     Ok(())
 }
 
@@ -1082,6 +1158,7 @@ async fn stream_ollama_chat(
     tools: Option<&[serde_json::Value]>,
     tx: UnboundedSender<StreamChunk>,
     registry: &HashMap<String, ApiKeyConfig>,
+    strict_stream: bool,
 ) -> Result<()> {
     let sys = system_prompt.or(profile.system_prompt.as_deref());
     let mut api_messages = Vec::new();
@@ -1098,7 +1175,11 @@ async fn stream_ollama_chat(
     apply_optional_params(&mut body, profile, tools);
 
     let stream = send_streaming(client, profile, &body, registry).await?;
-    stream_parsers::parse_ollama_stream(stream, tx).await;
+    if strict_stream {
+        stream_parsers::parse_ollama_stream_strict(stream, tx).await;
+    } else {
+        stream_parsers::parse_ollama_stream(stream, tx).await;
+    }
     Ok(())
 }
 

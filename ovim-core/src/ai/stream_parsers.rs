@@ -114,8 +114,23 @@ impl OpenAiToolAccumulator {
 }
 
 pub async fn parse_openai_stream<E: Display>(
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
+    tx: UnboundedSender<StreamChunk>,
+) {
+    parse_openai_stream_inner(stream, tx, false).await;
+}
+
+pub(crate) async fn parse_openai_stream_strict<E: Display>(
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
+    tx: UnboundedSender<StreamChunk>,
+) {
+    parse_openai_stream_inner(stream, tx, true).await;
+}
+
+async fn parse_openai_stream_inner<E: Display>(
     mut stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
     tx: UnboundedSender<StreamChunk>,
+    strict: bool,
 ) {
     use std::future::poll_fn;
     let mut buf = SseLineBuffer::new();
@@ -165,7 +180,7 @@ pub async fn parse_openai_stream<E: Display>(
                                         let _ = tx.send(StreamChunk::Done);
                                         return;
                                     }
-                                    "stop" | "length" => {
+                                    "stop" => {
                                         // Extract any final delta content before Done
                                         if let Some(content) = delta
                                             .and_then(|d| d.get("content"))
@@ -177,6 +192,16 @@ pub async fn parse_openai_stream<E: Display>(
                                                 ));
                                             }
                                         }
+                                        let _ = tx.send(StreamChunk::Done);
+                                        return;
+                                    }
+                                    "length" if strict => {
+                                        let _ = tx.send(StreamChunk::Error(
+                                            "OpenAI stream reached its output limit before child completion".into(),
+                                        ));
+                                        return;
+                                    }
+                                    "length" => {
                                         let _ = tx.send(StreamChunk::Done);
                                         return;
                                     }
@@ -202,7 +227,13 @@ pub async fn parse_openai_stream<E: Display>(
                 return;
             }
             None => {
-                // Stream ended without [DONE] — graceful close
+                if strict {
+                    let _ = tx.send(StreamChunk::Error(
+                        "OpenAI stream ended before a terminal completion marker".into(),
+                    ));
+                    return;
+                }
+                // Root chat preserves its historic graceful-EOF behavior.
                 if !tool_acc.is_empty() {
                     tool_acc.emit_all(&tx);
                 }
@@ -218,8 +249,23 @@ pub async fn parse_openai_stream<E: Display>(
 // ---------------------------------------------------------------------------
 
 pub async fn parse_anthropic_stream<E: Display>(
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
+    tx: UnboundedSender<StreamChunk>,
+) {
+    parse_anthropic_stream_inner(stream, tx, false).await;
+}
+
+pub(crate) async fn parse_anthropic_stream_strict<E: Display>(
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
+    tx: UnboundedSender<StreamChunk>,
+) {
+    parse_anthropic_stream_inner(stream, tx, true).await;
+}
+
+async fn parse_anthropic_stream_inner<E: Display>(
     mut stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
     tx: UnboundedSender<StreamChunk>,
+    strict: bool,
 ) {
     use std::future::poll_fn;
 
@@ -340,10 +386,19 @@ pub async fn parse_anthropic_stream<E: Display>(
                                 "content_block_stop" => {
                                     if current_block_type == "tool_use" {
                                         // Parse accumulated JSON and emit ToolCallComplete
-                                        let arguments = serde_json::from_str(&tool_input_json)
-                                            .unwrap_or(serde_json::Value::Object(
-                                                serde_json::Map::new(),
-                                            ));
+                                        let arguments = match serde_json::from_str(&tool_input_json)
+                                        {
+                                            Ok(arguments) => arguments,
+                                            Err(error) if strict => {
+                                                let _ = tx.send(StreamChunk::Error(format!(
+                                                    "Anthropic sent malformed arguments for tool {tool_name:?}: {error}"
+                                                )));
+                                                return;
+                                            }
+                                            Err(_) => {
+                                                serde_json::Value::Object(serde_json::Map::new())
+                                            }
+                                        };
                                         let _ = tx.send(StreamChunk::ToolCallComplete {
                                             id: std::mem::take(&mut tool_id),
                                             name: std::mem::take(&mut tool_name),
@@ -379,8 +434,14 @@ pub async fn parse_anthropic_stream<E: Display>(
                 return;
             }
             None => {
-                // Stream ended without message_stop — graceful
-                let _ = tx.send(StreamChunk::Done);
+                if strict {
+                    let _ = tx.send(StreamChunk::Error(
+                        "Anthropic stream ended before message_stop".into(),
+                    ));
+                } else {
+                    // Root chat preserves its historic graceful-EOF behavior.
+                    let _ = tx.send(StreamChunk::Done);
+                }
                 return;
             }
         }
@@ -392,8 +453,23 @@ pub async fn parse_anthropic_stream<E: Display>(
 // ---------------------------------------------------------------------------
 
 pub async fn parse_ollama_stream<E: Display>(
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
+    tx: UnboundedSender<StreamChunk>,
+) {
+    parse_ollama_stream_inner(stream, tx, false).await;
+}
+
+pub(crate) async fn parse_ollama_stream_strict<E: Display>(
+    stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
+    tx: UnboundedSender<StreamChunk>,
+) {
+    parse_ollama_stream_inner(stream, tx, true).await;
+}
+
+async fn parse_ollama_stream_inner<E: Display>(
     mut stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
     tx: UnboundedSender<StreamChunk>,
+    strict: bool,
 ) {
     use std::future::poll_fn;
 
@@ -501,7 +577,14 @@ pub async fn parse_ollama_stream<E: Display>(
                     content_streaming_started,
                     &tx,
                 );
-                let _ = tx.send(StreamChunk::Done);
+                if strict {
+                    let _ = tx.send(StreamChunk::Error(
+                        "Ollama stream ended before done=true".into(),
+                    ));
+                } else {
+                    // Root chat preserves its historic graceful-EOF behavior.
+                    let _ = tx.send(StreamChunk::Done);
+                }
                 return;
             }
         }

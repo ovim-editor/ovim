@@ -10,6 +10,7 @@ use super::{
     DelegationEnvelope, DenyAllAgentApprovals, ScopedTool, ScopedToolView, WorkspaceStrategy,
 };
 use crate::ai::path_policy::sensitive_path_reason;
+use crate::ai::tools::StrictJsonSchema;
 use crate::run_log::{
     ArtifactId, ArtifactState, ArtifactStore, BaseManifest, BaseManifestId, BlobId, FileKind,
     GitBaseEntry, ManifestConfidence, ManifestId, ManifestLayer, RepoPath, RepositoryId,
@@ -18,6 +19,7 @@ use crate::run_log::{
 use git2::{ObjectType, Oid, Repository, TreeWalkMode, TreeWalkResult};
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
+use serde_json::json;
 use serde_json::Value;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -775,21 +777,62 @@ impl SnapshotToolExecutor {
         ScopedToolView::new([
             ScopedTool {
                 name: SNAPSHOT_READ_FILE_TOOL.into(),
+                description: "Read a bounded line range from a captured repository file.".into(),
+                input_schema: strict_schema(json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1 },
+                        "start_line": { "type": "integer", "minimum": 1 },
+                        "end_line": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["path"]
+                })),
                 side_effect: ToolSideEffect::Read,
                 requires_approval: false,
             },
             ScopedTool {
                 name: SNAPSHOT_LIST_FILES_TOOL.into(),
+                description: "List files and captured unsaved buffers in the immutable snapshot."
+                    .into(),
+                input_schema: strict_schema(json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1 },
+                        "max_results": { "type": "integer", "minimum": 1 }
+                    }
+                })),
                 side_effect: ToolSideEffect::Read,
                 requires_approval: false,
             },
             ScopedTool {
                 name: SNAPSHOT_SEARCH_TOOL.into(),
+                description: "Search text across bounded files in the immutable snapshot.".into(),
+                input_schema: strict_schema(json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1 },
+                        "path": { "type": "string", "minLength": 1 },
+                        "max_results": { "type": "integer", "minimum": 1 }
+                    },
+                    "required": ["query"]
+                })),
                 side_effect: ToolSideEffect::Read,
                 requires_approval: false,
             },
             ScopedTool {
                 name: SNAPSHOT_READ_UNSAVED_TOOL.into(),
+                description: "Read one captured unsaved buffer by its opaque entry ID.".into(),
+                input_schema: strict_schema(json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "entry_id": { "type": "string", "minLength": 1 }
+                    },
+                    "required": ["entry_id"]
+                })),
                 side_effect: ToolSideEffect::Read,
                 requires_approval: false,
             },
@@ -839,6 +882,10 @@ impl SnapshotToolExecutor {
         .map_err(|error| AgentToolError::new(error.to_string()))?;
         Ok(AgentToolResult::completed(Some(result)))
     }
+}
+
+fn strict_schema(schema: Value) -> StrictJsonSchema {
+    StrictJsonSchema::new(schema).expect("snapshot tool schemas are static and strict")
 }
 
 impl AgentToolExecutor for SnapshotToolExecutor {

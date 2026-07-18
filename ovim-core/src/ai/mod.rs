@@ -28,6 +28,7 @@ pub use config::{AiConfig, AiProfileConfig, ChatContextConfig, ProjectContextCon
 pub use extract::{extract_response, AiExtractedResponse};
 pub(crate) use provider::append_project_context;
 pub(crate) use provider::resolve_chat_system_prompt;
+pub(crate) use provider::stream_ai_chat_strict;
 pub(crate) use provider::stream_ai_chat_with_codex_session;
 pub use provider::{request_ai_edit, stream_ai_chat};
 pub use sanitization::{redact_high_risk_tokens, truncate_utf8_with_notice};

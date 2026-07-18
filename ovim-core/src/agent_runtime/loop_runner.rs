@@ -10,6 +10,7 @@ use super::{
     HandoffValidationError, HandoffValidator, ResolvedModelRoute, StructuredHandoffV1,
     ValidatedHandoff, WorkspaceAssignment,
 };
+use crate::ai::tools::StrictJsonSchema;
 use crate::run_log::{
     AgentProviderEvent as RecordedAgentProviderEvent, AgentProviderState, EventEnvelope, EventKind,
     OperationId, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent,
@@ -81,7 +82,9 @@ pub struct AgentProviderStart {
     pub envelope: DelegationEnvelope,
     pub route: ResolvedModelRoute,
     pub workspace: AgentWorkspaceDescriptor,
-    pub advertised_tools: Vec<String>,
+    /// The complete, already capability-scoped provider tool contract.
+    /// Adapters must not consult the root tool registry or profile tool list.
+    pub scoped_tools: Vec<ScopedTool>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -168,6 +171,8 @@ impl std::error::Error for AgentProviderError {}
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScopedTool {
     pub name: String,
+    pub description: String,
+    pub input_schema: StrictJsonSchema,
     pub side_effect: ToolSideEffect,
     pub requires_approval: bool,
 }
@@ -199,6 +204,10 @@ impl ScopedToolView {
 
     pub fn names(&self) -> Vec<String> {
         self.tools.keys().cloned().collect()
+    }
+
+    pub fn tools(&self) -> Vec<ScopedTool> {
+        self.tools.values().cloned().collect()
     }
 }
 
@@ -475,7 +484,7 @@ impl AgentLoopRunner {
             envelope: input.envelope.clone(),
             route: input.route.clone(),
             workspace: input.workspace.clone(),
-            advertised_tools: input.tool_view.names(),
+            scoped_tools: input.tool_view.tools(),
         };
         let mut session = tokio::select! {
             reason = input.cancellation.cancelled() => {
@@ -732,59 +741,63 @@ async fn execute_tool_request(
         .await?;
 
     let result = if let Some(descriptor) = descriptor {
-        let decision = if descriptor.requires_approval {
-            input
-                .runtime_hooks
-                .transition(
-                    &input.handle,
-                    DispatchState::WaitingForUser,
-                    Some(format!("waiting for approval for {tool_name}")),
-                )
-                .await?;
-            await_bounded(
-                &input.cancellation,
-                deadline,
-                input.approval_client.request(AgentApprovalRequest {
-                    handle: input.handle.clone(),
-                    tool_name: tool_name.clone(),
-                    arguments: arguments.clone(),
-                    workspace: input.workspace.clone(),
-                }),
-            )
-            .await
-            .map_err(AgentLoopError::Approval)?
+        if let Err(error) = descriptor.input_schema.validate_instance(&arguments) {
+            AgentToolResult::failed(format!("tool arguments failed schema validation: {error}"))
         } else {
-            AgentApprovalDecision::Allowed
-        };
-        match decision {
-            AgentApprovalDecision::Denied { reason } => AgentToolResult::failed(reason),
-            AgentApprovalDecision::Allowed => {
+            let decision = if descriptor.requires_approval {
                 input
                     .runtime_hooks
-                    .transition(&input.handle, DispatchState::WaitingForTool, None)
+                    .transition(
+                        &input.handle,
+                        DispatchState::WaitingForUser,
+                        Some(format!("waiting for approval for {tool_name}")),
+                    )
                     .await?;
-                record_tool_started(
-                    input,
-                    operation_id.clone(),
-                    provider_call_id.clone(),
-                    tool_name.clone(),
-                )
-                .await?;
-                match await_bounded(
+                await_bounded(
                     &input.cancellation,
                     deadline,
-                    input.tool_executor.execute(AgentToolCall {
+                    input.approval_client.request(AgentApprovalRequest {
                         handle: input.handle.clone(),
-                        tool_call_id,
-                        tool_name,
-                        arguments,
+                        tool_name: tool_name.clone(),
+                        arguments: arguments.clone(),
                         workspace: input.workspace.clone(),
                     }),
                 )
                 .await
-                {
-                    Ok(result) => result,
-                    Err(error) => AgentToolResult::failed(error.detail),
+                .map_err(AgentLoopError::Approval)?
+            } else {
+                AgentApprovalDecision::Allowed
+            };
+            match decision {
+                AgentApprovalDecision::Denied { reason } => AgentToolResult::failed(reason),
+                AgentApprovalDecision::Allowed => {
+                    input
+                        .runtime_hooks
+                        .transition(&input.handle, DispatchState::WaitingForTool, None)
+                        .await?;
+                    record_tool_started(
+                        input,
+                        operation_id.clone(),
+                        provider_call_id.clone(),
+                        tool_name.clone(),
+                    )
+                    .await?;
+                    match await_bounded(
+                        &input.cancellation,
+                        deadline,
+                        input.tool_executor.execute(AgentToolCall {
+                            handle: input.handle.clone(),
+                            tool_call_id,
+                            tool_name,
+                            arguments,
+                            workspace: input.workspace.clone(),
+                        }),
+                    )
+                    .await
+                    {
+                        Ok(result) => result,
+                        Err(error) => AgentToolResult::failed(error.detail),
+                    }
                 }
             }
         }
