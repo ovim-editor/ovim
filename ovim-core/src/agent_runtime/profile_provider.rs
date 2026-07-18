@@ -7,8 +7,8 @@
 
 use super::{
     AgentFuture, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
-    AgentProviderSession, AgentProviderStart, AgentToolResult, DelegationEnvelope, ProviderBinding,
-    ScopedTool,
+    AgentProviderFollowup, AgentProviderSession, AgentProviderStart, AgentToolResult,
+    DelegationEnvelope, ProviderBinding, ScopedTool,
 };
 use crate::ai::{
     redact_high_risk_tokens, AiConfig, AiProfileConfig, AiProviderKind, ApiKeyConfig, ChatMessage,
@@ -627,6 +627,44 @@ impl AgentProviderSession for ProfileAgentSession {
                 provider_state: Vec::new(),
             });
             Ok(())
+        };
+        Box::pin(async move { outcome })
+    }
+
+    fn can_followup(&self) -> bool {
+        self.terminal && self.active.is_none()
+    }
+
+    fn start_followup(
+        &mut self,
+        followup: &AgentProviderFollowup,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        let outcome = if !self.can_followup() {
+            Err(AgentProviderError::new(
+                "profile session is not at a retained terminal boundary",
+            ))
+        } else if followup.objective.trim().is_empty() || followup.objective.len() > 8 * 1024 {
+            Err(AgentProviderError::new(
+                "follow-up objective is empty or oversized",
+            ))
+        } else {
+            self.messages.push(ChatMessage {
+                role: ChatRole::User,
+                content: format!(
+                    "Parent follow-up turn {} (generation {}): {}",
+                    followup.followup_turn_id,
+                    followup.turn_generation,
+                    redact_high_risk_tokens(&followup.objective)
+                ),
+                model: None,
+                timestamp: Instant::now(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                provider_state: Vec::new(),
+            });
+            self.terminal = false;
+            self.begin_round()
         };
         Box::pin(async move { outcome })
     }

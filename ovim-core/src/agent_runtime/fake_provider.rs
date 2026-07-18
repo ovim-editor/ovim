@@ -15,7 +15,8 @@ use std::time::Duration;
 
 use super::{
     AgentFuture, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
-    AgentProviderSession, AgentProviderStart, AgentToolResult, ProviderBinding,
+    AgentProviderFollowup, AgentProviderSession, AgentProviderStart, AgentToolResult,
+    ProviderBinding,
 };
 use crate::run_log::EventId;
 
@@ -391,6 +392,8 @@ impl AgentProviderAdapter for FakeProviderAdapter {
                     session_id: format!("fake:{}", request.handle.agent_id),
                 },
                 active,
+                maximum_active,
+                counted_active: true,
                 delivered_messages: BTreeSet::new(),
             }) as Box<dyn AgentProviderSession>)
         })
@@ -406,12 +409,16 @@ struct FakeProviderSessionAdapter {
     pending: Vec<AgentProviderEvent>,
     binding: ProviderBinding,
     active: Arc<AtomicUsize>,
+    maximum_active: Arc<AtomicUsize>,
+    counted_active: bool,
     delivered_messages: BTreeSet<EventId>,
 }
 
 impl Drop for FakeProviderSessionAdapter {
     fn drop(&mut self) {
-        self.active.fetch_sub(1, Ordering::AcqRel);
+        if self.counted_active {
+            self.active.fetch_sub(1, Ordering::AcqRel);
+        }
     }
 }
 
@@ -424,7 +431,12 @@ impl AgentProviderSession for FakeProviderSessionAdapter {
         Box::pin(async move {
             loop {
                 if !self.pending.is_empty() {
-                    return Ok(self.pending.remove(0));
+                    let event = self.pending.remove(0);
+                    if matches!(event, AgentProviderEvent::Handoff { .. }) && self.counted_active {
+                        self.active.fetch_sub(1, Ordering::AcqRel);
+                        self.counted_active = false;
+                    }
+                    return Ok(event);
                 }
                 if self.next_tick > self.maximum_tick {
                     return Err(AgentProviderError::new(
@@ -467,6 +479,34 @@ impl AgentProviderSession for FakeProviderSessionAdapter {
     ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
         self.delivered_messages.insert(message_event_id.clone());
         Box::pin(async { Ok(()) })
+    }
+
+    fn can_followup(&self) -> bool {
+        self.next_tick > self.maximum_tick && self.pending.is_empty()
+    }
+
+    fn start_followup(
+        &mut self,
+        _followup: &AgentProviderFollowup,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        let outcome = if !self.can_followup() {
+            Err(AgentProviderError::new(
+                "fake session is not at its terminal boundary",
+            ))
+        } else {
+            match FakeProvider::from_embedded(self.provider.scenario().name.as_str()) {
+                Ok(provider) => {
+                    self.provider = provider;
+                    self.next_tick = 0;
+                    let current = self.active.fetch_add(1, Ordering::AcqRel) + 1;
+                    self.maximum_active.fetch_max(current, Ordering::AcqRel);
+                    self.counted_active = true;
+                    Ok(())
+                }
+                Err(error) => Err(AgentProviderError::new(error.to_string())),
+            }
+        };
+        Box::pin(async move { outcome })
     }
 }
 

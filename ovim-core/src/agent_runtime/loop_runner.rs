@@ -154,6 +154,14 @@ pub struct AgentProviderStart {
     pub scoped_tools: Vec<ScopedTool>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentProviderFollowup {
+    pub handle: DispatchHandle,
+    pub followup_turn_id: TurnId,
+    pub turn_generation: u32,
+    pub objective: String,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum AgentProviderEvent {
     CallStarted {
@@ -218,6 +226,23 @@ pub trait AgentProviderSession: Send {
         Box::pin(async {
             Err(AgentProviderError::new(
                 "provider session does not support parent messages",
+            ))
+        })
+    }
+
+    /// True only while the adapter can prove this idle session retained a
+    /// bounded, non-ambiguous context suitable for a new child turn.
+    fn can_followup(&self) -> bool {
+        false
+    }
+
+    fn start_followup(
+        &mut self,
+        _followup: &AgentProviderFollowup,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        Box::pin(async {
+            Err(AgentProviderError::new(
+                "provider session cannot safely retain follow-up context",
             ))
         })
     }
@@ -558,18 +583,33 @@ pub struct AgentLoopUsage {
     pub tool_calls: usize,
 }
 
-#[derive(Clone, Debug)]
 pub struct AgentLoopResult {
     pub binding: ProviderBinding,
     pub handoff: ValidatedHandoff,
     pub usage: AgentLoopUsage,
     pub workspace_warnings: Vec<AgentWorkspaceWarning>,
+    pub retained_session: Option<Box<dyn AgentProviderSession>>,
 }
 
 pub struct AgentLoopRunner;
 
 impl AgentLoopRunner {
     pub async fn run(input: AgentLoopInput) -> Result<AgentLoopResult, AgentLoopError> {
+        Self::run_inner(input, None).await
+    }
+
+    pub async fn run_followup(
+        input: AgentLoopInput,
+        session: Box<dyn AgentProviderSession>,
+        followup: AgentProviderFollowup,
+    ) -> Result<AgentLoopResult, AgentLoopError> {
+        Self::run_inner(input, Some((session, followup))).await
+    }
+
+    async fn run_inner(
+        input: AgentLoopInput,
+        retained: Option<(Box<dyn AgentProviderSession>, AgentProviderFollowup)>,
+    ) -> Result<AgentLoopResult, AgentLoopError> {
         validate_input(&input)?;
         let deadline = Instant::now() + input.budget.timeout;
         let request = AgentProviderStart {
@@ -579,14 +619,35 @@ impl AgentLoopRunner {
             workspace: input.workspace.clone(),
             scoped_tools: input.tool_view.tools(),
         };
-        let mut session = tokio::select! {
-            reason = input.cancellation.cancelled() => {
-                return Err(AgentLoopError::CancelledBeforeBinding(reason));
+        let mut session = match retained {
+            Some((mut session, followup)) => {
+                if !session.can_followup() {
+                    return Err(AgentLoopError::ProviderStart(AgentProviderError::new(
+                        "retained provider session no longer proves follow-up safety",
+                    )));
+                }
+                tokio::select! {
+                    reason = input.cancellation.cancelled() => {
+                        return Err(AgentLoopError::CancelledBeforeBinding(reason));
+                    }
+                    _ = tokio::time::sleep_until(deadline) => {
+                        return Err(AgentLoopError::TimedOutBeforeBinding);
+                    }
+                    result = session.start_followup(&followup) => {
+                        result.map_err(AgentLoopError::ProviderStart)?;
+                    }
+                }
+                session
             }
-            _ = tokio::time::sleep_until(deadline) => {
-                return Err(AgentLoopError::TimedOutBeforeBinding);
-            }
-            result = input.provider.start(request) => result.map_err(AgentLoopError::ProviderStart)?,
+            None => tokio::select! {
+                reason = input.cancellation.cancelled() => {
+                    return Err(AgentLoopError::CancelledBeforeBinding(reason));
+                }
+                _ = tokio::time::sleep_until(deadline) => {
+                    return Err(AgentLoopError::TimedOutBeforeBinding);
+                }
+                result = input.provider.start(request) => result.map_err(AgentLoopError::ProviderStart)?,
+            },
         };
         let binding = session.binding().clone();
         validate_binding(&binding, &input.route)?;
@@ -793,11 +854,15 @@ impl AgentLoopRunner {
                 }
             }
         };
+        let retained_session = (handoff.status() == HandoffStatus::Completed
+            && session.can_followup())
+        .then_some(session);
         Ok(AgentLoopResult {
             binding,
             handoff,
             usage,
             workspace_warnings: input.workspace.warnings.clone(),
+            retained_session,
         })
     }
 }

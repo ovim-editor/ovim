@@ -6,10 +6,10 @@ use super::{
     AgentLoopEventSink, AgentLoopInput, AgentLoopResult, AgentLoopRunner, AgentLoopRuntimeHooks,
     AgentMailbox, AgentMessageClaimOutcome, AgentMessageError, AgentMessageQueue,
     AgentMessageRecord, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
-    AgentProviderSession, AgentProviderStart, AgentToolExecutor, AgentToolResult,
-    AgentWorkspaceDescriptor, DispatchError, DispatchHandle, DispatchRequest, DispatchState,
-    HandoffStatus, HandoffValidator, MailboxError, RootAgentBudget, ScopedToolView,
-    SubagentModelCatalog,
+    AgentProviderFollowup, AgentProviderSession, AgentProviderStart, AgentToolExecutor,
+    AgentToolResult, AgentWorkspaceDescriptor, DispatchError, DispatchHandle, DispatchRequest,
+    DispatchState, FollowupAgentHandle, FollowupAgentRequest, HandoffStatus, HandoffValidator,
+    MailboxError, RootAgentBudget, ScopedToolView, SubagentModelCatalog,
 };
 use crate::run_log::{
     AgentId, EventEnvelope, EventId, EventKind, MailboxNotificationKind, RunEventSink, RunId,
@@ -95,6 +95,7 @@ struct SupervisorInner {
     root_budget: Arc<RootAgentBudget>,
     live: AsyncMutex<BTreeMap<AgentId, LiveAgentHandle>>,
     mailboxes: Mutex<HashMap<AgentId, AgentMailbox>>,
+    idle_sessions: Mutex<HashMap<AgentId, Box<dyn AgentProviderSession>>>,
     drain_lock: AsyncMutex<()>,
     changed: Notify,
 }
@@ -167,6 +168,7 @@ impl AgentSupervisor {
                 config,
                 live: AsyncMutex::new(BTreeMap::new()),
                 mailboxes: Mutex::new(HashMap::new()),
+                idle_sessions: Mutex::new(HashMap::new()),
                 drain_lock: AsyncMutex::new(()),
                 changed: Notify::new(),
             }),
@@ -311,6 +313,52 @@ impl AgentSupervisor {
         Ok(queued)
     }
 
+    pub async fn followup_agent(
+        &self,
+        mut request: FollowupAgentRequest,
+    ) -> Result<FollowupAgentHandle, AgentSupervisorError> {
+        if self.inner.live.lock().await.contains_key(&request.agent_id) {
+            return Err(AgentSupervisorError::FollowupTargetBusy(request.agent_id));
+        }
+        let record = self
+            .inner
+            .scheduler
+            .lock()
+            .map_err(|_| poisoned())?
+            .dispatch_record(&request.agent_id)
+            .ok_or_else(|| AgentSupervisorError::UnknownAgent(request.agent_id.clone()))?;
+        let dependencies = self
+            .inner
+            .factory
+            .build(&record)
+            .map_err(AgentSupervisorError::InputFactory)?;
+        let inherited_budget = dependencies
+            .budget
+            .unwrap_or_else(|| self.inner.config.child_budget.clone());
+        if request.budget.timeout > inherited_budget.timeout
+            || request.budget.max_provider_events > inherited_budget.max_provider_events
+            || request.budget.max_tool_calls > inherited_budget.max_tool_calls
+        {
+            return Err(AgentSupervisorError::FollowupBudgetWidening);
+        }
+        let retained = self
+            .inner
+            .idle_sessions
+            .lock()
+            .map_err(|_| poisoned())?
+            .get(&request.agent_id)
+            .is_some_and(|session| session.can_followup());
+        request.retained_session_requested = retained;
+        let followup = self
+            .inner
+            .scheduler
+            .lock()
+            .map_err(|_| poisoned())?
+            .begin_followup(request)?;
+        self.drain_ready().await?;
+        Ok(followup)
+    }
+
     pub async fn interrupt(
         &self,
         agent_id: &AgentId,
@@ -429,6 +477,9 @@ impl AgentSupervisor {
     async fn run_one(&self, record: AgentDispatchRecord, cancellation: AgentCancellationToken) {
         let result = self.run_one_inner(&record, cancellation).await;
         if let Err(error) = result {
+            if let Ok(mut sessions) = self.inner.idle_sessions.lock() {
+                sessions.remove(&record.handle.agent_id);
+            }
             let status = match &error {
                 AgentSupervisorError::Loop(AgentLoopError::CancelledBeforeBinding(_)) => {
                     HandoffStatus::Interrupted
@@ -471,7 +522,7 @@ impl AgentSupervisor {
         record: &AgentDispatchRecord,
         cancellation: AgentCancellationToken,
     ) -> Result<(), AgentSupervisorError> {
-        let dependencies = self
+        let mut dependencies = self
             .inner
             .factory
             .build(record)
@@ -489,11 +540,33 @@ impl AgentSupervisor {
             inner: dependencies.provider,
             queue: message_queue.clone(),
         });
-        let AgentLoopResult {
-            handoff,
-            workspace_warnings,
-            ..
-        } = AgentLoopRunner::run(AgentLoopInput {
+        let retained_session = if record.followup.is_some() {
+            self.inner
+                .idle_sessions
+                .lock()
+                .map_err(|_| poisoned())?
+                .remove(&record.handle.agent_id)
+        } else {
+            None
+        };
+        if let Some(followup) = &record.followup {
+            dependencies.envelope.objective = followup.objective.clone();
+            dependencies.envelope.parent_brief = Some(format!(
+                "Previous validated handoff: {}",
+                followup.prior_handoff_summary
+            ));
+            if let Some(identity) = dependencies.envelope.identity.as_mut() {
+                identity.causing_turn_id = followup.parent_turn_id.clone();
+                identity.causing_event_id = followup.parent_event_id.clone();
+            }
+        }
+        let budget = record
+            .followup
+            .as_ref()
+            .map(|followup| followup.budget.clone())
+            .or(dependencies.budget)
+            .unwrap_or_else(|| self.inner.config.child_budget.clone());
+        let input = AgentLoopInput {
             handle: record.handle.clone(),
             envelope: dependencies.envelope,
             route: record.resolved_route.clone(),
@@ -505,13 +578,30 @@ impl AgentSupervisor {
             approval_client: dependencies.approval_client,
             workspace: dependencies.workspace,
             cancellation,
-            budget: dependencies
-                .budget
-                .unwrap_or_else(|| self.inner.config.child_budget.clone()),
+            budget,
             root_budget: self.inner.root_budget.clone(),
             handoff_validator: HandoffValidator::default(),
-        })
-        .await?;
+        };
+        let AgentLoopResult {
+            handoff,
+            workspace_warnings,
+            retained_session: next_idle_session,
+            ..
+        } = if let (Some(session), Some(followup)) = (retained_session, record.followup.as_ref()) {
+            AgentLoopRunner::run_followup(
+                input,
+                session,
+                AgentProviderFollowup {
+                    handle: record.handle.clone(),
+                    followup_turn_id: followup.followup_turn_id.clone(),
+                    turn_generation: followup.turn_generation,
+                    objective: followup.objective.clone(),
+                },
+            )
+            .await?
+        } else {
+            AgentLoopRunner::run(input).await?
+        };
         for message in message_queue.unsettled()? {
             message_queue.reject_queued(
                 &message.message_event_id,
@@ -524,6 +614,13 @@ impl AgentSupervisor {
             .lock()
             .map_err(|_| poisoned())?
             .finish_with_handoff_and_warnings(&record.handle, handoff, workspace_warnings)?;
+        if let Some(session) = next_idle_session {
+            self.inner
+                .idle_sessions
+                .lock()
+                .map_err(|_| poisoned())?
+                .insert(record.handle.agent_id.clone(), session);
+        }
         self.notify_terminal(record, &terminal)?;
         Ok(())
     }
@@ -823,6 +920,17 @@ impl AgentProviderSession for MessageDeliveringSession {
     ) -> super::AgentFuture<'_, Result<(), AgentProviderError>> {
         self.inner.deliver_message(message_event_id, content)
     }
+
+    fn can_followup(&self) -> bool {
+        self.inner.can_followup()
+    }
+
+    fn start_followup(
+        &mut self,
+        followup: &super::AgentProviderFollowup,
+    ) -> super::AgentFuture<'_, Result<(), AgentProviderError>> {
+        self.inner.start_followup(followup)
+    }
 }
 
 fn validate_config(config: &AgentSupervisorConfig) -> Result<(), AgentSupervisorError> {
@@ -907,6 +1015,8 @@ pub enum AgentSupervisorError {
         agent_id: AgentId,
         state: DispatchState,
     },
+    FollowupTargetBusy(AgentId),
+    FollowupBudgetWidening,
     InputFactory(String),
     Dispatch(DispatchError),
     Loop(AgentLoopError),
@@ -971,6 +1081,14 @@ impl fmt::Display for AgentSupervisorError {
                 formatter,
                 "agent {agent_id} cannot receive a message while in state {state:?}"
             ),
+            Self::FollowupTargetBusy(agent_id) => {
+                write!(
+                    formatter,
+                    "agent {agent_id} has not reached an idle boundary"
+                )
+            }
+            Self::FollowupBudgetWidening => formatter
+                .write_str("follow-up budget cannot exceed the child turn's inherited budget"),
             Self::InputFactory(detail) => {
                 write!(formatter, "could not build child loop input: {detail}")
             }
@@ -1231,6 +1349,74 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn followup_reuses_proven_idle_session_on_same_agent_with_fresh_budget() {
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(2)));
+        let (supervisor, run_id, root) =
+            supervisor_with(sink.clone(), factory, AgentSupervisorConfig::default());
+        let child = supervisor
+            .dispatch(request("follow up once"))
+            .await
+            .unwrap();
+        assert!(supervisor
+            .wait_for_idle(Duration::from_secs(1))
+            .await
+            .unwrap());
+        assert_eq!(
+            supervisor.state(&child.agent_id).unwrap(),
+            Some(DispatchState::Completed)
+        );
+        let (turn_id, caused_by_event) = parent_cause(&*sink, &run_id, &root);
+        let followup = supervisor
+            .followup_agent(FollowupAgentRequest {
+                agent_id: child.agent_id.clone(),
+                parent_agent_id: root.clone(),
+                causing_turn_id: turn_id,
+                caused_by_event,
+                objective: "Now inspect the restart edge.".into(),
+                capabilities: Some(BTreeSet::from([super::super::AgentCapability::Read])),
+                budget: AgentLoopBudget {
+                    timeout: Duration::from_secs(30),
+                    max_provider_events: 32,
+                    max_tool_calls: 8,
+                },
+                retained_session_requested: false,
+            })
+            .await
+            .unwrap();
+        assert_eq!(followup.handle.agent_id, child.agent_id);
+        assert_eq!(followup.turn_generation, 1);
+        assert!(supervisor
+            .wait_for_idle(Duration::from_secs(1))
+            .await
+            .unwrap());
+        let record = supervisor
+            .dispatches()
+            .unwrap()
+            .into_iter()
+            .find(|record| record.handle.agent_id == child.agent_id)
+            .unwrap();
+        assert_eq!(record.state, DispatchState::Completed);
+        assert_eq!(record.turn_generation, 1);
+        assert_eq!(record.handle.workspace, child.workspace);
+        assert_eq!(record.followup.unwrap().budget.max_tool_calls, 8);
+        let followup_event = sink
+            .events(&run_id)
+            .unwrap()
+            .into_iter()
+            .find_map(|event| match event.kind {
+                EventKind::AgentFollowup(followup) => Some(followup),
+                _ => None,
+            })
+            .unwrap();
+        assert!(followup_event.retained_session_requested);
+        assert_eq!(
+            supervisor.mailbox(root).unwrap().pending().unwrap().len(),
+            2
+        );
     }
 
     #[tokio::test]
