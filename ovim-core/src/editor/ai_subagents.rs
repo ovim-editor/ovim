@@ -21,8 +21,8 @@ use crate::ai::tools::ToolDefinition;
 use crate::ai::tools::ToolResult;
 use crate::ai::{AiConfig, AiSubagentConfig};
 use crate::run_log::{
-    AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, LocalRunStore, ManifestId,
-    RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
+    AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, EventKind, LocalRunStore,
+    ManifestId, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -120,6 +120,14 @@ impl AiSubagentService {
         .map_err(|error| error.to_string())
     }
 
+    pub fn parent_capabilities(&self) -> BTreeSet<AgentCapability> {
+        if self.startup_policy.enabled {
+            BTreeSet::from([AgentCapability::DispatchAgents])
+        } else {
+            BTreeSet::new()
+        }
+    }
+
     /// Running supervisors keep the exact startup policy/profile snapshot.
     /// A mutable Lua/config reload must rebuild AiState rather than silently
     /// changing routing or authority beneath queued children.
@@ -158,6 +166,23 @@ impl AiSubagentService {
                 return Err("subagent run identity changed after initialization".into());
             }
             return Ok(run.clone());
+        }
+
+        let has_prior_child_history = store
+            .events(&run_id)
+            .map_err(|error| error.to_string())?
+            .iter()
+            .any(|event| {
+                matches!(
+                    &event.kind,
+                    EventKind::AgentLifecycle(lifecycle) if lifecycle.dispatch_spec.is_some()
+                )
+            });
+        if has_prior_child_history {
+            return Err(
+                "this resumed run contains delegated-agent history; the read-only preview preserves it but conservatively refuses to reconstruct child provider sessions after restart"
+                    .into(),
+            );
         }
 
         store
@@ -231,7 +256,11 @@ impl Editor {
     /// tools. Merely registering a profile or opening a chat never exposes
     /// them; the durable root binding must be active and exact.
     pub(crate) fn ai_subagent_parent_tools_visible(&self) -> bool {
-        self.active_subagent_root().is_ok()
+        self.ai_state
+            .subagents
+            .parent_capabilities()
+            .contains(&AgentCapability::DispatchAgents)
+            && self.active_subagent_root().is_ok()
     }
 
     pub(crate) fn ai_subagent_parent_tools(&self) -> Vec<ToolDefinition> {
@@ -343,6 +372,174 @@ impl Editor {
             }
             _ => unreachable!(),
         }
+    }
+
+    pub(crate) fn begin_pending_ai_subagent_control(
+        &mut self,
+        call: ToolCallInfo,
+        continuation: super::ai_chat_state::SubagentControlContinuation,
+    ) -> Result<
+        (),
+        (
+            ToolResult,
+            super::ai_chat_state::SubagentControlContinuation,
+        ),
+    > {
+        if self.ai_state.chat.is_none() {
+            return Err((
+                ToolResult::Error("no active chat session".into()),
+                continuation,
+            ));
+        }
+        let prepared = match self.prepare_ai_subagent_async_control(&call) {
+            Ok(prepared) => prepared,
+            Err(error) => return Err((ToolResult::Error(error), continuation)),
+        };
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let _ = sender.send(prepared.execute().await);
+        });
+        let chat = self
+            .ai_state
+            .chat
+            .as_mut()
+            .expect("active chat checked above");
+        chat.pending_subagent_control = Some(super::ai_chat_state::PendingSubagentControl {
+            tool_call: call,
+            continuation,
+            receiver,
+            task,
+        });
+        chat.waiting = true;
+        self.set_lsp_status("Waiting for delegated-agent activity".into());
+        Ok(())
+    }
+
+    pub(crate) fn poll_pending_ai_subagent_control(&mut self) -> bool {
+        let user_steering = self.ai_state.chat.as_ref().is_some_and(|chat| {
+            !chat.queued_inputs.is_empty()
+                && chat
+                    .pending_subagent_control
+                    .as_ref()
+                    .is_some_and(|pending| pending.tool_call.name == WAIT_AGENT_TOOL)
+        });
+        let received = if user_steering {
+            Some(ToolResult::Success(
+                json!({ "outcome": "user_steering", "updates": [] }).to_string(),
+            ))
+        } else {
+            let Some(pending) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_subagent_control.as_mut())
+            else {
+                return false;
+            };
+            match pending.receiver.try_recv() {
+                Ok(result) => Some(result),
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => Some(ToolResult::Error(
+                    "delegated-agent control stopped without returning a result".into(),
+                )),
+            }
+        };
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_subagent_control.take())
+            .expect("pending delegated-agent control exists");
+        if user_steering {
+            pending.task.abort();
+        }
+        let mut result = received.expect("completed control produced a result");
+        if pending.tool_call.name == WAIT_AGENT_TOOL
+            && !user_steering
+            && let ToolResult::Success(payload) = &result
+            && let Err(error) = self.consume_ai_subagent_updates(payload)
+        {
+            result = ToolResult::Error(error);
+        }
+        match pending.continuation {
+            super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                runtime_tool,
+                runtime_turn,
+                response,
+            } => {
+                self.finish_dynamic_tool(
+                    &runtime_turn,
+                    &runtime_tool,
+                    &pending.tool_call,
+                    response,
+                    result,
+                );
+                self.set_lsp_status(String::new());
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.waiting = true;
+                }
+                true
+            }
+            super::ai_chat_state::SubagentControlContinuation::Batch {
+                runtime_tool,
+                runtime_turn,
+                remaining_tool_calls,
+                model_name,
+            } => {
+                if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
+                    && let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result)
+                {
+                    self.ai_runtime_fail_turn(format!(
+                        "failed to record delegated-agent tool result: {error}"
+                    ));
+                    self.clear_streaming_state();
+                    return true;
+                }
+                self.record_tool_event_summary(&pending.tool_call, &result);
+                let result_content =
+                    self.format_tool_result_with_target(&pending.tool_call, &result);
+                if let Some(conversation) = self.conversation_mut() {
+                    conversation.append_tool_result(pending.tool_call.id, result_content);
+                }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.tool_call_count = chat.tool_call_count.saturating_add(1);
+                }
+                self.set_lsp_status(String::new());
+                self.execute_tool_call_batch(remaining_tool_calls, model_name)
+            }
+        }
+    }
+
+    fn consume_ai_subagent_updates(&self, payload: &str) -> Result<(), String> {
+        let value: serde_json::Value = serde_json::from_str(payload)
+            .map_err(|error| format!("invalid delegated-agent wait result: {error}"))?;
+        let Some(updates) = value.get("updates").and_then(serde_json::Value::as_array) else {
+            return Ok(());
+        };
+        if updates.is_empty() {
+            return Ok(());
+        }
+        let root = self.active_subagent_root()?;
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id,
+            root.root_agent_id.clone(),
+            root.repository_id,
+        )?;
+        let mailbox = run
+            .supervisor
+            .mailbox(root.root_agent_id)
+            .map_err(|error| error.to_string())?;
+        for update in updates {
+            let id = update
+                .get("notification_event_id")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(|| "delegated-agent update has no event identity".to_string())?;
+            mailbox
+                .consume(&EventId::parse(id).map_err(|error| error.to_string())?)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(())
     }
 
     fn active_subagent_root(&self) -> Result<ActiveSubagentRoot, String> {
@@ -524,6 +721,12 @@ impl Editor {
                 },
             })
             .map_err(|error| error.to_string())?;
+        let state = run
+            .supervisor
+            .state(&handle.agent_id)
+            .map_err(|error| error.to_string())?
+            .map(|state| format!("{state:?}").to_lowercase())
+            .unwrap_or_else(|| "created".into());
         Ok(json!({
             "task_name": args.task_name,
             "run_id": handle.run_id,
@@ -534,7 +737,7 @@ impl Editor {
             "profile": resolved.profile_name,
             "provider": resolved.provider,
             "reasoning_effort": resolved.reasoning_effort,
-            "state": "queued"
+            "state": state
         }))
     }
 
@@ -612,13 +815,6 @@ impl PreparedAsyncSubagentControl {
                             })
                         })
                         .collect::<Vec<_>>();
-                    for entry in &entries {
-                        if let Err(error) = mailbox.consume(&entry.notification_event_id) {
-                            return ToolResult::Error(format!(
-                                "received a child update but could not consume it durably: {error}"
-                            ));
-                        }
-                    }
                     Ok(json!({ "outcome": "updates", "updates": updates }))
                 }
                 Err(error) => Err(error.to_string()),
@@ -804,7 +1000,11 @@ impl std::error::Error for ManifestRegistryError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
+    use crate::ai::{AiProviderKind, PROFILE_LOCAL};
+    use crate::editor::ai_state::AiState;
     use crate::run_log::{BaseManifestId, ManifestConfidence, RepositoryBase};
+    use std::fs;
 
     fn manifest(repository_id: RepositoryId) -> BaseManifest {
         BaseManifest {
@@ -822,6 +1022,36 @@ mod tests {
             confidence: ManifestConfidence::Complete,
             issues: Vec::new(),
         }
+    }
+
+    fn enabled_editor() -> (tempfile::TempDir, tempfile::TempDir, Editor) {
+        let repository = tempfile::tempdir().unwrap();
+        git2::Repository::init(repository.path()).unwrap();
+        let file = repository.path().join("lib.rs");
+        fs::write(&file, "pub fn answer() -> u32 { 42 }\n").unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let layout = crate::run_log::RunStorageLayout::new(storage.path().join("runs"));
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        editor.ai_state = Box::new(AiState::with_run_storage_layout(layout).unwrap());
+        editor.ai_state.config.subagents.enabled = true;
+        let profile = editor
+            .ai_state
+            .config
+            .profiles
+            .get_mut(PROFILE_LOCAL)
+            .unwrap();
+        profile.provider = AiProviderKind::OpenAi;
+        profile.model = "test-model".into();
+        profile.reasoning_effort = Some("high".into());
+        editor.ai_state.subagents = Box::new(AiSubagentService::new(&editor.ai_state.config));
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        (repository, storage, editor)
+    }
+
+    fn attach_root_turn(editor: &mut Editor) {
+        let turn = editor.begin_ai_runtime_turn("inspect in parallel").unwrap();
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
     }
 
     #[test]
@@ -896,5 +1126,85 @@ mod tests {
         assert!(service
             .run(store, run_id, AgentId::new(), RepositoryId::new())
             .is_err());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn parent_tools_require_feature_dispatch_capability_and_active_durable_root() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        assert!(!editor.ai_subagent_parent_tools_visible());
+        assert!(editor.ai_subagent_parent_tools().is_empty());
+
+        attach_root_turn(&mut editor);
+        assert!(editor.ai_subagent_parent_tools_visible());
+        assert!(editor
+            .ai_state
+            .subagents
+            .parent_capabilities()
+            .contains(&AgentCapability::DispatchAgents));
+        let names = editor
+            .ai_subagent_parent_tools()
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            names,
+            BTreeSet::from([
+                SPAWN_AGENT_TOOL.into(),
+                LIST_AGENTS_TOOL.into(),
+                WAIT_AGENT_TOOL.into(),
+                INTERRUPT_AGENT_TOOL.into(),
+            ])
+        );
+
+        editor.ai_state.config.subagents.enabled = false;
+        assert!(!editor.ai_subagent_parent_tools_visible());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn invalid_model_effort_pair_allocates_no_child_or_manifest() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        attach_root_turn(&mut editor);
+        let call = ToolCallInfo {
+            id: "tool-invalid-route".into(),
+            name: SPAWN_AGENT_TOOL.into(),
+            arguments: json!({
+                "task_name": "inspect_store",
+                "objective": "Inspect the store",
+                "agent_kind": "explorer",
+                "model": crate::agent_runtime::catalog_model_id(PROFILE_LOCAL, "test-model"),
+                "reasoning_effort": "low",
+                "context_mode": "brief",
+                "expected_output": "analysis",
+                "relevant_paths": ["ovim-core/src"],
+                "done_when": ["Evidence is cited"],
+                "non_goals": ["Do not edit"],
+                "timeout_seconds": 60
+            }),
+        };
+        assert!(matches!(
+            editor.execute_ai_subagent_control_tool(&call),
+            ToolResult::Error(_)
+        ));
+        assert!(editor.ai_state.subagents.runs.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn wait_control_times_out_without_blocking_the_editor_task() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        attach_root_turn(&mut editor);
+        let call = ToolCallInfo {
+            id: "tool-wait".into(),
+            name: WAIT_AGENT_TOOL.into(),
+            arguments: json!({ "timeout_seconds": 1 }),
+        };
+        let prepared = editor.prepare_ai_subagent_async_control(&call).unwrap();
+        let result = prepared.execute().await;
+        let ToolResult::Success(payload) = result else {
+            panic!("wait should complete successfully")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&payload).unwrap()["outcome"],
+            "timed_out"
+        );
     }
 }

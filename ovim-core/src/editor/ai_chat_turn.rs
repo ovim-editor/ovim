@@ -92,6 +92,9 @@ impl Editor {
 
     /// Drain available streaming chunks. Returns true if state changed.
     pub fn poll_pending_ai_chat_job(&mut self) -> bool {
+        if self.poll_pending_ai_subagent_control() {
+            return true;
+        }
         if self.poll_pending_auto_mode_classification() {
             return true;
         }
@@ -273,6 +276,43 @@ impl Editor {
                         self.ai_runtime_fail_turn(message);
                         self.clear_streaming_state();
                         return true;
+                    }
+                    if matches!(
+                        call.name.as_str(),
+                        crate::ai::tools::subagents::WAIT_AGENT_TOOL
+                            | crate::ai::tools::subagents::INTERRUPT_AGENT_TOOL
+                    ) {
+                        let continuation =
+                            super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                                runtime_tool: tool.clone(),
+                                runtime_turn: turn.clone(),
+                                response,
+                            };
+                        match self.begin_pending_ai_subagent_control(call.clone(), continuation) {
+                            Ok(()) => {
+                                changed = true;
+                                continue;
+                            }
+                            Err((result, continuation)) => {
+                                let super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                                    runtime_tool,
+                                    runtime_turn,
+                                    response,
+                                } = continuation
+                                else {
+                                    unreachable!()
+                                };
+                                self.finish_dynamic_tool(
+                                    &runtime_turn,
+                                    &runtime_tool,
+                                    &call,
+                                    response,
+                                    result,
+                                );
+                                changed = true;
+                                continue;
+                            }
+                        }
                     }
                     if call.name == "explain_with_codebase" {
                         let continuation =

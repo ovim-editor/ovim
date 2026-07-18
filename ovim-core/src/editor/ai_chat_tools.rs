@@ -448,6 +448,9 @@ impl Editor {
         tc: &ToolCallInfo,
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
+        if self.is_ai_subagent_control_tool(&tc.name) {
+            return ToolDispatchOutcome::Completed(self.execute_ai_subagent_control_tool(tc));
+        }
         if tc.name != "bash" {
             if let Err(err) = self.active_chat_target_buffer_index_strict() {
                 return ToolDispatchOutcome::Completed(ToolResult::Error(err));
@@ -1030,6 +1033,31 @@ impl Editor {
                 None => None,
             };
 
+            let subagent_control_outcome = if matches!(
+                tc.name.as_str(),
+                crate::ai::tools::subagents::WAIT_AGENT_TOOL
+                    | crate::ai::tools::subagents::INTERRUPT_AGENT_TOOL
+            ) {
+                let continuation = super::ai_chat_state::SubagentControlContinuation::Batch {
+                    runtime_tool: runtime_tool.as_ref().map(|(_, tool)| tool.clone()),
+                    runtime_turn: runtime_tool.as_ref().map(|(turn, _)| turn.clone()),
+                    remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
+                    model_name: model_name.clone(),
+                };
+                match self.begin_pending_ai_subagent_control(tc.clone(), continuation) {
+                    Ok(()) => {
+                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                            chat.tool_call_count =
+                                chat.tool_call_count.saturating_add(executed_in_batch);
+                        }
+                        return true;
+                    }
+                    Err((result, _continuation)) => Some(ToolDispatchOutcome::Completed(result)),
+                }
+            } else {
+                None
+            };
+
             let shell_outcome = if tc.name == "bash" {
                 if let Some(request) = self.maybe_require_tool_policy_approval(
                     tc,
@@ -1145,7 +1173,9 @@ impl Editor {
                 return true;
             }
 
-            let outcome = if let Some(outcome) = shell_outcome {
+            let outcome = if let Some(outcome) = subagent_control_outcome {
+                outcome
+            } else if let Some(outcome) = shell_outcome {
                 outcome
             } else if tc.name == "explain_with_codebase" {
                 let continuation = CodeExplanationContinuation::Batch {

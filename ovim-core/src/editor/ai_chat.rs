@@ -130,6 +130,7 @@ impl Editor {
                 || chat.pending_auto_mode_classification.is_some()
                 || chat.pending_shell_execution.is_some()
                 || chat.pending_web_execution.is_some()
+                || chat.pending_subagent_control.is_some()
                 || chat.pending_code_explanation.is_some()
         });
 
@@ -142,6 +143,7 @@ impl Editor {
             pending_classification,
             pending_shell,
             pending_web,
+            pending_subagent,
             pending_explanation,
         ) = {
             let chat = self.ai_state.chat.as_mut().expect("pending chat exists");
@@ -151,6 +153,7 @@ impl Editor {
                 chat.pending_auto_mode_classification.take(),
                 chat.pending_shell_execution.take(),
                 chat.pending_web_execution.take(),
+                chat.pending_subagent_control.take(),
                 chat.pending_code_explanation.take(),
             )
         };
@@ -270,6 +273,51 @@ impl Editor {
             let mut unresolved = vec![pending.tool_call.clone()];
             unresolved.extend(pending.remaining_tool_calls);
             self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
+        }
+        if let Some(pending) = pending_subagent {
+            pending.task.abort();
+            match pending.continuation {
+                super::ai_chat_state::SubagentControlContinuation::Dynamic {
+                    runtime_tool,
+                    runtime_turn,
+                    response,
+                } => {
+                    if let Err(error) = self.ai_state.agent_runtime.fail_tool(
+                        &runtime_turn,
+                        &runtime_tool,
+                        "cancelled by user",
+                    ) {
+                        crate::log_warn!(
+                            "agent_runtime",
+                            "failed to cancel delegated-agent control: {error}"
+                        );
+                    }
+                    let _ = response.send(Err("cancelled by user".into()));
+                }
+                super::ai_chat_state::SubagentControlContinuation::Batch {
+                    runtime_tool,
+                    runtime_turn,
+                    remaining_tool_calls,
+                    ..
+                } => {
+                    if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
+                    {
+                        if let Err(error) =
+                            self.ai_state
+                                .agent_runtime
+                                .fail_tool(turn, tool, "cancelled by user")
+                        {
+                            crate::log_warn!(
+                                "agent_runtime",
+                                "failed to cancel delegated-agent control: {error}"
+                            );
+                        }
+                    }
+                    let mut unresolved = vec![pending.tool_call];
+                    unresolved.extend(remaining_tool_calls);
+                    self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
+                }
+            }
         }
         if let Some(pending) = pending_explanation {
             if let Some(chat) = self.ai_state.chat.as_mut() {

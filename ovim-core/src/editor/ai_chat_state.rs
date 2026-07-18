@@ -214,6 +214,28 @@ pub struct PendingWebExecution {
     pub task: tokio::task::JoinHandle<()>,
 }
 
+pub enum SubagentControlContinuation {
+    Dynamic {
+        runtime_tool: crate::agent_runtime::PendingToolRef,
+        runtime_turn: crate::agent_runtime::PendingTurnRef,
+        response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    },
+    Batch {
+        runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+        runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,
+        remaining_tool_calls: Vec<ToolCallInfo>,
+        model_name: String,
+    },
+}
+
+/// A mailbox wait or hierarchy interruption parked away from the editor loop.
+pub struct PendingSubagentControl {
+    pub tool_call: ToolCallInfo,
+    pub continuation: SubagentControlContinuation,
+    pub receiver: tokio::sync::oneshot::Receiver<crate::ai::tools::ToolResult>,
+    pub task: tokio::task::JoinHandle<()>,
+}
+
 pub enum CodeExplanationContinuation {
     Batch {
         runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
@@ -429,6 +451,7 @@ pub struct AiChatState {
     pub pending_auto_mode_classification: Option<PendingAutoModeClassification>,
     pub pending_shell_execution: Option<PendingShellExecution>,
     pub pending_web_execution: Option<PendingWebExecution>,
+    pub pending_subagent_control: Option<PendingSubagentControl>,
     /// Interactive code walkthrough currently blocking the invoking tool.
     pub pending_code_explanation: Option<PendingCodeExplanation>,
     /// First-chat-open prompt when session starts outside a git repo.
@@ -552,6 +575,7 @@ impl AiChatState {
             pending_auto_mode_classification: None,
             pending_shell_execution: None,
             pending_web_execution: None,
+            pending_subagent_control: None,
             pending_code_explanation: None,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),

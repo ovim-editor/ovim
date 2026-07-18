@@ -110,12 +110,6 @@ impl Editor {
                 );
             }
 
-            if self.ai_subagent_parent_tools_visible() {
-                prompt.push_str(
-                    "- Delegate bounded independent research, review, or verification when it can run in parallel. Choose an explicit model and effort, avoid duplicate or tiny sequential tasks, and continue the local critical path while children run.\n\n",
-                );
-            }
-
             if !self.active_chat_target_has_file_path() {
                 prompt.push_str(
                     "- No file is currently open. Project tools such as list_files and search_project still work when a project boundary is available.\n\
@@ -228,6 +222,15 @@ impl Editor {
             (Some(sp), None) => Some(sp),
             (None, Some(contract)) => Some(contract.to_string()),
             (None, None) => None,
+        };
+        let system_prompt = if self.ai_subagent_parent_tools_visible() {
+            let guidance = "## Delegation\n\nDelegate bounded independent research, review, or verification when it can run in parallel. Every child request must choose an explicit advertised model and reasoning effort. Avoid duplicate, tiny, or sequential tasks, and continue the local critical path while children run.";
+            Some(match system_prompt {
+                Some(prompt) => format!("{prompt}\n\n{guidance}"),
+                None => guidance.into(),
+            })
+        } else {
+            system_prompt
         };
         let stable_system_prompt = system_prompt.clone();
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
@@ -358,6 +361,9 @@ impl Editor {
                 pending.task.abort();
             }
             if let Some(pending) = chat.pending_web_execution.take() {
+                pending.task.abort();
+            }
+            if let Some(pending) = chat.pending_subagent_control.take() {
                 pending.task.abort();
             }
             chat.streaming_content = Some(String::new());

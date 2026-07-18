@@ -323,6 +323,10 @@ impl Editor {
             .tool_registry
             .get(&call.name)
             .map(|tool| normalize_side_effect(tool.side_effect))
+            .or_else(|| {
+                crate::ai::tools::subagents::is_parent_control_tool(&call.name)
+                    .then_some(ToolSideEffect::Read)
+            })
             .unwrap_or(ToolSideEffect::Unknown);
         self.ai_state.agent_runtime.record_tool_intent(
             turn,
