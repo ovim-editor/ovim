@@ -5,9 +5,10 @@
 //! worktree or editor state after construction.
 
 use super::{
-    AgentFuture, AgentLoopDependencies, AgentLoopInputFactory, AgentProviderAdapter, AgentToolCall,
-    AgentToolError, AgentToolExecutor, AgentToolResult, AgentWorkspaceDescriptor,
-    DelegationEnvelope, DenyAllAgentApprovals, ScopedTool, ScopedToolView, WorkspaceStrategy,
+    AgentCapability, AgentFuture, AgentLoopDependencies, AgentLoopInputFactory,
+    AgentProviderAdapter, AgentToolCall, AgentToolError, AgentToolExecutor, AgentToolResult,
+    AgentWorkspaceDescriptor, DelegationEnvelope, DenyAllAgentApprovals, ScopedTool,
+    ScopedToolView, WorkspaceStrategy,
 };
 use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::tools::StrictJsonSchema;
@@ -940,6 +941,7 @@ impl SnapshotToolExecutor {
                     "required": ["path"]
                 })),
                 side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
                 requires_approval: false,
             },
             ScopedTool {
@@ -955,6 +957,7 @@ impl SnapshotToolExecutor {
                     }
                 })),
                 side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
                 requires_approval: false,
             },
             ScopedTool {
@@ -971,6 +974,7 @@ impl SnapshotToolExecutor {
                     "required": ["query"]
                 })),
                 side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
                 requires_approval: false,
             },
             ScopedTool {
@@ -985,6 +989,7 @@ impl SnapshotToolExecutor {
                     "required": ["entry_id"]
                 })),
                 side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
                 requires_approval: false,
             },
         ])
@@ -1007,6 +1012,7 @@ impl SnapshotToolExecutor {
                     "required": ["query"]
                 })),
                 side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
                 requires_approval: false,
             });
         }
@@ -1023,6 +1029,7 @@ impl SnapshotToolExecutor {
                     }
                 })),
                 side_effect: ToolSideEffect::Read,
+                required_capability: AgentCapability::Read,
                 requires_approval: false,
             });
         }

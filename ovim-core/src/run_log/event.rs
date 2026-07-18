@@ -124,6 +124,8 @@ pub enum EventKind {
     AgentLifecycle(AgentLifecycleEvent),
     AgentProvider(AgentProviderEvent),
     AgentHandoff(AgentHandoffEvent),
+    AgentApprovalRequested(AgentApprovalRequestedEvent),
+    AgentApprovalResolved(AgentApprovalResolvedEvent),
     MailboxNotification(MailboxNotificationEvent),
     MailboxConsumed(MailboxConsumedEvent),
     TurnLifecycle(TurnLifecycleEvent),
@@ -160,6 +162,12 @@ impl Serialize for EventKind {
             Self::AgentLifecycle(value) => ("agent_lifecycle", serde_json::to_value(value)),
             Self::AgentProvider(value) => ("agent_provider", serde_json::to_value(value)),
             Self::AgentHandoff(value) => ("agent_handoff", serde_json::to_value(value)),
+            Self::AgentApprovalRequested(value) => {
+                ("agent_approval_requested", serde_json::to_value(value))
+            }
+            Self::AgentApprovalResolved(value) => {
+                ("agent_approval_resolved", serde_json::to_value(value))
+            }
             Self::MailboxNotification(value) => {
                 ("mailbox_notification", serde_json::to_value(value))
             }
@@ -204,6 +212,8 @@ impl<'de> Deserialize<'de> for EventKind {
             "agent_lifecycle" => decode(raw.data).map(Self::AgentLifecycle),
             "agent_provider" => decode(raw.data).map(Self::AgentProvider),
             "agent_handoff" => decode(raw.data).map(Self::AgentHandoff),
+            "agent_approval_requested" => decode(raw.data).map(Self::AgentApprovalRequested),
+            "agent_approval_resolved" => decode(raw.data).map(Self::AgentApprovalResolved),
             "mailbox_notification" => decode(raw.data).map(Self::MailboxNotification),
             "mailbox_consumed" => decode(raw.data).map(Self::MailboxConsumed),
             "turn_lifecycle" => decode(raw.data).map(Self::TurnLifecycle),
@@ -479,6 +489,76 @@ pub struct AgentHandoffEvent {
     pub handoff: ValidatedHandoff,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_warnings: Vec<AgentWorkspaceWarning>,
+}
+
+pub const AGENT_APPROVAL_EVENT_VERSION: u32 = 1;
+
+/// Complete, attributed user-attention request for one child tool operation.
+///
+/// Tool arguments are deliberately absent: the normalized effect and durable
+/// tool intent are sufficient for approval routing without copying possibly
+/// sensitive payloads into a second event.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentApprovalRequestedEvent {
+    pub version: u32,
+    pub task_name: String,
+    /// Root-to-parent chain. The requesting child remains in the envelope's
+    /// `agent_id`, so it cannot be confused with one of its ancestors.
+    pub ancestry: Vec<AgentId>,
+    pub role: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub tool_name: String,
+    pub normalized_effect: ToolSideEffect,
+    pub required_capability: AgentCapabilitySnapshot,
+    pub effective_capabilities: Vec<AgentCapabilitySnapshot>,
+    pub workspace: AgentApprovalWorkspaceSnapshot,
+    pub reason: String,
+    /// RFC 3339 UTC timestamp. Event sequence remains the ordering authority.
+    pub created_at: String,
+    /// RFC 3339 UTC timestamp after which approval must fail closed.
+    pub deadline_at: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentApprovalWorkspaceSnapshot {
+    pub workspace_id: WorkspaceId,
+    pub strategy: AgentWorkspaceStrategySnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub root: Option<String>,
+    pub read_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentApprovalResolvedEvent {
+    pub version: u32,
+    pub request_event_id: EventId,
+    pub decision: AgentApprovalDecisionSnapshot,
+    pub source: AgentApprovalResolutionSourceSnapshot,
+    pub decided_by: String,
+    pub reason: String,
+    /// RFC 3339 UTC timestamp. Event sequence remains the ordering authority.
+    pub resolved_at: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentApprovalDecisionSnapshot {
+    Allowed,
+    Denied,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentApprovalResolutionSourceSnapshot {
+    User,
+    Policy,
+    Timeout,
+    Cancellation,
+    Restart,
 }
 
 pub const MAILBOX_EVENT_VERSION: u32 = 1;

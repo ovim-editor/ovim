@@ -1,5 +1,6 @@
 //! Transient orchestration state projected onto the append-only run log.
 
+mod approval;
 mod dispatch;
 pub mod fake_provider;
 mod handoff;
@@ -11,6 +12,7 @@ mod service;
 mod supervisor;
 mod workspace;
 
+pub use approval::*;
 pub use dispatch::*;
 pub use handoff::*;
 pub use loop_runner::*;

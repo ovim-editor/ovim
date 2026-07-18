@@ -6,9 +6,9 @@
 //! lifecycle hooks, budgets, and cancellation.
 
 use super::{
-    AgentWorkspaceWarning, DispatchHandle, DispatchState, HandoffConfidence, HandoffStatus,
-    HandoffValidationError, HandoffValidator, ResolvedModelRoute, StructuredHandoffV1,
-    ValidatedHandoff, WorkspaceAssignment,
+    AgentCapability, AgentWorkspaceWarning, DispatchHandle, DispatchState, HandoffConfidence,
+    HandoffStatus, HandoffValidationError, HandoffValidator, ResolvedModelRoute,
+    StructuredHandoffV1, ValidatedHandoff, WorkspaceAssignment,
 };
 use crate::ai::tools::StrictJsonSchema;
 use crate::run_log::{
@@ -241,6 +241,9 @@ pub struct ScopedTool {
     pub description: String,
     pub input_schema: StrictJsonSchema,
     pub side_effect: ToolSideEffect,
+    /// Capability already admitted by the scoped tool view. The approval
+    /// broker rechecks it against its independently owned policy ceiling.
+    pub required_capability: AgentCapability,
     pub requires_approval: bool,
 }
 
@@ -343,9 +346,16 @@ impl std::error::Error for AgentToolError {}
 #[derive(Clone, Debug, PartialEq)]
 pub struct AgentApprovalRequest {
     pub handle: DispatchHandle,
+    pub operation_id: OperationId,
+    pub tool_intent_event_id: EventId,
+    pub provider_call_id: Option<String>,
+    pub turn_id: Option<TurnId>,
     pub tool_name: String,
-    pub arguments: Value,
+    pub normalized_effect: ToolSideEffect,
+    pub required_capability: AgentCapability,
     pub workspace: AgentWorkspaceDescriptor,
+    pub reason: String,
+    pub deadline: Instant,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -789,13 +799,13 @@ async fn execute_tool_request(
     let side_effect = descriptor
         .as_ref()
         .map_or(ToolSideEffect::Unknown, |tool| tool.side_effect.clone());
-    record_tool_intent(
+    let intent_event = record_tool_intent(
         input,
         operation_id.clone(),
         provider_call_id.clone(),
         &tool_name,
         arguments.clone(),
-        side_effect,
+        side_effect.clone(),
     )
     .await?;
     input
@@ -825,9 +835,20 @@ async fn execute_tool_request(
                     deadline,
                     input.approval_client.request(AgentApprovalRequest {
                         handle: input.handle.clone(),
+                        operation_id: operation_id.clone(),
+                        tool_intent_event_id: intent_event.event_id,
+                        provider_call_id: provider_call_id.clone(),
+                        turn_id: input
+                            .envelope
+                            .identity
+                            .as_ref()
+                            .map(|identity| identity.causing_turn_id.clone()),
                         tool_name: tool_name.clone(),
-                        arguments: arguments.clone(),
+                        normalized_effect: side_effect,
+                        required_capability: descriptor.required_capability.clone(),
                         workspace: input.workspace.clone(),
+                        reason: "scoped tool policy requires attributed user approval".into(),
+                        deadline,
                     }),
                 )
                 .await
@@ -1364,6 +1385,7 @@ mod tests {
             }))
             .unwrap(),
             side_effect: ToolSideEffect::Read,
+            required_capability: AgentCapability::Read,
             requires_approval: false,
         }])
         .unwrap();

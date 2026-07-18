@@ -627,6 +627,7 @@ fn submit_handoff_tool() -> ScopedTool {
         description: "Complete this child exactly once with a structured, bounded handoff to the parent. This tool must be the only call in its provider round.".into(),
         input_schema: submit_handoff_schema(),
         side_effect: ToolSideEffect::Read,
+        required_capability: crate::agent_runtime::AgentCapability::Read,
         requires_approval: false,
     }
 }
@@ -946,6 +947,7 @@ mod tests {
             }))
             .unwrap(),
             side_effect: ToolSideEffect::Read,
+            required_capability: crate::agent_runtime::AgentCapability::Read,
             requires_approval: false,
         }
     }

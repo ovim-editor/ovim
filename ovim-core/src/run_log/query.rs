@@ -305,6 +305,8 @@ fn event_kind_label(kind: &EventKind) -> String {
             format!("agent.provider.{:?}", event.state).to_lowercase()
         }
         EventKind::AgentHandoff(_) => "agent.handoff".into(),
+        EventKind::AgentApprovalRequested(_) => "agent.approval.requested".into(),
+        EventKind::AgentApprovalResolved(_) => "agent.approval.resolved".into(),
         EventKind::MailboxNotification(_) => "mailbox.notification".into(),
         EventKind::MailboxConsumed(_) => "mailbox.consumed".into(),
         EventKind::TurnLifecycle(event) => format!("turn.{}", turn_state_label(&event.state)),
