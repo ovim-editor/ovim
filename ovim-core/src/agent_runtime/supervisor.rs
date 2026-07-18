@@ -720,7 +720,7 @@ impl AgentSupervisor {
                 continue;
             };
             self.notify_terminal(
-                &record,
+                record,
                 &super::DispatchTerminalRecord {
                     handoff_event,
                     terminal_event: terminal.clone(),
