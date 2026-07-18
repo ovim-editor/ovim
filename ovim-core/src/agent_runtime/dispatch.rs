@@ -4,12 +4,12 @@
 //! deliberately does not start provider sessions or create Git worktrees.
 
 use super::{
-    ModelFallbackPolicy, ModelRouteError, ModelRouteResolution, ReasoningEffort,
-    RequestedModelRoute, ResolvedModelRoute, SubagentModelCatalog,
+    HandoffStatus, ModelFallbackPolicy, ModelRouteError, ModelRouteResolution, ReasoningEffort,
+    RequestedModelRoute, ResolvedModelRoute, SubagentModelCatalog, ValidatedHandoff,
 };
 use crate::run_log::{
-    AgentCapabilitySnapshot, AgentCompletionContractSnapshot, AgentDispatchSpecSnapshot, AgentId,
-    AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot,
+    AgentCapabilitySnapshot, AgentCompletionContractSnapshot, AgentDispatchSpecSnapshot,
+    AgentHandoffEvent, AgentId, AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot,
     AgentModelFallbackPolicySnapshot, AgentModelRouteResolutionSnapshot,
     AgentRequestedModelRouteSnapshot, AgentResolvedModelRouteSnapshot,
     AgentWorkspacePolicySnapshot, AgentWorkspaceStrategySnapshot, EventActor, EventEnvelope,
@@ -235,6 +235,13 @@ struct ScheduledAgent {
     causing_turn_id: Option<TurnId>,
     state: DispatchState,
     last_event_id: EventId,
+    pending_handoff_status: Option<HandoffStatus>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct DispatchTerminalRecord {
+    pub handoff_event: EventEnvelope,
+    pub terminal_event: EventEnvelope,
 }
 
 pub struct AgentDispatchScheduler {
@@ -281,6 +288,52 @@ impl AgentDispatchScheduler {
                     event.event_id, event.run_id, run_id
                 )));
             }
+            if let EventKind::AgentHandoff(recorded) = &event.kind {
+                let agent_id = event.agent_id.as_ref().ok_or_else(|| {
+                    DispatchError::InvalidHistory(format!(
+                        "handoff {} has no agent identity",
+                        event.event_id
+                    ))
+                })?;
+                if ignored_agents.contains(agent_id) {
+                    continue;
+                }
+                let agent = scheduler.agents.get_mut(agent_id).ok_or_else(|| {
+                    DispatchError::InvalidHistory(format!(
+                        "handoff {} belongs to unknown scheduler agent {}",
+                        event.event_id, agent_id
+                    ))
+                })?;
+                if event.workspace_id.as_ref() != Some(&agent.handle.workspace.workspace_id) {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} handoff changed workspace identity",
+                        agent_id
+                    )));
+                }
+                if event.caused_by.as_ref() != Some(&agent.last_event_id) {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} handoff is not causally contiguous",
+                        agent_id
+                    )));
+                }
+                if agent.pending_handoff_status.is_some() {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} recorded more than one pending handoff",
+                        agent_id
+                    )));
+                }
+                let target = terminal_state_for_handoff(recorded.handoff.status());
+                if !valid_transition(&agent.state, &target) {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} recorded a handoff from invalid state {:?}",
+                        agent_id, agent.state
+                    )));
+                }
+                agent.last_event_id = event.event_id.clone();
+                agent.pending_handoff_status = Some(recorded.handoff.status());
+                continue;
+            }
+
             let EventKind::AgentLifecycle(lifecycle) = &event.kind else {
                 continue;
             };
@@ -349,6 +402,7 @@ impl AgentDispatchScheduler {
                         causing_turn_id: event.turn_id.clone(),
                         state: DispatchState::Created,
                         last_event_id: event.event_id.clone(),
+                        pending_handoff_status: None,
                     },
                 );
                 continue;
@@ -390,6 +444,21 @@ impl AgentDispatchScheduler {
                 )));
             }
             let next = projected_state(&lifecycle.state);
+            match (agent.pending_handoff_status, &next) {
+                (None, DispatchState::Completed) => {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} completed without a validated handoff",
+                        lifecycle.agent_id
+                    )));
+                }
+                (Some(status), next) if *next != terminal_state_for_handoff(status) => {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {} lifecycle {:?} contradicts handoff status {:?}",
+                        lifecycle.agent_id, next, status
+                    )));
+                }
+                _ => {}
+            }
             let legacy_start = agent.state == DispatchState::Queued
                 && lifecycle.state == AgentLifecycleState::Started;
             if !legacy_start && !valid_transition(&agent.state, &next) {
@@ -398,8 +467,33 @@ impl AgentDispatchScheduler {
                     lifecycle.agent_id, agent.state, next
                 )));
             }
-            agent.state = next;
+            agent.state = next.clone();
             agent.last_event_id = event.event_id.clone();
+            if next.is_terminal() {
+                agent.pending_handoff_status = None;
+            }
+        }
+
+        // A crash can land between the durable validated handoff and its
+        // lifecycle event. The handoff is already the completion gate, so
+        // recovery finishes that exact terminal transition rather than
+        // downgrading it to an ambiguous interruption.
+        let pending_handoffs = scheduler
+            .agents
+            .values()
+            .filter_map(|agent| {
+                agent
+                    .pending_handoff_status
+                    .map(|status| (agent.handle.clone(), status))
+            })
+            .collect::<Vec<_>>();
+        for (handle, status) in pending_handoffs {
+            scheduler.transition_internal(
+                &handle,
+                terminal_state_for_handoff(status),
+                Some("recovered terminal state from durable validated handoff".into()),
+                true,
+            )?;
         }
 
         let ambiguous = scheduler
@@ -557,6 +651,7 @@ impl AgentDispatchScheduler {
                 causing_turn_id: request.causing_turn_id,
                 state: DispatchState::Queued,
                 last_event_id: queued_event.event_id,
+                pending_handoff_status: None,
             },
         );
         Ok(handle)
@@ -567,6 +662,102 @@ impl AgentDispatchScheduler {
         handle: &DispatchHandle,
         next: DispatchState,
         detail: Option<String>,
+    ) -> Result<EventEnvelope, DispatchError> {
+        self.transition_internal(handle, next, detail, false)
+    }
+
+    /// Record a completed result only after the provider payload has become a
+    /// [`ValidatedHandoff`]. The handoff event is appended first and is the
+    /// causal parent of the Completed lifecycle event.
+    pub fn complete_with_handoff(
+        &mut self,
+        handle: &DispatchHandle,
+        handoff: ValidatedHandoff,
+    ) -> Result<DispatchTerminalRecord, DispatchError> {
+        if handoff.status() != HandoffStatus::Completed {
+            return Err(DispatchError::HandoffStatusMismatch {
+                expected: HandoffStatus::Completed,
+                actual: handoff.status(),
+            });
+        }
+        self.finish_with_handoff(handle, handoff)
+    }
+
+    /// Failed, interrupted, and timed-out children retain the same structured
+    /// partial evidence contract. Timed-out handoffs project to Interrupted in
+    /// the current lifecycle vocabulary.
+    pub fn finish_with_handoff(
+        &mut self,
+        handle: &DispatchHandle,
+        handoff: ValidatedHandoff,
+    ) -> Result<DispatchTerminalRecord, DispatchError> {
+        let agent = self
+            .agents
+            .get(&handle.agent_id)
+            .ok_or_else(|| DispatchError::UnknownAgent(handle.agent_id.clone()))?;
+        if agent.handle.run_id != handle.run_id || agent.handle.workspace != handle.workspace {
+            return Err(DispatchError::HandleMismatch(handle.agent_id.clone()));
+        }
+        let handoff_status = handoff.status();
+        let handoff_version = handoff.as_handoff().version;
+        let terminal_state = terminal_state_for_handoff(handoff_status);
+        if !valid_transition(&agent.state, &terminal_state) {
+            return Err(DispatchError::InvalidTransition {
+                agent_id: handle.agent_id.clone(),
+                from: agent.state.clone(),
+                to: terminal_state,
+            });
+        }
+        if agent.pending_handoff_status.is_some() {
+            return Err(DispatchError::PendingHandoff(handle.agent_id.clone()));
+        }
+        let handoff_event = self
+            .sink
+            .append(NewRunEvent {
+                run_id: self.run_id.clone(),
+                caused_by: Some(agent.last_event_id.clone()),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::System("agent_scheduler".into()),
+                agent_id: Some(handle.agent_id.clone()),
+                turn_id: agent.causing_turn_id.clone(),
+                workspace_id: Some(handle.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: EventKind::AgentHandoff(AgentHandoffEvent { handoff }),
+            })
+            .map_err(DispatchError::RunLog)?;
+        let agent = self
+            .agents
+            .get_mut(&handle.agent_id)
+            .expect("checked above");
+        agent.last_event_id = handoff_event.event_id.clone();
+        agent.pending_handoff_status = Some(handoff_status);
+        let terminal_event = self
+            .transition_internal(
+                handle,
+                terminal_state,
+                Some(format!(
+                    "terminal state recorded from structured handoff v{}",
+                    handoff_version
+                )),
+                true,
+            )
+            .map_err(|error| DispatchError::TerminalAfterHandoffFailed {
+                handoff_event_id: handoff_event.event_id.clone(),
+                source: Box::new(error),
+            })?;
+        Ok(DispatchTerminalRecord {
+            handoff_event,
+            terminal_event,
+        })
+    }
+
+    fn transition_internal(
+        &mut self,
+        handle: &DispatchHandle,
+        next: DispatchState,
+        detail: Option<String>,
+        from_validated_handoff: bool,
     ) -> Result<EventEnvelope, DispatchError> {
         let agent = self
             .agents
@@ -581,6 +772,24 @@ impl AgentDispatchScheduler {
                 from: agent.state.clone(),
                 to: next,
             });
+        }
+        if next == DispatchState::Completed && !from_validated_handoff {
+            return Err(DispatchError::CompletionRequiresValidatedHandoff(
+                handle.agent_id.clone(),
+            ));
+        }
+        if from_validated_handoff {
+            let status = agent
+                .pending_handoff_status
+                .ok_or_else(|| DispatchError::MissingPendingHandoff(handle.agent_id.clone()))?;
+            if terminal_state_for_handoff(status) != next {
+                return Err(DispatchError::PendingHandoffTransitionMismatch {
+                    status,
+                    lifecycle: next,
+                });
+            }
+        } else if agent.pending_handoff_status.is_some() {
+            return Err(DispatchError::PendingHandoff(handle.agent_id.clone()));
         }
         let event = self
             .sink
@@ -612,6 +821,7 @@ impl AgentDispatchScheduler {
         agent.state = next.clone();
         agent.last_event_id = event.event_id.clone();
         if next.is_terminal() {
+            agent.pending_handoff_status = None;
             if self.shared_writer.get(&handle.workspace.workspace_id) == Some(&handle.agent_id) {
                 self.shared_writer.remove(&handle.workspace.workspace_id);
             }
@@ -707,6 +917,14 @@ fn valid_transition(from: &DispatchState, to: &DispatchState) -> bool {
                 Running | Completed | Interrupted | Failed
             )
     )
+}
+
+fn terminal_state_for_handoff(status: HandoffStatus) -> DispatchState {
+    match status {
+        HandoffStatus::Completed => DispatchState::Completed,
+        HandoffStatus::Failed => DispatchState::Failed,
+        HandoffStatus::Interrupted | HandoffStatus::TimedOut => DispatchState::Interrupted,
+    }
 }
 
 fn lifecycle_event(
@@ -1130,6 +1348,21 @@ pub enum DispatchError {
         from: DispatchState,
         to: DispatchState,
     },
+    CompletionRequiresValidatedHandoff(AgentId),
+    HandoffStatusMismatch {
+        expected: HandoffStatus,
+        actual: HandoffStatus,
+    },
+    PendingHandoff(AgentId),
+    MissingPendingHandoff(AgentId),
+    PendingHandoffTransitionMismatch {
+        status: HandoffStatus,
+        lifecycle: DispatchState,
+    },
+    TerminalAfterHandoffFailed {
+        handoff_event_id: EventId,
+        source: Box<DispatchError>,
+    },
     RunLog(RunLogError),
     QueueAfterCreationFailed {
         agent_id: AgentId,
@@ -1193,6 +1426,33 @@ impl fmt::Display for DispatchError {
             Self::InvalidTransition { agent_id, from, to } => write!(
                 formatter,
                 "agent {agent_id} cannot transition from {from:?} to {to:?}"
+            ),
+            Self::CompletionRequiresValidatedHandoff(agent_id) => write!(
+                formatter,
+                "agent {agent_id} cannot complete without a validated structured handoff"
+            ),
+            Self::HandoffStatusMismatch { expected, actual } => write!(
+                formatter,
+                "handoff status {actual:?} does not match expected status {expected:?}"
+            ),
+            Self::PendingHandoff(agent_id) => write!(
+                formatter,
+                "agent {agent_id} already has a durable pending handoff"
+            ),
+            Self::MissingPendingHandoff(agent_id) => write!(
+                formatter,
+                "agent {agent_id} has no durable validated handoff for its terminal transition"
+            ),
+            Self::PendingHandoffTransitionMismatch { status, lifecycle } => write!(
+                formatter,
+                "handoff status {status:?} does not permit lifecycle state {lifecycle:?}"
+            ),
+            Self::TerminalAfterHandoffFailed {
+                handoff_event_id,
+                source,
+            } => write!(
+                formatter,
+                "handoff {handoff_event_id} was durable but its terminal lifecycle failed: {source}"
             ),
             Self::RunLog(error) => write!(formatter, "could not record agent lifecycle: {error}"),
             Self::QueueAfterCreationFailed {
@@ -1387,6 +1647,9 @@ impl std::error::Error for ProjectionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_runtime::{
+        HandoffConfidence, HandoffEvidence, HandoffValidator, StructuredHandoffV1,
+    };
     use crate::ai::AiConfig;
     use crate::run_log::{
         AgentModelProfileSnapshot, InMemoryRunEventSink, MessageEvent, MessageRole,
@@ -1428,6 +1691,41 @@ mod tests {
         }
     }
 
+    fn handoff(status: HandoffStatus) -> ValidatedHandoff {
+        let completed = status == HandoffStatus::Completed;
+        HandoffValidator::default()
+            .validate(
+                StructuredHandoffV1 {
+                    version: 1,
+                    status,
+                    summary: if completed {
+                        "Completed the bounded delegated objective."
+                    } else {
+                        "Stopped with partial evidence."
+                    }
+                    .into(),
+                    evidence: completed
+                        .then(|| HandoffEvidence {
+                            path: "ovim-core/src/agent_runtime/dispatch.rs".into(),
+                            line: Some(1),
+                            claim: "The scheduler owns the completion gate.".into(),
+                        })
+                        .into_iter()
+                        .collect(),
+                    changed_files: vec![],
+                    verification: vec![],
+                    blockers: (!completed)
+                        .then(|| "Provider did not complete the objective.".into())
+                        .into_iter()
+                        .collect(),
+                    followups: vec![],
+                    confidence: HandoffConfidence::High,
+                },
+                Some(status),
+            )
+            .unwrap()
+    }
+
     fn record_parent_turn(
         sink: &InMemoryRunEventSink,
         parent: &DispatchHandle,
@@ -1456,6 +1754,15 @@ mod tests {
             }),
         })
         .unwrap()
+    }
+
+    fn start_running(scheduler: &mut AgentDispatchScheduler, handle: &DispatchHandle) {
+        scheduler
+            .transition(handle, DispatchState::Starting, None)
+            .unwrap();
+        scheduler
+            .transition(handle, DispatchState::Running, None)
+            .unwrap();
     }
 
     #[test]
@@ -1626,6 +1933,177 @@ mod tests {
             scheduler.state(&handle.agent_id),
             Some(&DispatchState::Queued)
         );
+    }
+
+    #[test]
+    fn completed_lifecycle_requires_a_durable_validated_handoff() {
+        let (mut scheduler, sink) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_completion_gate").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        start_running(&mut scheduler, &handle);
+        let events_before = sink.events(&handle.run_id).unwrap().len();
+
+        assert_eq!(
+            scheduler
+                .transition(&handle, DispatchState::Completed, None)
+                .unwrap_err(),
+            DispatchError::CompletionRequiresValidatedHandoff(handle.agent_id.clone())
+        );
+        assert_eq!(sink.events(&handle.run_id).unwrap().len(), events_before);
+
+        let record = scheduler
+            .complete_with_handoff(&handle, handoff(HandoffStatus::Completed))
+            .unwrap();
+        assert!(matches!(
+            record.handoff_event.kind,
+            EventKind::AgentHandoff(_)
+        ));
+        assert!(matches!(
+            record.terminal_event.kind,
+            EventKind::AgentLifecycle(AgentLifecycleEvent {
+                state: AgentLifecycleState::Completed,
+                ..
+            })
+        ));
+        assert_eq!(
+            record.terminal_event.caused_by.as_ref(),
+            Some(&record.handoff_event.event_id)
+        );
+        assert_eq!(
+            scheduler.state(&handle.agent_id),
+            Some(&DispatchState::Completed)
+        );
+
+        drop(scheduler);
+        let restored = AgentDispatchScheduler::rehydrate(handle.run_id, sink, catalog()).unwrap();
+        assert_eq!(
+            restored.state(&handle.agent_id),
+            Some(&DispatchState::Completed)
+        );
+    }
+
+    #[test]
+    fn partial_handoffs_preserve_explicit_non_completion_status() {
+        let (mut scheduler, sink) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_partial_handoff").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        start_running(&mut scheduler, &handle);
+
+        scheduler
+            .finish_with_handoff(&handle, handoff(HandoffStatus::TimedOut))
+            .unwrap();
+        assert_eq!(
+            scheduler.state(&handle.agent_id),
+            Some(&DispatchState::Interrupted)
+        );
+        assert!(sink.events(&handle.run_id).unwrap().iter().any(|event| {
+            matches!(
+                &event.kind,
+                EventKind::AgentHandoff(recorded)
+                    if recorded.handoff.status() == HandoffStatus::TimedOut
+            )
+        }));
+    }
+
+    #[test]
+    fn rehydrate_rejects_completed_history_without_a_handoff() {
+        let (mut scheduler, sink) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_invalid_completion_history").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        start_running(&mut scheduler, &handle);
+        let agent = scheduler.agents[&handle.agent_id].clone();
+        sink.append(NewRunEvent {
+            run_id: handle.run_id.clone(),
+            caused_by: Some(agent.last_event_id),
+            operation_id: None,
+            provider_call_id: None,
+            actor: EventActor::System("malformed_history_test".into()),
+            agent_id: Some(handle.agent_id.clone()),
+            turn_id: agent.causing_turn_id,
+            workspace_id: Some(handle.workspace.workspace_id.clone()),
+            branch_id: None,
+            kind: lifecycle_event(
+                &handle.agent_id,
+                agent.parent_agent_id,
+                &agent.role,
+                Some(agent.objective),
+                None,
+                DispatchState::Completed,
+                None,
+            ),
+        })
+        .unwrap();
+        drop(scheduler);
+
+        assert!(matches!(
+            AgentDispatchScheduler::rehydrate(handle.run_id, sink, catalog()),
+            Err(DispatchError::InvalidHistory(detail))
+                if detail.contains("completed without a validated handoff")
+        ));
+    }
+
+    #[test]
+    fn rehydrate_finishes_a_handoff_that_was_durable_at_process_stop() {
+        let (mut scheduler, sink) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_pending_handoff_recovery").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        start_running(&mut scheduler, &handle);
+        let agent = scheduler.agents[&handle.agent_id].clone();
+        let recorded = sink
+            .append(NewRunEvent {
+                run_id: handle.run_id.clone(),
+                caused_by: Some(agent.last_event_id),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::System("process_stop_test".into()),
+                agent_id: Some(handle.agent_id.clone()),
+                turn_id: agent.causing_turn_id,
+                workspace_id: Some(handle.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: EventKind::AgentHandoff(AgentHandoffEvent {
+                    handoff: handoff(HandoffStatus::Completed),
+                }),
+            })
+            .unwrap();
+        drop(scheduler);
+
+        let restored =
+            AgentDispatchScheduler::rehydrate(handle.run_id.clone(), sink.clone(), catalog())
+                .unwrap();
+        assert_eq!(
+            restored.state(&handle.agent_id),
+            Some(&DispatchState::Completed)
+        );
+        let events = sink.events(&handle.run_id).unwrap();
+        let terminal = events.last().unwrap();
+        assert_eq!(terminal.caused_by.as_ref(), Some(&recorded.event_id));
+        assert!(matches!(
+            terminal.kind,
+            EventKind::AgentLifecycle(AgentLifecycleEvent {
+                state: AgentLifecycleState::Completed,
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1839,7 +2317,7 @@ mod tests {
             .transition(&first, DispatchState::Running, None)
             .unwrap();
         scheduler
-            .transition(&first, DispatchState::Completed, None)
+            .complete_with_handoff(&first, handoff(HandoffStatus::Completed))
             .unwrap();
         assert!(scheduler
             .dispatch(request(
