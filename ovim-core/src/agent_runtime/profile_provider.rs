@@ -14,9 +14,9 @@ use crate::ai::{
     redact_high_risk_tokens, AiConfig, AiProfileConfig, AiProviderKind, ApiKeyConfig, ChatMessage,
     ChatRole, StreamChunk, ToolCallInfo,
 };
-use crate::run_log::{ToolOutcome, ToolSideEffect};
+use crate::run_log::{EventId, ToolOutcome, ToolSideEffect};
 use serde_json::{json, Value};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, HashMap, VecDeque};
 use std::sync::Arc;
 use std::time::Instant;
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
@@ -198,6 +198,8 @@ impl AgentProviderAdapter for ProfileAgentProvider {
                 active: None,
                 round_state: RoundState::default(),
                 terminal: false,
+                pending_parent_messages: VecDeque::new(),
+                delivered_message_ids: BTreeSet::new(),
             };
             session.begin_round()?;
             Ok(Box::new(session) as Box<dyn AgentProviderSession>)
@@ -219,6 +221,8 @@ struct ProfileAgentSession {
     active: Option<ActiveRound>,
     round_state: RoundState,
     terminal: bool,
+    pending_parent_messages: VecDeque<ChatMessage>,
+    delivered_message_ids: BTreeSet<EventId>,
 }
 
 struct ActiveRound {
@@ -260,6 +264,7 @@ impl ProfileAgentSession {
             provider_call_id: provider_call_id.clone(),
             ..RoundState::default()
         };
+        self.messages.extend(self.pending_parent_messages.drain(..));
         let request = AgentStreamRequest {
             profile: self.profile.clone(),
             messages: self.messages.clone(),
@@ -401,6 +406,25 @@ impl ProfileAgentSession {
                         "submit_handoff arguments failed schema validation: {error}"
                     ))
                 })?;
+            if !self.pending_parent_messages.is_empty() {
+                self.messages.push(ChatMessage {
+                    role: ChatRole::Assistant,
+                    content: format!(
+                        "{}\n[The completion boundary was deferred because a parent message arrived.]",
+                        std::mem::take(&mut self.round_state.content)
+                    ),
+                    model: Some(self.profile.model.clone()),
+                    timestamp: Instant::now(),
+                    images: Vec::new(),
+                    tool_calls: Vec::new(),
+                    tool_call_id: None,
+                    provider_state: std::mem::take(&mut self.round_state.provider_state),
+                });
+                self.begin_round()?;
+                return self.pending.pop_front().ok_or_else(|| {
+                    AgentProviderError::new("deferred provider round did not start")
+                });
+            }
             self.terminal = true;
             return serde_json::to_vec(&handoff)
                 .map(|payload| AgentProviderEvent::Handoff { payload })
@@ -566,6 +590,42 @@ impl AgentProviderSession for ProfileAgentSession {
                 "tool result repeats call ID {tool_call_id:?}"
             )))
         } else {
+            Ok(())
+        };
+        Box::pin(async move { outcome })
+    }
+
+    fn deliver_message(
+        &mut self,
+        message_event_id: &EventId,
+        content: &str,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        let outcome = if self.delivered_message_ids.contains(message_event_id) {
+            Ok(())
+        } else if self.terminal {
+            Err(AgentProviderError::new(
+                "provider session already crossed its terminal handoff boundary",
+            ))
+        } else if content.trim().is_empty() || content.len() > super::MAX_AGENT_MESSAGE_BYTES {
+            Err(AgentProviderError::new(
+                "parent message is empty or exceeds the delivery bound",
+            ))
+        } else {
+            self.delivered_message_ids.insert(message_event_id.clone());
+            self.pending_parent_messages.push_back(ChatMessage {
+                role: ChatRole::User,
+                content: format!(
+                    "Parent message (durable ID {}): {}",
+                    message_event_id,
+                    redact_high_risk_tokens(content)
+                ),
+                model: None,
+                timestamp: Instant::now(),
+                images: Vec::new(),
+                tool_calls: Vec::new(),
+                tool_call_id: None,
+                provider_state: Vec::new(),
+            });
             Ok(())
         };
         Box::pin(async move { outcome })

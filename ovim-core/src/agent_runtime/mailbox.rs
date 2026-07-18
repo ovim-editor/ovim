@@ -125,15 +125,11 @@ impl AgentMessageProjection {
                     else {
                         continue;
                     };
-                    let message =
-                        projection
-                            .messages
-                            .get_mut(message_event_id)
-                            .ok_or_else(|| {
-                                AgentMessageProjectionError::NotificationBeforeMessage(
-                                    message_event_id.clone(),
-                                )
-                            })?;
+                    // Version-one mailboxes also use `Message` for ordinary
+                    // chat events. They are outside this outbound projection.
+                    let Some(message) = projection.messages.get_mut(message_event_id) else {
+                        continue;
+                    };
                     if notification.recipient_agent_id != message.recipient_agent_id
                         || message.notification_event_id.is_some()
                     {
@@ -838,6 +834,49 @@ impl AgentMessageQueue {
 
     pub fn queued(&self) -> Result<Vec<AgentMessageRecord>, AgentMessageError> {
         Ok(self.projection()?.queued_for(&self.recipient_agent_id))
+    }
+
+    pub fn unsettled(&self) -> Result<Vec<AgentMessageRecord>, AgentMessageError> {
+        Ok(self
+            .projection()?
+            .messages()
+            .filter(|message| {
+                message.recipient_agent_id == self.recipient_agent_id
+                    && !message.state.is_terminal()
+            })
+            .cloned()
+            .collect())
+    }
+
+    /// Repair the only non-atomic enqueue edge (message event durable before
+    /// notification), then conservatively reject any delivery that was not
+    /// proven terminal. Delivered/rejected notifications are consumed again
+    /// idempotently when a crash landed between status and acknowledgement.
+    pub fn reconcile_after_restart(&self) -> Result<Vec<AgentMessageRecord>, AgentMessageError> {
+        let projection = self.projection()?;
+        for message in projection.messages().filter(|message| {
+            message.recipient_agent_id == self.recipient_agent_id
+                && message.notification_event_id.is_none()
+        }) {
+            self.mailbox.notify(MailboxNotificationKind::Message {
+                sender_agent_id: Some(message.sender_agent_id.clone()),
+                message_event_id: message.message_event_id.clone(),
+            })?;
+        }
+        let messages = self
+            .projection()?
+            .messages()
+            .filter(|message| message.recipient_agent_id == self.recipient_agent_id)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut reconciled = Vec::with_capacity(messages.len());
+        for message in messages {
+            reconciled.push(self.reject_queued(
+                &message.message_event_id,
+                "message was not safely deliverable after process restart",
+            )?);
+        }
+        Ok(reconciled)
     }
 
     pub fn claim(

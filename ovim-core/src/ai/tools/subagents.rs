@@ -10,11 +10,16 @@ pub const SPAWN_AGENT_TOOL: &str = "spawn_agent";
 pub const LIST_AGENTS_TOOL: &str = "list_agents";
 pub const WAIT_AGENT_TOOL: &str = "wait_agent";
 pub const INTERRUPT_AGENT_TOOL: &str = "interrupt_agent";
+pub const SEND_MESSAGE_TOOL: &str = "send_message";
 
 pub fn is_parent_control_tool(name: &str) -> bool {
     matches!(
         name,
-        SPAWN_AGENT_TOOL | LIST_AGENTS_TOOL | WAIT_AGENT_TOOL | INTERRUPT_AGENT_TOOL
+        SPAWN_AGENT_TOOL
+            | LIST_AGENTS_TOOL
+            | WAIT_AGENT_TOOL
+            | INTERRUPT_AGENT_TOOL
+            | SEND_MESSAGE_TOOL
     )
 }
 
@@ -125,6 +130,19 @@ pub fn parent_control_tools(
                     "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 60 }
                 },
                 "required": ["timeout_seconds"]
+            }))?,
+        ),
+        definition(
+            SEND_MESSAGE_TOOL,
+            "Queue one bounded parent message to a live delegated child. Delivery occurs at a safe provider/tool boundary and does not start a new turn; queued or terminal targets reject the message.".into(),
+            strict(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "agent_id": { "type": "string", "pattern": "^agt_.+" },
+                    "message": { "type": "string", "minLength": 1, "maxLength": 8192 }
+                },
+                "required": ["agent_id", "message"]
             }))?,
         ),
         definition(
@@ -256,5 +274,37 @@ mod tests {
         let mut unknown = valid;
         unknown["surprise"] = json!(true);
         assert!(schema.validate_instance(&unknown).is_err());
+    }
+
+    #[test]
+    fn send_message_schema_is_bounded_and_strict() {
+        let (config, catalog) = configured();
+        let tools = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let schema = tools
+            .iter()
+            .find(|tool| tool.name == SEND_MESSAGE_TOOL)
+            .unwrap()
+            .custom_input_schema
+            .as_ref()
+            .unwrap();
+        assert!(schema
+            .validate_instance(&json!({
+                "agent_id": "agt_child",
+                "message": "Inspect the restart edge."
+            }))
+            .is_ok());
+        assert!(schema
+            .validate_instance(&json!({
+                "agent_id": "agt_child",
+                "message": "",
+            }))
+            .is_err());
+        assert!(schema
+            .validate_instance(&json!({
+                "agent_id": "agt_child",
+                "message": "ok",
+                "start_new_turn": true,
+            }))
+            .is_err());
     }
 }

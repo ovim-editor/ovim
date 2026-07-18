@@ -4,12 +4,16 @@ use super::{
     validated_terminal_handoff, AgentApprovalClient, AgentCancellationToken, AgentDispatchRecord,
     AgentDispatchScheduler, AgentLoopBudget, AgentLoopError, AgentLoopEventRecord,
     AgentLoopEventSink, AgentLoopInput, AgentLoopResult, AgentLoopRunner, AgentLoopRuntimeHooks,
-    AgentMailbox, AgentProviderAdapter, AgentToolExecutor, AgentWorkspaceDescriptor, DispatchError,
-    DispatchHandle, DispatchRequest, DispatchState, HandoffStatus, HandoffValidator, MailboxError,
-    RootAgentBudget, ScopedToolView, SubagentModelCatalog,
+    AgentMailbox, AgentMessageClaimOutcome, AgentMessageError, AgentMessageQueue,
+    AgentMessageRecord, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
+    AgentProviderSession, AgentProviderStart, AgentToolExecutor, AgentToolResult,
+    AgentWorkspaceDescriptor, DispatchError, DispatchHandle, DispatchRequest, DispatchState,
+    HandoffStatus, HandoffValidator, MailboxError, RootAgentBudget, ScopedToolView,
+    SubagentModelCatalog,
 };
 use crate::run_log::{
-    AgentId, EventEnvelope, EventKind, MailboxNotificationKind, RunEventSink, RunId,
+    AgentId, EventEnvelope, EventId, EventKind, MailboxNotificationKind, RunEventSink, RunId,
+    TurnId,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -53,6 +57,15 @@ pub struct AgentLoopDependencies {
     pub workspace: AgentWorkspaceDescriptor,
     pub envelope: super::DelegationEnvelope,
     pub budget: Option<AgentLoopBudget>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SendAgentMessageRequest {
+    pub sender_agent_id: AgentId,
+    pub recipient_agent_id: AgentId,
+    pub causing_turn_id: TurnId,
+    pub caused_by_event: EventId,
+    pub content: String,
 }
 
 pub trait AgentLoopInputFactory: Send + Sync {
@@ -126,6 +139,7 @@ impl AgentSupervisor {
         scheduler.set_external_parent(root_agent_id.clone());
         let supervisor =
             Self::from_scheduler(run_id, root_agent_id, sink, scheduler, factory, config);
+        supervisor.recover_agent_messages()?;
         supervisor.recover_mailbox_notifications()?;
         Ok(supervisor)
     }
@@ -227,6 +241,74 @@ impl AgentSupervisor {
         )?;
         mailboxes.insert(recipient, mailbox.clone());
         Ok(mailbox)
+    }
+
+    pub fn message_queue(
+        &self,
+        recipient: AgentId,
+    ) -> Result<AgentMessageQueue, AgentSupervisorError> {
+        Ok(AgentMessageQueue::new(
+            self.inner.run_id.clone(),
+            recipient.clone(),
+            self.inner.sink.clone(),
+            self.mailbox(recipient)?,
+        )?)
+    }
+
+    pub fn messages(&self) -> Result<Vec<AgentMessageRecord>, AgentSupervisorError> {
+        let projection =
+            super::AgentMessageProjection::rehydrate(&self.inner.sink.events(&self.inner.run_id)?)
+                .map_err(AgentMessageError::Projection)?;
+        Ok(projection.messages().cloned().collect())
+    }
+
+    /// Queue one bounded parent-authored message for a currently active child.
+    /// The provider wrapper accepts it only between provider/tool operations;
+    /// terminal and merely queued children reject steering explicitly.
+    pub fn send_message(
+        &self,
+        request: SendAgentMessageRequest,
+    ) -> Result<AgentMessageRecord, AgentSupervisorError> {
+        let record = self
+            .inner
+            .scheduler
+            .lock()
+            .map_err(|_| poisoned())?
+            .dispatch_record(&request.recipient_agent_id)
+            .ok_or_else(|| {
+                AgentSupervisorError::UnknownAgent(request.recipient_agent_id.clone())
+            })?;
+        let expected_parent = record
+            .parent_agent_id
+            .as_ref()
+            .unwrap_or(&self.inner.root_agent_id);
+        if expected_parent != &request.sender_agent_id {
+            return Err(AgentSupervisorError::MessageSenderMismatch {
+                recipient: request.recipient_agent_id,
+                sender: request.sender_agent_id,
+            });
+        }
+        if !matches!(
+            record.state,
+            DispatchState::Starting
+                | DispatchState::Running
+                | DispatchState::WaitingForAgent
+                | DispatchState::WaitingForTool
+                | DispatchState::WaitingForUser
+        ) {
+            return Err(AgentSupervisorError::MessageTargetNotLive {
+                agent_id: request.recipient_agent_id,
+                state: record.state,
+            });
+        }
+        let queued = self.message_queue(record.handle.agent_id)?.queue(
+            request.sender_agent_id,
+            request.causing_turn_id,
+            request.caused_by_event,
+            request.content,
+        )?;
+        self.inner.changed.notify_waiters();
+        Ok(queued)
     }
 
     pub async fn interrupt(
@@ -402,6 +484,11 @@ impl AgentSupervisor {
         let bridge = Arc::new(SchedulerLoopBridge {
             scheduler: self.inner.scheduler.clone(),
         });
+        let message_queue = self.message_queue(record.handle.agent_id.clone())?;
+        let provider: Arc<dyn AgentProviderAdapter> = Arc::new(MessageDeliveringProvider {
+            inner: dependencies.provider,
+            queue: message_queue.clone(),
+        });
         let AgentLoopResult {
             handoff,
             workspace_warnings,
@@ -410,7 +497,7 @@ impl AgentSupervisor {
             handle: record.handle.clone(),
             envelope: dependencies.envelope,
             route: record.resolved_route.clone(),
-            provider: dependencies.provider,
+            provider,
             tool_view: dependencies.tool_view,
             tool_executor: dependencies.tool_executor,
             event_sink: bridge.clone(),
@@ -425,6 +512,12 @@ impl AgentSupervisor {
             handoff_validator: HandoffValidator::default(),
         })
         .await?;
+        for message in message_queue.unsettled()? {
+            message_queue.reject_queued(
+                &message.message_event_id,
+                "child reached a terminal provider boundary before message delivery",
+            )?;
+        }
         let terminal = self
             .inner
             .scheduler
@@ -531,6 +624,14 @@ impl AgentSupervisor {
         Ok(())
     }
 
+    fn recover_agent_messages(&self) -> Result<(), AgentSupervisorError> {
+        for record in self.dispatches()? {
+            self.message_queue(record.handle.agent_id)?
+                .reconcile_after_restart()?;
+        }
+        Ok(())
+    }
+
     fn validate_dispatch_limits(
         &self,
         records: &[AgentDispatchRecord],
@@ -609,6 +710,121 @@ impl AgentLoopRuntimeHooks for SchedulerLoopBridge {
     }
 }
 
+#[derive(Clone)]
+struct MessageDeliveringProvider {
+    inner: Arc<dyn AgentProviderAdapter>,
+    queue: AgentMessageQueue,
+}
+
+impl AgentProviderAdapter for MessageDeliveringProvider {
+    fn start(
+        &self,
+        request: AgentProviderStart,
+    ) -> super::AgentFuture<'_, Result<Box<dyn AgentProviderSession>, AgentProviderError>> {
+        Box::pin(async move {
+            let session = self.inner.start(request).await?;
+            Ok(Box::new(MessageDeliveringSession {
+                inner: session,
+                queue: self.queue.clone(),
+            }) as Box<dyn AgentProviderSession>)
+        })
+    }
+}
+
+struct MessageDeliveringSession {
+    inner: Box<dyn AgentProviderSession>,
+    queue: AgentMessageQueue,
+}
+
+impl MessageDeliveringSession {
+    async fn deliver_pending(&mut self) -> Result<(), AgentProviderError> {
+        loop {
+            let Some(message) = self
+                .queue
+                .queued()
+                .map_err(|error| AgentProviderError::new(error.to_string()))?
+                .into_iter()
+                .next()
+            else {
+                return Ok(());
+            };
+            let session_id = self.inner.binding().session_id.clone();
+            match self
+                .queue
+                .claim(&message.message_event_id, &session_id)
+                .map_err(|error| AgentProviderError::new(error.to_string()))?
+            {
+                AgentMessageClaimOutcome::Claimed {
+                    delivery_event_id, ..
+                } => {
+                    let result = self
+                        .inner
+                        .deliver_message(&message.message_event_id, &message.content)
+                        .await
+                        .map_err(|error| error.to_string());
+                    self.queue
+                        .finish_delivery(&message.message_event_id, &delivery_event_id, result)
+                        .map_err(|error| AgentProviderError::new(error.to_string()))?;
+                }
+                AgentMessageClaimOutcome::AlreadyClaimed(_) => {
+                    self.queue
+                        .reject_queued(
+                            &message.message_event_id,
+                            "message delivery was already attempted at an ambiguous boundary",
+                        )
+                        .map_err(|error| AgentProviderError::new(error.to_string()))?;
+                }
+                AgentMessageClaimOutcome::Terminal(_) => {
+                    self.queue
+                        .reject_queued(
+                            &message.message_event_id,
+                            "message delivery was already terminal",
+                        )
+                        .map_err(|error| AgentProviderError::new(error.to_string()))?;
+                }
+            }
+        }
+    }
+}
+
+impl AgentProviderSession for MessageDeliveringSession {
+    fn binding(&self) -> &super::ProviderBinding {
+        self.inner.binding()
+    }
+
+    fn next_event(
+        &mut self,
+    ) -> super::AgentFuture<'_, Result<AgentProviderEvent, AgentProviderError>> {
+        Box::pin(async move {
+            self.deliver_pending().await?;
+            self.inner.next_event().await
+        })
+    }
+
+    fn submit_tool_result(
+        &mut self,
+        tool_call_id: &str,
+        result: &AgentToolResult,
+    ) -> super::AgentFuture<'_, Result<(), AgentProviderError>> {
+        let tool_call_id = tool_call_id.to_string();
+        let result = result.clone();
+        Box::pin(async move {
+            self.inner
+                .submit_tool_result(&tool_call_id, &result)
+                .await?;
+            self.deliver_pending().await
+        })
+    }
+
+    fn deliver_message(
+        &mut self,
+        message_event_id: &EventId,
+        content: &str,
+    ) -> super::AgentFuture<'_, Result<(), AgentProviderError>> {
+        self.inner.deliver_message(message_event_id, content)
+    }
+}
+
 fn validate_config(config: &AgentSupervisorConfig) -> Result<(), AgentSupervisorError> {
     if config.max_concurrent == 0
         || config.max_queued == 0
@@ -679,12 +895,23 @@ pub enum AgentSupervisorError {
     QueueLimit,
     RunAgentLimit,
     ParentChildLimit(AgentId),
-    DepthLimit { depth: usize },
+    DepthLimit {
+        depth: usize,
+    },
     UnknownAgent(AgentId),
+    MessageSenderMismatch {
+        recipient: AgentId,
+        sender: AgentId,
+    },
+    MessageTargetNotLive {
+        agent_id: AgentId,
+        state: DispatchState,
+    },
     InputFactory(String),
     Dispatch(DispatchError),
     Loop(AgentLoopError),
     Mailbox(MailboxError),
+    Message(AgentMessageError),
     RunLog(crate::run_log::RunLogError),
     Poisoned,
 }
@@ -704,6 +931,12 @@ impl From<AgentLoopError> for AgentSupervisorError {
 impl From<MailboxError> for AgentSupervisorError {
     fn from(value: MailboxError) -> Self {
         Self::Mailbox(value)
+    }
+}
+
+impl From<AgentMessageError> for AgentSupervisorError {
+    fn from(value: AgentMessageError) -> Self {
+        Self::Message(value)
     }
 }
 
@@ -730,12 +963,21 @@ impl fmt::Display for AgentSupervisorError {
                 "agent depth {depth} exceeds the configured limit"
             ),
             Self::UnknownAgent(agent) => write!(formatter, "agent {agent} is unknown"),
+            Self::MessageSenderMismatch { recipient, sender } => write!(
+                formatter,
+                "agent {sender} is not the parent authorized to message child {recipient}"
+            ),
+            Self::MessageTargetNotLive { agent_id, state } => write!(
+                formatter,
+                "agent {agent_id} cannot receive a message while in state {state:?}"
+            ),
             Self::InputFactory(detail) => {
                 write!(formatter, "could not build child loop input: {detail}")
             }
             Self::Dispatch(error) => write!(formatter, "agent scheduler: {error}"),
             Self::Loop(error) => write!(formatter, "agent loop: {error}"),
             Self::Mailbox(error) => write!(formatter, "agent mailbox: {error}"),
+            Self::Message(error) => write!(formatter, "agent message: {error}"),
             Self::RunLog(error) => write!(formatter, "run log: {error}"),
             Self::Poisoned => formatter.write_str("agent supervisor lock was poisoned"),
         }
@@ -864,6 +1106,28 @@ mod tests {
         (supervisor, run_id, root)
     }
 
+    fn parent_cause(sink: &dyn RunEventSink, run_id: &RunId, root: &AgentId) -> (TurnId, EventId) {
+        let turn_id = TurnId::new();
+        let event = sink
+            .append(NewRunEvent {
+                run_id: run_id.clone(),
+                caused_by: None,
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::Agent(root.clone()),
+                agent_id: Some(root.clone()),
+                turn_id: Some(turn_id.clone()),
+                workspace_id: None,
+                branch_id: None,
+                kind: EventKind::Message(MessageEvent {
+                    role: MessageRole::Agent,
+                    content: "message child".into(),
+                }),
+            })
+            .unwrap();
+        (turn_id, event.event_id)
+    }
+
     #[tokio::test]
     async fn runs_three_children_concurrently_and_finishes_out_of_order() {
         let sink = Arc::new(InMemoryRunEventSink::new());
@@ -906,6 +1170,67 @@ mod tests {
             supervisor.mailbox(root).unwrap().pending().unwrap().len(),
             3
         );
+    }
+
+    #[tokio::test]
+    async fn parent_message_delivers_once_at_a_provider_boundary_and_completed_target_rejects() {
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(30)));
+        let (supervisor, run_id, root) =
+            supervisor_with(sink.clone(), factory, AgentSupervisorConfig::default());
+        let (turn_id, caused_by_event) = parent_cause(&*sink, &run_id, &root);
+        let child = supervisor
+            .dispatch_nonblocking(request("message boundary"))
+            .unwrap();
+        loop {
+            if matches!(
+                supervisor.state(&child.agent_id).unwrap(),
+                Some(DispatchState::Starting | DispatchState::Running)
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let message = supervisor
+            .send_message(SendAgentMessageRequest {
+                sender_agent_id: root.clone(),
+                recipient_agent_id: child.agent_id.clone(),
+                causing_turn_id: turn_id.clone(),
+                caused_by_event: caused_by_event.clone(),
+                content: "Also inspect the restart edge.".into(),
+            })
+            .unwrap();
+        assert!(supervisor
+            .wait_for_idle(Duration::from_secs(2))
+            .await
+            .unwrap());
+        let projection = supervisor
+            .message_queue(child.agent_id.clone())
+            .unwrap()
+            .projection()
+            .unwrap();
+        assert!(matches!(
+            projection.message(&message.message_event_id).unwrap().state,
+            super::super::AgentMessageState::Delivered { .. }
+        ));
+        assert!(projection
+            .message(&message.message_event_id)
+            .unwrap()
+            .consumption_event_id
+            .is_some());
+        assert!(matches!(
+            supervisor.send_message(SendAgentMessageRequest {
+                sender_agent_id: root,
+                recipient_agent_id: child.agent_id,
+                causing_turn_id: turn_id,
+                caused_by_event,
+                content: "too late".into(),
+            }),
+            Err(AgentSupervisorError::MessageTargetNotLive {
+                state: DispatchState::Completed,
+                ..
+            })
+        ));
     }
 
     #[tokio::test]

@@ -88,8 +88,9 @@ configuration—keeps long-running turns unlimited.
 
 Ovim can dispatch bounded explorer and reviewer children from an active AI
 chat. The feature is disabled by default and is currently configured only in
-legacy `ai.toml`. When enabled, the root model receives four controls:
-`spawn_agent`, `list_agents`, `wait_agent`, and `interrupt_agent`. They appear
+legacy `ai.toml`. When enabled, the root model receives five controls:
+`spawn_agent`, `list_agents`, `wait_agent`, `send_message`, and
+`interrupt_agent`. They appear
 only while the editor owns an active durable root turn in a Git repository;
 they are not ordinary profile tools and are never exposed to a child.
 
@@ -146,6 +147,13 @@ parks only that provider tool call, not the editor event loop, and completes on
 a validated handoff, timeout, or new user steering. Delivered mailbox entries
 are acknowledged durably after the wait result wins. `interrupt_agent`
 interrupts the named child hierarchy while preserving partial run history.
+
+`send_message` queues a bounded parent-authored message only to a live child.
+It does not start a new turn. Ovim records the message before notifying the
+child, claims delivery by durable event ID, and presents it to the provider
+only between provider/tool operations. Queued, completed, and otherwise idle
+targets reject the message explicitly. A restart never blindly repeats an
+ambiguous provider delivery; the message remains visible as rejected instead.
 
 The current preview does not attempt to resume an in-flight child provider
 session after restarting Ovim. Existing child history remains intact, but the

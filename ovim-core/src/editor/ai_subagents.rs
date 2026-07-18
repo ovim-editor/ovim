@@ -10,13 +10,14 @@ use crate::agent_runtime::{
     CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex, CompletionContract,
     DelegatedAgentKind, DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput,
     DelegationIdentity, DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider,
-    ReasoningEffort, RequestedModelRoute, SnapshotAgentLoopInputFactory, SnapshotDiagnostic,
-    SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
+    ReasoningEffort, RequestedModelRoute, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
+    SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
+    WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
-    is_parent_control_tool, INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, SPAWN_AGENT_TOOL,
-    WAIT_AGENT_TOOL,
+    is_parent_control_tool, INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, SEND_MESSAGE_TOOL,
+    SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
 };
 use crate::ai::tools::ToolDefinition;
 use crate::ai::tools::ToolResult;
@@ -69,6 +70,13 @@ struct SpawnAgentArguments {
 struct InterruptAgentArguments {
     agent_id: String,
     reason: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SendMessageArguments {
+    agent_id: String,
+    message: String,
 }
 
 pub(crate) struct AiSubagentService {
@@ -319,6 +327,7 @@ impl Editor {
         let result = match call.name.as_str() {
             SPAWN_AGENT_TOOL => self.spawn_ai_subagent(&call.arguments),
             LIST_AGENTS_TOOL => self.list_ai_subagents(),
+            SEND_MESSAGE_TOOL => self.send_ai_subagent_message(&call.arguments),
             WAIT_AGENT_TOOL => Err(
                 "wait_agent is asynchronous and must be dispatched through the editor turn loop"
                     .into(),
@@ -775,6 +784,39 @@ impl Editor {
         }))
     }
 
+    fn send_ai_subagent_message(
+        &self,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let args: SendMessageArguments =
+            serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
+        let root = self.active_subagent_root()?;
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id,
+            root.root_agent_id.clone(),
+            root.repository_id,
+        )?;
+        let recipient_agent_id =
+            AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+        let message = run
+            .supervisor
+            .send_message(SendAgentMessageRequest {
+                sender_agent_id: root.root_agent_id,
+                recipient_agent_id,
+                causing_turn_id: root.turn_id,
+                caused_by_event: root.caused_by_event,
+                content: args.message,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": "queued",
+            "message_event_id": message.message_event_id,
+            "agent_id": message.recipient_agent_id,
+            "state": "queued"
+        }))
+    }
+
     fn list_ai_subagents(&self) -> Result<serde_json::Value, String> {
         let root = self.active_subagent_root()?;
         let run = self.ai_state.subagents.run(
@@ -813,6 +855,34 @@ impl Editor {
                 })
             })
             .collect::<Vec<_>>();
+        let messages = run
+            .supervisor
+            .messages()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|message| {
+                let (state, detail) = match message.state {
+                    crate::agent_runtime::AgentMessageState::Queued => ("queued", None),
+                    crate::agent_runtime::AgentMessageState::Delivering { .. } => {
+                        ("delivering", None)
+                    }
+                    crate::agent_runtime::AgentMessageState::Delivered { .. } => {
+                        ("delivered", None)
+                    }
+                    crate::agent_runtime::AgentMessageState::Rejected { detail, .. } => {
+                        ("rejected", Some(detail))
+                    }
+                };
+                json!({
+                    "message_event_id": message.message_event_id,
+                    "sender_agent_id": message.sender_agent_id,
+                    "recipient_agent_id": message.recipient_agent_id,
+                    "state": state,
+                    "detail": detail,
+                    "consumed": message.consumption_event_id.is_some(),
+                })
+            })
+            .collect::<Vec<_>>();
         let records = run
             .supervisor
             .dispatches()
@@ -839,6 +909,7 @@ impl Editor {
         Ok(json!({
             "agents": records,
             "pending_approvals": pending_approvals,
+            "messages": messages,
             "pending_attention": pending_attention,
         }))
     }
@@ -1299,6 +1370,7 @@ mod tests {
                 LIST_AGENTS_TOOL.into(),
                 WAIT_AGENT_TOOL.into(),
                 INTERRUPT_AGENT_TOOL.into(),
+                SEND_MESSAGE_TOOL.into(),
             ])
         );
 
@@ -1463,5 +1535,76 @@ mod tests {
         let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
         assert_eq!(payload["outcome"], "interrupted");
         assert_eq!(payload["agent_ids"][0], agent_id);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn send_message_queues_to_live_child_and_projects_delivery() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        service.provider = Arc::new(
+            FakeProviderAdapter::new("delayed_completion")
+                .with_tick_duration(std::time::Duration::from_millis(100)),
+        );
+        *editor.ai_state.subagents = service;
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("message_me"))
+        else {
+            panic!("spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        let agent_id = spawned["agent_id"].as_str().unwrap().to_string();
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let agent = AgentId::parse(agent_id.clone()).unwrap();
+        loop {
+            if matches!(
+                run.supervisor.state(&agent).unwrap(),
+                Some(
+                    crate::agent_runtime::DispatchState::Starting
+                        | crate::agent_runtime::DispatchState::Running
+                )
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let ToolResult::Success(queued) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
+            id: "tool-message".into(),
+            name: SEND_MESSAGE_TOOL.into(),
+            arguments: json!({
+                "agent_id": agent_id,
+                "message": "Also inspect replay idempotence."
+            }),
+        }) else {
+            panic!("message should be queued")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&queued).unwrap()["outcome"],
+            "queued"
+        );
+        assert!(run
+            .supervisor
+            .wait_for_idle(std::time::Duration::from_secs(2))
+            .await
+            .unwrap());
+        let ToolResult::Success(listed) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
+            id: "tool-list-messages".into(),
+            name: LIST_AGENTS_TOOL.into(),
+            arguments: json!({}),
+        }) else {
+            panic!("list should include message delivery")
+        };
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed["messages"][0]["state"], "delivered");
+        assert_eq!(listed["messages"][0]["consumed"], true);
     }
 }
