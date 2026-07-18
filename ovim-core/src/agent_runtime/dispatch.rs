@@ -189,6 +189,7 @@ pub struct WorkspaceAssignment {
 
 #[derive(Clone, Debug)]
 pub struct DispatchRequest {
+    pub task_name: String,
     pub objective: String,
     pub role: AgentRoleTemplate,
     pub requested_route: RequestedModelRoute,
@@ -231,6 +232,7 @@ struct ScheduledAgent {
     role: AgentRoleTemplate,
     requested_route: RequestedModelRoute,
     resolved_route: ResolvedModelRoute,
+    task_name: String,
     objective: String,
     parent_agent_id: Option<AgentId>,
     causing_turn_id: Option<TurnId>,
@@ -258,6 +260,7 @@ pub struct AgentDispatchScheduler {
     run_id: RunId,
     sink: Arc<dyn RunEventSink>,
     model_catalog: Arc<SubagentModelCatalog>,
+    external_parent: Option<AgentId>,
     agents: HashMap<AgentId, ScheduledAgent>,
     shared_writer: HashMap<WorkspaceId, AgentId>,
 }
@@ -272,9 +275,17 @@ impl AgentDispatchScheduler {
             run_id,
             sink,
             model_catalog,
+            external_parent: None,
             agents: HashMap::new(),
             shared_writer: HashMap::new(),
         }
+    }
+
+    /// Admit one root agent owned by the interactive runtime rather than this
+    /// scheduler. Child lifecycle still records that exact parent and causing
+    /// turn; only execution ownership stays outside the delegated scheduler.
+    pub fn set_external_parent(&mut self, parent: AgentId) {
+        self.external_parent = Some(parent);
     }
 
     /// Rebuild scheduler ownership from normalized durable lifecycle events.
@@ -422,6 +433,10 @@ impl AgentDispatchScheduler {
                         role,
                         requested_route,
                         resolved_route,
+                        task_name: spec
+                            .task_name
+                            .clone()
+                            .unwrap_or_else(|| lifecycle.agent_id.to_string()),
                         objective,
                         parent_agent_id: lifecycle.parent_agent_id.clone(),
                         causing_turn_id: event.turn_id.clone(),
@@ -624,6 +639,7 @@ impl AgentDispatchScheduler {
                     Some(request.objective.clone()),
                     Some(dispatch_spec_snapshot(
                         &request.role,
+                        &request.task_name,
                         &request.requested_route,
                         &resolved_route,
                         &request.workspace.strategy,
@@ -676,6 +692,7 @@ impl AgentDispatchScheduler {
                 role: request.role,
                 requested_route: request.requested_route,
                 resolved_route,
+                task_name: request.task_name,
                 objective: request.objective,
                 parent_agent_id: request.parent_agent_id,
                 causing_turn_id: request.causing_turn_id,
@@ -1025,11 +1042,24 @@ impl AgentDispatchScheduler {
     }
 
     fn validate_request(&self, request: &DispatchRequest) -> Result<(), DispatchError> {
+        if !valid_task_name(&request.task_name) {
+            return Err(DispatchError::InvalidTaskName(request.task_name.clone()));
+        }
+        if self
+            .agents
+            .values()
+            .any(|agent| agent.task_name == request.task_name)
+        {
+            return Err(DispatchError::DuplicateTaskName(request.task_name.clone()));
+        }
         if request.objective.trim().is_empty() {
             return Err(DispatchError::EmptyObjective);
         }
         match (&request.parent_agent_id, &request.causing_turn_id) {
-            (Some(parent), Some(turn)) if !self.agents.contains_key(parent) => {
+            (Some(parent), Some(turn))
+                if !self.agents.contains_key(parent)
+                    && self.external_parent.as_ref() != Some(parent) =>
+            {
                 let _ = turn;
                 return Err(DispatchError::UnknownParent(parent.clone()));
             }
@@ -1083,6 +1113,7 @@ pub struct AgentDispatchRecord {
     pub role: AgentRoleTemplate,
     pub requested_route: RequestedModelRoute,
     pub resolved_route: ResolvedModelRoute,
+    pub task_name: String,
     pub objective: String,
     pub parent_agent_id: Option<AgentId>,
     pub causing_turn_id: Option<TurnId>,
@@ -1096,6 +1127,7 @@ fn dispatch_record(agent: &ScheduledAgent) -> AgentDispatchRecord {
         role: agent.role.clone(),
         requested_route: agent.requested_route.clone(),
         resolved_route: agent.resolved_route.clone(),
+        task_name: agent.task_name.clone(),
         objective: agent.objective.clone(),
         parent_agent_id: agent.parent_agent_id.clone(),
         causing_turn_id: agent.causing_turn_id.clone(),
@@ -1271,12 +1303,14 @@ fn lifecycle_event(
 
 fn dispatch_spec_snapshot(
     role: &AgentRoleTemplate,
+    task_name: &str,
     requested_route: &RequestedModelRoute,
     resolved_route: &ResolvedModelRoute,
     assigned_workspace: &WorkspaceStrategy,
 ) -> AgentDispatchSpecSnapshot {
     AgentDispatchSpecSnapshot {
         version: 2,
+        task_name: Some(task_name.into()),
         legacy_model: None,
         requested_route: Some(requested_route_snapshot(requested_route)),
         resolved_route: Some(resolved_route_snapshot(resolved_route)),
@@ -1324,6 +1358,16 @@ fn dispatch_spec_snapshot(
             }
         },
     }
+}
+
+fn valid_task_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes[0].is_ascii_lowercase()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'_')
 }
 
 fn requested_route_snapshot(route: &RequestedModelRoute) -> AgentRequestedModelRouteSnapshot {
@@ -1641,6 +1685,8 @@ fn lifecycle_state(state: DispatchState) -> AgentLifecycleState {
 pub enum DispatchError {
     InvalidHistory(String),
     ModelRoute(ModelRouteError),
+    InvalidTaskName(String),
+    DuplicateTaskName(String),
     EmptyObjective,
     UnknownParent(AgentId),
     ChildMissingCausingTurn,
@@ -1701,6 +1747,13 @@ impl fmt::Display for DispatchError {
         match self {
             Self::InvalidHistory(detail) => write!(formatter, "invalid dispatch history: {detail}"),
             Self::ModelRoute(error) => write!(formatter, "could not resolve agent model: {error}"),
+            Self::InvalidTaskName(name) => write!(
+                formatter,
+                "invalid agent task name {name:?}; expected 1-64 lowercase letters, digits, or '_' starting with a letter"
+            ),
+            Self::DuplicateTaskName(name) => {
+                write!(formatter, "agent task name {name:?} is already allocated")
+            }
             Self::EmptyObjective => formatter.write_str("agent objective is empty"),
             Self::UnknownParent(id) => write!(formatter, "parent agent {id} is unknown"),
             Self::ChildMissingCausingTurn => {
@@ -2010,7 +2063,12 @@ mod tests {
         workspace_id: WorkspaceId,
         strategy: WorkspaceStrategy,
     ) -> DispatchRequest {
+        static NEXT_TASK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
         DispatchRequest {
+            task_name: format!(
+                "task_{}",
+                NEXT_TASK.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+            ),
             objective: "bounded delegated objective".into(),
             role: kind,
             requested_route: RequestedModelRoute::exact(
@@ -2116,6 +2174,7 @@ mod tests {
         let cause = record_parent_turn(&sink, &parent, turn.clone());
         let child = scheduler
             .dispatch(DispatchRequest {
+                task_name: "inspect_storage".into(),
                 objective: "inspect the storage layer".into(),
                 role: AgentKind::built_in(AgentKindName::Explorer),
                 requested_route: RequestedModelRoute::exact(
@@ -2167,6 +2226,44 @@ mod tests {
     }
 
     #[test]
+    fn task_names_are_strict_and_unique_before_durable_allocation() {
+        let (mut scheduler, sink) = scheduler();
+        let workspace = WorkspaceId::parse("wsp_task_names").unwrap();
+        let mut first = request(
+            AgentKind::built_in(AgentKindName::Explorer),
+            workspace.clone(),
+            WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+        );
+        first.task_name = "inspect_store".into();
+        scheduler.dispatch(first.clone()).unwrap();
+        let durable_count = sink
+            .events(&RunId::parse("run_dispatch_test").unwrap())
+            .unwrap()
+            .len();
+
+        assert_eq!(
+            scheduler.dispatch(first).unwrap_err(),
+            DispatchError::DuplicateTaskName("inspect_store".into())
+        );
+        let mut invalid = request(
+            AgentKind::built_in(AgentKindName::Reviewer),
+            workspace,
+            WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+        );
+        invalid.task_name = "Not Valid".into();
+        assert!(matches!(
+            scheduler.dispatch(invalid),
+            Err(DispatchError::InvalidTaskName(_))
+        ));
+        assert_eq!(
+            sink.events(&RunId::parse("run_dispatch_test").unwrap())
+                .unwrap()
+                .len(),
+            durable_count
+        );
+    }
+
+    #[test]
     fn child_dispatch_requires_a_matching_parent_turn_event() {
         let (mut scheduler, sink) = scheduler();
         let workspace = WorkspaceId::parse("wsp_causal_rejections").unwrap();
@@ -2179,6 +2276,7 @@ mod tests {
             .unwrap();
         let turn = TurnId::parse("trn_expected_cause").unwrap();
         let child_request = |causing_turn_id, caused_by_event| DispatchRequest {
+            task_name: "causal_child".into(),
             objective: "causally delegated work".into(),
             role: AgentKind::built_in(AgentKindName::Explorer),
             requested_route: RequestedModelRoute::exact(
@@ -2463,6 +2561,7 @@ mod tests {
         );
         let handle = scheduler
             .dispatch(DispatchRequest {
+                task_name: "custom_snapshot".into(),
                 objective: "bounded delegated objective".into(),
                 role,
                 requested_route: requested_route.clone(),
@@ -2947,6 +3046,7 @@ mod tests {
         let child_cause = record_parent_turn(&sink, &parent, child_turn.clone());
         let child = scheduler
             .dispatch(DispatchRequest {
+                task_name: "review_plan".into(),
                 objective: "review the plan".into(),
                 role: AgentKind::built_in(AgentKindName::Reviewer),
                 requested_route: RequestedModelRoute::exact(

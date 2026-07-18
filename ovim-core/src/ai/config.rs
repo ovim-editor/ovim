@@ -8,6 +8,72 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// Preview policy for Ovim-owned delegated agents.
+///
+/// The feature is deliberately disabled by default. Enabling it grants only
+/// the parent control surface; child authority is still narrowed separately
+/// by the read-only workspace and role policy.
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiSubagentConfig {
+    pub enabled: bool,
+    pub max_concurrent: usize,
+    pub max_queued: usize,
+    pub max_children_per_parent: usize,
+    pub max_total_per_run: usize,
+    pub max_depth: usize,
+    pub default_timeout_seconds: u64,
+    pub allow_writes: bool,
+    pub allow_network: bool,
+    /// Empty means every otherwise eligible configured catalog entry.
+    pub allowed_models: Vec<String>,
+    /// Empty fails closed. The preview defaults to the two read-only roles.
+    pub allowed_agent_kinds: Vec<String>,
+    /// Empty means every effort advertised by an allowed catalog entry.
+    pub allowed_reasoning_efforts: Vec<String>,
+    pub budgets: AiSubagentBudgetConfig,
+}
+
+impl Default for AiSubagentConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            max_concurrent: 3,
+            max_queued: 8,
+            max_children_per_parent: 4,
+            max_total_per_run: 8,
+            max_depth: 1,
+            default_timeout_seconds: 600,
+            allow_writes: false,
+            allow_network: false,
+            allowed_models: Vec::new(),
+            allowed_agent_kinds: vec!["explorer".into(), "reviewer".into()],
+            allowed_reasoning_efforts: Vec::new(),
+            budgets: AiSubagentBudgetConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct AiSubagentBudgetConfig {
+    pub max_provider_events_per_agent: usize,
+    pub max_tool_calls_per_agent: usize,
+    pub max_total_provider_events: usize,
+    pub max_total_tool_calls: usize,
+    pub max_estimated_cost: f64,
+}
+
+impl Default for AiSubagentBudgetConfig {
+    fn default() -> Self {
+        Self {
+            max_provider_events_per_agent: 256,
+            max_tool_calls_per_agent: 48,
+            max_total_provider_events: 1024,
+            max_total_tool_calls: 160,
+            max_estimated_cost: 5.0,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct AiProfileConfig {
     pub name: String,
@@ -99,6 +165,8 @@ pub struct AiConfig {
     pub chat_context: ChatContextConfig,
     /// Tool-approval behavior for AI chat tool calls.
     pub tool_approval_mode: ToolApprovalMode,
+    /// Explicitly gated preview configuration for delegated agents.
+    pub subagents: AiSubagentConfig,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +175,35 @@ struct AiTomlConfig {
     tool_approval_mode: Option<String>,
     #[serde(default)]
     profiles: HashMap<String, AiTomlProfile>,
+    #[serde(default)]
+    subagents: AiTomlSubagentConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AiTomlSubagentConfig {
+    enabled: Option<bool>,
+    max_concurrent: Option<usize>,
+    max_queued: Option<usize>,
+    max_children_per_parent: Option<usize>,
+    max_total_per_run: Option<usize>,
+    max_depth: Option<usize>,
+    default_timeout_seconds: Option<u64>,
+    allow_writes: Option<bool>,
+    allow_network: Option<bool>,
+    allowed_models: Option<Vec<String>>,
+    allowed_agent_kinds: Option<Vec<String>>,
+    allowed_reasoning_efforts: Option<Vec<String>>,
+    #[serde(default)]
+    budgets: AiTomlSubagentBudgetConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AiTomlSubagentBudgetConfig {
+    max_provider_events_per_agent: Option<usize>,
+    max_tool_calls_per_agent: Option<usize>,
+    max_total_provider_events: Option<usize>,
+    max_total_tool_calls: Option<usize>,
+    max_estimated_cost: Option<f64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -187,6 +284,7 @@ impl Default for AiConfig {
             project_context: ProjectContextConfig::default(),
             chat_context: ChatContextConfig::default(),
             tool_approval_mode: ToolApprovalMode::default(),
+            subagents: AiSubagentConfig::default(),
         }
     }
 }
@@ -287,6 +385,7 @@ impl AiConfig {
         if let Some(mode) = parsed.tool_approval_mode.as_deref() {
             cfg.tool_approval_mode = parse_tool_approval_mode(mode);
         }
+        cfg.subagents = merge_subagent_config(parsed.subagents)?;
 
         if !cfg.profiles.contains_key(&cfg.default_profile) {
             cfg.default_profile = PROFILE_LOCAL.to_string();
@@ -298,6 +397,93 @@ impl AiConfig {
     pub fn resolve_profile(&self, name: &str) -> Option<&AiProfileConfig> {
         self.profiles.get(name)
     }
+}
+
+fn merge_subagent_config(parsed: AiTomlSubagentConfig) -> Result<AiSubagentConfig> {
+    let mut config = AiSubagentConfig::default();
+    config.enabled = parsed.enabled.unwrap_or(config.enabled);
+    config.max_concurrent = parsed.max_concurrent.unwrap_or(config.max_concurrent);
+    config.max_queued = parsed.max_queued.unwrap_or(config.max_queued);
+    config.max_children_per_parent = parsed
+        .max_children_per_parent
+        .unwrap_or(config.max_children_per_parent);
+    config.max_total_per_run = parsed.max_total_per_run.unwrap_or(config.max_total_per_run);
+    config.max_depth = parsed.max_depth.unwrap_or(config.max_depth);
+    config.default_timeout_seconds = parsed
+        .default_timeout_seconds
+        .unwrap_or(config.default_timeout_seconds);
+    config.allow_writes = parsed.allow_writes.unwrap_or(config.allow_writes);
+    config.allow_network = parsed.allow_network.unwrap_or(config.allow_network);
+    config.allowed_models = parsed.allowed_models.unwrap_or(config.allowed_models);
+    config.allowed_agent_kinds = parsed
+        .allowed_agent_kinds
+        .unwrap_or(config.allowed_agent_kinds);
+    config.allowed_reasoning_efforts = parsed
+        .allowed_reasoning_efforts
+        .unwrap_or(config.allowed_reasoning_efforts);
+    config.budgets.max_provider_events_per_agent = parsed
+        .budgets
+        .max_provider_events_per_agent
+        .unwrap_or(config.budgets.max_provider_events_per_agent);
+    config.budgets.max_tool_calls_per_agent = parsed
+        .budgets
+        .max_tool_calls_per_agent
+        .unwrap_or(config.budgets.max_tool_calls_per_agent);
+    config.budgets.max_total_provider_events = parsed
+        .budgets
+        .max_total_provider_events
+        .unwrap_or(config.budgets.max_total_provider_events);
+    config.budgets.max_total_tool_calls = parsed
+        .budgets
+        .max_total_tool_calls
+        .unwrap_or(config.budgets.max_total_tool_calls);
+    config.budgets.max_estimated_cost = parsed
+        .budgets
+        .max_estimated_cost
+        .unwrap_or(config.budgets.max_estimated_cost);
+
+    let positive = [
+        config.max_concurrent,
+        config.max_queued,
+        config.max_children_per_parent,
+        config.max_total_per_run,
+        config.max_depth,
+        config.budgets.max_provider_events_per_agent,
+        config.budgets.max_tool_calls_per_agent,
+        config.budgets.max_total_provider_events,
+        config.budgets.max_total_tool_calls,
+    ];
+    if positive.contains(&0) || config.default_timeout_seconds == 0 {
+        anyhow::bail!("subagent limits and budgets must be positive");
+    }
+    if !config.budgets.max_estimated_cost.is_finite() || config.budgets.max_estimated_cost < 0.0 {
+        anyhow::bail!("subagent max_estimated_cost must be finite and non-negative");
+    }
+    if config.allow_writes || config.allow_network || config.max_depth != 1 {
+        anyhow::bail!(
+            "the subagent preview supports only read-only, network-disabled children at depth 1"
+        );
+    }
+    validate_allowlist("allowed_models", &config.allowed_models)?;
+    validate_allowlist("allowed_agent_kinds", &config.allowed_agent_kinds)?;
+    validate_allowlist(
+        "allowed_reasoning_efforts",
+        &config.allowed_reasoning_efforts,
+    )?;
+    Ok(config)
+}
+
+fn validate_allowlist(name: &str, values: &[String]) -> Result<()> {
+    let mut seen = std::collections::BTreeSet::new();
+    for value in values {
+        if value.trim().is_empty() {
+            anyhow::bail!("subagent {name} contains an empty value");
+        }
+        if !seen.insert(value) {
+            anyhow::bail!("subagent {name} repeats {value:?}");
+        }
+    }
+    Ok(())
 }
 
 /// Parse a string into an EditFormat enum.
@@ -475,5 +661,40 @@ mod tests {
         assert_eq!(infer_provider("gpt-5.6-sol"), AiProviderKind::Codex);
         assert_eq!(infer_provider("gpt-5.6-terra"), AiProviderKind::Codex);
         assert_eq!(default_api_key_env(AiProviderKind::Codex), None);
+    }
+
+    #[test]
+    fn subagent_preview_defaults_fail_closed() {
+        let preview = AiConfig::default().subagents;
+        assert!(!preview.enabled);
+        assert_eq!(preview.max_concurrent, 3);
+        assert_eq!(preview.max_depth, 1);
+        assert!(!preview.allow_writes);
+        assert!(!preview.allow_network);
+        assert_eq!(preview.allowed_agent_kinds, ["explorer", "reviewer"]);
+        assert_eq!(preview.budgets.max_tool_calls_per_agent, 48);
+        assert_eq!(preview.budgets.max_total_tool_calls, 160);
+    }
+
+    #[test]
+    fn subagent_preview_rejects_unsafe_or_ambiguous_policy() {
+        assert!(merge_subagent_config(AiTomlSubagentConfig {
+            enabled: Some(true),
+            allow_writes: Some(true),
+            ..AiTomlSubagentConfig::default()
+        })
+        .is_err());
+        assert!(merge_subagent_config(AiTomlSubagentConfig {
+            enabled: Some(true),
+            allowed_models: Some(vec!["same/model".into(), "same/model".into()]),
+            ..AiTomlSubagentConfig::default()
+        })
+        .is_err());
+        assert!(merge_subagent_config(AiTomlSubagentConfig {
+            enabled: Some(true),
+            max_concurrent: Some(0),
+            ..AiTomlSubagentConfig::default()
+        })
+        .is_err());
     }
 }

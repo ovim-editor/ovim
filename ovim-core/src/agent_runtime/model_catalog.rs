@@ -257,6 +257,39 @@ impl SubagentModelCatalog {
                     (BTreeSet::from([effort.clone()]), effort, true, true)
                 };
             let id = catalog_model_id(profile_name, &profile.model);
+            if !config.subagents.allowed_models.is_empty()
+                && !config.subagents.allowed_models.contains(&id)
+            {
+                continue;
+            }
+            let supported_reasoning_efforts =
+                if config.subagents.allowed_reasoning_efforts.is_empty() {
+                    supported_reasoning_efforts
+                } else {
+                    supported_reasoning_efforts
+                        .into_iter()
+                        .filter(|effort| {
+                            config
+                                .subagents
+                                .allowed_reasoning_efforts
+                                .iter()
+                                .any(|allowed| allowed == effort.as_str())
+                        })
+                        .collect()
+                };
+            if supported_reasoning_efforts.is_empty() {
+                continue;
+            }
+            let default_reasoning_effort =
+                if supported_reasoning_efforts.contains(&default_reasoning_effort) {
+                    default_reasoning_effort
+                } else {
+                    supported_reasoning_efforts
+                        .iter()
+                        .next()
+                        .expect("empty effort sets were skipped")
+                        .clone()
+                };
             let entry = SubagentModelCatalogEntry {
                 id: id.clone(),
                 provider: profile.provider,

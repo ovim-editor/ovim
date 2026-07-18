@@ -902,11 +902,37 @@ impl AgentToolExecutor for SnapshotToolExecutor {
 pub struct SnapshotAgentLoopInputFactory {
     manager: AgentWorkspaceManager,
     provider: Arc<dyn AgentProviderAdapter>,
+    envelopes: Mutex<HashMap<ManifestId, DelegationEnvelope>>,
 }
 
 impl SnapshotAgentLoopInputFactory {
     pub fn new(manager: AgentWorkspaceManager, provider: Arc<dyn AgentProviderAdapter>) -> Self {
-        Self { manager, provider }
+        Self {
+            manager,
+            provider,
+            envelopes: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Bind the complete typed delegation contract before queue execution can
+    /// start. Manifest identities are one-per-dispatch, so replacing a value
+    /// would make the immutable context ambiguous and is rejected.
+    pub fn register_envelope(
+        &self,
+        manifest_id: ManifestId,
+        envelope: DelegationEnvelope,
+    ) -> Result<(), String> {
+        let mut envelopes = self
+            .envelopes
+            .lock()
+            .map_err(|_| "delegation envelope registry is poisoned".to_string())?;
+        if envelopes.contains_key(&manifest_id) {
+            return Err(format!(
+                "delegation envelope for manifest {manifest_id} is already registered"
+            ));
+        }
+        envelopes.insert(manifest_id, envelope);
+        Ok(())
     }
 }
 
@@ -930,6 +956,14 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("captured manifest {manifest_id} is not registered"))?;
         let warnings = workspace.warnings().to_vec();
+        let mut envelope = self
+            .envelopes
+            .lock()
+            .map_err(|_| "delegation envelope registry is poisoned".to_string())?
+            .get(manifest_id)
+            .cloned()
+            .ok_or_else(|| format!("captured manifest {manifest_id} has no delegation envelope"))?;
+        envelope.workspace_warnings = warnings.clone();
         Ok(AgentLoopDependencies {
             provider: self.provider.clone(),
             tool_view: SnapshotToolExecutor::scoped_view(),
@@ -941,10 +975,7 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
                 read_only: true,
                 warnings: warnings.clone(),
             },
-            envelope: DelegationEnvelope {
-                workspace_warnings: warnings,
-                ..DelegationEnvelope::objective(dispatch.objective.clone())
-            },
+            envelope,
             budget: None,
         })
     }
@@ -1872,6 +1903,7 @@ mod tests {
                 resolution: ModelRouteResolution::Exact,
                 fallback_reason: None,
             },
+            task_name: "snapshot_tools".into(),
             objective: "inspect the snapshot".into(),
             parent_agent_id: None,
             causing_turn_id: None,
@@ -1882,6 +1914,12 @@ mod tests {
             manager,
             Arc::new(FakeProviderAdapter::new("delayed_completion")),
         );
+        factory
+            .register_envelope(
+                fixture.manifest_id.clone(),
+                DelegationEnvelope::objective("inspect the snapshot"),
+            )
+            .unwrap();
         let dependencies = factory.build(&dispatch).unwrap();
         let names = dependencies.tool_view.names();
         assert_eq!(
@@ -1964,6 +2002,12 @@ mod tests {
             manager,
             Arc::new(FakeProviderAdapter::new("delayed_completion")),
         ));
+        factory
+            .register_envelope(
+                fixture.manifest_id.clone(),
+                DelegationEnvelope::objective("inspect the captured snapshot"),
+            )
+            .unwrap();
         let supervisor = AgentSupervisor::new(
             run_id.clone(),
             root_agent_id,
@@ -1975,6 +2019,7 @@ mod tests {
         .unwrap();
         supervisor
             .dispatch(DispatchRequest {
+                task_name: "inspect_snapshot".into(),
                 objective: "inspect the captured snapshot".into(),
                 role: AgentRoleTemplate::built_in(AgentKindName::Explorer),
                 requested_route: RequestedModelRoute::exact(

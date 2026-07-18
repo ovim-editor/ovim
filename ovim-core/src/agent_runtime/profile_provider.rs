@@ -680,11 +680,25 @@ fn delegation_system_prompt(
 ) -> Result<String, AgentProviderError> {
     let bounded = json!({
         "version": envelope.version,
+        "task_name": bounded_text(&envelope.task_name, 64),
         "objective": bounded_text(&envelope.objective, 8 * 1024),
+        "agent_kind": envelope.agent_kind.as_str(),
+        "context_mode": envelope.context_mode.as_str(),
+        "expected_output": envelope.expected_output.as_str(),
         "done_when": bounded_list(&envelope.done_when, 16, 512),
         "non_goals": bounded_list(&envelope.non_goals, 16, 512),
         "relevant_paths": bounded_list(&envelope.relevant_paths, 32, 512),
         "parent_brief": envelope.parent_brief.as_deref().map(|text| bounded_text(text, 4 * 1024)),
+        "identity": envelope.identity.as_ref().map(|identity| json!({
+            "run_id": identity.run_id,
+            "parent_agent_id": identity.parent_agent_id,
+            "causing_turn_id": identity.causing_turn_id,
+            "causing_event_id": identity.causing_event_id,
+            "workspace_id": identity.workspace_id,
+            "manifest_id": identity.manifest_id,
+        })),
+        "effective_capabilities": bounded_list(&envelope.effective_capabilities, 16, 64),
+        "timeout_seconds": envelope.timeout_seconds,
         "workspace_warnings": envelope.workspace_warnings.iter().take(16).map(|warning| json!({
             "kind": warning.kind,
             "path": warning.path.as_deref().map(|text| bounded_text(text, 512)),

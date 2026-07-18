@@ -96,7 +96,9 @@ impl AgentSupervisor {
         config: AgentSupervisorConfig,
     ) -> Result<Self, AgentSupervisorError> {
         validate_config(&config)?;
-        let scheduler = AgentDispatchScheduler::new(run_id.clone(), sink.clone(), model_catalog);
+        let mut scheduler =
+            AgentDispatchScheduler::new(run_id.clone(), sink.clone(), model_catalog);
+        scheduler.set_external_parent(root_agent_id.clone());
         Ok(Self::from_scheduler(
             run_id,
             root_agent_id,
@@ -119,8 +121,9 @@ impl AgentSupervisor {
         config: AgentSupervisorConfig,
     ) -> Result<Self, AgentSupervisorError> {
         validate_config(&config)?;
-        let scheduler =
+        let mut scheduler =
             AgentDispatchScheduler::rehydrate(run_id.clone(), sink.clone(), model_catalog)?;
+        scheduler.set_external_parent(root_agent_id.clone());
         let supervisor =
             Self::from_scheduler(run_id, root_agent_id, sink, scheduler, factory, config);
         supervisor.recover_mailbox_notifications()?;
@@ -160,14 +163,33 @@ impl AgentSupervisor {
         &self,
         request: DispatchRequest,
     ) -> Result<DispatchHandle, AgentSupervisorError> {
-        let handle = {
-            let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
-            let records = scheduler.dispatch_records();
-            self.validate_dispatch_limits(&records, &request)?;
-            scheduler.dispatch(request)?
-        };
+        let handle = self.allocate(request)?;
         self.drain_ready().await?;
         Ok(handle)
+    }
+
+    /// Durably allocate and queue a child, then drain in an independent task.
+    /// This is the parent-tool boundary: the caller receives the stable child
+    /// identity without waiting for provider startup or completion.
+    pub fn dispatch_nonblocking(
+        &self,
+        request: DispatchRequest,
+    ) -> Result<DispatchHandle, AgentSupervisorError> {
+        let handle = self.allocate(request)?;
+        let supervisor = self.clone();
+        tokio::spawn(async move {
+            if let Err(error) = supervisor.drain_ready().await {
+                crate::log_warn!("agent_runtime", "could not drain child queue: {error}");
+            }
+        });
+        Ok(handle)
+    }
+
+    fn allocate(&self, request: DispatchRequest) -> Result<DispatchHandle, AgentSupervisorError> {
+        let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
+        let records = scheduler.dispatch_records();
+        self.validate_dispatch_limits(&records, &request)?;
+        scheduler.dispatch(request).map_err(Into::into)
     }
 
     pub fn state(&self, agent_id: &AgentId) -> Result<Option<DispatchState>, AgentSupervisorError> {
@@ -532,7 +554,11 @@ impl AgentSupervisor {
             if children >= self.inner.config.max_children_per_parent {
                 return Err(AgentSupervisorError::ParentChildLimit(parent.clone()));
             }
-            let depth = agent_depth(records, parent)? + 1;
+            let depth = if parent == &self.inner.root_agent_id {
+                1
+            } else {
+                agent_depth(records, parent)? + 1
+            };
             if depth > self.inner.config.max_depth {
                 return Err(AgentSupervisorError::DepthLimit { depth });
             }
@@ -802,6 +828,7 @@ mod tests {
 
     fn request(objective: &str) -> DispatchRequest {
         DispatchRequest {
+            task_name: format!("task_{}", objective.replace(' ', "_")),
             objective: objective.into(),
             role: AgentKind::built_in(AgentKindName::Explorer),
             requested_route: RequestedModelRoute::exact(

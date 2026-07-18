@@ -12,9 +12,9 @@ use super::{
 };
 use crate::ai::tools::StrictJsonSchema;
 use crate::run_log::{
-    AgentProviderEvent as RecordedAgentProviderEvent, AgentProviderState, EventEnvelope, EventKind,
-    OperationId, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect, ToolStartedEvent,
-    AGENT_PROVIDER_EVENT_VERSION,
+    AgentProviderEvent as RecordedAgentProviderEvent, AgentProviderState, EventEnvelope, EventId,
+    EventKind, ManifestId, OperationId, RunId, ToolIntentEvent, ToolOutcome, ToolResultEvent,
+    ToolSideEffect, ToolStartedEvent, TurnId, WorkspaceId, AGENT_PROVIDER_EVENT_VERSION,
 };
 use serde_json::Value;
 use std::collections::BTreeMap;
@@ -35,23 +35,90 @@ pub type AgentFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DelegationEnvelope {
     pub version: u32,
+    pub task_name: String,
     pub objective: String,
+    pub agent_kind: DelegatedAgentKind,
+    pub context_mode: DelegationContextMode,
+    pub expected_output: DelegationExpectedOutput,
     pub done_when: Vec<String>,
     pub non_goals: Vec<String>,
     pub relevant_paths: Vec<String>,
     pub parent_brief: Option<String>,
+    pub identity: Option<Box<DelegationIdentity>>,
+    pub effective_capabilities: Vec<String>,
+    pub timeout_seconds: u64,
     pub workspace_warnings: Vec<AgentWorkspaceWarning>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DelegatedAgentKind {
+    Explorer,
+    Reviewer,
+}
+
+impl DelegatedAgentKind {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Explorer => "explorer",
+            Self::Reviewer => "reviewer",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DelegationContextMode {
+    Brief,
+}
+
+impl DelegationContextMode {
+    pub fn as_str(&self) -> &'static str {
+        "brief"
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DelegationExpectedOutput {
+    Analysis,
+    ReviewReport,
+    Verification,
+}
+
+impl DelegationExpectedOutput {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Analysis => "analysis",
+            Self::ReviewReport => "review_report",
+            Self::Verification => "verification",
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DelegationIdentity {
+    pub run_id: RunId,
+    pub parent_agent_id: crate::run_log::AgentId,
+    pub causing_turn_id: TurnId,
+    pub causing_event_id: EventId,
+    pub workspace_id: WorkspaceId,
+    pub manifest_id: ManifestId,
 }
 
 impl DelegationEnvelope {
     pub fn objective(objective: impl Into<String>) -> Self {
         Self {
             version: 1,
+            task_name: "delegated_task".into(),
             objective: objective.into(),
+            agent_kind: DelegatedAgentKind::Explorer,
+            context_mode: DelegationContextMode::Brief,
+            expected_output: DelegationExpectedOutput::Analysis,
             done_when: Vec::new(),
             non_goals: Vec::new(),
             relevant_paths: Vec::new(),
             parent_brief: None,
+            identity: None,
+            effective_capabilities: vec!["read".into()],
+            timeout_seconds: 600,
             workspace_warnings: Vec::new(),
         }
     }

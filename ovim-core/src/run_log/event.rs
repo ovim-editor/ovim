@@ -305,6 +305,10 @@ pub struct AgentLifecycleEvent {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDispatchSpecSnapshot {
     pub version: u32,
+    /// Parent-assigned stable task name. Optional only for histories written
+    /// before delegated tasks became addressable by name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub task_name: Option<String>,
     /// Version-one role-owned route. New dispatches must leave this absent and
     /// persist both requested and resolved version-two routes instead.
     #[serde(default, rename = "model", skip_serializing_if = "Option::is_none")]
