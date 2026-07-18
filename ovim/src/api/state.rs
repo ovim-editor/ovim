@@ -1,3 +1,5 @@
+pub use ovim_core::agent_runtime::{AgentArtifactHandle, AgentControlPlaneSnapshot, AgentSnapshot};
+use ovim_core::run_log::{AgentId, EventEnvelope, EventId, OperationId, RunId, TurnId};
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -58,6 +60,68 @@ pub enum ApiRequest {
         to: usize,
         tx: oneshot::Sender<ApiResponse>,
     },
+    GetAgents {
+        run_id: RunId,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    GetAgent {
+        run_id: RunId,
+        agent_id: AgentId,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    GetAgentEvents {
+        run_id: RunId,
+        agent_id: AgentId,
+        after_sequence: u64,
+        limit: usize,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    GetAgentArtifacts {
+        run_id: RunId,
+        agent_id: AgentId,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    WaitAgent {
+        target: AgentControlTarget,
+        timeout_millis: u64,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    InterruptAgent {
+        target: AgentControlTarget,
+        reason: String,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    SendAgentMessage {
+        target: AgentControlTarget,
+        parent_agent_id: AgentId,
+        causing_turn_id: TurnId,
+        caused_by_event_id: EventId,
+        message: String,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    FollowupAgent {
+        target: AgentControlTarget,
+        parent_agent_id: AgentId,
+        causing_turn_id: TurnId,
+        caused_by_event_id: EventId,
+        objective: String,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+    DecideAgentApproval {
+        target: AgentControlTarget,
+        request_event_id: EventId,
+        allow: bool,
+        reason: Option<String>,
+        tx: oneshot::Sender<ApiResponse>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentControlTarget {
+    pub run_id: RunId,
+    pub agent_id: AgentId,
+    pub turn_generation: u32,
+    pub operation_id: OperationId,
 }
 
 /// Response types that can be returned from the editor
@@ -81,8 +145,41 @@ pub enum ApiResponse {
     Trace(TraceInfo),
     Diagnostics(DiagnosticsInfo),
     Lines(LinesResponse),
+    Agents(AgentControlPlaneSnapshot),
+    Agent(AgentSnapshot),
+    AgentEvents(AgentEventsResponse),
+    AgentArtifacts(AgentArtifactsResponse),
+    AgentControl(AgentControlResponse),
     Success(SuccessResponse),
     Error(ErrorResponse),
+}
+
+pub const AGENT_API_SCHEMA_VERSION: u32 = 1;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentEventsResponse {
+    pub schema_version: u32,
+    pub run_id: RunId,
+    pub agent_id: AgentId,
+    pub after_sequence: u64,
+    pub events: Vec<EventEnvelope>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentArtifactsResponse {
+    pub schema_version: u32,
+    pub run_id: RunId,
+    pub agent_id: AgentId,
+    pub artifacts: Vec<AgentArtifactHandle>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentControlResponse {
+    pub schema_version: u32,
+    pub run_id: RunId,
+    pub agent_id: AgentId,
+    pub operation_id: OperationId,
+    pub result: serde_json::Value,
 }
 
 /// Result of send_keys operation with context window
@@ -693,7 +790,11 @@ pub fn format_context_window(
 
 #[cfg(test)]
 mod context_window_tests {
-    use super::{format_context_window, parse_key_string};
+    use super::{
+        format_context_window, parse_key_string, AgentControlResponse, ApiResponse,
+        AGENT_API_SCHEMA_VERSION,
+    };
+    use ovim_core::run_log::{AgentId, OperationId, RunId};
     use ovim_core::{KeyCode, Modifiers};
 
     #[test]
@@ -771,5 +872,22 @@ mod context_window_tests {
     fn trailing_newline_preserves_the_empty_final_line() {
         let context = format_context_window("first\n", 1, 0, Some("file.txt"), "NORMAL");
         assert!(context.contains(">> 2 | \n"), "{context}");
+    }
+
+    #[test]
+    fn agent_control_response_has_stable_versioned_wire_identity() {
+        let response = ApiResponse::AgentControl(AgentControlResponse {
+            schema_version: AGENT_API_SCHEMA_VERSION,
+            run_id: RunId::new(),
+            agent_id: AgentId::new(),
+            operation_id: OperationId::new(),
+            result: serde_json::json!({ "outcome": "queued" }),
+        });
+        let value = serde_json::to_value(response).unwrap();
+        assert_eq!(value["schema_version"], AGENT_API_SCHEMA_VERSION);
+        assert!(value["run_id"].as_str().unwrap().starts_with("run_"));
+        assert!(value["agent_id"].as_str().unwrap().starts_with("agt_"));
+        assert!(value["operation_id"].as_str().unwrap().starts_with("op_"));
+        assert_eq!(value["result"]["outcome"], "queued");
     }
 }

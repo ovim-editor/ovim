@@ -506,10 +506,38 @@ impl AiSubagentRun {
 }
 
 impl Editor {
+    fn headless_subagent_run(&self, run_id: &RunId) -> Result<Arc<AiSubagentRun>, String> {
+        if let Ok(run) = self.ai_state.subagents.registered_run(run_id) {
+            return Ok(run);
+        }
+        let binding = self
+            .ai_state
+            .durable_chat_bindings
+            .values()
+            .find(|binding| &binding.binding.run_id == run_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown or inactive delegated-agent run {run_id}"))?;
+        let services = self
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .ok_or_else(|| "durable run storage is unavailable".to_string())?;
+        let repository_root = self
+            .ai_repo_root()
+            .ok_or_else(|| "delegated agents require an active Git repository".to_string())?;
+        self.ai_state.subagents.run(
+            services.store.clone(),
+            run_id.clone(),
+            binding.binding.root_agent_id,
+            binding.binding.key.repository_id,
+            repository_root,
+        )
+    }
+
     /// Build one restart-safe, transport-neutral snapshot from the existing
     /// editor-owned supervisor and durable projections.
     pub fn ai_agent_snapshot(&self, run_id: &RunId) -> Result<AgentControlPlaneSnapshot, String> {
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         let events = run
             .store
             .events(run_id)
@@ -551,7 +579,7 @@ impl Editor {
         if !(1..=1_000).contains(&limit) {
             return Err("agent event limit must be between 1 and 1000".into());
         }
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         ensure_run_agent(&run, agent_id, None)?;
         Ok(run
             .store
@@ -575,7 +603,7 @@ impl Editor {
         if timeout.is_zero() || timeout > std::time::Duration::from_secs(60) {
             return Err("agent wait timeout must be between 1ms and 60s".into());
         }
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         ensure_run_agent(&run, agent_id, Some(turn_generation))?;
         Ok(PreparedHeadlessAgentControl::Wait {
             mailbox: run
@@ -594,7 +622,7 @@ impl Editor {
         turn_generation: u32,
         reason: String,
     ) -> Result<PreparedHeadlessAgentControl, String> {
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         ensure_run_agent(&run, agent_id, Some(turn_generation))?;
         Ok(PreparedHeadlessAgentControl::Interrupt {
             supervisor: run.supervisor.clone(),
@@ -614,7 +642,7 @@ impl Editor {
         caused_by_event: EventId,
         content: String,
     ) -> Result<serde_json::Value, String> {
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         ensure_run_agent(&run, agent_id, Some(turn_generation))?;
         if parent_agent_id != run.root_agent_id {
             return Err("message parent does not match the run root agent".into());
@@ -648,7 +676,7 @@ impl Editor {
         caused_by_event: EventId,
         objective: String,
     ) -> Result<PreparedHeadlessAgentControl, String> {
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         let record = ensure_run_agent(&run, agent_id, Some(turn_generation))?;
         if parent_agent_id != run.root_agent_id {
             return Err("follow-up parent does not match the run root agent".into());
@@ -685,7 +713,7 @@ impl Editor {
         allow: bool,
         reason: Option<String>,
     ) -> Result<serde_json::Value, String> {
-        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let run = self.headless_subagent_run(run_id)?;
         ensure_run_agent(&run, agent_id, Some(turn_generation))?;
         let decision = if allow {
             AgentApprovalResponseDecision::Allow
@@ -2200,6 +2228,18 @@ mod tests {
             crate::run_log::AgentReported::NotReported
         );
         assert!(snapshot.agents[0].handoff.is_some());
+        assert!(editor.ai_agent_snapshot(&RunId::new()).is_err());
+        assert!(editor
+            .ai_agent_events(&run.run_id, &AgentId::new(), 0, 100)
+            .is_err());
+        assert!(editor
+            .prepare_ai_agent_wait(
+                &run.run_id,
+                &snapshot.agents[0].agent_id,
+                snapshot.agents[0].turn_generation + 1,
+                std::time::Duration::from_millis(1),
+            )
+            .is_err());
         editor.consume_ai_subagent_updates(&payload).unwrap();
     }
 

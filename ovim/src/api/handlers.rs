@@ -1,13 +1,15 @@
-use super::state::{ApiRequest, ApiResponse, ApiState, MAX_KEY_STRING_LENGTH};
+use super::state::{AgentControlTarget, ApiRequest, ApiResponse, ApiState, MAX_KEY_STRING_LENGTH};
 use crate::metrics;
 use axum::{
-    extract::State,
+    extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Json, Response},
     Json as JsonExtractor,
 };
 use serde::Deserialize;
 use tokio::sync::oneshot;
+
+use ovim_core::run_log::{AgentId, EventId, OperationId, RunId, TurnId};
 
 // Input validation constants
 const MAX_BUFFER_SIZE: usize = 100_000_000; // 100MB max buffer content
@@ -714,6 +716,362 @@ pub async fn read_lines(
     match rx.await {
         Ok(response) => Json(response).into_response(),
         Err(_) => error_response("Failed to read lines"),
+    }
+}
+
+#[derive(Deserialize)]
+pub struct AgentRunQuery {
+    pub run_id: String,
+}
+
+#[derive(Deserialize)]
+pub struct AgentEventsQuery {
+    pub run_id: String,
+    #[serde(default)]
+    pub after_sequence: u64,
+    #[serde(default = "default_agent_event_limit")]
+    pub limit: usize,
+}
+
+fn default_agent_event_limit() -> usize {
+    100
+}
+
+#[derive(Deserialize)]
+pub struct AgentWaitPayload {
+    pub run_id: String,
+    pub turn_generation: u32,
+    pub operation_id: String,
+    pub timeout_millis: u64,
+}
+
+#[derive(Deserialize)]
+pub struct AgentInterruptPayload {
+    pub run_id: String,
+    pub turn_generation: u32,
+    pub operation_id: String,
+    pub reason: String,
+}
+
+#[derive(Deserialize)]
+pub struct AgentMessagePayload {
+    pub run_id: String,
+    pub turn_generation: u32,
+    pub operation_id: String,
+    pub parent_agent_id: String,
+    pub causing_turn_id: String,
+    pub caused_by_event_id: String,
+    pub message: String,
+}
+
+#[derive(Deserialize)]
+pub struct AgentFollowupPayload {
+    pub run_id: String,
+    pub turn_generation: u32,
+    pub operation_id: String,
+    pub parent_agent_id: String,
+    pub causing_turn_id: String,
+    pub caused_by_event_id: String,
+    pub objective: String,
+}
+
+#[derive(Deserialize)]
+pub struct AgentApprovalPayload {
+    pub run_id: String,
+    pub turn_generation: u32,
+    pub operation_id: String,
+    pub request_event_id: String,
+    pub decision: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+pub async fn get_agents(
+    State(state): State<ApiState>,
+    Query(query): Query<AgentRunQuery>,
+) -> Response {
+    let run_id = match RunId::parse(query.run_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    request_agent(&state, |tx| ApiRequest::GetAgents { run_id, tx }).await
+}
+
+pub async fn get_agent(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<AgentRunQuery>,
+) -> Response {
+    let (run_id, agent_id) = match parse_run_agent(query.run_id, agent_id) {
+        Ok(ids) => ids,
+        Err(error) => return validation_error(&error),
+    };
+    request_agent(&state, |tx| ApiRequest::GetAgent {
+        run_id,
+        agent_id,
+        tx,
+    })
+    .await
+}
+
+pub async fn get_agent_events(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<AgentEventsQuery>,
+) -> Response {
+    if !(1..=1_000).contains(&query.limit) {
+        return validation_error("limit must be between 1 and 1000");
+    }
+    let (run_id, agent_id) = match parse_run_agent(query.run_id, agent_id) {
+        Ok(ids) => ids,
+        Err(error) => return validation_error(&error),
+    };
+    request_agent(&state, |tx| ApiRequest::GetAgentEvents {
+        run_id,
+        agent_id,
+        after_sequence: query.after_sequence,
+        limit: query.limit,
+        tx,
+    })
+    .await
+}
+
+pub async fn get_agent_artifacts(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    Query(query): Query<AgentRunQuery>,
+) -> Response {
+    let (run_id, agent_id) = match parse_run_agent(query.run_id, agent_id) {
+        Ok(ids) => ids,
+        Err(error) => return validation_error(&error),
+    };
+    request_agent(&state, |tx| ApiRequest::GetAgentArtifacts {
+        run_id,
+        agent_id,
+        tx,
+    })
+    .await
+}
+
+pub async fn wait_agent(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    JsonExtractor(payload): JsonExtractor<AgentWaitPayload>,
+) -> Response {
+    if !(1..=60_000).contains(&payload.timeout_millis) {
+        return validation_error("timeout_millis must be between 1 and 60000");
+    }
+    let target = match parse_target(
+        payload.run_id,
+        agent_id,
+        payload.turn_generation,
+        payload.operation_id,
+    ) {
+        Ok(target) => target,
+        Err(error) => return validation_error(&error),
+    };
+    request_agent(&state, |tx| ApiRequest::WaitAgent {
+        target,
+        timeout_millis: payload.timeout_millis,
+        tx,
+    })
+    .await
+}
+
+pub async fn interrupt_agent(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    JsonExtractor(payload): JsonExtractor<AgentInterruptPayload>,
+) -> Response {
+    if payload.reason.trim().is_empty() || payload.reason.len() > 2_048 {
+        return validation_error("reason must be between 1 and 2048 bytes");
+    }
+    let target = match parse_target(
+        payload.run_id,
+        agent_id,
+        payload.turn_generation,
+        payload.operation_id,
+    ) {
+        Ok(target) => target,
+        Err(error) => return validation_error(&error),
+    };
+    request_agent(&state, |tx| ApiRequest::InterruptAgent {
+        target,
+        reason: payload.reason,
+        tx,
+    })
+    .await
+}
+
+pub async fn send_agent_message(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    JsonExtractor(payload): JsonExtractor<AgentMessagePayload>,
+) -> Response {
+    if payload.message.trim().is_empty() || payload.message.len() > 8 * 1_024 {
+        return validation_error("message must be between 1 and 8192 bytes");
+    }
+    let target = match parse_target(
+        payload.run_id,
+        agent_id,
+        payload.turn_generation,
+        payload.operation_id,
+    ) {
+        Ok(target) => target,
+        Err(error) => return validation_error(&error),
+    };
+    let parent_agent_id = match AgentId::parse(payload.parent_agent_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    let causing_turn_id = match TurnId::parse(payload.causing_turn_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    let caused_by_event_id = match EventId::parse(payload.caused_by_event_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    request_agent(&state, |tx| ApiRequest::SendAgentMessage {
+        target,
+        parent_agent_id,
+        causing_turn_id,
+        caused_by_event_id,
+        message: payload.message,
+        tx,
+    })
+    .await
+}
+
+pub async fn followup_agent(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    JsonExtractor(payload): JsonExtractor<AgentFollowupPayload>,
+) -> Response {
+    if payload.objective.trim().is_empty() || payload.objective.len() > 16 * 1_024 {
+        return validation_error("objective must be between 1 and 16384 bytes");
+    }
+    let target = match parse_target(
+        payload.run_id,
+        agent_id,
+        payload.turn_generation,
+        payload.operation_id,
+    ) {
+        Ok(target) => target,
+        Err(error) => return validation_error(&error),
+    };
+    let parent_agent_id = match AgentId::parse(payload.parent_agent_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    let causing_turn_id = match TurnId::parse(payload.causing_turn_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    let caused_by_event_id = match EventId::parse(payload.caused_by_event_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    request_agent(&state, |tx| ApiRequest::FollowupAgent {
+        target,
+        parent_agent_id,
+        causing_turn_id,
+        caused_by_event_id,
+        objective: payload.objective,
+        tx,
+    })
+    .await
+}
+
+pub async fn decide_agent_approval(
+    State(state): State<ApiState>,
+    Path(agent_id): Path<String>,
+    JsonExtractor(payload): JsonExtractor<AgentApprovalPayload>,
+) -> Response {
+    let allow = match payload.decision.as_str() {
+        "allow" => true,
+        "deny" => false,
+        _ => return validation_error("decision must be 'allow' or 'deny'"),
+    };
+    let target = match parse_target(
+        payload.run_id,
+        agent_id,
+        payload.turn_generation,
+        payload.operation_id,
+    ) {
+        Ok(target) => target,
+        Err(error) => return validation_error(&error),
+    };
+    let request_event_id = match EventId::parse(payload.request_event_id) {
+        Ok(id) => id,
+        Err(error) => return validation_error(&error.to_string()),
+    };
+    request_agent(&state, |tx| ApiRequest::DecideAgentApproval {
+        target,
+        request_event_id,
+        allow,
+        reason: payload.reason,
+        tx,
+    })
+    .await
+}
+
+fn parse_run_agent(run_id: String, agent_id: String) -> Result<(RunId, AgentId), String> {
+    Ok((
+        RunId::parse(run_id).map_err(|error| error.to_string())?,
+        AgentId::parse(agent_id).map_err(|error| error.to_string())?,
+    ))
+}
+
+fn parse_target(
+    run_id: String,
+    agent_id: String,
+    turn_generation: u32,
+    operation_id: String,
+) -> Result<AgentControlTarget, String> {
+    let (run_id, agent_id) = parse_run_agent(run_id, agent_id)?;
+    Ok(AgentControlTarget {
+        run_id,
+        agent_id,
+        turn_generation,
+        operation_id: OperationId::parse(operation_id).map_err(|error| error.to_string())?,
+    })
+}
+
+async fn request_agent(
+    state: &ApiState,
+    request: impl FnOnce(oneshot::Sender<ApiResponse>) -> ApiRequest,
+) -> Response {
+    let (tx, rx) = oneshot::channel();
+    if state.tx.send(request(tx)).await.is_err() {
+        return error_response("Editor not available");
+    }
+    match rx.await {
+        Ok(response) => agent_response(response),
+        Err(_) => error_response("Failed to complete delegated-agent request"),
+    }
+}
+
+fn agent_response(response: ApiResponse) -> Response {
+    match &response {
+        ApiResponse::Error(error) => {
+            let status = if error.error.contains("unknown")
+                || error.error.contains("does not belong")
+                || error.error.contains("inactive")
+            {
+                StatusCode::NOT_FOUND
+            } else if error.error.contains("stale")
+                || error.error.contains("already")
+                || error.error.contains("busy")
+                || error.error.contains("conflict")
+            {
+                StatusCode::CONFLICT
+            } else {
+                StatusCode::BAD_REQUEST
+            };
+            (status, Json(response)).into_response()
+        }
+        _ => Json(response).into_response(),
     }
 }
 

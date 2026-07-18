@@ -7,14 +7,16 @@ mod state;
 pub use mcp::{get_resources, get_tools, JsonRpcRequest, JsonRpcResponse};
 pub use routes::create_router;
 pub use state::{
-    format_context_window, parse_key_string, AiChatMessageSnapshot, AiChatSnapshot, ApiRequest,
-    ApiResponse, ApiState, BufferInfo, CodeExplanationSnapshot, ContextWindowInfo, CursorPosition,
-    DecorationInfo, DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot,
-    ErrorResponse, HealthInfo, ImageAttachmentSnapshot, LineEntry, LinesResponse,
-    LspServerInfoItem, LspStatusInfo, MetricsInfo, ModeInfo, OutlineInfo, OutlineSymbol,
-    PickerInfo, PickerResultInfo, QueuedChatSnapshot, RenderInfo, SendKeysResult, SuccessResponse,
-    SymbolSearchInfo, SymbolSearchResult, ToolCallSnapshot, TraceInfo, TraceNode, ViewSnapshot,
-    VisualSelection, SNAPSHOT_SCHEMA_VERSION,
+    format_context_window, parse_key_string, AgentArtifactHandle, AgentArtifactsResponse,
+    AgentControlPlaneSnapshot, AgentControlResponse, AgentControlTarget, AgentEventsResponse,
+    AgentSnapshot, AiChatMessageSnapshot, AiChatSnapshot, ApiRequest, ApiResponse, ApiState,
+    BufferInfo, CodeExplanationSnapshot, ContextWindowInfo, CursorPosition, DecorationInfo,
+    DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo,
+    ImageAttachmentSnapshot, LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo,
+    MetricsInfo, ModeInfo, OutlineInfo, OutlineSymbol, PickerInfo, PickerResultInfo,
+    QueuedChatSnapshot, RenderInfo, SendKeysResult, SuccessResponse, SymbolSearchInfo,
+    SymbolSearchResult, ToolCallSnapshot, TraceInfo, TraceNode, ViewSnapshot, VisualSelection,
+    AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
 };
 
 use anyhow::Result;

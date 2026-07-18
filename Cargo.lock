@@ -2443,6 +2443,7 @@ dependencies = [
  "tar",
  "tempfile",
  "tokio",
+ "tower",
  "tree-sitter",
  "unicode-segmentation",
  "unicode-width 0.1.14",

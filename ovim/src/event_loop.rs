@@ -10,11 +10,12 @@ use tokio::sync::mpsc;
 use tokio::time::{interval, Duration, Instant};
 
 use ovim::api::{
-    parse_key_string, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DecorationInfo,
+    parse_key_string, AgentArtifactsResponse, AgentControlResponse, AgentControlTarget,
+    AgentEventsResponse, ApiRequest, ApiResponse, BufferInfo, CursorPosition, DecorationInfo,
     DiagnosticCounts, DiagnosticItem, DiagnosticsInfo, EditorSnapshot, ErrorResponse, HealthInfo,
     LineEntry, LinesResponse, LspServerInfoItem, LspStatusInfo, ModeInfo, PickerInfo,
     PickerResultInfo, RenderInfo, SuccessResponse, ViewSnapshot, VisualSelection,
-    SNAPSHOT_SCHEMA_VERSION,
+    AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
 };
 use ovim::buffer::{BufferId, LineHighlights};
 use ovim::editor::{self, handle_mouse_event, Editor, InputHandler};
@@ -1643,7 +1644,196 @@ async fn handle_api_request(
             let response = handle_read_lines(editor, from, to);
             let _ = tx.send(response);
         }
+        ApiRequest::GetAgents { run_id, tx } => {
+            let response = editor
+                .ai_agent_snapshot(&run_id)
+                .map(ApiResponse::Agents)
+                .unwrap_or_else(api_agent_error);
+            let _ = tx.send(response);
+        }
+        ApiRequest::GetAgent {
+            run_id,
+            agent_id,
+            tx,
+        } => {
+            let response = editor
+                .ai_agent_snapshot(&run_id)
+                .and_then(|snapshot| {
+                    snapshot
+                        .agents
+                        .into_iter()
+                        .find(|agent| agent.agent_id == agent_id)
+                        .ok_or_else(|| format!("agent {agent_id} does not belong to run {run_id}"))
+                })
+                .map(ApiResponse::Agent)
+                .unwrap_or_else(api_agent_error);
+            let _ = tx.send(response);
+        }
+        ApiRequest::GetAgentEvents {
+            run_id,
+            agent_id,
+            after_sequence,
+            limit,
+            tx,
+        } => {
+            let response = editor
+                .ai_agent_events(&run_id, &agent_id, after_sequence, limit)
+                .map(|events| {
+                    ApiResponse::AgentEvents(AgentEventsResponse {
+                        schema_version: AGENT_API_SCHEMA_VERSION,
+                        run_id,
+                        agent_id,
+                        after_sequence,
+                        events,
+                    })
+                })
+                .unwrap_or_else(api_agent_error);
+            let _ = tx.send(response);
+        }
+        ApiRequest::GetAgentArtifacts {
+            run_id,
+            agent_id,
+            tx,
+        } => {
+            let response = editor
+                .ai_agent_snapshot(&run_id)
+                .and_then(|snapshot| {
+                    snapshot
+                        .agents
+                        .into_iter()
+                        .find(|agent| agent.agent_id == agent_id)
+                        .map(|agent| agent.artifact_handles)
+                        .ok_or_else(|| format!("agent {agent_id} does not belong to run {run_id}"))
+                })
+                .map(|artifacts| {
+                    ApiResponse::AgentArtifacts(AgentArtifactsResponse {
+                        schema_version: AGENT_API_SCHEMA_VERSION,
+                        run_id,
+                        agent_id,
+                        artifacts,
+                    })
+                })
+                .unwrap_or_else(api_agent_error);
+            let _ = tx.send(response);
+        }
+        ApiRequest::WaitAgent {
+            target,
+            timeout_millis,
+            tx,
+        } => {
+            let prepared = editor.prepare_ai_agent_wait(
+                &target.run_id,
+                &target.agent_id,
+                target.turn_generation,
+                Duration::from_millis(timeout_millis),
+            );
+            spawn_agent_control(prepared, target, tx);
+        }
+        ApiRequest::InterruptAgent { target, reason, tx } => {
+            let prepared = editor.prepare_ai_agent_interrupt(
+                &target.run_id,
+                &target.agent_id,
+                target.turn_generation,
+                reason,
+            );
+            spawn_agent_control(prepared, target, tx);
+        }
+        ApiRequest::SendAgentMessage {
+            target,
+            parent_agent_id,
+            causing_turn_id,
+            caused_by_event_id,
+            message,
+            tx,
+        } => {
+            let result = editor.ai_agent_send_message(
+                &target.run_id,
+                &target.agent_id,
+                target.turn_generation,
+                parent_agent_id,
+                causing_turn_id,
+                caused_by_event_id,
+                message,
+            );
+            let _ = tx.send(agent_control_response(&target, result));
+        }
+        ApiRequest::FollowupAgent {
+            target,
+            parent_agent_id,
+            causing_turn_id,
+            caused_by_event_id,
+            objective,
+            tx,
+        } => {
+            let prepared = editor.prepare_ai_agent_followup(
+                &target.run_id,
+                &target.agent_id,
+                target.turn_generation,
+                parent_agent_id,
+                causing_turn_id,
+                caused_by_event_id,
+                objective,
+            );
+            spawn_agent_control(prepared, target, tx);
+        }
+        ApiRequest::DecideAgentApproval {
+            target,
+            request_event_id,
+            allow,
+            reason,
+            tx,
+        } => {
+            let result = editor.ai_agent_respond_approval(
+                &target.run_id,
+                &target.agent_id,
+                target.turn_generation,
+                target.operation_id.clone(),
+                request_event_id,
+                allow,
+                reason,
+            );
+            let _ = tx.send(agent_control_response(&target, result));
+        }
     }
+}
+
+fn spawn_agent_control(
+    prepared: Result<ovim::editor::PreparedHeadlessAgentControl, String>,
+    target: AgentControlTarget,
+    tx: tokio::sync::oneshot::Sender<ApiResponse>,
+) {
+    let prepared = match prepared {
+        Ok(prepared) => prepared,
+        Err(error) => {
+            let _ = tx.send(api_agent_error(error));
+            return;
+        }
+    };
+    tokio::spawn(async move {
+        let result = prepared.execute().await;
+        let _ = tx.send(agent_control_response(&target, result));
+    });
+}
+
+fn agent_control_response(
+    target: &AgentControlTarget,
+    result: Result<serde_json::Value, String>,
+) -> ApiResponse {
+    result
+        .map(|result| {
+            ApiResponse::AgentControl(AgentControlResponse {
+                schema_version: AGENT_API_SCHEMA_VERSION,
+                run_id: target.run_id.clone(),
+                agent_id: target.agent_id.clone(),
+                operation_id: target.operation_id.clone(),
+                result,
+            })
+        })
+        .unwrap_or_else(api_agent_error)
+}
+
+fn api_agent_error(error: String) -> ApiResponse {
+    ApiResponse::Error(ErrorResponse { error })
 }
 
 /// Handle edit-line API request: find and replace text on a specific line or whole buffer
@@ -2579,23 +2769,68 @@ mod tests {
     use super::handle_edit_line;
     use super::handle_terminal_resize;
     use super::process_input_events;
+    use super::spawn_agent_control;
     use super::ApiRequest;
     use super::ApiResponse;
     use super::{
         create_snapshot, create_snapshot_with_dimensions, refresh_after_input, tick_transient_ui,
     };
+    use ovim::api::AgentControlTarget;
     use ovim::api::SNAPSHOT_SCHEMA_VERSION;
-    use ovim::editor::{Editor, InputHandler};
+    use ovim::editor::{Editor, InputHandler, PreparedHeadlessAgentControl};
     use ovim::mode::Mode;
     use ovim::session::SessionInfo;
     use ovim::ui::AnsiRenderCache;
+    use ovim_core::agent_runtime::AgentMailbox;
     use ovim_core::ai::chat_types::ChatOpts;
+    use ovim_core::run_log::{AgentId, InMemoryRunEventSink, OperationId, RunId};
     use std::sync::{Arc, Mutex};
-    use std::time::SystemTime;
+    use std::time::{Duration, SystemTime};
     use tokio::sync::oneshot;
 
     fn test_session() -> Arc<Mutex<SessionInfo>> {
         Arc::new(Mutex::new(SessionInfo::new(0, None, "test".into())))
+    }
+
+    #[tokio::test]
+    async fn headless_agent_wait_is_spawned_and_bounded_off_the_editor_loop() {
+        let run_id = RunId::new();
+        let root_agent_id = AgentId::new();
+        let child_agent_id = AgentId::new();
+        let mailbox = AgentMailbox::new(
+            run_id.clone(),
+            root_agent_id,
+            Arc::new(InMemoryRunEventSink::new()),
+        )
+        .unwrap();
+        let target = AgentControlTarget {
+            run_id,
+            agent_id: child_agent_id.clone(),
+            turn_generation: 0,
+            operation_id: OperationId::new(),
+        };
+        let (tx, mut rx) = oneshot::channel();
+        spawn_agent_control(
+            Ok(PreparedHeadlessAgentControl::Wait {
+                mailbox,
+                agent_id: child_agent_id,
+                timeout: Duration::from_millis(25),
+            }),
+            target,
+            tx,
+        );
+        assert!(matches!(
+            rx.try_recv(),
+            Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+        ));
+        let response = tokio::time::timeout(Duration::from_secs(1), rx)
+            .await
+            .expect("agent wait must be bounded")
+            .unwrap();
+        let ApiResponse::AgentControl(response) = response else {
+            panic!("expected agent control response")
+        };
+        assert_eq!(response.result["outcome"], "timed_out");
     }
 
     #[tokio::test]
