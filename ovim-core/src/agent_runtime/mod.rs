@@ -7,6 +7,7 @@ mod loop_runner;
 mod mailbox;
 mod model_catalog;
 mod service;
+mod supervisor;
 
 pub use dispatch::*;
 pub use handoff::*;
@@ -14,3 +15,4 @@ pub use loop_runner::*;
 pub use mailbox::*;
 pub use model_catalog::*;
 pub use service::*;
+pub use supervisor::*;

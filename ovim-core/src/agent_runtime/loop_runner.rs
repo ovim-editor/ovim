@@ -382,7 +382,7 @@ fn reserve(counter: &AtomicUsize, maximum: usize) -> bool {
         .is_ok()
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct AgentCancellationToken {
     sender: Arc<watch::Sender<Option<String>>>,
 }

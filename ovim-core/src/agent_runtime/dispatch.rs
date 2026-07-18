@@ -4,8 +4,9 @@
 //! deliberately does not start provider sessions or create Git worktrees.
 
 use super::{
-    HandoffStatus, ModelFallbackPolicy, ModelRouteError, ModelRouteResolution, ReasoningEffort,
-    RequestedModelRoute, ResolvedModelRoute, SubagentModelCatalog, ValidatedHandoff,
+    HandoffConfidence, HandoffStatus, HandoffValidator, ModelFallbackPolicy, ModelRouteError,
+    ModelRouteResolution, ReasoningEffort, RequestedModelRoute, ResolvedModelRoute,
+    StructuredHandoffV1, SubagentModelCatalog, ValidatedHandoff,
 };
 use crate::run_log::{
     AgentCapabilitySnapshot, AgentCompletionContractSnapshot, AgentDispatchSpecSnapshot,
@@ -13,8 +14,8 @@ use crate::run_log::{
     AgentModelFallbackPolicySnapshot, AgentModelRouteResolutionSnapshot,
     AgentRequestedModelRouteSnapshot, AgentResolvedModelRouteSnapshot,
     AgentWorkspacePolicySnapshot, AgentWorkspaceStrategySnapshot, EventActor, EventEnvelope,
-    EventId, EventKind, ManifestId, NewRunEvent, RunEventSink, RunId, RunLogError, TurnId,
-    WorkspaceId,
+    EventId, EventKind, ManifestId, NewRunEvent, OperationId, RunEventSink, RunId, RunLogError,
+    ToolOutcome, TurnId, WorkspaceId,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -234,8 +235,17 @@ struct ScheduledAgent {
     parent_agent_id: Option<AgentId>,
     causing_turn_id: Option<TurnId>,
     state: DispatchState,
+    queue_sequence: u64,
     last_event_id: EventId,
     pending_handoff_status: Option<HandoffStatus>,
+    runtime_operations: HashMap<OperationId, RuntimeOperationState>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeOperationState {
+    Intended,
+    Started,
+    Terminal,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -322,6 +332,15 @@ impl AgentDispatchScheduler {
                         agent_id
                     )));
                 }
+                if agent
+                    .runtime_operations
+                    .values()
+                    .any(|state| *state != RuntimeOperationState::Terminal)
+                {
+                    return Err(DispatchError::InvalidHistory(format!(
+                        "agent {agent_id} recorded a handoff with an outstanding tool operation"
+                    )));
+                }
                 let target = terminal_state_for_handoff(recorded.handoff.status());
                 if !valid_transition(&agent.state, &target) {
                     return Err(DispatchError::InvalidHistory(format!(
@@ -335,6 +354,12 @@ impl AgentDispatchScheduler {
             }
 
             let EventKind::AgentLifecycle(lifecycle) = &event.kind else {
+                if let Some(agent_id) = event.agent_id.as_ref()
+                    && scheduler.agents.contains_key(agent_id)
+                    && is_runtime_trace_event(&event.kind)
+                {
+                    scheduler.apply_rehydrated_runtime_event(event)?;
+                }
                 continue;
             };
             if event.agent_id.as_ref() != Some(&lifecycle.agent_id) {
@@ -401,8 +426,10 @@ impl AgentDispatchScheduler {
                         parent_agent_id: lifecycle.parent_agent_id.clone(),
                         causing_turn_id: event.turn_id.clone(),
                         state: DispatchState::Created,
+                        queue_sequence: event.sequence,
                         last_event_id: event.event_id.clone(),
                         pending_handoff_status: None,
+                        runtime_operations: HashMap::new(),
                     },
                 );
                 continue;
@@ -468,6 +495,9 @@ impl AgentDispatchScheduler {
                 )));
             }
             agent.state = next.clone();
+            if next == DispatchState::Queued {
+                agent.queue_sequence = event.sequence;
+            }
             agent.last_event_id = event.event_id.clone();
             if next.is_terminal() {
                 agent.pending_handoff_status = None;
@@ -513,10 +543,10 @@ impl AgentDispatchScheduler {
             .map(|agent| agent.handle.clone())
             .collect::<Vec<_>>();
         for handle in ambiguous {
-            scheduler.transition(
+            scheduler.terminate_conservatively(
                 &handle,
-                DispatchState::Interrupted,
-                Some("interrupted while recovering scheduler after process restart".into()),
+                HandoffStatus::Interrupted,
+                "interrupted while recovering scheduler after process restart",
             )?;
         }
 
@@ -650,8 +680,10 @@ impl AgentDispatchScheduler {
                 parent_agent_id: request.parent_agent_id,
                 causing_turn_id: request.causing_turn_id,
                 state: DispatchState::Queued,
+                queue_sequence: queued_event.sequence,
                 last_event_id: queued_event.event_id,
                 pending_handoff_status: None,
+                runtime_operations: HashMap::new(),
             },
         );
         Ok(handle)
@@ -710,6 +742,15 @@ impl AgentDispatchScheduler {
         }
         if agent.pending_handoff_status.is_some() {
             return Err(DispatchError::PendingHandoff(handle.agent_id.clone()));
+        }
+        if agent
+            .runtime_operations
+            .values()
+            .any(|state| *state != RuntimeOperationState::Terminal)
+        {
+            return Err(DispatchError::OutstandingRuntimeOperations(
+                handle.agent_id.clone(),
+            ));
         }
         let handoff_event = self
             .sink
@@ -843,6 +884,134 @@ impl AgentDispatchScheduler {
         self.agents.get(agent_id).map(|agent| &agent.resolved_route)
     }
 
+    /// FIFO-ready queued work for the supervisor.
+    pub fn queued_dispatches(&self) -> Vec<AgentDispatchRecord> {
+        let mut queued = self
+            .agents
+            .values()
+            .filter(|agent| agent.state == DispatchState::Queued)
+            .map(dispatch_record)
+            .collect::<Vec<_>>();
+        queued.sort_by_key(|agent| agent.queue_sequence);
+        queued
+    }
+
+    pub fn dispatch_record(&self, agent_id: &AgentId) -> Option<AgentDispatchRecord> {
+        self.agents.get(agent_id).map(dispatch_record)
+    }
+
+    pub fn dispatch_records(&self) -> Vec<AgentDispatchRecord> {
+        let mut records = self
+            .agents
+            .values()
+            .map(dispatch_record)
+            .collect::<Vec<_>>();
+        records.sort_by_key(|agent| agent.queue_sequence);
+        records
+    }
+
+    /// Append a provider/tool event to this child’s causal trace and advance
+    /// the scheduler-owned tip used by handoff completion and recovery.
+    pub fn record_runtime_event(
+        &mut self,
+        handle: &DispatchHandle,
+        kind: EventKind,
+        operation_id: Option<OperationId>,
+        provider_call_id: Option<String>,
+    ) -> Result<EventEnvelope, DispatchError> {
+        let agent = self
+            .agents
+            .get(&handle.agent_id)
+            .ok_or_else(|| DispatchError::UnknownAgent(handle.agent_id.clone()))?;
+        if agent.handle != *handle {
+            return Err(DispatchError::HandleMismatch(handle.agent_id.clone()));
+        }
+        if agent.state.is_terminal() || !is_runtime_trace_event(&kind) {
+            return Err(DispatchError::InvalidRuntimeEvent(handle.agent_id.clone()));
+        }
+        validate_runtime_operation(agent, &kind, operation_id.as_ref())?;
+        let event = self
+            .sink
+            .append(NewRunEvent {
+                run_id: self.run_id.clone(),
+                caused_by: Some(agent.last_event_id.clone()),
+                operation_id: operation_id.clone(),
+                provider_call_id,
+                actor: EventActor::Agent(handle.agent_id.clone()),
+                agent_id: Some(handle.agent_id.clone()),
+                turn_id: agent.causing_turn_id.clone(),
+                workspace_id: Some(handle.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: kind.clone(),
+            })
+            .map_err(DispatchError::RunLog)?;
+        let agent = self
+            .agents
+            .get_mut(&handle.agent_id)
+            .expect("checked above");
+        apply_runtime_operation(agent, &kind, operation_id.as_ref())?;
+        agent.last_event_id = event.event_id.clone();
+        Ok(event)
+    }
+
+    fn apply_rehydrated_runtime_event(
+        &mut self,
+        event: &EventEnvelope,
+    ) -> Result<(), DispatchError> {
+        let agent_id = event.agent_id.as_ref().expect("caller checked identity");
+        let agent = self.agents.get(agent_id).expect("caller checked agent");
+        if event.workspace_id.as_ref() != Some(&agent.handle.workspace.workspace_id)
+            || event.turn_id != agent.causing_turn_id
+            || event.caused_by.as_ref() != Some(&agent.last_event_id)
+            || agent.state.is_terminal()
+        {
+            return Err(DispatchError::InvalidHistory(format!(
+                "agent {agent_id} has a non-contiguous runtime event"
+            )));
+        }
+        validate_runtime_operation(agent, &event.kind, event.operation_id.as_ref())?;
+        let agent = self.agents.get_mut(agent_id).expect("checked above");
+        apply_runtime_operation(agent, &event.kind, event.operation_id.as_ref())?;
+        agent.last_event_id = event.event_id.clone();
+        Ok(())
+    }
+
+    pub(crate) fn terminate_conservatively(
+        &mut self,
+        handle: &DispatchHandle,
+        status: HandoffStatus,
+        detail: &str,
+    ) -> Result<DispatchTerminalRecord, DispatchError> {
+        let open = self
+            .agents
+            .get(&handle.agent_id)
+            .ok_or_else(|| DispatchError::UnknownAgent(handle.agent_id.clone()))?
+            .runtime_operations
+            .iter()
+            .filter(|(_, state)| **state != RuntimeOperationState::Terminal)
+            .map(|(operation_id, state)| (operation_id.clone(), *state))
+            .collect::<Vec<_>>();
+        for (operation_id, state) in open {
+            self.record_runtime_event(
+                handle,
+                EventKind::ToolResult(crate::run_log::ToolResultEvent {
+                    outcome: if state == RuntimeOperationState::Started {
+                        ToolOutcome::UnknownAfterCrash
+                    } else {
+                        ToolOutcome::Failed
+                    },
+                    summary: Some(
+                        "tool operation interrupted while recovering after process restart".into(),
+                    ),
+                    result: None,
+                }),
+                Some(operation_id),
+                None,
+            )?;
+        }
+        self.finish_with_handoff(handle, validated_terminal_handoff(status, detail)?)
+    }
+
     fn validate_request(&self, request: &DispatchRequest) -> Result<(), DispatchError> {
         if request.objective.trim().is_empty() {
             return Err(DispatchError::EmptyObjective);
@@ -896,6 +1065,124 @@ impl AgentDispatchScheduler {
     }
 }
 
+#[derive(Clone, Debug)]
+pub struct AgentDispatchRecord {
+    pub handle: DispatchHandle,
+    pub role: AgentRoleTemplate,
+    pub requested_route: RequestedModelRoute,
+    pub resolved_route: ResolvedModelRoute,
+    pub objective: String,
+    pub parent_agent_id: Option<AgentId>,
+    pub causing_turn_id: Option<TurnId>,
+    pub state: DispatchState,
+    pub queue_sequence: u64,
+}
+
+fn dispatch_record(agent: &ScheduledAgent) -> AgentDispatchRecord {
+    AgentDispatchRecord {
+        handle: agent.handle.clone(),
+        role: agent.role.clone(),
+        requested_route: agent.requested_route.clone(),
+        resolved_route: agent.resolved_route.clone(),
+        objective: agent.objective.clone(),
+        parent_agent_id: agent.parent_agent_id.clone(),
+        causing_turn_id: agent.causing_turn_id.clone(),
+        state: agent.state.clone(),
+        queue_sequence: agent.queue_sequence,
+    }
+}
+
+fn is_runtime_trace_event(kind: &EventKind) -> bool {
+    matches!(
+        kind,
+        EventKind::AgentProvider(_)
+            | EventKind::ToolIntent(_)
+            | EventKind::ToolStarted(_)
+            | EventKind::ToolResult(_)
+    )
+}
+
+fn validate_runtime_operation(
+    agent: &ScheduledAgent,
+    kind: &EventKind,
+    operation_id: Option<&OperationId>,
+) -> Result<(), DispatchError> {
+    match kind {
+        EventKind::AgentProvider(_) if operation_id.is_none() => Ok(()),
+        EventKind::ToolIntent(_) => {
+            let operation_id = operation_id
+                .ok_or_else(|| DispatchError::InvalidRuntimeEvent(agent.handle.agent_id.clone()))?;
+            if agent.runtime_operations.contains_key(operation_id) {
+                return Err(DispatchError::InvalidRuntimeOperation(operation_id.clone()));
+            }
+            Ok(())
+        }
+        EventKind::ToolStarted(_) => {
+            let operation_id = operation_id
+                .ok_or_else(|| DispatchError::InvalidRuntimeEvent(agent.handle.agent_id.clone()))?;
+            if agent.runtime_operations.get(operation_id) != Some(&RuntimeOperationState::Intended)
+            {
+                return Err(DispatchError::InvalidRuntimeOperation(operation_id.clone()));
+            }
+            Ok(())
+        }
+        EventKind::ToolResult(result) => {
+            let operation_id = operation_id
+                .ok_or_else(|| DispatchError::InvalidRuntimeEvent(agent.handle.agent_id.clone()))?;
+            let current = agent.runtime_operations.get(operation_id);
+            let valid = match result.outcome {
+                ToolOutcome::Completed => current == Some(&RuntimeOperationState::Started),
+                ToolOutcome::Failed | ToolOutcome::Interrupted => matches!(
+                    current,
+                    Some(RuntimeOperationState::Intended | RuntimeOperationState::Started)
+                ),
+                ToolOutcome::UnknownAfterCrash => current == Some(&RuntimeOperationState::Started),
+            };
+            if !valid {
+                return Err(DispatchError::InvalidRuntimeOperation(operation_id.clone()));
+            }
+            Ok(())
+        }
+        _ => Err(DispatchError::InvalidRuntimeEvent(
+            agent.handle.agent_id.clone(),
+        )),
+    }
+}
+
+fn apply_runtime_operation(
+    agent: &mut ScheduledAgent,
+    kind: &EventKind,
+    operation_id: Option<&OperationId>,
+) -> Result<(), DispatchError> {
+    match kind {
+        EventKind::AgentProvider(_) => {}
+        EventKind::ToolIntent(_) => {
+            agent.runtime_operations.insert(
+                operation_id.expect("validated operation ID").clone(),
+                RuntimeOperationState::Intended,
+            );
+        }
+        EventKind::ToolStarted(_) => {
+            *agent
+                .runtime_operations
+                .get_mut(operation_id.expect("validated operation ID"))
+                .expect("validated operation") = RuntimeOperationState::Started;
+        }
+        EventKind::ToolResult(_) => {
+            *agent
+                .runtime_operations
+                .get_mut(operation_id.expect("validated operation ID"))
+                .expect("validated operation") = RuntimeOperationState::Terminal;
+        }
+        _ => {
+            return Err(DispatchError::InvalidRuntimeEvent(
+                agent.handle.agent_id.clone(),
+            ))
+        }
+    }
+    Ok(())
+}
+
 fn valid_transition(from: &DispatchState, to: &DispatchState) -> bool {
     use DispatchState::*;
     matches!(
@@ -925,6 +1212,29 @@ fn terminal_state_for_handoff(status: HandoffStatus) -> DispatchState {
         HandoffStatus::Failed => DispatchState::Failed,
         HandoffStatus::Interrupted | HandoffStatus::TimedOut => DispatchState::Interrupted,
     }
+}
+
+pub(crate) fn validated_terminal_handoff(
+    status: HandoffStatus,
+    detail: impl Into<String>,
+) -> Result<ValidatedHandoff, DispatchError> {
+    let detail = detail.into();
+    HandoffValidator::default()
+        .validate(
+            StructuredHandoffV1 {
+                version: 1,
+                status,
+                summary: detail.clone(),
+                evidence: Vec::new(),
+                changed_files: Vec::new(),
+                verification: Vec::new(),
+                blockers: vec![detail],
+                followups: Vec::new(),
+                confidence: HandoffConfidence::Low,
+            },
+            Some(status),
+        )
+        .map_err(|error| DispatchError::InvalidHistory(format!("terminal handoff: {error}")))
 }
 
 fn lifecycle_event(
@@ -1355,6 +1665,9 @@ pub enum DispatchError {
     },
     PendingHandoff(AgentId),
     MissingPendingHandoff(AgentId),
+    OutstandingRuntimeOperations(AgentId),
+    InvalidRuntimeEvent(AgentId),
+    InvalidRuntimeOperation(OperationId),
     PendingHandoffTransitionMismatch {
         status: HandoffStatus,
         lifecycle: DispatchState,
@@ -1442,6 +1755,17 @@ impl fmt::Display for DispatchError {
             Self::MissingPendingHandoff(agent_id) => write!(
                 formatter,
                 "agent {agent_id} has no durable validated handoff for its terminal transition"
+            ),
+            Self::OutstandingRuntimeOperations(agent_id) => write!(
+                formatter,
+                "agent {agent_id} cannot finish with runtime tool operations still open"
+            ),
+            Self::InvalidRuntimeEvent(agent_id) => {
+                write!(formatter, "agent {agent_id} emitted an invalid runtime event")
+            }
+            Self::InvalidRuntimeOperation(operation_id) => write!(
+                formatter,
+                "runtime tool operation {operation_id} has an invalid event transition"
             ),
             Self::PendingHandoffTransitionMismatch { status, lifecycle } => write!(
                 formatter,
