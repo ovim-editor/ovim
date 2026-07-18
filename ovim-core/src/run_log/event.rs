@@ -284,13 +284,20 @@ pub struct AgentLifecycleEvent {
     /// Resolved provider-independent configuration, recorded once on Created.
     /// Optional/defaulted for histories written before dispatch snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dispatch_spec: Option<AgentDispatchSpecSnapshot>,
+    pub dispatch_spec: Option<Box<AgentDispatchSpecSnapshot>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentDispatchSpecSnapshot {
     pub version: u32,
-    pub model: AgentModelProfileSnapshot,
+    /// Version-one role-owned route. New dispatches must leave this absent and
+    /// persist both requested and resolved version-two routes instead.
+    #[serde(default, rename = "model", skip_serializing_if = "Option::is_none")]
+    pub legacy_model: Option<AgentModelProfileSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub requested_route: Option<AgentRequestedModelRouteSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_route: Option<AgentResolvedModelRouteSnapshot>,
     pub instructions: String,
     pub capabilities: Vec<AgentCapabilitySnapshot>,
     pub kind_workspace_policy: AgentWorkspacePolicySnapshot,
@@ -303,6 +310,44 @@ pub struct AgentModelProfileSnapshot {
     pub model: String,
     pub effort: AgentModelEffortSnapshot,
     pub fallback_model: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRequestedModelRouteSnapshot {
+    pub catalog_model_id: String,
+    pub reasoning_effort: String,
+    pub fallback_policy: AgentModelFallbackPolicySnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum AgentModelFallbackPolicySnapshot {
+    FailClosed,
+    Explicit {
+        catalog_model_id: String,
+        reasoning_effort: String,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentResolvedModelRouteSnapshot {
+    pub catalog_generation: String,
+    pub catalog_model_id: String,
+    pub profile_name: String,
+    pub provider: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub resolution: AgentModelRouteResolutionSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentModelRouteResolutionSnapshot {
+    Exact,
+    ConfiguredFallback,
+    HistoricV1,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -3,9 +3,15 @@
 //! This module allocates ovim agent identities and records scheduling state. It
 //! deliberately does not start provider sessions or create Git worktrees.
 
+use super::{
+    ModelFallbackPolicy, ModelRouteError, ModelRouteResolution, ReasoningEffort,
+    RequestedModelRoute, ResolvedModelRoute, SubagentModelCatalog,
+};
 use crate::run_log::{
     AgentCapabilitySnapshot, AgentCompletionContractSnapshot, AgentDispatchSpecSnapshot, AgentId,
-    AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot, AgentModelProfileSnapshot,
+    AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot,
+    AgentModelFallbackPolicySnapshot, AgentModelRouteResolutionSnapshot,
+    AgentRequestedModelRouteSnapshot, AgentResolvedModelRouteSnapshot,
     AgentWorkspacePolicySnapshot, AgentWorkspaceStrategySnapshot, EventActor, EventEnvelope,
     EventId, EventKind, ManifestId, NewRunEvent, RunEventSink, RunId, RunLogError, TurnId,
     WorkspaceId,
@@ -51,22 +57,6 @@ impl fmt::Display for AgentKindName {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum ModelEffort {
-    Low,
-    Medium,
-    High,
-}
-
-/// Logical model requirements. Provider session/thread identifiers never
-/// appear here and never participate in agent identity.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentModelProfile {
-    pub model: String,
-    pub effort: ModelEffort,
-    pub fallback_model: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspacePolicy {
     SharedWorkspace,
     IsolatedWorktree,
@@ -83,22 +73,20 @@ pub enum CompletionContract {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct AgentKind {
+pub struct AgentRoleTemplate {
     pub name: AgentKindName,
-    pub model: AgentModelProfile,
     pub instructions: String,
     pub capabilities: BTreeSet<AgentCapability>,
     pub workspace_policy: WorkspacePolicy,
     pub completion_contract: CompletionContract,
 }
 
-impl AgentKind {
+impl AgentRoleTemplate {
     pub fn built_in(name: AgentKindName) -> Self {
         let capabilities = |values: &[AgentCapability]| values.iter().cloned().collect();
         match name {
             AgentKindName::Implementer => Self {
                 name,
-                model: model("gpt-5.6-sol", ModelEffort::Medium),
                 instructions: "Implement the delegated objective and verify recorded changes."
                     .into(),
                 capabilities: capabilities(&[
@@ -112,7 +100,6 @@ impl AgentKind {
             },
             AgentKindName::Explorer => Self {
                 name,
-                model: model("gpt-5.6-terra", ModelEffort::Low),
                 instructions: "Explore the delegated question without mutating source.".into(),
                 capabilities: capabilities(&[
                     AgentCapability::Read,
@@ -124,7 +111,6 @@ impl AgentKind {
             },
             AgentKindName::Verifier => Self {
                 name,
-                model: model("gpt-5.6-terra", ModelEffort::Low),
                 instructions: "Run verification and report evidence and failures.".into(),
                 capabilities: capabilities(&[
                     AgentCapability::Read,
@@ -136,7 +122,6 @@ impl AgentKind {
             },
             AgentKindName::Reviewer => Self {
                 name,
-                model: model("gpt-5.6-terra", ModelEffort::Medium),
                 instructions: "Review the selected source state without changing it.".into(),
                 capabilities: capabilities(&[AgentCapability::Read, AgentCapability::Navigate]),
                 workspace_policy: WorkspacePolicy::ReadOnlyProjection,
@@ -144,11 +129,6 @@ impl AgentKind {
             },
             AgentKindName::Safety => Self {
                 name,
-                model: AgentModelProfile {
-                    model: "gpt-5.6-luna".into(),
-                    effort: ModelEffort::Low,
-                    fallback_model: Some("gpt-5.6-terra".into()),
-                },
                 instructions: "Classify the proposed action against explicit user authorization."
                     .into(),
                 capabilities: capabilities(&[AgentCapability::Read]),
@@ -157,7 +137,6 @@ impl AgentKind {
             },
             AgentKindName::Planner => Self {
                 name,
-                model: model("gpt-5.6-sol", ModelEffort::Medium),
                 instructions: "Decompose objectives and dispatch appropriately scoped agents."
                     .into(),
                 capabilities: capabilities(&[
@@ -170,7 +149,6 @@ impl AgentKind {
             },
             AgentKindName::Custom(_) => Self {
                 name,
-                model: model("gpt-5.6-terra", ModelEffort::Medium),
                 instructions: String::new(),
                 capabilities: BTreeSet::new(),
                 workspace_policy: WorkspacePolicy::ReadOnlyProjection,
@@ -187,13 +165,9 @@ impl AgentKind {
     }
 }
 
-fn model(model: &str, effort: ModelEffort) -> AgentModelProfile {
-    AgentModelProfile {
-        model: model.into(),
-        effort,
-        fallback_model: None,
-    }
-}
+/// Compatibility name for callers that constructed role presets before
+/// routing moved to `DispatchRequest`. It no longer contains model policy.
+pub type AgentKind = AgentRoleTemplate;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorkspaceStrategy {
@@ -215,7 +189,8 @@ pub struct WorkspaceAssignment {
 #[derive(Clone, Debug)]
 pub struct DispatchRequest {
     pub objective: String,
-    pub kind: AgentKind,
+    pub role: AgentRoleTemplate,
+    pub requested_route: RequestedModelRoute,
     pub parent_agent_id: Option<AgentId>,
     pub causing_turn_id: Option<TurnId>,
     pub caused_by_event: Option<EventId>,
@@ -252,7 +227,9 @@ impl DispatchState {
 #[derive(Clone, Debug)]
 struct ScheduledAgent {
     handle: DispatchHandle,
-    kind: AgentKind,
+    role: AgentRoleTemplate,
+    requested_route: RequestedModelRoute,
+    resolved_route: ResolvedModelRoute,
     objective: String,
     parent_agent_id: Option<AgentId>,
     causing_turn_id: Option<TurnId>,
@@ -263,15 +240,21 @@ struct ScheduledAgent {
 pub struct AgentDispatchScheduler {
     run_id: RunId,
     sink: Arc<dyn RunEventSink>,
+    model_catalog: Arc<SubagentModelCatalog>,
     agents: HashMap<AgentId, ScheduledAgent>,
     shared_writer: HashMap<WorkspaceId, AgentId>,
 }
 
 impl AgentDispatchScheduler {
-    pub fn new(run_id: RunId, sink: Arc<dyn RunEventSink>) -> Self {
+    pub fn new(
+        run_id: RunId,
+        sink: Arc<dyn RunEventSink>,
+        model_catalog: Arc<SubagentModelCatalog>,
+    ) -> Self {
         Self {
             run_id,
             sink,
+            model_catalog,
             agents: HashMap::new(),
             shared_writer: HashMap::new(),
         }
@@ -281,10 +264,14 @@ impl AgentDispatchScheduler {
     /// Queued work remains recoverable. Any state that may have crossed a
     /// provider/effect boundary is durably interrupted because this process
     /// cannot prove the old provider session is still attached.
-    pub fn rehydrate(run_id: RunId, sink: Arc<dyn RunEventSink>) -> Result<Self, DispatchError> {
+    pub fn rehydrate(
+        run_id: RunId,
+        sink: Arc<dyn RunEventSink>,
+        model_catalog: Arc<SubagentModelCatalog>,
+    ) -> Result<Self, DispatchError> {
         let mut events = sink.events(&run_id).map_err(DispatchError::RunLog)?;
         events.sort_by_key(|event| event.sequence);
-        let mut scheduler = Self::new(run_id.clone(), sink);
+        let mut scheduler = Self::new(run_id.clone(), sink, model_catalog);
         let mut ignored_agents = BTreeSet::new();
 
         for event in &events {
@@ -333,8 +320,9 @@ impl AgentDispatchScheduler {
                             lifecycle.agent_id
                         ))
                     })?;
-                let (kind, strategy) = restore_dispatch_spec(&lifecycle.kind, spec)?;
-                if kind.can_write()
+                let (role, strategy, requested_route, resolved_route) =
+                    restore_dispatch_spec(&lifecycle.kind, spec)?;
+                if role.can_write()
                     && matches!(strategy, WorkspaceStrategy::ReadOnlySnapshot { .. })
                 {
                     return Err(DispatchError::InvalidHistory(format!(
@@ -353,7 +341,9 @@ impl AgentDispatchScheduler {
                                 strategy,
                             },
                         },
-                        kind,
+                        role,
+                        requested_route,
+                        resolved_route,
                         objective,
                         parent_agent_id: lifecycle.parent_agent_id.clone(),
                         causing_turn_id: event.turn_id.clone(),
@@ -385,7 +375,7 @@ impl AgentDispatchScheduler {
             }
             if lifecycle.parent_agent_id != agent.parent_agent_id
                 || event.turn_id != agent.causing_turn_id
-                || lifecycle.kind != agent.kind.name.to_string()
+                || lifecycle.kind != agent.role.name.to_string()
                 || lifecycle.objective.as_deref() != Some(agent.objective.as_str())
             {
                 return Err(DispatchError::InvalidHistory(format!(
@@ -438,7 +428,7 @@ impl AgentDispatchScheduler {
 
         for agent in scheduler.agents.values() {
             if agent.state.is_terminal()
-                || !agent.kind.can_write()
+                || !agent.role.can_write()
                 || !matches!(
                     agent.handle.workspace.strategy,
                     WorkspaceStrategy::SharedWorkspace
@@ -461,8 +451,15 @@ impl AgentDispatchScheduler {
 
     pub fn dispatch(&mut self, request: DispatchRequest) -> Result<DispatchHandle, DispatchError> {
         self.validate_request(&request)?;
+        let resolved_route = self
+            .model_catalog
+            .resolve(
+                &request.requested_route,
+                !request.role.capabilities.is_empty(),
+            )
+            .map_err(DispatchError::ModelRoute)?;
         let agent_id = AgentId::new();
-        if request.kind.can_write()
+        if request.role.can_write()
             && matches!(
                 request.workspace.strategy,
                 WorkspaceStrategy::SharedWorkspace
@@ -499,10 +496,12 @@ impl AgentDispatchScheduler {
                 kind: lifecycle_event(
                     &agent_id,
                     request.parent_agent_id.clone(),
-                    &request.kind,
+                    &request.role,
                     Some(request.objective.clone()),
                     Some(dispatch_spec_snapshot(
-                        &request.kind,
+                        &request.role,
+                        &request.requested_route,
+                        &resolved_route,
                         &request.workspace.strategy,
                     )),
                     DispatchState::Created,
@@ -525,7 +524,7 @@ impl AgentDispatchScheduler {
                 kind: lifecycle_event(
                     &agent_id,
                     request.parent_agent_id.clone(),
-                    &request.kind,
+                    &request.role,
                     Some(request.objective.clone()),
                     None,
                     DispatchState::Queued,
@@ -537,7 +536,7 @@ impl AgentDispatchScheduler {
                 created_event_id: created_event.event_id,
                 source,
             })?;
-        if request.kind.can_write()
+        if request.role.can_write()
             && matches!(
                 request.workspace.strategy,
                 WorkspaceStrategy::SharedWorkspace
@@ -550,7 +549,9 @@ impl AgentDispatchScheduler {
             agent_id,
             ScheduledAgent {
                 handle: handle.clone(),
-                kind: request.kind,
+                role: request.role,
+                requested_route: request.requested_route,
+                resolved_route,
                 objective: request.objective,
                 parent_agent_id: request.parent_agent_id,
                 causing_turn_id: request.causing_turn_id,
@@ -596,7 +597,7 @@ impl AgentDispatchScheduler {
                 kind: lifecycle_event(
                     &handle.agent_id,
                     agent.parent_agent_id.clone(),
-                    &agent.kind,
+                    &agent.role,
                     Some(agent.objective.clone()),
                     None,
                     next.clone(),
@@ -620,6 +621,16 @@ impl AgentDispatchScheduler {
 
     pub fn state(&self, agent_id: &AgentId) -> Option<&DispatchState> {
         self.agents.get(agent_id).map(|agent| &agent.state)
+    }
+
+    pub fn requested_route(&self, agent_id: &AgentId) -> Option<&RequestedModelRoute> {
+        self.agents
+            .get(agent_id)
+            .map(|agent| &agent.requested_route)
+    }
+
+    pub fn resolved_route(&self, agent_id: &AgentId) -> Option<&ResolvedModelRoute> {
+        self.agents.get(agent_id).map(|agent| &agent.resolved_route)
     }
 
     fn validate_request(&self, request: &DispatchRequest) -> Result<(), DispatchError> {
@@ -663,7 +674,7 @@ impl AgentDispatchScheduler {
             (None, Some(_)) => return Err(DispatchError::TurnWithoutParent),
             _ => {}
         }
-        if request.kind.can_write()
+        if request.role.can_write()
             && matches!(
                 request.workspace.strategy,
                 WorkspaceStrategy::ReadOnlySnapshot { .. }
@@ -701,7 +712,7 @@ fn valid_transition(from: &DispatchState, to: &DispatchState) -> bool {
 fn lifecycle_event(
     agent_id: &AgentId,
     parent_agent_id: Option<AgentId>,
-    kind: &AgentKind,
+    role: &AgentRoleTemplate,
     objective: Option<String>,
     dispatch_spec: Option<AgentDispatchSpecSnapshot>,
     state: DispatchState,
@@ -711,30 +722,26 @@ fn lifecycle_event(
         agent_id: agent_id.clone(),
         parent_agent_id,
         state: lifecycle_state(state),
-        kind: kind.name.to_string(),
+        kind: role.name.to_string(),
         objective,
         detail,
-        dispatch_spec,
+        dispatch_spec: dispatch_spec.map(Box::new),
     })
 }
 
 fn dispatch_spec_snapshot(
-    kind: &AgentKind,
+    role: &AgentRoleTemplate,
+    requested_route: &RequestedModelRoute,
+    resolved_route: &ResolvedModelRoute,
     assigned_workspace: &WorkspaceStrategy,
 ) -> AgentDispatchSpecSnapshot {
     AgentDispatchSpecSnapshot {
-        version: 1,
-        model: AgentModelProfileSnapshot {
-            model: kind.model.model.clone(),
-            effort: match kind.model.effort {
-                ModelEffort::Low => AgentModelEffortSnapshot::Low,
-                ModelEffort::Medium => AgentModelEffortSnapshot::Medium,
-                ModelEffort::High => AgentModelEffortSnapshot::High,
-            },
-            fallback_model: kind.model.fallback_model.clone(),
-        },
-        instructions: kind.instructions.clone(),
-        capabilities: kind
+        version: 2,
+        legacy_model: None,
+        requested_route: Some(requested_route_snapshot(requested_route)),
+        resolved_route: Some(resolved_route_snapshot(resolved_route)),
+        instructions: role.instructions.clone(),
+        capabilities: role
             .capabilities
             .iter()
             .map(|capability| match capability {
@@ -747,7 +754,7 @@ fn dispatch_spec_snapshot(
                 AgentCapability::DispatchAgents => AgentCapabilitySnapshot::DispatchAgents,
             })
             .collect(),
-        kind_workspace_policy: match kind.workspace_policy {
+        kind_workspace_policy: match role.workspace_policy {
             WorkspacePolicy::SharedWorkspace => AgentWorkspacePolicySnapshot::SharedWorkspace,
             WorkspacePolicy::IsolatedWorktree => AgentWorkspacePolicySnapshot::IsolatedWorktree,
             WorkspacePolicy::ReadOnlyProjection => AgentWorkspacePolicySnapshot::ReadOnlyProjection,
@@ -765,7 +772,7 @@ fn dispatch_spec_snapshot(
                 }
             }
         },
-        completion_contract: match &kind.completion_contract {
+        completion_contract: match &role.completion_contract {
             CompletionContract::StructuredHandoff => {
                 AgentCompletionContractSnapshot::StructuredHandoff
             }
@@ -779,21 +786,54 @@ fn dispatch_spec_snapshot(
     }
 }
 
+fn requested_route_snapshot(route: &RequestedModelRoute) -> AgentRequestedModelRouteSnapshot {
+    AgentRequestedModelRouteSnapshot {
+        catalog_model_id: route.catalog_model_id.clone(),
+        reasoning_effort: route.reasoning_effort.as_str().into(),
+        fallback_policy: match &route.fallback_policy {
+            ModelFallbackPolicy::FailClosed => AgentModelFallbackPolicySnapshot::FailClosed,
+            ModelFallbackPolicy::Explicit {
+                catalog_model_id,
+                reasoning_effort,
+            } => AgentModelFallbackPolicySnapshot::Explicit {
+                catalog_model_id: catalog_model_id.clone(),
+                reasoning_effort: reasoning_effort.as_str().into(),
+            },
+        },
+    }
+}
+
+fn resolved_route_snapshot(route: &ResolvedModelRoute) -> AgentResolvedModelRouteSnapshot {
+    AgentResolvedModelRouteSnapshot {
+        catalog_generation: route.catalog_generation.clone(),
+        catalog_model_id: route.catalog_model_id.clone(),
+        profile_name: route.profile_name.clone(),
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+        reasoning_effort: route.reasoning_effort.as_str().into(),
+        resolution: match route.resolution {
+            ModelRouteResolution::Exact => AgentModelRouteResolutionSnapshot::Exact,
+            ModelRouteResolution::ConfiguredFallback => {
+                AgentModelRouteResolutionSnapshot::ConfiguredFallback
+            }
+            ModelRouteResolution::HistoricV1 => AgentModelRouteResolutionSnapshot::HistoricV1,
+        },
+        fallback_reason: route.fallback_reason.clone(),
+    }
+}
+
 fn restore_dispatch_spec(
     kind_name: &str,
     snapshot: &AgentDispatchSpecSnapshot,
-) -> Result<(AgentKind, WorkspaceStrategy), DispatchError> {
-    if snapshot.version != 1 {
-        return Err(DispatchError::InvalidHistory(format!(
-            "unsupported dispatch spec version {}",
-            snapshot.version
-        )));
-    }
-    if snapshot.model.model.trim().is_empty() {
-        return Err(DispatchError::InvalidHistory(
-            "dispatch spec has an empty model".into(),
-        ));
-    }
+) -> Result<
+    (
+        AgentRoleTemplate,
+        WorkspaceStrategy,
+        RequestedModelRoute,
+        ResolvedModelRoute,
+    ),
+    DispatchError,
+> {
     let capabilities = snapshot
         .capabilities
         .iter()
@@ -846,35 +886,200 @@ fn restore_dispatch_spec(
             }
         }
     };
-    Ok((
-        AgentKind {
-            name,
-            model: AgentModelProfile {
-                model: snapshot.model.model.clone(),
-                effort: match snapshot.model.effort {
-                    AgentModelEffortSnapshot::Low => ModelEffort::Low,
-                    AgentModelEffortSnapshot::Medium => ModelEffort::Medium,
-                    AgentModelEffortSnapshot::High => ModelEffort::High,
-                },
-                fallback_model: snapshot.model.fallback_model.clone(),
-            },
-            instructions: snapshot.instructions.clone(),
-            capabilities,
-            workspace_policy,
-            completion_contract: match &snapshot.completion_contract {
-                AgentCompletionContractSnapshot::StructuredHandoff => {
-                    CompletionContract::StructuredHandoff
-                }
-                AgentCompletionContractSnapshot::ReviewReport => CompletionContract::ReviewReport,
-                AgentCompletionContractSnapshot::SafetyVerdict => CompletionContract::SafetyVerdict,
-                AgentCompletionContractSnapshot::Plan => CompletionContract::Plan,
-                AgentCompletionContractSnapshot::Custom(value) => {
-                    CompletionContract::Custom(value.clone())
-                }
-            },
+    let role = AgentRoleTemplate {
+        name,
+        instructions: snapshot.instructions.clone(),
+        capabilities,
+        workspace_policy,
+        completion_contract: match &snapshot.completion_contract {
+            AgentCompletionContractSnapshot::StructuredHandoff => {
+                CompletionContract::StructuredHandoff
+            }
+            AgentCompletionContractSnapshot::ReviewReport => CompletionContract::ReviewReport,
+            AgentCompletionContractSnapshot::SafetyVerdict => CompletionContract::SafetyVerdict,
+            AgentCompletionContractSnapshot::Plan => CompletionContract::Plan,
+            AgentCompletionContractSnapshot::Custom(value) => {
+                CompletionContract::Custom(value.clone())
+            }
         },
-        strategy,
+    };
+    let (requested_route, resolved_route) = match snapshot.version {
+        1 => restore_v1_model_route(snapshot)?,
+        2 => restore_v2_model_route(snapshot)?,
+        version => {
+            return Err(DispatchError::InvalidHistory(format!(
+                "unsupported dispatch spec version {version}"
+            )))
+        }
+    };
+    Ok((role, strategy, requested_route, resolved_route))
+}
+
+fn restore_v1_model_route(
+    snapshot: &AgentDispatchSpecSnapshot,
+) -> Result<(RequestedModelRoute, ResolvedModelRoute), DispatchError> {
+    if snapshot.requested_route.is_some() || snapshot.resolved_route.is_some() {
+        return Err(DispatchError::InvalidHistory(
+            "version-one dispatch spec contains version-two routes".into(),
+        ));
+    }
+    let model = snapshot.legacy_model.as_ref().ok_or_else(|| {
+        DispatchError::InvalidHistory("version-one dispatch spec has no model".into())
+    })?;
+    if model.model.trim().is_empty() {
+        return Err(DispatchError::InvalidHistory(
+            "version-one dispatch spec has an empty model".into(),
+        ));
+    }
+    let effort = match model.effort {
+        AgentModelEffortSnapshot::Low => ReasoningEffort::low(),
+        AgentModelEffortSnapshot::Medium => ReasoningEffort::medium(),
+        AgentModelEffortSnapshot::High => ReasoningEffort::high(),
+    };
+    let fallback_policy = model
+        .fallback_model
+        .as_ref()
+        .map(|fallback| ModelFallbackPolicy::Explicit {
+            catalog_model_id: fallback.clone(),
+            reasoning_effort: effort.clone(),
+        })
+        .unwrap_or(ModelFallbackPolicy::FailClosed);
+    Ok((
+        RequestedModelRoute {
+            // V1 did not persist a catalog/profile identity. Preserve its raw
+            // value exactly and mark the resolved route as historic.
+            catalog_model_id: model.model.clone(),
+            reasoning_effort: effort.clone(),
+            fallback_policy,
+        },
+        ResolvedModelRoute {
+            catalog_generation: "historic-v1".into(),
+            catalog_model_id: model.model.clone(),
+            profile_name: "historic-v1".into(),
+            provider: "historic-v1".into(),
+            model: model.model.clone(),
+            reasoning_effort: effort,
+            resolution: ModelRouteResolution::HistoricV1,
+            fallback_reason: None,
+        },
     ))
+}
+
+fn restore_v2_model_route(
+    snapshot: &AgentDispatchSpecSnapshot,
+) -> Result<(RequestedModelRoute, ResolvedModelRoute), DispatchError> {
+    if snapshot.legacy_model.is_some() {
+        return Err(DispatchError::InvalidHistory(
+            "version-two dispatch spec contains a version-one model".into(),
+        ));
+    }
+    let requested = snapshot.requested_route.as_ref().ok_or_else(|| {
+        DispatchError::InvalidHistory("version-two dispatch spec has no requested route".into())
+    })?;
+    let resolved = snapshot.resolved_route.as_ref().ok_or_else(|| {
+        DispatchError::InvalidHistory("version-two dispatch spec has no resolved route".into())
+    })?;
+    require_nonempty_route_field("requested catalog model ID", &requested.catalog_model_id)?;
+    let requested_effort = parse_historic_effort(&requested.reasoning_effort)?;
+    let fallback_policy = match &requested.fallback_policy {
+        AgentModelFallbackPolicySnapshot::FailClosed => ModelFallbackPolicy::FailClosed,
+        AgentModelFallbackPolicySnapshot::Explicit {
+            catalog_model_id,
+            reasoning_effort,
+        } => {
+            require_nonempty_route_field("fallback catalog model ID", catalog_model_id)?;
+            ModelFallbackPolicy::Explicit {
+                catalog_model_id: catalog_model_id.clone(),
+                reasoning_effort: parse_historic_effort(reasoning_effort)?,
+            }
+        }
+    };
+    for (label, value) in [
+        ("catalog generation", resolved.catalog_generation.as_str()),
+        (
+            "resolved catalog model ID",
+            resolved.catalog_model_id.as_str(),
+        ),
+        ("profile name", resolved.profile_name.as_str()),
+        ("provider", resolved.provider.as_str()),
+        ("model", resolved.model.as_str()),
+    ] {
+        require_nonempty_route_field(label, value)?;
+    }
+    let resolved_effort = parse_historic_effort(&resolved.reasoning_effort)?;
+    let resolution = match resolved.resolution {
+        AgentModelRouteResolutionSnapshot::Exact => {
+            if requested.catalog_model_id != resolved.catalog_model_id
+                || requested_effort != resolved_effort
+                || resolved.fallback_reason.is_some()
+            {
+                return Err(DispatchError::InvalidHistory(
+                    "exact version-two route differs from its request".into(),
+                ));
+            }
+            ModelRouteResolution::Exact
+        }
+        AgentModelRouteResolutionSnapshot::ConfiguredFallback => {
+            let ModelFallbackPolicy::Explicit {
+                catalog_model_id,
+                reasoning_effort,
+            } = &fallback_policy
+            else {
+                return Err(DispatchError::InvalidHistory(
+                    "resolved fallback has fail-closed request policy".into(),
+                ));
+            };
+            if catalog_model_id != &resolved.catalog_model_id
+                || reasoning_effort != &resolved_effort
+                || resolved
+                    .fallback_reason
+                    .as_deref()
+                    .is_none_or(|reason| reason.trim().is_empty())
+            {
+                return Err(DispatchError::InvalidHistory(
+                    "resolved fallback does not match its explicit request policy".into(),
+                ));
+            }
+            ModelRouteResolution::ConfiguredFallback
+        }
+        AgentModelRouteResolutionSnapshot::HistoricV1 => {
+            return Err(DispatchError::InvalidHistory(
+                "version-two dispatch spec uses a historic-v1 resolution".into(),
+            ))
+        }
+    };
+    Ok((
+        RequestedModelRoute {
+            catalog_model_id: requested.catalog_model_id.clone(),
+            reasoning_effort: requested_effort,
+            fallback_policy,
+        },
+        ResolvedModelRoute {
+            catalog_generation: resolved.catalog_generation.clone(),
+            catalog_model_id: resolved.catalog_model_id.clone(),
+            profile_name: resolved.profile_name.clone(),
+            provider: resolved.provider.clone(),
+            model: resolved.model.clone(),
+            reasoning_effort: resolved_effort,
+            resolution,
+            fallback_reason: resolved.fallback_reason.clone(),
+        },
+    ))
+}
+
+fn parse_historic_effort(value: &str) -> Result<ReasoningEffort, DispatchError> {
+    ReasoningEffort::new(value).map_err(|error| {
+        DispatchError::InvalidHistory(format!("dispatch spec has invalid effort: {error}"))
+    })
+}
+
+fn require_nonempty_route_field(label: &str, value: &str) -> Result<(), DispatchError> {
+    if value.trim().is_empty() {
+        return Err(DispatchError::InvalidHistory(format!(
+            "dispatch spec has an empty {label}"
+        )));
+    }
+    Ok(())
 }
 
 fn lifecycle_state(state: DispatchState) -> AgentLifecycleState {
@@ -895,6 +1100,7 @@ fn lifecycle_state(state: DispatchState) -> AgentLifecycleState {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DispatchError {
     InvalidHistory(String),
+    ModelRoute(ModelRouteError),
     EmptyObjective,
     UnknownParent(AgentId),
     ChildMissingCausingTurn,
@@ -936,6 +1142,7 @@ impl fmt::Display for DispatchError {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::InvalidHistory(detail) => write!(formatter, "invalid dispatch history: {detail}"),
+            Self::ModelRoute(error) => write!(formatter, "could not resolve agent model: {error}"),
             Self::EmptyObjective => formatter.write_str("agent objective is empty"),
             Self::UnknownParent(id) => write!(formatter, "parent agent {id} is unknown"),
             Self::ChildMissingCausingTurn => {
@@ -1010,7 +1217,7 @@ pub struct ProjectedAgent {
     pub kind: String,
     pub objective: Option<String>,
     pub workspace_id: Option<WorkspaceId>,
-    pub dispatch_spec: Option<AgentDispatchSpecSnapshot>,
+    pub dispatch_spec: Option<Box<AgentDispatchSpecSnapshot>>,
     pub state: DispatchState,
 }
 
@@ -1180,12 +1387,22 @@ impl std::error::Error for ProjectionError {}
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::run_log::{InMemoryRunEventSink, MessageEvent, MessageRole};
+    use crate::ai::AiConfig;
+    use crate::run_log::{
+        AgentModelProfileSnapshot, InMemoryRunEventSink, MessageEvent, MessageRole,
+    };
+
+    fn catalog() -> Arc<SubagentModelCatalog> {
+        Arc::new(SubagentModelCatalog::from_config(&AiConfig::default()).unwrap())
+    }
 
     fn scheduler() -> (AgentDispatchScheduler, Arc<InMemoryRunEventSink>) {
         let sink = Arc::new(InMemoryRunEventSink::new());
-        let scheduler =
-            AgentDispatchScheduler::new(RunId::parse("run_dispatch_test").unwrap(), sink.clone());
+        let scheduler = AgentDispatchScheduler::new(
+            RunId::parse("run_dispatch_test").unwrap(),
+            sink.clone(),
+            catalog(),
+        );
         (scheduler, sink)
     }
 
@@ -1196,7 +1413,11 @@ mod tests {
     ) -> DispatchRequest {
         DispatchRequest {
             objective: "bounded delegated objective".into(),
-            kind,
+            role: kind,
+            requested_route: RequestedModelRoute::exact(
+                super::super::catalog_model_id("local", "qwen2.5-coder:7b"),
+                ReasoningEffort::none(),
+            ),
             parent_agent_id: None,
             causing_turn_id: None,
             caused_by_event: None,
@@ -1253,7 +1474,11 @@ mod tests {
         let child = scheduler
             .dispatch(DispatchRequest {
                 objective: "inspect the storage layer".into(),
-                kind: AgentKind::built_in(AgentKindName::Explorer),
+                role: AgentKind::built_in(AgentKindName::Explorer),
+                requested_route: RequestedModelRoute::exact(
+                    super::super::catalog_model_id("local", "qwen2.5-coder:7b"),
+                    ReasoningEffort::none(),
+                ),
                 parent_agent_id: Some(parent.agent_id.clone()),
                 causing_turn_id: Some(turn.clone()),
                 caused_by_event: Some(cause.event_id.clone()),
@@ -1312,7 +1537,11 @@ mod tests {
         let turn = TurnId::parse("trn_expected_cause").unwrap();
         let child_request = |causing_turn_id, caused_by_event| DispatchRequest {
             objective: "causally delegated work".into(),
-            kind: AgentKind::built_in(AgentKindName::Explorer),
+            role: AgentKind::built_in(AgentKindName::Explorer),
+            requested_route: RequestedModelRoute::exact(
+                super::super::catalog_model_id("local", "qwen2.5-coder:7b"),
+                ReasoningEffort::none(),
+            ),
             parent_agent_id: Some(parent.agent_id.clone()),
             causing_turn_id: Some(causing_turn_id),
             caused_by_event,
@@ -1402,13 +1631,8 @@ mod tests {
     #[test]
     fn resolved_custom_dispatch_spec_round_trips_and_rehydrates() {
         let (mut scheduler, sink) = scheduler();
-        let kind = AgentKind {
+        let role = AgentKind {
             name: AgentKindName::Custom("migration-auditor".into()),
-            model: AgentModelProfile {
-                model: "custom-model-v2".into(),
-                effort: ModelEffort::High,
-                fallback_model: Some("fallback-model".into()),
-            },
             instructions: "Audit migrations using the pinned policy revision.".into(),
             capabilities: BTreeSet::from([
                 AgentCapability::Read,
@@ -1418,23 +1642,42 @@ mod tests {
             workspace_policy: WorkspacePolicy::ReadOnlyProjection,
             completion_contract: CompletionContract::Custom("migration-audit-v3".into()),
         };
+        let requested_route = RequestedModelRoute::exact(
+            super::super::catalog_model_id("local", "qwen2.5-coder:7b"),
+            ReasoningEffort::none(),
+        );
         let handle = scheduler
-            .dispatch(request(
-                kind,
-                WorkspaceId::parse("wsp_custom_snapshot").unwrap(),
-                WorkspaceStrategy::ReadOnlySnapshot {
-                    manifest_id: Some(ManifestId::parse("mft_custom_snapshot").unwrap()),
+            .dispatch(DispatchRequest {
+                objective: "bounded delegated objective".into(),
+                role,
+                requested_route: requested_route.clone(),
+                parent_agent_id: None,
+                causing_turn_id: None,
+                caused_by_event: None,
+                workspace: WorkspaceAssignment {
+                    workspace_id: WorkspaceId::parse("wsp_custom_snapshot").unwrap(),
+                    strategy: WorkspaceStrategy::ReadOnlySnapshot {
+                        manifest_id: Some(ManifestId::parse("mft_custom_snapshot").unwrap()),
+                    },
                 },
-            ))
+            })
             .unwrap();
+        let resolved_route = scheduler.resolved_route(&handle.agent_id).unwrap().clone();
         let events = sink.events(&handle.run_id).unwrap();
         let EventKind::AgentLifecycle(created) = &events[0].kind else {
             panic!("expected created lifecycle")
         };
         let snapshot = created.dispatch_spec.as_ref().unwrap();
-        assert_eq!(snapshot.version, 1);
-        assert_eq!(snapshot.model.model, "custom-model-v2");
-        assert_eq!(snapshot.model.effort, AgentModelEffortSnapshot::High);
+        assert_eq!(snapshot.version, 2);
+        assert!(snapshot.legacy_model.is_none());
+        assert_eq!(
+            snapshot.requested_route.as_ref().unwrap().catalog_model_id,
+            requested_route.catalog_model_id
+        );
+        assert_eq!(
+            snapshot.resolved_route.as_ref().unwrap().profile_name,
+            "local"
+        );
         assert_eq!(
             snapshot.completion_contract,
             AgentCompletionContractSnapshot::Custom("migration-audit-v3".into())
@@ -1459,6 +1702,97 @@ mod tests {
             projection.agents()[&handle.agent_id].dispatch_spec.as_ref(),
             Some(snapshot)
         );
+        drop(scheduler);
+        let rehydrated = AgentDispatchScheduler::rehydrate(handle.run_id, sink, catalog()).unwrap();
+        assert_eq!(
+            rehydrated.requested_route(&handle.agent_id),
+            Some(&requested_route)
+        );
+        assert_eq!(
+            rehydrated.resolved_route(&handle.agent_id),
+            Some(&resolved_route)
+        );
+    }
+
+    #[test]
+    fn invalid_explicit_effort_creates_no_durable_agent() {
+        let (mut scheduler, sink) = scheduler();
+        let mut invalid = request(
+            AgentKind::built_in(AgentKindName::Explorer),
+            WorkspaceId::parse("wsp_invalid_route").unwrap(),
+            WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+        );
+        invalid.requested_route.reasoning_effort = ReasoningEffort::high();
+
+        assert!(matches!(
+            scheduler.dispatch(invalid),
+            Err(DispatchError::ModelRoute(ModelRouteError::InvalidEffort {
+                requested,
+                ..
+            })) if requested == ReasoningEffort::high()
+        ));
+        assert!(sink
+            .events(&RunId::parse("run_dispatch_test").unwrap())
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn version_one_snapshot_rehydrates_with_explicit_historic_route_marker() {
+        let (mut scheduler, source) = scheduler();
+        let handle = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Explorer),
+                WorkspaceId::parse("wsp_v1_history").unwrap(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let created = source.events(&handle.run_id).unwrap().remove(0);
+        let EventKind::AgentLifecycle(mut lifecycle) = created.kind else {
+            panic!("expected lifecycle")
+        };
+        let snapshot = lifecycle.dispatch_spec.as_mut().unwrap();
+        snapshot.version = 1;
+        snapshot.legacy_model = Some(AgentModelProfileSnapshot {
+            model: "legacy-model".into(),
+            effort: AgentModelEffortSnapshot::Medium,
+            fallback_model: Some("legacy-fallback".into()),
+        });
+        snapshot.requested_route = None;
+        snapshot.resolved_route = None;
+
+        let history = Arc::new(InMemoryRunEventSink::new());
+        history
+            .append(NewRunEvent {
+                run_id: handle.run_id.clone(),
+                caused_by: None,
+                operation_id: None,
+                provider_call_id: None,
+                actor: created.actor,
+                agent_id: created.agent_id,
+                turn_id: created.turn_id,
+                workspace_id: created.workspace_id,
+                branch_id: None,
+                kind: EventKind::AgentLifecycle(lifecycle),
+            })
+            .unwrap();
+
+        let rehydrated =
+            AgentDispatchScheduler::rehydrate(handle.run_id, history, catalog()).unwrap();
+        let requested = rehydrated.requested_route(&handle.agent_id).unwrap();
+        let resolved = rehydrated.resolved_route(&handle.agent_id).unwrap();
+        assert_eq!(requested.catalog_model_id, "legacy-model");
+        assert_eq!(requested.reasoning_effort, ReasoningEffort::medium());
+        assert_eq!(
+            requested.fallback_policy,
+            ModelFallbackPolicy::Explicit {
+                catalog_model_id: "legacy-fallback".into(),
+                reasoning_effort: ReasoningEffort::medium(),
+            }
+        );
+        assert_eq!(resolved.catalog_generation, "historic-v1");
+        assert_eq!(resolved.profile_name, "historic-v1");
+        assert_eq!(resolved.resolution, ModelRouteResolution::HistoricV1);
     }
 
     #[test]
@@ -1541,7 +1875,7 @@ mod tests {
             .unwrap();
         drop(scheduler);
 
-        let mut restored = AgentDispatchScheduler::rehydrate(run_id, sink).unwrap();
+        let mut restored = AgentDispatchScheduler::rehydrate(run_id, sink, catalog()).unwrap();
         assert_eq!(
             restored.state(&first.agent_id),
             Some(&DispatchState::Queued)
@@ -1587,7 +1921,7 @@ mod tests {
             .unwrap();
         drop(scheduler);
 
-        let mut restored = AgentDispatchScheduler::rehydrate(run_id, sink).unwrap();
+        let mut restored = AgentDispatchScheduler::rehydrate(run_id, sink, catalog()).unwrap();
         assert_eq!(
             restored.state(&first.agent_id),
             Some(&DispatchState::Queued)
@@ -1627,7 +1961,8 @@ mod tests {
             .unwrap();
         drop(scheduler);
 
-        let mut restored = AgentDispatchScheduler::rehydrate(run_id.clone(), sink.clone()).unwrap();
+        let mut restored =
+            AgentDispatchScheduler::rehydrate(run_id.clone(), sink.clone(), catalog()).unwrap();
         assert_eq!(
             restored.state(&first.agent_id),
             Some(&DispatchState::Interrupted)
@@ -1678,7 +2013,7 @@ mod tests {
         drop(scheduler);
 
         assert!(matches!(
-            AgentDispatchScheduler::rehydrate(run_id, sink),
+            AgentDispatchScheduler::rehydrate(run_id, sink, catalog()),
             Err(DispatchError::InvalidHistory(detail))
                 if detail.contains("workspace identity")
         ));
@@ -1717,7 +2052,7 @@ mod tests {
             .unwrap();
 
         assert!(matches!(
-            AgentDispatchScheduler::rehydrate(handle.run_id, corrupted),
+            AgentDispatchScheduler::rehydrate(handle.run_id, corrupted, catalog()),
             Err(DispatchError::InvalidHistory(detail))
                 if detail.contains("unsupported dispatch spec version 99")
         ));
@@ -1787,7 +2122,11 @@ mod tests {
         let child = scheduler
             .dispatch(DispatchRequest {
                 objective: "review the plan".into(),
-                kind: AgentKind::built_in(AgentKindName::Reviewer),
+                role: AgentKind::built_in(AgentKindName::Reviewer),
+                requested_route: RequestedModelRoute::exact(
+                    super::super::catalog_model_id("local", "qwen2.5-coder:7b"),
+                    ReasoningEffort::none(),
+                ),
                 parent_agent_id: Some(parent.agent_id.clone()),
                 causing_turn_id: Some(child_turn),
                 caused_by_event: Some(child_cause.event_id),
