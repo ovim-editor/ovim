@@ -506,6 +506,64 @@ impl AiSubagentRun {
 }
 
 impl Editor {
+    /// Project delegated-agent state for the current chat through the exact
+    /// versioned snapshot used by headless API clients.
+    pub fn ai_agent_current_snapshot(&self) -> Result<Option<AgentControlPlaneSnapshot>, String> {
+        if !self.ai_state.subagents.policy().enabled || self.ai_state.chat.is_none() {
+            return Ok(None);
+        }
+        let Some(binding) = self
+            .ai_state
+            .durable_chat_bindings
+            .get(&self.ai_chat_conversation_key())
+        else {
+            return Ok(None);
+        };
+        self.ai_agent_snapshot(&binding.binding.run_id).map(Some)
+    }
+
+    pub fn ai_agent_tree_cursor(&self) -> usize {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map_or(0, |chat| chat.agent_tree_cursor)
+    }
+
+    pub fn ai_agent_tree_focused(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.agent_tree_focused)
+    }
+
+    pub fn ai_agent_selected_id(&self) -> Option<&str> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.selected_agent_id.as_deref())
+    }
+
+    pub fn ai_agent_followed_id(&self) -> Option<&str> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.followed_agent_id.as_deref())
+    }
+
+    pub fn ai_agent_card_expanded(&self, agent_id: &AgentId) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.expanded_agent_cards.contains(agent_id.as_str()))
+    }
+
+    pub fn ai_agent_expanded_cards(&self) -> Option<&std::collections::HashSet<String>> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .map(|chat| &chat.expanded_agent_cards)
+    }
+
     fn headless_subagent_run(&self, run_id: &RunId) -> Result<Arc<AiSubagentRun>, String> {
         if let Ok(run) = self.ai_state.subagents.registered_run(run_id) {
             return Ok(run);

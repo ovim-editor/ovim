@@ -440,6 +440,18 @@ pub struct AiChatState {
     pub tree_panel_open: bool,
     /// Cursor index into the flattened DFS tree list.
     pub tree_panel_cursor: usize,
+    /// Whether keyboard navigation in the shared sidebar targets delegated
+    /// agents (`true`) or conversation branches (`false`).
+    pub agent_tree_focused: bool,
+    /// Cursor into `AgentControlPlaneSnapshot::hierarchy`.
+    pub agent_tree_cursor: usize,
+    /// Stable selected/followed identities. These are presentation state only;
+    /// lifecycle and control data always comes from the durable projection.
+    pub selected_agent_id: Option<String>,
+    pub followed_agent_id: Option<String>,
+    /// Expanded inline/tree cards. Children default collapsed to keep the chat
+    /// usable in narrow terminals.
+    pub expanded_agent_cards: HashSet<String>,
     /// Tool calls accumulated during streaming.
     pub streaming_tool_calls: Vec<ToolCallInfo>,
     /// Opaque inference-strategy items accumulated for the assistant message.
@@ -568,6 +580,11 @@ impl AiChatState {
             expanded_tool_events: HashSet::new(),
             tree_panel_open: false,
             tree_panel_cursor: 0,
+            agent_tree_focused: true,
+            agent_tree_cursor: 0,
+            selected_agent_id: None,
+            followed_agent_id: None,
+            expanded_agent_cards: HashSet::new(),
             streaming_tool_calls: Vec::new(),
             streaming_provider_state: Vec::new(),
             tool_call_count: 0,

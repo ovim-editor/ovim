@@ -4,6 +4,7 @@ pub use core::Renderer;
 pub use dashboard::MENU_ITEMS;
 
 // Internal modules
+pub mod agent_tree;
 pub mod ai_chat;
 mod ai_chat_layout;
 mod buffer;

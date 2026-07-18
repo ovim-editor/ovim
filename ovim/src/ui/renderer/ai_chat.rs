@@ -108,9 +108,60 @@ fn render_chat_panel_impl(
         return;
     };
 
-    // Render tree panel if open
+    let agent_snapshot = editor.ai_agent_current_snapshot().ok().flatten();
+
+    // Keep delegated-agent hierarchy adjacent to, but visually distinct from,
+    // the existing conversation branch tree. Both are projections; neither
+    // renderer owns lifecycle or control state.
     if let Some(tree_rect) = layout.tree_area {
-        super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
+        if agent_snapshot
+            .as_ref()
+            .is_some_and(|snapshot| !snapshot.agents.is_empty())
+        {
+            let has_branches = editor
+                .conversation()
+                .and_then(|conversation| conversation.root_id())
+                .is_some();
+            let agent_height = if has_branches && tree_rect.height >= 10 {
+                (tree_rect.height.saturating_mul(2) / 3)
+                    .clamp(5, tree_rect.height.saturating_sub(3))
+            } else {
+                tree_rect.height
+            };
+            let agent_area = Rect::new(tree_rect.x, tree_rect.y, tree_rect.width, agent_height);
+            let expanded = editor
+                .ai_agent_expanded_cards()
+                .cloned()
+                .unwrap_or_default();
+            super::agent_tree::render_agent_tree_panel(
+                frame,
+                agent_snapshot.as_ref(),
+                agent_area,
+                super::agent_tree::AgentTreeRenderState {
+                    enabled: true,
+                    focused: editor.ai_chat_focus() == ChatFocus::TreePanel
+                        && editor.ai_agent_tree_focused(),
+                    cursor: editor.ai_agent_tree_cursor(),
+                    selected_agent_id: editor.ai_agent_selected_id(),
+                    followed_agent_id: editor.ai_agent_followed_id(),
+                    expanded: &expanded,
+                },
+            );
+            if agent_height < tree_rect.height {
+                super::conversation_tree::render_tree_panel(
+                    frame,
+                    editor,
+                    Rect::new(
+                        tree_rect.x,
+                        tree_rect.y + agent_height,
+                        tree_rect.width,
+                        tree_rect.height - agent_height,
+                    ),
+                );
+            }
+        } else {
+            super::conversation_tree::render_tree_panel(frame, editor, tree_rect);
+        }
     }
 
     render_chat_header(frame, editor, layout.header_area);

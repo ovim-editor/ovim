@@ -25,6 +25,77 @@ pub struct AgentControlPlaneSnapshot {
     pub pending_attention: usize,
 }
 
+impl AgentControlPlaneSnapshot {
+    /// Return agents in stable parent-before-child order.
+    ///
+    /// The durable dispatch list is normally already chronological, but API
+    /// clients and renderers must not rely on completion or transport order to
+    /// reconstruct hierarchy. Unknown/orphaned parents remain visible after
+    /// the rooted tree rather than disappearing from the control plane.
+    pub fn hierarchy(&self) -> Vec<&AgentSnapshot> {
+        let by_id = self
+            .agents
+            .iter()
+            .map(|agent| (agent.agent_id.clone(), agent))
+            .collect::<BTreeMap<_, _>>();
+        let mut children = BTreeMap::<AgentId, Vec<AgentId>>::new();
+        for agent in &self.agents {
+            let parent = agent
+                .parent_agent_id
+                .clone()
+                .unwrap_or_else(|| self.root_agent_id.clone());
+            children
+                .entry(parent)
+                .or_default()
+                .push(agent.agent_id.clone());
+        }
+
+        let mut ordered = Vec::with_capacity(self.agents.len());
+        let mut visited = BTreeSet::new();
+        visit_hierarchy(
+            &self.root_agent_id,
+            &by_id,
+            &children,
+            &mut visited,
+            &mut ordered,
+        );
+        for agent in &self.agents {
+            if visited.insert(agent.agent_id.clone()) {
+                ordered.push(agent);
+                visit_hierarchy(
+                    &agent.agent_id,
+                    &by_id,
+                    &children,
+                    &mut visited,
+                    &mut ordered,
+                );
+            }
+        }
+        ordered
+    }
+}
+
+fn visit_hierarchy<'a>(
+    parent: &AgentId,
+    by_id: &BTreeMap<AgentId, &'a AgentSnapshot>,
+    children: &BTreeMap<AgentId, Vec<AgentId>>,
+    visited: &mut BTreeSet<AgentId>,
+    ordered: &mut Vec<&'a AgentSnapshot>,
+) {
+    let Some(child_ids) = children.get(parent) else {
+        return;
+    };
+    for child_id in child_ids {
+        if !visited.insert(child_id.clone()) {
+            continue;
+        }
+        if let Some(child) = by_id.get(child_id) {
+            ordered.push(*child);
+            visit_hierarchy(child_id, by_id, children, visited, ordered);
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub struct AgentSnapshot {
     pub agent_id: AgentId,
