@@ -979,9 +979,12 @@ mod tests {
     async fn queue_and_concurrency_limits_fail_before_allocating_extra_agent() {
         let sink = Arc::new(InMemoryRunEventSink::new());
         let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(30)));
-        let mut config = AgentSupervisorConfig::default();
-        config.max_concurrent = 1;
-        config.max_queued = 1;
+        let maximum_active = factory.delayed.maximum_active_counter();
+        let config = AgentSupervisorConfig {
+            max_concurrent: 1,
+            max_queued: 1,
+            ..AgentSupervisorConfig::default()
+        };
         let (supervisor, _, _) = supervisor_with(sink, factory, config);
         supervisor.dispatch(request("first")).await.unwrap();
         supervisor.dispatch(request("second")).await.unwrap();
@@ -994,14 +997,94 @@ mod tests {
             .wait_for_idle(Duration::from_secs(2))
             .await
             .unwrap());
+        assert_eq!(maximum_active.load(Ordering::Acquire), 1);
+    }
+
+    #[tokio::test]
+    async fn root_and_child_budgets_terminalize_with_validated_partial_handoffs() {
+        let root_sink = Arc::new(InMemoryRunEventSink::new());
+        let root_factory = Arc::new(FakeInputFactory::new(Duration::from_millis(2)));
+        let root_config = AgentSupervisorConfig {
+            max_concurrent: 1,
+            root_max_provider_events: 2,
+            ..AgentSupervisorConfig::default()
+        };
+        let (root_limited, _, root_recipient) =
+            supervisor_with(root_sink, root_factory, root_config);
+        let first = root_limited
+            .dispatch(request("first budget"))
+            .await
+            .unwrap();
+        let second = root_limited
+            .dispatch(request("second budget"))
+            .await
+            .unwrap();
+        assert!(root_limited
+            .wait_for_idle(Duration::from_secs(1))
+            .await
+            .unwrap());
+        assert_eq!(
+            root_limited.state(&first.agent_id).unwrap(),
+            Some(DispatchState::Completed)
+        );
+        assert_eq!(
+            root_limited.state(&second.agent_id).unwrap(),
+            Some(DispatchState::Interrupted)
+        );
+        assert_eq!(
+            root_limited
+                .mailbox(root_recipient)
+                .unwrap()
+                .pending()
+                .unwrap()
+                .len(),
+            2
+        );
+
+        let child_sink = Arc::new(InMemoryRunEventSink::new());
+        let child_factory = Arc::new(FakeInputFactory::new(Duration::from_millis(20)));
+        let child_config = AgentSupervisorConfig {
+            child_budget: AgentLoopBudget {
+                timeout: Duration::from_millis(5),
+                max_provider_events: 1,
+                max_tool_calls: 1,
+            },
+            ..AgentSupervisorConfig::default()
+        };
+        let (child_limited, _, child_recipient) =
+            supervisor_with(child_sink, child_factory, child_config);
+        let child = child_limited
+            .dispatch(request("child budget"))
+            .await
+            .unwrap();
+        assert!(child_limited
+            .wait_for_idle(Duration::from_secs(1))
+            .await
+            .unwrap());
+        assert_eq!(
+            child_limited.state(&child.agent_id).unwrap(),
+            Some(DispatchState::Interrupted)
+        );
+        let entries = child_limited
+            .mailbox(child_recipient)
+            .unwrap()
+            .pending()
+            .unwrap();
+        assert!(matches!(
+            &entries[0].notification,
+            MailboxNotificationKind::Handoff { handoff, .. }
+                if matches!(handoff.status, HandoffStatus::Interrupted | HandoffStatus::TimedOut)
+        ));
     }
 
     #[tokio::test]
     async fn parent_interrupt_cascades_to_live_descendant() {
         let sink = Arc::new(InMemoryRunEventSink::new());
         let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(40)));
-        let mut config = AgentSupervisorConfig::default();
-        config.max_depth = 1;
+        let config = AgentSupervisorConfig {
+            max_depth: 1,
+            ..AgentSupervisorConfig::default()
+        };
         let (supervisor, run_id, _) = supervisor_with(sink.clone(), factory, config);
         let mut parent_request = request("parent delayed");
         parent_request.role = AgentKind::built_in(AgentKindName::Planner);
