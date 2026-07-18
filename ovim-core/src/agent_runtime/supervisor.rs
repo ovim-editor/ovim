@@ -264,6 +264,31 @@ impl AgentSupervisor {
         Ok(projection.messages().cloned().collect())
     }
 
+    /// Reject any unsettled steering for `agent_id` and run `finish` as one
+    /// scheduler-locked step. The scheduler lock is the admission/termination
+    /// exclusion: a concurrent `send_message` either enqueues before this sweep
+    /// (and is rejected here) or observes the resulting terminal state and is
+    /// refused, so a parent-authored message can never be durably orphaned
+    /// across the child's terminal boundary. Every terminal path funnels through
+    /// here so the sweep cannot be forgotten (the infrastructure-failure path
+    /// previously skipped it). The message-queue view is built before the lock
+    /// so the lock order stays scheduler-only.
+    fn terminalize_locked<T>(
+        &self,
+        agent_id: &AgentId,
+        finish: impl FnOnce(&mut AgentDispatchScheduler) -> Result<T, AgentSupervisorError>,
+    ) -> Result<T, AgentSupervisorError> {
+        let queue = self.message_queue(agent_id.clone())?;
+        let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
+        for message in queue.unsettled()? {
+            queue.reject_queued(
+                &message.message_event_id,
+                "child reached a terminal boundary before message delivery",
+            )?;
+        }
+        finish(&mut scheduler)
+    }
+
     /// Queue one bounded parent-authored message for a currently active child.
     /// The provider wrapper accepts it only between provider/tool operations;
     /// terminal and merely queued children reject steering explicitly.
@@ -271,11 +296,15 @@ impl AgentSupervisor {
         &self,
         request: SendAgentMessageRequest,
     ) -> Result<AgentMessageRecord, AgentSupervisorError> {
-        let record = self
-            .inner
-            .scheduler
-            .lock()
-            .map_err(|_| poisoned())?
+        // Build the queue view before locking the scheduler, then hold that lock
+        // across both the liveness check and the durable enqueue. This makes the
+        // scheduler lock the admission/termination exclusion (see
+        // terminalize_locked): a terminal transition cannot slip between the
+        // check and the append, so the message is either delivered/rejected or
+        // the target is refused as not-live — never durably orphaned.
+        let queue = self.message_queue(request.recipient_agent_id.clone())?;
+        let scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
+        let record = scheduler
             .dispatch_record(&request.recipient_agent_id)
             .ok_or_else(|| {
                 AgentSupervisorError::UnknownAgent(request.recipient_agent_id.clone())
@@ -303,12 +332,13 @@ impl AgentSupervisor {
                 state: record.state,
             });
         }
-        let queued = self.message_queue(record.handle.agent_id)?.queue(
+        let queued = queue.queue(
             request.sender_agent_id,
             request.causing_turn_id,
             request.caused_by_event,
             request.content,
         )?;
+        drop(scheduler);
         self.inner.changed.notify_waiters();
         Ok(queued)
     }
@@ -384,29 +414,38 @@ impl AgentSupervisor {
         let mut terminals = Vec::new();
         {
             let live = self.inner.live.lock().await;
-            let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
             for current in &descendants {
                 if let Some(handle) = live.get(current) {
                     handle.cancellation.cancel(reason.clone());
                     continue;
                 }
-                let Some(state) = scheduler.state(current) else {
-                    continue;
-                };
-                if state.is_terminal() {
-                    continue;
+                // Not live. Because promotion holds `live` (see drain_ready),
+                // this child is not mid-start; terminalize it through the shared
+                // helper so any queued steering is rejected too, unless it has
+                // already reached a terminal state.
+                let reason = reason.clone();
+                let outcome = self.terminalize_locked(current, |scheduler| {
+                    let non_terminal = scheduler
+                        .state(current)
+                        .is_some_and(|state| !state.is_terminal());
+                    if !non_terminal {
+                        return Ok(None);
+                    }
+                    let record = scheduler
+                        .dispatch_record(current)
+                        .ok_or_else(|| AgentSupervisorError::UnknownAgent(current.clone()))?;
+                    let terminal = scheduler.finish_with_handoff(
+                        &record.handle,
+                        validated_terminal_handoff(
+                            HandoffStatus::Interrupted,
+                            format!("cancelled before provider start: {reason}"),
+                        )?,
+                    )?;
+                    Ok(Some((record, terminal)))
+                })?;
+                if let Some(pair) = outcome {
+                    terminals.push(pair);
                 }
-                let record = scheduler
-                    .dispatch_record(current)
-                    .ok_or_else(|| AgentSupervisorError::UnknownAgent(current.clone()))?;
-                let terminal = scheduler.finish_with_handoff(
-                    &record.handle,
-                    validated_terminal_handoff(
-                        HandoffStatus::Interrupted,
-                        format!("cancelled before provider start: {reason}"),
-                    )?,
-                )?;
-                terminals.push((record, terminal));
             }
         }
         for (record, terminal) in terminals {
@@ -508,19 +547,24 @@ impl AgentSupervisor {
                 }
                 _ => HandoffStatus::Failed,
             };
-            let terminal = self.inner.scheduler.lock().ok().and_then(|mut scheduler| {
-                let state = scheduler.state(&record.handle.agent_id)?.clone();
-                if state.is_terminal() {
-                    return None;
-                }
-                scheduler
-                    .terminate_conservatively(
+            // Route through terminalize_locked so an infrastructure failure also
+            // rejects any unsettled steering (this path previously skipped it).
+            let terminal = self
+                .terminalize_locked(&record.handle.agent_id, |scheduler| {
+                    let non_terminal = scheduler
+                        .state(&record.handle.agent_id)
+                        .is_some_and(|state| !state.is_terminal());
+                    if !non_terminal {
+                        return Ok(None);
+                    }
+                    Ok(Some(scheduler.terminate_conservatively(
                         &record.handle,
                         status,
                         &format!("child loop infrastructure failed: {error}"),
-                    )
-                    .ok()
-            });
+                    )?))
+                })
+                .ok()
+                .flatten();
             if let Some(terminal) = terminal {
                 let _ = self.notify_terminal(&record, &terminal);
             }
@@ -622,18 +666,13 @@ impl AgentSupervisor {
         } else {
             AgentLoopRunner::run(input).await?
         };
-        for message in message_queue.unsettled()? {
-            message_queue.reject_queued(
-                &message.message_event_id,
-                "child reached a terminal provider boundary before message delivery",
-            )?;
-        }
-        let terminal = self
-            .inner
-            .scheduler
-            .lock()
-            .map_err(|_| poisoned())?
-            .finish_with_handoff_and_warnings(&record.handle, handoff, workspace_warnings)?;
+        let terminal = self.terminalize_locked(&record.handle.agent_id, |scheduler| {
+            Ok(scheduler.finish_with_handoff_and_warnings(
+                &record.handle,
+                handoff,
+                workspace_warnings,
+            )?)
+        })?;
         if let Some(session) = next_idle_session {
             self.inner
                 .idle_sessions
@@ -1378,6 +1417,67 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    #[tokio::test]
+    async fn steering_to_a_terminating_child_is_never_left_durably_queued() {
+        // Queue steering to a live child, then interrupt it. However the child
+        // terminates — whether it consumed the message at a boundary first or
+        // was cancelled while parked — the terminal path must settle the message
+        // (delivered or rejected). It must never be left durably queued, which
+        // is the orphaning A3 addresses.
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_secs(10)));
+        let (supervisor, run_id, root) =
+            supervisor_with(sink.clone(), factory, AgentSupervisorConfig::default());
+        let (turn_id, caused_by_event) = parent_cause(&*sink, &run_id, &root);
+        let child = supervisor
+            .dispatch_nonblocking(request("message boundary"))
+            .unwrap();
+        loop {
+            if matches!(
+                supervisor.state(&child.agent_id).unwrap(),
+                Some(
+                    DispatchState::Starting
+                        | DispatchState::Running
+                        | DispatchState::WaitingForAgent
+                        | DispatchState::WaitingForTool
+                        | DispatchState::WaitingForUser
+                )
+            ) {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let message = supervisor
+            .send_message(SendAgentMessageRequest {
+                sender_agent_id: root.clone(),
+                recipient_agent_id: child.agent_id.clone(),
+                causing_turn_id: turn_id,
+                caused_by_event,
+                content: "steer before the child reaches a boundary".into(),
+            })
+            .unwrap();
+        // send_message durably enqueues the steering.
+        assert!(matches!(
+            message.state,
+            super::super::AgentMessageState::Queued
+        ));
+        supervisor.interrupt(&child.agent_id, "stop").await.unwrap();
+        assert!(supervisor
+            .wait_for_idle(Duration::from_secs(2))
+            .await
+            .unwrap());
+        // The steering is settled, never left durably queued.
+        assert!(supervisor
+            .message_queue(child.agent_id.clone())
+            .unwrap()
+            .projection()
+            .unwrap()
+            .message(&message.message_event_id)
+            .unwrap()
+            .state
+            .is_terminal());
     }
 
     #[tokio::test]
