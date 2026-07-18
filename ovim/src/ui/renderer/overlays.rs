@@ -617,7 +617,11 @@ pub fn render_lsp_install_dialog(frame: &mut Frame, editor: &Editor, _theme: &Th
 pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _theme: &Theme) {
     let pending_no_repo = editor.ai_chat_has_pending_no_repo_folder_approval();
     let pending_tool = editor.ai_chat_has_pending_tool_approval();
-    if !pending_no_repo && !pending_tool {
+    let agent_snapshot = editor.ai_agent_current_snapshot().ok().flatten();
+    let pending_agent = agent_snapshot
+        .as_ref()
+        .and_then(super::agent_tree::project_agent_approval_prompt);
+    if !pending_no_repo && !pending_tool && pending_agent.is_none() {
         return;
     }
 
@@ -629,13 +633,21 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
                 .unwrap_or_else(|| "Allow folder access for this chat session?".to_string()),
             "Enter/Ctrl-Y allow   Esc/Ctrl-N deny",
         )
-    } else {
+    } else if pending_tool {
         (
             " Tool Permission ",
             editor
                 .ai_chat_pending_tool_approval_summary()
                 .unwrap_or_else(|| "Allow requested tool action?".to_string()),
             "Enter/Ctrl-Y allow once   Ctrl-A allow for chat   Esc/Ctrl-N deny",
+        )
+    } else {
+        (
+            " Child Agent Permission ",
+            pending_agent
+                .map(|approval| approval.summary)
+                .unwrap_or_else(|| "Allow requested child action?".to_string()),
+            "Enter/A/Ctrl-Y allow this child operation   D/Esc/Ctrl-N deny",
         )
     };
 

@@ -1778,7 +1778,10 @@ fn render_text_input(
         return;
     }
 
-    let prompt = if allow_edits { ">> " } else { "?  " };
+    let prompt =
+        editor
+            .ai_agent_composer_prompt()
+            .unwrap_or(if allow_edits { ">> " } else { "?  " });
     let prompt_len = prompt.len(); // 3
     let prefix_total = 2 + prompt_len; // "│ " + prompt = 5
     let suffix_len = 2; // " │"

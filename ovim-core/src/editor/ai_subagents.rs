@@ -564,6 +564,238 @@ impl Editor {
             .map(|chat| &chat.expanded_agent_cards)
     }
 
+    pub fn ai_agent_follow_status(&self) -> Option<String> {
+        let followed = self.ai_agent_followed_id()?;
+        let snapshot = self.ai_agent_current_snapshot().ok().flatten()?;
+        let agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id.as_str() == followed)?;
+        Some(format!(
+            "{} · {} · {} · {}",
+            agent.task_name,
+            agent.resolved_route.model,
+            agent.resolved_route.reasoning_effort,
+            agent.lifecycle.replace('_', " ")
+        ))
+    }
+
+    pub(crate) fn ai_agent_has_pending_approval(&self) -> bool {
+        self.ai_agent_current_snapshot()
+            .ok()
+            .flatten()
+            .is_some_and(|snapshot| snapshot.oldest_pending_approval().is_some())
+    }
+
+    /// Resolve the exact oldest request displayed by the child approval
+    /// prompt, through the same broker entry point used by the API.
+    pub(crate) fn ai_agent_resolve_pending_approval(&mut self, allow: bool) -> Result<(), String> {
+        let snapshot = self
+            .ai_agent_current_snapshot()?
+            .ok_or_else(|| "there is no delegated-agent run for this chat".to_string())?;
+        let (agent, approval) = snapshot
+            .oldest_pending_approval()
+            .ok_or_else(|| "there is no pending delegated-agent approval".to_string())?;
+        self.ai_agent_respond_approval(
+            &snapshot.run_id,
+            &agent.agent_id,
+            agent.turn_generation,
+            approval.operation_id.clone(),
+            approval.request_event_id.clone(),
+            allow,
+            (!allow).then(|| "Denied from the Ovim agent tree".to_string()),
+        )?;
+        self.set_lsp_status(format!(
+            "{} {} approval for {}",
+            if allow { "Allowed" } else { "Denied" },
+            approval.tool_name,
+            agent.task_name
+        ));
+        Ok(())
+    }
+
+    pub(crate) fn ai_agent_composer_action(
+        &self,
+    ) -> Option<super::ai_chat_state::AgentComposerActionKind> {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_agent_composer_action.as_ref())
+            .map(|action| action.kind)
+    }
+
+    pub fn ai_agent_composer_prompt(&self) -> Option<&'static str> {
+        match self.ai_agent_composer_action()? {
+            super::ai_chat_state::AgentComposerActionKind::Message => Some("m> "),
+            super::ai_chat_state::AgentComposerActionKind::Followup => Some("r> "),
+        }
+    }
+
+    pub(crate) fn begin_ai_agent_composer_action(
+        &mut self,
+        agent_id: String,
+        kind: super::ai_chat_state::AgentComposerActionKind,
+    ) -> Result<(), String> {
+        let snapshot = self
+            .ai_agent_current_snapshot()?
+            .ok_or_else(|| "there is no delegated-agent run for this chat".to_string())?;
+        let agent = snapshot
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id.as_str() == agent_id)
+            .ok_or_else(|| format!("unknown delegated agent {agent_id}"))?;
+        let valid_state = match kind {
+            super::ai_chat_state::AgentComposerActionKind::Message => matches!(
+                agent.lifecycle.as_str(),
+                "starting"
+                    | "running"
+                    | "waiting_for_agent"
+                    | "waiting_for_tool"
+                    | "waiting_for_user"
+            ),
+            super::ai_chat_state::AgentComposerActionKind::Followup => {
+                matches!(agent.lifecycle.as_str(), "completed" | "interrupted")
+            }
+        };
+        if !valid_state {
+            return Err(format!(
+                "{} is not available while {} is {}",
+                match kind {
+                    super::ai_chat_state::AgentComposerActionKind::Message => "message",
+                    super::ai_chat_state::AgentComposerActionKind::Followup => "follow-up",
+                },
+                agent.task_name,
+                agent.lifecycle.replace('_', " ")
+            ));
+        }
+        let chat = self
+            .ai_state
+            .chat
+            .as_mut()
+            .ok_or_else(|| "there is no active chat composer".to_string())?;
+        if chat.pending_agent_composer_action.is_some() {
+            return Err("a delegated-agent composer action is already active".into());
+        }
+        let previous_input = std::mem::take(&mut chat.input);
+        let previous_cursor = chat.input_cursor;
+        chat.input_cursor = 0;
+        chat.pending_agent_composer_action =
+            Some(super::ai_chat_state::PendingAgentComposerAction {
+                kind,
+                agent_id,
+                previous_input,
+                previous_cursor,
+            });
+        chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
+        self.set_lsp_status(match kind {
+            super::ai_chat_state::AgentComposerActionKind::Message => {
+                format!(
+                    "Type a message for {} and press Enter; Esc cancels",
+                    agent.task_name
+                )
+            }
+            super::ai_chat_state::AgentComposerActionKind::Followup => format!(
+                "Type the follow-up objective for {} and press Enter; Esc cancels",
+                agent.task_name
+            ),
+        });
+        Ok(())
+    }
+
+    pub(crate) fn cancel_ai_agent_composer_action(&mut self) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        let Some(action) = chat.pending_agent_composer_action.take() else {
+            return false;
+        };
+        chat.input = action.previous_input;
+        chat.input_cursor = action.previous_cursor.min(chat.input.len());
+        self.set_lsp_status("Cancelled delegated-agent action".into());
+        true
+    }
+
+    pub(crate) fn submit_ai_agent_composer_action(&mut self) -> Result<bool, String> {
+        let Some(chat) = self.ai_state.chat.as_ref() else {
+            return Ok(false);
+        };
+        if chat.pending_agent_composer_action.is_none() {
+            return Ok(false);
+        }
+        let content = chat.input.trim().to_string();
+        if content.is_empty() {
+            return Err("delegated-agent message/objective cannot be empty".into());
+        }
+        let chat = self.ai_state.chat.as_mut().expect("chat checked above");
+        let action = chat
+            .pending_agent_composer_action
+            .take()
+            .expect("action checked above");
+        chat.input = action.previous_input;
+        chat.input_cursor = action.previous_cursor.min(chat.input.len());
+
+        let (tool_name, arguments, status) = match action.kind {
+            super::ai_chat_state::AgentComposerActionKind::Message => (
+                SEND_MESSAGE_TOOL,
+                json!({"agent_id": action.agent_id.clone(), "message": content}),
+                "Message queued for delegated agent",
+            ),
+            super::ai_chat_state::AgentComposerActionKind::Followup => (
+                FOLLOWUP_AGENT_TOOL,
+                json!({"agent_id": action.agent_id.clone(), "objective": content}),
+                "Follow-up queued for delegated agent",
+            ),
+        };
+        let call = ToolCallInfo {
+            id: format!("ui-{tool_name}-{}", action.agent_id),
+            name: tool_name.into(),
+            arguments,
+        };
+        if action.kind == super::ai_chat_state::AgentComposerActionKind::Message {
+            match self.execute_ai_subagent_control_tool(&call) {
+                ToolResult::Success(_) => self.set_lsp_status(status.into()),
+                ToolResult::Error(error) => return Err(error),
+            }
+        } else {
+            self.spawn_ai_agent_ui_control(call, status)?;
+        }
+        Ok(true)
+    }
+
+    pub(crate) fn interrupt_ai_agent_from_ui(&mut self, agent_id: String) -> Result<(), String> {
+        self.spawn_ai_agent_ui_control(
+            ToolCallInfo {
+                id: format!("ui-interrupt-{agent_id}"),
+                name: INTERRUPT_AGENT_TOOL.into(),
+                arguments: json!({
+                    "agent_id": agent_id,
+                    "reason": "Interrupted from the Ovim agent tree"
+                }),
+            },
+            "Interrupt requested for delegated agent",
+        )
+    }
+
+    fn spawn_ai_agent_ui_control(
+        &mut self,
+        call: ToolCallInfo,
+        status: &'static str,
+    ) -> Result<(), String> {
+        let prepared = self.prepare_ai_subagent_async_control(&call)?;
+        let runtime = tokio::runtime::Handle::try_current()
+            .map_err(|_| "delegated-agent controls require an async runtime".to_string())?;
+        runtime.spawn(async move {
+            if let ToolResult::Error(error) = prepared.execute().await {
+                crate::log_warn!(
+                    "agent_runtime",
+                    "delegated-agent UI control failed: {error}"
+                );
+            }
+        });
+        self.set_lsp_status(status.into());
+        Ok(())
+    }
+
     fn headless_subagent_run(&self, run_id: &RunId) -> Result<Arc<AiSubagentRun>, String> {
         if let Ok(run) = self.ai_state.subagents.registered_run(run_id) {
             return Ok(run);

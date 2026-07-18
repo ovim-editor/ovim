@@ -50,6 +50,11 @@ pub(crate) struct AgentTreeView {
     pub empty_message: Option<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct AgentApprovalPrompt {
+    pub summary: String,
+}
+
 #[derive(Clone, Copy)]
 pub(crate) struct AgentTreeRenderState<'a> {
     pub enabled: bool,
@@ -127,6 +132,57 @@ pub(crate) fn project_inline_agent_cards(
     // cards. Stable hierarchy order is retained within each priority tier.
     cards.sort_by_key(|card| std::cmp::Reverse(card.attention_priority));
     cards
+}
+
+pub(crate) fn project_agent_approval_prompt(
+    snapshot: &AgentControlPlaneSnapshot,
+) -> Option<AgentApprovalPrompt> {
+    let (agent, approval) = snapshot.oldest_pending_approval()?;
+    let ancestry = agent
+        .ancestry
+        .iter()
+        .map(|ancestor| {
+            snapshot
+                .agents
+                .iter()
+                .find(|candidate| candidate.agent_id == *ancestor)
+                .map(|candidate| candidate.task_name.clone())
+                .unwrap_or_else(|| {
+                    if *ancestor == snapshot.root_agent_id {
+                        "root".into()
+                    } else {
+                        short_id(ancestor.as_str())
+                    }
+                })
+        })
+        .collect::<Vec<_>>()
+        .join(" › ");
+    Some(AgentApprovalPrompt {
+        summary: format!(
+            "Child: {} ({})\nAncestry: {} › {} · role {}\nRoute: requested {}/{} → effective {}/{}{}\nTool: {} · effect {}\nWorkspace: {} · {} · {}\nReason: {}",
+            agent.task_name,
+            short_id(agent.agent_id.as_str()),
+            if ancestry.is_empty() { "root" } else { &ancestry },
+            agent.task_name,
+            agent.role,
+            agent.requested_route.catalog_model_id,
+            agent.requested_route.reasoning_effort,
+            agent.resolved_route.catalog_model_id,
+            agent.resolved_route.reasoning_effort,
+            agent
+                .resolved_route
+                .fallback_reason
+                .as_deref()
+                .map(|reason| format!(" · fallback: {reason}"))
+                .unwrap_or_default(),
+            approval.tool_name,
+            approval.effect,
+            workspace_label(&agent.workspace.strategy),
+            agent.workspace.ownership,
+            agent.workspace.root.as_deref().unwrap_or("root not reported"),
+            approval.reason
+        ),
+    })
 }
 
 fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> AgentCardView {
@@ -323,7 +379,11 @@ pub(crate) fn render_agent_tree_panel(
         Rect::new(area.x, area.y, area.width.saturating_sub(1), 1),
     );
 
-    let footer_height = u16::from(area.height >= 6);
+    let footer_height = if area.height >= 8 {
+        2
+    } else {
+        u16::from(area.height >= 6)
+    };
     let content_height = area.height.saturating_sub(1 + footer_height) as usize;
     let flat = flatten_cards(&view.cards);
     let selected_line = flat
@@ -352,19 +412,30 @@ pub(crate) fn render_agent_tree_panel(
 
     if footer_height > 0 {
         let hint = if area.width >= 30 {
-            " ↵ select · f follow · Space details · Tab branches"
+            " ↵ select · f/w follow · Space details"
         } else {
             " ↵ f Space · Tab"
         };
         render_text_row(
             frame,
             area,
-            area.height - 1,
+            area.height - footer_height,
             hint,
             AgentTone::Quiet,
             false,
             false,
         );
+        if footer_height > 1 {
+            render_text_row(
+                frame,
+                area,
+                area.height - 1,
+                " m message · r follow-up · i interrupt · a/d approval",
+                AgentTone::Quiet,
+                false,
+                false,
+            );
+        }
     }
     render_right_border(frame, area);
 }
@@ -821,6 +892,18 @@ mod tests {
         assert_eq!(cards[0].agent_id, "agt_approval");
         assert!(cards[0].lines.join("\n").contains("2 approval"));
         assert!(cards[0].lines.join("\n").contains("bash (execute)"));
+
+        let prompt = project_agent_approval_prompt(&snapshot).unwrap();
+        assert!(prompt.summary.contains("Child: needs permission"));
+        assert!(prompt.summary.contains("Ancestry: root › needs permission"));
+        assert!(prompt
+            .summary
+            .contains("requested codex/requested/medium → effective codex/effective/high"));
+        assert!(prompt.summary.contains("Tool: bash · effect execute"));
+        assert!(prompt
+            .summary
+            .contains("Workspace: snapshot · ovim · root not reported"));
+        assert!(prompt.summary.contains("Reason: run focused tests"));
     }
 
     #[test]

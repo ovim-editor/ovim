@@ -73,6 +73,33 @@ impl AgentControlPlaneSnapshot {
         }
         ordered
     }
+
+    /// Oldest pending decision in durable projection order. Presentation and
+    /// input use this same attribution rule so simultaneous approvals cannot
+    /// silently retarget between the prompt and the response.
+    pub fn oldest_pending_approval(&self) -> Option<(&AgentSnapshot, &AgentApprovalSnapshot)> {
+        self.hierarchy()
+            .into_iter()
+            .flat_map(|agent| {
+                agent
+                    .approvals
+                    .iter()
+                    .filter(|approval| approval.state == "pending")
+                    .map(move |approval| (agent, approval))
+            })
+            .min_by(|(left_agent, left), (right_agent, right)| {
+                (
+                    &left.created_at,
+                    &left.request_event_id,
+                    &left_agent.agent_id,
+                )
+                    .cmp(&(
+                        &right.created_at,
+                        &right.request_event_id,
+                        &right_agent.agent_id,
+                    ))
+            })
+    }
 }
 
 fn visit_hierarchy<'a>(

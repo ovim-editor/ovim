@@ -274,6 +274,16 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
 
     if is_ai_chat {
         // AI chat right-side: profile:model, tool iterations, streaming status, position
+        if let Some(followed) = editor.ai_agent_follow_status() {
+            let followed: String = followed.chars().take(48).collect();
+            right_spans.push(Span::styled(
+                format!(" ↳ {followed} "),
+                Style::default()
+                    .fg(Color::Rgb(130, 205, 235))
+                    .bg(status_bg)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
         let active_profile = editor.ai_chat_effective_profile();
         let model_display = editor
             .ai_state
