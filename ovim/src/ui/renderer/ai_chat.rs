@@ -745,9 +745,11 @@ fn render_message_history(
                 format!(
                     "─ delegated agents {}{}",
                     cards.len(),
-                    (snapshot.pending_attention > 0)
-                        .then(|| format!(" · !{}", snapshot.pending_attention))
-                        .unwrap_or_default()
+                    if snapshot.pending_attention > 0 {
+                        format!(" · !{}", snapshot.pending_attention)
+                    } else {
+                        String::new()
+                    }
                 ),
                 Style::default()
                     .fg(if snapshot.pending_attention > 0 {

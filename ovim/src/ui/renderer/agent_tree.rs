@@ -96,9 +96,11 @@ pub(crate) fn project_agent_tree(
             }),
         };
     };
-    let attention = (snapshot.pending_attention > 0)
-        .then(|| format!(" !{}", snapshot.pending_attention))
-        .unwrap_or_default();
+    let attention = if snapshot.pending_attention > 0 {
+        format!(" !{}", snapshot.pending_attention)
+    } else {
+        String::new()
+    };
     let header = fit(
         &format!(" Agents {}{attention}", snapshot.agents.len()),
         width.saturating_sub(1),
@@ -199,13 +201,17 @@ fn project_agent_card(agent: &AgentSnapshot, width: usize, expanded: bool) -> Ag
     let tone = tone(agent, attention_priority);
     let connector = tree_connector(agent.ancestry.len());
     let disclosure = if expanded { "▾" } else { "▸" };
-    let fallback = (agent.resolved_route.resolution == "configured_fallback")
-        .then_some("↪ ")
-        .unwrap_or_default();
-    let attention = (attention_priority > 0).then_some(" !").unwrap_or_default();
-    let recovery = (agent.recovery_status != "none")
-        .then_some(" ↻")
-        .unwrap_or_default();
+    let fallback = if agent.resolved_route.resolution == "configured_fallback" {
+        "↪ "
+    } else {
+        ""
+    };
+    let attention = if attention_priority > 0 { " !" } else { "" };
+    let recovery = if agent.recovery_status != "none" {
+        " ↻"
+    } else {
+        ""
+    };
     let mut lines = vec![fit(
         &format!(
             "{connector}{disclosure} {} {} · {}{attention}{recovery}",
