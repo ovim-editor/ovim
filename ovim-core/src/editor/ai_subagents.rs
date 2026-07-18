@@ -5,12 +5,12 @@
 //! exact durable run sink and configured provider profiles.
 
 use crate::agent_runtime::{
-    AgentCapability, AgentKindName, AgentLoopBudget, AgentRoleTemplate, AgentSupervisor,
-    AgentSupervisorConfig, AgentWorkspaceManager, CompletionContract, DelegatedAgentKind,
-    DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity,
-    DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
-    RequestedModelRoute, SnapshotAgentLoopInputFactory, SubagentModelCatalog, WorkspaceAssignment,
-    WorkspacePolicy, WorkspaceStrategy,
+    AgentCapability, AgentKindName, AgentLoopBudget, AgentProviderAdapter, AgentRoleTemplate,
+    AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager, CompletionContract,
+    DelegatedAgentKind, DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput,
+    DelegationIdentity, DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider,
+    ReasoningEffort, RequestedModelRoute, SnapshotAgentLoopInputFactory, SubagentModelCatalog,
+    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -74,7 +74,7 @@ pub(crate) struct AiSubagentService {
     startup_policy: AiSubagentConfig,
     config_fingerprint: String,
     catalog: Result<Arc<SubagentModelCatalog>, String>,
-    provider: Arc<ProfileAgentProvider>,
+    provider: Arc<dyn AgentProviderAdapter>,
     runs: Mutex<HashMap<RunId, Arc<AiSubagentRun>>>,
 }
 
@@ -1000,6 +1000,7 @@ impl std::error::Error for ManifestRegistryError {}
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_runtime::fake_provider::FakeProviderAdapter;
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
     use crate::ai::{AiProviderKind, PROFILE_LOCAL};
     use crate::editor::ai_state::AiState;
@@ -1044,7 +1045,9 @@ mod tests {
         profile.provider = AiProviderKind::OpenAi;
         profile.model = "test-model".into();
         profile.reasoning_effort = Some("high".into());
-        editor.ai_state.subagents = Box::new(AiSubagentService::new(&editor.ai_state.config));
+        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        service.provider = Arc::new(FakeProviderAdapter::new("delayed_completion"));
+        editor.ai_state.subagents = Box::new(service);
         editor.open_ai_chat(ChatOpts::default()).unwrap();
         (repository, storage, editor)
     }
@@ -1052,6 +1055,26 @@ mod tests {
     fn attach_root_turn(editor: &mut Editor) {
         let turn = editor.begin_ai_runtime_turn("inspect in parallel").unwrap();
         editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+    }
+
+    fn spawn_call(task_name: &str) -> ToolCallInfo {
+        ToolCallInfo {
+            id: format!("tool-{task_name}"),
+            name: SPAWN_AGENT_TOOL.into(),
+            arguments: json!({
+                "task_name": task_name,
+                "objective": "Inspect the captured snapshot and cite evidence",
+                "agent_kind": "explorer",
+                "model": crate::agent_runtime::catalog_model_id(PROFILE_LOCAL, "test-model"),
+                "reasoning_effort": "high",
+                "context_mode": "brief",
+                "expected_output": "analysis",
+                "relevant_paths": ["lib.rs"],
+                "done_when": ["Evidence is cited"],
+                "non_goals": ["Do not edit"],
+                "timeout_seconds": 60
+            }),
+        }
     }
 
     #[test]
@@ -1206,5 +1229,87 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&payload).unwrap()["outcome"],
             "timed_out"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn spawn_returns_immediately_list_projects_route_and_wait_delivers_handoff() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("inspect_snapshot"))
+        else {
+            panic!("spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        assert_eq!(spawned["task_name"], "inspect_snapshot");
+        assert_eq!(spawned["reasoning_effort"], "high");
+        assert!(spawned["agent_id"].as_str().unwrap().starts_with("agt_"));
+
+        let ToolResult::Success(listed) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
+            id: "tool-list".into(),
+            name: LIST_AGENTS_TOOL.into(),
+            arguments: json!({}),
+        }) else {
+            panic!("list should project the child")
+        };
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed["agents"][0]["task_name"], "inspect_snapshot");
+        assert_eq!(listed["agents"][0]["reasoning_effort"], "high");
+
+        let wait = ToolCallInfo {
+            id: "tool-wait-handoff".into(),
+            name: WAIT_AGENT_TOOL.into(),
+            arguments: json!({ "timeout_seconds": 2 }),
+        };
+        let result = editor
+            .prepare_ai_subagent_async_control(&wait)
+            .unwrap()
+            .execute()
+            .await;
+        let ToolResult::Success(payload) = result else {
+            panic!("wait should receive the child handoff")
+        };
+        let payload_json: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload_json["outcome"], "updates");
+        assert_eq!(
+            payload_json["updates"][0]["notification"]["type"],
+            "handoff"
+        );
+        editor.consume_ai_subagent_updates(&payload).unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn interrupt_targets_only_a_known_child_hierarchy() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        let mut service = AiSubagentService::new(&editor.ai_state.config);
+        service.provider = Arc::new(
+            FakeProviderAdapter::new("delayed_completion")
+                .with_tick_duration(std::time::Duration::from_millis(100)),
+        );
+        editor.ai_state.subagents = Box::new(service);
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("interrupt_me"))
+        else {
+            panic!("spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        let agent_id = spawned["agent_id"].as_str().unwrap();
+        let call = ToolCallInfo {
+            id: "tool-interrupt".into(),
+            name: INTERRUPT_AGENT_TOOL.into(),
+            arguments: json!({ "agent_id": agent_id, "reason": "parent changed direction" }),
+        };
+        let result = editor
+            .prepare_ai_subagent_async_control(&call)
+            .unwrap()
+            .execute()
+            .await;
+        let ToolResult::Success(payload) = result else {
+            panic!("interrupt should succeed")
+        };
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["outcome"], "interrupted");
+        assert_eq!(payload["agent_ids"][0], agent_id);
     }
 }
