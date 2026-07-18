@@ -1548,8 +1548,10 @@ mod tests {
 
     #[test]
     fn environment_then_config_then_platform_default_precedence_is_injectable() {
-        let mut config = AiSubagentWorkspaceConfig::default();
-        config.root = Some(PathBuf::from("/configured/workspaces"));
+        let mut config = AiSubagentWorkspaceConfig {
+            root: Some(PathBuf::from("/configured/workspaces")),
+            ..Default::default()
+        };
 
         let environment = WorkspaceStorageLayout::from_locations(
             Some(OsString::from("/environment/workspaces")),
