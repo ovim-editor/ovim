@@ -532,8 +532,12 @@ impl From<MailboxProjectionError> for MailboxError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::agent_runtime::{
+        HandoffConfidence, HandoffEvidence, HandoffStatus, HandoffValidator, StructuredHandoffV1,
+    };
     use crate::run_log::{
-        InMemoryRunEventSink, MessageEvent, MessageRole, SqliteRunEventSink, TurnId,
+        AgentHandoffEvent, AgentLifecycleEvent, InMemoryRunEventSink, MessageEvent, MessageRole,
+        SqliteRunEventSink, TurnId,
     };
 
     fn message(
@@ -575,11 +579,71 @@ mod tests {
     async fn completion_before_subscription_is_returned_immediately_and_at_least_once() {
         let (mailbox, sink, run_id, _) = mailbox();
         let source = AgentId::parse("agt_mailbox_child").unwrap();
-        let event = message(&*sink, &run_id, Some(source.clone()), None);
+        let cause = message(&*sink, &run_id, Some(source.clone()), None);
+        let handoff = HandoffValidator::default()
+            .validate(
+                StructuredHandoffV1 {
+                    version: 1,
+                    status: HandoffStatus::Completed,
+                    summary: "Finished before the parent subscribed.".into(),
+                    evidence: vec![HandoffEvidence {
+                        path: "ovim-core/src/agent_runtime/mailbox.rs".into(),
+                        line: Some(1),
+                        claim: "Durable state is checked before waiting.".into(),
+                    }],
+                    changed_files: vec![],
+                    verification: vec![],
+                    blockers: vec![],
+                    followups: vec![],
+                    confidence: HandoffConfidence::High,
+                },
+                Some(HandoffStatus::Completed),
+            )
+            .unwrap();
+        let handoff_event = sink
+            .append(NewRunEvent {
+                run_id: run_id.clone(),
+                caused_by: Some(cause.event_id),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::System("completion_test".into()),
+                agent_id: Some(source.clone()),
+                turn_id: None,
+                workspace_id: None,
+                branch_id: None,
+                kind: EventKind::AgentHandoff(AgentHandoffEvent {
+                    handoff: handoff.clone(),
+                }),
+            })
+            .unwrap();
+        let terminal_event = sink
+            .append(NewRunEvent {
+                run_id: run_id.clone(),
+                caused_by: Some(handoff_event.event_id.clone()),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::System("completion_test".into()),
+                agent_id: Some(source.clone()),
+                turn_id: None,
+                workspace_id: None,
+                branch_id: None,
+                kind: EventKind::AgentLifecycle(AgentLifecycleEvent {
+                    agent_id: source.clone(),
+                    parent_agent_id: Some(mailbox.recipient_agent_id().clone()),
+                    state: AgentLifecycleState::Completed,
+                    kind: "explorer".into(),
+                    objective: Some("finish before subscription".into()),
+                    detail: None,
+                    dispatch_spec: None,
+                }),
+            })
+            .unwrap();
         let notification = mailbox
-            .notify(MailboxNotificationKind::Message {
-                sender_agent_id: Some(source),
-                message_event_id: event.event_id,
+            .notify(MailboxNotificationKind::Handoff {
+                source_agent_id: source,
+                terminal_event_id: terminal_event.event_id,
+                handoff_event_id: handoff_event.event_id,
+                handoff: Box::new(handoff.parent_projection()),
             })
             .unwrap();
 
@@ -590,6 +654,7 @@ mod tests {
             first,
             MailboxWaitOutcome::Updates(entries)
                 if entries[0].notification_event_id == notification.notification_event_id
+                    && matches!(entries[0].notification, MailboxNotificationKind::Handoff { .. })
         ));
     }
 
