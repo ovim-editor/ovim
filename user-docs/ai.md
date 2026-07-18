@@ -88,9 +88,9 @@ configuration—keeps long-running turns unlimited.
 
 Ovim can dispatch bounded explorer and reviewer children from an active AI
 chat. The feature is disabled by default and is currently configured only in
-legacy `ai.toml`. When enabled, the root model receives five controls:
-`spawn_agent`, `list_agents`, `wait_agent`, `send_message`, and
-`interrupt_agent`. They appear
+legacy `ai.toml`. When enabled, the root model receives six controls:
+`spawn_agent`, `list_agents`, `wait_agent`, `send_message`,
+`followup_agent`, and `interrupt_agent`. They appear
 only while the editor owns an active durable root turn in a Git repository;
 they are not ordinary profile tools and are never exposed to a child.
 
@@ -154,6 +154,14 @@ child, claims delivery by durable event ID, and presents it to the provider
 only between provider/tool operations. Queued, completed, and otherwise idle
 targets reject the message explicitly. A restart never blindly repeats an
 ambiguous provider delivery; the message remains visible as rejected instead.
+
+`followup_agent` starts a fresh turn on a completed or interrupted child while
+retaining the same Ovim agent identity, model and reasoning effort, workspace,
+capability ceiling, and budget ceiling. The follow-up has a fresh durable turn
+ID and monotonically increasing generation. Ovim reuses an idle provider
+session only when the provider explicitly supports safe follow-up; otherwise
+it opens a fresh provider session with bounded context from the validated prior
+handoff. Follow-up cannot reroute the child or widen its authority.
 
 The current preview does not attempt to resume an in-flight child provider
 session after restarting Ovim. Existing child history remains intact, but the

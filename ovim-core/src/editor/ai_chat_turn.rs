@@ -281,6 +281,7 @@ impl Editor {
                         call.name.as_str(),
                         crate::ai::tools::subagents::WAIT_AGENT_TOOL
                             | crate::ai::tools::subagents::INTERRUPT_AGENT_TOOL
+                            | crate::ai::tools::subagents::FOLLOWUP_AGENT_TOOL
                     ) {
                         let continuation =
                             super::ai_chat_state::SubagentControlContinuation::Dynamic {

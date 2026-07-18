@@ -5,19 +5,19 @@
 //! exact durable run sink and configured provider profiles.
 
 use crate::agent_runtime::{
-    AgentApprovalBroker, AgentCapability, AgentKindName, AgentLoopBudget, AgentProviderAdapter,
-    AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager,
-    CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex, CompletionContract,
-    DelegatedAgentKind, DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput,
-    DelegationIdentity, DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider,
-    ReasoningEffort, RequestedModelRoute, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
-    SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
-    WorkspaceStrategy,
+    AgentApprovalBroker, AgentCapability, AgentKindName, AgentLoopBudget, AgentLoopInputFactory,
+    AgentProviderAdapter, AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig,
+    AgentWorkspaceManager, CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex,
+    CompletionContract, DelegatedAgentKind, DelegationContextMode, DelegationEnvelope,
+    DelegationExpectedOutput, DelegationIdentity, DispatchRequest, FollowupAgentRequest,
+    ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort, RequestedModelRoute,
+    SendAgentMessageRequest, SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol,
+    SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
-    is_parent_control_tool, INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, SEND_MESSAGE_TOOL,
-    SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
+    is_parent_control_tool, FOLLOWUP_AGENT_TOOL, INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL,
+    SEND_MESSAGE_TOOL, SPAWN_AGENT_TOOL, WAIT_AGENT_TOOL,
 };
 use crate::ai::tools::ToolDefinition;
 use crate::ai::tools::ToolResult;
@@ -77,6 +77,13 @@ struct InterruptAgentArguments {
 struct SendMessageArguments {
     agent_id: String,
     message: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct FollowupAgentArguments {
+    agent_id: String,
+    objective: String,
 }
 
 pub(crate) struct AiSubagentService {
@@ -328,6 +335,10 @@ impl Editor {
             SPAWN_AGENT_TOOL => self.spawn_ai_subagent(&call.arguments),
             LIST_AGENTS_TOOL => self.list_ai_subagents(),
             SEND_MESSAGE_TOOL => self.send_ai_subagent_message(&call.arguments),
+            FOLLOWUP_AGENT_TOOL => Err(
+                "followup_agent is asynchronous and must be dispatched through the editor turn loop"
+                    .into(),
+            ),
             WAIT_AGENT_TOOL => Err(
                 "wait_agent is asynchronous and must be dispatched through the editor turn loop"
                     .into(),
@@ -348,7 +359,10 @@ impl Editor {
         &self,
         call: &ToolCallInfo,
     ) -> Result<PreparedAsyncSubagentControl, String> {
-        if !matches!(call.name.as_str(), WAIT_AGENT_TOOL | INTERRUPT_AGENT_TOOL) {
+        if !matches!(
+            call.name.as_str(),
+            WAIT_AGENT_TOOL | INTERRUPT_AGENT_TOOL | FOLLOWUP_AGENT_TOOL
+        ) {
             return Err("delegated-agent control does not run asynchronously".into());
         }
         let definition = self
@@ -396,6 +410,38 @@ impl Editor {
                     supervisor: run.supervisor.clone(),
                     agent_id,
                     reason: args.reason,
+                })
+            }
+            FOLLOWUP_AGENT_TOOL => {
+                let args: FollowupAgentArguments = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| error.to_string())?;
+                let agent_id = AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+                let record = run
+                    .supervisor
+                    .dispatches()
+                    .map_err(|error| error.to_string())?
+                    .into_iter()
+                    .find(|record| record.handle.agent_id == agent_id)
+                    .ok_or_else(|| format!("unknown delegated agent {agent_id}"))?;
+                let dependencies = run
+                    .input_factory
+                    .build(&record)
+                    .map_err(|error| error.to_string())?;
+                let budget = dependencies.budget.unwrap_or_else(|| {
+                    supervisor_config(self.ai_state.subagents.policy()).child_budget
+                });
+                Ok(PreparedAsyncSubagentControl::Followup {
+                    supervisor: run.supervisor.clone(),
+                    request: FollowupAgentRequest {
+                        agent_id,
+                        parent_agent_id: root.root_agent_id,
+                        causing_turn_id: root.turn_id,
+                        caused_by_event: root.caused_by_event,
+                        objective: args.objective,
+                        capabilities: None,
+                        budget,
+                        retained_session_requested: false,
+                    },
                 })
             }
             _ => unreachable!(),
@@ -902,6 +948,8 @@ impl Editor {
                     "reasoning_effort": record.resolved_route.reasoning_effort,
                     "state": format!("{:?}", record.state).to_lowercase(),
                     "queue_sequence": record.queue_sequence,
+                    "turn_generation": record.turn_generation,
+                    "followup_turn_id": record.followup.as_ref().map(|turn| &turn.followup_turn_id),
                 })
             })
             .collect::<Vec<_>>();
@@ -987,6 +1035,10 @@ pub(crate) enum PreparedAsyncSubagentControl {
         agent_id: AgentId,
         reason: String,
     },
+    Followup {
+        supervisor: AgentSupervisor,
+        request: FollowupAgentRequest,
+    },
 }
 
 impl PreparedAsyncSubagentControl {
@@ -1020,6 +1072,22 @@ impl PreparedAsyncSubagentControl {
                 .interrupt(&agent_id, reason)
                 .await
                 .map(|agents| json!({ "outcome": "interrupted", "agent_ids": agents }))
+                .map_err(|error| error.to_string()),
+            Self::Followup {
+                supervisor,
+                request,
+            } => supervisor
+                .followup_agent(request)
+                .await
+                .map(|followup| {
+                    json!({
+                        "outcome": "queued",
+                        "agent_id": followup.handle.agent_id,
+                        "followup_turn_id": followup.followup_turn_id,
+                        "turn_generation": followup.turn_generation,
+                        "state": "queued",
+                    })
+                })
                 .map_err(|error| error.to_string()),
         };
         match result {
@@ -1371,6 +1439,7 @@ mod tests {
                 WAIT_AGENT_TOOL.into(),
                 INTERRUPT_AGENT_TOOL.into(),
                 SEND_MESSAGE_TOOL.into(),
+                FOLLOWUP_AGENT_TOOL.into(),
             ])
         );
 
@@ -1606,5 +1675,77 @@ mod tests {
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
         assert_eq!(listed["messages"][0]["state"], "delivered");
         assert_eq!(listed["messages"][0]["consumed"], true);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn followup_reopens_same_child_with_fresh_turn_and_projects_generation() {
+        let (_repository, _storage, mut editor) = enabled_editor();
+        attach_root_turn(&mut editor);
+        let ToolResult::Success(spawned) =
+            editor.execute_ai_subagent_control_tool(&spawn_call("follow_me"))
+        else {
+            panic!("spawn should return a durable handle")
+        };
+        let spawned: serde_json::Value = serde_json::from_str(&spawned).unwrap();
+        let agent_id = spawned["agent_id"].as_str().unwrap().to_string();
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        assert!(run
+            .supervisor
+            .wait_for_idle(std::time::Duration::from_secs(2))
+            .await
+            .unwrap());
+
+        let followup = ToolCallInfo {
+            id: "tool-followup".into(),
+            name: FOLLOWUP_AGENT_TOOL.into(),
+            arguments: json!({
+                "agent_id": agent_id,
+                "objective": "Now verify the replay boundary."
+            }),
+        };
+        let result = editor
+            .prepare_ai_subagent_async_control(&followup)
+            .unwrap()
+            .execute()
+            .await;
+        let ToolResult::Success(payload) = result else {
+            panic!("follow-up should reopen the idle child")
+        };
+        let payload: serde_json::Value = serde_json::from_str(&payload).unwrap();
+        assert_eq!(payload["agent_id"], spawned["agent_id"]);
+        assert_eq!(payload["turn_generation"], 1);
+        assert!(payload["followup_turn_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("trn_"));
+        assert!(run
+            .supervisor
+            .wait_for_idle(std::time::Duration::from_secs(2))
+            .await
+            .unwrap());
+
+        let ToolResult::Success(listed) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
+            id: "tool-list-followup".into(),
+            name: LIST_AGENTS_TOOL.into(),
+            arguments: json!({}),
+        }) else {
+            panic!("list should project the follow-up generation")
+        };
+        let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
+        assert_eq!(listed["agents"][0]["agent_id"], spawned["agent_id"]);
+        assert_eq!(listed["agents"][0]["turn_generation"], 1);
+        assert_eq!(
+            listed["agents"][0]["followup_turn_id"],
+            payload["followup_turn_id"]
+        );
     }
 }

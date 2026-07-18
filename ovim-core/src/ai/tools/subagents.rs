@@ -11,6 +11,7 @@ pub const LIST_AGENTS_TOOL: &str = "list_agents";
 pub const WAIT_AGENT_TOOL: &str = "wait_agent";
 pub const INTERRUPT_AGENT_TOOL: &str = "interrupt_agent";
 pub const SEND_MESSAGE_TOOL: &str = "send_message";
+pub const FOLLOWUP_AGENT_TOOL: &str = "followup_agent";
 
 pub fn is_parent_control_tool(name: &str) -> bool {
     matches!(
@@ -20,6 +21,7 @@ pub fn is_parent_control_tool(name: &str) -> bool {
             | WAIT_AGENT_TOOL
             | INTERRUPT_AGENT_TOOL
             | SEND_MESSAGE_TOOL
+            | FOLLOWUP_AGENT_TOOL
     )
 }
 
@@ -143,6 +145,19 @@ pub fn parent_control_tools(
                     "message": { "type": "string", "minLength": 1, "maxLength": 8192 }
                 },
                 "required": ["agent_id", "message"]
+            }))?,
+        ),
+        definition(
+            FOLLOWUP_AGENT_TOOL,
+            "Start a fresh turn on one completed or interrupted delegated child while preserving its agent identity, model route, workspace, capability ceiling, and budget ceiling. The provider session is reused only when it explicitly supports safe follow-up; otherwise the child receives bounded prior-handoff context in a fresh session.".into(),
+            strict(json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": {
+                    "agent_id": { "type": "string", "pattern": "^agt_.+" },
+                    "objective": { "type": "string", "minLength": 1, "maxLength": 8192 }
+                },
+                "required": ["agent_id", "objective"]
             }))?,
         ),
         definition(
@@ -304,6 +319,38 @@ mod tests {
                 "agent_id": "agt_child",
                 "message": "ok",
                 "start_new_turn": true,
+            }))
+            .is_err());
+    }
+
+    #[test]
+    fn followup_schema_is_bounded_and_strict() {
+        let (config, catalog) = configured();
+        let tools = parent_control_tools(&catalog, &config.subagents).unwrap();
+        let schema = tools
+            .iter()
+            .find(|tool| tool.name == FOLLOWUP_AGENT_TOOL)
+            .unwrap()
+            .custom_input_schema
+            .as_ref()
+            .unwrap();
+        assert!(schema
+            .validate_instance(&json!({
+                "agent_id": "agt_child",
+                "objective": "Verify the restart edge."
+            }))
+            .is_ok());
+        assert!(schema
+            .validate_instance(&json!({
+                "agent_id": "agt_child",
+                "objective": "",
+            }))
+            .is_err());
+        assert!(schema
+            .validate_instance(&json!({
+                "agent_id": "agt_child",
+                "objective": "Continue",
+                "model": "do-not-reroute",
             }))
             .is_err());
     }

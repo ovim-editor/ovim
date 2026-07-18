@@ -50,8 +50,11 @@ perform external effects, or receive dispatch tools. A command that cannot be
 deterministically classified as read-only is denied rather than escalated to
 an approval prompt.
 
-Write agents, integration, custom role definitions, dependency graphs,
-follow-up turns, and recursive dispatch are later phases. The existing
+Write agents, integration, custom role definitions, dependency graphs, and
+recursive dispatch are later phases. Follow-up turns are now available for
+completed or interrupted read-only children: they preserve the Ovim agent,
+route, workspace, capability ceiling, and budget ceiling while recording a
+fresh turn ID and generation. The existing
 scheduler types that mention write workspaces are foundations, not permission
 to expose write agents in the v1 product.
 
