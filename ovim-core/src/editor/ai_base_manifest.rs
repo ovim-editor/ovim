@@ -47,6 +47,18 @@ struct DefaultEditorCapturePolicy;
 
 impl CapturePolicy for DefaultEditorCapturePolicy {
     fn decide(&self, subject: &CaptureSubject<'_>) -> CaptureDecision {
+        // A pathless unsaved buffer is an unnamed scratch buffer: it carries no
+        // path for the sensitive-path net to screen, and its contents may be a
+        // pasted secret. It cannot be classified, so fail closed and never
+        // expose anonymous scratch buffers to delegated child agents. Excluding
+        // here — at capture — means the bytes are never read into the artifact
+        // store. Named/file-backed buffers keep the path-based screening below;
+        // a future explicit affordance can opt an individual scratch buffer in.
+        if subject.path.is_none() && matches!(subject.kind, CaptureKind::UnsavedBuffer) {
+            return CaptureDecision::Exclude {
+                reason: "unnamed scratch buffer is not shared with delegated agents".into(),
+            };
+        }
         subject
             .path
             .and_then(|path| sensitive_path_reason(Path::new(path.as_str())))
@@ -340,7 +352,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-    async fn captures_modified_pathless_but_excludes_read_only_pathless() {
+    async fn records_modified_pathless_buffer_but_excludes_its_content() {
         let directory = tempfile::tempdir().unwrap();
         let repository = Repository::init(directory.path()).unwrap();
         fs::write(directory.path().join("base"), b"base").unwrap();
@@ -358,8 +370,17 @@ mod tests {
         let store = ArtifactStore::open(blobs.path()).unwrap();
 
         let captured = capture(&editor, directory.path(), &store);
+        // The read-only pathless buffer is dropped at capture; the modified one
+        // is still recorded as a manifest entry...
         assert_eq!(captured.manifest.unsaved_buffers.len(), 1);
         assert!(captured.manifest.unsaved_buffers[0].modified);
+        // ...but its content is excluded from the artifact store, so an unnamed
+        // scratch buffer (which could hold a pasted secret) never reaches a
+        // delegated child agent.
+        assert!(captured.manifest.artifacts.iter().any(|artifact| matches!(
+            &artifact.state,
+            ArtifactState::Excluded { reason } if reason.contains("scratch buffer")
+        )));
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
