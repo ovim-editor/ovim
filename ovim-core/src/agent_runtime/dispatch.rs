@@ -1760,6 +1760,17 @@ mod tests {
         });
         snapshot.requested_route = None;
         snapshot.resolved_route = None;
+        let wire = serde_json::to_value(EventKind::AgentLifecycle(lifecycle)).unwrap();
+        assert_eq!(
+            wire.pointer("/data/dispatch_spec/model/model"),
+            Some(&serde_json::json!("legacy-model"))
+        );
+        assert!(wire
+            .pointer("/data/dispatch_spec/requested_route")
+            .is_none());
+        let EventKind::AgentLifecycle(lifecycle) = serde_json::from_value(wire).unwrap() else {
+            panic!("version-one wire event did not decode as a lifecycle")
+        };
 
         let history = Arc::new(InMemoryRunEventSink::new());
         history
