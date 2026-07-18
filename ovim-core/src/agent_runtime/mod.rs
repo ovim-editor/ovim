@@ -13,6 +13,7 @@ mod projection;
 mod service;
 mod supervisor;
 mod workspace;
+mod workspace_layout;
 
 pub use approval::*;
 pub use dispatch::*;
@@ -26,3 +27,4 @@ pub use projection::*;
 pub use service::*;
 pub use supervisor::*;
 pub use workspace::*;
+pub use workspace_layout::*;
