@@ -191,11 +191,17 @@ Agent-tree keys:
   Esc cancels and restores the root draft exactly.
 - `i` interrupts the selected child through the same durable control path used
   by the headless API and parent model.
-- `a`/Enter allows the oldest displayed child approval; `d`/Esc denies it.
-  The blocking prompt identifies child and ancestry, role, requested and
-  effective model/effort, tool and normalized effect, workspace, and reason.
-  Simultaneous requests stay attributed and are presented in durable order.
+- `a` allows the highlighted child's pending approval; `d` denies it. If the
+  highlighted child has none, the oldest pending approval is used instead. The
+  prompt identifies child and ancestry, role, requested and effective
+  model/effort, tool and normalized effect, workspace, and reason. Simultaneous
+  requests stay attributed and are presented in durable order.
 - `q` closes the sidebar.
+
+A child pausing for approval does not freeze the editor — only that child
+waits while the root turn and composer stay interactive. From any focus,
+`Ctrl-Y` allows and `Ctrl-N` denies the oldest pending child approval without
+opening the tree; the highlighted-child `a`/`d` above give per-child control.
 
 Completed, failed, interrupted, and restart-recovered children keep distinct
 visual states. An interrupted-after-restart child is never presented as still

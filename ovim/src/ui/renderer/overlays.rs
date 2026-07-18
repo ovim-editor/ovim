@@ -625,12 +625,13 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
         return;
     }
 
-    let (title, summary, hints) = if pending_no_repo {
+    let (title, summary, blocking, hints) = if pending_no_repo {
         (
             " Folder Access Permission ",
             editor
                 .ai_chat_pending_no_repo_folder_approval_summary()
                 .unwrap_or_else(|| "Allow folder access for this chat session?".to_string()),
+            "This request blocks agent progress until resolved.",
             "Enter/Ctrl-Y allow   Esc/Ctrl-N deny",
         )
     } else if pending_tool {
@@ -639,6 +640,7 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
             editor
                 .ai_chat_pending_tool_approval_summary()
                 .unwrap_or_else(|| "Allow requested tool action?".to_string()),
+            "This request blocks agent progress until resolved.",
             "Enter/Ctrl-Y allow once   Ctrl-A allow for chat   Esc/Ctrl-N deny",
         )
     } else {
@@ -647,7 +649,10 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
             pending_agent
                 .map(|approval| approval.summary)
                 .unwrap_or_else(|| "Allow requested child action?".to_string()),
-            "Enter/A/Ctrl-Y allow this child operation   D/Esc/Ctrl-N deny",
+            // A child pausing for approval never freezes the editor; only the
+            // child waits. Keys reflect that non-blocking model.
+            "This child agent is paused until you allow or deny; the editor stays interactive.",
+            "Ctrl-Y allow   Ctrl-N deny   ·   a/d on the selected child in the agent tree (Ctrl-T)",
         )
     };
 
@@ -657,7 +662,7 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
         &[
             (&summary, 't'),
             (" ", 's'),
-            ("This request blocks agent progress until resolved.", 's'),
+            (blocking, 's'),
             (" ", 's'),
             (hints, 'a'),
         ],

@@ -100,6 +100,29 @@ impl AgentControlPlaneSnapshot {
                     ))
             })
     }
+
+    /// Oldest pending decision for one specific agent, using the same durable
+    /// ordering as [`Self::oldest_pending_approval`]. The agent tree resolves
+    /// the child the user has highlighted rather than the globally-oldest one,
+    /// so a decision cannot silently retarget to a different child.
+    pub fn oldest_pending_approval_for(
+        &self,
+        agent_id: &str,
+    ) -> Option<(&AgentSnapshot, &AgentApprovalSnapshot)> {
+        let agent = self
+            .agents
+            .iter()
+            .find(|agent| agent.agent_id.as_str() == agent_id)?;
+        agent
+            .approvals
+            .iter()
+            .filter(|approval| approval.state == "pending")
+            .min_by(|left, right| {
+                (&left.created_at, &left.request_event_id)
+                    .cmp(&(&right.created_at, &right.request_event_id))
+            })
+            .map(|approval| (agent, approval))
+    }
 }
 
 fn visit_hierarchy<'a>(
@@ -607,5 +630,123 @@ fn state_name(state: &DispatchState) -> &'static str {
         DispatchState::Completed => "completed",
         DispatchState::Interrupted => "interrupted",
         DispatchState::Failed => "failed",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn pending_approval(created_at: &str) -> AgentApprovalSnapshot {
+        AgentApprovalSnapshot {
+            request_event_id: EventId::new(),
+            operation_id: OperationId::new(),
+            state: "pending".into(),
+            tool_name: "read".into(),
+            effect: "read".into(),
+            reason: "test".into(),
+            created_at: created_at.into(),
+            deadline_at: "2026-12-31T00:00:00Z".into(),
+            decision: None,
+            resolution_source: None,
+            resolution_reason: None,
+        }
+    }
+
+    fn child(parent: &AgentId, approvals: Vec<AgentApprovalSnapshot>) -> AgentSnapshot {
+        AgentSnapshot {
+            agent_id: AgentId::new(),
+            parent_agent_id: Some(parent.clone()),
+            ancestry: vec![parent.clone()],
+            children: Vec::new(),
+            task_name: "task".into(),
+            role: "explorer".into(),
+            objective: "obj".into(),
+            requested_route: AgentRequestedRouteSnapshot {
+                catalog_model_id: "m".into(),
+                reasoning_effort: "low".into(),
+                fallback_policy: "none".into(),
+                fallback_catalog_model_id: None,
+                fallback_reasoning_effort: None,
+            },
+            resolved_route: AgentResolvedRouteSnapshot {
+                catalog_generation: "g".into(),
+                catalog_model_id: "m".into(),
+                profile_name: "p".into(),
+                provider: "codex".into(),
+                model: "m".into(),
+                reasoning_effort: "low".into(),
+                resolution: "exact".into(),
+                fallback_reason: None,
+            },
+            lifecycle: "running".into(),
+            turn_generation: 0,
+            turn_id: None,
+            elapsed_millis: AgentReported::NotReported,
+            progress: AgentReported::NotReported,
+            usage: AgentReported::NotReported,
+            workspace: AgentWorkspaceSnapshot {
+                workspace_id: WorkspaceId::new(),
+                strategy: "snapshot".into(),
+                manifest_id: None,
+                ownership: "owned".into(),
+                root: None,
+                read_only: true,
+            },
+            messages: Vec::new(),
+            approvals,
+            handoff: None,
+            artifact_handles: Vec::new(),
+            attention: AgentAttentionSnapshot::default(),
+            recovery_status: "none".into(),
+        }
+    }
+
+    fn control_plane(root: AgentId, agents: Vec<AgentSnapshot>) -> AgentControlPlaneSnapshot {
+        AgentControlPlaneSnapshot {
+            schema_version: AGENT_CONTROL_SNAPSHOT_VERSION,
+            run_id: RunId::new(),
+            root_agent_id: root,
+            last_sequence: 0,
+            agents,
+            pending_attention: 0,
+        }
+    }
+
+    #[test]
+    fn targeted_child_resolves_its_own_approval_not_the_globally_oldest() {
+        let root = AgentId::new();
+        let older = child(&root, vec![pending_approval("2026-01-01T00:00:00Z")]);
+        let selected = child(&root, vec![pending_approval("2026-06-01T00:00:00Z")]);
+        let older_id = older.agent_id.clone();
+        let selected_id = selected.agent_id.clone();
+        let snapshot = control_plane(root, vec![older, selected]);
+
+        // The globally-oldest approval belongs to the first child...
+        assert_eq!(
+            snapshot.oldest_pending_approval().unwrap().0.agent_id,
+            older_id
+        );
+        // ...but targeting the highlighted child returns that child's approval,
+        // so `a`/`d` in the tree never silently retarget to a different child.
+        let (agent, _) = snapshot
+            .oldest_pending_approval_for(selected_id.as_str())
+            .expect("selected child has a pending approval");
+        assert_eq!(agent.agent_id, selected_id);
+    }
+
+    #[test]
+    fn targeted_child_without_a_pending_approval_returns_none() {
+        let root = AgentId::new();
+        let quiet = child(&root, Vec::new());
+        let quiet_id = quiet.agent_id.clone();
+        let busy = child(&root, vec![pending_approval("2026-01-01T00:00:00Z")]);
+        let snapshot = control_plane(root, vec![quiet, busy]);
+
+        // No result for the quiet child; the caller then falls back to oldest.
+        assert!(snapshot
+            .oldest_pending_approval_for(quiet_id.as_str())
+            .is_none());
+        assert!(snapshot.oldest_pending_approval().is_some());
     }
 }

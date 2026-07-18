@@ -94,6 +94,18 @@ pub(crate) struct AiSubagentService {
     catalog: Result<Arc<SubagentModelCatalog>, String>,
     provider: Arc<dyn AgentProviderAdapter>,
     runs: Mutex<HashMap<RunId, Arc<AiSubagentRun>>>,
+    /// Memoized control-plane projection keyed by the run's durable event
+    /// watermark. Rebuilding clones and re-projects the entire event log, which
+    /// the renderer would otherwise pay on every frame; the watermark is a
+    /// complete version for the projection because every state transition
+    /// appends a durable event.
+    snapshot_cache: Mutex<Option<CachedControlPlaneSnapshot>>,
+}
+
+struct CachedControlPlaneSnapshot {
+    run_id: RunId,
+    last_sequence: Option<u64>,
+    snapshot: AgentControlPlaneSnapshot,
 }
 
 pub(crate) struct AiSubagentRun {
@@ -152,6 +164,38 @@ impl AiSubagentService {
                 .map_err(|error| error.to_string()),
             provider: Arc::new(ProfileAgentProvider::new(config)),
             runs: Mutex::new(HashMap::new()),
+            snapshot_cache: Mutex::new(None),
+        }
+    }
+
+    /// Serve a memoized control-plane snapshot when the run's durable watermark
+    /// is unchanged since the last projection.
+    fn cached_snapshot(
+        &self,
+        run_id: &RunId,
+        last_sequence: Option<u64>,
+    ) -> Option<AgentControlPlaneSnapshot> {
+        let guard = self.snapshot_cache.lock().ok()?;
+        guard
+            .as_ref()
+            .filter(|cached| cached.run_id == *run_id && cached.last_sequence == last_sequence)
+            .map(|cached| cached.snapshot.clone())
+    }
+
+    /// Record the freshly-projected snapshot against the watermark it was built
+    /// from. Only the most recent run/watermark is retained.
+    fn cache_snapshot(
+        &self,
+        run_id: RunId,
+        last_sequence: Option<u64>,
+        snapshot: &AgentControlPlaneSnapshot,
+    ) {
+        if let Ok(mut guard) = self.snapshot_cache.lock() {
+            *guard = Some(CachedControlPlaneSnapshot {
+                run_id,
+                last_sequence,
+                snapshot: snapshot.clone(),
+            });
         }
     }
 
@@ -509,17 +553,45 @@ impl Editor {
     /// Project delegated-agent state for the current chat through the exact
     /// versioned snapshot used by headless API clients.
     pub fn ai_agent_current_snapshot(&self) -> Result<Option<AgentControlPlaneSnapshot>, String> {
-        if !self.ai_state.subagents.policy().enabled || self.ai_state.chat.is_none() {
-            return Ok(None);
-        }
-        let Some(binding) = self
-            .ai_state
-            .durable_chat_bindings
-            .get(&self.ai_chat_conversation_key())
-        else {
+        let Some(run_id) = self.current_subagent_run_id() else {
             return Ok(None);
         };
-        self.ai_agent_snapshot(&binding.binding.run_id).map(Some)
+        self.ai_agent_snapshot(&run_id).map(Some)
+    }
+
+    /// The delegated-agent run bound to the active chat, if any. Shared by the
+    /// snapshot projection and the per-tick repaint check so both agree on which
+    /// run is live without duplicating the binding lookup.
+    fn current_subagent_run_id(&self) -> Option<RunId> {
+        if !self.ai_state.subagents.policy().enabled || self.ai_state.chat.is_none() {
+            return None;
+        }
+        self.ai_state
+            .durable_chat_bindings
+            .get(&self.ai_chat_conversation_key())
+            .map(|binding| binding.binding.run_id.clone())
+    }
+
+    /// Mark the chat dirty when the delegated-agent control plane advances, so
+    /// agent cards refresh live even while the parent turn is idle. The check is
+    /// O(1) against the durable watermark; the snapshot itself is only rebuilt
+    /// on the next render (and then memoized).
+    pub fn poll_ai_subagent_repaint(&mut self) -> bool {
+        let Some(run_id) = self.current_subagent_run_id() else {
+            return false;
+        };
+        let current = match self.headless_subagent_run(&run_id) {
+            Ok(run) => run.store.last_sequence(&run_id).ok().flatten().unwrap_or(0),
+            Err(_) => 0,
+        };
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        if chat.last_observed_agent_sequence == current {
+            return false;
+        }
+        chat.last_observed_agent_sequence = current;
+        true
     }
 
     pub fn ai_agent_tree_cursor(&self) -> usize {
@@ -590,11 +662,24 @@ impl Editor {
     /// Resolve the exact oldest request displayed by the child approval
     /// prompt, through the same broker entry point used by the API.
     pub(crate) fn ai_agent_resolve_pending_approval(&mut self, allow: bool) -> Result<(), String> {
+        self.ai_agent_resolve_approval_for(None, allow)
+    }
+
+    /// Resolve the pending approval for a specific child, falling back to the
+    /// globally-oldest one when that child has none. The agent tree passes the
+    /// highlighted child so `a`/`d` act on what the user selected, while the
+    /// non-blocking `Ctrl-Y`/`Ctrl-N` shortcuts pass `None` for the oldest.
+    pub(crate) fn ai_agent_resolve_approval_for(
+        &mut self,
+        agent_id: Option<&str>,
+        allow: bool,
+    ) -> Result<(), String> {
         let snapshot = self
             .ai_agent_current_snapshot()?
             .ok_or_else(|| "there is no delegated-agent run for this chat".to_string())?;
-        let (agent, approval) = snapshot
-            .oldest_pending_approval()
+        let (agent, approval) = agent_id
+            .and_then(|id| snapshot.oldest_pending_approval_for(id))
+            .or_else(|| snapshot.oldest_pending_approval())
             .ok_or_else(|| "there is no pending delegated-agent approval".to_string())?;
         self.ai_agent_respond_approval(
             &snapshot.run_id,
@@ -828,6 +913,17 @@ impl Editor {
     /// editor-owned supervisor and durable projections.
     pub fn ai_agent_snapshot(&self, run_id: &RunId) -> Result<AgentControlPlaneSnapshot, String> {
         let run = self.headless_subagent_run(run_id)?;
+        let last_sequence = run
+            .store
+            .last_sequence(run_id)
+            .map_err(|error| error.to_string())?;
+        if let Some(cached) = self
+            .ai_state
+            .subagents
+            .cached_snapshot(run_id, last_sequence)
+        {
+            return Ok(cached);
+        }
         let events = run
             .store
             .events(run_id)
@@ -839,7 +935,7 @@ impl Editor {
             .pending()
             .map_err(|error| error.to_string())?
             .len();
-        crate::agent_runtime::build_agent_snapshot(
+        let snapshot = crate::agent_runtime::build_agent_snapshot(
             run_id.clone(),
             run.root_agent_id.clone(),
             run.supervisor
@@ -856,7 +952,11 @@ impl Editor {
                 .resolved()
                 .map_err(|error| error.to_string())?,
             pending_notifications,
-        )
+        )?;
+        self.ai_state
+            .subagents
+            .cache_snapshot(run_id.clone(), last_sequence, &snapshot);
+        Ok(snapshot)
     }
 
     pub fn ai_agent_events(

@@ -458,6 +458,10 @@ pub struct AiChatState {
     pub agent_tree_focused: bool,
     /// Cursor into `AgentControlPlaneSnapshot::hierarchy`.
     pub agent_tree_cursor: usize,
+    /// Durable event watermark last reflected on screen. When the run advances
+    /// past this the chat is repainted so agent cards update live even while the
+    /// parent turn is idle. Zero means nothing observed yet.
+    pub last_observed_agent_sequence: u64,
     /// Stable selected/followed identities. These are presentation state only;
     /// lifecycle and control data always comes from the durable projection.
     pub selected_agent_id: Option<String>,
@@ -598,6 +602,7 @@ impl AiChatState {
             tree_panel_cursor: 0,
             agent_tree_focused: true,
             agent_tree_cursor: 0,
+            last_observed_agent_sequence: 0,
             selected_agent_id: None,
             followed_agent_id: None,
             expanded_agent_cards: HashSet::new(),

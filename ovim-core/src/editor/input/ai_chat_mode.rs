@@ -121,28 +121,25 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         return Ok(());
     }
 
-    if editor.ai_agent_has_pending_approval() {
-        if key_event.code == KeyCode::Enter
-            || key_event.code == KeyCode::Char('a')
-            || (key_event.code == KeyCode::Char('y')
-                && key_event.modifiers.contains(Modifiers::CONTROL))
-        {
+    // A delegated child that pauses for approval must not seize the foreground:
+    // it runs in the background while the root turn continues, so the composer,
+    // Enter (submit), and Esc (hide) all stay live. Only the explicit
+    // Ctrl-Y/Ctrl-N chords resolve the oldest pending child approval from any
+    // focus; the agent tree (Ctrl-T) resolves a specific selected child with
+    // a/d. Every other key falls through to normal chat handling.
+    if editor.ai_agent_has_pending_approval() && key_event.modifiers.contains(Modifiers::CONTROL) {
+        if key_event.code == KeyCode::Char('y') {
             if let Err(error) = editor.ai_agent_resolve_pending_approval(true) {
                 editor.set_lsp_status(format!("Failed to allow child approval: {error}"));
             }
             return Ok(());
         }
-        if key_event.code == KeyCode::Esc
-            || key_event.code == KeyCode::Char('d')
-            || (key_event.code == KeyCode::Char('n')
-                && key_event.modifiers.contains(Modifiers::CONTROL))
-        {
+        if key_event.code == KeyCode::Char('n') {
             if let Err(error) = editor.ai_agent_resolve_pending_approval(false) {
                 editor.set_lsp_status(format!("Failed to deny child approval: {error}"));
             }
             return Ok(());
         }
-        return Ok(());
     }
 
     let focus = editor.ai_chat_focus();
@@ -654,12 +651,14 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 }
             }
             KeyCode::Char('a') => {
-                if let Err(error) = editor.ai_agent_resolve_pending_approval(true) {
+                if let Err(error) = editor.ai_agent_resolve_approval_for(selected.as_deref(), true)
+                {
                     editor.set_lsp_status(error);
                 }
             }
             KeyCode::Char('d') => {
-                if let Err(error) = editor.ai_agent_resolve_pending_approval(false) {
+                if let Err(error) = editor.ai_agent_resolve_approval_for(selected.as_deref(), false)
+                {
                     editor.set_lsp_status(error);
                 }
             }
