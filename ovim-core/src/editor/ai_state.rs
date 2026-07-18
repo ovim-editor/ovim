@@ -100,6 +100,9 @@ pub struct AiState {
     /// the process entry point (`ovim --resume`).
     pub(crate) resume_durable_conversations: bool,
     pub config: AiConfig,
+    /// Dedicated read-only delegated-agent control plane. It snapshots the
+    /// startup config and never replaces root chat orchestration.
+    pub(crate) subagents: Box<super::ai_subagents::AiSubagentService>,
     pub prompt: AiPromptState,
     pub active_selection: Option<AiSelectionSnapshot>,
     pub pending_jobs: Vec<PendingAiJob>,
@@ -165,6 +168,7 @@ impl AiState {
             }
         }
 
+        let subagents = Box::new(super::ai_subagents::AiSubagentService::new(&config));
         Self {
             agent_runtime: Box::new(agent_runtime),
             run_storage_warning,
@@ -172,6 +176,7 @@ impl AiState {
             durable_chat_bindings: HashMap::new(),
             resume_durable_conversations: false,
             config,
+            subagents,
             prompt: AiPromptState::default(),
             active_selection: None,
             pending_jobs: Vec::new(),
