@@ -301,6 +301,9 @@ fn event_kind_label(kind: &EventKind) -> String {
         EventKind::AgentLifecycle(event) => {
             format!("agent.{}", agent_state_label(&event.state))
         }
+        EventKind::AgentHandoff(_) => "agent.handoff".into(),
+        EventKind::MailboxNotification(_) => "mailbox.notification".into(),
+        EventKind::MailboxConsumed(_) => "mailbox.consumed".into(),
         EventKind::TurnLifecycle(event) => format!("turn.{}", turn_state_label(&event.state)),
         EventKind::Message(event) => format!("message.{}", message_role_label(&event.role)),
         EventKind::ToolIntent(_) => "tool.intent".into(),
