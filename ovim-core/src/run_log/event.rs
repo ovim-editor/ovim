@@ -124,6 +124,7 @@ pub enum EventKind {
     AgentLifecycle(AgentLifecycleEvent),
     AgentProvider(AgentProviderEvent),
     AgentHandoff(AgentHandoffEvent),
+    AgentFollowup(AgentFollowupEvent),
     AgentApprovalRequested(AgentApprovalRequestedEvent),
     AgentApprovalResolved(AgentApprovalResolvedEvent),
     AgentMessage(AgentMessageEvent),
@@ -164,6 +165,7 @@ impl Serialize for EventKind {
             Self::AgentLifecycle(value) => ("agent_lifecycle", serde_json::to_value(value)),
             Self::AgentProvider(value) => ("agent_provider", serde_json::to_value(value)),
             Self::AgentHandoff(value) => ("agent_handoff", serde_json::to_value(value)),
+            Self::AgentFollowup(value) => ("agent_followup", serde_json::to_value(value)),
             Self::AgentApprovalRequested(value) => {
                 ("agent_approval_requested", serde_json::to_value(value))
             }
@@ -218,6 +220,7 @@ impl<'de> Deserialize<'de> for EventKind {
             "agent_lifecycle" => decode(raw.data).map(Self::AgentLifecycle),
             "agent_provider" => decode(raw.data).map(Self::AgentProvider),
             "agent_handoff" => decode(raw.data).map(Self::AgentHandoff),
+            "agent_followup" => decode(raw.data).map(Self::AgentFollowup),
             "agent_approval_requested" => decode(raw.data).map(Self::AgentApprovalRequested),
             "agent_approval_resolved" => decode(raw.data).map(Self::AgentApprovalResolved),
             "agent_message" => decode(raw.data).map(Self::AgentMessage),
@@ -497,6 +500,37 @@ pub struct AgentHandoffEvent {
     pub handoff: ValidatedHandoff,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub workspace_warnings: Vec<AgentWorkspaceWarning>,
+}
+
+pub const AGENT_FOLLOWUP_EVENT_VERSION: u32 = 1;
+
+/// Durable authorization for reopening one terminal child as a fresh turn.
+/// The child `AgentId`, workspace, and route remain stable; the turn,
+/// generation, parent cause, budget, and eventual handoff are new identities.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentFollowupEvent {
+    pub version: u32,
+    pub agent_id: AgentId,
+    pub turn_generation: u32,
+    pub followup_turn_id: TurnId,
+    pub parent_agent_id: AgentId,
+    pub parent_turn_id: TurnId,
+    pub parent_event_id: EventId,
+    pub prior_terminal_event_id: EventId,
+    pub prior_handoff_event_id: EventId,
+    pub objective: String,
+    pub effective_capabilities: Vec<AgentCapabilitySnapshot>,
+    pub budget: AgentFollowupBudgetSnapshot,
+    pub retained_session_requested: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentFollowupBudgetSnapshot {
+    pub timeout_millis: u64,
+    pub max_provider_events: usize,
+    pub max_tool_calls: usize,
 }
 
 pub const AGENT_APPROVAL_EVENT_VERSION: u32 = 1;

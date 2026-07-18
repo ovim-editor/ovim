@@ -305,6 +305,7 @@ fn event_kind_label(kind: &EventKind) -> String {
             format!("agent.provider.{:?}", event.state).to_lowercase()
         }
         EventKind::AgentHandoff(_) => "agent.handoff".into(),
+        EventKind::AgentFollowup(_) => "agent.followup".into(),
         EventKind::AgentApprovalRequested(_) => "agent.approval.requested".into(),
         EventKind::AgentApprovalResolved(_) => "agent.approval.resolved".into(),
         EventKind::AgentMessage(_) => "agent.message.queued".into(),

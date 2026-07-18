@@ -545,6 +545,7 @@ fn event_kind_name(kind: &super::EventKind) -> &str {
         super::EventKind::AgentLifecycle(_) => "agent_lifecycle",
         super::EventKind::AgentProvider(_) => "agent_provider",
         super::EventKind::AgentHandoff(_) => "agent_handoff",
+        super::EventKind::AgentFollowup(_) => "agent_followup",
         super::EventKind::AgentApprovalRequested(_) => "agent_approval_requested",
         super::EventKind::AgentApprovalResolved(_) => "agent_approval_resolved",
         super::EventKind::AgentMessage(_) => "agent_message",

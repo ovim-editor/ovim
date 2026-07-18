@@ -2199,6 +2199,8 @@ mod tests {
             objective: "inspect the snapshot".into(),
             parent_agent_id: None,
             causing_turn_id: None,
+            turn_generation: 0,
+            followup: None,
             state: DispatchState::Queued,
             queue_sequence: 1,
         };

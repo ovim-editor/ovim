@@ -4,18 +4,19 @@
 //! deliberately does not start provider sessions or create Git worktrees.
 
 use super::{
-    HandoffConfidence, HandoffStatus, HandoffValidator, ModelFallbackPolicy, ModelRouteError,
-    ModelRouteResolution, ReasoningEffort, RequestedModelRoute, ResolvedModelRoute,
-    StructuredHandoffV1, SubagentModelCatalog, ValidatedHandoff,
+    AgentLoopBudget, HandoffConfidence, HandoffStatus, HandoffValidator, ModelFallbackPolicy,
+    ModelRouteError, ModelRouteResolution, ReasoningEffort, RequestedModelRoute,
+    ResolvedModelRoute, StructuredHandoffV1, SubagentModelCatalog, ValidatedHandoff,
 };
 use crate::run_log::{
     AgentCapabilitySnapshot, AgentCompletionContractSnapshot, AgentDispatchSpecSnapshot,
-    AgentHandoffEvent, AgentId, AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot,
+    AgentFollowupBudgetSnapshot, AgentFollowupEvent, AgentHandoffEvent, AgentId,
+    AgentLifecycleEvent, AgentLifecycleState, AgentModelEffortSnapshot,
     AgentModelFallbackPolicySnapshot, AgentModelRouteResolutionSnapshot,
     AgentRequestedModelRouteSnapshot, AgentResolvedModelRouteSnapshot,
     AgentWorkspacePolicySnapshot, AgentWorkspaceStrategySnapshot, EventActor, EventEnvelope,
     EventId, EventKind, ManifestId, NewRunEvent, OperationId, RunEventSink, RunId, RunLogError,
-    ToolOutcome, TurnId, WorkspaceId,
+    ToolOutcome, TurnId, WorkspaceId, AGENT_FOLLOWUP_EVENT_VERSION,
 };
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
@@ -236,11 +237,50 @@ struct ScheduledAgent {
     objective: String,
     parent_agent_id: Option<AgentId>,
     causing_turn_id: Option<TurnId>,
+    turn_generation: u32,
+    followup: Option<AgentFollowupTurn>,
+    followup_authorized: bool,
     state: DispatchState,
     queue_sequence: u64,
     last_event_id: EventId,
     pending_handoff_status: Option<HandoffStatus>,
     runtime_operations: HashMap<OperationId, RuntimeOperationState>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentFollowupTurn {
+    pub turn_generation: u32,
+    pub followup_turn_id: TurnId,
+    pub parent_turn_id: TurnId,
+    pub parent_event_id: EventId,
+    pub prior_terminal_event_id: EventId,
+    pub prior_handoff_event_id: EventId,
+    pub objective: String,
+    pub prior_handoff_summary: String,
+    pub budget: AgentLoopBudget,
+    pub retained_session_requested: bool,
+}
+
+#[derive(Clone, Debug)]
+pub struct FollowupAgentRequest {
+    pub agent_id: AgentId,
+    pub parent_agent_id: AgentId,
+    pub causing_turn_id: TurnId,
+    pub caused_by_event: EventId,
+    pub objective: String,
+    /// Omitted to preserve the current capability ceiling. A supplied set may
+    /// only narrow it.
+    pub capabilities: Option<BTreeSet<AgentCapability>>,
+    pub budget: AgentLoopBudget,
+    pub retained_session_requested: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FollowupAgentHandle {
+    pub handle: DispatchHandle,
+    pub followup_turn_id: TurnId,
+    pub turn_generation: u32,
+    pub followup_event_id: EventId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -364,6 +404,11 @@ impl AgentDispatchScheduler {
                 continue;
             }
 
+            if let EventKind::AgentFollowup(followup) = &event.kind {
+                scheduler.apply_rehydrated_followup(event, followup)?;
+                continue;
+            }
+
             let EventKind::AgentLifecycle(lifecycle) = &event.kind else {
                 if let Some(agent_id) = event.agent_id.as_ref()
                     && scheduler.agents.contains_key(agent_id)
@@ -440,6 +485,9 @@ impl AgentDispatchScheduler {
                         objective,
                         parent_agent_id: lifecycle.parent_agent_id.clone(),
                         causing_turn_id: event.turn_id.clone(),
+                        turn_generation: 0,
+                        followup: None,
+                        followup_authorized: false,
                         state: DispatchState::Created,
                         queue_sequence: event.sequence,
                         last_event_id: event.event_id.clone(),
@@ -503,7 +551,10 @@ impl AgentDispatchScheduler {
             }
             let legacy_start = agent.state == DispatchState::Queued
                 && lifecycle.state == AgentLifecycleState::Started;
-            if !legacy_start && !valid_transition(&agent.state, &next) {
+            let authorized_followup = agent.followup_authorized
+                && agent.state.is_terminal()
+                && next == DispatchState::Queued;
+            if !legacy_start && !authorized_followup && !valid_transition(&agent.state, &next) {
                 return Err(DispatchError::InvalidHistory(format!(
                     "agent {} has invalid transition {:?} -> {:?}",
                     lifecycle.agent_id, agent.state, next
@@ -512,6 +563,9 @@ impl AgentDispatchScheduler {
             agent.state = next.clone();
             if next == DispatchState::Queued {
                 agent.queue_sequence = event.sequence;
+            }
+            if authorized_followup {
+                agent.followup_authorized = false;
             }
             agent.last_event_id = event.event_id.clone();
             if next.is_terminal() {
@@ -537,6 +591,25 @@ impl AgentDispatchScheduler {
                 &handle,
                 terminal_state_for_handoff(status),
                 Some("recovered terminal state from durable validated handoff".into()),
+                true,
+                false,
+            )?;
+        }
+
+        // A crash can also land after durable follow-up authorization and
+        // before the Queued lifecycle. Resume only that never-started turn.
+        let pending_followups = scheduler
+            .agents
+            .values()
+            .filter(|agent| agent.followup_authorized && agent.state.is_terminal())
+            .map(|agent| agent.handle.clone())
+            .collect::<Vec<_>>();
+        for handle in pending_followups {
+            scheduler.transition_internal(
+                &handle,
+                DispatchState::Queued,
+                Some("recovered queued state from durable follow-up authorization".into()),
+                false,
                 true,
             )?;
         }
@@ -696,6 +769,9 @@ impl AgentDispatchScheduler {
                 objective: request.objective,
                 parent_agent_id: request.parent_agent_id,
                 causing_turn_id: request.causing_turn_id,
+                turn_generation: 0,
+                followup: None,
+                followup_authorized: false,
                 state: DispatchState::Queued,
                 queue_sequence: queued_event.sequence,
                 last_event_id: queued_event.event_id,
@@ -706,13 +782,182 @@ impl AgentDispatchScheduler {
         Ok(handle)
     }
 
+    /// Reopen one completed/interrupted child as a fresh turn on the same
+    /// Ovim identity. The authorization event is durable before Queued, so a
+    /// stop at either edge is replayable without interpreting a terminal child
+    /// as still running.
+    pub fn begin_followup(
+        &mut self,
+        request: FollowupAgentRequest,
+    ) -> Result<FollowupAgentHandle, DispatchError> {
+        if request.objective.trim().is_empty() || request.objective.len() > 8 * 1024 {
+            return Err(DispatchError::InvalidFollowupObjective);
+        }
+        if request.budget.timeout.is_zero()
+            || request.budget.max_provider_events == 0
+            || request.budget.max_tool_calls == 0
+        {
+            return Err(DispatchError::InvalidFollowupBudget);
+        }
+        let agent = self
+            .agents
+            .get(&request.agent_id)
+            .ok_or_else(|| DispatchError::UnknownAgent(request.agent_id.clone()))?;
+        if !matches!(
+            agent.state,
+            DispatchState::Completed | DispatchState::Interrupted
+        ) || agent.followup_authorized
+        {
+            return Err(DispatchError::FollowupIneligible {
+                agent_id: request.agent_id,
+                state: agent.state.clone(),
+            });
+        }
+        let expected_parent = agent
+            .parent_agent_id
+            .as_ref()
+            .or(self.external_parent.as_ref())
+            .ok_or_else(|| DispatchError::UnknownParent(request.parent_agent_id.clone()))?;
+        if expected_parent != &request.parent_agent_id {
+            return Err(DispatchError::FollowupParentMismatch {
+                agent_id: request.agent_id,
+                parent_agent_id: request.parent_agent_id,
+            });
+        }
+        let parent_event = self
+            .sink
+            .event(&self.run_id, &request.caused_by_event)
+            .map_err(DispatchError::RunLog)?
+            .ok_or_else(|| DispatchError::CausingEventNotFound(request.caused_by_event.clone()))?;
+        if parent_event.agent_id.as_ref() != Some(expected_parent)
+            || parent_event.turn_id.as_ref() != Some(&request.causing_turn_id)
+        {
+            return Err(DispatchError::FollowupParentCauseMismatch(
+                request.caused_by_event,
+            ));
+        }
+        let capabilities = request
+            .capabilities
+            .unwrap_or_else(|| agent.role.capabilities.clone());
+        if capabilities.is_empty() || !capabilities.is_subset(&agent.role.capabilities) {
+            return Err(DispatchError::FollowupCapabilityWidening(
+                agent.handle.agent_id.clone(),
+            ));
+        }
+        let resolved = self
+            .model_catalog
+            .resolve(&agent.requested_route, true)
+            .map_err(DispatchError::ModelRoute)?;
+        if !same_effective_route(&resolved, &agent.resolved_route) {
+            return Err(DispatchError::FollowupRouteChanged(
+                agent.handle.agent_id.clone(),
+            ));
+        }
+        let prior_terminal_event = self
+            .sink
+            .event(&self.run_id, &agent.last_event_id)
+            .map_err(DispatchError::RunLog)?
+            .ok_or_else(|| DispatchError::InvalidHistory("terminal event is missing".into()))?;
+        let prior_handoff_event_id = prior_terminal_event.caused_by.clone().ok_or_else(|| {
+            DispatchError::InvalidHistory("terminal event has no handoff cause".into())
+        })?;
+        let prior_handoff_event = self
+            .sink
+            .event(&self.run_id, &prior_handoff_event_id)
+            .map_err(DispatchError::RunLog)?
+            .ok_or_else(|| DispatchError::InvalidHistory("prior handoff is missing".into()))?;
+        let EventKind::AgentHandoff(prior_handoff) = prior_handoff_event.kind else {
+            return Err(DispatchError::InvalidHistory(
+                "terminal cause is not a handoff".into(),
+            ));
+        };
+        let turn_generation = agent
+            .turn_generation
+            .checked_add(1)
+            .ok_or(DispatchError::FollowupGenerationOverflow)?;
+        let followup_turn_id = TurnId::new();
+        let timeout_millis = u64::try_from(request.budget.timeout.as_millis())
+            .map_err(|_| DispatchError::InvalidFollowupBudget)?;
+        let followup_event = self
+            .sink
+            .append(NewRunEvent {
+                run_id: self.run_id.clone(),
+                caused_by: Some(prior_terminal_event.event_id.clone()),
+                operation_id: None,
+                provider_call_id: None,
+                actor: EventActor::Agent(request.parent_agent_id.clone()),
+                agent_id: Some(agent.handle.agent_id.clone()),
+                turn_id: Some(followup_turn_id.clone()),
+                workspace_id: Some(agent.handle.workspace.workspace_id.clone()),
+                branch_id: None,
+                kind: EventKind::AgentFollowup(AgentFollowupEvent {
+                    version: AGENT_FOLLOWUP_EVENT_VERSION,
+                    agent_id: agent.handle.agent_id.clone(),
+                    turn_generation,
+                    followup_turn_id: followup_turn_id.clone(),
+                    parent_agent_id: request.parent_agent_id,
+                    parent_turn_id: request.causing_turn_id.clone(),
+                    parent_event_id: parent_event.event_id,
+                    prior_terminal_event_id: prior_terminal_event.event_id.clone(),
+                    prior_handoff_event_id: prior_handoff_event_id.clone(),
+                    objective: request.objective.clone(),
+                    effective_capabilities: capabilities.iter().map(capability_snapshot).collect(),
+                    budget: AgentFollowupBudgetSnapshot {
+                        timeout_millis,
+                        max_provider_events: request.budget.max_provider_events,
+                        max_tool_calls: request.budget.max_tool_calls,
+                    },
+                    retained_session_requested: request.retained_session_requested,
+                }),
+            })
+            .map_err(DispatchError::RunLog)?;
+        let agent = self
+            .agents
+            .get_mut(&request.agent_id)
+            .expect("follow-up agent checked above");
+        agent.role.capabilities = capabilities;
+        agent.objective = request.objective.clone();
+        agent.causing_turn_id = Some(followup_turn_id.clone());
+        agent.turn_generation = turn_generation;
+        agent.followup = Some(AgentFollowupTurn {
+            turn_generation,
+            followup_turn_id: followup_turn_id.clone(),
+            parent_turn_id: request.causing_turn_id,
+            parent_event_id: request.caused_by_event,
+            prior_terminal_event_id: prior_terminal_event.event_id,
+            prior_handoff_event_id,
+            objective: request.objective,
+            prior_handoff_summary: prior_handoff.handoff.as_handoff().summary.clone(),
+            budget: request.budget,
+            retained_session_requested: request.retained_session_requested,
+        });
+        agent.followup_authorized = true;
+        agent.last_event_id = followup_event.event_id.clone();
+        let handle = agent.handle.clone();
+        self.transition_internal(
+            &handle,
+            DispatchState::Queued,
+            Some(format!(
+                "follow-up turn generation {turn_generation} queued"
+            )),
+            false,
+            true,
+        )?;
+        Ok(FollowupAgentHandle {
+            handle,
+            followup_turn_id,
+            turn_generation,
+            followup_event_id: followup_event.event_id,
+        })
+    }
+
     pub fn transition(
         &mut self,
         handle: &DispatchHandle,
         next: DispatchState,
         detail: Option<String>,
     ) -> Result<EventEnvelope, DispatchError> {
-        self.transition_internal(handle, next, detail, false)
+        self.transition_internal(handle, next, detail, false, false)
     }
 
     /// Record a completed result only after the provider payload has become a
@@ -811,6 +1056,7 @@ impl AgentDispatchScheduler {
                     handoff_version
                 )),
                 true,
+                false,
             )
             .map_err(|error| DispatchError::TerminalAfterHandoffFailed {
                 handoff_event_id: handoff_event.event_id.clone(),
@@ -828,6 +1074,7 @@ impl AgentDispatchScheduler {
         next: DispatchState,
         detail: Option<String>,
         from_validated_handoff: bool,
+        from_followup: bool,
     ) -> Result<EventEnvelope, DispatchError> {
         let agent = self
             .agents
@@ -836,7 +1083,11 @@ impl AgentDispatchScheduler {
         if agent.handle.run_id != handle.run_id || agent.handle.workspace != handle.workspace {
             return Err(DispatchError::HandleMismatch(handle.agent_id.clone()));
         }
-        if !valid_transition(&agent.state, &next) {
+        let authorized_followup = from_followup
+            && agent.followup_authorized
+            && agent.state.is_terminal()
+            && next == DispatchState::Queued;
+        if !valid_transition(&agent.state, &next) && !authorized_followup {
             return Err(DispatchError::InvalidTransition {
                 agent_id: handle.agent_id.clone(),
                 from: agent.state.clone(),
@@ -860,6 +1111,11 @@ impl AgentDispatchScheduler {
             }
         } else if agent.pending_handoff_status.is_some() {
             return Err(DispatchError::PendingHandoff(handle.agent_id.clone()));
+        }
+        if from_followup && !authorized_followup {
+            return Err(DispatchError::FollowupNotAuthorized(
+                handle.agent_id.clone(),
+            ));
         }
         let event = self
             .sink
@@ -895,6 +1151,10 @@ impl AgentDispatchScheduler {
             if self.shared_writer.get(&handle.workspace.workspace_id) == Some(&handle.agent_id) {
                 self.shared_writer.remove(&handle.workspace.workspace_id);
             }
+        }
+        if authorized_followup {
+            agent.followup_authorized = false;
+            agent.queue_sequence = event.sequence;
         }
         Ok(event)
     }
@@ -1002,6 +1262,137 @@ impl AgentDispatchScheduler {
         let agent = self.agents.get_mut(agent_id).expect("checked above");
         apply_runtime_operation(agent, &event.kind, event.operation_id.as_ref())?;
         agent.last_event_id = event.event_id.clone();
+        Ok(())
+    }
+
+    fn apply_rehydrated_followup(
+        &mut self,
+        envelope: &EventEnvelope,
+        followup: &AgentFollowupEvent,
+    ) -> Result<(), DispatchError> {
+        if followup.version != AGENT_FOLLOWUP_EVENT_VERSION {
+            return Err(DispatchError::InvalidHistory(format!(
+                "unsupported follow-up event version {}",
+                followup.version
+            )));
+        }
+        let agent = self.agents.get(&followup.agent_id).ok_or_else(|| {
+            DispatchError::InvalidHistory(format!(
+                "follow-up {} belongs to unknown agent {}",
+                envelope.event_id, followup.agent_id
+            ))
+        })?;
+        let expected_parent = agent.parent_agent_id.as_ref().ok_or_else(|| {
+            DispatchError::InvalidHistory("follow-up agent has no durable parent".into())
+        })?;
+        if envelope.agent_id.as_ref() != Some(&followup.agent_id)
+            || envelope.turn_id.as_ref() != Some(&followup.followup_turn_id)
+            || envelope.workspace_id.as_ref() != Some(&agent.handle.workspace.workspace_id)
+            || envelope.caused_by.as_ref() != Some(&agent.last_event_id)
+            || envelope.actor != EventActor::Agent(followup.parent_agent_id.clone())
+            || expected_parent != &followup.parent_agent_id
+            || followup.prior_terminal_event_id != agent.last_event_id
+            || !matches!(
+                agent.state,
+                DispatchState::Completed | DispatchState::Interrupted
+            )
+            || agent.followup_authorized
+        {
+            return Err(DispatchError::InvalidHistory(format!(
+                "follow-up {} is not authorized from the recorded terminal boundary",
+                envelope.event_id
+            )));
+        }
+        if followup.turn_generation != agent.turn_generation.saturating_add(1)
+            || followup.objective.trim().is_empty()
+            || followup.objective.len() > 8 * 1024
+            || followup.budget.timeout_millis == 0
+            || followup.budget.max_provider_events == 0
+            || followup.budget.max_tool_calls == 0
+        {
+            return Err(DispatchError::InvalidHistory(format!(
+                "follow-up {} has an invalid generation, objective, or budget",
+                envelope.event_id
+            )));
+        }
+        let parent_event = self
+            .sink
+            .event(&self.run_id, &followup.parent_event_id)
+            .map_err(DispatchError::RunLog)?
+            .ok_or_else(|| {
+                DispatchError::InvalidHistory("follow-up parent event is missing".into())
+            })?;
+        if parent_event.agent_id.as_ref() != Some(&followup.parent_agent_id)
+            || parent_event.turn_id.as_ref() != Some(&followup.parent_turn_id)
+        {
+            return Err(DispatchError::InvalidHistory(
+                "follow-up parent cause has the wrong agent or turn".into(),
+            ));
+        }
+        let prior_terminal = self
+            .sink
+            .event(&self.run_id, &followup.prior_terminal_event_id)
+            .map_err(DispatchError::RunLog)?
+            .ok_or_else(|| {
+                DispatchError::InvalidHistory("follow-up terminal event is missing".into())
+            })?;
+        if prior_terminal.caused_by.as_ref() != Some(&followup.prior_handoff_event_id) {
+            return Err(DispatchError::InvalidHistory(
+                "follow-up terminal does not reference its recorded handoff".into(),
+            ));
+        }
+        let prior_handoff = self
+            .sink
+            .event(&self.run_id, &followup.prior_handoff_event_id)
+            .map_err(DispatchError::RunLog)?
+            .ok_or_else(|| {
+                DispatchError::InvalidHistory("follow-up handoff event is missing".into())
+            })?;
+        let EventKind::AgentHandoff(prior_handoff) = prior_handoff.kind else {
+            return Err(DispatchError::InvalidHistory(
+                "follow-up handoff ID is not an agent handoff".into(),
+            ));
+        };
+        let capabilities = followup
+            .effective_capabilities
+            .iter()
+            .map(restore_capability)
+            .collect::<BTreeSet<_>>();
+        if capabilities.len() != followup.effective_capabilities.len()
+            || capabilities.is_empty()
+            || !capabilities.is_subset(&agent.role.capabilities)
+        {
+            return Err(DispatchError::InvalidHistory(
+                "follow-up capabilities widen or repeat the prior ceiling".into(),
+            ));
+        }
+        let timeout = std::time::Duration::from_millis(followup.budget.timeout_millis);
+        let agent = self
+            .agents
+            .get_mut(&followup.agent_id)
+            .expect("follow-up agent checked above");
+        agent.role.capabilities = capabilities;
+        agent.objective = followup.objective.clone();
+        agent.causing_turn_id = Some(followup.followup_turn_id.clone());
+        agent.turn_generation = followup.turn_generation;
+        agent.followup = Some(AgentFollowupTurn {
+            turn_generation: followup.turn_generation,
+            followup_turn_id: followup.followup_turn_id.clone(),
+            parent_turn_id: followup.parent_turn_id.clone(),
+            parent_event_id: followup.parent_event_id.clone(),
+            prior_terminal_event_id: followup.prior_terminal_event_id.clone(),
+            prior_handoff_event_id: followup.prior_handoff_event_id.clone(),
+            objective: followup.objective.clone(),
+            prior_handoff_summary: prior_handoff.handoff.as_handoff().summary.clone(),
+            budget: AgentLoopBudget {
+                timeout,
+                max_provider_events: followup.budget.max_provider_events,
+                max_tool_calls: followup.budget.max_tool_calls,
+            },
+            retained_session_requested: followup.retained_session_requested,
+        });
+        agent.followup_authorized = true;
+        agent.last_event_id = envelope.event_id.clone();
         Ok(())
     }
 
@@ -1117,6 +1508,8 @@ pub struct AgentDispatchRecord {
     pub objective: String,
     pub parent_agent_id: Option<AgentId>,
     pub causing_turn_id: Option<TurnId>,
+    pub turn_generation: u32,
+    pub followup: Option<AgentFollowupTurn>,
     pub state: DispatchState,
     pub queue_sequence: u64,
 }
@@ -1131,6 +1524,8 @@ fn dispatch_record(agent: &ScheduledAgent) -> AgentDispatchRecord {
         objective: agent.objective.clone(),
         parent_agent_id: agent.parent_agent_id.clone(),
         causing_turn_id: agent.causing_turn_id.clone(),
+        turn_generation: agent.turn_generation,
+        followup: agent.followup.clone(),
         state: agent.state.clone(),
         queue_sequence: agent.queue_sequence,
     }
@@ -1315,19 +1710,7 @@ fn dispatch_spec_snapshot(
         requested_route: Some(requested_route_snapshot(requested_route)),
         resolved_route: Some(resolved_route_snapshot(resolved_route)),
         instructions: role.instructions.clone(),
-        capabilities: role
-            .capabilities
-            .iter()
-            .map(|capability| match capability {
-                AgentCapability::Read => AgentCapabilitySnapshot::Read,
-                AgentCapability::Navigate => AgentCapabilitySnapshot::Navigate,
-                AgentCapability::SafeShell => AgentCapabilitySnapshot::SafeShell,
-                AgentCapability::Shell => AgentCapabilitySnapshot::Shell,
-                AgentCapability::WorkspaceWrite => AgentCapabilitySnapshot::WorkspaceWrite,
-                AgentCapability::ExternalEffects => AgentCapabilitySnapshot::ExternalEffects,
-                AgentCapability::DispatchAgents => AgentCapabilitySnapshot::DispatchAgents,
-            })
-            .collect(),
+        capabilities: role.capabilities.iter().map(capability_snapshot).collect(),
         kind_workspace_policy: match role.workspace_policy {
             WorkspacePolicy::SharedWorkspace => AgentWorkspacePolicySnapshot::SharedWorkspace,
             WorkspacePolicy::IsolatedWorktree => AgentWorkspacePolicySnapshot::IsolatedWorktree,
@@ -1358,6 +1741,38 @@ fn dispatch_spec_snapshot(
             }
         },
     }
+}
+
+fn capability_snapshot(capability: &AgentCapability) -> AgentCapabilitySnapshot {
+    match capability {
+        AgentCapability::Read => AgentCapabilitySnapshot::Read,
+        AgentCapability::Navigate => AgentCapabilitySnapshot::Navigate,
+        AgentCapability::SafeShell => AgentCapabilitySnapshot::SafeShell,
+        AgentCapability::Shell => AgentCapabilitySnapshot::Shell,
+        AgentCapability::WorkspaceWrite => AgentCapabilitySnapshot::WorkspaceWrite,
+        AgentCapability::ExternalEffects => AgentCapabilitySnapshot::ExternalEffects,
+        AgentCapability::DispatchAgents => AgentCapabilitySnapshot::DispatchAgents,
+    }
+}
+
+fn restore_capability(capability: &AgentCapabilitySnapshot) -> AgentCapability {
+    match capability {
+        AgentCapabilitySnapshot::Read => AgentCapability::Read,
+        AgentCapabilitySnapshot::Navigate => AgentCapability::Navigate,
+        AgentCapabilitySnapshot::SafeShell => AgentCapability::SafeShell,
+        AgentCapabilitySnapshot::Shell => AgentCapability::Shell,
+        AgentCapabilitySnapshot::WorkspaceWrite => AgentCapability::WorkspaceWrite,
+        AgentCapabilitySnapshot::ExternalEffects => AgentCapability::ExternalEffects,
+        AgentCapabilitySnapshot::DispatchAgents => AgentCapability::DispatchAgents,
+    }
+}
+
+fn same_effective_route(left: &ResolvedModelRoute, right: &ResolvedModelRoute) -> bool {
+    left.catalog_model_id == right.catalog_model_id
+        && left.profile_name == right.profile_name
+        && left.provider == right.provider
+        && left.model == right.model
+        && left.reasoning_effort == right.reasoning_effort
 }
 
 fn valid_task_name(value: &str) -> bool {
@@ -1421,15 +1836,7 @@ fn restore_dispatch_spec(
     let capabilities = snapshot
         .capabilities
         .iter()
-        .map(|capability| match capability {
-            AgentCapabilitySnapshot::Read => AgentCapability::Read,
-            AgentCapabilitySnapshot::Navigate => AgentCapability::Navigate,
-            AgentCapabilitySnapshot::SafeShell => AgentCapability::SafeShell,
-            AgentCapabilitySnapshot::Shell => AgentCapability::Shell,
-            AgentCapabilitySnapshot::WorkspaceWrite => AgentCapability::WorkspaceWrite,
-            AgentCapabilitySnapshot::ExternalEffects => AgentCapability::ExternalEffects,
-            AgentCapabilitySnapshot::DispatchAgents => AgentCapability::DispatchAgents,
-        })
+        .map(restore_capability)
         .collect::<BTreeSet<_>>();
     if capabilities.len() != snapshot.capabilities.len() {
         return Err(DispatchError::InvalidHistory(
@@ -1716,6 +2123,21 @@ pub enum DispatchError {
         from: DispatchState,
         to: DispatchState,
     },
+    FollowupIneligible {
+        agent_id: AgentId,
+        state: DispatchState,
+    },
+    FollowupParentMismatch {
+        agent_id: AgentId,
+        parent_agent_id: AgentId,
+    },
+    FollowupParentCauseMismatch(EventId),
+    FollowupCapabilityWidening(AgentId),
+    FollowupRouteChanged(AgentId),
+    InvalidFollowupObjective,
+    InvalidFollowupBudget,
+    FollowupGenerationOverflow,
+    FollowupNotAuthorized(AgentId),
     CompletionRequiresValidatedHandoff(AgentId),
     HandoffStatusMismatch {
         expected: HandoffStatus,
@@ -1805,6 +2227,42 @@ impl fmt::Display for DispatchError {
                 formatter,
                 "agent {agent_id} cannot transition from {from:?} to {to:?}"
             ),
+            Self::FollowupIneligible { agent_id, state } => write!(
+                formatter,
+                "agent {agent_id} cannot start a follow-up from state {state:?}"
+            ),
+            Self::FollowupParentMismatch {
+                agent_id,
+                parent_agent_id,
+            } => write!(
+                formatter,
+                "agent {parent_agent_id} is not authorized to follow up child {agent_id}"
+            ),
+            Self::FollowupParentCauseMismatch(event_id) => write!(
+                formatter,
+                "follow-up parent event {event_id} has the wrong agent or turn"
+            ),
+            Self::FollowupCapabilityWidening(agent_id) => write!(
+                formatter,
+                "follow-up for agent {agent_id} widens or empties its capability ceiling"
+            ),
+            Self::FollowupRouteChanged(agent_id) => write!(
+                formatter,
+                "follow-up for agent {agent_id} cannot preserve its effective model route"
+            ),
+            Self::InvalidFollowupObjective => {
+                formatter.write_str("follow-up objective is empty or oversized")
+            }
+            Self::InvalidFollowupBudget => {
+                formatter.write_str("follow-up budget must contain positive bounded limits")
+            }
+            Self::FollowupGenerationOverflow => {
+                formatter.write_str("follow-up turn generation overflowed")
+            }
+            Self::FollowupNotAuthorized(agent_id) => write!(
+                formatter,
+                "agent {agent_id} has no durable follow-up authorization for terminal-to-queued"
+            ),
             Self::CompletionRequiresValidatedHandoff(agent_id) => write!(
                 formatter,
                 "agent {agent_id} cannot complete without a validated structured handoff"
@@ -1868,6 +2326,7 @@ pub struct ProjectedAgent {
     pub workspace_id: Option<WorkspaceId>,
     pub dispatch_spec: Option<Box<AgentDispatchSpecSnapshot>>,
     pub state: DispatchState,
+    pub turn_generation: u32,
 }
 
 /// UI-facing selection is deliberately separate from scheduler ownership and
@@ -1885,7 +2344,27 @@ impl AgentFollowProjection {
         let mut ordered: Vec<_> = events.iter().collect();
         ordered.sort_by_key(|event| event.sequence);
         let mut projection = Self::default();
+        let mut followup_authorized = BTreeSet::new();
         for event in ordered {
+            if let EventKind::AgentFollowup(followup) = &event.kind {
+                let agent = projection
+                    .agents
+                    .get_mut(&followup.agent_id)
+                    .ok_or_else(|| ProjectionError::UnknownAgent(followup.agent_id.clone()))?;
+                if !agent.state.is_terminal()
+                    || followup.turn_generation != agent.turn_generation.saturating_add(1)
+                    || event.agent_id.as_ref() != Some(&followup.agent_id)
+                    || event.turn_id.as_ref() != Some(&followup.followup_turn_id)
+                    || event.workspace_id != agent.workspace_id
+                {
+                    return Err(ProjectionError::InvalidFollowup(followup.agent_id.clone()));
+                }
+                agent.turn_generation = followup.turn_generation;
+                agent.causing_turn_id = Some(followup.followup_turn_id.clone());
+                agent.objective = Some(followup.objective.clone());
+                followup_authorized.insert(followup.agent_id.clone());
+                continue;
+            }
             let EventKind::AgentLifecycle(lifecycle) = &event.kind else {
                 continue;
             };
@@ -1923,6 +2402,7 @@ impl AgentFollowProjection {
                             workspace_id: event.workspace_id.clone(),
                             dispatch_spec: lifecycle.dispatch_spec.clone(),
                             state,
+                            turn_generation: 0,
                         },
                     );
                     if projection.selected.is_none() {
@@ -1940,7 +2420,13 @@ impl AgentFollowProjection {
                     }
                     let legacy_start = agent.state == DispatchState::Queued
                         && lifecycle.state == AgentLifecycleState::Started;
-                    if !legacy_start && !valid_transition(&agent.state, &state) {
+                    let authorized_followup = followup_authorized.contains(&agent.agent_id)
+                        && agent.state.is_terminal()
+                        && state == DispatchState::Queued;
+                    if !legacy_start
+                        && !authorized_followup
+                        && !valid_transition(&agent.state, &state)
+                    {
                         return Err(ProjectionError::InvalidLifecycle {
                             agent_id: agent.agent_id.clone(),
                             from: agent.state.clone(),
@@ -1948,6 +2434,9 @@ impl AgentFollowProjection {
                         });
                     }
                     agent.state = state;
+                    if authorized_followup {
+                        followup_authorized.remove(&agent.agent_id);
+                    }
                 }
             }
         }
@@ -2017,6 +2506,7 @@ pub enum ProjectionError {
     UnknownParent(AgentId),
     ParentChanged(AgentId),
     DispatchSpecRepeated(AgentId),
+    InvalidFollowup(AgentId),
     InvalidLifecycle {
         agent_id: AgentId,
         from: DispatchState,
@@ -2157,6 +2647,148 @@ mod tests {
         scheduler
             .transition(handle, DispatchState::Running, None)
             .unwrap();
+    }
+
+    fn followup_budget() -> AgentLoopBudget {
+        AgentLoopBudget {
+            timeout: std::time::Duration::from_secs(45),
+            max_provider_events: 32,
+            max_tool_calls: 8,
+        }
+    }
+
+    #[test]
+    fn followup_reopens_same_agent_with_fresh_turn_and_narrowed_ceiling() {
+        let (mut scheduler, sink) = scheduler();
+        let workspace_id = WorkspaceId::new();
+        let parent = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Planner),
+                workspace_id.clone(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let first_parent_turn = TurnId::new();
+        let first_cause = record_parent_turn(&sink, &parent, first_parent_turn.clone());
+        let mut child_request = request(
+            AgentKind::built_in(AgentKindName::Planner),
+            workspace_id,
+            WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+        );
+        child_request.parent_agent_id = Some(parent.agent_id.clone());
+        child_request.causing_turn_id = Some(first_parent_turn);
+        child_request.caused_by_event = Some(first_cause.event_id);
+        let child = scheduler.dispatch(child_request).unwrap();
+        start_running(&mut scheduler, &child);
+        scheduler
+            .finish_with_handoff(&child, handoff(HandoffStatus::Completed))
+            .unwrap();
+
+        let followup_parent_turn = TurnId::new();
+        let followup_cause = record_parent_turn(&sink, &parent, followup_parent_turn.clone());
+        let before = scheduler.dispatch_record(&child.agent_id).unwrap();
+        let followup = scheduler
+            .begin_followup(FollowupAgentRequest {
+                agent_id: child.agent_id.clone(),
+                parent_agent_id: parent.agent_id.clone(),
+                causing_turn_id: followup_parent_turn,
+                caused_by_event: followup_cause.event_id,
+                objective: "Check the restart boundary too.".into(),
+                capabilities: Some(BTreeSet::from([AgentCapability::Read])),
+                budget: followup_budget(),
+                retained_session_requested: true,
+            })
+            .unwrap();
+        let after = scheduler.dispatch_record(&child.agent_id).unwrap();
+
+        assert_eq!(followup.handle.agent_id, child.agent_id);
+        assert_ne!(followup.followup_turn_id, before.causing_turn_id.unwrap());
+        assert_eq!(followup.turn_generation, 1);
+        assert_eq!(after.state, DispatchState::Queued);
+        assert_eq!(after.turn_generation, 1);
+        assert_eq!(after.handle.workspace, before.handle.workspace);
+        assert_eq!(after.resolved_route, before.resolved_route);
+        assert_eq!(
+            after.role.capabilities,
+            BTreeSet::from([AgentCapability::Read])
+        );
+        assert_eq!(after.followup.unwrap().budget, followup_budget());
+
+        let events = sink.events(&child.run_id).unwrap();
+        let projection = AgentFollowProjection::rehydrate(&events).unwrap();
+        let projected = projection.agents().get(&child.agent_id).unwrap();
+        assert_eq!(projected.turn_generation, 1);
+        assert_eq!(projected.state, DispatchState::Queued);
+        let restored = AgentDispatchScheduler::rehydrate(child.run_id, sink, catalog()).unwrap();
+        let restored = restored.dispatch_record(&child.agent_id).unwrap();
+        assert_eq!(restored.turn_generation, 1);
+        assert_eq!(restored.state, DispatchState::Queued);
+        assert_eq!(restored.handle.agent_id, child.agent_id);
+    }
+
+    #[test]
+    fn followup_rejects_live_failed_and_capability_widening_targets() {
+        let (mut scheduler, sink) = scheduler();
+        let workspace_id = WorkspaceId::new();
+        let parent = scheduler
+            .dispatch(request(
+                AgentKind::built_in(AgentKindName::Planner),
+                workspace_id.clone(),
+                WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+            ))
+            .unwrap();
+        let parent_turn = TurnId::new();
+        let cause = record_parent_turn(&sink, &parent, parent_turn.clone());
+        let mut child_request = request(
+            AgentKind::built_in(AgentKindName::Explorer),
+            workspace_id,
+            WorkspaceStrategy::ReadOnlySnapshot { manifest_id: None },
+        );
+        child_request.parent_agent_id = Some(parent.agent_id.clone());
+        child_request.causing_turn_id = Some(parent_turn.clone());
+        child_request.caused_by_event = Some(cause.event_id.clone());
+        let child = scheduler.dispatch(child_request).unwrap();
+        assert!(matches!(
+            scheduler.begin_followup(FollowupAgentRequest {
+                agent_id: child.agent_id.clone(),
+                parent_agent_id: parent.agent_id.clone(),
+                causing_turn_id: parent_turn.clone(),
+                caused_by_event: cause.event_id.clone(),
+                objective: "too soon".into(),
+                capabilities: None,
+                budget: followup_budget(),
+                retained_session_requested: false,
+            }),
+            Err(DispatchError::FollowupIneligible {
+                state: DispatchState::Queued,
+                ..
+            })
+        ));
+        start_running(&mut scheduler, &child);
+        scheduler
+            .finish_with_handoff(&child, handoff(HandoffStatus::Failed))
+            .unwrap();
+        let second_turn = TurnId::new();
+        let second_cause = record_parent_turn(&sink, &parent, second_turn.clone());
+        assert!(matches!(
+            scheduler.begin_followup(FollowupAgentRequest {
+                agent_id: child.agent_id,
+                parent_agent_id: parent.agent_id,
+                causing_turn_id: second_turn,
+                caused_by_event: second_cause.event_id,
+                objective: "not after failure".into(),
+                capabilities: Some(BTreeSet::from([
+                    AgentCapability::Read,
+                    AgentCapability::Navigate,
+                ])),
+                budget: followup_budget(),
+                retained_session_requested: false,
+            }),
+            Err(DispatchError::FollowupIneligible {
+                state: DispatchState::Failed,
+                ..
+            })
+        ));
     }
 
     #[test]
