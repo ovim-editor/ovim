@@ -502,17 +502,12 @@ pub const AGENT_USAGE_EVENT_VERSION: u32 = 1;
 /// Whether a provider supplied a metric. `NotReported` is deliberately
 /// different from a reported zero: Ovim never estimates missing token or cost
 /// data.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "status", content = "value", rename_all = "snake_case")]
 pub enum AgentReported<T> {
     Reported(T),
+    #[default]
     NotReported,
-}
-
-impl<T> Default for AgentReported<T> {
-    fn default() -> Self {
-        Self::NotReported
-    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

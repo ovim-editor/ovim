@@ -1381,7 +1381,7 @@ mod tests {
             .queue(sender, turn, parent_event, "Check the recovery edge too.")
             .unwrap();
         assert!(matches!(queued.state, AgentMessageState::Queued));
-        assert_eq!(queue.queued().unwrap(), [queued.clone()]);
+        assert_eq!(queue.queued().unwrap(), std::slice::from_ref(&queued));
 
         let claimed = queue
             .claim(&queued.message_event_id, "session-one")

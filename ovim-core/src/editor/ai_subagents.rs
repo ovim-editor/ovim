@@ -2218,7 +2218,10 @@ mod tests {
         );
         assert_eq!(snapshot.agents.len(), 1);
         assert_eq!(snapshot.agents[0].task_name, "inspect_snapshot");
-        assert_eq!(snapshot.agents[0].ancestry, [run.root_agent_id.clone()]);
+        assert_eq!(
+            snapshot.agents[0].ancestry,
+            std::slice::from_ref(&run.root_agent_id)
+        );
         let crate::run_log::AgentReported::Reported(usage) = &snapshot.agents[0].usage else {
             panic!("completed child should have durable usage")
         };
