@@ -543,6 +543,7 @@ fn event_kind_name(kind: &super::EventKind) -> &str {
         super::EventKind::RunLifecycle(_) => "run_lifecycle",
         super::EventKind::BranchLifecycle(_) => "branch_lifecycle",
         super::EventKind::AgentLifecycle(_) => "agent_lifecycle",
+        super::EventKind::AgentProvider(_) => "agent_provider",
         super::EventKind::AgentHandoff(_) => "agent_handoff",
         super::EventKind::MailboxNotification(_) => "mailbox_notification",
         super::EventKind::MailboxConsumed(_) => "mailbox_consumed",

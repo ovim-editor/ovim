@@ -122,6 +122,7 @@ pub enum EventKind {
     RunLifecycle(RunLifecycleEvent),
     BranchLifecycle(BranchLifecycleEvent),
     AgentLifecycle(AgentLifecycleEvent),
+    AgentProvider(AgentProviderEvent),
     AgentHandoff(AgentHandoffEvent),
     MailboxNotification(MailboxNotificationEvent),
     MailboxConsumed(MailboxConsumedEvent),
@@ -157,6 +158,7 @@ impl Serialize for EventKind {
             Self::RunLifecycle(value) => ("run_lifecycle", serde_json::to_value(value)),
             Self::BranchLifecycle(value) => ("branch_lifecycle", serde_json::to_value(value)),
             Self::AgentLifecycle(value) => ("agent_lifecycle", serde_json::to_value(value)),
+            Self::AgentProvider(value) => ("agent_provider", serde_json::to_value(value)),
             Self::AgentHandoff(value) => ("agent_handoff", serde_json::to_value(value)),
             Self::MailboxNotification(value) => {
                 ("mailbox_notification", serde_json::to_value(value))
@@ -200,6 +202,7 @@ impl<'de> Deserialize<'de> for EventKind {
             "run_lifecycle" => decode(raw.data).map(Self::RunLifecycle),
             "branch_lifecycle" => decode(raw.data).map(Self::BranchLifecycle),
             "agent_lifecycle" => decode(raw.data).map(Self::AgentLifecycle),
+            "agent_provider" => decode(raw.data).map(Self::AgentProvider),
             "agent_handoff" => decode(raw.data).map(Self::AgentHandoff),
             "mailbox_notification" => decode(raw.data).map(Self::MailboxNotification),
             "mailbox_consumed" => decode(raw.data).map(Self::MailboxConsumed),
@@ -432,6 +435,35 @@ pub enum AgentLifecycleState {
     Completed,
     Interrupted,
     Failed,
+}
+
+pub const AGENT_PROVIDER_EVENT_VERSION: u32 = 1;
+
+/// Provider-owned session metadata attached to an ovim agent identity.
+///
+/// Session and call identifiers remain opaque adapter data. They are useful
+/// for audit and conservative recovery, but never replace `AgentId`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProviderEvent {
+    pub version: u32,
+    pub state: AgentProviderState,
+    pub provider: String,
+    pub profile: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checkpoint: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProviderState {
+    Bound,
+    CallStarted,
+    Checkpoint,
 }
 
 /// A complete validated handoff retained inline in the durable event stream.

@@ -301,6 +301,9 @@ fn event_kind_label(kind: &EventKind) -> String {
         EventKind::AgentLifecycle(event) => {
             format!("agent.{}", agent_state_label(&event.state))
         }
+        EventKind::AgentProvider(event) => {
+            format!("agent.provider.{:?}", event.state).to_lowercase()
+        }
         EventKind::AgentHandoff(_) => "agent.handoff".into(),
         EventKind::MailboxNotification(_) => "mailbox.notification".into(),
         EventKind::MailboxConsumed(_) => "mailbox.consumed".into(),

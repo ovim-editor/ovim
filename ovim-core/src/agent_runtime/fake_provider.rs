@@ -9,6 +9,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::BTreeSet;
 use std::fmt;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
+use std::time::Duration;
+
+use super::{
+    AgentFuture, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
+    AgentProviderSession, AgentProviderStart, AgentToolResult, ProviderBinding,
+};
 
 const EMBEDDED_FIXTURES: &str = include_str!("fixtures/fake-provider-v1.json");
 
@@ -289,6 +297,204 @@ impl fmt::Display for FakeProviderError {
 }
 
 impl std::error::Error for FakeProviderError {}
+
+/// Async adapter that lets the deterministic phase-zero fixtures drive the
+/// real child loop without adding a second orchestration implementation.
+#[derive(Clone)]
+pub struct FakeProviderAdapter {
+    scenario_name: String,
+    call_id: Option<String>,
+    tick_duration: Duration,
+    active: Arc<AtomicUsize>,
+    maximum_active: Arc<AtomicUsize>,
+}
+
+impl FakeProviderAdapter {
+    pub fn new(scenario_name: impl Into<String>) -> Self {
+        Self {
+            scenario_name: scenario_name.into(),
+            call_id: None,
+            tick_duration: Duration::from_millis(1),
+            active: Arc::new(AtomicUsize::new(0)),
+            maximum_active: Arc::new(AtomicUsize::new(0)),
+        }
+    }
+
+    pub fn for_call(mut self, call_id: impl Into<String>) -> Self {
+        self.call_id = Some(call_id.into());
+        self
+    }
+
+    pub fn with_tick_duration(mut self, tick_duration: Duration) -> Self {
+        self.tick_duration = tick_duration;
+        self
+    }
+
+    pub fn active_counter(&self) -> Arc<AtomicUsize> {
+        self.active.clone()
+    }
+
+    pub fn maximum_active_counter(&self) -> Arc<AtomicUsize> {
+        self.maximum_active.clone()
+    }
+}
+
+impl AgentProviderAdapter for FakeProviderAdapter {
+    fn start(
+        &self,
+        request: AgentProviderStart,
+    ) -> AgentFuture<'_, Result<Box<dyn AgentProviderSession>, AgentProviderError>> {
+        let scenario_name = self.scenario_name.clone();
+        let selected_call = self.call_id.clone();
+        let tick_duration = self.tick_duration;
+        let active = self.active.clone();
+        let maximum_active = self.maximum_active.clone();
+        Box::pin(async move {
+            let provider = FakeProvider::from_embedded(&scenario_name)
+                .map_err(|error| AgentProviderError::new(error.to_string()))?;
+            let selected_call = selected_call.or_else(|| {
+                (provider.scenario().calls.len() == 1)
+                    .then(|| provider.scenario().calls[0].call_id.clone())
+            });
+            let Some(selected_call) = selected_call else {
+                return Err(AgentProviderError::new(format!(
+                    "fake scenario {scenario_name} has multiple calls; select one explicitly"
+                )));
+            };
+            let maximum_tick = provider
+                .scenario()
+                .calls
+                .iter()
+                .find(|call| call.call_id == selected_call)
+                .and_then(|call| call.events.last())
+                .map(|event| event.at_tick)
+                .ok_or_else(|| {
+                    AgentProviderError::new(format!(
+                        "fake scenario {scenario_name} has no call {selected_call}"
+                    ))
+                })?;
+            let current = active.fetch_add(1, Ordering::AcqRel) + 1;
+            maximum_active.fetch_max(current, Ordering::AcqRel);
+            Ok(Box::new(FakeProviderSessionAdapter {
+                provider,
+                selected_call,
+                next_tick: 0,
+                maximum_tick,
+                tick_duration,
+                pending: Vec::new(),
+                binding: ProviderBinding {
+                    provider: request.route.provider,
+                    profile: request.route.profile_name,
+                    model: request.route.model,
+                    reasoning_effort: request.route.reasoning_effort.as_str().into(),
+                    session_id: format!("fake:{}", request.handle.agent_id),
+                },
+                active,
+            }) as Box<dyn AgentProviderSession>)
+        })
+    }
+}
+
+struct FakeProviderSessionAdapter {
+    provider: FakeProvider,
+    selected_call: String,
+    next_tick: u64,
+    maximum_tick: u64,
+    tick_duration: Duration,
+    pending: Vec<AgentProviderEvent>,
+    binding: ProviderBinding,
+    active: Arc<AtomicUsize>,
+}
+
+impl Drop for FakeProviderSessionAdapter {
+    fn drop(&mut self) {
+        self.active.fetch_sub(1, Ordering::AcqRel);
+    }
+}
+
+impl AgentProviderSession for FakeProviderSessionAdapter {
+    fn binding(&self) -> &ProviderBinding {
+        &self.binding
+    }
+
+    fn next_event(&mut self) -> AgentFuture<'_, Result<AgentProviderEvent, AgentProviderError>> {
+        Box::pin(async move {
+            loop {
+                if !self.pending.is_empty() {
+                    return Ok(self.pending.remove(0));
+                }
+                if self.next_tick > self.maximum_tick {
+                    return Err(AgentProviderError::new(
+                        "fake provider exhausted without a terminal event",
+                    ));
+                }
+                if !self.tick_duration.is_zero() && self.next_tick > 0 {
+                    tokio::time::sleep(self.tick_duration).await;
+                } else {
+                    tokio::task::yield_now().await;
+                }
+                let tick = self.next_tick;
+                self.next_tick += 1;
+                let events = self
+                    .provider
+                    .advance_to(tick)
+                    .map_err(|error| AgentProviderError::new(error.to_string()))?;
+                self.pending.extend(
+                    events
+                        .into_iter()
+                        .filter(|event| event.call_id == self.selected_call)
+                        .map(map_fake_event),
+                );
+            }
+        })
+    }
+
+    fn submit_tool_result(
+        &mut self,
+        _tool_call_id: &str,
+        _result: &AgentToolResult,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn map_fake_event(event: FakeProviderEvent) -> AgentProviderEvent {
+    match event.kind {
+        FakeProviderEventKind::Started => AgentProviderEvent::CallStarted {
+            provider_call_id: event.call_id,
+        },
+        FakeProviderEventKind::ToolStarted {
+            tool_call_id,
+            tool_name,
+        } => AgentProviderEvent::ToolObservedStarted {
+            provider_call_id: Some(event.call_id),
+            tool_call_id,
+            tool_name,
+        },
+        FakeProviderEventKind::ToolFailed {
+            tool_call_id,
+            tool_name,
+            error,
+        } => AgentProviderEvent::ToolObservedFailed {
+            provider_call_id: Some(event.call_id),
+            tool_call_id,
+            tool_name,
+            error,
+        },
+        FakeProviderEventKind::Handoff { payload } => AgentProviderEvent::Handoff {
+            payload: serde_json::to_vec(&payload)
+                .expect("fixture payload was already parsed from valid JSON"),
+        },
+        FakeProviderEventKind::ProviderFailed { error } => {
+            AgentProviderEvent::ProviderFailed { error }
+        }
+        FakeProviderEventKind::Cancelled { reason } => AgentProviderEvent::Cancelled { reason },
+        FakeProviderEventKind::TimedOut { timeout_ticks } => AgentProviderEvent::TimedOut {
+            detail: format!("fixture timed out after {timeout_ticks} ticks"),
+        },
+        FakeProviderEventKind::Checkpoint { label } => AgentProviderEvent::Checkpoint { label },
+    }
+}
 
 #[cfg(test)]
 mod tests {
