@@ -6,9 +6,9 @@
 //! lifecycle hooks, budgets, and cancellation.
 
 use super::{
-    DispatchHandle, DispatchState, HandoffConfidence, HandoffStatus, HandoffValidationError,
-    HandoffValidator, ResolvedModelRoute, StructuredHandoffV1, ValidatedHandoff,
-    WorkspaceAssignment,
+    AgentWorkspaceWarning, DispatchHandle, DispatchState, HandoffConfidence, HandoffStatus,
+    HandoffValidationError, HandoffValidator, ResolvedModelRoute, StructuredHandoffV1,
+    ValidatedHandoff, WorkspaceAssignment,
 };
 use crate::run_log::{
     AgentProviderEvent as RecordedAgentProviderEvent, AgentProviderState, EventEnvelope, EventKind,
@@ -39,6 +39,7 @@ pub struct DelegationEnvelope {
     pub non_goals: Vec<String>,
     pub relevant_paths: Vec<String>,
     pub parent_brief: Option<String>,
+    pub workspace_warnings: Vec<AgentWorkspaceWarning>,
 }
 
 impl DelegationEnvelope {
@@ -50,6 +51,7 @@ impl DelegationEnvelope {
             non_goals: Vec::new(),
             relevant_paths: Vec::new(),
             parent_brief: None,
+            workspace_warnings: Vec::new(),
         }
     }
 }
@@ -61,6 +63,7 @@ pub struct AgentWorkspaceDescriptor {
     /// filesystem root. A virtual read-only snapshot may intentionally omit it.
     pub root: Option<PathBuf>,
     pub read_only: bool,
+    pub warnings: Vec<AgentWorkspaceWarning>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1198,6 +1201,7 @@ mod tests {
                 assignment,
                 root: None,
                 read_only: true,
+                warnings: Vec::new(),
             },
             cancellation,
             budget: AgentLoopBudget {
