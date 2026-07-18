@@ -547,6 +547,8 @@ fn event_kind_name(kind: &super::EventKind) -> &str {
         super::EventKind::AgentHandoff(_) => "agent_handoff",
         super::EventKind::AgentApprovalRequested(_) => "agent_approval_requested",
         super::EventKind::AgentApprovalResolved(_) => "agent_approval_resolved",
+        super::EventKind::AgentMessage(_) => "agent_message",
+        super::EventKind::AgentMessageDelivery(_) => "agent_message_delivery",
         super::EventKind::MailboxNotification(_) => "mailbox_notification",
         super::EventKind::MailboxConsumed(_) => "mailbox_consumed",
         super::EventKind::TurnLifecycle(_) => "turn_lifecycle",

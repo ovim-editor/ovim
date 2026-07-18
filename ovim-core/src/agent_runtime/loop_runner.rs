@@ -205,6 +205,22 @@ pub trait AgentProviderSession: Send {
     ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
         Box::pin(async { Ok(()) })
     }
+
+    /// Accept one durable parent message at a provider-defined safe boundary.
+    /// Implementations must deduplicate by `message_event_id`. Returning `Ok`
+    /// means the session durably/in-memory accepted the message for this turn;
+    /// it must not start a new provider turn solely because of this call.
+    fn deliver_message(
+        &mut self,
+        _message_event_id: &EventId,
+        _content: &str,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        Box::pin(async {
+            Err(AgentProviderError::new(
+                "provider session does not support parent messages",
+            ))
+        })
+    }
 }
 
 pub trait AgentProviderAdapter: Send + Sync {

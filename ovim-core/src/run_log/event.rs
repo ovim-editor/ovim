@@ -126,6 +126,8 @@ pub enum EventKind {
     AgentHandoff(AgentHandoffEvent),
     AgentApprovalRequested(AgentApprovalRequestedEvent),
     AgentApprovalResolved(AgentApprovalResolvedEvent),
+    AgentMessage(AgentMessageEvent),
+    AgentMessageDelivery(AgentMessageDeliveryEvent),
     MailboxNotification(MailboxNotificationEvent),
     MailboxConsumed(MailboxConsumedEvent),
     TurnLifecycle(TurnLifecycleEvent),
@@ -167,6 +169,10 @@ impl Serialize for EventKind {
             }
             Self::AgentApprovalResolved(value) => {
                 ("agent_approval_resolved", serde_json::to_value(value))
+            }
+            Self::AgentMessage(value) => ("agent_message", serde_json::to_value(value)),
+            Self::AgentMessageDelivery(value) => {
+                ("agent_message_delivery", serde_json::to_value(value))
             }
             Self::MailboxNotification(value) => {
                 ("mailbox_notification", serde_json::to_value(value))
@@ -214,6 +220,8 @@ impl<'de> Deserialize<'de> for EventKind {
             "agent_handoff" => decode(raw.data).map(Self::AgentHandoff),
             "agent_approval_requested" => decode(raw.data).map(Self::AgentApprovalRequested),
             "agent_approval_resolved" => decode(raw.data).map(Self::AgentApprovalResolved),
+            "agent_message" => decode(raw.data).map(Self::AgentMessage),
+            "agent_message_delivery" => decode(raw.data).map(Self::AgentMessageDelivery),
             "mailbox_notification" => decode(raw.data).map(Self::MailboxNotification),
             "mailbox_consumed" => decode(raw.data).map(Self::MailboxConsumed),
             "turn_lifecycle" => decode(raw.data).map(Self::TurnLifecycle),
@@ -559,6 +567,43 @@ pub enum AgentApprovalResolutionSourceSnapshot {
     Timeout,
     Cancellation,
     Restart,
+}
+
+pub const AGENT_MESSAGE_EVENT_VERSION: u32 = 1;
+
+/// One bounded parent-authored message addressed to a live delegated child.
+///
+/// The envelope event ID is the stable message ID. Delivery is recorded in
+/// separate events so a process stop can distinguish never-attempted work from
+/// an ambiguous provider boundary without replaying the message blindly.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageEvent {
+    pub version: u32,
+    pub sender_agent_id: AgentId,
+    pub recipient_agent_id: AgentId,
+    pub parent_event_id: EventId,
+    pub content: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentMessageDeliveryEvent {
+    pub version: u32,
+    pub message_event_id: EventId,
+    pub state: AgentMessageDeliveryState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_session_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentMessageDeliveryState {
+    Started,
+    Delivered,
+    Rejected,
 }
 
 pub const MAILBOX_EVENT_VERSION: u32 = 1;

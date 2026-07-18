@@ -17,6 +17,7 @@ use super::{
     AgentFuture, AgentProviderAdapter, AgentProviderError, AgentProviderEvent,
     AgentProviderSession, AgentProviderStart, AgentToolResult, ProviderBinding,
 };
+use crate::run_log::EventId;
 
 const EMBEDDED_FIXTURES: &str = include_str!("fixtures/fake-provider-v1.json");
 
@@ -390,6 +391,7 @@ impl AgentProviderAdapter for FakeProviderAdapter {
                     session_id: format!("fake:{}", request.handle.agent_id),
                 },
                 active,
+                delivered_messages: BTreeSet::new(),
             }) as Box<dyn AgentProviderSession>)
         })
     }
@@ -404,6 +406,7 @@ struct FakeProviderSessionAdapter {
     pending: Vec<AgentProviderEvent>,
     binding: ProviderBinding,
     active: Arc<AtomicUsize>,
+    delivered_messages: BTreeSet<EventId>,
 }
 
 impl Drop for FakeProviderSessionAdapter {
@@ -454,6 +457,15 @@ impl AgentProviderSession for FakeProviderSessionAdapter {
         _tool_call_id: &str,
         _result: &AgentToolResult,
     ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        Box::pin(async { Ok(()) })
+    }
+
+    fn deliver_message(
+        &mut self,
+        message_event_id: &EventId,
+        _content: &str,
+    ) -> AgentFuture<'_, Result<(), AgentProviderError>> {
+        self.delivered_messages.insert(message_event_id.clone());
         Box::pin(async { Ok(()) })
     }
 }

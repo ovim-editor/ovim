@@ -307,6 +307,10 @@ fn event_kind_label(kind: &EventKind) -> String {
         EventKind::AgentHandoff(_) => "agent.handoff".into(),
         EventKind::AgentApprovalRequested(_) => "agent.approval.requested".into(),
         EventKind::AgentApprovalResolved(_) => "agent.approval.resolved".into(),
+        EventKind::AgentMessage(_) => "agent.message.queued".into(),
+        EventKind::AgentMessageDelivery(event) => {
+            format!("agent.message.{:?}", event.state).to_lowercase()
+        }
         EventKind::MailboxNotification(_) => "mailbox.notification".into(),
         EventKind::MailboxConsumed(_) => "mailbox.consumed".into(),
         EventKind::TurnLifecycle(event) => format!("turn.{}", turn_state_label(&event.state)),
