@@ -1,5 +1,6 @@
 pub mod builtins;
 pub mod schema;
+pub mod subagents;
 
 use std::collections::HashMap;
 use std::fmt;

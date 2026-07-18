@@ -169,6 +169,10 @@ impl AiState {
         }
 
         let subagents = Box::new(super::ai_subagents::AiSubagentService::new(&config));
+        // Parent controls are intentionally not registered as ordinary editor
+        // tools. Their schemas are injected only for an enabled, durable root
+        // turn that currently owns DispatchAgents authority.
+        let tool_registry = ToolRegistry::new();
         Self {
             agent_runtime: Box::new(agent_runtime),
             run_storage_warning,
@@ -191,7 +195,7 @@ impl AiState {
             chat: None,
             conversations: HashMap::new(),
             conversation_runtime_nodes: HashMap::new(),
-            tool_registry: ToolRegistry::new(),
+            tool_registry,
             ai_attention_generation: 0,
             no_repo_session_prompted: false,
             no_repo_session_allowed_root: None,

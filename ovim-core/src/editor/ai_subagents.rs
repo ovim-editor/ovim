@@ -5,20 +5,70 @@
 //! exact durable run sink and configured provider profiles.
 
 use crate::agent_runtime::{
-    AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager, ProfileAgentProvider,
-    SnapshotAgentLoopInputFactory, SubagentModelCatalog,
+    AgentCapability, AgentKindName, AgentLoopBudget, AgentRoleTemplate, AgentSupervisor,
+    AgentSupervisorConfig, AgentWorkspaceManager, CompletionContract, DelegatedAgentKind,
+    DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity,
+    DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
+    RequestedModelRoute, SnapshotAgentLoopInputFactory, SubagentModelCatalog, WorkspaceAssignment,
+    WorkspacePolicy, WorkspaceStrategy,
 };
+use crate::ai::chat_types::ToolCallInfo;
+use crate::ai::tools::subagents::{
+    is_parent_control_tool, INTERRUPT_AGENT_TOOL, LIST_AGENTS_TOOL, SPAWN_AGENT_TOOL,
+    WAIT_AGENT_TOOL,
+};
+use crate::ai::tools::ToolDefinition;
+use crate::ai::tools::ToolResult;
 use crate::ai::{AiConfig, AiSubagentConfig};
 use crate::run_log::{
-    AgentId, ArtifactStore, BaseManifest, LocalRunStore, ManifestId, RepositoryId, RunEventSink,
-    RunId,
+    AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, LocalRunStore, ManifestId,
+    RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
 };
+use serde::Deserialize;
+use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::collections::HashMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+
+use super::Editor;
+
+#[derive(Clone)]
+struct ActiveSubagentRoot {
+    store: Arc<LocalRunStore>,
+    run_id: RunId,
+    root_agent_id: AgentId,
+    repository_id: RepositoryId,
+    turn_id: TurnId,
+    caused_by_event: EventId,
+    repository_root: PathBuf,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SpawnAgentArguments {
+    task_name: String,
+    objective: String,
+    agent_kind: String,
+    model: String,
+    reasoning_effort: String,
+    context_mode: String,
+    expected_output: String,
+    relevant_paths: Vec<String>,
+    done_when: Vec<String>,
+    non_goals: Vec<String>,
+    timeout_seconds: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct InterruptAgentArguments {
+    agent_id: String,
+    reason: String,
+}
 
 pub(crate) struct AiSubagentService {
     startup_policy: AiSubagentConfig,
@@ -32,6 +82,7 @@ pub(crate) struct AiSubagentRun {
     pub root_agent_id: AgentId,
     pub repository_id: RepositoryId,
     pub supervisor: AgentSupervisor,
+    pub artifact_store: ArtifactStore,
     pub workspace_manager: AgentWorkspaceManager,
     pub input_factory: Arc<SnapshotAgentLoopInputFactory>,
     manifest_registry: BaseManifestRegistry,
@@ -56,6 +107,17 @@ impl AiSubagentService {
 
     pub fn catalog(&self) -> Result<Arc<SubagentModelCatalog>, String> {
         self.catalog.clone()
+    }
+
+    pub fn parent_tools(&self) -> Result<Vec<ToolDefinition>, String> {
+        if !self.startup_policy.enabled {
+            return Ok(Vec::new());
+        }
+        crate::ai::tools::subagents::parent_control_tools(
+            self.catalog()?.as_ref(),
+            &self.startup_policy,
+        )
+        .map_err(|error| error.to_string())
     }
 
     /// Running supervisors keep the exact startup policy/profile snapshot.
@@ -104,7 +166,7 @@ impl AiSubagentService {
             .map_err(|error| error.to_string())?;
         let artifact_store = ArtifactStore::open(store.layout().artifact_directory(&run_id))
             .map_err(|error| error.to_string())?;
-        let workspace_manager = AgentWorkspaceManager::new(artifact_store);
+        let workspace_manager = AgentWorkspaceManager::new(artifact_store.clone());
         let input_factory = Arc::new(SnapshotAgentLoopInputFactory::new(
             workspace_manager.clone(),
             self.provider.clone(),
@@ -123,6 +185,7 @@ impl AiSubagentService {
             root_agent_id,
             repository_id,
             supervisor,
+            artifact_store,
             workspace_manager,
             input_factory,
             manifest_registry: BaseManifestRegistry::new(
@@ -160,6 +223,420 @@ impl AiSubagentRun {
         self.manifest_registry
             .load(manifest_id)
             .map_err(|error| error.to_string())
+    }
+}
+
+impl Editor {
+    /// Parent controls are a root-runtime capability, not ordinary profile
+    /// tools. Merely registering a profile or opening a chat never exposes
+    /// them; the durable root binding must be active and exact.
+    pub(crate) fn ai_subagent_parent_tools_visible(&self) -> bool {
+        self.active_subagent_root().is_ok()
+    }
+
+    pub(crate) fn ai_subagent_parent_tools(&self) -> Vec<ToolDefinition> {
+        if !self.ai_subagent_parent_tools_visible() {
+            return Vec::new();
+        }
+        self.ai_state.subagents.parent_tools().unwrap_or_default()
+    }
+
+    pub(crate) fn is_ai_subagent_control_tool(&self, name: &str) -> bool {
+        is_parent_control_tool(name)
+    }
+
+    pub(crate) fn execute_ai_subagent_control_tool(&mut self, call: &ToolCallInfo) -> ToolResult {
+        if !is_parent_control_tool(&call.name) {
+            return ToolResult::Error("unknown delegated-agent control".into());
+        }
+        let definition = match self
+            .ai_subagent_parent_tools()
+            .into_iter()
+            .find(|definition| definition.name == call.name)
+        {
+            Some(definition) => definition,
+            None => {
+                return ToolResult::Error(
+                    "delegated-agent controls require an enabled durable root turn with DispatchAgents authority"
+                        .into(),
+                )
+            }
+        };
+        if let Some(schema) = definition.custom_input_schema.as_ref()
+            && let Err(error) = schema.validate_instance(&call.arguments)
+        {
+            return ToolResult::Error(format!("invalid {} arguments: {error}", call.name));
+        }
+
+        let result = match call.name.as_str() {
+            SPAWN_AGENT_TOOL => self.spawn_ai_subagent(&call.arguments),
+            LIST_AGENTS_TOOL => self.list_ai_subagents(),
+            WAIT_AGENT_TOOL => Err(
+                "wait_agent is asynchronous and must be dispatched through the editor turn loop"
+                    .into(),
+            ),
+            INTERRUPT_AGENT_TOOL => Err(
+                "interrupt_agent is asynchronous and must be dispatched through the editor turn loop"
+                    .into(),
+            ),
+            _ => unreachable!("parent-control name was checked above"),
+        };
+        match result {
+            Ok(value) => ToolResult::Success(value.to_string()),
+            Err(error) => ToolResult::Error(error),
+        }
+    }
+
+    pub(crate) fn prepare_ai_subagent_async_control(
+        &self,
+        call: &ToolCallInfo,
+    ) -> Result<PreparedAsyncSubagentControl, String> {
+        if !matches!(call.name.as_str(), WAIT_AGENT_TOOL | INTERRUPT_AGENT_TOOL) {
+            return Err("delegated-agent control does not run asynchronously".into());
+        }
+        let definition = self
+            .ai_subagent_parent_tools()
+            .into_iter()
+            .find(|definition| definition.name == call.name)
+            .ok_or_else(|| {
+                "delegated-agent controls require an enabled durable root turn with DispatchAgents authority"
+                    .to_string()
+            })?;
+        if let Some(schema) = definition.custom_input_schema.as_ref() {
+            schema
+                .validate_instance(&call.arguments)
+                .map_err(|error| format!("invalid {} arguments: {error}", call.name))?;
+        }
+        let root = self.active_subagent_root()?;
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id,
+            root.root_agent_id.clone(),
+            root.repository_id,
+        )?;
+        match call.name.as_str() {
+            WAIT_AGENT_TOOL => {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct Arguments {
+                    timeout_seconds: u64,
+                }
+                let args: Arguments = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| error.to_string())?;
+                Ok(PreparedAsyncSubagentControl::Wait {
+                    mailbox: run
+                        .supervisor
+                        .mailbox(root.root_agent_id)
+                        .map_err(|e| e.to_string())?,
+                    timeout: std::time::Duration::from_secs(args.timeout_seconds),
+                })
+            }
+            INTERRUPT_AGENT_TOOL => {
+                let args: InterruptAgentArguments = serde_json::from_value(call.arguments.clone())
+                    .map_err(|error| error.to_string())?;
+                let agent_id = AgentId::parse(args.agent_id).map_err(|error| error.to_string())?;
+                Ok(PreparedAsyncSubagentControl::Interrupt {
+                    supervisor: run.supervisor.clone(),
+                    agent_id,
+                    reason: args.reason,
+                })
+            }
+            _ => unreachable!(),
+        }
+    }
+
+    fn active_subagent_root(&self) -> Result<ActiveSubagentRoot, String> {
+        self.ai_state
+            .subagents
+            .ensure_compatible(&self.ai_state.config)?;
+        let turn = self
+            .active_ai_runtime_turn()
+            .ok_or_else(|| "there is no active root agent turn".to_string())?;
+        let services = self
+            .ai_state
+            .durable_runs
+            .as_ref()
+            .ok_or_else(|| "durable run storage is unavailable".to_string())?;
+        let binding = self
+            .ai_state
+            .durable_chat_bindings
+            .get(&self.ai_chat_conversation_key())
+            .ok_or_else(|| "the active chat has no durable root binding".to_string())?;
+        if binding.binding.run_id != turn.run_id
+            || binding.binding.root_agent_id != turn.agent_id
+            || binding.binding.workspace_id != turn.workspace_id
+        {
+            return Err("active root turn does not match its durable binding".into());
+        }
+        let caused_by_event = self
+            .ai_state
+            .agent_runtime
+            .selected_branch_tip(&binding.locator)
+            .cloned()
+            .ok_or_else(|| "active root branch has no durable causal tip".to_string())?;
+        let repository_root = self
+            .ai_repo_root()
+            .ok_or_else(|| "delegated agents require an active Git repository".to_string())?;
+        Ok(ActiveSubagentRoot {
+            store: services.store.clone(),
+            run_id: turn.run_id,
+            root_agent_id: turn.agent_id,
+            repository_id: binding.binding.key.repository_id.clone(),
+            turn_id: turn.turn_id,
+            caused_by_event,
+            repository_root,
+        })
+    }
+
+    fn spawn_ai_subagent(
+        &mut self,
+        arguments: &serde_json::Value,
+    ) -> Result<serde_json::Value, String> {
+        let args: SpawnAgentArguments =
+            serde_json::from_value(arguments.clone()).map_err(|error| error.to_string())?;
+        let root = self.active_subagent_root()?;
+        let effort = ReasoningEffort::new(args.reasoning_effort.clone())
+            .map_err(|error| error.to_string())?;
+        let requested_route = RequestedModelRoute {
+            catalog_model_id: args.model,
+            reasoning_effort: effort,
+            fallback_policy: ModelFallbackPolicy::FailClosed,
+        };
+        // Resolve before allocating any child, workspace, manifest, or
+        // lifecycle identity. Invalid model/effort pairs leave no durable
+        // dispatch residue.
+        let catalog = self.ai_state.subagents.catalog()?;
+        let resolved = catalog
+            .resolve(&requested_route, true)
+            .map_err(|error| error.to_string())?;
+
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id.clone(),
+            root.root_agent_id.clone(),
+            root.repository_id.clone(),
+        )?;
+        let manifest_id = ManifestId::new();
+        let base_manifest_id = BaseManifestId::new();
+        let workspace_id = WorkspaceId::new();
+        let capture = self
+            .capture_ai_base_manifest(
+                &root.repository_root,
+                root.repository_id,
+                base_manifest_id,
+                chrono::Utc::now().to_rfc3339(),
+                &run.artifact_store,
+            )
+            .map_err(|error| error.to_string())?;
+        run.register_manifest(manifest_id.clone(), capture.manifest, &root.repository_root)?;
+
+        let agent_kind = match args.agent_kind.as_str() {
+            "explorer" => DelegatedAgentKind::Explorer,
+            "reviewer" => DelegatedAgentKind::Reviewer,
+            _ => return Err("only explorer and reviewer delegated roles are supported".into()),
+        };
+        let expected_output = match args.expected_output.as_str() {
+            "analysis" => DelegationExpectedOutput::Analysis,
+            "review_report" => DelegationExpectedOutput::ReviewReport,
+            "verification" => DelegationExpectedOutput::Verification,
+            _ => return Err("unsupported delegated output contract".into()),
+        };
+        if args.context_mode != "brief" {
+            return Err("only brief delegated context is supported".into());
+        }
+        let role_name = match agent_kind {
+            DelegatedAgentKind::Explorer => AgentKindName::Explorer,
+            DelegatedAgentKind::Reviewer => AgentKindName::Reviewer,
+        };
+        let role = AgentRoleTemplate {
+            name: role_name,
+            instructions: "Use only the immutable captured snapshot. Report bounded evidence and never mutate source or perform external effects.".into(),
+            capabilities: BTreeSet::from([AgentCapability::Read]),
+            workspace_policy: WorkspacePolicy::ReadOnlyProjection,
+            completion_contract: CompletionContract::ReviewReport,
+        };
+        let envelope = DelegationEnvelope {
+            version: 1,
+            task_name: args.task_name.clone(),
+            objective: args.objective.clone(),
+            agent_kind,
+            context_mode: DelegationContextMode::Brief,
+            expected_output,
+            done_when: args.done_when,
+            non_goals: args.non_goals,
+            relevant_paths: args.relevant_paths,
+            parent_brief: None,
+            identity: Some(Box::new(DelegationIdentity {
+                run_id: root.run_id.clone(),
+                parent_agent_id: root.root_agent_id.clone(),
+                causing_turn_id: root.turn_id.clone(),
+                causing_event_id: root.caused_by_event.clone(),
+                workspace_id: workspace_id.clone(),
+                manifest_id: manifest_id.clone(),
+            })),
+            effective_capabilities: vec!["read".into()],
+            timeout_seconds: args.timeout_seconds,
+            workspace_warnings: capture
+                .adapter_issues
+                .into_iter()
+                .map(|issue| crate::agent_runtime::AgentWorkspaceWarning {
+                    kind: crate::agent_runtime::AgentWorkspaceWarningKind::CaptureIssue,
+                    path: issue.path,
+                    artifact_id: None,
+                    detail: issue.detail,
+                })
+                .collect(),
+        };
+        run.input_factory.register_prepared(
+            manifest_id.clone(),
+            envelope,
+            Some(AgentLoopBudget {
+                timeout: std::time::Duration::from_secs(args.timeout_seconds),
+                max_provider_events: self
+                    .ai_state
+                    .subagents
+                    .policy()
+                    .budgets
+                    .max_provider_events_per_agent,
+                max_tool_calls: self
+                    .ai_state
+                    .subagents
+                    .policy()
+                    .budgets
+                    .max_tool_calls_per_agent,
+            }),
+        )?;
+        let handle = run
+            .supervisor
+            .dispatch_nonblocking(DispatchRequest {
+                task_name: args.task_name.clone(),
+                objective: args.objective,
+                role,
+                requested_route,
+                parent_agent_id: Some(root.root_agent_id),
+                causing_turn_id: Some(root.turn_id),
+                caused_by_event: Some(root.caused_by_event),
+                workspace: WorkspaceAssignment {
+                    workspace_id,
+                    strategy: WorkspaceStrategy::ReadOnlySnapshot {
+                        manifest_id: Some(manifest_id.clone()),
+                    },
+                },
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "task_name": args.task_name,
+            "run_id": handle.run_id,
+            "agent_id": handle.agent_id,
+            "workspace_id": handle.workspace.workspace_id,
+            "manifest_id": manifest_id,
+            "model": resolved.catalog_model_id,
+            "profile": resolved.profile_name,
+            "provider": resolved.provider,
+            "reasoning_effort": resolved.reasoning_effort,
+            "state": "queued"
+        }))
+    }
+
+    fn list_ai_subagents(&self) -> Result<serde_json::Value, String> {
+        let root = self.active_subagent_root()?;
+        let run = self.ai_state.subagents.run(
+            root.store,
+            root.run_id,
+            root.root_agent_id.clone(),
+            root.repository_id,
+        )?;
+        let pending = run
+            .supervisor
+            .mailbox(root.root_agent_id)
+            .map_err(|error| error.to_string())?
+            .pending()
+            .map_err(|error| error.to_string())?;
+        let records = run
+            .supervisor
+            .dispatches()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .map(|record| {
+                json!({
+                    "task_name": record.task_name,
+                    "agent_id": record.handle.agent_id,
+                    "parent_agent_id": record.parent_agent_id,
+                    "workspace_id": record.handle.workspace.workspace_id,
+                    "workspace": format!("{:?}", record.handle.workspace.strategy),
+                    "agent_kind": record.role.name.to_string(),
+                    "model": record.resolved_route.catalog_model_id,
+                    "profile": record.resolved_route.profile_name,
+                    "provider": record.resolved_route.provider,
+                    "reasoning_effort": record.resolved_route.reasoning_effort,
+                    "state": format!("{:?}", record.state).to_lowercase(),
+                    "queue_sequence": record.queue_sequence,
+                })
+            })
+            .collect::<Vec<_>>();
+        Ok(json!({
+            "agents": records,
+            "pending_attention": pending.len(),
+        }))
+    }
+}
+
+pub(crate) enum PreparedAsyncSubagentControl {
+    Wait {
+        mailbox: crate::agent_runtime::AgentMailbox,
+        timeout: std::time::Duration,
+    },
+    Interrupt {
+        supervisor: AgentSupervisor,
+        agent_id: AgentId,
+        reason: String,
+    },
+}
+
+impl PreparedAsyncSubagentControl {
+    pub(crate) async fn execute(self) -> ToolResult {
+        let result: Result<serde_json::Value, String> = match self {
+            Self::Wait { mailbox, timeout } => match mailbox.wait(timeout).await {
+                Ok(crate::agent_runtime::MailboxWaitOutcome::TimedOut) => {
+                    Ok(json!({ "outcome": "timed_out", "updates": [] }))
+                }
+                Ok(crate::agent_runtime::MailboxWaitOutcome::Updates(entries)) => {
+                    let updates = entries
+                        .iter()
+                        .map(|entry| {
+                            json!({
+                                "notification_event_id": entry.notification_event_id,
+                                "sequence": entry.sequence,
+                                "recorded_at": entry.recorded_at,
+                                "notification": entry.notification,
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    for entry in &entries {
+                        if let Err(error) = mailbox.consume(&entry.notification_event_id) {
+                            return ToolResult::Error(format!(
+                                "received a child update but could not consume it durably: {error}"
+                            ));
+                        }
+                    }
+                    Ok(json!({ "outcome": "updates", "updates": updates }))
+                }
+                Err(error) => Err(error.to_string()),
+            },
+            Self::Interrupt {
+                supervisor,
+                agent_id,
+                reason,
+            } => supervisor
+                .interrupt(&agent_id, reason)
+                .await
+                .map(|agents| json!({ "outcome": "interrupted", "agent_ids": agents }))
+                .map_err(|error| error.to_string()),
+        };
+        match result {
+            Ok(value) => ToolResult::Success(value.to_string()),
+            Err(error) => ToolResult::Error(error),
+        }
     }
 }
 

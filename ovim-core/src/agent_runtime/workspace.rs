@@ -902,7 +902,13 @@ impl AgentToolExecutor for SnapshotToolExecutor {
 pub struct SnapshotAgentLoopInputFactory {
     manager: AgentWorkspaceManager,
     provider: Arc<dyn AgentProviderAdapter>,
-    envelopes: Mutex<HashMap<ManifestId, DelegationEnvelope>>,
+    envelopes: Mutex<HashMap<ManifestId, PreparedDelegation>>,
+}
+
+#[derive(Clone)]
+struct PreparedDelegation {
+    envelope: DelegationEnvelope,
+    budget: Option<super::AgentLoopBudget>,
 }
 
 impl SnapshotAgentLoopInputFactory {
@@ -922,6 +928,15 @@ impl SnapshotAgentLoopInputFactory {
         manifest_id: ManifestId,
         envelope: DelegationEnvelope,
     ) -> Result<(), String> {
+        self.register_prepared(manifest_id, envelope, None)
+    }
+
+    pub fn register_prepared(
+        &self,
+        manifest_id: ManifestId,
+        envelope: DelegationEnvelope,
+        budget: Option<super::AgentLoopBudget>,
+    ) -> Result<(), String> {
         let mut envelopes = self
             .envelopes
             .lock()
@@ -931,7 +946,7 @@ impl SnapshotAgentLoopInputFactory {
                 "delegation envelope for manifest {manifest_id} is already registered"
             ));
         }
-        envelopes.insert(manifest_id, envelope);
+        envelopes.insert(manifest_id, PreparedDelegation { envelope, budget });
         Ok(())
     }
 }
@@ -956,13 +971,14 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("captured manifest {manifest_id} is not registered"))?;
         let warnings = workspace.warnings().to_vec();
-        let mut envelope = self
+        let prepared = self
             .envelopes
             .lock()
             .map_err(|_| "delegation envelope registry is poisoned".to_string())?
             .get(manifest_id)
             .cloned()
             .ok_or_else(|| format!("captured manifest {manifest_id} has no delegation envelope"))?;
+        let mut envelope = prepared.envelope;
         envelope.workspace_warnings = warnings.clone();
         Ok(AgentLoopDependencies {
             provider: self.provider.clone(),
@@ -976,7 +992,7 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
                 warnings: warnings.clone(),
             },
             envelope,
-            budget: None,
+            budget: prepared.budget,
         })
     }
 }

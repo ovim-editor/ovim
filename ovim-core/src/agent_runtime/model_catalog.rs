@@ -254,7 +254,13 @@ impl SubagentModelCatalog {
                     )
                 } else {
                     let effort = configured_effort(profile_name, profile)?;
-                    (BTreeSet::from([effort.clone()]), effort, true, true)
+                    let child_supported = profile.provider != AiProviderKind::CodexAppServer;
+                    (
+                        BTreeSet::from([effort.clone()]),
+                        effort,
+                        child_supported,
+                        child_supported,
+                    )
                 };
             let id = catalog_model_id(profile_name, &profile.model);
             if !config.subagents.allowed_models.is_empty()
