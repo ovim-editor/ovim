@@ -171,7 +171,14 @@ fn render_chat_panel_impl(
         .map(|image| image.path.clone())
         .collect::<Vec<_>>();
     if layout.messages_area.height > 0 {
-        render_message_history(frame, editor, layout.messages_area, theme, cache);
+        render_message_history(
+            frame,
+            editor,
+            layout.messages_area,
+            theme,
+            cache,
+            agent_snapshot.as_ref(),
+        );
     } else {
         editor.render_cache.ai_chat_interactions.history = None;
     }
@@ -395,12 +402,14 @@ fn render_message_history(
     area: Rect,
     theme: &Theme,
     mut cache: Option<&mut LineRenderCache>,
+    agent_snapshot: Option<&ovim_core::agent_runtime::AgentControlPlaneSnapshot>,
 ) {
     editor.render_cache.ai_chat_interactions.history =
         Some(crate::key_convert::convert_ratatui_rect(area));
     editor.render_cache.ai_chat_last_queued_row_spans.clear();
     let messages = editor.ai_chat_messages();
-    if messages.is_empty() {
+    let has_agent_cards = agent_snapshot.is_some_and(|snapshot| !snapshot.agents.is_empty());
+    if messages.is_empty() && !has_agent_cards {
         editor.render_cache.ai_chat_last_total_rows = 0;
         editor.render_cache.ai_chat_last_visible_start_row = 0;
         editor.render_cache.ai_chat_last_visible_end_row = 0;
@@ -720,6 +729,44 @@ fn render_message_history(
             .render_cache
             .ai_chat_last_queued_row_spans
             .push((row_start, rendered_lines.len()));
+    }
+
+    // Delegated work is run state, not synthetic assistant prose. Keep one
+    // compact, independently collapsible card per projected child near the
+    // live edge of chat while preserving message row identity above it.
+    if let Some(snapshot) = agent_snapshot.filter(|snapshot| !snapshot.agents.is_empty()) {
+        let expanded = editor
+            .ai_agent_expanded_cards()
+            .cloned()
+            .unwrap_or_default();
+        let cards = super::agent_tree::project_inline_agent_cards(snapshot, panel_width, &expanded);
+        rendered_lines.push((
+            Line::from(Span::styled(
+                format!(
+                    "─ delegated agents {}{}",
+                    cards.len(),
+                    (snapshot.pending_attention > 0)
+                        .then(|| format!(" · !{}", snapshot.pending_attention))
+                        .unwrap_or_default()
+                ),
+                Style::default()
+                    .fg(if snapshot.pending_attention > 0 {
+                        Color::Rgb(255, 191, 77)
+                    } else {
+                        TEXT_DIM
+                    })
+                    .bg(BG_PANEL)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            false,
+        ));
+        for card in &cards {
+            rendered_lines.extend(
+                super::agent_tree::inline_card_lines(card, panel_width)
+                    .into_iter()
+                    .map(|line| (line, false)),
+            );
+        }
     }
 
     // Progress belongs to the run, not to an assistant message. Keep it as a

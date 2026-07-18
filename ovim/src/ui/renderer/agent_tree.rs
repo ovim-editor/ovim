@@ -369,7 +369,6 @@ pub(crate) fn render_agent_tree_panel(
     render_right_border(frame, area);
 }
 
-#[allow(dead_code)] // Used by the inline chat-card checkpoint immediately after tree wiring.
 pub(crate) fn inline_card_lines(card: &AgentCardView, width: usize) -> Vec<Line<'static>> {
     card.lines
         .iter()
@@ -836,6 +835,38 @@ mod tests {
         let text = view.cards[0].lines.join("\n");
         assert!(text.contains("interrupted/restart"));
         assert!(text.contains("follow-up can restart"));
+    }
+
+    #[test]
+    fn completed_inline_card_bounds_handoff_and_shows_evidence_and_artifacts() {
+        let mut item = agent("agt_done", "agt_root", "report findings", "completed");
+        item["handoff"] = json!({
+            "event_id": "evt_handoff",
+            "status": "completed",
+            "summary": "A deliberately long bounded handoff summary with enough detail to truncate in the compact card without hiding its state.",
+            "evidence": [{"path": "src/lib.rs", "line": 12, "claim": "entry point"}],
+            "changed_files": [],
+            "blockers": [],
+            "followups": [],
+            "confidence": "high"
+        });
+        item["artifact_handles"] = json!([{
+            "artifact_id": "art_report",
+            "state": {"type": "missing", "reason": "fixture"},
+            "media_type": "text/markdown",
+            "retention": "run",
+            "export_policy": "include"
+        }]);
+        let snapshot = snapshot(vec![item]);
+        let expanded = HashSet::from(["agt_done".to_string()]);
+        let cards = project_inline_agent_cards(&snapshot, 48, &expanded);
+        let text = cards[0].lines.join("\n");
+
+        assert!(text.contains("handoff completed · 1e · 1a"));
+        assert!(cards[0]
+            .lines
+            .iter()
+            .all(|line| UnicodeWidthStr::width(line.as_str()) <= 47));
     }
 
     #[test]
