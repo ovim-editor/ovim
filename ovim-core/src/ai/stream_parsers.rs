@@ -1049,6 +1049,80 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn strict_streams_reject_provider_eof_without_changing_root_chat_behavior() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        parse_openai_stream_strict(
+            make_stream(vec![
+                "data: {\"choices\":[{\"delta\":{\"content\":\"partial\"}}]}\n\n",
+            ]),
+            tx,
+        )
+        .await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(matches!(&chunks[0], StreamChunk::Content(text) if text == "partial"));
+        assert!(
+            matches!(&chunks[1], StreamChunk::Error(error) if error.contains("terminal completion marker"))
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        parse_anthropic_stream_strict(
+            make_stream(vec![
+                "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"partial\"}}\n\n",
+            ]),
+            tx,
+        )
+        .await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(
+            matches!(chunks.last(), Some(StreamChunk::Error(error)) if error.contains("message_stop"))
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        parse_ollama_stream_strict(
+            make_stream(vec![
+                "{\"message\":{\"content\":\"partial\"},\"done\":false}\n",
+            ]),
+            tx,
+        )
+        .await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(
+            matches!(chunks.last(), Some(StreamChunk::Error(error)) if error.contains("done=true"))
+        );
+    }
+
+    #[tokio::test]
+    async fn strict_streams_reject_output_limit_and_malformed_anthropic_arguments() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        parse_openai_stream_strict(
+            make_stream(vec![
+                "data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"length\"}]}\n\n",
+            ]),
+            tx,
+        )
+        .await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(
+            matches!(chunks.as_slice(), [StreamChunk::Error(error)] if error.contains("output limit"))
+        );
+
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        parse_anthropic_stream_strict(
+            make_stream(vec![
+                "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"bad\",\"name\":\"read_file\"}}\n\n",
+                "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"path\\\":\"}}\n\n",
+                "event: content_block_stop\ndata: {}\n\n",
+            ]),
+            tx,
+        )
+        .await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(
+            matches!(chunks.as_slice(), [StreamChunk::Error(error)] if error.contains("malformed arguments"))
+        );
+    }
+
+    #[tokio::test]
     async fn stream_byte_error() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let stream = make_error_stream(vec![

@@ -1094,6 +1094,20 @@ mod tests {
         }
     }
 
+    struct CountingToolExecutor {
+        calls: Arc<AtomicUsize>,
+    }
+
+    impl AgentToolExecutor for CountingToolExecutor {
+        fn execute(
+            &self,
+            _call: AgentToolCall,
+        ) -> AgentFuture<'_, Result<AgentToolResult, AgentToolError>> {
+            self.calls.fetch_add(1, Ordering::AcqRel);
+            Box::pin(async { Ok(AgentToolResult::completed(None)) })
+        }
+    }
+
     struct RecordingHarness {
         sink: Arc<InMemoryRunEventSink>,
         last_event: Mutex<Option<EventId>>,
@@ -1265,6 +1279,58 @@ mod tests {
             harness.states.lock().unwrap().as_slice(),
             &[DispatchState::Starting, DispatchState::Running]
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_and_unknown_provider_calls_never_reach_the_scoped_executor() {
+        let harness = Arc::new(RecordingHarness::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut input = input("delayed_completion", harness, AgentCancellationToken::new());
+        input.tool_view = ScopedToolView::new([ScopedTool {
+            name: "read_snapshot".into(),
+            description: "Read one snapshot path.".into(),
+            input_schema: crate::ai::tools::StrictJsonSchema::new(serde_json::json!({
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "path": { "type": "string", "minLength": 1 } },
+                "required": ["path"]
+            }))
+            .unwrap(),
+            side_effect: ToolSideEffect::Read,
+            requires_approval: false,
+        }])
+        .unwrap();
+        input.tool_executor = Arc::new(CountingToolExecutor {
+            calls: calls.clone(),
+        });
+        let deadline = Instant::now() + Duration::from_secs(1);
+
+        let malformed = execute_tool_request(
+            &input,
+            None,
+            "malformed".into(),
+            "read_snapshot".into(),
+            serde_json::json!({}),
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert_eq!(malformed.outcome, ToolOutcome::Failed);
+        assert!(malformed.summary.unwrap().contains("schema validation"));
+
+        let unknown = execute_tool_request(
+            &input,
+            None,
+            "unknown".into(),
+            "bash".into(),
+            serde_json::json!({"command": "pwd"}),
+            deadline,
+        )
+        .await
+        .unwrap();
+        assert_eq!(unknown.outcome, ToolOutcome::Failed);
+        assert!(unknown.summary.unwrap().contains("outside"));
+        assert_eq!(calls.load(Ordering::Acquire), 0);
     }
 
     fn result_event_run(harness: &RecordingHarness) -> RunId {
