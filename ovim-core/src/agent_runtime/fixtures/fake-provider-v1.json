@@ -1,0 +1,195 @@
+{
+  "version": 1,
+  "scenarios": [
+    {
+      "name": "delayed_completion",
+      "description": "A single successful provider call completes only at logical tick five.",
+      "calls": [
+        {
+          "call_id": "delayed",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 5,
+              "type": "handoff",
+              "payload": {
+                "version": 1,
+                "status": "completed",
+                "summary": "delayed fixture completed",
+                "evidence": [],
+                "changed_files": [],
+                "verification": [],
+                "blockers": [],
+                "followups": [],
+                "confidence": "high"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "out_of_order_completion",
+      "description": "The second declared call completes before the first.",
+      "calls": [
+        {
+          "call_id": "slow-first",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 5,
+              "type": "handoff",
+              "payload": {
+                "version": 1,
+                "status": "completed",
+                "summary": "slow call completed",
+                "evidence": [],
+                "changed_files": [],
+                "verification": [],
+                "blockers": [],
+                "followups": [],
+                "confidence": "high"
+              }
+            }
+          ]
+        },
+        {
+          "call_id": "fast-second",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 2,
+              "type": "handoff",
+              "payload": {
+                "version": 1,
+                "status": "completed",
+                "summary": "fast call completed",
+                "evidence": [],
+                "changed_files": [],
+                "verification": [],
+                "blockers": [],
+                "followups": [],
+                "confidence": "high"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "tool_failure",
+      "description": "A provider sees a deterministic tool error and terminates independently.",
+      "calls": [
+        {
+          "call_id": "tool-failure",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 1,
+              "type": "tool_started",
+              "tool_call_id": "tool-1",
+              "tool_name": "read_file"
+            },
+            {
+              "at_tick": 2,
+              "type": "tool_failed",
+              "tool_call_id": "tool-1",
+              "tool_name": "read_file",
+              "error": "injected read failure"
+            },
+            {
+              "at_tick": 3,
+              "type": "provider_failed",
+              "error": "provider stopped after injected tool failure"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "malformed_handoff",
+      "description": "The provider returns JSON that violates handoff v1.",
+      "calls": [
+        {
+          "call_id": "malformed-handoff",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 1,
+              "type": "handoff",
+              "payload": {
+                "version": 99,
+                "status": "completed",
+                "evidence": "not-an-array"
+              }
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "cancellation",
+      "description": "Cancellation lands while a tool is in flight.",
+      "calls": [
+        {
+          "call_id": "cancelled",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            {
+              "at_tick": 1,
+              "type": "tool_started",
+              "tool_call_id": "tool-cancel",
+              "tool_name": "search"
+            },
+            {
+              "at_tick": 2,
+              "type": "cancelled",
+              "reason": "injected parent cancellation"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "timeout",
+      "description": "A provider call reaches its logical deadline without a handoff.",
+      "calls": [
+        {
+          "call_id": "timed-out",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            { "at_tick": 3, "type": "timed_out", "timeout_ticks": 3 }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "restart",
+      "description": "A checkpoint is captured before completion and restored without duplicate delivery.",
+      "calls": [
+        {
+          "call_id": "restartable",
+          "events": [
+            { "at_tick": 0, "type": "started" },
+            { "at_tick": 1, "type": "checkpoint", "label": "before-restart" },
+            {
+              "at_tick": 4,
+              "type": "handoff",
+              "payload": {
+                "version": 1,
+                "status": "completed",
+                "summary": "completed after fixture restart",
+                "evidence": [],
+                "changed_files": [],
+                "verification": [],
+                "blockers": [],
+                "followups": [],
+                "confidence": "high"
+              }
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
