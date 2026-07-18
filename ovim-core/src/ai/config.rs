@@ -31,6 +31,12 @@ pub struct AiSubagentConfig {
     /// Empty means every effort advertised by an allowed catalog entry.
     pub allowed_reasoning_efforts: Vec<String>,
     pub budgets: AiSubagentBudgetConfig,
+    /// Storage and retention policy for Ovim-owned write workspaces.
+    ///
+    /// This has a separate root and retention window from the durable run log:
+    /// deleting conversational history must never imply deletion of an
+    /// unresolved worktree.
+    pub workspaces: AiSubagentWorkspaceConfig,
 }
 
 impl Default for AiSubagentConfig {
@@ -49,6 +55,27 @@ impl Default for AiSubagentConfig {
             allowed_agent_kinds: vec!["explorer".into(), "reviewer".into()],
             allowed_reasoning_efforts: Vec::new(),
             budgets: AiSubagentBudgetConfig::default(),
+            workspaces: AiSubagentWorkspaceConfig::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AiSubagentWorkspaceConfig {
+    /// Explicit workspace root. `None` selects the platform-data default.
+    pub root: Option<PathBuf>,
+    pub branch_prefix: String,
+    pub completed_retention_hours: u64,
+    pub minimum_free_space_mb: u64,
+}
+
+impl Default for AiSubagentWorkspaceConfig {
+    fn default() -> Self {
+        Self {
+            root: None,
+            branch_prefix: "ovim".into(),
+            completed_retention_hours: 24,
+            minimum_free_space_mb: 2_048,
         }
     }
 }
@@ -195,6 +222,16 @@ struct AiTomlSubagentConfig {
     allowed_reasoning_efforts: Option<Vec<String>>,
     #[serde(default)]
     budgets: AiTomlSubagentBudgetConfig,
+    #[serde(default)]
+    workspaces: AiTomlSubagentWorkspaceConfig,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AiTomlSubagentWorkspaceConfig {
+    root: Option<PathBuf>,
+    branch_prefix: Option<String>,
+    completed_retention_hours: Option<u64>,
+    minimum_free_space_mb: Option<u64>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -441,6 +478,19 @@ fn merge_subagent_config(parsed: AiTomlSubagentConfig) -> Result<AiSubagentConfi
         .budgets
         .max_estimated_cost
         .unwrap_or(config.budgets.max_estimated_cost);
+    config.workspaces.root = parsed.workspaces.root.or(config.workspaces.root);
+    config.workspaces.branch_prefix = parsed
+        .workspaces
+        .branch_prefix
+        .unwrap_or(config.workspaces.branch_prefix);
+    config.workspaces.completed_retention_hours = parsed
+        .workspaces
+        .completed_retention_hours
+        .unwrap_or(config.workspaces.completed_retention_hours);
+    config.workspaces.minimum_free_space_mb = parsed
+        .workspaces
+        .minimum_free_space_mb
+        .unwrap_or(config.workspaces.minimum_free_space_mb);
 
     let positive = [
         config.max_concurrent,
@@ -458,6 +508,13 @@ fn merge_subagent_config(parsed: AiTomlSubagentConfig) -> Result<AiSubagentConfi
     }
     if !config.budgets.max_estimated_cost.is_finite() || config.budgets.max_estimated_cost < 0.0 {
         anyhow::bail!("subagent max_estimated_cost must be finite and non-negative");
+    }
+    if config.workspaces.branch_prefix.trim().is_empty()
+        || config.workspaces.branch_prefix.contains("..")
+        || config.workspaces.branch_prefix.starts_with('/')
+        || config.workspaces.branch_prefix.ends_with('/')
+    {
+        anyhow::bail!("subagent workspace branch_prefix must be a non-empty relative ref prefix");
     }
     if config.allow_writes || config.allow_network || config.max_depth != 1 {
         anyhow::bail!(
@@ -674,6 +731,33 @@ mod tests {
         assert_eq!(preview.allowed_agent_kinds, ["explorer", "reviewer"]);
         assert_eq!(preview.budgets.max_tool_calls_per_agent, 48);
         assert_eq!(preview.budgets.max_total_tool_calls, 160);
+        assert_eq!(preview.workspaces.root, None);
+        assert_eq!(preview.workspaces.branch_prefix, "ovim");
+        assert_eq!(preview.workspaces.completed_retention_hours, 24);
+        assert_eq!(preview.workspaces.minimum_free_space_mb, 2_048);
+    }
+
+    #[test]
+    fn subagent_workspace_config_parses_without_process_environment() {
+        let parsed: AiTomlConfig = toml::from_str(
+            r#"
+                [subagents.workspaces]
+                root = "/fast/ovim-workspaces"
+                branch_prefix = "agents/ovim"
+                completed_retention_hours = 72
+                minimum_free_space_mb = 4096
+            "#,
+        )
+        .unwrap();
+
+        let workspaces = merge_subagent_config(parsed.subagents).unwrap().workspaces;
+        assert_eq!(
+            workspaces.root.as_deref(),
+            Some(std::path::Path::new("/fast/ovim-workspaces"))
+        );
+        assert_eq!(workspaces.branch_prefix, "agents/ovim");
+        assert_eq!(workspaces.completed_retention_hours, 72);
+        assert_eq!(workspaces.minimum_free_space_mb, 4_096);
     }
 
     #[test]
