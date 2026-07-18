@@ -133,8 +133,11 @@ authority beneath queued children.
 Children see an immutable content-addressed snapshot captured at dispatch,
 including authoritative unsaved editor buffers. Later edits in the root
 worktree cannot change what an already-running child reads. A child receives
-only bounded snapshot read, list, search, and unsaved-buffer tools—no shell,
-network, navigation, mutation, approval, or further dispatch capability.
+only bounded snapshot read, list, search, symbol, diagnostic, and
+unsaved-buffer tools—no shell, network, navigation, mutation, approval, or
+further dispatch capability. Symbol and diagnostic indexes are copied at
+dispatch and remain bound to that manifest; diagnostics without an exact
+matching analyzed buffer revision are omitted rather than shown as current.
 
 `spawn_agent` returns the durable task, agent, workspace, manifest, route, and
 state immediately; the root should keep working while the child runs.

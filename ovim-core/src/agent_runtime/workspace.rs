@@ -30,6 +30,8 @@ pub const SNAPSHOT_READ_FILE_TOOL: &str = "read_file_at_path";
 pub const SNAPSHOT_LIST_FILES_TOOL: &str = "list_files";
 pub const SNAPSHOT_SEARCH_TOOL: &str = "search_project";
 pub const SNAPSHOT_READ_UNSAVED_TOOL: &str = "read_unsaved_buffer";
+pub const SNAPSHOT_SEARCH_SYMBOLS_TOOL: &str = "search_symbols";
+pub const SNAPSHOT_READ_DIAGNOSTICS_TOOL: &str = "read_diagnostics";
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -206,6 +208,78 @@ pub trait SnapshotDiagnosticAdapter: Send + Sync {
 }
 
 #[derive(Clone)]
+pub struct CapturedSnapshotSymbolIndex {
+    manifest_id: ManifestId,
+    symbols: Vec<SnapshotSymbol>,
+}
+
+impl CapturedSnapshotSymbolIndex {
+    pub fn new(manifest_id: ManifestId, symbols: Vec<SnapshotSymbol>) -> Self {
+        Self {
+            manifest_id,
+            symbols,
+        }
+    }
+}
+
+impl SnapshotSymbolAdapter for CapturedSnapshotSymbolIndex {
+    fn manifest_id(&self) -> &ManifestId {
+        &self.manifest_id
+    }
+
+    fn search(&self, query: &str, maximum: usize) -> Result<Vec<SnapshotSymbol>, String> {
+        let query = query.to_lowercase();
+        Ok(self
+            .symbols
+            .iter()
+            .filter(|symbol| symbol.name.to_lowercase().contains(&query))
+            .take(maximum)
+            .cloned()
+            .collect())
+    }
+}
+
+#[derive(Clone)]
+pub struct CapturedSnapshotDiagnostics {
+    manifest_id: ManifestId,
+    diagnostics: Vec<SnapshotDiagnostic>,
+}
+
+impl CapturedSnapshotDiagnostics {
+    pub fn new(manifest_id: ManifestId, diagnostics: Vec<SnapshotDiagnostic>) -> Self {
+        Self {
+            manifest_id,
+            diagnostics,
+        }
+    }
+}
+
+impl SnapshotDiagnosticAdapter for CapturedSnapshotDiagnostics {
+    fn manifest_id(&self) -> &ManifestId {
+        &self.manifest_id
+    }
+
+    fn diagnostics(
+        &self,
+        path_prefix: Option<&RepoPath>,
+        maximum: usize,
+    ) -> Result<Vec<SnapshotDiagnostic>, String> {
+        Ok(self
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| {
+                path_prefix.is_none_or(|prefix| {
+                    diagnostic.path == *prefix
+                        || is_descendant(diagnostic.path.as_str(), prefix.as_str())
+                })
+            })
+            .take(maximum)
+            .cloned()
+            .collect())
+    }
+}
+
+#[derive(Clone)]
 pub struct AgentWorkspaceManager {
     inner: Arc<AgentWorkspaceManagerInner>,
 }
@@ -214,6 +288,8 @@ struct AgentWorkspaceManagerInner {
     artifact_store: ArtifactStore,
     limits: AgentWorkspaceLimits,
     read_only: Mutex<HashMap<ManifestId, Arc<ReadOnlyAgentWorkspace>>>,
+    symbols: Mutex<HashMap<ManifestId, Arc<dyn SnapshotSymbolAdapter>>>,
+    diagnostics: Mutex<HashMap<ManifestId, Arc<dyn SnapshotDiagnosticAdapter>>>,
 }
 
 impl AgentWorkspaceManager {
@@ -227,6 +303,8 @@ impl AgentWorkspaceManager {
                 artifact_store,
                 limits,
                 read_only: Mutex::new(HashMap::new()),
+                symbols: Mutex::new(HashMap::new()),
+                diagnostics: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -268,6 +346,65 @@ impl AgentWorkspaceManager {
             .get(manifest_id)
             .cloned())
     }
+
+    pub fn register_snapshot_adapters(
+        &self,
+        manifest_id: &ManifestId,
+        symbols: Arc<dyn SnapshotSymbolAdapter>,
+        diagnostics: Arc<dyn SnapshotDiagnosticAdapter>,
+    ) -> Result<(), AgentWorkspaceError> {
+        if symbols.manifest_id() != manifest_id || diagnostics.manifest_id() != manifest_id {
+            return Err(AgentWorkspaceError::Internal(
+                "snapshot adapter manifest identity mismatch".into(),
+            ));
+        }
+        let mut symbol_indexes = self.inner.symbols.lock().map_err(|_| {
+            AgentWorkspaceError::Internal("symbol adapter registry is poisoned".into())
+        })?;
+        let mut diagnostic_indexes = self.inner.diagnostics.lock().map_err(|_| {
+            AgentWorkspaceError::Internal("diagnostic adapter registry is poisoned".into())
+        })?;
+        if symbol_indexes.contains_key(manifest_id) || diagnostic_indexes.contains_key(manifest_id)
+        {
+            return Err(AgentWorkspaceError::DuplicateManifest(manifest_id.clone()));
+        }
+        symbol_indexes.insert(manifest_id.clone(), symbols);
+        diagnostic_indexes.insert(manifest_id.clone(), diagnostics);
+        Ok(())
+    }
+
+    fn snapshot_adapters(
+        &self,
+        manifest_id: &ManifestId,
+    ) -> Result<SnapshotAdapters, AgentWorkspaceError> {
+        let symbols = self
+            .inner
+            .symbols
+            .lock()
+            .map_err(|_| {
+                AgentWorkspaceError::Internal("symbol adapter registry is poisoned".into())
+            })?
+            .get(manifest_id)
+            .cloned();
+        let diagnostics = self
+            .inner
+            .diagnostics
+            .lock()
+            .map_err(|_| {
+                AgentWorkspaceError::Internal("diagnostic adapter registry is poisoned".into())
+            })?
+            .get(manifest_id)
+            .cloned();
+        Ok(SnapshotAdapters {
+            symbols,
+            diagnostics,
+        })
+    }
+}
+
+struct SnapshotAdapters {
+    symbols: Option<Arc<dyn SnapshotSymbolAdapter>>,
+    diagnostics: Option<Arc<dyn SnapshotDiagnosticAdapter>>,
 }
 
 #[derive(Clone)]
@@ -766,11 +903,25 @@ impl SnapshotContent {
 #[derive(Clone)]
 pub struct SnapshotToolExecutor {
     workspace: Arc<ReadOnlyAgentWorkspace>,
+    symbols: Option<Arc<dyn SnapshotSymbolAdapter>>,
+    diagnostics: Option<Arc<dyn SnapshotDiagnosticAdapter>>,
 }
 
 impl SnapshotToolExecutor {
     pub fn new(workspace: Arc<ReadOnlyAgentWorkspace>) -> Self {
-        Self { workspace }
+        Self {
+            workspace,
+            symbols: None,
+            diagnostics: None,
+        }
+    }
+
+    fn with_adapters(workspace: Arc<ReadOnlyAgentWorkspace>, adapters: SnapshotAdapters) -> Self {
+        Self {
+            workspace,
+            symbols: adapters.symbols,
+            diagnostics: adapters.diagnostics,
+        }
     }
 
     pub fn scoped_view() -> ScopedToolView {
@@ -840,6 +991,44 @@ impl SnapshotToolExecutor {
         .expect("snapshot tool names are static and unique")
     }
 
+    fn scoped_view_with_adapters(&self) -> ScopedToolView {
+        let mut tools = Self::scoped_view().tools();
+        if self.symbols.is_some() {
+            tools.push(ScopedTool {
+                name: SNAPSHOT_SEARCH_SYMBOLS_TOOL.into(),
+                description: "Search the manifest-bound symbol index captured at dispatch.".into(),
+                input_schema: strict_schema(json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "query": { "type": "string", "minLength": 1 },
+                        "max_results": { "type": "integer", "minimum": 1, "maximum": 200 }
+                    },
+                    "required": ["query"]
+                })),
+                side_effect: ToolSideEffect::Read,
+                requires_approval: false,
+            });
+        }
+        if self.diagnostics.is_some() {
+            tools.push(ScopedTool {
+                name: SNAPSHOT_READ_DIAGNOSTICS_TOOL.into(),
+                description: "Read diagnostics captured against this immutable manifest.".into(),
+                input_schema: strict_schema(json!({
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "path": { "type": "string", "minLength": 1 },
+                        "max_results": { "type": "integer", "minimum": 1, "maximum": 500 }
+                    }
+                })),
+                side_effect: ToolSideEffect::Read,
+                requires_approval: false,
+            });
+        }
+        ScopedToolView::new(tools).expect("snapshot adapter tool names are static and unique")
+    }
+
     fn execute_sync(&self, call: AgentToolCall) -> Result<AgentToolResult, AgentToolError> {
         if call.workspace.assignment != call.handle.workspace || !call.workspace.read_only {
             return Err(AgentToolError::new(
@@ -872,6 +1061,37 @@ impl SnapshotToolExecutor {
                 let entry_id = ArtifactId::parse(required_string(&call.arguments, "entry_id")?)
                     .map_err(|error| AgentToolError::new(error.to_string()))?;
                 serde_json::to_value(self.workspace.read_unsaved(&entry_id).map_err(tool_error)?)
+            }
+            SNAPSHOT_SEARCH_SYMBOLS_TOOL => {
+                let query = required_string(&call.arguments, "query")?;
+                let maximum = optional_usize(&call.arguments, "max_results")?
+                    .unwrap_or(50)
+                    .min(200);
+                let adapter = self.symbols.as_ref().ok_or_else(|| {
+                    AgentToolError::new("this manifest has no captured symbol index")
+                })?;
+                serde_json::to_value(
+                    adapter
+                        .search(query, maximum)
+                        .map_err(AgentToolError::new)?,
+                )
+            }
+            SNAPSHOT_READ_DIAGNOSTICS_TOOL => {
+                let prefix = optional_string(&call.arguments, "path")?
+                    .map(RepoPath::parse)
+                    .transpose()
+                    .map_err(|error| AgentToolError::new(error.to_string()))?;
+                let maximum = optional_usize(&call.arguments, "max_results")?
+                    .unwrap_or(100)
+                    .min(500);
+                let adapter = self.diagnostics.as_ref().ok_or_else(|| {
+                    AgentToolError::new("this manifest has no captured diagnostic index")
+                })?;
+                serde_json::to_value(
+                    adapter
+                        .diagnostics(prefix.as_ref(), maximum)
+                        .map_err(AgentToolError::new)?,
+                )
             }
             _ => {
                 return Err(AgentToolError::new(
@@ -971,6 +1191,10 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
             .map_err(|error| error.to_string())?
             .ok_or_else(|| format!("captured manifest {manifest_id} is not registered"))?;
         let warnings = workspace.warnings().to_vec();
+        let adapters = self
+            .manager
+            .snapshot_adapters(manifest_id)
+            .map_err(|error| error.to_string())?;
         let prepared = self
             .envelopes
             .lock()
@@ -980,10 +1204,12 @@ impl AgentLoopInputFactory for SnapshotAgentLoopInputFactory {
             .ok_or_else(|| format!("captured manifest {manifest_id} has no delegation envelope"))?;
         let mut envelope = prepared.envelope;
         envelope.workspace_warnings = warnings.clone();
+        let executor = SnapshotToolExecutor::with_adapters(workspace, adapters);
+        let tool_view = executor.scoped_view_with_adapters();
         Ok(AgentLoopDependencies {
             provider: self.provider.clone(),
-            tool_view: SnapshotToolExecutor::scoped_view(),
-            tool_executor: Arc::new(SnapshotToolExecutor::new(workspace)),
+            tool_view,
+            tool_executor: Arc::new(executor),
             approval_client: Arc::new(DenyAllAgentApprovals),
             workspace: AgentWorkspaceDescriptor {
                 assignment: dispatch.handle.workspace.clone(),
@@ -2078,5 +2304,52 @@ mod tests {
             mailbox_warnings.is_some_and(|warnings| !warnings.is_empty()),
             "events: {events:#?}"
         );
+    }
+
+    #[test]
+    fn captured_symbol_and_diagnostic_adapters_are_manifest_bound_copies() {
+        let manifest_id = ManifestId::new();
+        let mut source_symbols = vec![SnapshotSymbol {
+            name: "CapturedThing".into(),
+            kind: "struct".into(),
+            path: RepoPath::parse("src/lib.rs").unwrap(),
+            line: 7,
+            column: 1,
+        }];
+        let mut source_diagnostics = vec![SnapshotDiagnostic {
+            path: RepoPath::parse("src/lib.rs").unwrap(),
+            line: 9,
+            column: 3,
+            severity: "warning".into(),
+            message: "captured warning".into(),
+        }];
+        let symbols = CapturedSnapshotSymbolIndex::new(manifest_id.clone(), source_symbols.clone());
+        let diagnostics =
+            CapturedSnapshotDiagnostics::new(manifest_id.clone(), source_diagnostics.clone());
+        source_symbols[0].name = "LiveMutation".into();
+        source_diagnostics[0].message = "live mutation".into();
+
+        assert_eq!(symbols.manifest_id(), &manifest_id);
+        assert_eq!(
+            symbols.search("captured", 10).unwrap()[0].name,
+            "CapturedThing"
+        );
+        assert_eq!(
+            diagnostics
+                .diagnostics(Some(&RepoPath::parse("src").unwrap()), 10)
+                .unwrap()[0]
+                .message,
+            "captured warning"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        let manager = AgentWorkspaceManager::new(ArtifactStore::open(directory.path()).unwrap());
+        assert!(manager
+            .register_snapshot_adapters(
+                &ManifestId::new(),
+                Arc::new(symbols),
+                Arc::new(diagnostics),
+            )
+            .is_err());
     }
 }

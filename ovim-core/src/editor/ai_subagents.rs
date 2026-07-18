@@ -6,10 +6,11 @@
 
 use crate::agent_runtime::{
     AgentCapability, AgentKindName, AgentLoopBudget, AgentProviderAdapter, AgentRoleTemplate,
-    AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager, CompletionContract,
-    DelegatedAgentKind, DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput,
-    DelegationIdentity, DispatchRequest, ModelFallbackPolicy, ProfileAgentProvider,
-    ReasoningEffort, RequestedModelRoute, SnapshotAgentLoopInputFactory, SubagentModelCatalog,
+    AgentSupervisor, AgentSupervisorConfig, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
+    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegationContextMode,
+    DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
+    ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort, RequestedModelRoute,
+    SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog,
     WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
@@ -22,7 +23,7 @@ use crate::ai::tools::ToolResult;
 use crate::ai::{AiConfig, AiSubagentConfig};
 use crate::run_log::{
     AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, EventKind, LocalRunStore,
-    ManifestId, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
+    ManifestId, RepoPath, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
 };
 use serde::Deserialize;
 use serde_json::json;
@@ -625,7 +626,22 @@ impl Editor {
                 &run.artifact_store,
             )
             .map_err(|error| error.to_string())?;
+        let symbols = self.capture_snapshot_symbols(&root.repository_root);
+        let diagnostics = self.capture_snapshot_diagnostics();
         run.register_manifest(manifest_id.clone(), capture.manifest, &root.repository_root)?;
+        run.workspace_manager
+            .register_snapshot_adapters(
+                &manifest_id,
+                Arc::new(CapturedSnapshotSymbolIndex::new(
+                    manifest_id.clone(),
+                    symbols,
+                )),
+                Arc::new(CapturedSnapshotDiagnostics::new(
+                    manifest_id.clone(),
+                    diagnostics,
+                )),
+            )
+            .map_err(|error| error.to_string())?;
 
         let agent_kind = match args.agent_kind.as_str() {
             "explorer" => DelegatedAgentKind::Explorer,
@@ -781,6 +797,68 @@ impl Editor {
             "agents": records,
             "pending_attention": pending.len(),
         }))
+    }
+
+    fn capture_snapshot_symbols(&self, repository_root: &Path) -> Vec<SnapshotSymbol> {
+        let Some(path) = self.buffer().file_path().map(Path::new) else {
+            return Vec::new();
+        };
+        let Ok(relative) = path.strip_prefix(repository_root) else {
+            return Vec::new();
+        };
+        let Ok(path) = RepoPath::parse(relative.to_string_lossy().replace('\\', "/")) else {
+            return Vec::new();
+        };
+        fn flatten(
+            output: &mut Vec<SnapshotSymbol>,
+            path: &RepoPath,
+            symbols: &[lsp_types::DocumentSymbol],
+        ) {
+            for symbol in symbols {
+                output.push(SnapshotSymbol {
+                    name: symbol.name.clone(),
+                    kind: format!("{:?}", symbol.kind).to_lowercase(),
+                    path: path.clone(),
+                    line: symbol.range.start.line as usize + 1,
+                    column: symbol.range.start.character as usize + 1,
+                });
+                if let Some(children) = symbol.children.as_deref() {
+                    flatten(output, path, children);
+                }
+            }
+        }
+        let mut captured = Vec::new();
+        flatten(
+            &mut captured,
+            &path,
+            &self.lsp.state.available_document_symbols,
+        );
+        captured
+    }
+
+    fn capture_snapshot_diagnostics(&self) -> Vec<SnapshotDiagnostic> {
+        self.get_project_diagnostics_for_chat()
+            .into_iter()
+            .filter(|file| {
+                file.buffer_revision
+                    .is_some_and(|revision| file.lsp_versions.contains(&(revision as i32)))
+            })
+            .filter_map(|file| {
+                let path = RepoPath::parse(file.path).ok()?;
+                Some(
+                    file.diagnostics
+                        .into_iter()
+                        .map(move |diagnostic| SnapshotDiagnostic {
+                            path: path.clone(),
+                            line: diagnostic.line as usize + 1,
+                            column: diagnostic.start_character as usize + 1,
+                            severity: diagnostic.severity.unwrap_or_else(|| "unknown".into()),
+                            message: diagnostic.message,
+                        }),
+                )
+            })
+            .flatten()
+            .collect()
     }
 }
 
@@ -1001,6 +1079,7 @@ impl std::error::Error for ManifestRegistryError {}
 mod tests {
     use super::*;
     use crate::agent_runtime::fake_provider::FakeProviderAdapter;
+    use crate::agent_runtime::AgentLoopInputFactory;
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
     use crate::ai::{AiProviderKind, PROFILE_LOCAL};
     use crate::editor::ai_state::AiState;
@@ -1255,6 +1334,32 @@ mod tests {
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
         assert_eq!(listed["agents"][0]["task_name"], "inspect_snapshot");
         assert_eq!(listed["agents"][0]["reasoning_effort"], "high");
+        let run = editor
+            .ai_state
+            .subagents
+            .runs
+            .lock()
+            .unwrap()
+            .values()
+            .next()
+            .unwrap()
+            .clone();
+        let dispatch = run.supervisor.dispatches().unwrap().remove(0);
+        let child_tools = run
+            .input_factory
+            .build(&dispatch)
+            .unwrap()
+            .tool_view
+            .names();
+        for required in [
+            crate::agent_runtime::SNAPSHOT_SEARCH_SYMBOLS_TOOL,
+            crate::agent_runtime::SNAPSHOT_READ_DIAGNOSTICS_TOOL,
+        ] {
+            assert!(child_tools.iter().any(|name| name == required));
+        }
+        for forbidden in ["bash", "web_search", "spawn_agent", "write_file_at_path"] {
+            assert!(!child_tools.iter().any(|name| name == forbidden));
+        }
 
         let wait = ToolCallInfo {
             id: "tool-wait-handoff".into(),
