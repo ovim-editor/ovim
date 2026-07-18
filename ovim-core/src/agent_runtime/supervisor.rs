@@ -380,7 +380,11 @@ impl AgentSupervisor {
         let bridge = Arc::new(SchedulerLoopBridge {
             scheduler: self.inner.scheduler.clone(),
         });
-        let AgentLoopResult { handoff, .. } = AgentLoopRunner::run(AgentLoopInput {
+        let AgentLoopResult {
+            handoff,
+            workspace_warnings,
+            ..
+        } = AgentLoopRunner::run(AgentLoopInput {
             handle: record.handle.clone(),
             envelope: dependencies.envelope,
             route: record.resolved_route.clone(),
@@ -404,7 +408,7 @@ impl AgentSupervisor {
             .scheduler
             .lock()
             .map_err(|_| poisoned())?
-            .finish_with_handoff(&record.handle, handoff)?;
+            .finish_with_handoff_and_warnings(&record.handle, handoff, workspace_warnings)?;
         self.notify_terminal(record, &terminal)?;
         Ok(())
     }
@@ -428,7 +432,11 @@ impl AgentSupervisor {
                 source_agent_id: record.handle.agent_id.clone(),
                 terminal_event_id: terminal.terminal_event.event_id.clone(),
                 handoff_event_id: terminal.handoff_event.event_id.clone(),
-                handoff: Box::new(handoff.handoff.parent_projection()),
+                handoff: Box::new(
+                    handoff
+                        .handoff
+                        .parent_projection_with_workspace_warnings(&handoff.workspace_warnings),
+                ),
             })?;
         self.inner.changed.notify_waiters();
         Ok(())

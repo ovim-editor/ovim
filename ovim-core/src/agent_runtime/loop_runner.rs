@@ -461,6 +461,7 @@ pub struct AgentLoopResult {
     pub binding: ProviderBinding,
     pub handoff: ValidatedHandoff,
     pub usage: AgentLoopUsage,
+    pub workspace_warnings: Vec<AgentWorkspaceWarning>,
 }
 
 pub struct AgentLoopRunner;
@@ -694,6 +695,7 @@ impl AgentLoopRunner {
             binding,
             handoff,
             usage,
+            workspace_warnings: input.workspace.warnings.clone(),
         })
     }
 }
@@ -938,6 +940,11 @@ fn validate_input(input: &AgentLoopInput) -> Result<(), AgentLoopError> {
     if input.workspace.assignment != input.handle.workspace {
         return Err(AgentLoopError::InvalidInput(
             "workspace descriptor does not match dispatch handle".into(),
+        ));
+    }
+    if input.envelope.workspace_warnings != input.workspace.warnings {
+        return Err(AgentLoopError::InvalidInput(
+            "delegation envelope and workspace descriptor warnings differ".into(),
         ));
     }
     if input.budget.timeout.is_zero()

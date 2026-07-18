@@ -723,6 +723,15 @@ impl AgentDispatchScheduler {
         handle: &DispatchHandle,
         handoff: ValidatedHandoff,
     ) -> Result<DispatchTerminalRecord, DispatchError> {
+        self.finish_with_handoff_and_warnings(handle, handoff, Vec::new())
+    }
+
+    pub fn finish_with_handoff_and_warnings(
+        &mut self,
+        handle: &DispatchHandle,
+        handoff: ValidatedHandoff,
+        workspace_warnings: Vec<super::AgentWorkspaceWarning>,
+    ) -> Result<DispatchTerminalRecord, DispatchError> {
         let agent = self
             .agents
             .get(&handle.agent_id)
@@ -764,7 +773,10 @@ impl AgentDispatchScheduler {
                 turn_id: agent.causing_turn_id.clone(),
                 workspace_id: Some(handle.workspace.workspace_id.clone()),
                 branch_id: None,
-                kind: EventKind::AgentHandoff(AgentHandoffEvent { handoff }),
+                kind: EventKind::AgentHandoff(AgentHandoffEvent {
+                    handoff,
+                    workspace_warnings,
+                }),
             })
             .map_err(DispatchError::RunLog)?;
         let agent = self
@@ -2406,6 +2418,7 @@ mod tests {
                 branch_id: None,
                 kind: EventKind::AgentHandoff(AgentHandoffEvent {
                     handoff: handoff(HandoffStatus::Completed),
+                    workspace_warnings: Vec::new(),
                 }),
             })
             .unwrap();

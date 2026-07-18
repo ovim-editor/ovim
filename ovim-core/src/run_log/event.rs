@@ -2,7 +2,7 @@ use super::{
     AgentId, BaseManifestId, BranchId, EventId, ManifestId, OperationId, RepositoryId, RunId,
     TurnId, WorkspaceId,
 };
-use crate::agent_runtime::{ParentHandoffProjection, ValidatedHandoff};
+use crate::agent_runtime::{AgentWorkspaceWarning, ParentHandoffProjection, ValidatedHandoff};
 use serde::{
     de::{self, DeserializeOwned},
     Deserialize, Deserializer, Serialize, Serializer,
@@ -473,6 +473,8 @@ pub enum AgentProviderState {
 #[serde(deny_unknown_fields)]
 pub struct AgentHandoffEvent {
     pub handoff: ValidatedHandoff,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_warnings: Vec<AgentWorkspaceWarning>,
 }
 
 pub const MAILBOX_EVENT_VERSION: u32 = 1;
@@ -704,7 +706,8 @@ pub enum Replayability {
 mod tests {
     use super::*;
     use crate::agent_runtime::{
-        HandoffConfidence, HandoffEvidence, HandoffStatus, HandoffValidator, StructuredHandoffV1,
+        AgentWorkspaceWarning, AgentWorkspaceWarningKind, HandoffConfidence, HandoffEvidence,
+        HandoffStatus, HandoffValidator, StructuredHandoffV1,
     };
     use serde_json::json;
 
@@ -759,7 +762,15 @@ mod tests {
                 Some(HandoffStatus::Completed),
             )
             .unwrap();
-        let event = EventKind::AgentHandoff(AgentHandoffEvent { handoff });
+        let event = EventKind::AgentHandoff(AgentHandoffEvent {
+            handoff,
+            workspace_warnings: vec![AgentWorkspaceWarning {
+                kind: AgentWorkspaceWarningKind::MissingArtifact,
+                path: Some("src/missing.rs".into()),
+                artifact_id: None,
+                detail: "captured content was unavailable".into(),
+            }],
+        });
         let wire = serde_json::to_value(&event).unwrap();
         assert_eq!(serde_json::from_value::<EventKind>(wire).unwrap(), event);
 

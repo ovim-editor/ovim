@@ -354,7 +354,11 @@ impl AgentMailbox {
                         "handoff event ID does not name an agent handoff".into(),
                     ));
                 };
-                if &recorded.handoff.parent_projection() != handoff.as_ref() {
+                if &recorded
+                    .handoff
+                    .parent_projection_with_workspace_warnings(&recorded.workspace_warnings)
+                    != handoff.as_ref()
+                {
                     return Err(MailboxError::InvalidNotification(
                         "mailbox handoff projection does not match the validated artifact".into(),
                     ));
@@ -613,6 +617,7 @@ mod tests {
                 branch_id: None,
                 kind: EventKind::AgentHandoff(AgentHandoffEvent {
                     handoff: handoff.clone(),
+                    workspace_warnings: Vec::new(),
                 }),
             })
             .unwrap();

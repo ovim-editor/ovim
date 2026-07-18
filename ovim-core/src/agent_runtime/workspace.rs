@@ -29,7 +29,7 @@ pub const SNAPSHOT_LIST_FILES_TOOL: &str = "list_files";
 pub const SNAPSHOT_SEARCH_TOOL: &str = "search_project";
 pub const SNAPSHOT_READ_UNSAVED_TOOL: &str = "read_unsaved_buffer";
 
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentWorkspaceWarningKind {
     PartialCapture,
@@ -40,6 +40,7 @@ pub enum AgentWorkspaceWarningKind {
     MissingGitObject,
     SensitivePathExcluded,
     UnsupportedGitEntry,
+    WarningsOmitted,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -65,6 +66,7 @@ pub struct AgentWorkspaceLimits {
     pub max_search_file_bytes: u64,
     pub max_query_bytes: usize,
     pub max_result_line_bytes: usize,
+    pub max_workspace_warnings: usize,
 }
 
 impl Default for AgentWorkspaceLimits {
@@ -81,6 +83,7 @@ impl Default for AgentWorkspaceLimits {
             max_search_file_bytes: 1024 * 1024,
             max_query_bytes: 1_024,
             max_result_line_bytes: 1_024,
+            max_workspace_warnings: 64,
         }
     }
 }
@@ -406,7 +409,10 @@ impl ReadOnlyAgentWorkspace {
             artifact_store,
             files,
             unsaved_buffers,
-            warnings: deduplicate_warnings(warnings),
+            warnings: bound_warnings(
+                deduplicate_warnings(warnings),
+                limits.max_workspace_warnings,
+            ),
             limits,
         })
     }
@@ -1178,13 +1184,34 @@ fn deduplicate_warnings(warnings: Vec<AgentWorkspaceWarning>) -> Vec<AgentWorksp
         .into_iter()
         .filter(|warning| {
             seen.insert((
-                format!("{:?}", warning.kind),
+                warning.kind.clone(),
                 warning.path.clone(),
                 warning.artifact_id.clone(),
                 warning.detail.clone(),
             ))
         })
         .collect()
+}
+
+fn bound_warnings(
+    mut warnings: Vec<AgentWorkspaceWarning>,
+    maximum: usize,
+) -> Vec<AgentWorkspaceWarning> {
+    if warnings.len() <= maximum {
+        return warnings;
+    }
+    let retained = maximum.saturating_sub(1);
+    let omitted = warnings.len().saturating_sub(retained);
+    warnings.truncate(retained);
+    if maximum > 0 {
+        warnings.push(AgentWorkspaceWarning {
+            kind: AgentWorkspaceWarningKind::WarningsOmitted,
+            path: None,
+            artifact_id: None,
+            detail: format!("{omitted} additional workspace capture warnings were omitted"),
+        });
+    }
+    warnings
 }
 
 fn checked_repo_path(value: &str) -> Result<RepoPath, AgentWorkspaceError> {
@@ -1313,14 +1340,16 @@ mod tests {
     use super::*;
     use crate::agent_runtime::{
         fake_provider::FakeProviderAdapter, AgentCapability, AgentDispatchRecord, AgentKindName,
-        AgentRoleTemplate, DispatchHandle, DispatchState, ModelFallbackPolicy,
-        ModelRouteResolution, ReasoningEffort, RequestedModelRoute, ResolvedModelRoute,
-        WorkspaceAssignment,
+        AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig, DispatchHandle, DispatchRequest,
+        DispatchState, ModelFallbackPolicy, ModelRouteResolution, ReasoningEffort,
+        RequestedModelRoute, ResolvedModelRoute, SubagentModelCatalog, WorkspaceAssignment,
     };
+    use crate::ai::AiConfig;
     use crate::run_log::{
         capture_base_manifest, discover_git_manifest, ArtifactSource, BaseManifestId,
         CaptureDecision, CaptureLimits, CapturePolicy, CaptureSubject, ContentRequest,
-        EditorOverlayInput, GitManifestMetadata, GitSnapshotContentReader, RepositoryId, RunId,
+        EditorOverlayInput, EventKind, GitManifestMetadata, GitSnapshotContentReader,
+        InMemoryRunEventSink, MailboxNotificationKind, RepositoryId, RunEventSink, RunId,
         SnapshotContentReader, UnsavedBufferInput, WorkspaceId,
     };
     use git2::{IndexAddOption, Repository, Signature};
@@ -1852,5 +1881,94 @@ mod tests {
             Value::String("clean base".into())
         );
         assert!(!dispatch.role.capabilities.contains(&AgentCapability::Shell));
+    }
+
+    #[tokio::test]
+    async fn supervisor_persists_workspace_warnings_into_handoff_and_mailbox() {
+        let fixture = Fixture::new();
+        fs::write(
+            fixture.directory.path().join("excluded-large.txt"),
+            b"excluded content",
+        )
+        .unwrap();
+        let manifest = manifest_with_overlays(
+            &fixture.repository,
+            &fixture.store,
+            CaptureLimits {
+                max_file_bytes: 4,
+                max_total_bytes: 100,
+            },
+            None,
+            None,
+        );
+        let manager = AgentWorkspaceManager::new(fixture.store.clone());
+        manager
+            .register_read_only(
+                fixture.manifest_id.clone(),
+                manifest,
+                fixture.directory.path(),
+            )
+            .unwrap();
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        let run_id = RunId::parse("run_snapshot_warning_handoff").unwrap();
+        let root_agent_id = crate::run_log::AgentId::parse("agt_snapshot_warning_root").unwrap();
+        let catalog = Arc::new(SubagentModelCatalog::from_config(&AiConfig::default()).unwrap());
+        let factory = Arc::new(SnapshotAgentLoopInputFactory::new(
+            manager,
+            Arc::new(FakeProviderAdapter::new("delayed_completion")),
+        ));
+        let supervisor = AgentSupervisor::new(
+            run_id.clone(),
+            root_agent_id,
+            sink.clone(),
+            catalog,
+            factory,
+            AgentSupervisorConfig::default(),
+        )
+        .unwrap();
+        supervisor
+            .dispatch(DispatchRequest {
+                objective: "inspect the captured snapshot".into(),
+                role: AgentRoleTemplate::built_in(AgentKindName::Explorer),
+                requested_route: RequestedModelRoute::exact(
+                    super::super::catalog_model_id("local", "qwen2.5-coder:7b"),
+                    ReasoningEffort::none(),
+                ),
+                parent_agent_id: None,
+                causing_turn_id: None,
+                caused_by_event: None,
+                workspace: WorkspaceAssignment {
+                    workspace_id: WorkspaceId::parse("wsp_snapshot_warning_handoff").unwrap(),
+                    strategy: WorkspaceStrategy::ReadOnlySnapshot {
+                        manifest_id: Some(fixture.manifest_id),
+                    },
+                },
+            })
+            .await
+            .unwrap();
+        assert!(supervisor
+            .wait_for_idle(std::time::Duration::from_secs(2))
+            .await
+            .unwrap());
+
+        let events = sink.events(&run_id).unwrap();
+        let handoff_warnings = events.iter().find_map(|event| match &event.kind {
+            EventKind::AgentHandoff(handoff) => Some(&handoff.workspace_warnings),
+            _ => None,
+        });
+        assert!(handoff_warnings.is_some_and(|warnings| !warnings.is_empty()));
+        let mailbox_warnings = events.iter().find_map(|event| match &event.kind {
+            EventKind::MailboxNotification(notification) => match &notification.notification {
+                MailboxNotificationKind::Handoff { handoff, .. } => {
+                    Some(&handoff.workspace_warnings)
+                }
+                _ => None,
+            },
+            _ => None,
+        });
+        assert!(
+            mailbox_warnings.is_some_and(|warnings| !warnings.is_empty()),
+            "events: {events:#?}"
+        );
     }
 }

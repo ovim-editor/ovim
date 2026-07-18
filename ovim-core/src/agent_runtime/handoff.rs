@@ -3,6 +3,7 @@
 //! Provider output is untrusted. Callers must validate the JSON payload before
 //! recording a handoff or treating an agent as complete.
 
+use super::AgentWorkspaceWarning;
 use crate::run_log::RepoPath;
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::BTreeSet;
@@ -356,6 +357,13 @@ impl ValidatedHandoff {
     }
 
     pub fn parent_projection(&self) -> ParentHandoffProjection {
+        self.parent_projection_with_workspace_warnings(&[])
+    }
+
+    pub fn parent_projection_with_workspace_warnings(
+        &self,
+        workspace_warnings: &[AgentWorkspaceWarning],
+    ) -> ParentHandoffProjection {
         const SUMMARY_BYTES: usize = 1024;
         const TEXT_BYTES: usize = 512;
         const COMMAND_BYTES: usize = 1024;
@@ -364,6 +372,7 @@ impl ValidatedHandoff {
         const VERIFICATION: usize = 8;
         const BLOCKERS: usize = 8;
         const FOLLOWUPS: usize = 8;
+        const WORKSPACE_WARNINGS: usize = 16;
 
         ParentHandoffProjection {
             version: self.handoff.version,
@@ -416,6 +425,12 @@ impl ValidatedHandoff {
             omitted_verification: self.handoff.verification.len().saturating_sub(VERIFICATION),
             omitted_blockers: self.handoff.blockers.len().saturating_sub(BLOCKERS),
             omitted_followups: self.handoff.followups.len().saturating_sub(FOLLOWUPS),
+            workspace_warnings: workspace_warnings
+                .iter()
+                .take(WORKSPACE_WARNINGS)
+                .cloned()
+                .collect(),
+            omitted_workspace_warnings: workspace_warnings.len().saturating_sub(WORKSPACE_WARNINGS),
             confidence: self.handoff.confidence,
         }
     }
@@ -468,7 +483,15 @@ pub struct ParentHandoffProjection {
     pub omitted_verification: usize,
     pub omitted_blockers: usize,
     pub omitted_followups: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub workspace_warnings: Vec<AgentWorkspaceWarning>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub omitted_workspace_warnings: usize,
     pub confidence: HandoffConfidence,
+}
+
+fn is_zero(value: &usize) -> bool {
+    *value == 0
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -750,5 +773,25 @@ mod tests {
         assert_eq!(projection.evidence.len(), 8);
         assert_eq!(projection.omitted_evidence, 12);
         assert!(serde_json::to_vec(&projection).unwrap().len() < 16 * 1024);
+    }
+
+    #[test]
+    fn parent_projection_carries_bounded_system_workspace_warnings() {
+        let validated = HandoffValidator::default()
+            .validate(completed(), None)
+            .unwrap();
+        let warnings = (0..20)
+            .map(|index| AgentWorkspaceWarning {
+                kind: super::super::AgentWorkspaceWarningKind::MissingArtifact,
+                path: Some(format!("src/missing-{index}.rs")),
+                artifact_id: None,
+                detail: "artifact unavailable".into(),
+            })
+            .collect::<Vec<_>>();
+
+        let projection = validated.parent_projection_with_workspace_warnings(&warnings);
+        assert_eq!(projection.workspace_warnings.len(), 16);
+        assert_eq!(projection.omitted_workspace_warnings, 4);
+        assert!(validated.parent_projection().workspace_warnings.is_empty());
     }
 }
