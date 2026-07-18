@@ -5,14 +5,16 @@
 //! exact durable run sink and configured provider profiles.
 
 use crate::agent_runtime::{
-    AgentApprovalBroker, AgentCapability, AgentKindName, AgentLoopBudget, AgentLoopInputFactory,
-    AgentProviderAdapter, AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig,
-    AgentWorkspaceManager, CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex,
-    CompletionContract, DelegatedAgentKind, DelegationContextMode, DelegationEnvelope,
-    DelegationExpectedOutput, DelegationIdentity, DispatchRequest, FollowupAgentRequest,
-    ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort, RequestedModelRoute,
-    SendAgentMessageRequest, SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol,
-    SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy,
+    AgentApprovalBroker, AgentApprovalKey, AgentApprovalResponse, AgentApprovalResponseDecision,
+    AgentCapability, AgentControlPlaneSnapshot, AgentKindName, AgentLoopBudget,
+    AgentLoopInputFactory, AgentProviderAdapter, AgentRoleTemplate, AgentSupervisor,
+    AgentSupervisorConfig, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
+    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegationContextMode,
+    DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
+    FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
+    RequestedModelRoute, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
+    SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
+    WorkspaceStrategy,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -24,7 +26,7 @@ use crate::ai::tools::ToolResult;
 use crate::ai::{AiConfig, AiSubagentConfig};
 use crate::run_log::{
     AgentId, ArtifactStore, BaseManifest, BaseManifestId, EventId, EventKind, LocalRunStore,
-    ManifestId, RepoPath, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
+    ManifestId, OperationId, RepoPath, RepositoryId, RunEventSink, RunId, TurnId, WorkspaceId,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -95,6 +97,8 @@ pub(crate) struct AiSubagentService {
 }
 
 pub(crate) struct AiSubagentRun {
+    pub run_id: RunId,
+    pub store: Arc<LocalRunStore>,
     pub root_agent_id: AgentId,
     pub repository_id: RepositoryId,
     pub supervisor: AgentSupervisor,
@@ -187,6 +191,15 @@ impl AiSubagentService {
                 })
             })
             .unwrap_or_default()
+    }
+
+    fn registered_run(&self, run_id: &RunId) -> Result<Arc<AiSubagentRun>, String> {
+        self.runs
+            .lock()
+            .map_err(|_| "subagent run registry is poisoned".to_string())?
+            .get(run_id)
+            .cloned()
+            .ok_or_else(|| format!("unknown or inactive delegated-agent run {run_id}"))
     }
 
     /// Running supervisors keep the exact startup policy/profile snapshot.
@@ -282,6 +295,8 @@ impl AiSubagentService {
         .map_err(|error| error.to_string())?;
         let run_directory = store.layout().run_directory(&run_id);
         let run = Arc::new(AiSubagentRun {
+            run_id: run_id.clone(),
+            store,
             root_agent_id,
             repository_id,
             supervisor,
@@ -491,6 +506,212 @@ impl AiSubagentRun {
 }
 
 impl Editor {
+    /// Build one restart-safe, transport-neutral snapshot from the existing
+    /// editor-owned supervisor and durable projections.
+    pub fn ai_agent_snapshot(&self, run_id: &RunId) -> Result<AgentControlPlaneSnapshot, String> {
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let events = run
+            .store
+            .events(run_id)
+            .map_err(|error| error.to_string())?;
+        let pending_notifications = run
+            .supervisor
+            .mailbox(run.root_agent_id.clone())
+            .map_err(|error| error.to_string())?
+            .pending()
+            .map_err(|error| error.to_string())?
+            .len();
+        crate::agent_runtime::build_agent_snapshot(
+            run_id.clone(),
+            run.root_agent_id.clone(),
+            run.supervisor
+                .dispatches()
+                .map_err(|error| error.to_string())?,
+            &events,
+            run.supervisor
+                .messages()
+                .map_err(|error| error.to_string())?,
+            run.approval_broker
+                .pending()
+                .map_err(|error| error.to_string())?,
+            run.approval_broker
+                .resolved()
+                .map_err(|error| error.to_string())?,
+            pending_notifications,
+        )
+    }
+
+    pub fn ai_agent_events(
+        &self,
+        run_id: &RunId,
+        agent_id: &AgentId,
+        after_sequence: u64,
+        limit: usize,
+    ) -> Result<Vec<crate::run_log::EventEnvelope>, String> {
+        if !(1..=1_000).contains(&limit) {
+            return Err("agent event limit must be between 1 and 1000".into());
+        }
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        ensure_run_agent(&run, agent_id, None)?;
+        Ok(run
+            .store
+            .events(run_id)
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .filter(|event| {
+                event.sequence > after_sequence && event.agent_id.as_ref() == Some(agent_id)
+            })
+            .take(limit)
+            .collect())
+    }
+
+    pub fn prepare_ai_agent_wait(
+        &self,
+        run_id: &RunId,
+        agent_id: &AgentId,
+        turn_generation: u32,
+        timeout: std::time::Duration,
+    ) -> Result<PreparedHeadlessAgentControl, String> {
+        if timeout.is_zero() || timeout > std::time::Duration::from_secs(60) {
+            return Err("agent wait timeout must be between 1ms and 60s".into());
+        }
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        ensure_run_agent(&run, agent_id, Some(turn_generation))?;
+        Ok(PreparedHeadlessAgentControl::Wait {
+            mailbox: run
+                .supervisor
+                .mailbox(run.root_agent_id.clone())
+                .map_err(|error| error.to_string())?,
+            agent_id: agent_id.clone(),
+            timeout,
+        })
+    }
+
+    pub fn prepare_ai_agent_interrupt(
+        &self,
+        run_id: &RunId,
+        agent_id: &AgentId,
+        turn_generation: u32,
+        reason: String,
+    ) -> Result<PreparedHeadlessAgentControl, String> {
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        ensure_run_agent(&run, agent_id, Some(turn_generation))?;
+        Ok(PreparedHeadlessAgentControl::Interrupt {
+            supervisor: run.supervisor.clone(),
+            agent_id: agent_id.clone(),
+            reason,
+        })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn ai_agent_send_message(
+        &self,
+        run_id: &RunId,
+        agent_id: &AgentId,
+        turn_generation: u32,
+        parent_agent_id: AgentId,
+        causing_turn_id: TurnId,
+        caused_by_event: EventId,
+        content: String,
+    ) -> Result<serde_json::Value, String> {
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        ensure_run_agent(&run, agent_id, Some(turn_generation))?;
+        if parent_agent_id != run.root_agent_id {
+            return Err("message parent does not match the run root agent".into());
+        }
+        let message = run
+            .supervisor
+            .send_message(SendAgentMessageRequest {
+                sender_agent_id: parent_agent_id,
+                recipient_agent_id: agent_id.clone(),
+                causing_turn_id,
+                caused_by_event,
+                content,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": "queued",
+            "run_id": run_id,
+            "agent_id": agent_id,
+            "message_event_id": message.message_event_id,
+        }))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn prepare_ai_agent_followup(
+        &self,
+        run_id: &RunId,
+        agent_id: &AgentId,
+        turn_generation: u32,
+        parent_agent_id: AgentId,
+        causing_turn_id: TurnId,
+        caused_by_event: EventId,
+        objective: String,
+    ) -> Result<PreparedHeadlessAgentControl, String> {
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        let record = ensure_run_agent(&run, agent_id, Some(turn_generation))?;
+        if parent_agent_id != run.root_agent_id {
+            return Err("follow-up parent does not match the run root agent".into());
+        }
+        let dependencies = run
+            .input_factory
+            .build(&record)
+            .map_err(|error| error.to_string())?;
+        let budget = dependencies
+            .budget
+            .unwrap_or_else(|| supervisor_config(self.ai_state.subagents.policy()).child_budget);
+        Ok(PreparedHeadlessAgentControl::Followup {
+            supervisor: run.supervisor.clone(),
+            request: FollowupAgentRequest {
+                agent_id: agent_id.clone(),
+                parent_agent_id,
+                causing_turn_id,
+                caused_by_event,
+                objective,
+                capabilities: None,
+                budget,
+                retained_session_requested: false,
+            },
+        })
+    }
+
+    pub fn ai_agent_respond_approval(
+        &self,
+        run_id: &RunId,
+        agent_id: &AgentId,
+        turn_generation: u32,
+        operation_id: OperationId,
+        request_event_id: EventId,
+        allow: bool,
+        reason: Option<String>,
+    ) -> Result<serde_json::Value, String> {
+        let run = self.ai_state.subagents.registered_run(run_id)?;
+        ensure_run_agent(&run, agent_id, Some(turn_generation))?;
+        let decision = if allow {
+            AgentApprovalResponseDecision::Allow
+        } else {
+            AgentApprovalResponseDecision::Deny { reason }
+        };
+        run.approval_broker
+            .respond(AgentApprovalResponse {
+                key: AgentApprovalKey {
+                    run_id: run_id.clone(),
+                    agent_id: agent_id.clone(),
+                    operation_id: operation_id.clone(),
+                },
+                request_event_id: request_event_id.clone(),
+                decision,
+            })
+            .map_err(|error| error.to_string())?;
+        Ok(json!({
+            "outcome": if allow { "allowed" } else { "denied" },
+            "run_id": run_id,
+            "agent_id": agent_id,
+            "operation_id": operation_id,
+            "request_event_id": request_event_id,
+        }))
+    }
+
     /// Parent controls are a root-runtime capability, not ordinary profile
     /// tools. Merely registering a profile or opening a chat never exposes
     /// them; the durable root binding must be active and exact.
@@ -1224,6 +1445,96 @@ impl Editor {
     }
 }
 
+fn ensure_run_agent(
+    run: &AiSubagentRun,
+    agent_id: &AgentId,
+    turn_generation: Option<u32>,
+) -> Result<crate::agent_runtime::AgentDispatchRecord, String> {
+    let record = run
+        .supervisor
+        .dispatches()
+        .map_err(|error| error.to_string())?
+        .into_iter()
+        .find(|record| &record.handle.agent_id == agent_id)
+        .ok_or_else(|| format!("agent {agent_id} does not belong to run {}", run.run_id))?;
+    if turn_generation.is_some_and(|generation| generation != record.turn_generation) {
+        return Err(format!(
+            "stale agent generation: expected {}, current is {}",
+            turn_generation.unwrap_or_default(),
+            record.turn_generation
+        ));
+    }
+    Ok(record)
+}
+
+pub enum PreparedHeadlessAgentControl {
+    Wait {
+        mailbox: crate::agent_runtime::AgentMailbox,
+        agent_id: AgentId,
+        timeout: std::time::Duration,
+    },
+    Interrupt {
+        supervisor: AgentSupervisor,
+        agent_id: AgentId,
+        reason: String,
+    },
+    Followup {
+        supervisor: AgentSupervisor,
+        request: FollowupAgentRequest,
+    },
+}
+
+impl PreparedHeadlessAgentControl {
+    pub async fn execute(self) -> Result<serde_json::Value, String> {
+        match self {
+            Self::Wait {
+                mailbox,
+                agent_id,
+                timeout,
+            } => match mailbox.wait_for_agent(&agent_id, timeout).await {
+                Ok(crate::agent_runtime::MailboxWaitOutcome::TimedOut) => {
+                    Ok(json!({ "outcome": "timed_out", "agent_id": agent_id, "updates": [] }))
+                }
+                Ok(crate::agent_runtime::MailboxWaitOutcome::Updates(entries)) => Ok(json!({
+                    "outcome": "updates",
+                    "agent_id": agent_id,
+                    "updates": entries.into_iter().map(|entry| json!({
+                        "notification_event_id": entry.notification_event_id,
+                        "sequence": entry.sequence,
+                        "recorded_at": entry.recorded_at,
+                        "notification": entry.notification,
+                    })).collect::<Vec<_>>()
+                })),
+                Err(error) => Err(error.to_string()),
+            },
+            Self::Interrupt {
+                supervisor,
+                agent_id,
+                reason,
+            } => supervisor
+                .interrupt(&agent_id, reason)
+                .await
+                .map(|agents| json!({ "outcome": "interrupted", "agent_ids": agents }))
+                .map_err(|error| error.to_string()),
+            Self::Followup {
+                supervisor,
+                request,
+            } => supervisor
+                .followup_agent(request)
+                .await
+                .map(|followup| {
+                    json!({
+                        "outcome": "queued",
+                        "agent_id": followup.handle.agent_id,
+                        "followup_turn_id": followup.followup_turn_id,
+                        "turn_generation": followup.turn_generation,
+                    })
+                })
+                .map_err(|error| error.to_string()),
+        }
+    }
+}
+
 pub(crate) enum PreparedAsyncSubagentControl {
     Wait {
         mailbox: crate::agent_runtime::AgentMailbox,
@@ -1872,6 +2183,23 @@ mod tests {
         );
         assert!(run.approval_broker.pending().unwrap().is_empty());
         assert!(run.approval_broker.resolved().unwrap().is_empty());
+        let snapshot = editor.ai_agent_snapshot(&run.run_id).unwrap();
+        assert_eq!(
+            snapshot.schema_version,
+            crate::agent_runtime::AGENT_CONTROL_SNAPSHOT_VERSION
+        );
+        assert_eq!(snapshot.agents.len(), 1);
+        assert_eq!(snapshot.agents[0].task_name, "inspect_snapshot");
+        assert_eq!(snapshot.agents[0].ancestry, [run.root_agent_id.clone()]);
+        let crate::run_log::AgentReported::Reported(usage) = &snapshot.agents[0].usage else {
+            panic!("completed child should have durable usage")
+        };
+        assert_eq!(usage.provider_calls, 1);
+        assert_eq!(
+            usage.input_tokens,
+            crate::run_log::AgentReported::NotReported
+        );
+        assert!(snapshot.agents[0].handoff.is_some());
         editor.consume_ai_subagent_updates(&payload).unwrap();
     }
 
@@ -2245,5 +2573,23 @@ mod tests {
                 .len(),
             1
         );
+        let events = recovered.store.events(&recovered.run_id).unwrap();
+        let restarted_snapshot = crate::agent_runtime::build_agent_snapshot(
+            recovered.run_id.clone(),
+            recovered.root_agent_id.clone(),
+            recovered.supervisor.dispatches().unwrap(),
+            &events,
+            recovered.supervisor.messages().unwrap(),
+            recovered.approval_broker.pending().unwrap(),
+            recovered.approval_broker.resolved().unwrap(),
+            1,
+        )
+        .unwrap();
+        assert_eq!(restarted_snapshot.agents[0].lifecycle, "completed");
+        assert!(matches!(
+            restarted_snapshot.agents[0].usage,
+            crate::run_log::AgentReported::Reported(_)
+        ));
+        assert!(restarted_snapshot.agents[0].handoff.is_some());
     }
 }

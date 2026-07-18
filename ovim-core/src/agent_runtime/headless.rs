@@ -1,0 +1,513 @@
+//! Transport-neutral delegated-agent snapshots for editor and headless clients.
+
+use super::{
+    AgentApprovalProjection, AgentDispatchRecord, AgentMessageRecord, AgentMessageState,
+    AgentRuntimeProjection, DispatchState, PendingAgentApproval, ResolvedAgentApproval,
+    WorkspaceStrategy,
+};
+use crate::run_log::{
+    AgentApprovalDecisionSnapshot, AgentApprovalResolutionSourceSnapshot, AgentId, AgentReported,
+    AgentUsageEvent, ArtifactId, ArtifactRecord, EventEnvelope, EventId, EventKind, OperationId,
+    RunId, TurnId, WorkspaceId,
+};
+use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, BTreeSet};
+
+pub const AGENT_CONTROL_SNAPSHOT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentControlPlaneSnapshot {
+    pub schema_version: u32,
+    pub run_id: RunId,
+    pub root_agent_id: AgentId,
+    pub last_sequence: u64,
+    pub agents: Vec<AgentSnapshot>,
+    pub pending_attention: usize,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentSnapshot {
+    pub agent_id: AgentId,
+    pub parent_agent_id: Option<AgentId>,
+    pub ancestry: Vec<AgentId>,
+    pub children: Vec<AgentId>,
+    pub task_name: String,
+    pub role: String,
+    pub objective: String,
+    pub requested_route: AgentRequestedRouteSnapshot,
+    pub resolved_route: AgentResolvedRouteSnapshot,
+    pub lifecycle: String,
+    pub turn_generation: u32,
+    pub turn_id: Option<TurnId>,
+    pub elapsed_millis: AgentReported<u64>,
+    pub progress: AgentReported<crate::run_log::AgentProgressEvent>,
+    pub usage: AgentReported<AgentUsageEvent>,
+    pub workspace: AgentWorkspaceSnapshot,
+    pub messages: Vec<AgentMessageSnapshot>,
+    pub approvals: Vec<AgentApprovalSnapshot>,
+    pub handoff: Option<AgentHandoffSnapshot>,
+    pub artifact_handles: Vec<AgentArtifactHandle>,
+    pub attention: AgentAttentionSnapshot,
+    pub recovery_status: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentRequestedRouteSnapshot {
+    pub catalog_model_id: String,
+    pub reasoning_effort: String,
+    pub fallback_policy: String,
+    pub fallback_catalog_model_id: Option<String>,
+    pub fallback_reasoning_effort: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentResolvedRouteSnapshot {
+    pub catalog_generation: String,
+    pub catalog_model_id: String,
+    pub profile_name: String,
+    pub provider: String,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub resolution: String,
+    pub fallback_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentWorkspaceSnapshot {
+    pub workspace_id: WorkspaceId,
+    pub strategy: String,
+    pub manifest_id: Option<String>,
+    pub ownership: String,
+    pub root: Option<String>,
+    pub read_only: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentMessageSnapshot {
+    pub message_event_id: EventId,
+    pub sender_agent_id: AgentId,
+    pub recipient_agent_id: AgentId,
+    pub content: String,
+    pub state: String,
+    pub detail: Option<String>,
+    pub consumed: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentApprovalSnapshot {
+    pub request_event_id: EventId,
+    pub operation_id: OperationId,
+    pub state: String,
+    pub tool_name: String,
+    pub effect: String,
+    pub reason: String,
+    pub created_at: String,
+    pub deadline_at: String,
+    pub decision: Option<String>,
+    pub resolution_source: Option<String>,
+    pub resolution_reason: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentHandoffSnapshot {
+    pub event_id: EventId,
+    pub status: String,
+    pub summary: String,
+    pub evidence: Vec<super::HandoffEvidence>,
+    pub changed_files: Vec<String>,
+    pub blockers: Vec<String>,
+    pub followups: Vec<String>,
+    pub confidence: String,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentAttentionSnapshot {
+    pub required: bool,
+    pub pending_approvals: usize,
+    pub pending_messages: usize,
+    pub pending_notifications: usize,
+}
+
+/// Artifact metadata safe for list/detail responses. Blob bytes are returned
+/// only by the separately ID-scoped artifact read operation.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentArtifactHandle {
+    pub artifact_id: ArtifactId,
+    pub state: crate::run_log::ArtifactState,
+    pub media_type: Option<String>,
+    pub retention: crate::run_log::ArtifactRetention,
+    pub export_policy: crate::run_log::ArtifactExportPolicy,
+}
+
+pub(crate) fn build_agent_snapshot(
+    run_id: RunId,
+    root_agent_id: AgentId,
+    records: Vec<AgentDispatchRecord>,
+    events: &[EventEnvelope],
+    messages: Vec<AgentMessageRecord>,
+    pending_approvals: Vec<PendingAgentApproval>,
+    resolved_approvals: Vec<ResolvedAgentApproval>,
+    pending_notifications: usize,
+) -> Result<AgentControlPlaneSnapshot, String> {
+    let runtime = AgentRuntimeProjection::rehydrate(events).map_err(|error| error.to_string())?;
+    // Rehydrate independently as an integrity check: the broker is live state,
+    // while this proves the durable stream still reconstructs the same domain.
+    AgentApprovalProjection::rehydrate(&run_id, events).map_err(|error| error.to_string())?;
+    let by_id = records
+        .iter()
+        .map(|record| (record.handle.agent_id.clone(), record.clone()))
+        .collect::<BTreeMap<_, _>>();
+    let mut children = BTreeMap::<AgentId, Vec<AgentId>>::new();
+    for record in &records {
+        if let Some(parent) = &record.parent_agent_id {
+            children
+                .entry(parent.clone())
+                .or_default()
+                .push(record.handle.agent_id.clone());
+        }
+    }
+    let artifacts = artifact_handles_by_agent(events);
+    let handoffs = latest_handoffs(events);
+    let terminal_recovery = recovery_by_agent(events);
+    let mut agents = Vec::with_capacity(records.len());
+    for record in records {
+        let agent_id = record.handle.agent_id.clone();
+        let metrics = runtime.latest_for_agent(&agent_id);
+        let progress = metrics
+            .and_then(|metrics| metrics.progress.clone())
+            .map_or(AgentReported::NotReported, AgentReported::Reported);
+        let elapsed_millis = metrics
+            .and_then(|metrics| metrics.progress.as_ref())
+            .map(|progress| AgentReported::Reported(progress.elapsed_millis))
+            .unwrap_or(AgentReported::NotReported);
+        let usage = metrics
+            .and_then(|metrics| metrics.usage.clone())
+            .map_or(AgentReported::NotReported, AgentReported::Reported);
+        let agent_messages = messages
+            .iter()
+            .filter(|message| {
+                message.sender_agent_id == agent_id || message.recipient_agent_id == agent_id
+            })
+            .map(message_snapshot)
+            .collect::<Vec<_>>();
+        let approvals = pending_approvals
+            .iter()
+            .filter(|approval| approval.key.agent_id == agent_id)
+            .map(pending_approval_snapshot)
+            .chain(
+                resolved_approvals
+                    .iter()
+                    .filter(|approval| approval.pending.key.agent_id == agent_id)
+                    .map(resolved_approval_snapshot),
+            )
+            .collect::<Vec<_>>();
+        let pending_message_count = agent_messages
+            .iter()
+            .filter(|message| matches!(message.state.as_str(), "queued" | "delivering"))
+            .count();
+        let pending_approval_count = approvals
+            .iter()
+            .filter(|approval| approval.state == "pending")
+            .count();
+        let notifications = usize::from(record.parent_agent_id.as_ref() == Some(&root_agent_id))
+            .saturating_mul(pending_notifications);
+        agents.push(AgentSnapshot {
+            ancestry: ancestry(&record, &by_id, &root_agent_id)?,
+            children: children.remove(&agent_id).unwrap_or_default(),
+            parent_agent_id: record.parent_agent_id.clone(),
+            task_name: record.task_name.clone(),
+            role: record.role.name.to_string(),
+            objective: record.objective.clone(),
+            requested_route: requested_route(&record),
+            resolved_route: resolved_route(&record),
+            lifecycle: state_name(&record.state).into(),
+            turn_generation: record.turn_generation,
+            turn_id: metrics
+                .and_then(|metrics| metrics.key.turn_id.clone())
+                .or_else(|| {
+                    record
+                        .followup
+                        .as_ref()
+                        .map(|followup| followup.followup_turn_id.clone())
+                        .or_else(|| record.causing_turn_id.clone())
+                }),
+            elapsed_millis,
+            progress,
+            usage,
+            workspace: workspace_snapshot(&record),
+            messages: agent_messages,
+            approvals,
+            handoff: handoffs.get(&agent_id).cloned(),
+            artifact_handles: artifacts.get(&agent_id).cloned().unwrap_or_default(),
+            attention: AgentAttentionSnapshot {
+                required: pending_message_count + pending_approval_count + notifications > 0,
+                pending_approvals: pending_approval_count,
+                pending_messages: pending_message_count,
+                pending_notifications: notifications,
+            },
+            recovery_status: terminal_recovery
+                .get(&agent_id)
+                .cloned()
+                .unwrap_or_else(|| "none".into()),
+            agent_id,
+        });
+    }
+    let pending_attention = agents
+        .iter()
+        .map(|agent| {
+            agent.attention.pending_approvals
+                + agent.attention.pending_messages
+                + agent.attention.pending_notifications
+        })
+        .sum();
+    Ok(AgentControlPlaneSnapshot {
+        schema_version: AGENT_CONTROL_SNAPSHOT_VERSION,
+        run_id,
+        root_agent_id,
+        last_sequence: events.last().map_or(0, |event| event.sequence),
+        agents,
+        pending_attention,
+    })
+}
+
+fn ancestry(
+    record: &AgentDispatchRecord,
+    records: &BTreeMap<AgentId, AgentDispatchRecord>,
+    root: &AgentId,
+) -> Result<Vec<AgentId>, String> {
+    let mut result = Vec::new();
+    let mut next = record.parent_agent_id.as_ref();
+    let mut seen = BTreeSet::new();
+    while let Some(parent) = next {
+        if !seen.insert(parent.clone()) {
+            return Err(format!("agent ancestry contains a cycle at {parent}"));
+        }
+        result.push(parent.clone());
+        if parent == root {
+            break;
+        }
+        next = records
+            .get(parent)
+            .and_then(|record| record.parent_agent_id.as_ref());
+    }
+    result.reverse();
+    Ok(result)
+}
+
+fn requested_route(record: &AgentDispatchRecord) -> AgentRequestedRouteSnapshot {
+    let (fallback_policy, fallback_catalog_model_id, fallback_reasoning_effort) =
+        match &record.requested_route.fallback_policy {
+            super::ModelFallbackPolicy::FailClosed => ("fail_closed".into(), None, None),
+            super::ModelFallbackPolicy::Explicit {
+                catalog_model_id,
+                reasoning_effort,
+            } => (
+                "explicit".into(),
+                Some(catalog_model_id.clone()),
+                Some(reasoning_effort.as_str().into()),
+            ),
+        };
+    AgentRequestedRouteSnapshot {
+        catalog_model_id: record.requested_route.catalog_model_id.clone(),
+        reasoning_effort: record.requested_route.reasoning_effort.as_str().into(),
+        fallback_policy,
+        fallback_catalog_model_id,
+        fallback_reasoning_effort,
+    }
+}
+
+fn resolved_route(record: &AgentDispatchRecord) -> AgentResolvedRouteSnapshot {
+    AgentResolvedRouteSnapshot {
+        catalog_generation: record.resolved_route.catalog_generation.clone(),
+        catalog_model_id: record.resolved_route.catalog_model_id.clone(),
+        profile_name: record.resolved_route.profile_name.clone(),
+        provider: record.resolved_route.provider.clone(),
+        model: record.resolved_route.model.clone(),
+        reasoning_effort: record.resolved_route.reasoning_effort.as_str().into(),
+        resolution: match record.resolved_route.resolution {
+            super::ModelRouteResolution::Exact => "exact",
+            super::ModelRouteResolution::ConfiguredFallback => "configured_fallback",
+            super::ModelRouteResolution::HistoricV1 => "historic_v1",
+        }
+        .into(),
+        fallback_reason: record.resolved_route.fallback_reason.clone(),
+    }
+}
+
+fn workspace_snapshot(record: &AgentDispatchRecord) -> AgentWorkspaceSnapshot {
+    let (strategy, manifest_id, read_only) = match &record.handle.workspace.strategy {
+        WorkspaceStrategy::SharedWorkspace => ("shared_workspace", None, false),
+        WorkspaceStrategy::IsolatedWorktree { base_manifest_id } => (
+            "isolated_worktree",
+            base_manifest_id.as_ref().map(ToString::to_string),
+            false,
+        ),
+        WorkspaceStrategy::ReadOnlySnapshot { manifest_id } => (
+            "read_only_snapshot",
+            manifest_id.as_ref().map(ToString::to_string),
+            true,
+        ),
+    };
+    AgentWorkspaceSnapshot {
+        workspace_id: record.handle.workspace.workspace_id.clone(),
+        strategy: strategy.into(),
+        manifest_id,
+        ownership: "ovim".into(),
+        root: None,
+        read_only,
+    }
+}
+
+fn message_snapshot(message: &AgentMessageRecord) -> AgentMessageSnapshot {
+    let (state, detail) = match &message.state {
+        AgentMessageState::Queued => ("queued", None),
+        AgentMessageState::Delivering { .. } => ("delivering", None),
+        AgentMessageState::Delivered { .. } => ("delivered", None),
+        AgentMessageState::Rejected { detail, .. } => ("rejected", Some(detail.clone())),
+    };
+    AgentMessageSnapshot {
+        message_event_id: message.message_event_id.clone(),
+        sender_agent_id: message.sender_agent_id.clone(),
+        recipient_agent_id: message.recipient_agent_id.clone(),
+        content: message.content.clone(),
+        state: state.into(),
+        detail,
+        consumed: message.consumption_event_id.is_some(),
+    }
+}
+
+fn pending_approval_snapshot(approval: &PendingAgentApproval) -> AgentApprovalSnapshot {
+    AgentApprovalSnapshot {
+        request_event_id: approval.request_event_id.clone(),
+        operation_id: approval.key.operation_id.clone(),
+        state: "pending".into(),
+        tool_name: approval.request.tool_name.clone(),
+        effect: format!("{:?}", approval.request.normalized_effect).to_lowercase(),
+        reason: approval.request.reason.clone(),
+        created_at: approval.request.created_at.clone(),
+        deadline_at: approval.request.deadline_at.clone(),
+        decision: None,
+        resolution_source: None,
+        resolution_reason: None,
+    }
+}
+
+fn resolved_approval_snapshot(approval: &ResolvedAgentApproval) -> AgentApprovalSnapshot {
+    let mut snapshot = pending_approval_snapshot(&approval.pending);
+    snapshot.state = "resolved".into();
+    snapshot.decision = Some(
+        match approval.resolution.decision {
+            AgentApprovalDecisionSnapshot::Allowed => "allowed",
+            AgentApprovalDecisionSnapshot::Denied => "denied",
+        }
+        .into(),
+    );
+    snapshot.resolution_source = Some(
+        match approval.resolution.source {
+            AgentApprovalResolutionSourceSnapshot::User => "user",
+            AgentApprovalResolutionSourceSnapshot::Policy => "policy",
+            AgentApprovalResolutionSourceSnapshot::Timeout => "timeout",
+            AgentApprovalResolutionSourceSnapshot::Cancellation => "cancellation",
+            AgentApprovalResolutionSourceSnapshot::Restart => "restart",
+        }
+        .into(),
+    );
+    snapshot.resolution_reason = Some(approval.resolution.reason.clone());
+    snapshot
+}
+
+fn latest_handoffs(events: &[EventEnvelope]) -> BTreeMap<AgentId, AgentHandoffSnapshot> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let EventKind::AgentHandoff(recorded) = &event.kind else {
+                return None;
+            };
+            let agent_id = event.agent_id.clone()?;
+            let handoff = recorded.handoff.as_handoff();
+            Some((
+                agent_id,
+                AgentHandoffSnapshot {
+                    event_id: event.event_id.clone(),
+                    status: format!("{:?}", handoff.status).to_lowercase(),
+                    summary: handoff.summary.clone(),
+                    evidence: handoff.evidence.clone(),
+                    changed_files: handoff.changed_files.clone(),
+                    blockers: handoff.blockers.clone(),
+                    followups: handoff.followups.clone(),
+                    confidence: format!("{:?}", handoff.confidence).to_lowercase(),
+                },
+            ))
+        })
+        .collect()
+}
+
+fn artifact_handles_by_agent(
+    events: &[EventEnvelope],
+) -> BTreeMap<AgentId, Vec<AgentArtifactHandle>> {
+    let mut result = BTreeMap::<AgentId, BTreeMap<ArtifactId, AgentArtifactHandle>>::new();
+    for event in events {
+        let Some(agent_id) = &event.agent_id else {
+            continue;
+        };
+        let EventKind::FileMutation(mutation) = &event.kind else {
+            continue;
+        };
+        for artifact in &mutation.artifacts {
+            result
+                .entry(agent_id.clone())
+                .or_default()
+                .insert(artifact.artifact_id.clone(), artifact_handle(artifact));
+        }
+    }
+    result
+        .into_iter()
+        .map(|(agent, artifacts)| (agent, artifacts.into_values().collect()))
+        .collect()
+}
+
+fn artifact_handle(artifact: &ArtifactRecord) -> AgentArtifactHandle {
+    AgentArtifactHandle {
+        artifact_id: artifact.artifact_id.clone(),
+        state: artifact.state.clone(),
+        media_type: artifact.media_type.clone(),
+        retention: artifact.retention.clone(),
+        export_policy: artifact.export_policy.clone(),
+    }
+}
+
+fn recovery_by_agent(events: &[EventEnvelope]) -> BTreeMap<AgentId, String> {
+    events
+        .iter()
+        .filter_map(|event| {
+            let EventKind::AgentLifecycle(lifecycle) = &event.kind else {
+                return None;
+            };
+            let detail = lifecycle.detail.as_deref()?.to_ascii_lowercase();
+            let status = if detail.contains("restart")
+                || detail.contains("recovery")
+                || detail.contains("process stopped")
+            {
+                "interrupted_after_restart"
+            } else {
+                return None;
+            };
+            Some((lifecycle.agent_id.clone(), status.into()))
+        })
+        .collect()
+}
+
+fn state_name(state: &DispatchState) -> &'static str {
+    match state {
+        DispatchState::Created => "created",
+        DispatchState::Queued => "queued",
+        DispatchState::Starting => "starting",
+        DispatchState::Running => "running",
+        DispatchState::WaitingForAgent => "waiting_for_agent",
+        DispatchState::WaitingForTool => "waiting_for_tool",
+        DispatchState::WaitingForUser => "waiting_for_user",
+        DispatchState::Completed => "completed",
+        DispatchState::Interrupted => "interrupted",
+        DispatchState::Failed => "failed",
+    }
+}

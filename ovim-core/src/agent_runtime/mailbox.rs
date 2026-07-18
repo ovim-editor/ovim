@@ -600,6 +600,34 @@ impl AgentMailbox {
         }
     }
 
+    /// Wait for notifications attributable to one exact descendant without
+    /// consuming or being woken early by another child's pending handoff.
+    pub async fn wait_for_agent(
+        &self,
+        source_agent_id: &AgentId,
+        timeout: Duration,
+    ) -> Result<MailboxWaitOutcome, MailboxError> {
+        let mut receiver = self.wakeup.subscribe();
+        let deadline = Instant::now() + timeout;
+        loop {
+            let pending = self
+                .pending()?
+                .into_iter()
+                .filter(|entry| notification_source(&entry.notification) == Some(source_agent_id))
+                .collect::<Vec<_>>();
+            if !pending.is_empty() {
+                return Ok(MailboxWaitOutcome::Updates(pending));
+            }
+            if Instant::now() >= deadline
+                || tokio::time::timeout_at(deadline, receiver.changed())
+                    .await
+                    .is_err()
+            {
+                return Ok(MailboxWaitOutcome::TimedOut);
+            }
+        }
+    }
+
     fn validate_notification(
         &self,
         notification: &MailboxNotificationKind,
@@ -736,6 +764,21 @@ impl AgentMailbox {
                     })
             }
         }
+    }
+}
+
+fn notification_source(notification: &MailboxNotificationKind) -> Option<&AgentId> {
+    match notification {
+        MailboxNotificationKind::Handoff {
+            source_agent_id, ..
+        }
+        | MailboxNotificationKind::Attention {
+            source_agent_id, ..
+        } => Some(source_agent_id),
+        MailboxNotificationKind::Message {
+            sender_agent_id, ..
+        } => sender_agent_id.as_ref(),
+        MailboxNotificationKind::Steering { .. } => None,
     }
 }
 
