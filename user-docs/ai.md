@@ -163,6 +163,45 @@ session only when the provider explicitly supports safe follow-up; otherwise
 it opens a fresh provider session with bounded context from the validated prior
 handoff. Follow-up cannot reroute the child or widen its authority.
 
+### Inspect and control delegated agents
+
+Each delegated child appears as a collapsed inline card at the live edge of AI
+chat. The compact card shows its task, lifecycle, effective model and effort,
+current activity, elapsed time, and reported usage. Attention-required cards
+sort first. Expand a card from the agent tree to inspect ancestry and
+generation, requested versus effective routing (including fallback reason),
+workspace strategy and ownership, pending approvals/messages, and the bounded
+handoff summary with evidence and artifact counts. Missing provider metrics are
+shown as `not reported`/`n/r`, never estimated as zero.
+
+Press `Ctrl-T` in AI chat to open the shared sidebar. Delegated agents have a
+dedicated hierarchical section above the existing conversation branch tree;
+press `Tab` to switch between the two sections. The agent section starts
+collapsed and remains compact on narrow terminals.
+
+Agent-tree keys:
+
+- `j`/`k` or Down/Up moves through the hierarchy; `Enter` selects a child.
+- `Space` expands or collapses that child's detail in both the tree and chat.
+- `f` or `w` follows/unfollows the child. Following is nonblocking and adds
+  `task · model · effort · state` to the status line; the model-facing
+  `wait_agent` control remains available when the root actually needs to wait.
+- `m` opens the existing composer for a message to a live child. `r` opens it
+  for a follow-up objective on a completed or interrupted child. Enter submits;
+  Esc cancels and restores the root draft exactly.
+- `i` interrupts the selected child through the same durable control path used
+  by the headless API and parent model.
+- `a`/Enter allows the oldest displayed child approval; `d`/Esc denies it.
+  The blocking prompt identifies child and ancestry, role, requested and
+  effective model/effort, tool and normalized effect, workspace, and reason.
+  Simultaneous requests stay attributed and are presented in durable order.
+- `q` closes the sidebar.
+
+Completed, failed, interrupted, and restart-recovered children keep distinct
+visual states. An interrupted-after-restart child is never presented as still
+running; its expanded card explains that a follow-up can start a new
+generation.
+
 Ovim does not guess how to resume an in-flight child provider session after a
 restart. Starting, running, waiting, or effect-ambiguous work is closed with a
 validated interrupted handoff; an open tool effect is recorded as unknown
@@ -377,6 +416,7 @@ Built-in AI keybindings:
 - Normal mode `Space Space`: chat
 - Normal mode `Space ?`: read-only query
 - Visual mode `Space Space`: single-shot selection edit
+- AI chat `Ctrl-T`: delegated-agent and conversation-tree sidebar
 
 ## Legacy `ai.toml` (Still Supported)
 
