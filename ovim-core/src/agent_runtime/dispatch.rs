@@ -1570,6 +1570,8 @@ fn is_runtime_trace_event(kind: &EventKind) -> bool {
     matches!(
         kind,
         EventKind::AgentProvider(_)
+            | EventKind::AgentUsage(_)
+            | EventKind::AgentProgress(_)
             | EventKind::ToolIntent(_)
             | EventKind::ToolStarted(_)
             | EventKind::ToolResult(_)
@@ -1582,7 +1584,11 @@ fn validate_runtime_operation(
     operation_id: Option<&OperationId>,
 ) -> Result<(), DispatchError> {
     match kind {
-        EventKind::AgentProvider(_) if operation_id.is_none() => Ok(()),
+        EventKind::AgentProvider(_) | EventKind::AgentUsage(_) | EventKind::AgentProgress(_)
+            if operation_id.is_none() =>
+        {
+            Ok(())
+        }
         EventKind::ToolIntent(_) => {
             let operation_id = operation_id
                 .ok_or_else(|| DispatchError::InvalidRuntimeEvent(agent.handle.agent_id.clone()))?;
@@ -1629,7 +1635,7 @@ fn apply_runtime_operation(
     operation_id: Option<&OperationId>,
 ) -> Result<(), DispatchError> {
     match kind {
-        EventKind::AgentProvider(_) => {}
+        EventKind::AgentProvider(_) | EventKind::AgentUsage(_) | EventKind::AgentProgress(_) => {}
         EventKind::ToolIntent(_) => {
             agent.runtime_operations.insert(
                 operation_id.expect("validated operation ID").clone(),

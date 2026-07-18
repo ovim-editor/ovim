@@ -12,9 +12,11 @@ use super::{
 };
 use crate::ai::tools::StrictJsonSchema;
 use crate::run_log::{
-    AgentProviderEvent as RecordedAgentProviderEvent, AgentProviderState, EventEnvelope, EventId,
-    EventKind, ManifestId, OperationId, RunId, ToolIntentEvent, ToolOutcome, ToolResultEvent,
-    ToolSideEffect, ToolStartedEvent, TurnId, WorkspaceId, AGENT_PROVIDER_EVENT_VERSION,
+    AgentProgressActivity, AgentProgressEvent, AgentProviderEvent as RecordedAgentProviderEvent,
+    AgentProviderState, AgentReported, AgentUsageEvent, EventEnvelope, EventId, EventKind,
+    ManifestId, OperationId, RunId, ToolIntentEvent, ToolOutcome, ToolResultEvent, ToolSideEffect,
+    ToolStartedEvent, TurnId, WorkspaceId, AGENT_PROGRESS_EVENT_VERSION,
+    AGENT_PROVIDER_EVENT_VERSION, AGENT_USAGE_EVENT_VERSION,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -579,11 +581,14 @@ pub struct AgentLoopInput {
     pub budget: AgentLoopBudget,
     pub root_budget: Arc<RootAgentBudget>,
     pub handoff_validator: HandoffValidator,
+    /// Stable generation that resets cumulative metrics for follow-up turns.
+    pub turn_generation: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AgentLoopUsage {
     pub provider_events: usize,
+    pub provider_calls: usize,
     pub tool_calls: usize,
 }
 
@@ -615,7 +620,22 @@ impl AgentLoopRunner {
         retained: Option<(Box<dyn AgentProviderSession>, AgentProviderFollowup)>,
     ) -> Result<AgentLoopResult, AgentLoopError> {
         validate_input(&input)?;
+        let started_at = Instant::now();
         let deadline = Instant::now() + input.budget.timeout;
+        let mut usage = AgentLoopUsage {
+            provider_events: 0,
+            provider_calls: 0,
+            tool_calls: 0,
+        };
+        record_progress(
+            &input,
+            started_at,
+            AgentProgressActivity::StartingProvider,
+            None,
+            Some("starting provider session".into()),
+        )
+        .await?;
+        record_usage(&input, &usage).await?;
         let request = AgentProviderStart {
             handle: input.handle.clone(),
             envelope: input.envelope.clone(),
@@ -656,6 +676,14 @@ impl AgentLoopRunner {
         let binding = session.binding().clone();
         validate_binding(&binding, &input.route)?;
         record_provider_event(&input, AgentProviderState::Bound, &binding, None, None).await?;
+        record_progress(
+            &input,
+            started_at,
+            AgentProgressActivity::ProviderBound,
+            None,
+            Some(format!("{} session bound", binding.provider)),
+        )
+        .await?;
         input
             .runtime_hooks
             .transition(
@@ -668,10 +696,6 @@ impl AgentLoopRunner {
             )
             .await?;
 
-        let mut usage = AgentLoopUsage {
-            provider_events: 0,
-            tool_calls: 0,
-        };
         let mut observed_tools = BTreeMap::new();
         let handoff = loop {
             let event = tokio::select! {
@@ -703,12 +727,22 @@ impl AgentLoopRunner {
             usage.provider_events += 1;
             match event {
                 Ok(AgentProviderEvent::CallStarted { provider_call_id }) => {
+                    usage.provider_calls = usage.provider_calls.saturating_add(1);
                     record_provider_event(
                         &input,
                         AgentProviderState::CallStarted,
                         &binding,
                         Some(provider_call_id),
                         None,
+                    )
+                    .await?;
+                    record_usage(&input, &usage).await?;
+                    record_progress(
+                        &input,
+                        started_at,
+                        AgentProgressActivity::ProviderCall,
+                        None,
+                        Some("provider call in progress".into()),
                     )
                     .await?;
                 }
@@ -729,12 +763,22 @@ impl AgentLoopRunner {
                         continue;
                     }
                     usage.tool_calls += 1;
+                    record_usage(&input, &usage).await?;
+                    record_progress(
+                        &input,
+                        started_at,
+                        AgentProgressActivity::WaitingForTool,
+                        Some(tool_name.clone()),
+                        Some(format!("waiting for tool {tool_name}")),
+                    )
+                    .await?;
                     let result = execute_tool_request(
                         &input,
                         provider_call_id,
                         tool_call_id.clone(),
                         tool_name,
                         arguments,
+                        started_at,
                         deadline,
                     )
                     .await?;
@@ -742,12 +786,30 @@ impl AgentLoopRunner {
                         .submit_tool_result(&tool_call_id, &result)
                         .await
                         .map_err(AgentLoopError::Provider)?;
+                    record_progress(
+                        &input,
+                        started_at,
+                        AgentProgressActivity::ProviderCall,
+                        None,
+                        Some("tool result returned to provider".into()),
+                    )
+                    .await?;
                 }
                 Ok(AgentProviderEvent::ToolObservedStarted {
                     provider_call_id,
                     tool_call_id,
                     tool_name,
                 }) => {
+                    usage.tool_calls = usage.tool_calls.saturating_add(1);
+                    record_usage(&input, &usage).await?;
+                    record_progress(
+                        &input,
+                        started_at,
+                        AgentProgressActivity::WaitingForTool,
+                        Some(tool_name.clone()),
+                        Some(format!("provider observed tool {tool_name}")),
+                    )
+                    .await?;
                     let operation_id = OperationId::new();
                     record_tool_intent(
                         &input,
@@ -792,8 +854,24 @@ impl AgentLoopRunner {
                         .runtime_hooks
                         .transition(&input.handle, DispatchState::Running, None)
                         .await?;
+                    record_progress(
+                        &input,
+                        started_at,
+                        AgentProgressActivity::ProviderCall,
+                        None,
+                        Some("provider tool observation completed".into()),
+                    )
+                    .await?;
                 }
                 Ok(AgentProviderEvent::Handoff { payload }) => {
+                    record_progress(
+                        &input,
+                        started_at,
+                        AgentProgressActivity::FinalizingHandoff,
+                        None,
+                        Some("validating structured handoff".into()),
+                    )
+                    .await?;
                     close_observed_tools(
                         &input,
                         &mut observed_tools,
@@ -852,12 +930,22 @@ impl AgentLoopRunner {
                         AgentProviderState::Checkpoint,
                         &binding,
                         None,
-                        Some(label),
+                        Some(label.clone()),
                     )
                     .await?;
+                    let lower = label.to_ascii_lowercase();
+                    let activity = if lower.contains("reason") || lower.contains("thinking") {
+                        AgentProgressActivity::Reasoning
+                    } else if lower.contains("response") || lower.contains("message") {
+                        AgentProgressActivity::Responding
+                    } else {
+                        AgentProgressActivity::Other
+                    };
+                    record_progress(&input, started_at, activity, None, Some(label)).await?;
                 }
             }
         };
+        record_usage(&input, &usage).await?;
         let retained_session = (handoff.status() == HandoffStatus::Completed
             && session.can_followup())
         .then_some(session);
@@ -877,6 +965,7 @@ async fn execute_tool_request(
     tool_call_id: String,
     tool_name: String,
     arguments: Value,
+    started_at: Instant,
     deadline: Instant,
 ) -> Result<AgentToolResult, AgentLoopError> {
     let operation_id = OperationId::new();
@@ -915,6 +1004,14 @@ async fn execute_tool_request(
                         Some(format!("waiting for approval for {tool_name}")),
                     )
                     .await?;
+                record_progress(
+                    input,
+                    started_at,
+                    AgentProgressActivity::WaitingForApproval,
+                    Some(tool_name.clone()),
+                    Some(format!("waiting for approval for {tool_name}")),
+                )
+                .await?;
                 await_bounded(
                     &input.cancellation,
                     deadline,
@@ -1046,6 +1143,56 @@ async fn record_provider_event(
             }),
             operation_id: None,
             provider_call_id,
+        })
+        .await
+}
+
+async fn record_usage(
+    input: &AgentLoopInput,
+    usage: &AgentLoopUsage,
+) -> Result<EventEnvelope, AgentLoopError> {
+    input
+        .event_sink
+        .record(AgentLoopEventRecord {
+            handle: input.handle.clone(),
+            kind: EventKind::AgentUsage(AgentUsageEvent {
+                version: AGENT_USAGE_EVENT_VERSION,
+                turn_generation: input.turn_generation,
+                provider_calls: u64::try_from(usage.provider_calls).unwrap_or(u64::MAX),
+                tool_calls: u64::try_from(usage.tool_calls).unwrap_or(u64::MAX),
+                input_tokens: AgentReported::NotReported,
+                output_tokens: AgentReported::NotReported,
+                cached_input_tokens: AgentReported::NotReported,
+                cost: AgentReported::NotReported,
+            }),
+            operation_id: None,
+            provider_call_id: None,
+        })
+        .await
+}
+
+async fn record_progress(
+    input: &AgentLoopInput,
+    started_at: Instant,
+    activity: AgentProgressActivity,
+    current_tool: Option<String>,
+    detail: Option<String>,
+) -> Result<EventEnvelope, AgentLoopError> {
+    let elapsed_millis = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX);
+    input
+        .event_sink
+        .record(AgentLoopEventRecord {
+            handle: input.handle.clone(),
+            kind: EventKind::AgentProgress(AgentProgressEvent {
+                version: AGENT_PROGRESS_EVENT_VERSION,
+                turn_generation: input.turn_generation,
+                activity,
+                elapsed_millis,
+                current_tool,
+                detail,
+            }),
+            operation_id: None,
+            provider_call_id: None,
         })
         .await
 }
@@ -1433,6 +1580,7 @@ mod tests {
             },
             root_budget: Arc::new(RootAgentBudget::new(1024, 128)),
             handoff_validator: HandoffValidator::default(),
+            turn_generation: 0,
         }
     }
 
@@ -1464,6 +1612,23 @@ mod tests {
                 ..
             })
         )));
+        let agent_id = events
+            .iter()
+            .find_map(|event| event.agent_id.clone())
+            .expect("loop events carry the child identity");
+        let metrics = crate::agent_runtime::AgentRuntimeProjection::rehydrate(&events)
+            .unwrap()
+            .latest_for_agent(&agent_id)
+            .unwrap()
+            .clone();
+        let usage = metrics.usage.unwrap();
+        assert_eq!(usage.provider_calls, 1);
+        assert_eq!(usage.tool_calls, 0);
+        assert_eq!(usage.input_tokens, AgentReported::NotReported);
+        assert_eq!(usage.output_tokens, AgentReported::NotReported);
+        assert_eq!(usage.cached_input_tokens, AgentReported::NotReported);
+        assert_eq!(usage.cost, AgentReported::NotReported);
+        assert!(metrics.progress.is_some());
         assert_eq!(
             harness.states.lock().unwrap().as_slice(),
             &[DispatchState::Starting, DispatchState::Running]
@@ -1501,6 +1666,7 @@ mod tests {
             "malformed".into(),
             "read_snapshot".into(),
             serde_json::json!({}),
+            Instant::now(),
             deadline,
         )
         .await
@@ -1514,6 +1680,7 @@ mod tests {
             "unknown".into(),
             "bash".into(),
             serde_json::json!({"command": "pwd"}),
+            Instant::now(),
             deadline,
         )
         .await
@@ -1576,6 +1743,7 @@ mod tests {
                 "tool-call".into(),
                 "write_file".into(),
                 serde_json::json!({ "path": "src/lib.rs" }),
+                Instant::now(),
                 Instant::now() + Duration::from_secs(1),
             )
             .await

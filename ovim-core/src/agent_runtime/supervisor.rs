@@ -581,6 +581,7 @@ impl AgentSupervisor {
             budget,
             root_budget: self.inner.root_budget.clone(),
             handoff_validator: HandoffValidator::default(),
+            turn_generation: record.turn_generation,
         };
         let AgentLoopResult {
             handoff,

@@ -304,6 +304,8 @@ fn event_kind_label(kind: &EventKind) -> String {
         EventKind::AgentProvider(event) => {
             format!("agent.provider.{:?}", event.state).to_lowercase()
         }
+        EventKind::AgentUsage(_) => "agent.usage".into(),
+        EventKind::AgentProgress(_) => "agent.progress".into(),
         EventKind::AgentHandoff(_) => "agent.handoff".into(),
         EventKind::AgentFollowup(_) => "agent.followup".into(),
         EventKind::AgentApprovalRequested(_) => "agent.approval.requested".into(),

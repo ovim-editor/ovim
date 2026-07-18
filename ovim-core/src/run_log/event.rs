@@ -123,6 +123,8 @@ pub enum EventKind {
     BranchLifecycle(BranchLifecycleEvent),
     AgentLifecycle(AgentLifecycleEvent),
     AgentProvider(AgentProviderEvent),
+    AgentUsage(AgentUsageEvent),
+    AgentProgress(AgentProgressEvent),
     AgentHandoff(AgentHandoffEvent),
     AgentFollowup(AgentFollowupEvent),
     AgentApprovalRequested(AgentApprovalRequestedEvent),
@@ -164,6 +166,8 @@ impl Serialize for EventKind {
             Self::BranchLifecycle(value) => ("branch_lifecycle", serde_json::to_value(value)),
             Self::AgentLifecycle(value) => ("agent_lifecycle", serde_json::to_value(value)),
             Self::AgentProvider(value) => ("agent_provider", serde_json::to_value(value)),
+            Self::AgentUsage(value) => ("agent_usage", serde_json::to_value(value)),
+            Self::AgentProgress(value) => ("agent_progress", serde_json::to_value(value)),
             Self::AgentHandoff(value) => ("agent_handoff", serde_json::to_value(value)),
             Self::AgentFollowup(value) => ("agent_followup", serde_json::to_value(value)),
             Self::AgentApprovalRequested(value) => {
@@ -219,6 +223,8 @@ impl<'de> Deserialize<'de> for EventKind {
             "branch_lifecycle" => decode(raw.data).map(Self::BranchLifecycle),
             "agent_lifecycle" => decode(raw.data).map(Self::AgentLifecycle),
             "agent_provider" => decode(raw.data).map(Self::AgentProvider),
+            "agent_usage" => decode(raw.data).map(Self::AgentUsage),
+            "agent_progress" => decode(raw.data).map(Self::AgentProgress),
             "agent_handoff" => decode(raw.data).map(Self::AgentHandoff),
             "agent_followup" => decode(raw.data).map(Self::AgentFollowup),
             "agent_approval_requested" => decode(raw.data).map(Self::AgentApprovalRequested),
@@ -489,6 +495,82 @@ pub enum AgentProviderState {
     Bound,
     CallStarted,
     Checkpoint,
+}
+
+pub const AGENT_USAGE_EVENT_VERSION: u32 = 1;
+
+/// Whether a provider supplied a metric. `NotReported` is deliberately
+/// different from a reported zero: Ovim never estimates missing token or cost
+/// data.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "status", content = "value", rename_all = "snake_case")]
+pub enum AgentReported<T> {
+    Reported(T),
+    NotReported,
+}
+
+impl<T> Default for AgentReported<T> {
+    fn default() -> Self {
+        Self::NotReported
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentUsageCost {
+    /// ISO 4217 currency code. Providers currently report USD when they
+    /// report cost at all.
+    pub currency: String,
+    /// Integer millionths of the currency unit, avoiding floating-point
+    /// ambiguity in the durable log.
+    pub amount_micros: u64,
+}
+
+/// Cumulative normalized usage for one stable agent generation/turn.
+///
+/// Provider and tool call counts are harness-observed. Token and cost fields
+/// are reported only when the provider transport supplies them.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentUsageEvent {
+    pub version: u32,
+    pub turn_generation: u32,
+    pub provider_calls: u64,
+    pub tool_calls: u64,
+    pub input_tokens: AgentReported<u64>,
+    pub output_tokens: AgentReported<u64>,
+    pub cached_input_tokens: AgentReported<u64>,
+    pub cost: AgentReported<AgentUsageCost>,
+}
+
+pub const AGENT_PROGRESS_EVENT_VERSION: u32 = 1;
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProgressActivity {
+    StartingProvider,
+    ProviderBound,
+    ProviderCall,
+    Reasoning,
+    Responding,
+    WaitingForTool,
+    WaitingForApproval,
+    FinalizingHandoff,
+    Other,
+}
+
+/// Latest known activity for one stable agent generation/turn.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentProgressEvent {
+    pub version: u32,
+    pub turn_generation: u32,
+    pub activity: AgentProgressActivity,
+    pub elapsed_millis: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub current_tool: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
 }
 
 /// A complete validated handoff retained inline in the durable event stream.
