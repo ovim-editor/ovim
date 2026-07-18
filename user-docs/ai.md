@@ -163,10 +163,16 @@ session only when the provider explicitly supports safe follow-up; otherwise
 it opens a fresh provider session with bounded context from the validated prior
 handoff. Follow-up cannot reroute the child or widen its authority.
 
-The current preview does not attempt to resume an in-flight child provider
-session after restarting Ovim. Existing child history remains intact, but the
-resumed run fails closed for new delegated controls rather than guessing which
-provider effects completed.
+Ovim does not guess how to resume an in-flight child provider session after a
+restart. Starting, running, waiting, or effect-ambiguous work is closed with a
+validated interrupted handoff; an open tool effect is recorded as unknown
+after crash. A child that was durably queued but never started is retried only
+after its exact recorded model route still passes the current catalog. Its
+captured manifest, typed delegation envelope, per-child budget, symbols, and
+diagnostics are reconstructed from the private run directory. Completed and
+interrupted children remain available to list, inspect, and follow up, while
+stale approvals and ambiguous message deliveries fail closed. Missing handoff
+notifications are recreated without duplicating an existing mailbox entry.
 
 Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
