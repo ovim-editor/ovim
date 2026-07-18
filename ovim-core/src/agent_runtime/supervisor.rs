@@ -458,6 +458,15 @@ impl AgentSupervisor {
     pub async fn wait_for_idle(&self, timeout: Duration) -> Result<bool, AgentSupervisorError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
+            // Arm the change waiter BEFORE reading state. Notify stores no
+            // permit, so a terminal notify_waiters() that fires between the read
+            // and the await would otherwise be lost, blocking to the deadline
+            // even though the run is already idle. enable() registers interest
+            // now; a notify after this point makes the await return immediately.
+            let notified = self.inner.changed.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+
             let all_terminal = self
                 .dispatches()?
                 .iter()
@@ -465,10 +474,7 @@ impl AgentSupervisor {
             if all_terminal && self.inner.live.lock().await.is_empty() {
                 return Ok(true);
             }
-            if tokio::time::timeout_at(deadline, self.inner.changed.notified())
-                .await
-                .is_err()
-            {
+            if tokio::time::timeout_at(deadline, notified).await.is_err() {
                 return Ok(false);
             }
         }
