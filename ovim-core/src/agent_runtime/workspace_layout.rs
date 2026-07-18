@@ -1749,6 +1749,7 @@ mod tests {
             )
             .unwrap();
         assert!(result.repo_adjacent);
+        fs::remove_dir(result.layout.root()).unwrap();
     }
 
     #[test]
@@ -1776,6 +1777,37 @@ mod tests {
         assert!(matches!(
             layout.preflight_with(repository.path(), &coordinates("path"), &short_path),
             Err(WorkspaceLayoutError::PathTooLong { .. })
+        ));
+
+        let long_component = WorkspaceCoordinates::new(
+            RepositoryId::parse(format!("repo_{}", "x".repeat(200))).unwrap(),
+            RunId::parse("run_component-limit").unwrap(),
+            AgentId::parse("agt_component-limit").unwrap(),
+        );
+        assert!(matches!(
+            layout.preflight_with(repository.path(), &long_component, &FakeProbe::permissive()),
+            Err(WorkspaceLayoutError::PathComponentTooLong { .. })
+        ));
+    }
+
+    #[test]
+    fn broad_filesystem_roots_are_rejected_without_creation() {
+        let repository = git_repository();
+        let filesystem_root = repository
+            .path()
+            .ancestors()
+            .last()
+            .expect("absolute temporary path has a filesystem root");
+        let layout =
+            WorkspaceStorageLayout::new(filesystem_root, WorkspaceRootOrigin::Configuration, 0);
+
+        assert!(matches!(
+            layout.preflight_with(
+                repository.path(),
+                &coordinates("broad-root"),
+                &FakeProbe::permissive()
+            ),
+            Err(WorkspaceLayoutError::UnsafeRoot { .. })
         ));
     }
 
