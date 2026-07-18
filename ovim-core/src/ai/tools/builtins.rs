@@ -289,6 +289,7 @@ fn web_search_def() -> ToolDefinition {
             network: true,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "query".to_string(),
@@ -328,6 +329,7 @@ fn web_fetch_def() -> ToolDefinition {
             network: true,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![ToolParam {
             name: "url".to_string(),
             param_type: ParamType::String,
@@ -350,6 +352,7 @@ fn bash_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::External,
+        custom_input_schema: None,
         parameters: vec![ToolParam {
             name: "command".to_string(),
             param_type: ParamType::String,
@@ -439,6 +442,7 @@ fn workspace_context_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "include_git".to_string(),
@@ -642,6 +646,7 @@ fn read_file_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "start_line".to_string(),
@@ -728,6 +733,7 @@ fn read_file_at_path_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),
@@ -851,6 +857,7 @@ fn view_image_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![ToolParam {
             name: "path".to_string(),
             param_type: ParamType::FilePath,
@@ -877,6 +884,7 @@ fn read_selection_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![],
     }
 }
@@ -946,6 +954,7 @@ fn read_diagnostics_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![ToolParam {
             name: "path".to_string(),
             param_type: ParamType::FilePath,
@@ -999,6 +1008,7 @@ fn read_project_diagnostics_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path_prefix".to_string(),
@@ -1187,6 +1197,7 @@ fn search_project_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "query".to_string(),
@@ -1270,6 +1281,7 @@ fn list_files_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),
@@ -1385,6 +1397,7 @@ fn document_symbols_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![],
     }
 }
@@ -1401,6 +1414,7 @@ fn hover_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "line".to_string(),
@@ -1431,6 +1445,7 @@ fn goto_definition_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Read,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "line".to_string(),
@@ -1465,6 +1480,7 @@ pub(crate) fn open_file_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Navigation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),
@@ -1509,6 +1525,7 @@ pub(crate) fn select_text_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Navigation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "start_line".to_string(),
@@ -1550,6 +1567,7 @@ pub(crate) fn explain_with_codebase_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Navigation,
+        custom_input_schema: None,
         parameters: vec![ToolParam {
             name: "steps".to_string(),
             param_type: ParamType::CodeExplanationSteps,
@@ -1578,6 +1596,7 @@ pub(crate) fn edit_range_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "start_line".to_string(),
@@ -1622,6 +1641,7 @@ pub(crate) fn insert_lines_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "after_line".to_string(),
@@ -1661,6 +1681,7 @@ pub(crate) fn delete_lines_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "start_line".to_string(),
@@ -1698,6 +1719,7 @@ pub(crate) fn write_file_at_path_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),
@@ -1727,6 +1749,7 @@ pub(crate) fn create_file_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),
@@ -1758,6 +1781,7 @@ pub(crate) fn apply_patch_at_path_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),
@@ -1787,6 +1811,7 @@ pub(crate) fn snapshot_file_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![ToolParam {
             name: "path".to_string(),
             param_type: ParamType::FilePath,
@@ -1806,6 +1831,7 @@ pub(crate) fn restore_file_def() -> ToolDefinition {
             network: false,
         },
         side_effect: SideEffect::Mutation,
+        custom_input_schema: None,
         parameters: vec![
             ToolParam {
                 name: "path".to_string(),

@@ -2,9 +2,11 @@ pub mod builtins;
 pub mod schema;
 
 use std::collections::HashMap;
+use std::fmt;
 
 use crate::ai::config::AiProfileConfig;
 use crate::ai::scope::{Capabilities, RequiredScope};
+use serde_json::Value;
 
 /// How a tool affects state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -21,6 +23,7 @@ pub enum SideEffect {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ParamType {
     String,
+    StringEnum(StringEnum),
     StringArray,
     Integer,
     Boolean,
@@ -34,6 +37,155 @@ pub enum ParamType {
     /// Ordered source-reference and proposed-change walkthrough entries.
     TalkThroughChangesSteps,
 }
+
+/// A non-empty, duplicate-free set of exact string choices for a tool field.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StringEnum(Vec<String>);
+
+impl StringEnum {
+    pub fn new(
+        values: impl IntoIterator<Item = impl Into<String>>,
+    ) -> Result<Self, ToolSchemaError> {
+        let values = values.into_iter().map(Into::into).collect::<Vec<_>>();
+        if values.is_empty() {
+            return Err(ToolSchemaError::EmptyStringEnum);
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        for value in &values {
+            if value.is_empty() {
+                return Err(ToolSchemaError::EmptyStringEnumValue);
+            }
+            if !seen.insert(value) {
+                return Err(ToolSchemaError::DuplicateStringEnumValue(value.clone()));
+            }
+        }
+        Ok(Self(values))
+    }
+
+    pub fn values(&self) -> &[String] {
+        &self.0
+    }
+}
+
+/// A prevalidated object schema for tools whose dynamic contract cannot be
+/// represented as a flat parameter list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StrictJsonSchema(Value);
+
+impl StrictJsonSchema {
+    pub fn new(schema: Value) -> Result<Self, ToolSchemaError> {
+        jsonschema::validator_for(&schema)
+            .map_err(|error| ToolSchemaError::InvalidJsonSchema(error.to_string()))?;
+        validate_strict_object_schemas(&schema, "$".into())?;
+        let object = schema.as_object().ok_or_else(|| {
+            ToolSchemaError::StrictObjectRequired("root schema is not an object".into())
+        })?;
+        if object.get("type") != Some(&Value::String("object".into())) {
+            return Err(ToolSchemaError::StrictObjectRequired(
+                "root schema must declare type: object".into(),
+            ));
+        }
+        validate_required_properties(object, "$".into())?;
+        Ok(Self(schema))
+    }
+
+    pub fn as_value(&self) -> &Value {
+        &self.0
+    }
+}
+
+fn validate_strict_object_schemas(schema: &Value, path: String) -> Result<(), ToolSchemaError> {
+    match schema {
+        Value::Object(object) => {
+            if object.get("type") == Some(&Value::String("object".into())) {
+                if object.get("additionalProperties") != Some(&Value::Bool(false)) {
+                    return Err(ToolSchemaError::StrictObjectRequired(format!(
+                        "{path} must set additionalProperties: false"
+                    )));
+                }
+                validate_required_properties(object, path.clone())?;
+            }
+            for (key, value) in object {
+                validate_strict_object_schemas(value, format!("{path}/{key}"))?;
+            }
+        }
+        Value::Array(values) => {
+            for (index, value) in values.iter().enumerate() {
+                validate_strict_object_schemas(value, format!("{path}/{index}"))?;
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_required_properties(
+    object: &serde_json::Map<String, Value>,
+    path: String,
+) -> Result<(), ToolSchemaError> {
+    let properties = object
+        .get("properties")
+        .and_then(Value::as_object)
+        .ok_or_else(|| {
+            ToolSchemaError::StrictObjectRequired(format!(
+                "{path} must declare an object properties map"
+            ))
+        })?;
+    let Some(required) = object.get("required") else {
+        return Ok(());
+    };
+    let required = required.as_array().ok_or_else(|| {
+        ToolSchemaError::StrictObjectRequired(format!("{path}/required must be an array"))
+    })?;
+    let mut seen = std::collections::BTreeSet::new();
+    for value in required {
+        let name = value.as_str().ok_or_else(|| {
+            ToolSchemaError::StrictObjectRequired(format!(
+                "{path}/required must contain only strings"
+            ))
+        })?;
+        if !properties.contains_key(name) {
+            return Err(ToolSchemaError::StrictObjectRequired(format!(
+                "{path}/required names missing property {name:?}"
+            )));
+        }
+        if !seen.insert(name) {
+            return Err(ToolSchemaError::StrictObjectRequired(format!(
+                "{path}/required repeats property {name:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ToolSchemaError {
+    EmptyStringEnum,
+    EmptyStringEnumValue,
+    DuplicateStringEnumValue(String),
+    InvalidJsonSchema(String),
+    StrictObjectRequired(String),
+}
+
+impl fmt::Display for ToolSchemaError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptyStringEnum => formatter.write_str("string enum has no values"),
+            Self::EmptyStringEnumValue => {
+                formatter.write_str("string enum contains an empty value")
+            }
+            Self::DuplicateStringEnumValue(value) => {
+                write!(formatter, "string enum repeats value {value:?}")
+            }
+            Self::InvalidJsonSchema(detail) => write!(formatter, "invalid JSON schema: {detail}"),
+            Self::StrictObjectRequired(detail) => {
+                write!(formatter, "JSON schema is not strict: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ToolSchemaError {}
 
 /// A single tool parameter.
 #[derive(Debug, Clone)]
@@ -51,6 +203,9 @@ pub struct ToolDefinition {
     pub description: String,
     pub required_scope: RequiredScope,
     pub side_effect: SideEffect,
+    /// Overrides `parameters` when a tool needs a nested or dynamically
+    /// generated contract. Construction proves that every object is closed.
+    pub custom_input_schema: Option<StrictJsonSchema>,
     pub parameters: Vec<ToolParam>,
 }
 
@@ -146,6 +301,7 @@ mod tests {
                 network: false,
             },
             side_effect,
+            custom_input_schema: None,
             parameters: vec![],
         }
     }

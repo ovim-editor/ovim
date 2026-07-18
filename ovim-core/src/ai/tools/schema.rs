@@ -12,7 +12,7 @@ pub fn tools_to_openai_schema(tools: &[&ToolDefinition]) -> Vec<serde_json::Valu
                 "function": {
                     "name": tool.name,
                     "description": tool.description,
-                    "parameters": params_to_json_schema(&tool.parameters),
+                    "parameters": input_schema(tool),
                 }
             })
         })
@@ -27,10 +27,17 @@ pub fn tools_to_anthropic_schema(tools: &[&ToolDefinition]) -> Vec<serde_json::V
             json!({
                 "name": tool.name,
                 "description": tool.description,
-                "input_schema": params_to_json_schema(&tool.parameters),
+                "input_schema": input_schema(tool),
             })
         })
         .collect()
+}
+
+fn input_schema(tool: &ToolDefinition) -> serde_json::Value {
+    tool.custom_input_schema
+        .as_ref()
+        .map(|schema| schema.as_value().clone())
+        .unwrap_or_else(|| params_to_json_schema(&tool.parameters))
 }
 
 fn params_to_json_schema(params: &[super::ToolParam]) -> serde_json::Value {
@@ -47,6 +54,7 @@ fn params_to_json_schema(params: &[super::ToolParam]) -> serde_json::Value {
 
     let mut schema = json!({
         "type": "object",
+        "additionalProperties": false,
         "properties": properties,
     });
     if !required.is_empty() {
@@ -59,6 +67,11 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
     match param_type {
         ParamType::String => json!({
             "type": "string",
+            "description": description,
+        }),
+        ParamType::StringEnum(values) => json!({
+            "type": "string",
+            "enum": values.values(),
             "description": description,
         }),
         ParamType::StringArray => json!({
@@ -85,6 +98,7 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
         ParamType::LineRange => json!({
             "type": "object",
             "description": description,
+            "additionalProperties": false,
             "properties": {
                 "start": { "type": "integer" },
                 "end": { "type": "integer" },
@@ -256,7 +270,7 @@ fn talk_through_changes_steps_schema(description: &str) -> serde_json::Value {
 mod tests {
     use super::*;
     use crate::ai::scope::RequiredScope;
-    use crate::ai::tools::{SideEffect, ToolParam};
+    use crate::ai::tools::{SideEffect, StrictJsonSchema, StringEnum, ToolParam};
     use crate::ai::types::FileScope;
 
     fn test_tool() -> ToolDefinition {
@@ -269,6 +283,7 @@ mod tests {
                 network: false,
             },
             side_effect: SideEffect::Read,
+            custom_input_schema: None,
             parameters: vec![
                 ToolParam {
                     name: "start_line".to_string(),
@@ -296,6 +311,7 @@ mod tests {
                 network: false,
             },
             side_effect: SideEffect::Read,
+            custom_input_schema: None,
             parameters: vec![ToolParam {
                 name: "query".to_string(),
                 param_type: ParamType::String,
@@ -315,6 +331,7 @@ mod tests {
         assert_eq!(s["type"], "function");
         assert_eq!(s["function"]["name"], "read_file");
         assert_eq!(s["function"]["parameters"]["type"], "object");
+        assert_eq!(s["function"]["parameters"]["additionalProperties"], false);
         assert!(s["function"]["parameters"]["properties"]["start_line"].is_object());
         assert!(s["function"]["parameters"]["properties"]["end_line"].is_object());
         // No required params, so "required" key should be absent
@@ -362,6 +379,94 @@ mod tests {
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["start"].is_object());
         assert!(schema["properties"]["end"].is_object());
+        assert_eq!(schema["additionalProperties"], false);
+
+        let schema = param_type_to_schema(
+            &ParamType::StringEnum(StringEnum::new(["low", "high"]).unwrap()),
+            "effort",
+        );
+        assert_eq!(schema["type"], "string");
+        assert_eq!(schema["enum"], json!(["low", "high"]));
+    }
+
+    #[test]
+    fn custom_input_schema_is_preserved_for_every_provider_shape() {
+        let custom = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "model": { "type": "string", "enum": ["fast/terra", "safe/terra"] },
+                "route": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "properties": {
+                        "effort": { "type": "string", "enum": ["low", "high"] }
+                    },
+                    "required": ["effort"]
+                }
+            },
+            "required": ["model", "route"]
+        });
+        let mut tool = test_tool();
+        tool.custom_input_schema = Some(StrictJsonSchema::new(custom.clone()).unwrap());
+
+        let openai = tools_to_openai_schema(&[&tool]);
+        let anthropic = tools_to_anthropic_schema(&[&tool]);
+        assert_eq!(openai[0]["function"]["parameters"], custom);
+        assert_eq!(anthropic[0]["input_schema"], custom);
+    }
+
+    #[test]
+    fn custom_schema_rejects_open_root_nested_objects_and_bad_required_fields() {
+        let open_root = json!({
+            "type": "object",
+            "properties": {}
+        });
+        assert!(matches!(
+            StrictJsonSchema::new(open_root),
+            Err(super::super::ToolSchemaError::StrictObjectRequired(detail))
+                if detail.contains("additionalProperties")
+        ));
+
+        let open_nested = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+                "route": {
+                    "type": "object",
+                    "properties": {}
+                }
+            }
+        });
+        assert!(matches!(
+            StrictJsonSchema::new(open_nested),
+            Err(super::super::ToolSchemaError::StrictObjectRequired(detail))
+                if detail.contains("$/properties/route")
+        ));
+
+        let missing_property = json!({
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {},
+            "required": ["model"]
+        });
+        assert!(matches!(
+            StrictJsonSchema::new(missing_property),
+            Err(super::super::ToolSchemaError::StrictObjectRequired(detail))
+                if detail.contains("missing property")
+        ));
+    }
+
+    #[test]
+    fn string_enum_rejects_empty_or_ambiguous_choices() {
+        assert_eq!(
+            StringEnum::new(Vec::<String>::new()).unwrap_err(),
+            super::super::ToolSchemaError::EmptyStringEnum
+        );
+        assert_eq!(
+            StringEnum::new(["low", "low"]).unwrap_err(),
+            super::super::ToolSchemaError::DuplicateStringEnumValue("low".into())
+        );
     }
 
     #[test]
