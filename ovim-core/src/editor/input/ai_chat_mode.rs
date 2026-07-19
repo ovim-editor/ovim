@@ -29,7 +29,15 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
     let review_mode = editor.ai_chat_review_mode();
 
     if key_event.code == KeyCode::Char('c') && key_event.modifiers.contains(Modifiers::CONTROL) {
-        editor.cancel_ai_chat_generation();
+        // Ctrl-C keeps its established "stop" meaning while agent work is
+        // active. When the composer is idle, it clears the draft in place so
+        // recalling a historical message remains easy to cancel.
+        if !editor.cancel_ai_chat_generation()
+            && !review_mode
+            && editor.ai_chat_focus() == ChatFocus::TextInput
+        {
+            editor.clear_ai_chat_input();
+        }
         return Ok(());
     }
 
@@ -533,6 +541,8 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                         }
                     }
                 } else if role == ChatRole::User {
+                    let content = messages[idx].content.clone();
+                    let images = messages[idx].images.clone();
                     // Fork: set active_leaf to parent of this user message
                     let parent_id = editor
                         .conversation()
@@ -543,8 +553,13 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     }
                     // Return to text input for the new message
                     if let Some(chat) = editor.ai_state.chat.as_mut() {
+                        chat.input = content;
+                        chat.input_cursor = chat.input.len();
+                        chat.pending_images = images;
+                        chat.history.selected_node_id = None;
                         chat.focus = ChatFocus::TextInput;
                     }
+                    editor.reset_ai_chat_slash_completion();
                 }
             }
         }
@@ -819,6 +834,27 @@ mod tests {
             .expect("open chat");
     }
 
+    fn append_recorded_test_turn(editor: &mut Editor, user: &str, assistant: &str) -> (u64, u64) {
+        let turn = editor.begin_ai_runtime_turn(user).expect("begin turn");
+        let user_event = turn.initiating_event.caused_by.clone().expect("user event");
+        editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+        let user_node = editor
+            .conversation_mut()
+            .unwrap()
+            .append_user_message(user.into());
+        editor.record_ai_chat_node(user_node, user_event);
+        let assistant_event = editor
+            .ai_runtime_append_agent_message(assistant)
+            .expect("assistant event");
+        let assistant_node = editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message(assistant.into(), "test".into());
+        editor.record_ai_chat_node(assistant_node, assistant_event);
+        editor.ai_runtime_complete_turn();
+        (user_node, assistant_node)
+    }
+
     #[test]
     fn review_mode_ignores_unmapped_keys() {
         let mut editor = Editor::default();
@@ -902,6 +938,8 @@ mod tests {
         open_test_chat(&mut editor);
         if let Some(chat) = editor.ai_state.chat.as_mut() {
             chat.waiting = true;
+            chat.input = "keep this draft".into();
+            chat.input_cursor = chat.input.len();
         }
 
         handle_ai_chat_mode(
@@ -912,10 +950,99 @@ mod tests {
 
         assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
         assert!(!editor.ai_chat_waiting());
+        assert_eq!(editor.ai_chat_input(), "keep this draft");
         assert!(editor
             .ai_chat_messages()
             .iter()
             .any(|message| message.content == "Generation stopped by user."));
+    }
+
+    #[test]
+    fn control_c_clears_idle_composer_without_closing_chat() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "discard this draft".into();
+        chat.input_cursor = 7;
+
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('c'), Modifiers::CONTROL),
+        )
+        .expect("control-c");
+
+        assert_eq!(editor.mode(), crate::mode::Mode::AiChat);
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
+        assert_eq!(editor.ai_chat_input(), "");
+        assert_eq!(editor.ai_chat_input_cursor(), 0);
+    }
+
+    #[test]
+    fn enter_on_historical_user_message_forks_and_restores_it_to_composer() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (_, first_reply) =
+            append_recorded_test_turn(&mut editor, "first question", "first answer");
+        let (second_user, _) =
+            append_recorded_test_turn(&mut editor, "question to revise", "second answer");
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "replace this existing draft".into();
+        chat.input_cursor = chat.input.len();
+        chat.history.selected_node_id = Some(second_user);
+        chat.focus = ChatFocus::MessageHistory;
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+            .expect("recall historical message");
+
+        assert_eq!(editor.ai_chat_focus(), ChatFocus::TextInput);
+        assert_eq!(editor.ai_chat_input(), "question to revise");
+        assert_eq!(editor.ai_chat_input_cursor(), "question to revise".len());
+        assert_eq!(
+            editor.conversation().unwrap().active_leaf_id(),
+            Some(first_reply)
+        );
+        assert_eq!(
+            editor
+                .ai_chat_messages()
+                .iter()
+                .map(|message| message.content.as_str())
+                .collect::<Vec<_>>(),
+            vec!["first question", "first answer"]
+        );
+    }
+
+    #[test]
+    fn control_g_opens_recalled_historical_message_in_scratch_buffer() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        let (_, first_reply) = append_recorded_test_turn(&mut editor, "first", "answer");
+        let (historical_user, _) = append_recorded_test_turn(
+            &mut editor,
+            "a longer historical message\nwith another line",
+            "done",
+        );
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.history.selected_node_id = Some(historical_user);
+        chat.focus = ChatFocus::MessageHistory;
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE))
+            .expect("recall historical message");
+        assert_eq!(
+            editor.conversation().unwrap().active_leaf_id(),
+            Some(first_reply)
+        );
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('g'), Modifiers::CONTROL),
+        )
+        .expect("open scratch editor");
+
+        assert_eq!(editor.mode(), crate::mode::Mode::Normal);
+        assert!(editor.is_chat_scratch_buffer());
+        assert_eq!(
+            editor.buffer().rope().to_string(),
+            "a longer historical message\nwith another line"
+        );
     }
 
     #[test]

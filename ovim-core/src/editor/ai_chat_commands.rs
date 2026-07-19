@@ -221,7 +221,7 @@ impl Editor {
         Ok(true)
     }
 
-    fn clear_ai_chat_input(&mut self) {
+    pub(crate) fn clear_ai_chat_input(&mut self) {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.input.clear();
             chat.input_cursor = 0;
