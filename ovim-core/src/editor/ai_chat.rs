@@ -1303,7 +1303,7 @@ mod tests {
 
         assert!(editor.finish_code_explanation(false));
         let provider_result = response_rx.await.unwrap().unwrap();
-        assert!(provider_result.contains("completed the code walkthrough"));
+        assert!(provider_result.contains("completed the walkthrough"));
         assert!(!editor.ai_chat_has_pending_code_explanation());
         let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
         assert!(matches!(
