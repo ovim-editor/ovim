@@ -388,6 +388,32 @@ impl Editor {
         true
     }
 
+    /// Interrupt only the active shell tool, leaving its agent turn alive so
+    /// the resulting failure can be observed and the agent can continue.
+    pub fn interrupt_ai_shell_process(&mut self, force: bool) -> bool {
+        let Some(chat) = self.ai_state.chat.as_mut() else {
+            return false;
+        };
+        let Some(pending) = chat.pending_shell_execution.as_ref() else {
+            return false;
+        };
+        let tool_call_id = pending.tool_call.id.clone();
+        if force {
+            pending.kill.cancel();
+        } else {
+            pending.kill.interrupt();
+        }
+        if let Some(transcript) = chat.shell_transcripts.get_mut(&tool_call_id) {
+            transcript.phase = super::ai_chat_state::ShellTranscriptPhase::InterruptRequested;
+        }
+        self.set_lsp_status(if force {
+            "Force-stopping agent shell program".into()
+        } else {
+            "Interrupting agent shell program".into()
+        });
+        true
+    }
+
     /// Permanently discard the live panel state when replacing conversations.
     fn discard_active_ai_chat(&mut self, reason: &str) {
         if let Some(job) = self
@@ -903,6 +929,7 @@ mod tests {
                 "(sleep 5; touch cancelled-marker) & echo started",
                 &workdir,
                 Some(&task_kill),
+                None,
             )
         });
 
@@ -988,6 +1015,7 @@ mod tests {
                 "perl -e 'use POSIX (); POSIX::setsid(); sleep 15' & echo started",
                 &workdir,
                 Some(&task_kill),
+                None,
             )
         });
 

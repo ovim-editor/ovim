@@ -3188,6 +3188,7 @@ mod tests {
                         model_name: "test".into(),
                     },
                     receiver: result_rx,
+                    progress: tokio::sync::mpsc::unbounded_channel().1,
                     task,
                     kill: std::sync::Arc::new(
                         super::super::ai_chat_state::ShellKillHandle::default(),

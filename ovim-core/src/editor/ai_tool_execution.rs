@@ -12,7 +12,14 @@ use super::ai_chat_tools::{ToolDispatchOutcome, ToolPathResolution};
 use super::ai_tool_path::{compact_tool_label, normalize_path, to_relative_path_for_boundary};
 use super::Editor;
 
-fn read_capped_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
+fn read_capped_output(
+    mut reader: impl Read,
+    limit: usize,
+    progress: Option<(
+        tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>,
+        super::ai_chat_state::ShellOutputStream,
+    )>,
+) -> (Vec<u8>, bool) {
     let mut retained = Vec::with_capacity(limit.min(8 * 1024));
     let mut buffer = [0_u8; 8 * 1024];
     let mut truncated = false;
@@ -21,6 +28,12 @@ fn read_capped_output(mut reader: impl Read, limit: usize) -> (Vec<u8>, bool) {
             Ok(0) | Err(_) => break,
             Ok(count) => count,
         };
+        if let Some((sender, stream)) = progress.as_ref() {
+            let _ = sender.send(super::ai_chat_state::ShellProgressEvent::Output {
+                stream: *stream,
+                bytes: buffer[..count].to_vec(),
+            });
+        }
         let available = limit.saturating_sub(retained.len());
         let keep = available.min(count);
         retained.extend_from_slice(&buffer[..keep]);
@@ -96,8 +109,9 @@ pub(super) fn run_bash_program(
     command: &str,
     workdir: &Path,
     kill: Option<&super::ai_chat_state::ShellKillHandle>,
+    progress: Option<tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>>,
 ) -> ToolResult {
-    if kill.is_some_and(super::ai_chat_state::ShellKillHandle::is_cancelled) {
+    if kill.is_some_and(super::ai_chat_state::ShellKillHandle::is_interrupted) {
         return ToolResult::Error("Execution cancelled".into());
     }
     let shell = std::env::var_os("SHELL")
@@ -108,6 +122,7 @@ pub(super) fn run_bash_program(
         .arg("-lc")
         .arg(command)
         .current_dir(workdir)
+        .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
     #[cfg(unix)]
@@ -136,10 +151,20 @@ pub(super) fn run_bash_program(
             return ToolResult::Error("Execution cancelled".into());
         }
     }
+    if let Some(sender) = progress.as_ref() {
+        let _ = sender.send(super::ai_chat_state::ShellProgressEvent::Spawned { pid: child.id() });
+    }
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
-    let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
-    let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
+    let stdout_progress = progress
+        .clone()
+        .map(|sender| (sender, super::ai_chat_state::ShellOutputStream::Stdout));
+    let stderr_progress =
+        progress.map(|sender| (sender, super::ai_chat_state::ShellOutputStream::Stderr));
+    let stdout_task =
+        std::thread::spawn(move || read_capped_output(stdout, 48 * 1024, stdout_progress));
+    let stderr_task =
+        std::thread::spawn(move || read_capped_output(stderr, 16 * 1024, stderr_progress));
     // Drain the pipes BEFORE reaping the leader. While the leader is
     // un-reaped (running or zombie) the kernel reserves its pid — and
     // therefore its pgid — so a cancel landing anywhere in this window can
@@ -725,8 +750,8 @@ impl Editor {
         // bound even though the child is allowed to finish normally.
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
-        let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024));
-        let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024));
+        let stdout_task = std::thread::spawn(move || read_capped_output(stdout, 48 * 1024, None));
+        let stderr_task = std::thread::spawn(move || read_capped_output(stderr, 16 * 1024, None));
         let status = match child.wait() {
             Ok(status) => status,
             Err(error) => return ToolResult::Error(format!("failed waiting for shell: {error}")),

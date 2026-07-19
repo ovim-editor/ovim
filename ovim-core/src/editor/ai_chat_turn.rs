@@ -937,17 +937,23 @@ impl Editor {
         artifact_store: crate::run_log::ArtifactStore,
     ) {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let kill = std::sync::Arc::new(super::ai_chat_state::ShellKillHandle::default());
         let kill_for_task = kill.clone();
+        let task_command = command.clone();
+        let task_workdir = workdir.clone();
         let task = tokio::task::spawn_blocking(move || {
-            let observation = match crate::run_log::capture_workspace(&workdir, &artifact_store) {
+            let observation = match crate::run_log::capture_workspace(&task_workdir, &artifact_store) {
                 Ok(before) => {
                     let result = super::ai_tool_execution::run_bash_program(
-                        &command,
-                        &workdir,
+                        &task_command,
+                        &task_workdir,
                         Some(&kill_for_task),
+                        Some(progress_tx.clone()),
                     );
-                    match crate::run_log::capture_workspace(&workdir, &artifact_store) {
+                    let _ = progress_tx
+                        .send(super::ai_chat_state::ShellProgressEvent::CapturingChanges);
+                    match crate::run_log::capture_workspace(&task_workdir, &artifact_store) {
                         Ok(after) => super::ai_chat_state::ShellExecutionObservation {
                             result,
                             delta: Some(before.diff(after)),
@@ -976,10 +982,15 @@ impl Editor {
             let _ = result_tx.send(observation);
         });
         if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.shell_transcripts.insert(
+                call.id.clone(),
+                super::ai_chat_state::ShellTranscript::new(call.clone(), command, workdir),
+            );
             chat.pending_shell_execution = Some(super::ai_chat_state::PendingShellExecution {
                 tool_call: call,
                 continuation,
                 receiver: result_rx,
+                progress: progress_rx,
                 task,
                 kill,
             });
@@ -990,17 +1001,42 @@ impl Editor {
 
     fn poll_pending_shell_execution(&mut self) -> bool {
         let received = {
-            let Some(pending) = self
-                .ai_state
-                .chat
-                .as_mut()
-                .and_then(|chat| chat.pending_shell_execution.as_mut())
-            else {
+            let Some(chat) = self.ai_state.chat.as_mut() else {
                 return false;
             };
+            let Some(pending) = chat.pending_shell_execution.as_mut() else {
+                return false;
+            };
+            let tool_call_id = pending.tool_call.id.clone();
+            let mut progress_changed = false;
+            while let Ok(event) = pending.progress.try_recv() {
+                progress_changed = true;
+                let Some(transcript) = chat.shell_transcripts.get_mut(&tool_call_id) else {
+                    continue;
+                };
+                match event {
+                    super::ai_chat_state::ShellProgressEvent::Spawned { pid } => {
+                        transcript.pid = Some(pid);
+                        if transcript.phase
+                            != super::ai_chat_state::ShellTranscriptPhase::InterruptRequested
+                        {
+                            transcript.phase = super::ai_chat_state::ShellTranscriptPhase::Running;
+                        }
+                    }
+                    super::ai_chat_state::ShellProgressEvent::Output { stream, bytes } => {
+                        transcript.append(stream, bytes);
+                    }
+                    super::ai_chat_state::ShellProgressEvent::CapturingChanges => {
+                        transcript.phase =
+                            super::ai_chat_state::ShellTranscriptPhase::CapturingChanges;
+                    }
+                }
+            }
             match pending.receiver.try_recv() {
                 Ok(result) => Some(result),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {
+                    return progress_changed;
+                }
                 Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
                     Some(super::ai_chat_state::ShellExecutionObservation {
                         result: crate::ai::tools::ToolResult::Error(
@@ -1022,6 +1058,30 @@ impl Editor {
             .and_then(|chat| chat.pending_shell_execution.take())
             .expect("pending shell exists");
         let observation = received.expect("shell result");
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            let phase = if observation.outcome_unknown {
+                super::ai_chat_state::ShellTranscriptPhase::OutcomeUnknown
+            } else if pending.kill.is_interrupted() {
+                super::ai_chat_state::ShellTranscriptPhase::Interrupted
+            } else {
+                match &observation.result {
+                    crate::ai::tools::ToolResult::Success(_) => {
+                        super::ai_chat_state::ShellTranscriptPhase::Succeeded
+                    }
+                    crate::ai::tools::ToolResult::Error(_) => {
+                        super::ai_chat_state::ShellTranscriptPhase::Failed
+                    }
+                }
+            };
+            if let Some(transcript) = chat.shell_transcripts.get_mut(&pending.tool_call.id) {
+                transcript.finish(phase);
+            }
+            chat.shell_transcript_lru
+                .retain(|id| id != &pending.tool_call.id);
+            chat.shell_transcript_lru
+                .push_back(pending.tool_call.id.clone());
+            chat.evict_old_shell_transcripts();
+        }
         let (runtime_turn, runtime_tool) = match &pending.continuation {
             super::ai_chat_state::ShellExecutionContinuation::Dynamic {
                 runtime_turn,

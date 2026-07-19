@@ -96,6 +96,7 @@ pub struct PendingShellExecution {
     pub tool_call: ToolCallInfo,
     pub continuation: ShellExecutionContinuation,
     pub receiver: tokio::sync::oneshot::Receiver<ShellExecutionObservation>,
+    pub progress: tokio::sync::mpsc::UnboundedReceiver<ShellProgressEvent>,
     pub task: tokio::task::JoinHandle<()>,
     /// Kills the spawned command itself: aborting a started `spawn_blocking`
     /// task never stops the closure, so cancellation must reach the child.
@@ -122,6 +123,7 @@ struct ShellKillState {
     /// every living group member has exited. The pid is forgotten in the
     /// same critical section that reaps the leader (`reap_locked`).
     child_pid: Option<u32>,
+    interrupt_requested: bool,
     cancelled: bool,
 }
 
@@ -131,7 +133,7 @@ impl ShellKillHandle {
     pub fn publish_child(&self, pid: u32) -> bool {
         let mut state = self.state.lock().expect("shell kill handle poisoned");
         state.child_pid = Some(pid);
-        !state.cancelled
+        !state.cancelled && !state.interrupt_requested
     }
 
     /// Attempt one non-blocking reap of the published child under the
@@ -165,6 +167,11 @@ impl ShellKillHandle {
             .cancelled
     }
 
+    pub fn is_interrupted(&self) -> bool {
+        let state = self.state.lock().expect("shell kill handle poisoned");
+        state.interrupt_requested || state.cancelled
+    }
+
     /// The pid last published by the blocking task, if the child is alive.
     pub fn published_child(&self) -> Option<u32> {
         self.state
@@ -184,7 +191,27 @@ impl ShellKillHandle {
             kill_shell_process_group(pid);
         }
     }
+
+    /// Request the process group's normal terminal interrupt without taking
+    /// ownership away from the final reap or a later force-kill escalation.
+    pub fn interrupt(&self) {
+        let mut state = self.state.lock().expect("shell kill handle poisoned");
+        state.interrupt_requested = true;
+        if let Some(pid) = state.child_pid {
+            interrupt_shell_process_group(pid);
+        }
+    }
 }
+
+#[cfg(unix)]
+fn interrupt_shell_process_group(pid: u32) {
+    use nix::sys::signal::{killpg, Signal};
+    use nix::unistd::Pid;
+    let _ = killpg(Pid::from_raw(pid as i32), Signal::SIGINT);
+}
+
+#[cfg(not(unix))]
+fn interrupt_shell_process_group(_pid: u32) {}
 
 /// SIGKILL the process group led by `pid`. The shell child is spawned as a
 /// group leader, so this stops the command and everything it forked.
@@ -214,6 +241,108 @@ pub struct ShellExecutionObservation {
     pub capture_error: Option<String>,
     /// The command may have run, but its resulting disk state was not captured.
     pub outcome_unknown: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellOutputStream {
+    Stdout,
+    Stderr,
+}
+
+#[derive(Debug)]
+pub enum ShellProgressEvent {
+    Spawned {
+        pid: u32,
+    },
+    Output {
+        stream: ShellOutputStream,
+        bytes: Vec<u8>,
+    },
+    CapturingChanges,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellTranscriptPhase {
+    Preparing,
+    Running,
+    InterruptRequested,
+    CapturingChanges,
+    Succeeded,
+    Failed,
+    Interrupted,
+    OutcomeUnknown,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellTranscriptChunk {
+    pub stream: ShellOutputStream,
+    pub bytes: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ShellTranscript {
+    pub tool_call: ToolCallInfo,
+    pub command: String,
+    pub workdir: PathBuf,
+    pub phase: ShellTranscriptPhase,
+    pub pid: Option<u32>,
+    pub started_at: std::time::Instant,
+    pub last_output_at: Option<std::time::Instant>,
+    pub completed_at: Option<std::time::Instant>,
+    pub chunks: VecDeque<ShellTranscriptChunk>,
+    pub retained_bytes: usize,
+    pub dropped_bytes: usize,
+    pub expired: bool,
+}
+
+impl ShellTranscript {
+    pub const MAX_RETAINED_BYTES: usize = 512 * 1024;
+
+    pub fn new(tool_call: ToolCallInfo, command: String, workdir: PathBuf) -> Self {
+        Self {
+            tool_call,
+            command,
+            workdir,
+            phase: ShellTranscriptPhase::Preparing,
+            pid: None,
+            started_at: std::time::Instant::now(),
+            last_output_at: None,
+            completed_at: None,
+            chunks: VecDeque::new(),
+            retained_bytes: 0,
+            dropped_bytes: 0,
+            expired: false,
+        }
+    }
+
+    pub fn append(&mut self, stream: ShellOutputStream, bytes: Vec<u8>) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.last_output_at = Some(std::time::Instant::now());
+        self.retained_bytes = self.retained_bytes.saturating_add(bytes.len());
+        self.chunks
+            .push_back(ShellTranscriptChunk { stream, bytes });
+        while self.retained_bytes > Self::MAX_RETAINED_BYTES {
+            let Some(chunk) = self.chunks.pop_front() else {
+                break;
+            };
+            self.retained_bytes = self.retained_bytes.saturating_sub(chunk.bytes.len());
+            self.dropped_bytes = self.dropped_bytes.saturating_add(chunk.bytes.len());
+        }
+    }
+
+    pub fn finish(&mut self, phase: ShellTranscriptPhase) {
+        self.phase = phase;
+        self.completed_at = Some(std::time::Instant::now());
+    }
+
+    pub fn expire_output(&mut self) {
+        self.dropped_bytes = self.dropped_bytes.saturating_add(self.retained_bytes);
+        self.retained_bytes = 0;
+        self.chunks.clear();
+        self.expired = true;
+    }
 }
 
 /// An Exa request running off the editor/event-loop thread.
@@ -502,6 +631,11 @@ pub struct AiChatState {
     pub pending_tool_approval: Option<PendingToolApproval>,
     pub pending_auto_mode_classification: Option<PendingAutoModeClassification>,
     pub pending_shell_execution: Option<PendingShellExecution>,
+    /// Bounded live/completed shell output keyed by tool-call id.
+    pub shell_transcripts: HashMap<String, ShellTranscript>,
+    /// Oldest completed shell transcript first; running transcripts are never
+    /// placed here or evicted.
+    pub shell_transcript_lru: VecDeque<String>,
     pub pending_web_execution: Option<PendingWebExecution>,
     pub pending_subagent_control: Option<PendingSubagentControl>,
     /// Interactive code walkthrough currently blocking the invoking tool.
@@ -537,6 +671,31 @@ pub struct AiChatState {
 }
 
 impl AiChatState {
+    const MAX_COMPLETED_SHELL_TRANSCRIPTS: usize = 10;
+    const MAX_COMPLETED_SHELL_BYTES: usize = 2 * 1024 * 1024;
+
+    pub fn evict_old_shell_transcripts(&mut self) {
+        loop {
+            let completed_bytes: usize = self
+                .shell_transcript_lru
+                .iter()
+                .filter_map(|id| self.shell_transcripts.get(id))
+                .map(|transcript| transcript.retained_bytes)
+                .sum();
+            if self.shell_transcript_lru.len() <= Self::MAX_COMPLETED_SHELL_TRANSCRIPTS
+                && completed_bytes <= Self::MAX_COMPLETED_SHELL_BYTES
+            {
+                break;
+            }
+            let Some(id) = self.shell_transcript_lru.pop_front() else {
+                break;
+            };
+            if let Some(transcript) = self.shell_transcripts.get_mut(&id) {
+                transcript.expire_output();
+            }
+        }
+    }
+
     pub(crate) fn turn_blocker(&self) -> Option<AiTurnBlocker> {
         let blockers = [
             self.pending_tool_approval
@@ -634,6 +793,8 @@ impl AiChatState {
             pending_tool_approval: None,
             pending_auto_mode_classification: None,
             pending_shell_execution: None,
+            shell_transcripts: HashMap::new(),
+            shell_transcript_lru: VecDeque::new(),
             pending_web_execution: None,
             pending_subagent_control: None,
             pending_code_explanation: None,
@@ -814,5 +975,45 @@ impl AgentEditTracker {
                 i += 1;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod shell_transcript_tests {
+    use super::*;
+
+    fn call(id: &str) -> ToolCallInfo {
+        ToolCallInfo {
+            id: id.into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "echo test" }),
+        }
+    }
+
+    #[test]
+    fn transcript_drops_oldest_output_when_per_process_limit_is_exceeded() {
+        let mut transcript = ShellTranscript::new(call("shell-1"), "echo test".into(), ".".into());
+        let chunk_size = 8 * 1024;
+        for marker in 0..(ShellTranscript::MAX_RETAINED_BYTES / chunk_size + 2) {
+            transcript.append(ShellOutputStream::Stdout, vec![marker as u8; chunk_size]);
+        }
+
+        assert!(transcript.retained_bytes <= ShellTranscript::MAX_RETAINED_BYTES);
+        assert_eq!(transcript.dropped_bytes, 2 * chunk_size);
+        assert_eq!(transcript.chunks.front().unwrap().bytes[0], 2);
+    }
+
+    #[test]
+    fn expiring_a_transcript_keeps_metadata_but_releases_output() {
+        let mut transcript = ShellTranscript::new(call("shell-1"), "echo test".into(), ".".into());
+        transcript.append(ShellOutputStream::Stderr, b"warning\n".to_vec());
+        transcript.finish(ShellTranscriptPhase::Succeeded);
+        transcript.expire_output();
+
+        assert!(transcript.expired);
+        assert!(transcript.chunks.is_empty());
+        assert_eq!(transcript.retained_bytes, 0);
+        assert_eq!(transcript.command, "echo test");
+        assert_eq!(transcript.phase, ShellTranscriptPhase::Succeeded);
     }
 }
