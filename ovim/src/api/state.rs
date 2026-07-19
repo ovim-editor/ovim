@@ -294,6 +294,16 @@ pub struct CodeExplanationSnapshot {
     pub start_line: usize,
     pub end_line: usize,
     pub comment: String,
+    #[serde(default)]
+    pub discussion_state: String,
+    #[serde(default)]
+    pub question_count: usize,
+    #[serde(default)]
+    pub question: Option<String>,
+    #[serde(default)]
+    pub answer: Option<String>,
+    #[serde(default)]
+    pub draft: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

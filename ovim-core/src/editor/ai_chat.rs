@@ -325,11 +325,12 @@ impl Editor {
             }
             self.ai_state.active_selection = None;
             match pending.continuation {
-                super::ai_chat_state::CodeExplanationContinuation::Dynamic {
+                None => {}
+                Some(super::ai_chat_state::CodeExplanationContinuation::Dynamic {
                     runtime_tool,
                     runtime_turn,
                     response,
-                } => {
+                }) => {
                     if let Err(error) = self.ai_state.agent_runtime.fail_tool(
                         &runtime_turn,
                         &runtime_tool,
@@ -342,12 +343,12 @@ impl Editor {
                     }
                     let _ = response.send(Err("cancelled by user".into()));
                 }
-                super::ai_chat_state::CodeExplanationContinuation::Batch {
+                Some(super::ai_chat_state::CodeExplanationContinuation::Batch {
                     runtime_tool,
                     runtime_turn,
                     remaining_tool_calls,
                     ..
-                } => {
+                }) => {
                     if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
                     {
                         if let Err(error) =
@@ -367,7 +368,7 @@ impl Editor {
                     unresolved.extend(remaining_tool_calls);
                     self.append_synthetic_tool_results(&unresolved, "Execution cancelled");
                 }
-                super::ai_chat_state::CodeExplanationContinuation::Replay => {}
+                Some(super::ai_chat_state::CodeExplanationContinuation::Replay) => {}
             }
         }
 
@@ -695,13 +696,17 @@ mod tests {
             tool_call: first,
             steps: Vec::new(),
             current: 0,
+            threads: Vec::new(),
+            interaction: super::super::ai_chat_state::CodeExplanationInteraction::Navigating,
             original_active_buffer_id: buffer_id,
-            continuation: super::super::ai_chat_state::CodeExplanationContinuation::Batch {
-                runtime_tool: None,
-                runtime_turn: None,
-                remaining_tool_calls: vec![follow_up],
-                model_name: "test".into(),
-            },
+            continuation: Some(
+                super::super::ai_chat_state::CodeExplanationContinuation::Batch {
+                    runtime_tool: None,
+                    runtime_turn: None,
+                    remaining_tool_calls: vec![follow_up],
+                    model_name: "test".into(),
+                },
+            ),
         });
 
         assert!(editor.cancel_ai_chat_generation());

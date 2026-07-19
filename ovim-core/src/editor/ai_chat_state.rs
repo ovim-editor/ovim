@@ -266,13 +266,33 @@ pub enum CodeExplanationContinuation {
     Replay,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeExplanationInteraction {
+    Navigating,
+    Composing { input: String, cursor: usize },
+    Answering { step: usize, exchange: usize },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeExplanationExchange {
+    pub question: String,
+    pub answer: String,
+    pub failed: bool,
+}
+
 pub struct PendingCodeExplanation {
     pub tool_call: ToolCallInfo,
     pub steps: Vec<super::code_explanation::CodeExplanationStep>,
     pub current: usize,
+    /// Per-step discussion projected into the walkthrough card. The same
+    /// questions and answers are also committed to the main conversation.
+    pub threads: Vec<Vec<CodeExplanationExchange>>,
+    pub interaction: CodeExplanationInteraction,
     /// Tool navigation must not silently retarget later agent mutations.
     pub original_active_buffer_id: BufferId,
-    pub continuation: CodeExplanationContinuation,
+    /// Present only while the original explain_with_codebase call is blocked.
+    /// A question consumes this continuation but leaves the walkthrough open.
+    pub continuation: Option<CodeExplanationContinuation>,
 }
 
 #[derive(Debug, Clone)]
@@ -533,6 +553,7 @@ impl AiChatState {
                 .map(|_| AiTurnBlocker::WebExecution),
             self.pending_code_explanation
                 .as_ref()
+                .and_then(|pending| pending.continuation.as_ref())
                 .map(|_| AiTurnBlocker::CodeExplanation),
         ];
         debug_assert!(

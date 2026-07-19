@@ -2572,13 +2572,57 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
             }),
         code_explanation: editor
             .ai_code_explanation_view()
-            .map(|view| CodeExplanationSnapshot {
-                current: view.current,
-                total: view.total,
-                path: view.path,
-                start_line: view.start_line,
-                end_line: view.end_line,
-                comment: view.comment,
+            .map(|view| {
+                let (discussion_state, question_count, question, answer, draft) =
+                    match view.discussion {
+                        ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+                            question_count,
+                            latest_question,
+                            latest_answer,
+                            ..
+                        } => (
+                            "navigating".to_string(),
+                            question_count,
+                            latest_question,
+                            latest_answer,
+                            None,
+                        ),
+                        ovim_core::editor::CodeExplanationDiscussionView::Composing {
+                            input,
+                            question_count,
+                            ..
+                        } => (
+                            "composing".to_string(),
+                            question_count,
+                            None,
+                            None,
+                            Some(input),
+                        ),
+                        ovim_core::editor::CodeExplanationDiscussionView::Answering {
+                            question,
+                            answer,
+                            question_count,
+                        } => (
+                            "answering".to_string(),
+                            question_count,
+                            Some(question),
+                            Some(answer),
+                            None,
+                        ),
+                    };
+                CodeExplanationSnapshot {
+                    current: view.current,
+                    total: view.total,
+                    path: view.path,
+                    start_line: view.start_line,
+                    end_line: view.end_line,
+                    comment: view.comment,
+                    discussion_state,
+                    question_count,
+                    question,
+                    answer,
+                    draft,
+                }
             }),
         queued,
         messages,

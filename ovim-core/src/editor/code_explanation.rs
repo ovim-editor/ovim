@@ -33,6 +33,27 @@ pub struct CodeExplanationView {
     pub start_line: usize,
     pub end_line: usize,
     pub comment: String,
+    pub discussion: CodeExplanationDiscussionView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeExplanationDiscussionView {
+    Navigating {
+        question_count: usize,
+        latest_question: Option<String>,
+        latest_answer: Option<String>,
+        latest_failed: bool,
+    },
+    Composing {
+        input: String,
+        cursor: usize,
+        question_count: usize,
+    },
+    Answering {
+        question: String,
+        answer: String,
+        question_count: usize,
+    },
 }
 
 /// Pure walkthrough-card geometry shared by validation and rendering.

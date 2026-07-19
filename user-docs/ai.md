@@ -311,6 +311,16 @@ Completed tool calls appear as compact summary rows in chat. Move focus into
 message history, select a tool row, and press Enter to expand or collapse its
 arguments and result.
 
+Code walkthroughs keep the referenced source selected while you move between
+steps with Left/Right (or `h`/`l`). Press Space to ask about the current step;
+the step explanation is attached as quoted context, Enter sends, Shift-Enter
+adds a line, and Escape cancels the draft. The root chat agent answers in the
+walkthrough card using the conversation it already built. Questions and
+answers remain in normal conversation history after the walkthrough ends, so
+they are available when the agent returns to implementation. Walkthrough
+questions permit read-only investigation but reject navigation, mutations,
+external actions, and delegated-agent control until the answer finishes.
+
 Drag across text in message history to select it. Releasing the mouse copies
 the selection to the system clipboard; `Ctrl-Y`, `y` while history is focused,
 or `Cmd-C` also copies the active selection. Without a text selection,

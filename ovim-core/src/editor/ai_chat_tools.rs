@@ -108,6 +108,7 @@ impl Editor {
     ) -> Vec<serde_json::Value> {
         let caps = self.build_chat_capabilities();
         let direct_codex = profile.provider == crate::ai::AiProviderKind::Codex;
+        let walkthrough_answer = self.ai_code_explanation_answering();
         let mut tools = self
             .ai_state
             .tool_registry
@@ -123,7 +124,11 @@ impl Editor {
             })
             .cloned()
             .collect::<Vec<_>>();
-        tools.extend(self.ai_subagent_parent_tools());
+        if walkthrough_answer {
+            tools.retain(|tool| tool.side_effect == SideEffect::Read);
+        } else {
+            tools.extend(self.ai_subagent_parent_tools());
+        }
         let safe_range = self.ai_code_explanation_safe_range_lines();
         if let Some(tool) = tools
             .iter_mut()
@@ -448,6 +453,18 @@ impl Editor {
         tc: &ToolCallInfo,
         approved_once_root: Option<&PathBuf>,
     ) -> ToolDispatchOutcome {
+        if self.ai_code_explanation_answering()
+            && self
+                .ai_state
+                .tool_registry
+                .get(&tc.name)
+                .is_none_or(|tool| tool.side_effect != SideEffect::Read)
+        {
+            return ToolDispatchOutcome::Completed(ToolResult::Error(format!(
+                "tool '{}' is unavailable while answering a walkthrough question; use read-only investigation",
+                tc.name
+            )));
+        }
         if self.is_ai_subagent_control_tool(&tc.name) {
             return ToolDispatchOutcome::Completed(self.execute_ai_subagent_control_tool(tc));
         }

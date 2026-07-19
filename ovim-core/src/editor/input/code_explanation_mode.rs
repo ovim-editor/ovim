@@ -1,6 +1,6 @@
 use crate::editor::Editor;
 use crate::mode::Mode;
-use crate::{KeyCode, KeyEvent, MouseEventKind};
+use crate::{KeyCode, KeyEvent, Modifiers, MouseEventKind};
 
 /// Restores the mode that owns an active code walkthrough.
 ///
@@ -24,20 +24,76 @@ pub(super) fn handle_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
         return false;
     }
 
-    match key_event.code {
-        KeyCode::Left | KeyCode::Char('h') => {
-            editor.move_code_explanation(false);
+    let composing = editor.ai_code_explanation_view().is_some_and(|view| {
+        matches!(
+            view.discussion,
+            crate::editor::CodeExplanationDiscussionView::Composing { .. }
+        )
+    });
+
+    if composing {
+        match key_event.code {
+            KeyCode::Esc => {
+                editor.cancel_code_explanation_question();
+            }
+            KeyCode::Enter if key_event.modifiers.contains(Modifiers::SHIFT) => {
+                editor.insert_code_explanation_question_char('\n');
+            }
+            KeyCode::Char('j') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+                editor.insert_code_explanation_question_char('\n');
+            }
+            KeyCode::Enter => {
+                if let Err(error) = editor.submit_code_explanation_question() {
+                    editor.set_lsp_status(error);
+                }
+            }
+            KeyCode::Backspace => {
+                editor.backspace_code_explanation_question();
+            }
+            KeyCode::Left => {
+                editor.move_code_explanation_question_cursor(false);
+            }
+            KeyCode::Right => {
+                editor.move_code_explanation_question_cursor(true);
+            }
+            KeyCode::Char(character)
+                if !key_event.modifiers.contains(Modifiers::CONTROL)
+                    && !key_event.modifiers.contains(Modifiers::ALT) =>
+            {
+                editor.insert_code_explanation_question_char(character);
+            }
+            _ => {}
         }
-        KeyCode::Right | KeyCode::Char('l') => {
-            editor.move_code_explanation(true);
+    } else {
+        match key_event.code {
+            KeyCode::Left | KeyCode::Char('h') => {
+                editor.move_code_explanation(false);
+            }
+            KeyCode::Right | KeyCode::Char('l') => {
+                editor.move_code_explanation(true);
+            }
+            KeyCode::Enter => {
+                if editor.ai_code_explanation_answering() {
+                    editor
+                        .set_lsp_status("Wait for the walkthrough answer before continuing".into());
+                } else {
+                    editor.advance_or_finish_code_explanation();
+                }
+            }
+            KeyCode::Esc => {
+                editor.finish_code_explanation(true);
+            }
+            KeyCode::Char(' ') => {
+                if editor.ai_code_explanation_answering() {
+                    editor.set_lsp_status(
+                        "The current walkthrough question is still being answered".into(),
+                    );
+                } else {
+                    editor.begin_code_explanation_question();
+                }
+            }
+            _ => {}
         }
-        KeyCode::Enter => {
-            editor.advance_or_finish_code_explanation();
-        }
-        KeyCode::Esc => {
-            editor.finish_code_explanation(true);
-        }
-        _ => {}
     }
 
     // Step navigation positions the viewport explicitly, and ignored keys must

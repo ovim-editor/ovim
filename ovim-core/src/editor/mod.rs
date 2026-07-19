@@ -100,7 +100,9 @@ pub use ai_chat_state::{AiChatActivity, QueuedChatInput, QueuedChatInputKind};
 pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use ai_subagents::PreparedHeadlessAgentControl;
 pub use build_state::PendingShellCommand;
-pub use code_explanation::{CodeExplanationCardLayout, CodeExplanationView};
+pub use code_explanation::{
+    CodeExplanationCardLayout, CodeExplanationDiscussionView, CodeExplanationView,
+};
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;
 pub use editing_state::{EditingState, PendingChangeRepeat};

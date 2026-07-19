@@ -9,7 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
-use super::helpers::grapheme_col_to_display_col;
+use super::helpers::{grapheme_col_to_display_col, truncate_to_width};
 use super::layout::OverlayContext;
 
 /// Renders hover information as a floating window positioned near the cursor
@@ -686,11 +686,84 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
     ) else {
         return;
     };
+    let inner_width = layout.width.saturating_sub(2) as usize;
+    let (discussion, hints, expand_discussion) = match &view.discussion {
+        ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+            question_count,
+            latest_question,
+            latest_answer,
+            latest_failed,
+        } => {
+            let discussion = latest_answer.as_ref().map(|answer| {
+                let question = latest_question.as_deref().unwrap_or("Question");
+                let question_budget = inner_width.saturating_div(3).max(8);
+                let question = truncate_to_width(question, question_budget);
+                let label = if *latest_failed { "Error" } else { "AI" };
+                compact_walkthrough_line(
+                    &format!("Q{question_count}: {question} · {label}: "),
+                    answer,
+                    inner_width,
+                )
+            });
+            (
+                discussion,
+                "←/→ previous/next   Space ask   Enter next/done   Esc dismiss",
+                false,
+            )
+        }
+        ovim_core::editor::CodeExplanationDiscussionView::Composing {
+            input,
+            cursor,
+            question_count,
+        } => {
+            let mut input_with_cursor = input.clone();
+            input_with_cursor.insert((*cursor).min(input_with_cursor.len()), '▏');
+            (
+                Some(compact_walkthrough_line(
+                    &format!("Ask {}: ", question_count + 1),
+                    &input_with_cursor,
+                    inner_width,
+                )),
+                "Enter send   Shift-Enter newline   Esc cancel",
+                false,
+            )
+        }
+        ovim_core::editor::CodeExplanationDiscussionView::Answering { answer, .. } => {
+            let answer = if answer.is_empty() {
+                "Thinking…".to_string()
+            } else {
+                answer.split_whitespace().collect::<Vec<_>>().join(" ")
+            };
+            (
+                Some(format!("AI: {answer}")),
+                "Answering…   ←/→ browse steps   Esc dismiss",
+                true,
+            )
+        }
+    };
+    let discussion_rows = discussion.as_ref().map_or(0, |discussion| {
+        if expand_discussion {
+            ovim_core::editor::ai_chat_input::wrap_chat_input_rows(
+                discussion,
+                inner_width.max(1),
+                editor.options.tab_width,
+            )
+            .len()
+            .min(3) as u16
+        } else {
+            1
+        }
+    });
+    let height = layout
+        .height
+        .saturating_add(discussion_rows)
+        .min(10)
+        .min(buffer.height);
     let area = Rect::new(
         buffer.x + buffer.width.saturating_sub(layout.width) / 2,
-        buffer.bottom().saturating_sub(layout.height),
+        buffer.bottom().saturating_sub(height),
         layout.width,
-        layout.height,
+        height,
     );
     let range = if view.start_line == view.end_line {
         format!("{}:{}", view.path, view.start_line)
@@ -701,20 +774,26 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
         " Code walkthrough {}/{} · {range} ",
         view.current, view.total
     );
-    let content = vec![
-        Line::from(Span::styled(
-            view.comment,
-            Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
-        )),
+    let mut content = vec![Line::from(Span::styled(
+        view.comment,
+        Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
+    ))];
+    if let Some(discussion) = discussion {
+        content.push(Line::from(Span::styled(
+            discussion,
+            Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg),
+        )));
+    }
+    content.extend([
         Line::from(""),
         Line::from(Span::styled(
-            "←/→ previous/next   Enter next/done   Esc dismiss",
+            hints,
             Style::default()
                 .fg(MODAL_COLORS.action)
                 .bg(MODAL_COLORS.bg)
                 .add_modifier(Modifier::BOLD),
         )),
-    ];
+    ]);
     let card = Paragraph::new(content).wrap(Wrap { trim: false }).block(
         Block::default()
             .borders(Borders::ALL)
@@ -730,6 +809,18 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
     );
     frame.render_widget(Clear, area);
     frame.render_widget(card, area);
+}
+
+fn compact_walkthrough_line(label: &str, text: &str, width: usize) -> String {
+    let single_line = text.split_whitespace().collect::<Vec<_>>().join(" ");
+    let available = width.saturating_sub(UnicodeWidthStr::width(label));
+    let (truncated, ellipsis) =
+        if UnicodeWidthStr::width(single_line.as_str()) > available && available > 0 {
+            (truncate_to_width(&single_line, available - 1), "…")
+        } else {
+            (truncate_to_width(&single_line, available), "")
+        };
+    format!("{label}{truncated}{ellipsis}")
 }
 
 /// First-run and credential-recovery dialog for Exa-backed web search.
@@ -888,6 +979,9 @@ pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
 mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
+    use crate::editor::Editor;
+    use ovim_core::ai::chat_types::{ChatOpts, ToolCallInfo};
+
     /// Regression test: heights 7 and 8 used to panic in `render_modal_dialog`
     /// because the clamp minimum (7) exceeded the available maximum
     /// (`height - 2`). Height 6 exercises the too-small early return.
@@ -906,5 +1000,92 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_space_opens_visible_step_question_composer() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("demo.rs");
+        std::fs::write(&file, "fn demo() {}\n").unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let profile = editor.ai_state.active_profile.clone();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .get_mut(&profile)
+            .unwrap()
+            .scope
+            .files = ovim_core::ai::FileScope::Project;
+        editor.set_last_layout(
+            ovim_core::Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 22,
+            },
+            0,
+            100,
+            0,
+        );
+        let call = ToolCallInfo {
+            id: "walkthrough".into(),
+            name: "explain_with_codebase".into(),
+            arguments: serde_json::json!({
+                "steps": [{
+                    "path": "demo.rs",
+                    "start_line": 1,
+                    "comment": "This function is the entry point."
+                }]
+            }),
+        };
+        let key = {
+            let chat = editor.ai_state.chat.as_ref().unwrap();
+            (chat.origin_buffer_id, chat.opts.name.clone())
+        };
+        let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+        conversation.append_assistant_message_with_tools(
+            String::new(),
+            "test".into(),
+            vec![call.clone()],
+        );
+        conversation.append_tool_result(
+            call.id.clone(),
+            "User completed the code walkthrough (1 steps).".into(),
+        );
+        assert!(editor.replay_code_explanation(&call.id));
+        ovim_core::editor::InputHandler::handle_key_event(
+            &mut editor,
+            ovim_core::KeyEvent::new(ovim_core::KeyCode::Char(' '), ovim_core::Modifiers::NONE),
+        )
+        .unwrap();
+        for character in "Why?".chars() {
+            ovim_core::editor::InputHandler::handle_key_event(
+                &mut editor,
+                ovim_core::KeyEvent::new(
+                    ovim_core::KeyCode::Char(character),
+                    ovim_core::Modifiers::NONE,
+                ),
+            )
+            .unwrap();
+        }
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_ai_code_explanation(frame, &editor))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("Ask 1: Why?▏"), "{rendered}");
+        assert!(rendered.contains("Enter send"), "{rendered}");
     }
 }

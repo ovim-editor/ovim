@@ -174,6 +174,7 @@ impl Editor {
         for chunk in chunks {
             match chunk {
                 StreamChunk::Content(text) => {
+                    self.append_code_explanation_answer(&text);
                     if let Some(chat) = self.ai_state.chat.as_mut() {
                         if let Some(ref mut s) = chat.streaming_content {
                             s.push_str(&text);
@@ -477,6 +478,7 @@ impl Editor {
                     }
 
                     self.ai_runtime_complete_turn();
+                    self.finish_code_explanation_answer(None);
                     self.clear_streaming_state();
                     if let Err(error) = self.start_next_queued_ai_chat_input() {
                         if let Some(conv) = self.conversation_mut() {
@@ -494,6 +496,7 @@ impl Editor {
                         conv.append_error(msg.clone());
                     }
 
+                    self.finish_code_explanation_answer(Some(&msg));
                     self.ai_runtime_fail_turn(msg);
                     self.clear_streaming_state();
                     return true;
@@ -548,6 +551,7 @@ impl Editor {
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error("Stream interrupted".to_string());
             }
+            self.finish_code_explanation_answer(Some("The answer stream was interrupted."));
             self.ai_runtime_interrupt_turn("provider stream disconnected");
             self.clear_streaming_state();
             return true;

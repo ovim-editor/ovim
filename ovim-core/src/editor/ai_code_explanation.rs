@@ -3,10 +3,14 @@ use crate::ai::tools::ToolResult;
 use serde_json::json;
 use std::path::{Component, Path, PathBuf};
 
-use super::ai_chat_state::{CodeExplanationContinuation, PendingCodeExplanation};
+use super::ai_chat_state::{
+    CodeExplanationContinuation, CodeExplanationExchange, CodeExplanationInteraction,
+    PendingCodeExplanation, QueuedChatInputKind,
+};
 use super::code_explanation::{
-    comment_rows_for_viewport, safe_code_rows, CodeExplanationStep, CodeExplanationView,
-    MAX_WALKTHROUGH_COMMENT_BYTES, MAX_WALKTHROUGH_COMMENT_ROWS, MAX_WALKTHROUGH_STEPS,
+    comment_rows_for_viewport, safe_code_rows, CodeExplanationDiscussionView, CodeExplanationStep,
+    CodeExplanationView, MAX_WALKTHROUGH_COMMENT_BYTES, MAX_WALKTHROUGH_COMMENT_ROWS,
+    MAX_WALKTHROUGH_STEPS,
 };
 use super::Editor;
 
@@ -38,6 +42,35 @@ impl Editor {
             .pending_code_explanation
             .as_ref()?;
         let step = pending.steps.get(pending.current)?;
+        let exchanges = pending.threads.get(pending.current)?;
+        let discussion = match &pending.interaction {
+            CodeExplanationInteraction::Composing { input, cursor } => {
+                CodeExplanationDiscussionView::Composing {
+                    input: input.clone(),
+                    cursor: *cursor,
+                    question_count: exchanges.len(),
+                }
+            }
+            CodeExplanationInteraction::Answering { step, exchange }
+                if *step == pending.current =>
+            {
+                let exchange = pending.threads.get(*step)?.get(*exchange)?;
+                CodeExplanationDiscussionView::Answering {
+                    question: exchange.question.clone(),
+                    answer: exchange.answer.clone(),
+                    question_count: pending.threads[*step].len(),
+                }
+            }
+            _ => {
+                let latest = exchanges.last();
+                CodeExplanationDiscussionView::Navigating {
+                    question_count: exchanges.len(),
+                    latest_question: latest.map(|exchange| exchange.question.clone()),
+                    latest_answer: latest.map(|exchange| exchange.answer.clone()),
+                    latest_failed: latest.is_some_and(|exchange| exchange.failed),
+                }
+            }
+        };
         Some(CodeExplanationView {
             current: pending.current + 1,
             total: pending.steps.len(),
@@ -45,6 +78,7 @@ impl Editor {
             start_line: step.start_line,
             end_line: step.end_line,
             comment: step.comment.clone(),
+            discussion,
         })
     }
 
@@ -116,10 +150,12 @@ impl Editor {
         };
         chat.pending_code_explanation = Some(PendingCodeExplanation {
             tool_call,
+            threads: vec![Vec::new(); steps.len()],
             steps,
             current: 0,
+            interaction: CodeExplanationInteraction::Navigating,
             original_active_buffer_id,
-            continuation,
+            continuation: Some(continuation),
         });
         chat.waiting = false;
 
@@ -133,7 +169,14 @@ impl Editor {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.active_buffer_id = original_active_buffer_id;
                 }
-                return Err((error, Box::new(pending.continuation)));
+                return Err((
+                    error,
+                    Box::new(
+                        pending
+                            .continuation
+                            .expect("new walkthrough must retain its continuation"),
+                    ),
+                ));
             } else if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.active_buffer_id = original_active_buffer_id;
             }
@@ -143,7 +186,8 @@ impl Editor {
         self.ai_state.ai_attention_generation =
             self.ai_state.ai_attention_generation.saturating_add(1);
         self.set_lsp_status(
-            "Code walkthrough ready — Left/Right steps, Enter advances, Esc dismisses".into(),
+            "Code walkthrough ready — Left/Right steps, Space asks, Enter advances, Esc dismisses"
+                .into(),
         );
         Ok(())
     }
@@ -178,6 +222,253 @@ impl Editor {
         changed
     }
 
+    pub fn begin_code_explanation_question(&mut self) -> bool {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return false;
+        };
+        if !matches!(pending.interaction, CodeExplanationInteraction::Navigating) {
+            return false;
+        }
+        pending.interaction = CodeExplanationInteraction::Composing {
+            input: String::new(),
+            cursor: 0,
+        };
+        self.set_lsp_status(
+            "Ask about this walkthrough step — Enter sends, Shift-Enter adds a line, Esc cancels"
+                .into(),
+        );
+        true
+    }
+
+    pub fn cancel_code_explanation_question(&mut self) -> bool {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return false;
+        };
+        if !matches!(
+            pending.interaction,
+            CodeExplanationInteraction::Composing { .. }
+        ) {
+            return false;
+        }
+        pending.interaction = CodeExplanationInteraction::Navigating;
+        self.set_lsp_status("Cancelled walkthrough question".into());
+        true
+    }
+
+    pub fn insert_code_explanation_question_char(&mut self, character: char) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        input.insert(*cursor, character);
+        *cursor += character.len_utf8();
+        true
+    }
+
+    pub fn backspace_code_explanation_question(&mut self) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        let Some(previous) = input[..*cursor]
+            .char_indices()
+            .next_back()
+            .map(|(index, _)| index)
+        else {
+            return true;
+        };
+        input.drain(previous..*cursor);
+        *cursor = previous;
+        true
+    }
+
+    pub fn move_code_explanation_question_cursor(&mut self, forward: bool) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        if forward {
+            if *cursor < input.len() {
+                *cursor = input[*cursor..]
+                    .char_indices()
+                    .nth(1)
+                    .map(|(offset, _)| *cursor + offset)
+                    .unwrap_or(input.len());
+            }
+        } else if *cursor > 0 {
+            *cursor = input[..*cursor]
+                .char_indices()
+                .next_back()
+                .map(|(index, _)| index)
+                .unwrap_or(0);
+        }
+        true
+    }
+
+    pub fn submit_code_explanation_question(&mut self) -> Result<bool, String> {
+        let (step_index, step, question, tool_call, continuation) = {
+            let Some(pending) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .and_then(|chat| chat.pending_code_explanation.as_mut())
+            else {
+                return Ok(false);
+            };
+            let CodeExplanationInteraction::Composing { input, .. } = &pending.interaction else {
+                return Ok(false);
+            };
+            let question = input.trim().to_string();
+            if question.is_empty() {
+                return Err("walkthrough question cannot be empty".into());
+            }
+            let step_index = pending.current;
+            let step = pending
+                .steps
+                .get(step_index)
+                .cloned()
+                .ok_or_else(|| "walkthrough step is no longer available".to_string())?;
+            let exchange = pending.threads[step_index].len();
+            pending.threads[step_index].push(CodeExplanationExchange {
+                question: question.clone(),
+                answer: String::new(),
+                failed: false,
+            });
+            pending.interaction = CodeExplanationInteraction::Answering {
+                step: step_index,
+                exchange,
+            };
+            (
+                step_index,
+                step,
+                question,
+                pending.tool_call.clone(),
+                pending.continuation.take(),
+            )
+        };
+
+        let prompt = walkthrough_question_prompt(step_index, &step, &question);
+        let outcome = ToolResult::Success(format!(
+            "The user paused the code walkthrough at step {} to ask a question. Answer the attached user steering directly and concisely, using read-only investigation if needed. Do not edit files, restart the walkthrough, or continue implementation. Question: {}",
+            step_index + 1,
+            question
+        ));
+
+        match continuation {
+            Some(CodeExplanationContinuation::Replay) | None => {
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.input = prompt;
+                    chat.input_cursor = chat.input.len();
+                }
+                self.submit_ai_chat_message()
+                    .map_err(|error| error.to_string())?;
+            }
+            Some(continuation) => {
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.input = prompt;
+                    chat.input_cursor = chat.input.len();
+                }
+                self.queue_current_ai_chat_input(QueuedChatInputKind::Steer)
+                    .map_err(|error| error.to_string())?;
+                self.resolve_code_explanation_continuation(&tool_call, continuation, outcome);
+            }
+        }
+        self.set_lsp_status(format!(
+            "Answering walkthrough question for step {}",
+            step_index + 1
+        ));
+        Ok(true)
+    }
+
+    pub(crate) fn append_code_explanation_answer(&mut self, content: &str) {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return;
+        };
+        let CodeExplanationInteraction::Answering { step, exchange } = pending.interaction else {
+            return;
+        };
+        if let Some(answer) = pending
+            .threads
+            .get_mut(step)
+            .and_then(|thread| thread.get_mut(exchange))
+        {
+            answer.answer.push_str(content);
+        }
+    }
+
+    pub(crate) fn finish_code_explanation_answer(&mut self, error: Option<&str>) {
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return;
+        };
+        let CodeExplanationInteraction::Answering { step, exchange } = pending.interaction else {
+            return;
+        };
+        if let Some(answer) = pending
+            .threads
+            .get_mut(step)
+            .and_then(|thread| thread.get_mut(exchange))
+        {
+            if let Some(error) = error {
+                answer.failed = true;
+                if answer.answer.is_empty() {
+                    answer.answer = error.to_string();
+                }
+            } else if answer.answer.trim().is_empty() {
+                answer.failed = true;
+                answer.answer = "The agent completed without an answer.".into();
+            }
+        }
+        pending.interaction = CodeExplanationInteraction::Navigating;
+    }
+
+    pub(crate) fn ai_code_explanation_answering(&self) -> bool {
+        self.ai_state.chat.as_ref().is_some_and(|chat| {
+            chat.pending_code_explanation
+                .as_ref()
+                .is_some_and(|pending| {
+                    matches!(
+                        pending.interaction,
+                        CodeExplanationInteraction::Answering { .. }
+                    )
+                })
+        })
+    }
+
     /// Enter advances through a walkthrough and only unblocks the agent from
     /// the final step. This avoids completing a multi-step explanation with
     /// one accidental key press on its first card.
@@ -210,7 +501,11 @@ impl Editor {
         }
         self.ai_state.active_selection = None;
 
-        let is_replay = matches!(&pending.continuation, CodeExplanationContinuation::Replay);
+        let is_replay = matches!(
+            pending.continuation.as_ref(),
+            Some(CodeExplanationContinuation::Replay)
+        );
+        let question_count = pending.threads.iter().map(Vec::len).sum::<usize>();
         let outcome = if is_replay && dismissed {
             format!(
                 "Dismissed replay at step {} of {}.",
@@ -221,6 +516,19 @@ impl Editor {
             format!(
                 "Completed walkthrough replay ({} steps).",
                 pending.steps.len()
+            )
+        } else if pending.continuation.is_none() && dismissed {
+            format!(
+                "Dismissed code walkthrough at step {} of {} after {} question(s).",
+                pending.current + 1,
+                pending.steps.len(),
+                question_count
+            )
+        } else if pending.continuation.is_none() {
+            format!(
+                "Completed code walkthrough ({} steps, {} question(s)).",
+                pending.steps.len(),
+                question_count
             )
         } else if dismissed {
             format!(
@@ -236,19 +544,27 @@ impl Editor {
         };
         let result = ToolResult::Success(outcome.clone());
 
-        match pending.continuation {
+        if let Some(continuation) = pending.continuation {
+            self.resolve_code_explanation_continuation(&pending.tool_call, continuation, result);
+        }
+
+        self.set_lsp_status(outcome);
+        true
+    }
+
+    fn resolve_code_explanation_continuation(
+        &mut self,
+        tool_call: &ToolCallInfo,
+        continuation: CodeExplanationContinuation,
+        result: ToolResult,
+    ) {
+        match continuation {
             CodeExplanationContinuation::Dynamic {
                 runtime_tool,
                 runtime_turn,
                 response,
             } => {
-                self.finish_dynamic_tool(
-                    &runtime_turn,
-                    &runtime_tool,
-                    &pending.tool_call,
-                    response,
-                    result,
-                );
+                self.finish_dynamic_tool(&runtime_turn, &runtime_tool, tool_call, response, result);
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.waiting = true;
                 }
@@ -265,14 +581,13 @@ impl Editor {
                             "failed to record code walkthrough result: {error}"
                         ));
                         self.clear_streaming_state();
-                        return true;
+                        return;
                     }
                 }
-                self.record_tool_event_summary(&pending.tool_call, &result);
-                let result_content =
-                    self.format_tool_result_with_target(&pending.tool_call, &result);
+                self.record_tool_event_summary(tool_call, &result);
+                let result_content = self.format_tool_result_with_target(tool_call, &result);
                 if let Some(conversation) = self.conversation_mut() {
-                    conversation.append_tool_result(pending.tool_call.id.clone(), result_content);
+                    conversation.append_tool_result(tool_call.id.clone(), result_content);
                 }
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.tool_call_count = chat.tool_call_count.saturating_add(1);
@@ -282,9 +597,6 @@ impl Editor {
             }
             CodeExplanationContinuation::Replay => {}
         }
-
-        self.set_lsp_status(outcome);
-        true
     }
 
     fn parse_code_explanation_steps(
@@ -574,6 +886,29 @@ fn visual_overflow_guidance(line_rows: &[(usize, usize)], safe_range: usize) -> 
     format!("{endpoint}{longest}")
 }
 
+fn walkthrough_question_prompt(
+    step_index: usize,
+    step: &CodeExplanationStep,
+    question: &str,
+) -> String {
+    let range = if step.start_line == step.end_line {
+        format!("{}:{}", step.path, step.start_line)
+    } else {
+        format!("{}:{}-{}", step.path, step.start_line, step.end_line)
+    };
+    let quoted_comment = step
+        .comment
+        .lines()
+        .map(|line| format!("> {line}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "> Walkthrough step {} · {range}\n{quoted_comment}\n\n{}\n\nAnswer this question in the context of our existing conversation and the codebase. Do not modify files or perform external actions; use read-only investigation only if needed.",
+        step_index + 1,
+        question
+    )
+}
+
 fn required_step_string(
     raw: &serde_json::Value,
     field: &str,
@@ -602,7 +937,7 @@ fn required_step_line(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::chat_types::ChatOpts;
+    use crate::ai::chat_types::{ChatOpts, ProviderSteerUpdate, StreamChunk};
 
     fn setup_editor() -> (tempfile::TempDir, Editor, PathBuf, PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -660,6 +995,209 @@ mod tests {
             remaining_tool_calls: Vec::new(),
             model_name: "test".into(),
         }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn walkthrough_question_resumes_root_turn_and_remains_in_conversation() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([{
+            "path": "first.rs",
+            "start_line": 2,
+            "comment": "The history handler maps alternate navigation keys."
+        }]));
+        let turn = editor
+            .begin_ai_runtime_turn("explain the history handler")
+            .unwrap();
+        let runtime_tool = editor
+            .ai_runtime_record_tool_intent(&turn, &tool_call)
+            .unwrap();
+        editor.ai_runtime_start_tool(&turn, &runtime_tool).unwrap();
+        let (stream_tx, stream_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (steer_tx, mut steer_rx) = tokio::sync::mpsc::unbounded_channel();
+        let task = tokio::spawn(async { std::future::pending::<()>().await });
+        let (response_tx, response_rx) = tokio::sync::oneshot::channel();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.runtime_turn = Some(Box::new(turn.clone()));
+        chat.streaming_content = Some(String::new());
+        chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
+            receiver: stream_rx,
+            task,
+            profile_name: "test".into(),
+            model_name: "test".into(),
+            turn: Box::new(turn.clone()),
+            branch_generation: 0,
+            steer_tx: Some(steer_tx),
+        });
+        if let Err((error, _)) = editor.begin_code_explanation(
+            tool_call,
+            CodeExplanationContinuation::Dynamic {
+                runtime_tool,
+                runtime_turn: turn,
+                response: response_tx,
+            },
+        ) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+
+        let input = crate::editor::input::InputHandler::handle_key_event;
+        input(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Char(' '), crate::Modifiers::NONE),
+        )
+        .unwrap();
+        for character in "Why is k used here?".chars() {
+            input(
+                &mut editor,
+                crate::KeyEvent::new(crate::KeyCode::Char(character), crate::Modifiers::NONE),
+            )
+            .unwrap();
+        }
+        input(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Enter, crate::Modifiers::NONE),
+        )
+        .unwrap();
+
+        let ProviderSteerUpdate::Queue { id, content } = steer_rx.recv().await.unwrap() else {
+            panic!("walkthrough question should steer the root turn")
+        };
+        assert!(content.contains("> Walkthrough step 1 · first.rs:2"));
+        assert!(content.contains("Why is k used here?"));
+        assert!(response_rx.await.unwrap().unwrap().contains("paused"));
+        assert!(editor.ai_chat_has_pending_code_explanation());
+        assert!(editor.ai_code_explanation_answering());
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&editor.ai_state.active_profile)
+            .unwrap()
+            .clone();
+        let schema_has = |schemas: &[serde_json::Value], name: &str| {
+            schemas.iter().any(|schema| {
+                schema
+                    .get("name")
+                    .or_else(|| schema.pointer("/function/name"))
+                    .and_then(serde_json::Value::as_str)
+                    == Some(name)
+            })
+        };
+        assert!(!schema_has(
+            &editor.build_tool_schemas_for_chat(&profile),
+            "edit_range"
+        ));
+        let mutation = ToolCallInfo {
+            id: "edit-during-answer".into(),
+            name: "edit_range".into(),
+            arguments: json!({
+                "path": "first.rs",
+                "start_line": 2,
+                "end_line": 2,
+                "content": "// changed"
+            }),
+        };
+        assert!(matches!(
+            editor.dispatch_tool_call_with_approval(&mutation, None),
+            super::super::ai_chat_tools::ToolDispatchOutcome::Completed(
+                ToolResult::Error(ref error)
+            ) if error.contains("unavailable while answering a walkthrough question")
+        ));
+
+        stream_tx
+            .send(StreamChunk::SteerAccepted {
+                id,
+                content: content.clone(),
+            })
+            .unwrap();
+        stream_tx
+            .send(StreamChunk::Content(
+                "It is an alternate key only while history has focus.".into(),
+            ))
+            .unwrap();
+        stream_tx.send(StreamChunk::Done).unwrap();
+        assert!(editor.poll_pending_ai_chat_job());
+
+        let view = editor.ai_code_explanation_view().unwrap();
+        assert!(matches!(
+            view.discussion,
+            CodeExplanationDiscussionView::Navigating {
+                question_count: 1,
+                latest_question: Some(ref question),
+                latest_answer: Some(ref answer),
+                latest_failed: false,
+            } if question == "Why is k used here?"
+                && answer == "It is an alternate key only while history has focus."
+        ));
+        let messages = editor.ai_chat_messages();
+        assert!(messages.iter().any(|message| message.role
+            == crate::ai::chat_types::ChatRole::User
+            && message.content == content));
+        assert!(messages.iter().any(|message| {
+            message.role == crate::ai::chat_types::ChatRole::Assistant
+                && message.content == "It is an alternate key only while history has focus."
+        }));
+        assert!(schema_has(
+            &editor.build_tool_schemas_for_chat(&profile),
+            "edit_range"
+        ));
+
+        input(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Char(' '), crate::Modifiers::NONE),
+        )
+        .unwrap();
+        for character in "What focus transition enables it?".chars() {
+            input(
+                &mut editor,
+                crate::KeyEvent::new(crate::KeyCode::Char(character), crate::Modifiers::NONE),
+            )
+            .unwrap();
+        }
+        input(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Enter, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        let replacement = {
+            let chat = editor.ai_state.chat.as_mut().unwrap();
+            let previous = chat.pending_job.take().expect("second question job");
+            previous.task.abort();
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            let task = tokio::spawn(async { std::future::pending::<()>().await });
+            chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
+                receiver: rx,
+                task,
+                profile_name: previous.profile_name,
+                model_name: previous.model_name,
+                turn: previous.turn,
+                branch_generation: previous.branch_generation,
+                steer_tx: None,
+            });
+            tx
+        };
+        replacement
+            .send(StreamChunk::Content(
+                "Up moves focus from the first composer row into history.".into(),
+            ))
+            .unwrap();
+        replacement.send(StreamChunk::Done).unwrap();
+        assert!(editor.poll_pending_ai_chat_job());
+        assert!(matches!(
+            editor.ai_code_explanation_view().unwrap().discussion,
+            CodeExplanationDiscussionView::Navigating {
+                question_count: 2,
+                latest_question: Some(ref question),
+                latest_answer: Some(ref answer),
+                latest_failed: false,
+            } if question == "What focus transition enables it?"
+                && answer == "Up moves focus from the first composer row into history."
+        ));
+
+        assert!(editor.finish_code_explanation(false));
+        assert!(!editor.ai_chat_has_pending_code_explanation());
+        assert!(editor
+            .ai_chat_messages()
+            .iter()
+            .any(|message| message.content.contains("Why is k used here?")));
     }
 
     #[test]

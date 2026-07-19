@@ -98,6 +98,27 @@ impl Editor {
     }
 
     pub(crate) fn reject_provider_ai_chat_steer(&mut self, id: u64, error: &str) {
+        if self.ai_code_explanation_answering() {
+            let content = self
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.queued_inputs.iter().find(|item| item.id == id))
+                .map(|item| item.content.clone());
+            self.remove_queued_ai_chat_input(id);
+            if let Some(content) = content {
+                if let Err(record_error) = self.record_accepted_ai_chat_steer(content) {
+                    self.set_lsp_status(format!(
+                        "Walkthrough question reached the agent through the tool result, but its durable user message could not be recorded: {record_error}"
+                    ));
+                    return;
+                }
+            }
+            self.set_lsp_status(format!(
+                "Provider steering was unavailable ({error}); the walkthrough question was delivered through the tool result"
+            ));
+            return;
+        }
         if let Some(chat) = self.ai_state.chat.as_mut() {
             if let Some(item) = chat.queued_inputs.iter_mut().find(|item| item.id == id) {
                 item.kind = QueuedChatInputKind::FollowUp;
@@ -245,7 +266,11 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ai::chat_types::{ChatOpts, ImageAttachment};
+    use crate::ai::chat_types::{ChatOpts, ImageAttachment, ToolCallInfo};
+    use crate::editor::ai_chat_state::{
+        CodeExplanationExchange, CodeExplanationInteraction, PendingCodeExplanation,
+    };
+    use crate::editor::code_explanation::CodeExplanationStep;
     use std::path::PathBuf;
 
     fn editor_with_active_round() -> Editor {
@@ -285,6 +310,56 @@ mod tests {
             editor.ai_chat_messages().last().unwrap().content,
             "change direction"
         );
+    }
+
+    #[test]
+    fn rejected_walkthrough_steer_is_recorded_without_duplicate_follow_up() {
+        let mut editor = editor_with_active_round();
+        let content = "> Walkthrough step 1 · demo.rs:1\n> Context\n\nWhy?".to_string();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.queued_inputs.push_back(QueuedChatInput {
+            id: 7,
+            kind: QueuedChatInputKind::Steer,
+            content: content.clone(),
+            images: Vec::new(),
+        });
+        chat.pending_code_explanation = Some(PendingCodeExplanation {
+            tool_call: ToolCallInfo {
+                id: "walkthrough".into(),
+                name: "explain_with_codebase".into(),
+                arguments: serde_json::json!({}),
+            },
+            steps: vec![CodeExplanationStep {
+                path: "demo.rs".into(),
+                absolute_path: PathBuf::from("demo.rs"),
+                start_line: 1,
+                end_line: 1,
+                comment: "Context".into(),
+            }],
+            current: 0,
+            threads: vec![vec![CodeExplanationExchange {
+                question: "Why?".into(),
+                answer: String::new(),
+                failed: false,
+            }]],
+            interaction: CodeExplanationInteraction::Answering {
+                step: 0,
+                exchange: 0,
+            },
+            original_active_buffer_id: chat.active_buffer_id,
+            continuation: None,
+        });
+
+        editor.reject_provider_ai_chat_steer(7, "unsupported");
+
+        assert!(editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .queued_inputs
+            .is_empty());
+        assert_eq!(editor.ai_chat_messages().last().unwrap().content, content);
     }
 
     #[test]
