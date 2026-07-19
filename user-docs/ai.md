@@ -348,13 +348,21 @@ Completed tool calls appear as compact summary rows in chat. Move focus into
 message history, select a tool row, and press Enter to expand or collapse its
 arguments and result.
 
-Code walkthroughs keep the referenced source selected while you move between
-steps with Left/Right (or `h`/`l`). Press Space to ask about the current step;
-the step explanation is attached as quoted context, Enter sends, Shift-Enter
-adds a line, and Escape cancels the draft. The root chat agent answers in the
-walkthrough card using the conversation it already built. Questions and
-answers remain in normal conversation history after the walkthrough ends, so
-they are available when the agent returns to implementation. Walkthrough
+Walkthroughs combine concept pages and code pages in one linear sequence.
+Concept pages use a larger centered panel for an introduction, prerequisite
+mental model, transition, or synthesis that does not belong to one source
+range. Their body is limited by the current terminal dimensions, and the agent
+must split dense material into focused semantic pages rather than truncating or
+compressing it. Code pages keep the referenced source selected in the existing
+compact card. Both page types aim to teach one new idea at a time and introduce
+only the context needed for the next page.
+
+Move between pages with Left/Right (or `h`/`l`). Press Space to ask about the
+current page; its explanation is attached as quoted context, Enter sends,
+Shift-Enter adds a line, and Escape cancels the draft. The root chat agent
+answers in the walkthrough using the conversation it already built. Questions
+and answers remain in normal conversation history after the walkthrough ends,
+so they are available when the agent returns to implementation. Walkthrough
 questions permit read-only investigation but reject navigation, mutations,
 external actions, and delegated-agent control until the answer finishes.
 
