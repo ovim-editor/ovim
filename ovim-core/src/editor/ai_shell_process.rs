@@ -14,6 +14,7 @@ pub enum ShellProcessPhase {
     Failed,
     Interrupted,
     OutcomeUnknown,
+    Archived,
 }
 
 impl ShellProcessPhase {
@@ -27,6 +28,7 @@ impl ShellProcessPhase {
             Self::Failed => "failed",
             Self::Interrupted => "interrupted",
             Self::OutcomeUnknown => "outcome unknown",
+            Self::Archived => "completed · restored history",
         }
     }
 
@@ -49,6 +51,7 @@ impl From<ShellTranscriptPhase> for ShellProcessPhase {
             ShellTranscriptPhase::Failed => Self::Failed,
             ShellTranscriptPhase::Interrupted => Self::Interrupted,
             ShellTranscriptPhase::OutcomeUnknown => Self::OutcomeUnknown,
+            ShellTranscriptPhase::Archived => Self::Archived,
         }
     }
 }
@@ -106,11 +109,43 @@ impl Editor {
     }
 
     pub fn open_ai_shell_process_inspector(&mut self, tool_call_id: &str) -> bool {
+        let archived = if self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| !chat.shell_transcripts.contains_key(tool_call_id))
+        {
+            let Some(call) = self
+                .ai_chat_tool_event_call(tool_call_id)
+                .filter(|call| call.name == "bash")
+                .cloned()
+            else {
+                return false;
+            };
+            let command = call
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("bash")
+                .to_string();
+            Some((
+                call,
+                command,
+                self.ai_effective_project_root().unwrap_or_default(),
+                ShellTranscriptPhase::Archived,
+            ))
+        } else {
+            None
+        };
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };
-        if !chat.shell_transcripts.contains_key(tool_call_id) {
-            return false;
+        if let Some((call, command, workdir, phase)) = archived {
+            let mut transcript = ShellTranscript::new(call, command, workdir);
+            transcript.finish(phase);
+            transcript.expire_output();
+            chat.shell_transcripts
+                .insert(tool_call_id.to_string(), transcript);
         }
         chat.shell_inspector = Some(ShellInspectorState {
             tool_call_id: tool_call_id.to_string(),
@@ -469,5 +504,36 @@ mod tests {
         assert_eq!(view.search_match_line, Some(1));
         assert!(!view.follow_latest);
         assert_eq!(view.row_scroll_from_bottom, 1);
+    }
+
+    #[test]
+    fn restored_shell_call_opens_with_expired_output_metadata() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(crate::ai::chat_types::ChatOpts {
+                name: "chat".into(),
+                allow_edits: true,
+                ..Default::default()
+            })
+            .unwrap();
+        let call = ToolCallInfo {
+            id: "restored-shell".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "cargo test" }),
+        };
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_assistant_message_with_tools(String::new(), "test".into(), vec![call]);
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_tool_result("restored-shell".into(), "bash succeeded".into());
+
+        assert!(editor.open_ai_shell_process_inspector("restored-shell"));
+        let view = editor.ai_shell_inspector_view().unwrap();
+        assert!(view.expired);
+        assert_eq!(view.command, "cargo test");
+        assert_eq!(view.phase, ShellProcessPhase::Archived);
     }
 }

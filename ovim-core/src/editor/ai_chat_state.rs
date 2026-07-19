@@ -271,6 +271,7 @@ pub enum ShellTranscriptPhase {
     Failed,
     Interrupted,
     OutcomeUnknown,
+    Archived,
 }
 
 #[derive(Debug, Clone)]

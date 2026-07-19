@@ -419,6 +419,7 @@ impl Editor {
                         | super::ai_chat_state::ShellTranscriptPhase::Failed
                         | super::ai_chat_state::ShellTranscriptPhase::Interrupted
                         | super::ai_chat_state::ShellTranscriptPhase::OutcomeUnknown
+                        | super::ai_chat_state::ShellTranscriptPhase::Archived
                 )
             })
         {
@@ -1766,10 +1767,17 @@ mod tests {
 
         std::fs::write(dir.path().join("release-gate"), "go").unwrap();
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(2);
-        loop {
-            if editor.poll_pending_ai_chat_job() {
-                break;
-            }
+        while editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .pending_shell_execution
+            .is_some()
+        {
+            // Streaming output is itself a visible state change, so a `true`
+            // poll result no longer implies the shell has completed.
+            editor.poll_pending_ai_chat_job();
             assert!(
                 tokio::time::Instant::now() < deadline,
                 "shell did not finish"

@@ -348,6 +348,24 @@ Completed tool calls appear as compact summary rows in chat. Move focus into
 message history, select a tool row, and press Enter to expand or collapse its
 arguments and result.
 
+Shell calls have a Process Inspector instead of the ordinary expanded row.
+Select a live or completed shell row and press Enter to open it. The inspector
+shows live stdout and stderr, command phase, working directory, process ID,
+elapsed time, and how long the process has been quiet. It follows new output by
+default; use Up/Down or Page Up/Page Down to scroll, `G` to return to live
+follow mode, `/` to search, and `n` to visit the preceding match.
+
+While the process is running, Ctrl-C requests a normal terminal interrupt for
+the process group without cancelling the surrounding agent turn. Ctrl-K force
+stops the process group if it does not respond. Escape closes only the
+inspector. Shell tools do not accept keyboard input: commands that require an
+interactive prompt must use non-interactive flags instead.
+
+Process output is intentionally ephemeral and bounded. Ovim retains at most
+512 KiB per process and 2 MiB across the ten most recent completed processes;
+older output is marked as discarded or expired while the durable tool result
+remains in conversation history.
+
 Walkthroughs combine concept pages and code pages in one linear sequence.
 Concept pages use a larger centered panel for an introduction, prerequisite
 mental model, transition, or synthesis that does not belong to one source
