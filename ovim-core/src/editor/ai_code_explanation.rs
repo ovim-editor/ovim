@@ -753,7 +753,7 @@ impl Editor {
             let absolute_path = candidate.canonicalize().map_err(|error| {
                 ToolResult::Error(format!("step {step_number} cannot open '{path}': {error}"))
             })?;
-            if !absolute_path.starts_with(&root) || !absolute_path.is_file() {
+            if !absolute_path.starts_with(root) || !absolute_path.is_file() {
                 return Err(ToolResult::Error(format!(
                     "step {step_number} path is not a file inside the project: {path}"
                 )));

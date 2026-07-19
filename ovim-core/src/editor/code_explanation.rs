@@ -145,8 +145,7 @@ impl ConceptExplanationCardLayout {
         let body_row_limit = concept_body_row_limit(Some(viewport_height as usize));
         let height = (body_rows as u16)
             .saturating_add(CONCEPT_CARD_NON_BODY_ROWS)
-            .max(MIN_CONCEPT_CARD_HEIGHT)
-            .min(MAX_CONCEPT_CARD_HEIGHT)
+            .clamp(MIN_CONCEPT_CARD_HEIGHT, MAX_CONCEPT_CARD_HEIGHT)
             .min(viewport_height.saturating_sub(2));
         Some(Self {
             width,
