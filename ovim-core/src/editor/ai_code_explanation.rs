@@ -1627,19 +1627,27 @@ mod tests {
         assert!(schema["function"]["description"]
             .as_str()
             .unwrap()
-            .contains("explain something about the code or codebase"));
+            .contains("understanding depends on seeing concrete code locations in sequence"));
         assert!(schema["function"]["description"]
             .as_str()
             .unwrap()
-            .contains("revisit the same line or range"));
+            .contains("revisit a line or range"));
         assert!(schema["function"]["description"]
             .as_str()
             .unwrap()
-            .contains("easy-to-understand steps"));
+            .contains("Do not use it for a short answer"));
         assert!(schema["function"]["description"]
             .as_str()
             .unwrap()
-            .contains("prerequisites before consequences"));
+            .contains("prerequisite before its consequence"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("Do not select an entire function"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("two new ideas"));
         let steps = &schema["function"]["parameters"]["properties"]["steps"];
         assert_eq!(steps["type"], "array");
         assert_eq!(
@@ -1655,13 +1663,29 @@ mod tests {
             .as_str()
             .unwrap()
             .contains("Repeating a range is encouraged"));
+        assert!(steps["description"]
+            .as_str()
+            .unwrap()
+            .contains("smallest condition, assignment, call, or block"));
+        assert!(steps["description"]
+            .as_str()
+            .unwrap()
+            .contains("split it into two steps"));
+        assert!(steps["items"]["properties"]["end_line"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("smallest cohesive block"));
+        assert!(steps["items"]["properties"]["end_line"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("surrounding function"));
         assert!(steps["items"]["properties"]["comment"]["description"]
             .as_str()
             .unwrap()
-            .contains("do not merely paraphrase"));
+            .contains("exactly one easy-to-understand idea"));
         assert!(steps["items"]["properties"]["comment"]["description"]
             .as_str()
             .unwrap()
-            .contains("easy-to-understand idea"));
+            .contains("front-load later details"));
     }
 }

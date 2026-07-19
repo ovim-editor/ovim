@@ -124,11 +124,11 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
                     "end_line": {
                         "type": "integer",
                         "minimum": 1,
-                        "description": "Optional 1-indexed inclusive end line for a cohesive block."
+                        "description": "Optional 1-indexed inclusive end line for the smallest cohesive block needed by this step. Do not include the surrounding function by default."
                     },
                     "comment": {
                         "type": "string",
-                        "description": "Teach one easy-to-understand idea: explain why this location matters, how it connects to the walkthrough, and what depends on it; do not merely paraphrase the code."
+                        "description": "Teach exactly one easy-to-understand idea. State one direct claim about why this location matters and the single connection needed for the next step. Keep it short; do not paraphrase syntax, front-load later details, or combine multiple ideas."
                     }
                 },
                 "required": ["path", "start_line", "comment"]

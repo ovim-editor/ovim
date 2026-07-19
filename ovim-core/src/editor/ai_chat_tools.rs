@@ -135,7 +135,7 @@ impl Editor {
             .find(|tool| tool.name == "explain_with_codebase")
         {
             tool.description.push_str(&format!(
-                " The current full-width walkthrough can reliably show at most {safe_range} visual code rows per step; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each comment concise enough to display in at most 5 wrapped rows. Prefer several bite-sized steps over one overloaded step, and freely revisit a range when each visit teaches a different relationship or consequence. If validation rejects a range, use its suggested endpoint and longest-line measurements to choose a conceptual split, then retry."
+                " The current full-width walkthrough can reliably show at most {safe_range} visual code rows per step; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each comment concise enough to display in at most 5 wrapped rows. Treat those as maximums, not targets: choose the fewest code rows and words that establish one idea. Never expand a selection to the full function merely for context. Split before the reader must retain two new facts at once, and freely revisit a range when each visit teaches a different relationship or consequence. If validation rejects a range, use its suggested endpoint and longest-line measurements to choose a conceptual split, then retry."
             ));
             if let Some(steps) = tool
                 .parameters
@@ -143,7 +143,7 @@ impl Editor {
                 .find(|param| param.name == "steps")
             {
                 steps.description = format!(
-                    "Narratively ordered, bite-sized walkthrough steps using project-relative paths and 1-indexed inclusive lines. Each optional range may occupy at most {safe_range} visual code rows in the full-width walkthrough after soft wrapping, and each comment may occupy at most 5 wrapped rows. Use single-line anchors for handoffs or invariants; use ranges only for cohesive blocks; split larger explanations by concept. Repeating a range is encouraged when a later step adds a distinct perspective rather than restating the earlier comment."
+                    "Narratively ordered, bite-sized walkthrough steps using project-relative paths and 1-indexed inclusive lines. Each optional range may occupy at most {safe_range} visual code rows in the full-width walkthrough after soft wrapping, and each comment may occupy at most 5 wrapped rows. Use single-line anchors for handoffs or invariants. Otherwise select the smallest condition, assignment, call, or block that proves the comment; never include the full surrounding function by default. Give each step one new idea and one necessary connection. If one comment needs two ideas, split it into two steps. Repeating a range is encouraged when a later step adds a distinct perspective rather than restating the earlier comment."
                 );
             }
         }
