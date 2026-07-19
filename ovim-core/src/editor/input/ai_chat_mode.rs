@@ -21,6 +21,10 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         return Ok(());
     }
+    if editor.ai_shell_inspector_is_open() {
+        handle_shell_inspector(editor, key_event);
+        return Ok(());
+    }
     if code_explanation_mode::handle_key(editor, key_event) {
         return Ok(());
     }
@@ -516,6 +520,13 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.recall_queued_ai_chat_input(id);
                 return Ok(());
             }
+            if let Some(tool_call_id) = editor
+                .ai_chat_history_selected_shell_tool_id()
+                .map(str::to_owned)
+            {
+                editor.open_ai_shell_process_inspector(&tool_call_id);
+                return Ok(());
+            }
             let node_ids = editor
                 .conversation()
                 .map(|c| c.node_ids_for_active_branch().to_vec())
@@ -531,7 +542,9 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
 
                 if role == ChatRole::Tool {
                     if let Some(tool_call_id) = tool_call_id.as_deref() {
-                        editor.toggle_ai_chat_tool_event(tool_call_id);
+                        if !editor.open_ai_shell_process_inspector(tool_call_id) {
+                            editor.toggle_ai_chat_tool_event(tool_call_id);
+                        }
                     }
                 } else if role == ChatRole::Thinking {
                     // Toggle thinking expand/collapse
@@ -566,6 +579,53 @@ fn handle_message_history(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         _ => {}
     }
     Ok(())
+}
+
+fn handle_shell_inspector(editor: &mut Editor, key_event: KeyEvent) {
+    let search_active = editor
+        .ai_shell_inspector_view()
+        .is_some_and(|view| view.search_input.is_some());
+    if search_active {
+        match key_event.code {
+            KeyCode::Esc => editor.ai_shell_inspector_cancel_search(),
+            KeyCode::Enter => editor.ai_shell_inspector_submit_search(),
+            KeyCode::Backspace => editor.ai_shell_inspector_search_backspace(),
+            KeyCode::Char(character)
+                if !key_event
+                    .modifiers
+                    .intersects(Modifiers::CONTROL | Modifiers::SUPER) =>
+            {
+                editor.ai_shell_inspector_search_insert(character);
+            }
+            _ => {}
+        }
+        return;
+    }
+
+    match key_event.code {
+        KeyCode::Esc | KeyCode::Char('q') => editor.close_ai_shell_process_inspector(),
+        KeyCode::Char('c') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.interrupt_ai_shell_process(false);
+        }
+        KeyCode::Char('k') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.interrupt_ai_shell_process(true);
+        }
+        KeyCode::Up | KeyCode::Char('k') => editor.ai_shell_inspector_scroll_up(1),
+        KeyCode::Down | KeyCode::Char('j') => editor.ai_shell_inspector_scroll_down(1),
+        KeyCode::PageUp => editor.ai_shell_inspector_scroll_up(10),
+        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.ai_shell_inspector_scroll_up(10);
+        }
+        KeyCode::PageDown => editor.ai_shell_inspector_scroll_down(10),
+        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.ai_shell_inspector_scroll_down(10);
+        }
+        KeyCode::Home | KeyCode::Char('g') => editor.ai_shell_inspector_scroll_to_top(),
+        KeyCode::End | KeyCode::Char('G') => editor.ai_shell_inspector_follow_latest(),
+        KeyCode::Char('/') => editor.ai_shell_inspector_begin_search(),
+        KeyCode::Char('n') => editor.ai_shell_inspector_next_match(),
+        _ => {}
+    }
 }
 
 fn handle_model_selector(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
@@ -1265,6 +1325,66 @@ mod tests {
             editor.ai_state.chat.as_ref().unwrap().queued_inputs[0].content,
             "first queued"
         );
+    }
+
+    #[test]
+    fn live_shell_row_opens_process_inspector_and_routes_modal_keys() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        editor
+            .conversation_mut()
+            .unwrap()
+            .append_user_message("run the build".into());
+        let call = ToolCallInfo {
+            id: "shell-live".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "npm run build" }),
+        };
+        let mut transcript = crate::editor::ai_chat_state::ShellTranscript::new(
+            call.clone(),
+            "npm run build".into(),
+            ".".into(),
+        );
+        transcript.append(
+            crate::editor::ai_chat_state::ShellOutputStream::Stdout,
+            b"starting\nbuilding\n".to_vec(),
+        );
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.streaming_tool_calls.push(call);
+        chat.shell_transcripts
+            .insert("shell-live".into(), transcript);
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Up, Modifiers::NONE)).unwrap();
+        assert_eq!(
+            editor.ai_chat_history_selected_shell_tool_id(),
+            Some("shell-live")
+        );
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE)).unwrap();
+        assert!(editor.ai_shell_inspector_is_open());
+
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Up, Modifiers::NONE)).unwrap();
+        assert!(!editor.ai_shell_inspector_view().unwrap().follow_latest);
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('/'), Modifiers::NONE),
+        )
+        .unwrap();
+        handle_ai_chat_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char('b'), Modifiers::NONE),
+        )
+        .unwrap();
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE)).unwrap();
+        assert_eq!(
+            editor
+                .ai_shell_inspector_view()
+                .unwrap()
+                .search_query
+                .as_deref(),
+            Some("b")
+        );
+        handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE)).unwrap();
+        assert!(!editor.ai_shell_inspector_is_open());
     }
 
     #[test]

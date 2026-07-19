@@ -21,6 +21,7 @@ mod ai_context;
 mod ai_durable_chat;
 pub(crate) mod ai_integration;
 mod ai_run_events;
+mod ai_shell_process;
 mod ai_skills;
 mod ai_state;
 mod ai_subagents;
@@ -98,6 +99,7 @@ pub use crate::change::{
 };
 pub use ai_chat_commands::AiChatSlashCompletion;
 pub use ai_chat_state::{AiChatActivity, QueuedChatInput, QueuedChatInputKind};
+pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};
 pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use ai_subagents::PreparedHeadlessAgentControl;
 pub use build_state::PendingShellCommand;

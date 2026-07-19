@@ -475,6 +475,19 @@ pub struct ChatHistoryState {
     /// Selected scheduled input, addressed by stable identity because steers
     /// may disappear asynchronously when the provider accepts them.
     pub selected_queued_id: Option<u64>,
+    /// Selected live shell row, which is presentation-only until its tool
+    /// result becomes a durable conversation message.
+    pub selected_shell_tool_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ShellInspectorState {
+    pub tool_call_id: String,
+    pub row_scroll_from_bottom: usize,
+    pub follow_latest: bool,
+    pub search_query: Option<String>,
+    pub search_input: Option<String>,
+    pub search_match_line: Option<usize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -636,6 +649,8 @@ pub struct AiChatState {
     /// Oldest completed shell transcript first; running transcripts are never
     /// placed here or evicted.
     pub shell_transcript_lru: VecDeque<String>,
+    /// Process Inspector overlay, if one shell transcript is being viewed.
+    pub shell_inspector: Option<ShellInspectorState>,
     pub pending_web_execution: Option<PendingWebExecution>,
     pub pending_subagent_control: Option<PendingSubagentControl>,
     /// Interactive code walkthrough currently blocking the invoking tool.
@@ -795,6 +810,7 @@ impl AiChatState {
             pending_shell_execution: None,
             shell_transcripts: HashMap::new(),
             shell_transcript_lru: VecDeque::new(),
+            shell_inspector: None,
             pending_web_execution: None,
             pending_subagent_control: None,
             pending_code_explanation: None,

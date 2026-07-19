@@ -436,6 +436,7 @@ fn has_blocking_modal(editor: &Editor) -> bool {
     editor.has_pending_lsp_install()
         || editor.ai_chat_has_exa_setup_dialog()
         || editor.ai_chat_image_modal_path().is_some()
+        || editor.ai_shell_inspector_is_open()
         || (editor.mode() == crate::mode::Mode::AiChat
             && (editor.ai_chat_has_pending_tool_approval()
                 || editor.ai_chat_has_pending_no_repo_folder_approval()))
@@ -452,6 +453,8 @@ fn render_blocking_modals(frame: &mut Frame, editor: &mut Editor, theme: &Theme)
         render_ai_chat_exa_setup_dialog(frame, editor);
     } else if editor.ai_chat_image_modal_path().is_some() {
         super::overlays::render_ai_chat_image_modal_frame(frame, editor);
+    } else if editor.ai_shell_inspector_is_open() {
+        super::overlays::render_ai_shell_process_inspector(frame, editor);
     } else if has_blocking_modal(editor) {
         render_ai_chat_permission_dialog(frame, editor, theme);
     }
@@ -465,7 +468,7 @@ fn set_cursor_position(
     command_chunk: Rect,
     chat_area: Option<Rect>,
 ) {
-    if editor.ai_chat_has_pending_code_explanation() {
+    if editor.ai_chat_has_pending_code_explanation() || editor.ai_shell_inspector_is_open() {
         return;
     }
     let layout = ctx.layout;

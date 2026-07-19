@@ -215,6 +215,16 @@ impl Editor {
             // after the UI reports the cancellation.
             pending.kill.cancel();
             pending.task.abort();
+            if let Some(chat) = self.ai_state.chat.as_mut() {
+                if let Some(transcript) = chat.shell_transcripts.get_mut(&pending.tool_call.id) {
+                    transcript.finish(super::ai_chat_state::ShellTranscriptPhase::Interrupted);
+                }
+                chat.shell_transcript_lru
+                    .retain(|id| id != &pending.tool_call.id);
+                chat.shell_transcript_lru
+                    .push_back(pending.tool_call.id.clone());
+                chat.evict_old_shell_transcripts();
+            }
             let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation {
                 super::ai_chat_state::ShellExecutionContinuation::Dynamic {
                     runtime_turn,
@@ -398,6 +408,23 @@ impl Editor {
             return false;
         };
         let tool_call_id = pending.tool_call.id.clone();
+        if chat
+            .shell_transcripts
+            .get(&tool_call_id)
+            .is_some_and(|transcript| {
+                matches!(
+                    transcript.phase,
+                    super::ai_chat_state::ShellTranscriptPhase::CapturingChanges
+                        | super::ai_chat_state::ShellTranscriptPhase::Succeeded
+                        | super::ai_chat_state::ShellTranscriptPhase::Failed
+                        | super::ai_chat_state::ShellTranscriptPhase::Interrupted
+                        | super::ai_chat_state::ShellTranscriptPhase::OutcomeUnknown
+                )
+            })
+        {
+            self.set_lsp_status("Shell process has already exited".into());
+            return false;
+        }
         if force {
             pending.kill.cancel();
         } else {
@@ -980,6 +1007,58 @@ mod tests {
             "shell leader was never reaped"
         );
         assert!(!dir.path().join("cancelled-marker").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn graceful_shell_interrupt_finishes_without_cancelling_the_execution_task() {
+        let dir = tempfile::tempdir().unwrap();
+        let kill = std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default());
+        let task_kill = kill.clone();
+        let workdir = dir.path().to_path_buf();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let worker = std::thread::spawn(move || {
+            super::super::ai_tool_execution::run_bash_program(
+                "trap 'exit 130' INT; echo ready; while :; do sleep 1; done",
+                &workdir,
+                Some(&task_kill),
+                Some(progress_tx),
+            )
+        });
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+        while kill.published_child().is_none() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "shell child never spawned"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(30));
+        kill.interrupt();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while !worker.is_finished() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "SIGINT did not stop the shell process group"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(matches!(
+            worker.join().unwrap(),
+            crate::ai::tools::ToolResult::Error(_)
+        ));
+        let events = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect::<Vec<_>>();
+        assert!(events.iter().any(|event| matches!(
+            event,
+            super::super::ai_chat_state::ShellProgressEvent::Spawned { .. }
+        )));
+        assert!(events.iter().any(|event| matches!(
+            event,
+            super::super::ai_chat_state::ShellProgressEvent::Output { bytes, .. }
+                if bytes.windows(b"ready".len()).any(|window| window == b"ready")
+        )));
     }
 
     // macOS-only: the killpg(pgid, 0) probe below detects the "group empty

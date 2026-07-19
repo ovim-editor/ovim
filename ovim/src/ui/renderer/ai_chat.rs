@@ -407,9 +407,11 @@ fn render_message_history(
     editor.render_cache.ai_chat_interactions.history =
         Some(crate::key_convert::convert_ratatui_rect(area));
     editor.render_cache.ai_chat_last_queued_row_spans.clear();
+    editor.render_cache.ai_chat_last_shell_row_spans.clear();
     let messages = editor.ai_chat_messages();
     let has_agent_cards = agent_snapshot.is_some_and(|snapshot| !snapshot.agents.is_empty());
-    if messages.is_empty() && !has_agent_cards {
+    let has_live_shells = !editor.ai_chat_live_shell_tool_ids().is_empty();
+    if messages.is_empty() && !has_agent_cards && !has_live_shells {
         editor.render_cache.ai_chat_last_total_rows = 0;
         editor.render_cache.ai_chat_last_visible_start_row = 0;
         editor.render_cache.ai_chat_last_visible_end_row = 0;
@@ -691,21 +693,34 @@ fn render_message_history(
     // Tool call status rows during tool execution
     if let Some(chat) = editor.ai_state.chat.as_ref() {
         if !chat.streaming_tool_calls.is_empty() {
+            let selected_shell = editor
+                .ai_chat_history_selected_shell_tool_id()
+                .map(str::to_owned);
             for tc in &chat.streaming_tool_calls {
                 let (kind, label) = summarize_streaming_tool_call(tc);
-                let status_text = format!("running {label}");
+                let status_text = editor
+                    .ai_shell_process_row_label(&tc.id)
+                    .unwrap_or_else(|| format!("running {label}"));
+                let row_start = rendered_lines.len();
                 rendered_lines.push((
                     render_tool_event_row(
                         panel_width,
                         &status_text,
                         kind,
-                        false,
+                        focus == ChatFocus::MessageHistory
+                            && selected_shell.as_deref() == Some(tc.id.as_str()),
                         true,
                         false,
                         false,
                     ),
                     false,
                 ));
+                if tc.name == "bash" && editor.ai_chat_live_shell_tool_ids().contains(&tc.id) {
+                    editor
+                        .render_cache
+                        .ai_chat_last_shell_row_spans
+                        .push((row_start, rendered_lines.len()));
+                }
             }
         }
     }

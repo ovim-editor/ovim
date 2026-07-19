@@ -91,6 +91,8 @@ pub struct RenderCache {
     pub ai_chat_last_visible_end_row: usize,
     /// Cached row spans per message from last render (oldest..latest).
     pub ai_chat_last_message_row_spans: Vec<(usize, usize)>,
+    /// Absolute rendered row spans for live shell calls, oldest first.
+    pub ai_chat_last_shell_row_spans: Vec<(usize, usize)>,
     /// Absolute rendered row spans for scheduled inputs, oldest first.
     pub ai_chat_last_queued_row_spans: Vec<(usize, usize)>,
     /// Plain text for every rendered history row, including off-screen rows.

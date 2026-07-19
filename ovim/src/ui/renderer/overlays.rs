@@ -1,7 +1,7 @@
 use crate::editor::Editor;
 use crate::syntax::{Theme, UiGroup};
 use ratatui::{
-    layout::Rect,
+    layout::{Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Paragraph, Wrap},
@@ -9,6 +9,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use super::ai_chat::TEXT_DIM;
 use super::helpers::{grapheme_col_to_display_col, truncate_to_width};
 use super::layout::OverlayContext;
 
@@ -866,6 +867,228 @@ fn compact_walkthrough_line(label: &str, text: &str, width: usize) -> String {
             (truncate_to_width(&single_line, available), "")
         };
     format!("{label}{truncated}{ellipsis}")
+}
+
+/// Live and retained output for one agent-owned shell process.
+pub fn render_ai_shell_process_inspector(frame: &mut Frame, editor: &Editor) {
+    let Some(view) = editor.ai_shell_inspector_view() else {
+        return;
+    };
+    let screen = frame.area();
+    if screen.width < 24 || screen.height < 10 {
+        return;
+    }
+    let width = (screen.width * 9 / 10).clamp(24, 120).min(screen.width);
+    let height = (screen.height * 4 / 5).clamp(10, 40).min(screen.height);
+    let area = Rect::new(
+        screen.x + screen.width.saturating_sub(width) / 2,
+        screen.y + screen.height.saturating_sub(height) / 2,
+        width,
+        height,
+    );
+    let phase_color = match view.phase {
+        ovim_core::editor::ShellProcessPhase::Succeeded => Color::Green,
+        ovim_core::editor::ShellProcessPhase::Failed
+        | ovim_core::editor::ShellProcessPhase::OutcomeUnknown => Color::Red,
+        ovim_core::editor::ShellProcessPhase::Interrupted
+        | ovim_core::editor::ShellProcessPhase::InterruptRequested => Color::Yellow,
+        _ => MODAL_COLORS.title,
+    };
+    let title = format!(" Process Inspector · {} ", view.phase.label());
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .border_style(Style::default().fg(phase_color).bg(MODAL_COLORS.bg))
+        .title(title)
+        .title_style(
+            Style::default()
+                .fg(phase_color)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::BOLD),
+        );
+    let inner = block.inner(area);
+    frame.render_widget(Clear, area);
+    frame.render_widget(block, area);
+
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(3),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .split(inner);
+    let content_width = chunks[0].width.saturating_sub(1) as usize;
+    let command = truncate_to_width(&format!("$ {}", view.command), content_width);
+    let cwd = truncate_to_width(
+        &format!("cwd {}", view.workdir.display()),
+        content_width.saturating_sub(1),
+    );
+    let pid = view
+        .pid
+        .map(|pid| pid.to_string())
+        .unwrap_or_else(|| "—".into());
+    let last_output = view
+        .last_output_age
+        .map(|age| format!("{} ago", format_process_duration(age)))
+        .unwrap_or_else(|| "none yet".into());
+    let metrics = truncate_to_width(
+        &format!(
+            "pid {pid} · elapsed {} · last output {last_output}",
+            format_process_duration(view.elapsed)
+        ),
+        content_width,
+    );
+    let header = Paragraph::new(vec![
+        Line::from(Span::styled(
+            command,
+            Style::default()
+                .fg(MODAL_COLORS.text)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::BOLD),
+        )),
+        Line::from(Span::styled(
+            cwd,
+            Style::default().fg(TEXT_DIM).bg(MODAL_COLORS.bg),
+        )),
+        Line::from(Span::styled(
+            metrics,
+            Style::default().fg(TEXT_DIM).bg(MODAL_COLORS.bg),
+        )),
+    ])
+    .style(Style::default().bg(MODAL_COLORS.bg));
+    frame.render_widget(header, chunks[0]);
+
+    let mut output_lines = if view.expired {
+        vec!["Output expired from the bounded process history.".to_string()]
+    } else if view.output.is_empty() {
+        let message = if view.phase.is_running() {
+            "Waiting for process output…"
+        } else {
+            "This process produced no output."
+        };
+        vec![message.to_string()]
+    } else {
+        view.output.lines().map(str::to_owned).collect::<Vec<_>>()
+    };
+    let has_discarded_banner = view.dropped_bytes > 0 && !view.expired;
+    if has_discarded_banner {
+        output_lines.insert(
+            0,
+            format!(
+                "… {} of older output discarded …",
+                format_byte_count(view.dropped_bytes)
+            ),
+        );
+    }
+    let visible_rows = chunks[1].height as usize;
+    let max_scroll = output_lines.len().saturating_sub(visible_rows);
+    let scroll = if view.follow_latest {
+        0
+    } else {
+        view.row_scroll_from_bottom.min(max_scroll)
+    };
+    let end = output_lines.len().saturating_sub(scroll);
+    let start = end.saturating_sub(visible_rows);
+    let query = view.search_query.as_deref();
+    let selected_match = view
+        .search_match_line
+        .map(|line| line + usize::from(has_discarded_banner));
+    let lines = output_lines[start..end]
+        .iter()
+        .enumerate()
+        .map(|(visible_index, line)| {
+            let absolute_index = start + visible_index;
+            let is_match = query.is_some_and(|query| line.contains(query));
+            let style = if selected_match == Some(absolute_index) {
+                Style::default()
+                    .fg(Color::Black)
+                    .bg(MODAL_COLORS.title)
+                    .add_modifier(Modifier::BOLD)
+            } else if is_match {
+                Style::default().fg(Color::Yellow).bg(MODAL_COLORS.bg)
+            } else {
+                Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg)
+            };
+            Line::from(Span::styled(
+                truncate_to_width(line, chunks[1].width as usize),
+                style,
+            ))
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Paragraph::new(lines).style(Style::default().bg(MODAL_COLORS.bg)),
+        chunks[1],
+    );
+
+    let position = if view.follow_latest {
+        "FOLLOW".to_string()
+    } else {
+        format!("SCROLL +{scroll}")
+    };
+    let footer = if let Some(input) = view.search_input.as_deref() {
+        vec![
+            Line::from(Span::styled(
+                format!("/{input}▏"),
+                Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg),
+            )),
+            Line::from(Span::styled(
+                "Enter find   Esc cancel search",
+                Style::default().fg(MODAL_COLORS.action).bg(MODAL_COLORS.bg),
+            )),
+        ]
+    } else if view.phase.is_running() {
+        vec![
+            Line::from(Span::styled(
+                position,
+                Style::default()
+                    .fg(phase_color)
+                    .bg(MODAL_COLORS.bg)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "↑/↓ scroll   G follow   / search   n next   Ctrl-C interrupt   Ctrl-K force   Esc close",
+                Style::default().fg(MODAL_COLORS.action).bg(MODAL_COLORS.bg),
+            )),
+        ]
+    } else {
+        vec![
+            Line::from(Span::styled(
+                position,
+                Style::default()
+                    .fg(phase_color)
+                    .bg(MODAL_COLORS.bg)
+                    .add_modifier(Modifier::BOLD),
+            )),
+            Line::from(Span::styled(
+                "↑/↓ scroll   G bottom   / search   n next   Esc close",
+                Style::default().fg(MODAL_COLORS.action).bg(MODAL_COLORS.bg),
+            )),
+        ]
+    };
+    frame.render_widget(
+        Paragraph::new(footer).style(Style::default().bg(MODAL_COLORS.bg)),
+        chunks[2],
+    );
+}
+
+fn format_process_duration(duration: std::time::Duration) -> String {
+    let seconds = duration.as_secs();
+    if seconds < 60 {
+        format!("{seconds}s")
+    } else {
+        format!("{}m {:02}s", seconds / 60, seconds % 60)
+    }
+}
+
+fn format_byte_count(bytes: usize) -> String {
+    if bytes >= 1024 * 1024 {
+        format!("{:.1} MiB", bytes as f64 / (1024.0 * 1024.0))
+    } else if bytes >= 1024 {
+        format!("{:.1} KiB", bytes as f64 / 1024.0)
+    } else {
+        format!("{bytes} B")
+    }
 }
 
 /// First-run and credential-recovery dialog for Exa-backed web search.
