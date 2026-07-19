@@ -146,7 +146,7 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
                     bold_text.push(bc);
                 }
                 if !bold_text.is_empty() {
-                    elements.push(MarkdownElement::Bold(bold_text));
+                    push_bold_elements(&bold_text, elements);
                 }
             }
             '`' => {
@@ -174,6 +174,22 @@ fn parse_inline_elements(line: &str, elements: &mut Vec<MarkdownElement>) {
 
     if !current_text.is_empty() {
         elements.push(MarkdownElement::Text(current_text));
+    }
+}
+
+/// Preserve inline-code semantics inside a bold run instead of displaying
+/// its backticks literally. The surrounding pieces remain bold; the code span
+/// uses the stronger code treatment, matching ordinary inline code.
+fn push_bold_elements(text: &str, elements: &mut Vec<MarkdownElement>) {
+    for (index, part) in text.split('`').enumerate() {
+        if part.is_empty() {
+            continue;
+        }
+        if index % 2 == 0 {
+            elements.push(MarkdownElement::Bold(part.to_string()));
+        } else {
+            elements.push(MarkdownElement::InlineCode(part.to_string()));
+        }
     }
 }
 
@@ -399,6 +415,20 @@ mod tests {
         assert!(elements
             .iter()
             .any(|e| matches!(e, MarkdownElement::InlineCode(s) if s == "println!")));
+    }
+
+    #[test]
+    fn test_parse_inline_code_nested_in_bold() {
+        let elements = parse_markdown("**Use `k` while history is focused.**");
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, MarkdownElement::Bold(text) if text == "Use ")));
+        assert!(elements
+            .iter()
+            .any(|element| matches!(element, MarkdownElement::InlineCode(text) if text == "k")));
+        assert!(elements.iter().any(|element| {
+            matches!(element, MarkdownElement::Bold(text) if text == " while history is focused.")
+        }));
     }
 
     #[test]

@@ -2079,7 +2079,7 @@ fn render_working_indicator(width: usize, frame: usize) -> Line<'static> {
 /// Wraps a styled `Line` (multi-span) into rows fitting within `max_width`.
 /// Preserves span styles and moves a whole word to the next row whenever that
 /// word fits there. Only words wider than a complete row are split.
-fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'static>>> {
+pub(super) fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'static>>> {
     if max_width == 0 {
         return vec![line
             .spans

@@ -737,74 +737,10 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
                 )
             }
         };
-    let (discussion, hints, expand_discussion) = match &view.discussion {
-        ovim_core::editor::CodeExplanationDiscussionView::Navigating {
-            question_count,
-            latest_question,
-            latest_answer,
-            latest_failed,
-        } => {
-            let discussion = latest_answer.as_ref().map(|answer| {
-                let question = latest_question.as_deref().unwrap_or("Question");
-                let question_budget = inner_width.saturating_div(3).max(8);
-                let question = truncate_to_width(question, question_budget);
-                let label = if *latest_failed { "Error" } else { "AI" };
-                compact_walkthrough_line(
-                    &format!("Q{question_count}: {question} · {label}: "),
-                    answer,
-                    inner_width,
-                )
-            });
-            (
-                discussion,
-                "←/→ previous/next   Space ask   Enter next/done   Esc dismiss",
-                false,
-            )
-        }
-        ovim_core::editor::CodeExplanationDiscussionView::Composing {
-            input,
-            cursor,
-            question_count,
-        } => {
-            let mut input_with_cursor = input.clone();
-            input_with_cursor.insert((*cursor).min(input_with_cursor.len()), '▏');
-            (
-                Some(compact_walkthrough_line(
-                    &format!("Ask {}: ", question_count + 1),
-                    &input_with_cursor,
-                    inner_width,
-                )),
-                "Enter send   Shift-Enter newline   Esc cancel",
-                false,
-            )
-        }
-        ovim_core::editor::CodeExplanationDiscussionView::Answering { answer, .. } => {
-            let answer = if answer.is_empty() {
-                "Thinking…".to_string()
-            } else {
-                answer.split_whitespace().collect::<Vec<_>>().join(" ")
-            };
-            (
-                Some(format!("AI: {answer}")),
-                "Answering…   ←/→ browse steps   Esc dismiss",
-                true,
-            )
-        }
-    };
-    let discussion_rows = discussion.as_ref().map_or(0, |discussion| {
-        if expand_discussion {
-            ovim_core::editor::ai_chat_input::wrap_chat_input_rows(
-                discussion,
-                inner_width.max(1),
-                editor.options.tab_width,
-            )
-            .len()
-            .min(3) as u16
-        } else {
-            1
-        }
-    });
-    let max_height = if concept_page { 20 } else { 10 };
+    let discussion = walkthrough_discussion(&view.discussion, inner_width);
+    let discussion_rows = discussion.lines.len() as u16;
+    let base_max_height: u16 = if concept_page { 20 } else { 10 };
+    let max_height = base_max_height.saturating_add(discussion_rows);
     let height = layout_height
         .saturating_add(discussion_rows)
         .min(max_height)
@@ -824,16 +760,11 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
         teaching_text,
         Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
     ))];
-    if let Some(discussion) = discussion {
-        content.push(Line::from(Span::styled(
-            discussion,
-            Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg),
-        )));
-    }
+    content.extend(discussion.lines);
     content.extend([
         Line::from(""),
         Line::from(Span::styled(
-            hints,
+            discussion.hints,
             Style::default()
                 .fg(MODAL_COLORS.action)
                 .bg(MODAL_COLORS.bg)
@@ -855,6 +786,151 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
     );
     frame.render_widget(Clear, area);
     frame.render_widget(card, area);
+}
+
+const WALKTHROUGH_ANSWER_ROWS: usize = 4;
+
+struct WalkthroughDiscussion {
+    lines: Vec<Line<'static>>,
+    hints: &'static str,
+}
+
+fn walkthrough_discussion(
+    discussion: &ovim_core::editor::CodeExplanationDiscussionView,
+    width: usize,
+) -> WalkthroughDiscussion {
+    match discussion {
+        ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+            question_count,
+            latest_question: Some(question),
+            latest_answer: Some(answer),
+            latest_failed,
+        } => WalkthroughDiscussion {
+            lines: walkthrough_exchange_lines(
+                *question_count,
+                question,
+                answer,
+                *latest_failed,
+                width,
+            ),
+            hints: "←/→ previous/next   Space ask   Enter next/done   Esc dismiss",
+        },
+        ovim_core::editor::CodeExplanationDiscussionView::Navigating { .. } => {
+            WalkthroughDiscussion {
+                lines: Vec::new(),
+                hints: "←/→ previous/next   Space ask   Enter next/done   Esc dismiss",
+            }
+        }
+        ovim_core::editor::CodeExplanationDiscussionView::Composing {
+            input,
+            cursor,
+            question_count,
+        } => {
+            let mut input_with_cursor = input.clone();
+            input_with_cursor.insert((*cursor).min(input_with_cursor.len()), '▏');
+            WalkthroughDiscussion {
+                lines: vec![Line::from(Span::styled(
+                    compact_walkthrough_line(
+                        &format!("Ask {}: ", question_count + 1),
+                        &input_with_cursor,
+                        width,
+                    ),
+                    Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg),
+                ))],
+                hints: "Enter send   Shift-Enter newline   Esc cancel",
+            }
+        }
+        ovim_core::editor::CodeExplanationDiscussionView::Answering {
+            question,
+            answer,
+            question_count,
+        } => WalkthroughDiscussion {
+            lines: walkthrough_exchange_lines(*question_count, question, answer, false, width),
+            hints: "Answering…   ←/→ browse steps   Esc dismiss",
+        },
+    }
+}
+
+fn walkthrough_exchange_lines(
+    question_count: usize,
+    question: &str,
+    answer: &str,
+    failed: bool,
+    width: usize,
+) -> Vec<Line<'static>> {
+    let question_label = format!("Q{question_count}  ");
+    let question_budget = width.saturating_sub(UnicodeWidthStr::width(question_label.as_str()));
+    let question = question.split_whitespace().collect::<Vec<_>>().join(" ");
+    let mut lines = vec![Line::from(vec![
+        Span::styled(
+            question_label,
+            Style::default()
+                .fg(MODAL_COLORS.title)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            truncate_to_width(&question, question_budget),
+            Style::default()
+                .fg(MODAL_COLORS.secondary)
+                .bg(MODAL_COLORS.bg),
+        ),
+    ])];
+
+    let label = if failed { "Error  " } else { "AI  " };
+    let label_width = UnicodeWidthStr::width(label);
+    let answer_width = width.saturating_sub(label_width).max(1);
+    let mut answer_rows = if answer.is_empty() {
+        vec![vec![Span::styled(
+            "Thinking…",
+            Style::default()
+                .fg(MODAL_COLORS.secondary)
+                .bg(MODAL_COLORS.bg),
+        )]]
+    } else {
+        let elements = super::markdown::parse_markdown(answer);
+        super::markdown::render_markdown(&elements, answer_width, None)
+            .iter()
+            .flat_map(|line| super::ai_chat::styled_word_wrap_line(line, answer_width))
+            .collect::<Vec<_>>()
+    };
+    let truncated = answer_rows.len() > WALKTHROUGH_ANSWER_ROWS;
+    if truncated {
+        answer_rows.truncate(WALKTHROUGH_ANSWER_ROWS - 1);
+        answer_rows.push(vec![Span::styled(
+            truncate_to_width("… full reply continues in chat history", answer_width),
+            Style::default()
+                .fg(MODAL_COLORS.secondary)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::ITALIC),
+        )]);
+    }
+    for (index, row) in answer_rows.into_iter().enumerate() {
+        let prefix = if index == 0 {
+            label.to_string()
+        } else {
+            " ".repeat(label_width)
+        };
+        let prefix_style = if failed {
+            Style::default()
+                .fg(Color::Red)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+                .fg(MODAL_COLORS.title)
+                .bg(MODAL_COLORS.bg)
+                .add_modifier(Modifier::BOLD)
+        };
+        let mut spans = Vec::with_capacity(row.len() + 1);
+        spans.push(Span::styled(prefix, prefix_style));
+        spans.extend(row);
+        lines.push(Line::from(spans));
+    }
+    while lines.len() < WALKTHROUGH_ANSWER_ROWS + 1 {
+        lines.push(Line::from(""));
+    }
+    lines
 }
 
 fn compact_walkthrough_line(label: &str, text: &str, width: usize) -> String {
@@ -1245,7 +1321,7 @@ pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{backend::TestBackend, Terminal};
+    use ratatui::{backend::TestBackend, style::Modifier, Terminal};
 
     use crate::editor::Editor;
     use ovim_core::ai::chat_types::{ChatOpts, ToolCallInfo};
@@ -1268,6 +1344,65 @@ mod tests {
                 })
                 .unwrap();
         }
+    }
+
+    #[test]
+    fn walkthrough_reply_keeps_markdown_and_geometry_when_answering_completes() {
+        let answer =
+            "**Choosing `k` is safe here.** It is handled only after history receives focus.";
+        let answering = ovim_core::editor::CodeExplanationDiscussionView::Answering {
+            question: "Why is k used here?".into(),
+            answer: answer.into(),
+            question_count: 1,
+        };
+        let completed = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+            question_count: 1,
+            latest_question: Some("Why is k used here?".into()),
+            latest_answer: Some(answer.into()),
+            latest_failed: false,
+        };
+
+        let streaming = super::walkthrough_discussion(&answering, 72);
+        let finished = super::walkthrough_discussion(&completed, 72);
+        assert_eq!(streaming.lines, finished.lines);
+        assert_eq!(streaming.lines.len(), super::WALKTHROUGH_ANSWER_ROWS + 1);
+
+        let rendered = streaming
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(!rendered.contains("**"), "{rendered}");
+        assert!(!rendered.contains('`'), "{rendered}");
+        assert!(streaming
+            .lines
+            .iter()
+            .flat_map(|line| &line.spans)
+            .any(|span| {
+                span.content.contains("Choosing")
+                    && span.style.add_modifier.contains(Modifier::BOLD)
+            }));
+    }
+
+    #[test]
+    fn walkthrough_reply_marks_bounded_overflow_instead_of_collapsing_it() {
+        let discussion = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
+            question_count: 2,
+            latest_question: Some("Can you give me the complete reasoning?".into()),
+            latest_answer: Some(
+                "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
+                    .into(),
+            ),
+            latest_failed: false,
+        };
+        let rendered = super::walkthrough_discussion(&discussion, 24)
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert!(rendered.contains("full reply"), "{rendered}");
     }
 
     #[tokio::test(flavor = "multi_thread")]
