@@ -24,6 +24,7 @@ AI is configured primarily through the Lua API (`vim.ai.setup(...)`) in `init.lu
 See [ai.md](ai.md) for:
 
 - Lua-first AI profile configuration
+- Reusable Agent Skills-compatible Markdown files
 - Secure API key setup without `~/.zshrc`
 - Legacy `ai.toml` compatibility and provider naming differences
 

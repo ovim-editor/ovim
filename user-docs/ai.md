@@ -84,6 +84,43 @@ guardrail with `max_tool_calls = 100`, in which case Ovim displays both the
 current count and limit. Omitting the setting—or setting it to `0` in legacy
 configuration—keeps long-running turns unlimited.
 
+## Skills
+
+Ovim supports reusable, Agent Skills-compatible instructions as flat Markdown
+files. Put each skill in the `skills` directory beneath the Ovim configuration
+root:
+
+1. `$OVIM_CONFIG/skills` when `OVIM_CONFIG` is set
+2. `$XDG_CONFIG_HOME/ovim/skills` when `XDG_CONFIG_HOME` is set
+3. `$HOME/.config/ovim/skills` otherwise
+
+For example, create `~/.config/ovim/skills/learn-codebase.md`:
+
+```markdown
+---
+name: learn-codebase
+description: Teach an unfamiliar codebase one high-impact concept at a time.
+---
+
+Start with the concept that unlocks the most understanding. Explain only that
+concept with `explain_with_codebase`, then let the user continue when ready.
+Keep a lightweight map of what has been taught and what likely remains.
+```
+
+`name` must use lowercase letters, digits, and hyphens. `description` is the
+short routing hint shown to the model. Standard optional frontmatter such as
+`license`, `compatibility`, and `metadata` is accepted.
+
+Skills use progressive disclosure: Ovim loads names and descriptions at
+startup, then exposes the full body only after the model calls
+`activate_skill` with one of those exact names. A successful activation is
+recorded in the active conversation branch, so later turns retain the skill's
+instructions. Forking or reverting to a point before activation removes it
+from that branch. Restart Ovim after adding or changing a skill file.
+
+This first format supports instruction-only `*.md` files. Skill package
+directories and executable bundled scripts are not loaded.
+
 ## Read-only delegated agents (preview)
 
 Ovim can dispatch bounded explorer and reviewer children from an active AI
