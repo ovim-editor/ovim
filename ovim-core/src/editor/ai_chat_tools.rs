@@ -1,6 +1,7 @@
 use crate::ai::chat_types::{ToolCallInfo, ToolSummaryKind};
 use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::scope::{Capabilities, ScopeContext};
+use crate::ai::skills::ACTIVATE_SKILL_TOOL;
 use crate::ai::tools::builtins::{OpenBufferState, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{SideEffect, ToolResult};
@@ -128,6 +129,23 @@ impl Editor {
             tools.retain(|tool| tool.side_effect == SideEffect::Read);
         } else {
             tools.extend(self.ai_subagent_parent_tools());
+        }
+        if self.ai_state.skill_catalog.is_empty() {
+            tools.retain(|tool| tool.name != ACTIVATE_SKILL_TOOL);
+        } else if let Some(tool) = tools
+            .iter_mut()
+            .find(|tool| tool.name == ACTIVATE_SKILL_TOOL)
+        {
+            if let Some(name) = tool
+                .parameters
+                .iter_mut()
+                .find(|param| param.name == "name")
+            {
+                name.param_type = crate::ai::tools::ParamType::StringEnum(
+                    crate::ai::tools::StringEnum::new(self.ai_state.skill_catalog.names())
+                        .expect("a non-empty skill catalog has at least one name"),
+                );
+            }
         }
         let safe_range = self.ai_code_explanation_safe_range_lines();
         if let Some(tool) = tools
@@ -467,6 +485,9 @@ impl Editor {
         }
         if self.is_ai_subagent_control_tool(&tc.name) {
             return ToolDispatchOutcome::Completed(self.execute_ai_subagent_control_tool(tc));
+        }
+        if tc.name == ACTIVATE_SKILL_TOOL {
+            return ToolDispatchOutcome::Completed(self.execute_activate_skill_tool(&tc.arguments));
         }
         if tc.name != "bash" {
             if let Err(err) = self.active_chat_target_buffer_index_strict() {
@@ -1361,6 +1382,14 @@ impl Editor {
             ToolResult::Success(s) => s.as_str().to_string(),
             ToolResult::Error(s) => format!("Error: {s}"),
         };
+        if tc.name == ACTIVATE_SKILL_TOOL {
+            let body = if self.active_chat_provider_is_remote() {
+                redact_high_risk_tokens(&raw_body)
+            } else {
+                raw_body
+            };
+            return truncate_utf8_with_notice(&body, 40 * 1024);
+        }
         let body = if self.active_chat_provider_is_remote() {
             let redacted = redact_high_risk_tokens(&raw_body);
             truncate_utf8_with_notice(&redacted, 8 * 1024)
@@ -1388,6 +1417,14 @@ impl Editor {
         let mutation_target = explicit_path.clone().unwrap_or_else(|| target_path.clone());
 
         let (kind, label) = match tc.name.as_str() {
+            "activate_skill" => {
+                let name = tc
+                    .arguments
+                    .get("name")
+                    .and_then(|value| value.as_str())
+                    .unwrap_or("unknown");
+                (ToolSummaryKind::Read, format!("skill {name}"))
+            }
             "edit_range" => {
                 let start = tc
                     .arguments
@@ -1716,6 +1753,7 @@ fn diff_line_deltas(diff: &str) -> (usize, usize) {
 mod tests {
     use super::*;
     use crate::ai::chat_types::{ChatOpts, ToolCallInfo};
+    use crate::ai::skills::{SkillCatalog, ACTIVATED_SKILL_MARKER};
     use crate::ai::{FileScope, ToolApprovalMode};
     use crate::editor::ai_tool_execution::find_enclosing_symbol;
     use crate::editor::ai_tool_path::normalize_path;
@@ -1787,6 +1825,73 @@ mod tests {
     #[test]
     fn find_enclosing_symbol_empty() {
         assert!(find_enclosing_symbol(&[], 10).is_none());
+    }
+
+    #[test]
+    fn skill_schema_is_lazy_and_restricts_activation_to_discovered_names() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("learn.md"),
+            "---\nname: learn-codebase\ndescription: Teach the codebase.\n---\nOne concept at a time.\n",
+        )
+        .unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state.skill_catalog = SkillCatalog::load_from_dir(directory.path());
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&editor.ai_state.active_profile)
+            .unwrap()
+            .clone();
+
+        let schemas = editor.build_tool_schemas_for_chat(&profile);
+        let activation = schemas
+            .iter()
+            .find(|schema| {
+                schema.pointer("/function/name").and_then(|v| v.as_str())
+                    == Some(ACTIVATE_SKILL_TOOL)
+            })
+            .expect("activation schema");
+        assert_eq!(
+            activation.pointer("/function/parameters/properties/name/enum"),
+            Some(&serde_json::json!(["learn-codebase"]))
+        );
+        assert!(
+            !activation.to_string().contains("One concept at a time."),
+            "skill instructions must not be included in the tool schema"
+        );
+    }
+
+    #[test]
+    fn activating_skill_returns_catalog_instructions_without_a_file_target() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("learn.md"),
+            "---\nname: learn-codebase\ndescription: Teach the codebase.\n---\nOne concept at a time.\n",
+        )
+        .unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state.skill_catalog = SkillCatalog::load_from_dir(directory.path());
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let call = ToolCallInfo {
+            id: "skill-1".into(),
+            name: ACTIVATE_SKILL_TOOL.into(),
+            arguments: serde_json::json!({"name": "learn-codebase"}),
+        };
+
+        match editor.dispatch_tool_call_with_approval(&call, None) {
+            ToolDispatchOutcome::Completed(ToolResult::Success(content)) => {
+                assert!(content.starts_with(&format!("{ACTIVATED_SKILL_MARKER}learn-codebase")));
+                assert!(content.contains("One concept at a time."));
+            }
+            ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+                panic!("unexpected activation error: {error}")
+            }
+            ToolDispatchOutcome::ApprovalRequired(_) => {
+                panic!("skill activation must not require path approval")
+            }
+        }
     }
 
     #[test]

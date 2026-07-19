@@ -1,4 +1,5 @@
 use crate::ai::chat_types::{ConversationTree, NodeId};
+use crate::ai::skills::SkillCatalog;
 use crate::ai::tools::ToolRegistry;
 use crate::ai::{AiConfig, AiJobResult, EditFormat, PROFILE_LOCAL};
 use crate::buffer::BufferId;
@@ -123,6 +124,8 @@ pub struct AiState {
         HashMap<(BufferId, String), HashMap<NodeId, ChatRuntimeNodeRef>>,
     /// Registry of all available tools.
     pub tool_registry: ToolRegistry,
+    /// User-configured skill metadata and lazily activated instructions.
+    pub skill_catalog: SkillCatalog,
     /// Monotonic signal that a running agent has paused for user attention.
     /// Frontends compare this value with the last one they observed so a
     /// single prompt can notify once without coupling sound playback to
@@ -173,6 +176,10 @@ impl AiState {
         // tools. Their schemas are injected only for an enabled, durable root
         // turn that currently owns DispatchAgents authority.
         let tool_registry = ToolRegistry::new();
+        #[cfg(not(test))]
+        let skill_catalog = SkillCatalog::discover();
+        #[cfg(test)]
+        let skill_catalog = SkillCatalog::default();
         Self {
             agent_runtime: Box::new(agent_runtime),
             run_storage_warning,
@@ -196,6 +203,7 @@ impl AiState {
             conversations: HashMap::new(),
             conversation_runtime_nodes: HashMap::new(),
             tool_registry,
+            skill_catalog,
             ai_attention_generation: 0,
             no_repo_session_prompted: false,
             no_repo_session_allowed_root: None,

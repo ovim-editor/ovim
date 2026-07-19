@@ -14,6 +14,7 @@ pub mod prompt;
 mod provider;
 pub mod sanitization;
 pub mod scope;
+pub mod skills;
 pub mod stream_parsers;
 pub mod tools;
 mod types;

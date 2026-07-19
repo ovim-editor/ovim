@@ -1,4 +1,5 @@
 use crate::ai::chat_types::{ChatMessage, ChatRole, StreamChunk};
+use crate::ai::skills::{ACTIVATED_SKILL_MARKER, ACTIVATE_SKILL_TOOL};
 use crate::ai::stream_ai_chat_with_codex_session;
 use crate::ai::tools::builtins::ProjectDiagnosticFile;
 use crate::ai::tools::SideEffect;
@@ -12,6 +13,37 @@ use super::ai_tool_path::to_relative_path_for_boundary;
 use super::Editor;
 
 impl Editor {
+    fn build_skill_system_prompt(&self, profile: &crate::ai::AiProfileConfig) -> Option<String> {
+        if self.ai_state.skill_catalog.is_empty()
+            || !self
+                .ai_state
+                .tool_registry
+                .tools_for_profile(profile, &self.build_chat_capabilities())
+                .iter()
+                .any(|tool| tool.name == ACTIVATE_SKILL_TOOL)
+        {
+            return None;
+        }
+
+        let activated = self
+            .conversation()
+            .into_iter()
+            .flat_map(|conversation| conversation.messages())
+            .filter(|message| message.role == ChatRole::Tool)
+            .flat_map(|message| message.content.lines())
+            .filter_map(|line| line.strip_prefix(ACTIVATED_SKILL_MARKER))
+            .map(str::trim)
+            .filter(|name| !name.is_empty())
+            .collect::<Vec<_>>();
+
+        let mut prompt = self.ai_state.skill_catalog.discovery_prompt()?;
+        if let Some(instructions) = self.ai_state.skill_catalog.activated_prompt(activated) {
+            prompt.push_str("\n\n");
+            prompt.push_str(&instructions);
+        }
+        Some(prompt)
+    }
+
     /// Build a context-aware system prompt for chat mode.
     ///
     /// This ensures the model responds in natural language instead of falling
@@ -231,6 +263,12 @@ impl Editor {
             })
         } else {
             system_prompt
+        };
+        let system_prompt = match (system_prompt, self.build_skill_system_prompt(&profile)) {
+            (Some(prompt), Some(skills)) => Some(format!("{prompt}\n\n{skills}")),
+            (Some(prompt), None) => Some(prompt),
+            (None, Some(skills)) => Some(skills),
+            (None, None) => None,
         };
         let stable_system_prompt = system_prompt.clone();
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
@@ -751,7 +789,10 @@ impl Editor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::ai::chat_types::ChatOpts;
+    use crate::ai::skills::{SkillCatalog, ACTIVATED_SKILL_MARKER};
     use crate::unicode::GraphemeCol;
+    use std::fs;
 
     fn editor_with_numbered_lines(line_count: usize) -> Editor {
         let mut editor = Editor::default();
@@ -794,5 +835,35 @@ mod tests {
         assert!(context.contains("line 51:"));
         assert!(context.contains("more lines above"));
         assert!(context.contains("more lines below"));
+    }
+
+    #[test]
+    fn skill_prompt_rehydrates_successful_activations_from_active_conversation() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::write(
+            directory.path().join("learn.md"),
+            "---\nname: learn-codebase\ndescription: Teach one concept at a time.\n---\nKeep a lightweight learning map.\n",
+        )
+        .unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state.skill_catalog = SkillCatalog::load_from_dir(directory.path());
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        let profile = editor
+            .ai_state
+            .config
+            .resolve_profile(&editor.ai_state.active_profile)
+            .unwrap()
+            .clone();
+
+        let discovery = editor.build_skill_system_prompt(&profile).unwrap();
+        assert!(discovery.contains("Teach one concept at a time."));
+        assert!(!discovery.contains("Keep a lightweight learning map."));
+
+        editor.conversation_mut().unwrap().append_tool_result(
+            "skill-1".into(),
+            format!("{ACTIVATED_SKILL_MARKER}learn-codebase\n\nSkill instructions loaded"),
+        );
+        let activated = editor.build_skill_system_prompt(&profile).unwrap();
+        assert!(activated.contains("Keep a lightweight learning map."));
     }
 }

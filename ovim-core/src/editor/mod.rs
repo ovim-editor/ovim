@@ -21,6 +21,7 @@ mod ai_context;
 mod ai_durable_chat;
 pub(crate) mod ai_integration;
 mod ai_run_events;
+mod ai_skills;
 mod ai_state;
 mod ai_subagents;
 mod ai_tool_execution;

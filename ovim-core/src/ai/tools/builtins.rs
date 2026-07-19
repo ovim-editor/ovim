@@ -187,6 +187,7 @@ pub struct ProjectDiagnosticFile {
 /// Register all built-in tools into the registry.
 pub fn register_builtins(registry: &mut ToolRegistry) {
     // Read tools
+    registry.register(activate_skill_def());
     registry.register(read_file_def());
     registry.register(workspace_context_def());
     registry.register(read_file_at_path_def());
@@ -240,6 +241,10 @@ pub fn execute_builtin(
     ctx: &ToolExecutionContext,
 ) -> ToolResult {
     match name {
+        "activate_skill" => ToolResult::Error(
+            "'activate_skill' must be dispatched by the editor so it can use the discovered skill catalog"
+                .to_string(),
+        ),
         "read_file" => handle_read_file(args, ctx),
         "workspace_context" => handle_workspace_context(args, ctx),
         "read_file_at_path" => handle_read_file_at_path(args, ctx),
@@ -276,6 +281,27 @@ pub fn execute_builtin(
             "'{name}' is a mutation tool — must be dispatched via execute_mutation_tool"
         )),
         _ => ToolResult::Error(format!("unknown built-in tool: {name}")),
+    }
+}
+
+fn activate_skill_def() -> ToolDefinition {
+    ToolDefinition {
+        name: crate::ai::skills::ACTIVATE_SKILL_TOOL.to_string(),
+        description: "Load the full instructions for one user-configured skill. Use this when the user names a skill or the request clearly matches an available skill description. Do not activate unrelated skills."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Selection,
+            shell: false,
+            network: false,
+        },
+        side_effect: SideEffect::Read,
+        custom_input_schema: None,
+        parameters: vec![ToolParam {
+            name: "name".to_string(),
+            param_type: ParamType::String,
+            required: true,
+            description: "Exact name of the available skill to activate.".to_string(),
+        }],
     }
 }
 
