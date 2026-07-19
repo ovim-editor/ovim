@@ -102,7 +102,8 @@ pub use ai_state::{AiEditRegion, AiRegionStatus};
 pub use ai_subagents::PreparedHeadlessAgentControl;
 pub use build_state::PendingShellCommand;
 pub use code_explanation::{
-    CodeExplanationCardLayout, CodeExplanationDiscussionView, CodeExplanationView,
+    CodeExplanationCardLayout, CodeExplanationDiscussionView, CodeExplanationPageView,
+    CodeExplanationView, ConceptExplanationCardLayout,
 };
 pub use command_context::CommandContext;
 pub use completion::CompletionMenu;

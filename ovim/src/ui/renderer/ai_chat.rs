@@ -2642,7 +2642,7 @@ mod tests {
     fn walkthrough_history_row_reserves_a_right_aligned_replay_action() {
         let line = render_tool_event_row(
             48,
-            "code walkthrough · 17 steps",
+            "walkthrough · 17 pages",
             ovim_core::ai::chat_types::ToolSummaryKind::Navigation,
             false,
             false,

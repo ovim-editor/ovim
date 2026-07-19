@@ -669,7 +669,7 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
     );
 }
 
-/// Compact walkthrough card that leaves the selected code visible above it.
+/// Compact code-page card or large centered concept-page panel.
 pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
     let Some(view) = editor.ai_code_explanation_view() else {
         return;
@@ -678,15 +678,64 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
         return;
     };
     let buffer = Rect::new(cached.x, cached.y, cached.width, cached.height);
-    let Some(layout) = ovim_core::editor::CodeExplanationCardLayout::resolve(
-        buffer.width,
-        buffer.height,
-        &view.comment,
-        editor.options.tab_width,
-    ) else {
-        return;
-    };
-    let inner_width = layout.width.saturating_sub(2) as usize;
+    let (layout_width, layout_height, inner_width, title, teaching_text, concept_page) =
+        match &view.page {
+            ovim_core::editor::CodeExplanationPageView::Concept { title, body } => {
+                let Some(layout) = ovim_core::editor::ConceptExplanationCardLayout::resolve(
+                    buffer.width,
+                    buffer.height,
+                    body,
+                    editor.options.tab_width,
+                ) else {
+                    return;
+                };
+                let title_budget = layout.width.saturating_sub(28) as usize;
+                (
+                    layout.width,
+                    layout.height,
+                    layout.body_width,
+                    format!(
+                        " Concept {}/{} · {} ",
+                        view.current,
+                        view.total,
+                        truncate_to_width(title, title_budget)
+                    ),
+                    body.clone(),
+                    true,
+                )
+            }
+            ovim_core::editor::CodeExplanationPageView::Code {
+                path,
+                start_line,
+                end_line,
+                comment,
+            } => {
+                let Some(layout) = ovim_core::editor::CodeExplanationCardLayout::resolve(
+                    buffer.width,
+                    buffer.height,
+                    comment,
+                    editor.options.tab_width,
+                ) else {
+                    return;
+                };
+                let range = if start_line == end_line {
+                    format!("{path}:{start_line}")
+                } else {
+                    format!("{path}:{start_line}-{end_line}")
+                };
+                (
+                    layout.width,
+                    layout.height,
+                    layout.comment_width,
+                    format!(
+                        " Code walkthrough {}/{} · {range} ",
+                        view.current, view.total
+                    ),
+                    comment.clone(),
+                    false,
+                )
+            }
+        };
     let (discussion, hints, expand_discussion) = match &view.discussion {
         ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count,
@@ -754,28 +803,24 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
             1
         }
     });
-    let height = layout
-        .height
+    let max_height = if concept_page { 20 } else { 10 };
+    let height = layout_height
         .saturating_add(discussion_rows)
-        .min(10)
-        .min(buffer.height);
+        .min(max_height)
+        .min(buffer.height.saturating_sub(u16::from(concept_page) * 2));
+    let y = if concept_page {
+        buffer.y + buffer.height.saturating_sub(height) / 2
+    } else {
+        buffer.bottom().saturating_sub(height)
+    };
     let area = Rect::new(
-        buffer.x + buffer.width.saturating_sub(layout.width) / 2,
-        buffer.bottom().saturating_sub(height),
-        layout.width,
+        buffer.x + buffer.width.saturating_sub(layout_width) / 2,
+        y,
+        layout_width,
         height,
     );
-    let range = if view.start_line == view.end_line {
-        format!("{}:{}", view.path, view.start_line)
-    } else {
-        format!("{}:{}-{}", view.path, view.start_line, view.end_line)
-    };
-    let title = format!(
-        " Code walkthrough {}/{} · {range} ",
-        view.current, view.total
-    );
     let mut content = vec![Line::from(Span::styled(
-        view.comment,
+        teaching_text,
         Style::default().fg(MODAL_COLORS.text).bg(MODAL_COLORS.bg),
     ))];
     if let Some(discussion) = discussion {
@@ -1087,5 +1132,78 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Ask 1: Why?▏"), "{rendered}");
         assert!(rendered.contains("Enter send"), "{rendered}");
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concept_page_uses_a_large_centered_panel() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(dir.path().join(".git")).unwrap();
+        let file = dir.path().join("demo.rs");
+        std::fs::write(&file, "fn demo() {}\n").unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        editor.set_last_layout(
+            ovim_core::Rect {
+                x: 0,
+                y: 0,
+                width: 100,
+                height: 22,
+            },
+            0,
+            100,
+            0,
+        );
+        let call = ToolCallInfo {
+            id: "concept-walkthrough".into(),
+            name: "explain_with_codebase".into(),
+            arguments: serde_json::json!({
+                "steps": [{
+                    "type": "concept",
+                    "title": "Two layers of history",
+                    "body": "Input recall and conversation navigation are separate concerns."
+                }]
+            }),
+        };
+        let key = {
+            let chat = editor.ai_state.chat.as_ref().unwrap();
+            (chat.origin_buffer_id, chat.opts.name.clone())
+        };
+        let conversation = editor.ai_state.conversations.get_mut(&key).unwrap();
+        conversation.append_assistant_message_with_tools(
+            String::new(),
+            "test".into(),
+            vec![call.clone()],
+        );
+        conversation.append_tool_result(
+            call.id.clone(),
+            "User completed the walkthrough (1 page).".into(),
+        );
+        assert!(editor.replay_code_explanation(&call.id));
+
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| super::render_ai_code_explanation(frame, &editor))
+            .unwrap();
+        let rows = terminal
+            .backend()
+            .buffer()
+            .content()
+            .chunks(100)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>();
+        let title_row = rows
+            .iter()
+            .position(|row| row.contains("Concept 1/1 · Two layers of history"))
+            .expect("concept title");
+        let body_row = rows
+            .iter()
+            .position(|row| row.contains("Input recall and conversation navigation"))
+            .expect("concept body");
+
+        assert!((4..=6).contains(&title_row), "title row: {title_row}");
+        assert!(body_row > title_row);
+        assert!(rows.iter().any(|row| row.contains("Space ask")));
     }
 }

@@ -2610,13 +2610,33 @@ fn create_ai_chat_snapshot(editor: &Editor) -> Option<ovim::api::AiChatSnapshot>
                             None,
                         ),
                     };
+                let (page_type, title, path, start_line, end_line, comment) = match view.page {
+                    ovim_core::editor::CodeExplanationPageView::Concept { title, body } => {
+                        ("concept".to_string(), Some(title), String::new(), 0, 0, body)
+                    }
+                    ovim_core::editor::CodeExplanationPageView::Code {
+                        path,
+                        start_line,
+                        end_line,
+                        comment,
+                    } => (
+                        "code".to_string(),
+                        None,
+                        path,
+                        start_line,
+                        end_line,
+                        comment,
+                    ),
+                };
                 CodeExplanationSnapshot {
                     current: view.current,
                     total: view.total,
-                    path: view.path,
-                    start_line: view.start_line,
-                    end_line: view.end_line,
-                    comment: view.comment,
+                    page_type,
+                    title,
+                    path,
+                    start_line,
+                    end_line,
+                    comment,
                     discussion_state,
                     question_count,
                     question,

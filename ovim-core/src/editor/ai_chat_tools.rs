@@ -148,12 +148,13 @@ impl Editor {
             }
         }
         let safe_range = self.ai_code_explanation_safe_range_lines();
+        let concept_rows = self.ai_code_explanation_concept_page_rows();
         if let Some(tool) = tools
             .iter_mut()
             .find(|tool| tool.name == "explain_with_codebase")
         {
             tool.description.push_str(&format!(
-                " The current full-width walkthrough can reliably show at most {safe_range} visual code rows per step; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each comment concise enough to display in at most 5 wrapped rows. Treat those as maximums, not targets: choose the fewest code rows and words that establish one idea. Never expand a selection to the full function merely for context. Split before the reader must retain two new facts at once, and freely revisit a range when each visit teaches a different relationship or consequence. If validation rejects a range, use its suggested endpoint and longest-line measurements to choose a conceptual split, then retry."
+                " The current walkthrough can reliably show at most {concept_rows} wrapped body rows on each concept page and at most {safe_range} visual code rows per code page; every inclusive start_line..end_line range must stay within that limit after soft wrapping. Keep each code comment within 5 wrapped rows. Treat all limits as maximums, not targets: choose the fewest words and code rows that establish one idea. Prefer one or two introductory concept pages when a mental model will reduce cognitive load, then move to concrete code. If a concept page needs two ideas or exceeds its row budget, split it into multiple consecutive concept pages. Never expand a selection to the full function merely for context. Split before the reader must retain two new facts at once, and freely revisit a range when each visit teaches a different relationship or consequence. If validation rejects a page, use its measured rows and suggestions to choose a semantic split, then retry."
             ));
             if let Some(steps) = tool
                 .parameters
@@ -161,7 +162,7 @@ impl Editor {
                 .find(|param| param.name == "steps")
             {
                 steps.description = format!(
-                    "Narratively ordered, bite-sized walkthrough steps using project-relative paths and 1-indexed inclusive lines. Each optional range may occupy at most {safe_range} visual code rows in the full-width walkthrough after soft wrapping, and each comment may occupy at most 5 wrapped rows. Use single-line anchors for handoffs or invariants. Otherwise select the smallest condition, assignment, call, or block that proves the comment; never include the full surrounding function by default. Give each step one new idea and one necessary connection. If one comment needs two ideas, split it into two steps. Repeating a range is encouraged when a later step adds a distinct perspective rather than restating the earlier comment."
+                    "Narratively ordered, bite-sized concept and code pages. A concept page may occupy at most {concept_rows} wrapped body rows; use it for one introductory mental model, prerequisite, transition, or synthesis without a code location. Prefer several focused concept pages over one dense page, and move to concrete code as soon as the reader is oriented. Code pages use project-relative paths and 1-indexed inclusive lines. Each optional range may occupy at most {safe_range} visual code rows after soft wrapping, and each comment may occupy at most 5 wrapped rows. Use single-line anchors for handoffs or invariants. Otherwise select the smallest condition, assignment, call, or block that proves the comment; never include the full surrounding function by default. Give every page one new idea and one necessary connection. If one page needs two ideas, split it into two pages. Repeating a range is encouraged when a later page adds a distinct perspective rather than restating the earlier comment."
                 );
             }
         }
@@ -1562,7 +1563,7 @@ impl Editor {
                     .unwrap_or(0);
                 (
                     ToolSummaryKind::Navigation,
-                    format!("code walkthrough · {count} steps"),
+                    format!("walkthrough · {count} pages"),
                 )
             }
             "select_text" => {

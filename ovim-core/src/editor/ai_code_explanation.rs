@@ -8,9 +8,10 @@ use super::ai_chat_state::{
     PendingCodeExplanation, QueuedChatInputKind,
 };
 use super::code_explanation::{
-    comment_rows_for_viewport, safe_code_rows, CodeExplanationDiscussionView, CodeExplanationStep,
+    comment_rows_for_viewport, concept_body_row_limit, concept_body_rows_for_viewport,
+    safe_code_rows, CodeExplanationDiscussionView, CodeExplanationPageView, CodeExplanationStep,
     CodeExplanationView, MAX_WALKTHROUGH_COMMENT_BYTES, MAX_WALKTHROUGH_COMMENT_ROWS,
-    MAX_WALKTHROUGH_STEPS,
+    MAX_WALKTHROUGH_CONCEPT_BODY_BYTES, MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS, MAX_WALKTHROUGH_STEPS,
 };
 use super::Editor;
 
@@ -32,6 +33,15 @@ impl Editor {
             .map(|area| area.height as usize)
             .unwrap_or_else(|| self.viewport_height());
         safe_code_rows((viewport > 0).then_some(viewport))
+    }
+
+    pub fn ai_code_explanation_concept_page_rows(&self) -> usize {
+        let viewport = self
+            .render_cache
+            .last_buffer_area
+            .map(|area| area.height as usize)
+            .unwrap_or_else(|| self.viewport_height());
+        concept_body_row_limit((viewport > 0).then_some(viewport))
     }
 
     pub fn ai_code_explanation_view(&self) -> Option<CodeExplanationView> {
@@ -71,13 +81,28 @@ impl Editor {
                 }
             }
         };
+        let page = match step {
+            CodeExplanationStep::Concept { title, body } => CodeExplanationPageView::Concept {
+                title: title.clone(),
+                body: body.clone(),
+            },
+            CodeExplanationStep::Code {
+                path,
+                start_line,
+                end_line,
+                comment,
+                ..
+            } => CodeExplanationPageView::Code {
+                path: path.clone(),
+                start_line: *start_line,
+                end_line: *end_line,
+                comment: comment.clone(),
+            },
+        };
         Some(CodeExplanationView {
             current: pending.current + 1,
             total: pending.steps.len(),
-            path: step.path.clone(),
-            start_line: step.start_line,
-            end_line: step.end_line,
-            comment: step.comment.clone(),
+            page,
             discussion,
         })
     }
@@ -96,7 +121,7 @@ impl Editor {
     pub fn replay_code_explanation(&mut self, tool_call_id: &str) -> bool {
         if self.ai_chat_waiting() || self.ai_chat_has_pending_code_explanation() {
             self.set_lsp_status(
-                "Finish the active agent work before replaying a code walkthrough".into(),
+                "Finish the active agent work before replaying a walkthrough".into(),
             );
             return false;
         }
@@ -105,7 +130,7 @@ impl Editor {
             .filter(|call| call.name == "explain_with_codebase")
             .cloned()
         else {
-            self.set_lsp_status("That code walkthrough is no longer available to replay".into());
+            self.set_lsp_status("That walkthrough is no longer available to replay".into());
             return false;
         };
 
@@ -115,7 +140,7 @@ impl Editor {
                 let message = match error {
                     ToolResult::Success(message) | ToolResult::Error(message) => message,
                 };
-                self.set_lsp_status(format!("Could not replay code walkthrough: {message}"));
+                self.set_lsp_status(format!("Could not replay walkthrough: {message}"));
                 false
             }
         }
@@ -180,13 +205,13 @@ impl Editor {
             } else if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.active_buffer_id = original_active_buffer_id;
             }
-            unreachable!("installed code walkthrough disappeared before activation");
+            unreachable!("installed walkthrough disappeared before activation");
         }
 
         self.ai_state.ai_attention_generation =
             self.ai_state.ai_attention_generation.saturating_add(1);
         self.set_lsp_status(
-            "Code walkthrough ready — Left/Right steps, Space asks, Enter advances, Esc dismisses"
+            "Walkthrough ready — Left/Right pages, Space asks, Enter advances, Esc dismisses"
                 .into(),
         );
         Ok(())
@@ -374,7 +399,7 @@ impl Editor {
 
         let prompt = walkthrough_question_prompt(step_index, &step, &question);
         let outcome = ToolResult::Success(format!(
-            "The user paused the code walkthrough at step {} to ask a question. Answer the attached user steering directly and concisely, using read-only investigation if needed. Do not edit files, restart the walkthrough, or continue implementation. Question: {}",
+            "The user paused the walkthrough at page {} to ask a question. Answer the attached user steering directly and concisely, using read-only investigation if needed. Do not edit files, restart the walkthrough, or continue implementation. Question: {}",
             step_index + 1,
             question
         ));
@@ -508,37 +533,37 @@ impl Editor {
         let question_count = pending.threads.iter().map(Vec::len).sum::<usize>();
         let outcome = if is_replay && dismissed {
             format!(
-                "Dismissed replay at step {} of {}.",
+                "Dismissed replay at page {} of {}.",
                 pending.current + 1,
                 pending.steps.len()
             )
         } else if is_replay {
             format!(
-                "Completed walkthrough replay ({} steps).",
+                "Completed walkthrough replay ({} pages).",
                 pending.steps.len()
             )
         } else if pending.continuation.is_none() && dismissed {
             format!(
-                "Dismissed code walkthrough at step {} of {} after {} question(s).",
+                "Dismissed walkthrough at page {} of {} after {} question(s).",
                 pending.current + 1,
                 pending.steps.len(),
                 question_count
             )
         } else if pending.continuation.is_none() {
             format!(
-                "Completed code walkthrough ({} steps, {} question(s)).",
+                "Completed walkthrough ({} pages, {} question(s)).",
                 pending.steps.len(),
                 question_count
             )
         } else if dismissed {
             format!(
-                "User dismissed the code walkthrough at step {} of {}.",
+                "User dismissed the walkthrough at page {} of {}.",
                 pending.current + 1,
                 pending.steps.len()
             )
         } else {
             format!(
-                "User completed the code walkthrough ({} steps).",
+                "User completed the walkthrough ({} pages).",
                 pending.steps.len()
             )
         };
@@ -578,7 +603,7 @@ impl Editor {
                 if let (Some(turn), Some(tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref()) {
                     if let Err(error) = self.ai_runtime_finish_tool(turn, tool, &result) {
                         self.ai_runtime_fail_turn(format!(
-                            "failed to record code walkthrough result: {error}"
+                            "failed to record walkthrough result: {error}"
                         ));
                         self.clear_streaming_state();
                         return;
@@ -614,21 +639,68 @@ impl Editor {
         }
         if raw_steps.len() > MAX_WALKTHROUGH_STEPS {
             return Err(ToolResult::Error(format!(
-                "walkthrough has {} steps; the maximum is {MAX_WALKTHROUGH_STEPS}",
+                "walkthrough has {} pages; the maximum is {MAX_WALKTHROUGH_STEPS}",
                 raw_steps.len()
             )));
         }
 
         let root = self
             .ai_effective_project_root()
-            .ok_or_else(|| ToolResult::Error(self.no_project_root_error()))?;
-        let root = root.canonicalize().unwrap_or(root);
+            .map(|root| root.canonicalize().unwrap_or(root));
         let safe_range = self.ai_code_explanation_safe_range_lines();
         let presentation_width = self.ai_code_explanation_presentation_width();
+        let presentation_height = self
+            .render_cache
+            .last_buffer_area
+            .map(|area| area.height as usize)
+            .filter(|height| *height > 0)
+            .or_else(|| (self.viewport_height() > 0).then(|| self.viewport_height()));
         let mut steps = Vec::with_capacity(raw_steps.len());
 
         for (index, raw) in raw_steps.iter().enumerate() {
             let step_number = index + 1;
+            let page_type = raw
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .unwrap_or("code");
+            if page_type == "concept" {
+                let title = required_step_string(raw, "title", step_number)?;
+                if title.contains(['\n', '\r']) {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} concept title must be a single line"
+                    )));
+                }
+                if title.chars().count() > MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} concept title exceeds {MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS} characters"
+                    )));
+                }
+                let body = required_step_string(raw, "body", step_number)?;
+                if body.len() > MAX_WALKTHROUGH_CONCEPT_BODY_BYTES {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} concept body exceeds {MAX_WALKTHROUGH_CONCEPT_BODY_BYTES} bytes"
+                    )));
+                }
+                let body_rows = concept_body_rows_for_viewport(
+                    presentation_width,
+                    &body,
+                    self.options.tab_width,
+                );
+                let row_limit = concept_body_row_limit(presentation_height);
+                if body_rows > row_limit {
+                    let suggested_pages = body_rows.div_ceil(row_limit);
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} concept body wraps to {body_rows} rows; the current maximum is {row_limit}. Split it semantically into at least {suggested_pages} focused concept pages rather than truncating or compressing it"
+                    )));
+                }
+                steps.push(CodeExplanationStep::Concept { title, body });
+                continue;
+            }
+            if page_type != "code" {
+                return Err(ToolResult::Error(format!(
+                    "step {step_number} has unsupported type {page_type:?}; expected 'concept' or 'code'"
+                )));
+            }
             let path = required_step_string(raw, "path", step_number)?;
             let comment = required_step_string(raw, "comment", step_number)?;
             if comment.len() > MAX_WALKTHROUGH_COMMENT_BYTES {
@@ -661,6 +733,9 @@ impl Editor {
                 )));
             }
 
+            let root = root
+                .as_ref()
+                .ok_or_else(|| ToolResult::Error(self.no_project_root_error()))?;
             let relative = Path::new(&path);
             if relative.is_absolute()
                 || relative.components().any(|component| {
@@ -717,7 +792,7 @@ impl Editor {
                 }
             }
 
-            steps.push(CodeExplanationStep {
+            steps.push(CodeExplanationStep::Code {
                 path,
                 absolute_path,
                 start_line,
@@ -814,11 +889,22 @@ impl Editor {
             .and_then(|chat| chat.pending_code_explanation.as_ref())
             .and_then(|pending| pending.steps.get(pending.current))
             .cloned()
-            .ok_or_else(|| ToolResult::Error("code walkthrough has no current step".to_string()))?;
+            .ok_or_else(|| ToolResult::Error("walkthrough has no current page".to_string()))?;
+
+        let CodeExplanationStep::Code {
+            absolute_path,
+            start_line,
+            end_line,
+            ..
+        } = step
+        else {
+            self.ai_state.active_selection = None;
+            return Ok(());
+        };
 
         let opened = self.handle_open_file_at_absolute_path(
-            &step.absolute_path,
-            &json!({ "line": step.start_line, "column": 1 }),
+            &absolute_path,
+            &json!({ "line": start_line, "column": 1 }),
             false,
         );
         if let ToolResult::Error(error) = opened {
@@ -827,8 +913,8 @@ impl Editor {
         let selected = self.execute_navigation_tool(
             "select_text",
             &json!({
-                "start_line": step.start_line,
-                "end_line": step.end_line,
+                "start_line": start_line,
+                "end_line": end_line,
             }),
         );
         if let ToolResult::Error(error) = selected {
@@ -838,10 +924,9 @@ impl Editor {
         // walkthrough instead owns the bottom rows with its card, so pin the
         // range's first line to the top and let the validated visual-row budget
         // flow downward without being obscured.
-        self.buffer_mut().cursor_mut().set_position(
-            step.start_line.saturating_sub(1),
-            crate::unicode::GraphemeCol(0),
-        );
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(start_line.saturating_sub(1), crate::unicode::GraphemeCol(0));
         self.move_cursor_line_to_top_with_offset(0);
         Ok(())
     }
@@ -891,19 +976,32 @@ fn walkthrough_question_prompt(
     step: &CodeExplanationStep,
     question: &str,
 ) -> String {
-    let range = if step.start_line == step.end_line {
-        format!("{}:{}", step.path, step.start_line)
-    } else {
-        format!("{}:{}-{}", step.path, step.start_line, step.end_line)
+    let (label, teaching_text) = match step {
+        CodeExplanationStep::Concept { title, body } => {
+            (format!("Concept: {title}"), body.as_str())
+        }
+        CodeExplanationStep::Code {
+            path,
+            start_line,
+            end_line,
+            comment,
+            ..
+        } => {
+            let range = if start_line == end_line {
+                format!("{path}:{start_line}")
+            } else {
+                format!("{path}:{start_line}-{end_line}")
+            };
+            (range, comment.as_str())
+        }
     };
-    let quoted_comment = step
-        .comment
+    let quoted_comment = teaching_text
         .lines()
         .map(|line| format!("> {line}"))
         .collect::<Vec<_>>()
         .join("\n");
     format!(
-        "> Walkthrough step {} · {range}\n{quoted_comment}\n\n{}\n\nAnswer this question in the context of our existing conversation and the codebase. Do not modify files or perform external actions; use read-only investigation only if needed.",
+        "> Walkthrough page {} · {label}\n{quoted_comment}\n\n{}\n\nAnswer this question in the context of our existing conversation and the codebase. Do not modify files or perform external actions; use read-only investigation only if needed.",
         step_index + 1,
         question
     )
@@ -1061,7 +1159,7 @@ mod tests {
         let ProviderSteerUpdate::Queue { id, content } = steer_rx.recv().await.unwrap() else {
             panic!("walkthrough question should steer the root turn")
         };
-        assert!(content.contains("> Walkthrough step 1 · first.rs:2"));
+        assert!(content.contains("> Walkthrough page 1 · first.rs:2"));
         assert!(content.contains("Why is k used here?"));
         assert!(response_rx.await.unwrap().unwrap().contains("paused"));
         assert!(editor.ai_chat_has_pending_code_explanation());
@@ -1272,6 +1370,121 @@ mod tests {
             original_target
         );
         assert!(editor.ai_state.active_selection.is_none());
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concept_pages_and_code_pages_share_one_linear_sequence() {
+        let (_dir, mut editor, _first, second) = setup_editor();
+        let original_target = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
+        let tool_call = call(json!([
+            {
+                "type": "concept",
+                "title": "Two layers of history",
+                "body": "Input recall and conversation navigation are separate concerns."
+            },
+            {
+                "type": "code",
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "This line performs the navigation handoff."
+            }
+        ]));
+
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+        assert!(matches!(
+            editor.ai_code_explanation_view().unwrap().page,
+            CodeExplanationPageView::Concept { ref title, .. }
+                if title == "Two layers of history"
+        ));
+        assert!(editor.ai_state.active_selection.is_none());
+
+        assert!(editor.move_code_explanation(true));
+        assert!(matches!(
+            editor.ai_code_explanation_view().unwrap().page,
+            CodeExplanationPageView::Code { start_line: 7, .. }
+        ));
+        assert_eq!(
+            PathBuf::from(editor.buffer().file_path().unwrap())
+                .canonicalize()
+                .unwrap(),
+            second.canonicalize().unwrap()
+        );
+        assert!(editor.ai_state.active_selection.is_some());
+
+        assert!(editor.move_code_explanation(false));
+        assert!(matches!(
+            editor.ai_code_explanation_view().unwrap().page,
+            CodeExplanationPageView::Concept { .. }
+        ));
+        assert!(editor.ai_state.active_selection.is_none());
+        assert_eq!(
+            editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .pending_code_explanation
+                .as_ref()
+                .unwrap()
+                .original_active_buffer_id,
+            original_target,
+            "the original agent target must remain available for completion"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn concept_page_overflow_requests_semantic_pagination() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        editor.set_last_layout(
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 32,
+                height: 16,
+            },
+            0,
+            32,
+            0,
+        );
+        let tool_call = call(json!([{
+            "type": "concept",
+            "title": "An overloaded introduction",
+            "body": "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty twenty-one twenty-two twenty-three twenty-four twenty-five twenty-six twenty-seven twenty-eight twenty-nine thirty thirty-one thirty-two thirty-three thirty-four thirty-five thirty-six thirty-seven thirty-eight thirty-nine forty"
+        }]));
+
+        let error = editor
+            .begin_code_explanation(tool_call, batch_continuation())
+            .expect_err("dense concept page should fail")
+            .0;
+        let ToolResult::Error(error) = error else {
+            panic!("expected tool error")
+        };
+        assert!(error.contains("concept body wraps to"), "{error}");
+        assert!(error.contains("current maximum is 8"), "{error}");
+        assert!(error.contains("focused concept pages"), "{error}");
+        assert!(
+            error.contains("rather than truncating or compressing"),
+            "{error}"
+        );
+    }
+
+    #[test]
+    fn concept_page_question_quotes_the_page_without_a_fake_code_range() {
+        let prompt = walkthrough_question_prompt(
+            0,
+            &CodeExplanationStep::Concept {
+                title: "Two layers of history".into(),
+                body: "Input recall and conversation navigation are separate.".into(),
+            },
+            "Which layer owns Up?",
+        );
+
+        assert!(prompt.contains("> Walkthrough page 1 · Concept: Two layers of history"));
+        assert!(prompt.contains("> Input recall and conversation navigation are separate."));
+        assert!(prompt.contains("Which layer owns Up?"));
+        assert!(!prompt.contains(".rs:"));
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1650,11 +1863,16 @@ mod tests {
             .contains("two new ideas"));
         let steps = &schema["function"]["parameters"]["properties"]["steps"];
         assert_eq!(steps["type"], "array");
+        let concept = &steps["items"]["oneOf"][0];
+        let code = &steps["items"]["oneOf"][1];
+        assert_eq!(concept["required"], json!(["type", "title", "body"]));
         assert_eq!(
-            steps["items"]["required"],
-            json!(["path", "start_line", "comment"])
+            code["required"],
+            json!(["type", "path", "start_line", "comment"])
         );
-        assert!(steps["items"]["properties"]["end_line"].is_object());
+        assert_eq!(concept["properties"]["type"]["const"], "concept");
+        assert_eq!(code["properties"]["type"]["const"], "code");
+        assert!(code["properties"]["end_line"].is_object());
         assert!(steps["description"]
             .as_str()
             .unwrap()
@@ -1670,22 +1888,34 @@ mod tests {
         assert!(steps["description"]
             .as_str()
             .unwrap()
-            .contains("split it into two steps"));
-        assert!(steps["items"]["properties"]["end_line"]["description"]
+            .contains("split it into two pages"));
+        assert!(code["properties"]["end_line"]["description"]
             .as_str()
             .unwrap()
             .contains("smallest cohesive block"));
-        assert!(steps["items"]["properties"]["end_line"]["description"]
+        assert!(code["properties"]["end_line"]["description"]
             .as_str()
             .unwrap()
             .contains("surrounding function"));
-        assert!(steps["items"]["properties"]["comment"]["description"]
+        assert!(code["properties"]["comment"]["description"]
             .as_str()
             .unwrap()
             .contains("exactly one easy-to-understand idea"));
-        assert!(steps["items"]["properties"]["comment"]["description"]
+        assert!(code["properties"]["comment"]["description"]
             .as_str()
             .unwrap()
             .contains("front-load later details"));
+        assert!(concept["properties"]["body"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("split it into consecutive concept pages"));
+        assert!(steps["description"]
+            .as_str()
+            .unwrap()
+            .contains("at most 12 wrapped body rows"));
+        assert!(schema["function"]["description"]
+            .as_str()
+            .unwrap()
+            .contains("pedagogical sequence would reduce cognitive load"));
     }
 }

@@ -329,7 +329,7 @@ mod tests {
                 name: "explain_with_codebase".into(),
                 arguments: serde_json::json!({}),
             },
-            steps: vec![CodeExplanationStep {
+            steps: vec![CodeExplanationStep::Code {
                 path: "demo.rs".into(),
                 absolute_path: PathBuf::from("demo.rs"),
                 start_line: 1,

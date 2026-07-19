@@ -108,30 +108,55 @@ fn param_type_to_schema(param_type: &ParamType, description: &str) -> serde_json
             "type": "array",
             "description": description,
             "minItems": 1,
+            "maxItems": 32,
             "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "properties": {
-                    "path": {
-                        "type": "string",
-                        "description": "Project-relative file path."
+                "oneOf": [
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "type": { "const": "concept" },
+                            "title": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Short orientation title for one mental model, prerequisite, transition, or synthesis."
+                            },
+                            "body": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Teach exactly one concept in plain language. Keep only what the reader must retain for the next page. If this needs two ideas or exceeds the live row budget, split it into consecutive concept pages rather than compressing it."
+                            }
+                        },
+                        "required": ["type", "title", "body"]
                     },
-                    "start_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Required 1-indexed inclusive anchor line."
-                    },
-                    "end_line": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "Optional 1-indexed inclusive end line for the smallest cohesive block needed by this step. Do not include the surrounding function by default."
-                    },
-                    "comment": {
-                        "type": "string",
-                        "description": "Teach exactly one easy-to-understand idea. State one direct claim about why this location matters and the single connection needed for the next step. Keep it short; do not paraphrase syntax, front-load later details, or combine multiple ideas."
+                    {
+                        "type": "object",
+                        "additionalProperties": false,
+                        "properties": {
+                            "type": { "const": "code" },
+                            "path": {
+                                "type": "string",
+                                "description": "Project-relative file path."
+                            },
+                            "start_line": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Required 1-indexed inclusive anchor line."
+                            },
+                            "end_line": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "description": "Optional 1-indexed inclusive end line for the smallest cohesive block needed by this page. Do not include the surrounding function by default."
+                            },
+                            "comment": {
+                                "type": "string",
+                                "minLength": 1,
+                                "description": "Teach exactly one easy-to-understand idea. State one direct claim about why this location matters and the single connection needed for the next page. Keep it short; do not paraphrase syntax, front-load later details, or combine multiple ideas."
+                            }
+                        },
+                        "required": ["type", "path", "start_line", "comment"]
                     }
-                },
-                "required": ["path", "start_line", "comment"]
+                ]
             }
         }),
         ParamType::ChangeSet => change_set_schema(description),

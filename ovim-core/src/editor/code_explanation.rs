@@ -4,6 +4,9 @@ use std::path::PathBuf;
 pub const MAX_WALKTHROUGH_STEPS: usize = 32;
 pub const MAX_WALKTHROUGH_COMMENT_BYTES: usize = 4 * 1024;
 pub const MAX_WALKTHROUGH_COMMENT_ROWS: usize = 5;
+pub const MAX_WALKTHROUGH_CONCEPT_BODY_BYTES: usize = 8 * 1024;
+pub const MAX_WALKTHROUGH_CONCEPT_BODY_ROWS: usize = 12;
+pub const MAX_WALKTHROUGH_CONCEPT_TITLE_CHARS: usize = 80;
 
 const FALLBACK_SAFE_CODE_ROWS: usize = 40;
 const WALKTHROUGH_CARD_RESERVED_ROWS: usize = 10;
@@ -14,14 +17,23 @@ const MAX_CARD_WIDTH: u16 = 100;
 const MIN_CARD_HEIGHT: u16 = 7;
 const MAX_CARD_HEIGHT: u16 = 10;
 const CARD_NON_COMMENT_ROWS: u16 = 4;
+const MIN_CONCEPT_CARD_HEIGHT: u16 = 12;
+const MAX_CONCEPT_CARD_HEIGHT: u16 = 20;
+const CONCEPT_CARD_NON_BODY_ROWS: u16 = 6;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CodeExplanationStep {
-    pub path: String,
-    pub absolute_path: PathBuf,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub comment: String,
+pub enum CodeExplanationStep {
+    Concept {
+        title: String,
+        body: String,
+    },
+    Code {
+        path: String,
+        absolute_path: PathBuf,
+        start_line: usize,
+        end_line: usize,
+        comment: String,
+    },
 }
 
 /// Stable presentation data for both the terminal UI and headless snapshots.
@@ -29,11 +41,22 @@ pub struct CodeExplanationStep {
 pub struct CodeExplanationView {
     pub current: usize,
     pub total: usize,
-    pub path: String,
-    pub start_line: usize,
-    pub end_line: usize,
-    pub comment: String,
+    pub page: CodeExplanationPageView,
     pub discussion: CodeExplanationDiscussionView,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CodeExplanationPageView {
+    Concept {
+        title: String,
+        body: String,
+    },
+    Code {
+        path: String,
+        start_line: usize,
+        end_line: usize,
+        comment: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -68,6 +91,18 @@ pub struct CodeExplanationCardLayout {
     pub comment_rows: usize,
 }
 
+/// Large, centered concept-page geometry. The row limit remains deliberately
+/// lower than the available panel height so whitespace aids comprehension
+/// instead of becoming permission for an essay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConceptExplanationCardLayout {
+    pub width: u16,
+    pub height: u16,
+    pub body_width: usize,
+    pub body_rows: usize,
+    pub body_row_limit: usize,
+}
+
 impl CodeExplanationCardLayout {
     pub fn resolve(
         viewport_width: u16,
@@ -94,6 +129,35 @@ impl CodeExplanationCardLayout {
     }
 }
 
+impl ConceptExplanationCardLayout {
+    pub fn resolve(
+        viewport_width: u16,
+        viewport_height: u16,
+        body: &str,
+        tab_width: usize,
+    ) -> Option<Self> {
+        if viewport_width < MIN_VIEWPORT_WIDTH || viewport_height < MIN_CONCEPT_CARD_HEIGHT {
+            return None;
+        }
+        let width = viewport_width.saturating_sub(4).min(MAX_CARD_WIDTH);
+        let body_width = width.saturating_sub(2).max(1) as usize;
+        let body_rows = comment_rows(body, body_width, tab_width);
+        let body_row_limit = concept_body_row_limit(Some(viewport_height as usize));
+        let height = (body_rows as u16)
+            .saturating_add(CONCEPT_CARD_NON_BODY_ROWS)
+            .max(MIN_CONCEPT_CARD_HEIGHT)
+            .min(MAX_CONCEPT_CARD_HEIGHT)
+            .min(viewport_height.saturating_sub(2));
+        Some(Self {
+            width,
+            height,
+            body_width,
+            body_rows,
+            body_row_limit,
+        })
+    }
+}
+
 pub fn safe_code_rows(viewport_height: Option<usize>) -> usize {
     match viewport_height {
         Some(height) if height > 0 => height
@@ -113,6 +177,29 @@ pub fn comment_rows_for_viewport(
         .filter(|width| *width > 0)
         .unwrap_or(FALLBACK_COMMENT_WIDTH);
     comment_rows(comment, width, tab_width)
+}
+
+pub fn concept_body_row_limit(viewport_height: Option<usize>) -> usize {
+    viewport_height
+        .filter(|height| *height > 0)
+        .map(|height| {
+            height
+                .saturating_sub(8)
+                .clamp(1, MAX_WALKTHROUGH_CONCEPT_BODY_ROWS)
+        })
+        .unwrap_or(MAX_WALKTHROUGH_CONCEPT_BODY_ROWS)
+}
+
+pub fn concept_body_rows_for_viewport(
+    viewport_width: Option<u16>,
+    body: &str,
+    tab_width: usize,
+) -> usize {
+    let width = viewport_width
+        .map(|width| width.saturating_sub(6).min(98) as usize)
+        .filter(|width| *width > 0)
+        .unwrap_or(FALLBACK_COMMENT_WIDTH);
+    comment_rows(body, width, tab_width)
 }
 
 fn comment_rows(comment: &str, width: usize, tab_width: usize) -> usize {
@@ -146,5 +233,22 @@ mod tests {
     fn card_is_absent_when_the_interaction_cannot_be_rendered() {
         assert!(CodeExplanationCardLayout::resolve(31, 24, "comment", 4).is_none());
         assert!(CodeExplanationCardLayout::resolve(80, 6, "comment", 4).is_none());
+    }
+
+    #[test]
+    fn concept_layout_is_larger_but_keeps_a_small_body_budget() {
+        let layout = ConceptExplanationCardLayout::resolve(
+            100,
+            24,
+            "A concise mental model that introduces one idea.",
+            4,
+        )
+        .unwrap();
+
+        assert_eq!(layout.width, 96);
+        assert!(layout.height >= 12);
+        assert_eq!(layout.body_row_limit, 12);
+        assert!(layout.body_rows < layout.body_row_limit);
+        assert_eq!(concept_body_row_limit(Some(16)), 8);
     }
 }

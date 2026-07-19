@@ -279,7 +279,7 @@ pub struct AiChatSnapshot {
     /// Blocking first-run/recovery setup currently shown by the chat UI.
     #[serde(default)]
     pub pending_setup: Option<String>,
-    /// Interactive code walkthrough currently blocking the agent tool call.
+    /// Interactive concept/code walkthrough currently blocking the agent tool call.
     #[serde(default)]
     pub code_explanation: Option<CodeExplanationSnapshot>,
     pub queued: Vec<QueuedChatSnapshot>,
@@ -290,6 +290,14 @@ pub struct AiChatSnapshot {
 pub struct CodeExplanationSnapshot {
     pub current: usize,
     pub total: usize,
+    /// `code` or `concept`. Empty only when reading snapshots from older clients.
+    #[serde(default)]
+    pub page_type: String,
+    /// Concept-page title. Code pages leave this unset.
+    #[serde(default)]
+    pub title: Option<String>,
+    /// Code pages populate these existing fields. Concept pages use an empty
+    /// path and zero line numbers while `comment` carries their body.
     pub path: String,
     pub start_line: usize,
     pub end_line: usize,
