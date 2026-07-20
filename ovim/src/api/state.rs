@@ -273,6 +273,12 @@ pub struct AiChatSnapshot {
     /// Per-chat bypass for Terra and interactive tool approval gates.
     #[serde(default)]
     pub yolo_mode: bool,
+    /// `off`, `publish`, or `commit`.
+    #[serde(default)]
+    pub comprehension_policy: String,
+    /// Summary of the checkpoint covering the current state, when available.
+    #[serde(default)]
+    pub comprehension_checkpoint: Option<String>,
     #[serde(default)]
     pub pending_images: Vec<ImageAttachmentSnapshot>,
     pub pending_approval: Option<String>,

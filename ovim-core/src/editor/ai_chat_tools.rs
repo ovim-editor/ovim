@@ -130,6 +130,11 @@ impl Editor {
         } else {
             tools.extend(self.ai_subagent_parent_tools());
         }
+        if self.ai_chat_comprehension_policy() == super::ai_chat_state::ComprehensionPolicy::Off {
+            tools.retain(|tool| {
+                tool.name != super::ai_comprehension::RECORD_COMPREHENSION_CHECKPOINT_TOOL
+            });
+        }
         if self.ai_state.skill_catalog.is_empty() {
             tools.retain(|tool| tool.name != ACTIVATE_SKILL_TOOL);
         } else if let Some(tool) = tools
@@ -489,6 +494,11 @@ impl Editor {
         }
         if tc.name == ACTIVATE_SKILL_TOOL {
             return ToolDispatchOutcome::Completed(self.execute_activate_skill_tool(&tc.arguments));
+        }
+        if tc.name == super::ai_comprehension::RECORD_COMPREHENSION_CHECKPOINT_TOOL {
+            return ToolDispatchOutcome::Completed(
+                self.execute_record_comprehension_checkpoint(&tc.arguments),
+            );
         }
         if tc.name != "bash" {
             if let Err(err) = self.active_chat_target_buffer_index_strict() {
@@ -932,6 +942,8 @@ impl Editor {
             Some("shell access is not authorized for this chat".to_string())
         } else if command.is_empty() {
             Some("'command' is required and must be non-empty".to_string())
+        } else if let Some(reason) = self.comprehension_gate_for_bash(&command) {
+            Some(reason)
         } else if workdir.is_none() {
             Some(self.no_project_root_error())
         } else if artifact_store.is_none() {
@@ -1146,6 +1158,8 @@ impl Editor {
                         Some(ToolDispatchOutcome::Completed(ToolResult::Error(
                             "'command' is required and must be non-empty".into(),
                         )))
+                    } else if let Some(reason) = self.comprehension_gate_for_bash(&command) {
+                        Some(ToolDispatchOutcome::Completed(ToolResult::Error(reason)))
                     } else {
                         match (workdir, artifact_store) {
                             (None, _) => Some(ToolDispatchOutcome::Completed(ToolResult::Error(

@@ -344,6 +344,7 @@ mod tests {
                 comment: "Context".into(),
             }],
             current: 0,
+            answer_scroll: 0,
             threads: vec![vec![CodeExplanationExchange {
                 question: "Why?".into(),
                 answer: String::new(),

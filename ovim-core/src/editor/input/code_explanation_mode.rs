@@ -72,6 +72,12 @@ pub(super) fn handle_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
             KeyCode::Right | KeyCode::Char('l') => {
                 editor.move_code_explanation(true);
             }
+            KeyCode::Up | KeyCode::Char('k') => {
+                editor.scroll_code_explanation_answer(false);
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                editor.scroll_code_explanation_answer(true);
+            }
             KeyCode::Enter => {
                 if editor.ai_code_explanation_answering() {
                     editor
@@ -112,8 +118,19 @@ pub(super) fn blocks_pointer_event(editor: &mut Editor, kind: &MouseEventKind) -
     if !restore_owning_mode(editor) {
         return false;
     }
-    if matches!(kind, MouseEventKind::ScrollUp | MouseEventKind::ScrollDown) {
-        return false;
+    match kind {
+        MouseEventKind::ScrollUp if editor.render_cache.code_explanation_answer_max_scroll > 0 => {
+            editor.scroll_code_explanation_answer(false);
+            return true;
+        }
+        MouseEventKind::ScrollDown
+            if editor.render_cache.code_explanation_answer_max_scroll > 0 =>
+        {
+            editor.scroll_code_explanation_answer(true);
+            return true;
+        }
+        MouseEventKind::ScrollUp | MouseEventKind::ScrollDown => return false,
+        _ => {}
     }
 
     editor.render_cache.mouse_state.is_dragging = false;

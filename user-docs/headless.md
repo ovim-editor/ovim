@@ -83,6 +83,13 @@ For a trusted session, enter `/yolo on` in the chat composer to bypass Terra and
 interactive approvals for that chat; `/yolo off` restores normal policy. The
 snapshot's `ai_chat.yolo_mode` field reports the current setting.
 
+Comprehension policy is also scriptable: submit `/comprehension publish`,
+`/comprehension commit`, or `/comprehension off`. Snapshots report the selected
+mode in `ai_chat.comprehension_policy` and include
+`ai_chat.comprehension_checkpoint` only while a recorded checkpoint still
+covers the current repository content. Comprehension gates remain active in
+YOLO mode.
+
 LSP helpers:
 
 ```bash

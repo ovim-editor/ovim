@@ -863,6 +863,16 @@ impl Editor {
                 .unwrap_or_default()
                 .trim()
                 .to_string();
+            if let Some(reason) = self.comprehension_gate_for_bash(&command) {
+                self.finish_dynamic_tool(
+                    &turn,
+                    &tool,
+                    &call,
+                    response,
+                    crate::ai::tools::ToolResult::Error(reason),
+                );
+                return;
+            }
             let Some(workdir) = self.ai_effective_project_root() else {
                 self.finish_dynamic_tool(
                     &turn,

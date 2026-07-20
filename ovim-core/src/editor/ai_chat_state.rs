@@ -7,6 +7,37 @@ use std::collections::VecDeque;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
+/// Boundary at which an agent must verify that the user understands the
+/// current repository state. This policy is independent from YOLO approvals.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ComprehensionPolicy {
+    #[default]
+    Off,
+    /// Require a checkpoint before externally publishing work.
+    Publish,
+    /// Require a checkpoint before local commits as well as publication.
+    Commit,
+}
+
+impl ComprehensionPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Publish => "publish",
+            Self::Commit => "commit",
+        }
+    }
+}
+
+/// A mastery checkpoint is valid only while the repository fingerprint still
+/// matches. The summary is retained for UI/headless clients and future audit.
+#[derive(Clone, Debug)]
+pub struct ComprehensionCheckpoint {
+    pub repository_fingerprint: String,
+    pub summary: String,
+    pub critical_concepts: Vec<String>,
+}
+
 /// A paused tool call that requires explicit user approval to access
 /// paths outside the active project boundary.
 pub struct PendingToolApproval {
@@ -414,6 +445,8 @@ pub struct PendingCodeExplanation {
     pub tool_call: ToolCallInfo,
     pub steps: Vec<super::code_explanation::CodeExplanationStep>,
     pub current: usize,
+    /// First wrapped answer row shown in the walkthrough reply viewport.
+    pub answer_scroll: usize,
     /// Per-step discussion projected into the walkthrough card. The same
     /// questions and answers are also committed to the main conversation.
     pub threads: Vec<Vec<CodeExplanationExchange>>,
@@ -590,6 +623,10 @@ pub struct AiChatState {
     /// Per-chat opt-in that executes tool requests without Terra or approval
     /// prompts. Hard path/integrity validation remains enforced.
     pub yolo_mode: bool,
+    /// Per-chat comprehension boundary. Unlike YOLO, this is a workflow gate,
+    /// not a tool-approval preference.
+    pub comprehension_policy: ComprehensionPolicy,
+    pub comprehension_checkpoint: Option<ComprehensionCheckpoint>,
     /// Waiting for AI response.
     pub waiting: bool,
     /// Pending async chat job.
@@ -802,6 +839,8 @@ impl AiChatState {
             history: ChatHistoryState::default(),
             allow_edits,
             yolo_mode: false,
+            comprehension_policy: ComprehensionPolicy::Off,
+            comprehension_checkpoint: None,
             waiting: false,
             pending_job: None,
             scratch: None,

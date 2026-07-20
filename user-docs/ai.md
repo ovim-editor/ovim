@@ -64,6 +64,27 @@ approval. It does not disable malformed-input checks, `..` traversal rejection,
 project-context requirements, or durable-run ownership checks. Click again or
 run `/yolo off` to restore normal policy.
 
+### Comprehension checkpoints
+
+The chat header also has a `COMPREHENSION` control. It is independent from
+YOLO: approval bypasses never bypass a comprehension boundary. Clicking the
+control toggles the recommended `PUBLISH` policy, which lets the agent work and
+make local commits but requires demonstrated understanding before `git push`,
+PR creation/merge, or release publication.
+
+Use `/comprehension off|publish|commit` for explicit control. `commit` also
+checks local commits. When a boundary is reached, the agent teaches a compact
+end-to-end mental model and checks critical concepts one question at a time.
+The bar is determined by the change's risk; explanations and hints may be
+broken into smaller steps, but required mastery is not relaxed. Questions focus
+on behavior, invariants, realistic failure modes, and verification rather than
+line-number or syntax trivia.
+
+After the user demonstrates the critical concepts, Ovim binds a checkpoint to
+the repository's current index and worktree content. Meaningful subsequent
+changes make it stale automatically. A local commit that preserves the same
+content does not force a duplicate drill before the corresponding push.
+
 The docked chat width is adjustable: drag its left separator toward the editor
 to make the chat wider, or toward the right to give the buffer more room. Ovim
 keeps the chosen proportion for that chat as the terminal is resized.
@@ -326,6 +347,8 @@ supported. Enter again executes a completed command.
 - `/model codex_sol` switches directly to a named profile.
 - `/clear` clears the current conversation and starts a fresh provider context.
 - `/exa` opens web-search setup to add or replace an Exa API key.
+- `/comprehension`, `/comprehension publish`, `/comprehension commit`, and
+  `/comprehension off` configure the per-chat mastery boundary.
 - `/yolo`, `/yolo on`, and `/yolo off` toggle or set the per-chat approval
   bypass. This is also useful for headless sessions.
 
@@ -379,8 +402,10 @@ Move between pages with Left/Right (or `h`/`l`). Press Space to ask about the
 current page; its explanation is attached as quoted context, Enter sends,
 Shift-Enter adds a line, and Escape cancels the draft. The root chat agent
 answers in the walkthrough using the conversation it already built. Questions
-and answers remain in normal conversation history after the walkthrough ends,
-so they are available when the agent returns to implementation. Walkthrough
+expand into the available terminal space; use Up/Down (or `k`/`j`) or the mouse
+wheel to read an answer that is longer than the card. Questions and answers
+remain in normal conversation history after the walkthrough ends, so they are
+available when the agent returns to implementation. Walkthrough
 questions permit read-only investigation but reject navigation, mutations,
 external actions, and delegated-agent control until the answer finishes.
 

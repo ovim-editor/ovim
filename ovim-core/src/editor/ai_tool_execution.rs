@@ -718,6 +718,9 @@ impl Editor {
                 return ToolResult::Error("'command' is required and must be non-empty".to_string())
             }
         };
+        if let Some(reason) = self.comprehension_gate_for_bash(command) {
+            return ToolResult::Error(reason);
+        }
 
         // A shell-capable agent must have an explicit repository boundary. Do
         // not silently fall back to the editor process cwd for effects.

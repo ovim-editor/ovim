@@ -746,6 +746,7 @@ mod tests {
             tool_call: first,
             steps: Vec::new(),
             current: 0,
+            answer_scroll: 0,
             threads: Vec::new(),
             interaction: super::super::ai_chat_state::CodeExplanationInteraction::Navigating,
             original_active_buffer_id: buffer_id,

@@ -671,7 +671,8 @@ pub fn render_ai_chat_permission_dialog(frame: &mut Frame, editor: &Editor, _the
 }
 
 /// Compact code-page card or large centered concept-page panel.
-pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
+pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
+    editor.render_cache.code_explanation_answer_max_scroll = 0;
     let Some(view) = editor.ai_code_explanation_view() else {
         return;
     };
@@ -737,14 +738,24 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
                 )
             }
         };
-    let discussion = walkthrough_discussion(&view.discussion, inner_width);
+    let height_limit = buffer
+        .height
+        .saturating_sub(2)
+        .max(layout_height)
+        .min(buffer.height);
+    let discussion_row_limit = height_limit.saturating_sub(layout_height) as usize;
+    let answer_row_limit = discussion_row_limit.saturating_sub(1).max(1);
+    let discussion = walkthrough_discussion(
+        &view.discussion,
+        inner_width,
+        answer_row_limit,
+        view.answer_scroll,
+    );
+    editor.render_cache.code_explanation_answer_max_scroll = discussion.answer_max_scroll;
     let discussion_rows = discussion.lines.len() as u16;
-    let base_max_height: u16 = if concept_page { 20 } else { 10 };
-    let max_height = base_max_height.saturating_add(discussion_rows);
     let height = layout_height
         .saturating_add(discussion_rows)
-        .min(max_height)
-        .min(buffer.height.saturating_sub(u16::from(concept_page) * 2));
+        .min(height_limit);
     let y = if concept_page {
         buffer.y + buffer.height.saturating_sub(height) / 2
     } else {
@@ -788,16 +799,25 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &Editor) {
     frame.render_widget(card, area);
 }
 
-const WALKTHROUGH_ANSWER_ROWS: usize = 4;
-
 struct WalkthroughDiscussion {
     lines: Vec<Line<'static>>,
-    hints: &'static str,
+    hints: String,
+    answer_max_scroll: usize,
+}
+
+struct WalkthroughExchange {
+    lines: Vec<Line<'static>>,
+    visible_start: usize,
+    visible_end: usize,
+    total_rows: usize,
+    max_scroll: usize,
 }
 
 fn walkthrough_discussion(
     discussion: &ovim_core::editor::CodeExplanationDiscussionView,
     width: usize,
+    answer_row_limit: usize,
+    answer_scroll: usize,
 ) -> WalkthroughDiscussion {
     match discussion {
         ovim_core::editor::CodeExplanationDiscussionView::Navigating {
@@ -805,20 +825,37 @@ fn walkthrough_discussion(
             latest_question: Some(question),
             latest_answer: Some(answer),
             latest_failed,
-        } => WalkthroughDiscussion {
-            lines: walkthrough_exchange_lines(
+        } => {
+            let exchange = walkthrough_exchange_lines(
                 *question_count,
                 question,
                 answer,
                 *latest_failed,
                 width,
-            ),
-            hints: "←/→ previous/next   Space ask   Enter next/done   Esc dismiss",
-        },
+                answer_row_limit,
+                answer_scroll,
+            );
+            let hints = if exchange.max_scroll > 0 {
+                format!(
+                    "↑/↓ reply {}–{}/{}   ←/→ steps   Space ask   Enter next/done   Esc dismiss",
+                    exchange.visible_start + 1,
+                    exchange.visible_end,
+                    exchange.total_rows,
+                )
+            } else {
+                "←/→ previous/next   Space ask   Enter next/done   Esc dismiss".into()
+            };
+            WalkthroughDiscussion {
+                lines: exchange.lines,
+                hints,
+                answer_max_scroll: exchange.max_scroll,
+            }
+        }
         ovim_core::editor::CodeExplanationDiscussionView::Navigating { .. } => {
             WalkthroughDiscussion {
                 lines: Vec::new(),
-                hints: "←/→ previous/next   Space ask   Enter next/done   Esc dismiss",
+                hints: "←/→ previous/next   Space ask   Enter next/done   Esc dismiss".into(),
+                answer_max_scroll: 0,
             }
         }
         ovim_core::editor::CodeExplanationDiscussionView::Composing {
@@ -837,17 +874,40 @@ fn walkthrough_discussion(
                     ),
                     Style::default().fg(MODAL_COLORS.title).bg(MODAL_COLORS.bg),
                 ))],
-                hints: "Enter send   Shift-Enter newline   Esc cancel",
+                hints: "Enter send   Shift-Enter newline   Esc cancel".into(),
+                answer_max_scroll: 0,
             }
         }
         ovim_core::editor::CodeExplanationDiscussionView::Answering {
             question,
             answer,
             question_count,
-        } => WalkthroughDiscussion {
-            lines: walkthrough_exchange_lines(*question_count, question, answer, false, width),
-            hints: "Answering…   ←/→ browse steps   Esc dismiss",
-        },
+        } => {
+            let exchange = walkthrough_exchange_lines(
+                *question_count,
+                question,
+                answer,
+                false,
+                width,
+                answer_row_limit,
+                answer_scroll,
+            );
+            let hints = if exchange.max_scroll > 0 {
+                format!(
+                    "Answering…   ↑/↓ reply {}–{}/{}   ←/→ steps   Esc dismiss",
+                    exchange.visible_start + 1,
+                    exchange.visible_end,
+                    exchange.total_rows,
+                )
+            } else {
+                "Answering…   ←/→ browse steps   Esc dismiss".into()
+            };
+            WalkthroughDiscussion {
+                lines: exchange.lines,
+                hints,
+                answer_max_scroll: exchange.max_scroll,
+            }
+        }
     }
 }
 
@@ -857,7 +917,9 @@ fn walkthrough_exchange_lines(
     answer: &str,
     failed: bool,
     width: usize,
-) -> Vec<Line<'static>> {
+    answer_row_limit: usize,
+    answer_scroll: usize,
+) -> WalkthroughExchange {
     let question_label = format!("Q{question_count}  ");
     let question_budget = width.saturating_sub(UnicodeWidthStr::width(question_label.as_str()));
     let question = question.split_whitespace().collect::<Vec<_>>().join(" ");
@@ -880,7 +942,7 @@ fn walkthrough_exchange_lines(
     let label = if failed { "Error  " } else { "AI  " };
     let label_width = UnicodeWidthStr::width(label);
     let answer_width = width.saturating_sub(label_width).max(1);
-    let mut answer_rows = if answer.is_empty() {
+    let answer_rows = if answer.is_empty() {
         vec![vec![Span::styled(
             "Thinking…",
             Style::default()
@@ -894,18 +956,19 @@ fn walkthrough_exchange_lines(
             .flat_map(|line| super::ai_chat::styled_word_wrap_line(line, answer_width))
             .collect::<Vec<_>>()
     };
-    let truncated = answer_rows.len() > WALKTHROUGH_ANSWER_ROWS;
-    if truncated {
-        answer_rows.truncate(WALKTHROUGH_ANSWER_ROWS - 1);
-        answer_rows.push(vec![Span::styled(
-            truncate_to_width("… full reply continues in chat history", answer_width),
-            Style::default()
-                .fg(MODAL_COLORS.secondary)
-                .bg(MODAL_COLORS.bg)
-                .add_modifier(Modifier::ITALIC),
-        )]);
-    }
-    for (index, row) in answer_rows.into_iter().enumerate() {
+    let answer_row_limit = answer_row_limit.max(1);
+    let total_rows = answer_rows.len();
+    let max_scroll = total_rows.saturating_sub(answer_row_limit);
+    let visible_start = answer_scroll.min(max_scroll);
+    let visible_end = visible_start
+        .saturating_add(answer_row_limit)
+        .min(total_rows);
+    for (index, row) in answer_rows
+        .into_iter()
+        .skip(visible_start)
+        .take(answer_row_limit)
+        .enumerate()
+    {
         let prefix = if index == 0 {
             label.to_string()
         } else {
@@ -927,10 +990,13 @@ fn walkthrough_exchange_lines(
         spans.extend(row);
         lines.push(Line::from(spans));
     }
-    while lines.len() < WALKTHROUGH_ANSWER_ROWS + 1 {
-        lines.push(Line::from(""));
+    WalkthroughExchange {
+        lines,
+        visible_start,
+        visible_end,
+        total_rows,
+        max_scroll,
     }
-    lines
 }
 
 fn compact_walkthrough_line(label: &str, text: &str, width: usize) -> String {
@@ -1362,10 +1428,10 @@ mod tests {
             latest_failed: false,
         };
 
-        let streaming = super::walkthrough_discussion(&answering, 72);
-        let finished = super::walkthrough_discussion(&completed, 72);
+        let streaming = super::walkthrough_discussion(&answering, 72, 8, 0);
+        let finished = super::walkthrough_discussion(&completed, 72, 8, 0);
         assert_eq!(streaming.lines, finished.lines);
-        assert_eq!(streaming.lines.len(), super::WALKTHROUGH_ANSWER_ROWS + 1);
+        assert!(streaming.lines.len() >= 2);
 
         let rendered = streaming
             .lines
@@ -1386,23 +1452,39 @@ mod tests {
     }
 
     #[test]
-    fn walkthrough_reply_marks_bounded_overflow_instead_of_collapsing_it() {
+    fn walkthrough_reply_uses_available_rows_and_scrolls_in_place() {
         let discussion = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count: 2,
             latest_question: Some("Can you give me the complete reasoning?".into()),
             latest_answer: Some(
-                "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen seventeen eighteen nineteen twenty"
-                    .into(),
+                (1..=80)
+                    .map(|word| format!("word{word}"))
+                    .collect::<Vec<_>>()
+                    .join(" "),
             ),
             latest_failed: false,
         };
-        let rendered = super::walkthrough_discussion(&discussion, 24)
+        let first = super::walkthrough_discussion(&discussion, 24, 10, 0);
+        assert_eq!(first.lines.len(), 11);
+        assert!(first.answer_max_scroll > 0);
+        assert!(first.hints.contains("↑/↓ reply 1–10/"), "{}", first.hints);
+        let first_rendered = first
             .lines
             .iter()
             .flat_map(|line| line.spans.iter())
             .map(|span| span.content.as_ref())
             .collect::<String>();
-        assert!(rendered.contains("full reply"), "{rendered}");
+        assert!(!first_rendered.contains("full reply"), "{first_rendered}");
+
+        let later = super::walkthrough_discussion(&discussion, 24, 10, 1);
+        let later_rendered = later
+            .lines
+            .iter()
+            .flat_map(|line| line.spans.iter())
+            .map(|span| span.content.as_ref())
+            .collect::<String>();
+        assert_ne!(first_rendered, later_rendered);
+        assert!(later.hints.contains("↑/↓ reply 2–11/"), "{}", later.hints);
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -1479,7 +1561,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| super::render_ai_code_explanation(frame, &editor))
+            .draw(|frame| super::render_ai_code_explanation(frame, &mut editor))
             .unwrap();
         let rendered = terminal
             .backend()
@@ -1542,7 +1624,7 @@ mod tests {
         let backend = TestBackend::new(100, 24);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
-            .draw(|frame| super::render_ai_code_explanation(frame, &editor))
+            .draw(|frame| super::render_ai_code_explanation(frame, &mut editor))
             .unwrap();
         let rows = terminal
             .backend()

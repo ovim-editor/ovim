@@ -41,6 +41,7 @@ pub enum CodeExplanationStep {
 pub struct CodeExplanationView {
     pub current: usize,
     pub total: usize,
+    pub answer_scroll: usize,
     pub page: CodeExplanationPageView,
     pub discussion: CodeExplanationDiscussionView,
 }

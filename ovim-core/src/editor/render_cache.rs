@@ -10,6 +10,7 @@ pub struct ChatTextPoint {
 #[derive(Default)]
 pub struct ChatInteractionGeometry {
     pub yolo_toggle: Option<crate::Rect>,
+    pub comprehension_toggle: Option<crate::Rect>,
     pub history: Option<crate::Rect>,
     pub slash_completions: Vec<(crate::Rect, usize)>,
     pub branches: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
@@ -52,6 +53,8 @@ pub struct RenderCache {
     pub mouse_state: super::MouseState,
     /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
     pub last_buffer_area: Option<crate::Rect>,
+    /// Largest valid scroll offset for the visible walkthrough answer.
+    pub code_explanation_answer_max_scroll: usize,
     /// Cached gutter width from last render
     pub last_gutter_width: usize,
     /// Cached text width from last render (buffer area width minus gutter, used for wrap calculations)
@@ -145,6 +148,7 @@ mod tests {
     fn chat_interactions_begin_frame_clears_every_hit_target() {
         let mut interactions = ChatInteractionGeometry {
             yolo_toggle: Some(rect()),
+            comprehension_toggle: Some(rect()),
             history: Some(rect()),
             slash_completions: vec![(rect(), 1)],
             branches: vec![(rect(), 2)],

@@ -45,6 +45,38 @@ pub struct ToolExecutionContext {
     pub lsp_status: String,
 }
 
+fn record_comprehension_checkpoint_def() -> ToolDefinition {
+    ToolDefinition {
+        name: "record_comprehension_checkpoint".to_string(),
+        description: "Record that the user has demonstrated every critical concept required by the active comprehension policy. Call only after a pedagogical guide and one-at-a-time active-recall or application checks; never call merely because the user viewed an explanation. The checkpoint is cryptographically bound to current repository content and becomes stale when that content changes."
+            .to_string(),
+        required_scope: RequiredScope {
+            file_scope: FileScope::Selection,
+            shell: false,
+            network: false,
+        },
+        // This records workflow metadata but does not mutate project files.
+        side_effect: SideEffect::Read,
+        custom_input_schema: None,
+        parameters: vec![
+            ToolParam {
+                name: "summary".to_string(),
+                param_type: ParamType::String,
+                required: true,
+                description: "Two or three sentences summarizing the demonstrated mental model, central invariant, and principal risk."
+                    .to_string(),
+            },
+            ToolParam {
+                name: "critical_concepts".to_string(),
+                param_type: ParamType::StringArray,
+                required: true,
+                description: "Critical mastery criteria the user's answers actually demonstrated. Do not include merely presented or waived concepts."
+                    .to_string(),
+            },
+        ],
+    }
+}
+
 fn format_lsp_versions(versions: &[i32]) -> String {
     if versions.is_empty() {
         "unversioned (exact analyzed revision unavailable)".to_string()
@@ -207,6 +239,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(open_file_def());
     registry.register(select_text_def());
     registry.register(explain_with_codebase_def());
+    registry.register(record_comprehension_checkpoint_def());
     // External tools (dispatched via execute_external_tool)
     registry.register(bash_def());
     // Mutation tools (dispatched via execute_mutation_tool, not execute_builtin)
@@ -243,6 +276,10 @@ pub fn execute_builtin(
     match name {
         "activate_skill" => ToolResult::Error(
             "'activate_skill' must be dispatched by the editor so it can use the discovered skill catalog"
+                .to_string(),
+        ),
+        "record_comprehension_checkpoint" => ToolResult::Error(
+            "'record_comprehension_checkpoint' must be dispatched by the editor so it can bind the checkpoint to repository state"
                 .to_string(),
         ),
         "read_file" => handle_read_file(args, ctx),

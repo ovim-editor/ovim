@@ -9,6 +9,7 @@ enum AiChatSlashCommandKind {
     Clear,
     Exa,
     Model,
+    Comprehension,
     Yolo,
 }
 
@@ -43,6 +44,12 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
         kind: AiChatSlashCommandKind::Model,
     },
     AiChatSlashCompletion {
+        command: "/comprehension",
+        usage: "/comprehension [off|publish|commit]",
+        description: "Require demonstrated understanding at a boundary",
+        kind: AiChatSlashCommandKind::Comprehension,
+    },
+    AiChatSlashCompletion {
         command: "/yolo",
         usage: "/yolo [on|off]",
         description: "Set tool approval policy",
@@ -55,6 +62,7 @@ enum AiChatSlashCommand {
     Clear,
     Exa,
     Model { profile: Option<String> },
+    Comprehension { policy: super::ComprehensionPolicy },
     Yolo { enabled: Option<bool> },
 }
 
@@ -85,6 +93,16 @@ impl AiChatSlashCommand {
                 profile: arguments.first().map(|value| (*value).to_string()),
             }),
             AiChatSlashCommandKind::Model => Err(format!("Usage: {}", spec.usage)),
+            AiChatSlashCommandKind::Comprehension if arguments.len() <= 1 => {
+                let policy = match arguments.first().copied() {
+                    None | Some("publish") => super::ComprehensionPolicy::Publish,
+                    Some("off") => super::ComprehensionPolicy::Off,
+                    Some("commit") => super::ComprehensionPolicy::Commit,
+                    Some(_) => return Some(Err(format!("Usage: {}", spec.usage))),
+                };
+                Ok(Self::Comprehension { policy })
+            }
+            AiChatSlashCommandKind::Comprehension => Err(format!("Usage: {}", spec.usage)),
             AiChatSlashCommandKind::Yolo if arguments.is_empty() => {
                 Ok(Self::Yolo { enabled: None })
             }
@@ -211,6 +229,10 @@ impl Editor {
                     self.clear_ai_chat_input();
                 }
             }
+            Ok(AiChatSlashCommand::Comprehension { policy }) => {
+                self.clear_ai_chat_input();
+                self.set_ai_chat_comprehension_policy(policy);
+            }
             Ok(AiChatSlashCommand::Yolo { enabled }) => {
                 self.clear_ai_chat_input();
                 let enabled = enabled.unwrap_or_else(|| !self.ai_chat_yolo_mode());
@@ -321,6 +343,16 @@ mod tests {
             AiChatSlashCommand::parse("/yolo"),
             Some(Ok(AiChatSlashCommand::Yolo { enabled: None }))
         );
+        assert_eq!(
+            AiChatSlashCommand::parse("/comprehension commit"),
+            Some(Ok(AiChatSlashCommand::Comprehension {
+                policy: crate::editor::ComprehensionPolicy::Commit
+            }))
+        );
+        assert!(matches!(
+            AiChatSlashCommand::parse("/comprehension eventually"),
+            Some(Err(_))
+        ));
         assert!(AiChatSlashCommand::parse("hello").is_none());
         assert!(matches!(
             AiChatSlashCommand::parse("/clear now"),
@@ -340,7 +372,7 @@ mod tests {
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/".into();
         chat.input_cursor = 1;
-        assert_eq!(editor.ai_chat_slash_completions().len(), 4);
+        assert_eq!(editor.ai_chat_slash_completions().len(), 5);
 
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "/cl".into();

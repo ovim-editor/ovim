@@ -255,6 +255,12 @@ impl Editor {
             (None, Some(contract)) => Some(contract.to_string()),
             (None, None) => None,
         };
+        let system_prompt = match (system_prompt, self.comprehension_system_prompt()) {
+            (Some(prompt), Some(guidance)) => Some(format!("{prompt}\n\n{guidance}")),
+            (Some(prompt), None) => Some(prompt),
+            (None, Some(guidance)) => Some(guidance.to_string()),
+            (None, None) => None,
+        };
         let system_prompt = if self.ai_subagent_parent_tools_visible() {
             let guidance = "## Delegation\n\nDelegate bounded independent research, review, or verification when it can run in parallel. Every child request must choose an explicit advertised model and reasoning effort. Avoid duplicate, tiny, or sequential tasks, and continue the local critical path while children run.";
             Some(match system_prompt {

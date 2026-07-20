@@ -319,11 +319,15 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
     if area.width == 0 || area.height == 0 {
         return;
     }
-    let enabled = editor.ai_chat_yolo_mode();
-    let label = if enabled { " YOLO ON " } else { " YOLO OFF " };
-    let width = text_display_width(label).min(area.width as usize) as u16;
-    let x = area.right().saturating_sub(width);
-    let style = if enabled {
+    let yolo_enabled = editor.ai_chat_yolo_mode();
+    let yolo_label = if yolo_enabled {
+        " YOLO ON "
+    } else {
+        " YOLO OFF "
+    };
+    let yolo_width = text_display_width(yolo_label).min(area.width as usize) as u16;
+    let yolo_x = area.right().saturating_sub(yolo_width);
+    let yolo_style = if yolo_enabled {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
             .bg(Color::Rgb(100, 48, 28))
@@ -334,13 +338,48 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) {
             .bg(Color::Rgb(35, 40, 50))
             .add_modifier(Modifier::DIM)
     };
+
+    let comprehension = editor.ai_chat_comprehension_policy();
+    let comprehension_label = match comprehension {
+        ovim_core::editor::ComprehensionPolicy::Off => " COMPREHENSION OFF ",
+        ovim_core::editor::ComprehensionPolicy::Publish => " COMPREHENSION: PUBLISH ",
+        ovim_core::editor::ComprehensionPolicy::Commit => " COMPREHENSION: COMMIT ",
+    };
+    let available = area.width.saturating_sub(yolo_width);
+    let comprehension_width =
+        text_display_width(comprehension_label).min(available as usize) as u16;
+    let comprehension_x = yolo_x.saturating_sub(comprehension_width);
+    let comprehension_style = if comprehension == ovim_core::editor::ComprehensionPolicy::Off {
+        Style::default()
+            .fg(TEXT_DIM)
+            .bg(Color::Rgb(35, 40, 50))
+            .add_modifier(Modifier::DIM)
+    } else {
+        Style::default()
+            .fg(Color::Rgb(190, 230, 255))
+            .bg(Color::Rgb(35, 70, 92))
+            .add_modifier(Modifier::BOLD)
+    };
     frame.render_widget(
-        Paragraph::new(Span::styled(label, style)).alignment(Alignment::Right),
+        Paragraph::new(Line::from(vec![
+            Span::styled(comprehension_label, comprehension_style),
+            Span::styled(yolo_label, yolo_style),
+        ]))
+        .alignment(Alignment::Right),
         Rect::new(area.x, area.y, area.width, 1),
     );
     editor.render_cache.ai_chat_interactions.yolo_toggle = Some(
-        crate::key_convert::convert_ratatui_rect(Rect::new(x, area.y, width, 1)),
+        crate::key_convert::convert_ratatui_rect(Rect::new(yolo_x, area.y, yolo_width, 1)),
     );
+    editor
+        .render_cache
+        .ai_chat_interactions
+        .comprehension_toggle = Some(crate::key_convert::convert_ratatui_rect(Rect::new(
+        comprehension_x,
+        area.y,
+        comprehension_width,
+        1,
+    )));
 }
 
 fn render_chat_image_gallery(
@@ -2286,13 +2325,14 @@ mod tests {
         assert!(rendered.contains("Commands"));
         assert!(rendered.contains("/clear"));
         assert!(rendered.contains("/model [profile]"));
+        assert!(rendered.contains("/comprehension"));
         assert_eq!(
             editor
                 .render_cache
                 .ai_chat_interactions
                 .slash_completions
                 .len(),
-            4
+            5
         );
     }
 
@@ -2403,6 +2443,7 @@ mod tests {
             .map(|cell| cell.symbol())
             .collect::<String>();
         assert!(header.contains("YOLO OFF"), "{header}");
+        assert!(header.contains("COMPREHENSION OFF"), "{header}");
         let hitbox = editor
             .render_cache
             .ai_chat_interactions
@@ -2410,6 +2451,16 @@ mod tests {
             .unwrap();
         assert_eq!(hitbox.y, 0);
         assert_eq!(hitbox.x + hitbox.width, 80);
+        let comprehension_hitbox = editor
+            .render_cache
+            .ai_chat_interactions
+            .comprehension_toggle
+            .unwrap();
+        assert_eq!(comprehension_hitbox.y, 0);
+        assert_eq!(
+            comprehension_hitbox.x + comprehension_hitbox.width,
+            hitbox.x
+        );
 
         assert!(editor.set_ai_chat_yolo_mode(true));
         terminal

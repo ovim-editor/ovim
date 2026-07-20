@@ -868,6 +868,10 @@ impl Renderer {
         // scrolling an image message away cannot replay stale image commands.
         editor.render_cache.ai_chat_image_thumbnails.clear();
         editor.render_cache.ai_chat_interactions.yolo_toggle = None;
+        editor
+            .render_cache
+            .ai_chat_interactions
+            .comprehension_toggle = None;
         init_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {

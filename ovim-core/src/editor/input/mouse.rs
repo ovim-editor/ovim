@@ -407,6 +407,15 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             }
             return Ok(None);
         }
+        if editor
+            .render_cache
+            .ai_chat_interactions
+            .comprehension_toggle
+            .is_some_and(|area| area.contains(col, row))
+        {
+            editor.toggle_ai_chat_comprehension_policy();
+            return Ok(None);
+        }
         if editor.ai_chat_image_modal_path().is_some() {
             editor.close_ai_chat_image_modal();
             return Ok(None);

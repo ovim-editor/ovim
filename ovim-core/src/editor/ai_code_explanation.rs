@@ -102,6 +102,7 @@ impl Editor {
         Some(CodeExplanationView {
             current: pending.current + 1,
             total: pending.steps.len(),
+            answer_scroll: pending.answer_scroll,
             page,
             discussion,
         })
@@ -178,6 +179,7 @@ impl Editor {
             threads: vec![Vec::new(); steps.len()],
             steps,
             current: 0,
+            answer_scroll: 0,
             interaction: CodeExplanationInteraction::Navigating,
             original_active_buffer_id,
             continuation: Some(continuation),
@@ -236,6 +238,7 @@ impl Editor {
                 false
             } else {
                 pending.current = next;
+                pending.answer_scroll = 0;
                 true
             }
         };
@@ -263,6 +266,7 @@ impl Editor {
             input: String::new(),
             cursor: 0,
         };
+        pending.answer_scroll = 0;
         self.set_lsp_status(
             "Ask about this walkthrough step — Enter sends, Shift-Enter adds a line, Esc cancels"
                 .into(),
@@ -388,6 +392,7 @@ impl Editor {
                 step: step_index,
                 exchange,
             };
+            pending.answer_scroll = 0;
             (
                 step_index,
                 step,
@@ -499,6 +504,28 @@ impl Editor {
                     )
                 })
         })
+    }
+
+    /// Scrolls the answer rendered inside the walkthrough card. The renderer
+    /// supplies the exact bound because Markdown styling affects wrapping.
+    pub fn scroll_code_explanation_answer(&mut self, forward: bool) -> bool {
+        let max_scroll = self.render_cache.code_explanation_answer_max_scroll;
+        let Some(pending) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+        else {
+            return false;
+        };
+        let current = pending.answer_scroll.min(max_scroll);
+        let next = if forward {
+            current.saturating_add(1).min(max_scroll)
+        } else {
+            current.saturating_sub(1)
+        };
+        pending.answer_scroll = next;
+        next != current
     }
 
     /// Enter advances through a walkthrough and only unblocks the agent from
@@ -1326,6 +1353,55 @@ mod tests {
             0,
         );
         assert_eq!(editor.ai_code_explanation_safe_range_lines(), 8);
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn walkthrough_answer_scroll_controls_are_bounded_and_reset_between_steps() {
+        let (_dir, mut editor, _first, _second) = setup_editor();
+        let tool_call = call(json!([
+            {
+                "path": "first.rs",
+                "start_line": 2,
+                "comment": "The entry point validates the request."
+            },
+            {
+                "path": "second.rs",
+                "start_line": 7,
+                "comment": "The handoff occurs here."
+            }
+        ]));
+        if let Err((error, _)) = editor.begin_code_explanation(tool_call, batch_continuation()) {
+            panic!("could not start walkthrough: {error:?}");
+        }
+        editor.render_cache.code_explanation_answer_max_scroll = 2;
+
+        crate::editor::input::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Down, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(editor.ai_code_explanation_view().unwrap().answer_scroll, 1);
+        for _ in 0..2 {
+            crate::editor::input::mouse::handle_mouse_event(
+                &mut editor,
+                crate::MouseEvent {
+                    kind: crate::MouseEventKind::ScrollDown,
+                    column: 10,
+                    row: 5,
+                },
+            )
+            .unwrap();
+        }
+        assert_eq!(editor.ai_code_explanation_view().unwrap().answer_scroll, 2);
+        crate::editor::input::InputHandler::handle_key_event(
+            &mut editor,
+            crate::KeyEvent::new(crate::KeyCode::Up, crate::Modifiers::NONE),
+        )
+        .unwrap();
+        assert_eq!(editor.ai_code_explanation_view().unwrap().answer_scroll, 1);
+
+        assert!(editor.move_code_explanation(true));
+        assert_eq!(editor.ai_code_explanation_view().unwrap().answer_scroll, 0);
     }
 
     #[tokio::test(flavor = "multi_thread")]
