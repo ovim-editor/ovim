@@ -418,9 +418,39 @@ impl Editor {
                     chat.input = prompt;
                     chat.input_cursor = chat.input.len();
                 }
-                self.queue_current_ai_chat_input(QueuedChatInputKind::Steer)
-                    .map_err(|error| error.to_string())?;
-                self.resolve_code_explanation_continuation(&tool_call, continuation, outcome);
+                // The continuation has already been taken out of `pending`, so it
+                // must be resolved on every exit from here. Returning early on a
+                // queue failure would drop it: the Batch variant discards its
+                // remaining tool calls without ever emitting a tool_result for
+                // the explain_with_codebase tool_use — leaving the next provider
+                // request malformed — and the Dynamic variant drops its oneshot
+                // sender. Esc cannot recover either, because finish_code_
+                // explanation sees `continuation == None` and resolves nothing.
+                match self.queue_current_ai_chat_input(QueuedChatInputKind::Steer) {
+                    Ok(()) => {
+                        self.resolve_code_explanation_continuation(
+                            &tool_call,
+                            continuation,
+                            outcome,
+                        );
+                    }
+                    Err(error) => {
+                        let error = error.to_string();
+                        self.resolve_code_explanation_continuation(
+                            &tool_call,
+                            continuation,
+                            ToolResult::Error(format!(
+                                "the user's walkthrough question could not be queued: {error}"
+                            )),
+                        );
+                        // Also close out the exchange we optimistically pushed
+                        // above, so the walkthrough leaves `Answering` and the
+                        // page shows the failure instead of an empty answer that
+                        // never arrives.
+                        self.finish_code_explanation_answer(Some(&error));
+                        return Err(error);
+                    }
+                }
             }
         }
         self.set_lsp_status(format!(

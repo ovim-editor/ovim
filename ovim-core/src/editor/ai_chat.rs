@@ -216,14 +216,10 @@ impl Editor {
             pending.kill.cancel();
             pending.task.abort();
             if let Some(chat) = self.ai_state.chat.as_mut() {
-                if let Some(transcript) = chat.shell_transcripts.get_mut(&pending.tool_call.id) {
-                    transcript.finish(super::ai_chat_state::ShellTranscriptPhase::Interrupted);
-                }
-                chat.shell_transcript_lru
-                    .retain(|id| id != &pending.tool_call.id);
-                chat.shell_transcript_lru
-                    .push_back(pending.tool_call.id.clone());
-                chat.evict_old_shell_transcripts();
+                chat.retire_shell_transcript(
+                    &pending.tool_call.id,
+                    super::ai_chat_state::ShellTranscriptPhase::Interrupted,
+                );
             }
             let (runtime_turn, runtime_tool, response, unresolved) = match pending.continuation {
                 super::ai_chat_state::ShellExecutionContinuation::Dynamic {

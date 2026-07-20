@@ -395,8 +395,19 @@ impl Editor {
             chat.pending_tool_approval = None;
             chat.pending_auto_mode_classification = None;
             if let Some(pending) = chat.pending_shell_execution.take() {
+                // Aborting a started `spawn_blocking` task does not stop it; the
+                // command itself must be killed or it keeps mutating the
+                // workspace after the UI has moved on.
                 pending.kill.cancel();
                 pending.task.abort();
+                // Retire the transcript too, exactly as the user-cancel path
+                // does. Skipping this leaves the row rendering as `running` for
+                // the rest of the session and keeps its retained output out of
+                // the LRU, so eviction can never reclaim it.
+                chat.retire_shell_transcript(
+                    &pending.tool_call.id,
+                    super::ai_chat_state::ShellTranscriptPhase::Interrupted,
+                );
             }
             if let Some(pending) = chat.pending_web_execution.take() {
                 pending.task.abort();
@@ -539,8 +550,19 @@ impl Editor {
             chat.pending_tool_approval = None;
             chat.pending_auto_mode_classification = None;
             if let Some(pending) = chat.pending_shell_execution.take() {
+                // Aborting a started `spawn_blocking` task does not stop it; the
+                // command itself must be killed or it keeps mutating the
+                // workspace after the UI has moved on.
                 pending.kill.cancel();
                 pending.task.abort();
+                // Retire the transcript too, exactly as the user-cancel path
+                // does. Skipping this leaves the row rendering as `running` for
+                // the rest of the session and keeps its retained output out of
+                // the LRU, so eviction can never reclaim it.
+                chat.retire_shell_transcript(
+                    &pending.tool_call.id,
+                    super::ai_chat_state::ShellTranscriptPhase::Interrupted,
+                );
             }
             if let Some(pending) = chat.pending_web_execution.take() {
                 pending.task.abort();

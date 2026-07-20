@@ -690,6 +690,26 @@ impl AiChatState {
     const MAX_COMPLETED_SHELL_TRANSCRIPTS: usize = 10;
     const MAX_COMPLETED_SHELL_BYTES: usize = 2 * 1024 * 1024;
 
+    /// Retire a shell transcript at a terminal boundary: stamp its final phase,
+    /// move it to the tail of the completed-transcript LRU, and re-run eviction.
+    ///
+    /// Every path that stops a running shell process must go through here. A
+    /// path that only cancels the kill token and aborts the task leaves the
+    /// transcript in `Running` forever — the chat keeps rendering it as a live
+    /// process — and, because it never enters the LRU, its retained output can
+    /// never be reclaimed by `evict_old_shell_transcripts`, which only walks the
+    /// LRU. That was the shape of the leak on the new-turn path.
+    pub fn retire_shell_transcript(&mut self, tool_call_id: &str, phase: ShellTranscriptPhase) {
+        let Some(transcript) = self.shell_transcripts.get_mut(tool_call_id) else {
+            return;
+        };
+        transcript.finish(phase);
+        self.shell_transcript_lru.retain(|id| id != tool_call_id);
+        self.shell_transcript_lru
+            .push_back(tool_call_id.to_string());
+        self.evict_old_shell_transcripts();
+    }
+
     pub fn evict_old_shell_transcripts(&mut self) {
         loop {
             let completed_bytes: usize = self
