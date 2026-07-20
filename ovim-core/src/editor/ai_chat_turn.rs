@@ -18,8 +18,8 @@ impl Editor {
         }
 
         if chat.runtime_turn.is_some() {
-            return self
-                .queue_current_ai_chat_input(super::ai_chat_state::QueuedChatInputKind::Steer);
+            self.queue_current_ai_chat_input(super::ai_chat_state::QueuedChatInputKind::Steer);
+            return Ok(());
         }
 
         if chat.pending_images.is_empty() && self.try_execute_ai_chat_slash_command(&input)? {

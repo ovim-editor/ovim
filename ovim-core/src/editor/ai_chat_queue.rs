@@ -10,7 +10,8 @@ impl Editor {
         if !self.ai_chat_round_active() {
             return self.submit_ai_chat_message();
         }
-        self.queue_current_ai_chat_input(QueuedChatInputKind::FollowUp)
+        self.queue_current_ai_chat_input(QueuedChatInputKind::FollowUp);
+        Ok(())
     }
 
     pub fn ai_chat_round_active(&self) -> bool {
@@ -28,14 +29,21 @@ impl Editor {
             .flat_map(|chat| chat.queued_inputs.iter())
     }
 
-    pub(crate) fn queue_current_ai_chat_input(
-        &mut self,
-        requested_kind: QueuedChatInputKind,
-    ) -> Result<()> {
+    /// Queues the composer's current contents. Infallible by construction: every
+    /// step is an in-memory state update, and the steer notification is
+    /// best-effort (a closed receiver means the round already ended).
+    ///
+    /// The return type is deliberately `()` rather than `Result<()>`. It used to
+    /// be the latter without a single failing path, which invited callers to
+    /// take state out of a pending struct *before* calling and then bail on an
+    /// error that could never arrive — leaving that state dropped. Letting the
+    /// compiler prove infallibility removes the temptation and the dead
+    /// handling that came with it.
+    pub(crate) fn queue_current_ai_chat_input(&mut self, requested_kind: QueuedChatInputKind) {
         let input = self.ai_chat_input().trim().to_string();
         let has_images = !self.ai_chat_pending_images().is_empty();
         if input.is_empty() && !has_images {
-            return Ok(());
+            return;
         }
         let kind = if has_images {
             // Codex steering currently accepts text items only. Keep image
@@ -79,7 +87,6 @@ impl Editor {
             QueuedChatInputKind::Command => "Slash command queued for the end of this round",
         };
         self.set_lsp_status(status.to_string());
-        Ok(())
     }
 
     /// Apply steers at ovim's post-tool continuation boundary (OpenAI,
