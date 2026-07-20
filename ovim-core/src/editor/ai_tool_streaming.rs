@@ -888,4 +888,87 @@ mod tests {
         let activated = editor.build_skill_system_prompt(&profile).unwrap();
         assert!(activated.contains("Keep a lightweight learning map."));
     }
+
+    // A turn that ends while a shell effect is still in flight must retire that
+    // effect's transcript, not just cancel the task. Previously this path only
+    // called kill.cancel()/task.abort(), so the transcript stayed in `Running`
+    // for the rest of the session — the chat kept rendering a live process that
+    // had already died — and, never having entered the LRU, its retained output
+    // could not be reclaimed by evict_old_shell_transcripts.
+    //
+    // clear_streaming_state is the reachable path: it is called from every
+    // stream-error and turn-teardown branch in ai_chat_turn.rs. Driving the real
+    // editor showed why this needs a test rather than live verification — typing
+    // while a shell runs queues a steer instead of starting a new turn, so a
+    // user cannot reach the ghost state on demand; it takes a provider error or
+    // turn teardown landing while the effect is still pending.
+    #[tokio::test]
+    async fn clearing_streaming_state_retires_an_in_flight_shell_transcript() {
+        use crate::ai::chat_types::ToolCallInfo;
+        use crate::editor::ai_chat_state::{
+            PendingShellExecution, ShellExecutionContinuation, ShellKillHandle, ShellTranscript,
+            ShellTranscriptPhase,
+        };
+        use std::sync::Arc;
+
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+
+        let call = ToolCallInfo {
+            id: "shell-ghost".into(),
+            name: "bash".into(),
+            arguments: serde_json::json!({ "command": "sleep 60" }),
+        };
+        let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
+        let (_progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let kill = Arc::new(ShellKillHandle::default());
+        let task = tokio::spawn(async {});
+
+        {
+            let chat = editor.ai_state.chat.as_mut().expect("chat");
+            let mut transcript = ShellTranscript::new(
+                call.clone(),
+                "sleep 60".into(),
+                std::path::PathBuf::from("/tmp"),
+            );
+            transcript.phase = ShellTranscriptPhase::Running;
+            chat.shell_transcripts.insert(call.id.clone(), transcript);
+            chat.pending_shell_execution = Some(PendingShellExecution {
+                tool_call: call.clone(),
+                continuation: ShellExecutionContinuation::Batch {
+                    runtime_tool: None,
+                    runtime_turn: None,
+                    remaining_tool_calls: Vec::new(),
+                    model_name: "test-model".into(),
+                },
+                receiver: result_rx,
+                progress: progress_rx,
+                task,
+                kill: kill.clone(),
+            });
+        }
+
+        editor.clear_streaming_state();
+
+        let chat = editor.ai_state.chat.as_ref().expect("chat");
+        assert!(
+            chat.pending_shell_execution.is_none(),
+            "the pending execution should have been taken"
+        );
+        let transcript = chat
+            .shell_transcripts
+            .get(&call.id)
+            .expect("transcript is retained for history");
+        assert_eq!(
+            transcript.phase,
+            ShellTranscriptPhase::Interrupted,
+            "a transcript left in Running renders as a live process forever"
+        );
+        assert!(
+            chat.shell_transcript_lru.iter().any(|id| id == &call.id),
+            "an unretired transcript never enters the LRU, so its output can \
+             never be evicted"
+        );
+        assert!(kill.is_cancelled(), "the command itself must be killed");
+    }
 }
