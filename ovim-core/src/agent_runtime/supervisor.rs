@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
-use tokio::sync::{Mutex as AsyncMutex, Notify, Semaphore};
+use tokio::sync::{Mutex as AsyncMutex, Notify, OwnedSemaphorePermit, Semaphore};
 use tokio::task::AbortHandle;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -77,6 +77,25 @@ pub struct LiveAgentHandle {
     pub dispatch: DispatchHandle,
     pub cancellation: AgentCancellationToken,
     pub abort_handle: AbortHandle,
+}
+
+/// Outcome of the steering sweep performed at a terminal boundary. The dispatch
+/// is terminal in both cases — the sweep runs after the terminal transition has
+/// already been committed, so it can never undo it. `Incomplete` means steering
+/// admitted before the boundary is still Queued against a now-terminal child,
+/// where it is inert (nothing will ever deliver it) but stays visible in the
+/// mailbox projection until a later sweep clears it.
+#[derive(Debug)]
+#[must_use = "an incomplete sweep leaves steering queued against a terminal child"]
+pub enum SteeringSweep {
+    Complete,
+    Incomplete(AgentMessageError),
+}
+
+impl SteeringSweep {
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Complete)
+    }
 }
 
 #[derive(Clone)]
@@ -277,16 +296,44 @@ impl AgentSupervisor {
         &self,
         agent_id: &AgentId,
         finish: impl FnOnce(&mut AgentDispatchScheduler) -> Result<T, AgentSupervisorError>,
-    ) -> Result<T, AgentSupervisorError> {
+    ) -> Result<(T, SteeringSweep), AgentSupervisorError> {
         let queue = self.message_queue(agent_id.clone())?;
         let mut scheduler = self.inner.scheduler.lock().map_err(|_| poisoned())?;
-        for message in queue.unsettled()? {
-            queue.reject_queued(
+        // Close admission FIRST, then sweep. send_message checks the dispatch
+        // state under this same lock, so once `finish` lands no further steering
+        // can be enqueued and the sweep below only has to drain what was
+        // admitted before this point — the exclusion is preserved either way.
+        //
+        // The order matters because reject_queued is a CAS against the run-wide
+        // event sequence (any agent's append invalidates a claim) and can fail
+        // with ConcurrentUpdateLimit for reasons that have nothing to do with
+        // this child. Sweeping first made the terminal transition hostage to
+        // that CAS: one exhausted retry loop left the dispatch non-terminal
+        // forever, so wait_for_idle could never return true again and the parent
+        // never got a handoff. Reaching a terminal state is the load-bearing
+        // invariant; the sweep is cleanup and is reported, not fatal.
+        let finished = finish(&mut scheduler)?;
+        let sweep = Self::sweep_unsettled(&queue);
+        Ok((finished, sweep))
+    }
+
+    /// Best-effort rejection of steering that was admitted before the terminal
+    /// boundary. Returns rather than propagates, so a failure cannot undo the
+    /// terminal transition that has already been committed by the caller.
+    fn sweep_unsettled(queue: &AgentMessageQueue) -> SteeringSweep {
+        let unsettled = match queue.unsettled() {
+            Ok(unsettled) => unsettled,
+            Err(error) => return SteeringSweep::Incomplete(error),
+        };
+        for message in unsettled {
+            if let Err(error) = queue.reject_queued(
                 &message.message_event_id,
                 "child reached a terminal boundary before message delivery",
-            )?;
+            ) {
+                return SteeringSweep::Incomplete(error);
+            }
         }
-        finish(&mut scheduler)
+        SteeringSweep::Complete
     }
 
     /// Queue one bounded parent-authored message for a currently active child.
@@ -443,6 +490,7 @@ impl AgentSupervisor {
                     )?;
                     Ok(Some((record, terminal)))
                 })?;
+                let (outcome, _sweep) = outcome;
                 if let Some(pair) = outcome {
                     terminals.push(pair);
                 }
@@ -517,10 +565,15 @@ impl AgentSupervisor {
             let task_record = record.clone();
             let task_cancellation = cancellation.clone();
             let (launch, launched) = tokio::sync::oneshot::channel();
+            // The permit is handed to run_one rather than held by this block, so
+            // run_one can release it before spawning the re-drain. Dropping it
+            // here (i.e. after run_one returns) would let the re-drain observe
+            // the slot as still occupied and give up with a child left Queued.
             let task = tokio::spawn(async move {
                 let _ = launched.await;
-                let _permit = permit;
-                supervisor.run_one(task_record, task_cancellation).await;
+                supervisor
+                    .run_one(task_record, task_cancellation, permit)
+                    .await;
             });
             live.insert(
                 record.handle.agent_id.clone(),
@@ -538,7 +591,12 @@ impl AgentSupervisor {
         Ok(())
     }
 
-    async fn run_one(&self, record: AgentDispatchRecord, cancellation: AgentCancellationToken) {
+    async fn run_one(
+        &self,
+        record: AgentDispatchRecord,
+        cancellation: AgentCancellationToken,
+        permit: OwnedSemaphorePermit,
+    ) {
         let result = self.run_one_inner(&record, cancellation).await;
         if let Err(error) = result {
             if let Ok(mut sessions) = self.inner.idle_sessions.lock() {
@@ -569,6 +627,7 @@ impl AgentSupervisor {
                         &format!("child loop infrastructure failed: {error}"),
                     )?))
                 })
+                .map(|(terminal, _sweep)| terminal)
                 .ok()
                 .flatten();
             if let Some(terminal) = terminal {
@@ -576,6 +635,16 @@ impl AgentSupervisor {
             }
         }
         self.inner.live.lock().await.remove(&record.handle.agent_id);
+        // Release the concurrency slot BEFORE spawning the re-drain. The re-drain
+        // gives up on the first try_acquire_owned miss, so if the permit were
+        // still held here (as it was when the spawned task owned it and dropped
+        // it only after this function returned) the drain could observe a full
+        // semaphore and return with a child left Queued and nothing scheduled to
+        // retry it — a permanent stall, since the only other drain triggers are
+        // new dispatches. This is only reachable on a multi-threaded runtime;
+        // under the current-thread runtime the spawned drain cannot start until
+        // this task yields, which is why the existing tests never caught it.
+        drop(permit);
         self.inner.changed.notify_waiters();
         tokio::spawn(self.clone().drain_ready_task());
     }
@@ -672,7 +741,7 @@ impl AgentSupervisor {
         } else {
             AgentLoopRunner::run(input).await?
         };
-        let terminal = self.terminalize_locked(&record.handle.agent_id, |scheduler| {
+        let (terminal, _sweep) = self.terminalize_locked(&record.handle.agent_id, |scheduler| {
             Ok(scheduler.finish_with_handoff_and_warnings(
                 &record.handle,
                 handoff,
@@ -1978,5 +2047,80 @@ mod tests {
         )
         .unwrap();
         assert_eq!(reopened.mailbox(root).unwrap().pending().unwrap().len(), 2);
+    }
+
+    // Regression: run_one must release its concurrency permit BEFORE spawning the
+    // re-drain. When the permit was owned by the spawned task instead, it dropped
+    // only after run_one returned, so on a multi-threaded runtime the re-drain
+    // could observe a saturated semaphore, give up on its first try_acquire miss,
+    // and leave the remaining children Queued with nothing scheduled to retry.
+    //
+    // This must run on the multi_thread flavor: under the current-thread runtime
+    // the spawned drain cannot start until the owning task completes (which drops
+    // the permit first), so the ordering bug is invisible there — which is why
+    // every other test in this file passed while the defect was live.
+    //
+    // Honest scope: this test does NOT reproduce the defect on its own. Measured
+    // against the unfixed code it passed 7/7, because the natural window between
+    // `tokio::spawn(drain_ready_task)` and the permit drop is only a function
+    // epilogue wide — the re-drain almost never gets scheduled inside it.
+    //
+    // The mechanism was confirmed separately by widening that window with a
+    // single `yield_now().await` between the spawn and the permit drop:
+    //   - unfixed + widened window: 3/3 stalled here with "never reached idle"
+    //   - fixed   + widened window: 3/3 passed
+    // So the ordering defect is real and this fix closes it, but in production it
+    // needs an unlucky preemption in a very narrow window to bite.
+    //
+    // What this test therefore guards is the single-slot promotion chain itself
+    // (every completion must promote the next queued child); the ordering is
+    // covered by reasoning plus that experiment, matching the precedent set by
+    // parent_interrupt_terminalizes_a_not_yet_live_descendant above.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn single_slot_drains_every_queued_child_after_each_completion() {
+        const CHILDREN: usize = 12;
+
+        let sink = Arc::new(InMemoryRunEventSink::new());
+        let factory = Arc::new(FakeInputFactory::new(Duration::from_millis(1)));
+        let config = AgentSupervisorConfig {
+            // One slot is the point: every child after the first must be
+            // promoted by the re-drain that follows a completion.
+            max_concurrent: 1,
+            max_queued: CHILDREN,
+            max_children_per_parent: CHILDREN,
+            max_total_per_run: CHILDREN,
+            ..AgentSupervisorConfig::default()
+        };
+        let (supervisor, _run_id, _root) = supervisor_with(sink, factory, config);
+
+        // The first dispatch takes the only slot; every later one is left Queued,
+        // so each must be promoted by the re-drain that follows a completion.
+        let mut dispatched = Vec::new();
+        for index in 0..CHILDREN {
+            dispatched.push(
+                supervisor
+                    .dispatch(request(&format!("queued child {index}")))
+                    .await
+                    .unwrap(),
+            );
+        }
+
+        assert!(
+            supervisor
+                .wait_for_idle(Duration::from_secs(10))
+                .await
+                .unwrap(),
+            "supervisor never reached idle: a queued child was not promoted after \
+             a completion freed the single provider slot"
+        );
+
+        for handle in dispatched {
+            let state = supervisor.state(&handle.agent_id).unwrap();
+            assert!(
+                state.as_ref().is_some_and(|state| state.is_terminal()),
+                "child {:?} ended in {state:?}, expected a terminal state",
+                handle.agent_id
+            );
+        }
     }
 }
