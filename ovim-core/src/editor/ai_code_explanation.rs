@@ -15,6 +15,11 @@ use super::code_explanation::{
 };
 use super::Editor;
 
+/// A newly submitted walkthrough question follows the newest wrapped answer
+/// row. The renderer clamps this sentinel to its layout-dependent scroll bound;
+/// the first manual scroll replaces it with an explicit offset.
+const FOLLOW_LATEST_ANSWER: usize = usize::MAX;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CodeExplanationSourceMetrics {
     line_count: usize,
@@ -392,7 +397,7 @@ impl Editor {
                 step: step_index,
                 exchange,
             };
-            pending.answer_scroll = 0;
+            pending.answer_scroll = FOLLOW_LATEST_ANSWER;
             (
                 step_index,
                 step,
@@ -491,6 +496,9 @@ impl Editor {
             }
         }
         pending.interaction = CodeExplanationInteraction::Navigating;
+        self.set_lsp_status(
+            "Walkthrough answer ready — Up/Down reads the reply; Enter continues".into(),
+        );
     }
 
     pub(crate) fn ai_code_explanation_answering(&self) -> bool {
@@ -1069,6 +1077,7 @@ fn required_step_line(
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use crate::ai::chat_types::{ChatOpts, ProviderSteerUpdate, StreamChunk};
 
     fn setup_editor() -> (tempfile::TempDir, Editor, PathBuf, PathBuf) {
@@ -1198,6 +1207,11 @@ mod tests {
         assert!(response_rx.await.unwrap().unwrap().contains("paused"));
         assert!(editor.ai_chat_has_pending_code_explanation());
         assert!(editor.ai_code_explanation_answering());
+        assert_eq!(
+            editor.ai_code_explanation_view().unwrap().answer_scroll,
+            FOLLOW_LATEST_ANSWER,
+            "a new answer should follow its latest streamed rows"
+        );
         let profile = editor
             .ai_state
             .config
@@ -1259,6 +1273,14 @@ mod tests {
             } if question == "Why is k used here?"
                 && answer == "It is an alternate key only while history has focus."
         ));
+        assert_eq!(
+            editor.ai_chat_activity(),
+            crate::editor::AiChatActivity::WaitingCodeExplanation
+        );
+        assert_eq!(
+            editor.lsp_status(),
+            "Walkthrough answer ready — Up/Down reads the reply; Enter continues"
+        );
         let messages = editor.ai_chat_messages();
         assert!(messages.iter().any(|message| message.role
             == crate::ai::chat_types::ChatRole::User

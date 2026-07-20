@@ -1485,6 +1485,15 @@ mod tests {
             .collect::<String>();
         assert_ne!(first_rendered, later_rendered);
         assert!(later.hints.contains("↑/↓ reply 2–11/"), "{}", later.hints);
+
+        let following = super::walkthrough_discussion(&discussion, 24, 10, usize::MAX);
+        assert!(
+            following
+                .hints
+                .contains(&format!("–{0}/{0}", following.answer_max_scroll + 10)),
+            "{}",
+            following.hints
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

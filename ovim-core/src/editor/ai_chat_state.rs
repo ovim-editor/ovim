@@ -807,6 +807,11 @@ impl AiChatState {
             blocker.activity()
         } else if self.pending_job.is_some() || self.runtime_turn.is_some() || self.waiting {
             AiChatActivity::Inference
+        } else if self.pending_code_explanation.is_some() {
+            // A question can complete the provider turn that originally owned
+            // the walkthrough. The walkthrough itself still needs user input,
+            // so headless clients and hidden-chat status must not report idle.
+            AiChatActivity::WaitingCodeExplanation
         } else {
             AiChatActivity::Idle
         }

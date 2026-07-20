@@ -151,7 +151,7 @@ impl Editor {
             return None;
         }
         Some(format!(
-            "Blocked by COMPREHENSION: {} requires demonstrated understanding of the current repository state before {}. Teach a concise mental map, invariant, principal risk, and relevant verification; ask one active-recall/application question at a time without revealing answers first. Keep mastery criteria fixed while adapting scaffolding. After every critical concept is demonstrated, call {} and retry this exact action. YOLO does not bypass this gate.",
+            "Blocked by COMPREHENSION: {} requires demonstrated understanding of the current repository state before {}. The entire shell invocation was stopped before any segment ran; retry earlier permitted work (such as a local commit under publish policy) in a separate command. Teach a concise mental map, invariant, principal risk, and relevant verification; ask one active-recall/application question at a time without revealing answers first. Keep mastery criteria fixed while adapting scaffolding. After every critical concept is demonstrated, call {} and retry this exact action. YOLO does not bypass this gate.",
             policy.as_str(),
             boundary.label(),
             RECORD_COMPREHENSION_CHECKPOINT_TOOL,
