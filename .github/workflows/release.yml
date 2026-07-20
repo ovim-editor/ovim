@@ -8,6 +8,10 @@ on:
       tag:
         description: "Existing tag to build (e.g. v0.1.6)"
         required: true
+      publish:
+        description: "Upload artifacts to the GitHub release. Leave off for a build-only dry run."
+        type: boolean
+        default: false
 
 permissions:
   contents: write
@@ -16,20 +20,48 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  # Fails fast, before four release builds burn runner minutes, if the crate
+  # versions don't match the tag being built. Guards against tagging a release
+  # whose binaries report the previous version.
+  verify-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+      - name: Check crate versions match tag
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          expected="${tag#v}"
+          status=0
+          for manifest in ovim/Cargo.toml ovim-core/Cargo.toml; do
+            actual="$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)"
+            if [ "$actual" != "$expected" ]; then
+              echo "::error file=$manifest::version is $actual, expected $expected (from tag $tag)"
+              status=1
+            fi
+          done
+          exit $status
+
   build:
+    needs: verify-version
     strategy:
       fail-fast: false
       matrix:
         include:
           - target: aarch64-apple-darwin
             os: macos-14
+            arch_pattern: "arm64"
           # Cross-compiled from the arm64 runner; macos-13 (Intel) queues are unusable
           - target: x86_64-apple-darwin
             os: macos-14
+            arch_pattern: "x86_64"
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
+            arch_pattern: "x86-64"
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-22.04-arm
+            arch_pattern: "aarch64"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -43,6 +75,22 @@ jobs:
           key: ${{ matrix.target }}
       - name: Build
         run: cargo build --release --locked -p ovim --features vendored --target ${{ matrix.target }}
+      # The Intel macOS binary is cross-compiled from an arm64 runner with
+      # vendored OpenSSL, libgit2 and Lua. A build script that ignores the
+      # target would silently emit an arm64 binary, so assert the architecture
+      # rather than trusting the toolchain.
+      - name: Verify binary architecture
+        run: |
+          binary="target/${{ matrix.target }}/release/ovim"
+          described="$(file -b "$binary")"
+          echo "$described"
+          case "$described" in
+            *"${{ matrix.arch_pattern }}"*) ;;
+            *)
+              echo "::error::${{ matrix.target }} produced the wrong architecture: $described"
+              exit 1
+              ;;
+          esac
       - name: Package
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
@@ -60,8 +108,12 @@ jobs:
             *.tar.gz.sha256
           if-no-files-found: error
 
+  # Only publishes for a real tag push, or a dispatch that explicitly opts in.
+  # A bare workflow_dispatch is a build-only dry run: it must not clobber the
+  # assets of an already-published release.
   release:
     needs: build
+    if: github.event_name == 'push' || inputs.publish
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
