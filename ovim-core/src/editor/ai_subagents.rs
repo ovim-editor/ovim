@@ -971,16 +971,35 @@ impl Editor {
         }
         let run = self.headless_subagent_run(run_id)?;
         ensure_run_agent(&run, agent_id, None)?;
-        Ok(run
-            .store
-            .events(run_id)
-            .map_err(|error| error.to_string())?
-            .into_iter()
-            .filter(|event| {
-                event.sequence > after_sequence && event.agent_id.as_ref() == Some(agent_id)
-            })
-            .take(limit)
-            .collect())
+        // Page through the tail rather than decoding the whole run and filtering
+        // in memory. The agent filter cannot be pushed into the SQL LIMIT (the
+        // limit would bound rows scanned, not rows matching this agent), so
+        // instead we walk bounded pages and stop as soon as `limit` events for
+        // this agent have been found. Memory stays at one page regardless of run
+        // size, and a client tailing with `after_sequence` no longer pays for the
+        // history it has already seen.
+        const PAGE: usize = 512;
+        let mut collected = Vec::with_capacity(limit.min(PAGE));
+        let mut cursor = after_sequence;
+        loop {
+            let page = run
+                .store
+                .events_after(run_id, Some(cursor), Some(PAGE))
+                .map_err(|error| error.to_string())?;
+            let Some(last) = page.last() else {
+                break;
+            };
+            cursor = last.sequence;
+            for event in page {
+                if event.agent_id.as_ref() == Some(agent_id) {
+                    collected.push(event);
+                    if collected.len() >= limit {
+                        return Ok(collected);
+                    }
+                }
+            }
+        }
+        Ok(collected)
     }
 
     pub fn prepare_ai_agent_wait(

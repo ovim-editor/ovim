@@ -36,6 +36,32 @@ pub trait RunEventSink: Send + Sync {
         event_id: &EventId,
     ) -> Result<Option<EventEnvelope>, RunLogError>;
     fn events(&self, run_id: &RunId) -> Result<Vec<EventEnvelope>, RunLogError>;
+    /// Reads at most `limit` events with `sequence > after_sequence`, in
+    /// ascending sequence order.
+    ///
+    /// This is the bounded counterpart to [`RunEventSink::events`], which loads
+    /// and decodes an entire run. Callers that tail a run (incremental
+    /// projections, paged history endpoints) must use this instead: with
+    /// `events` they pay a full-table decode per call, which is O(n) per read
+    /// and O(n^2) over the life of a run.
+    ///
+    /// The default implementation filters `events()` and is correct but not
+    /// cheap; durable stores should override it with an indexed, LIMITed query.
+    fn events_after(
+        &self,
+        run_id: &RunId,
+        after_sequence: Option<u64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<EventEnvelope>, RunLogError> {
+        let mut events = self.events(run_id)?;
+        if let Some(after) = after_sequence {
+            events.retain(|event| event.sequence > after);
+        }
+        if let Some(limit) = limit {
+            events.truncate(limit);
+        }
+        Ok(events)
+    }
     fn last_sequence(&self, run_id: &RunId) -> Result<Option<u64>, RunLogError>;
     /// Discovers runs known to the store in stable creation order.
     fn runs(&self) -> Result<Vec<RunId>, RunLogError>;

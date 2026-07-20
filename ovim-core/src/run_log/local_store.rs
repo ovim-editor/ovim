@@ -162,6 +162,21 @@ impl RunEventSink for LocalRunStore {
         }
     }
 
+    /// Forwards to the backing sink so the SQLite store's indexed, LIMITed read
+    /// is used. Without this override the default trait implementation would
+    /// route through `events()` and reintroduce the full-run decode.
+    fn events_after(
+        &self,
+        run_id: &RunId,
+        after_sequence: Option<u64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<EventEnvelope>, RunLogError> {
+        match self.sink_for_read(run_id)? {
+            Some(sink) => sink.events_after(run_id, after_sequence, limit),
+            None => Ok(Vec::new()),
+        }
+    }
+
     fn last_sequence(&self, run_id: &RunId) -> Result<Option<u64>, RunLogError> {
         match self.sink_for_read(run_id)? {
             Some(sink) => sink.last_sequence(run_id),

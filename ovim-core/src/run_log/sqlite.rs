@@ -281,6 +281,43 @@ impl RunEventSink for SqliteRunEventSink {
         .collect()
     }
 
+    /// Indexed, bounded tail read. `events_run_sequence` covers
+    /// `(run_id, sequence)`, so this seeks straight to `after_sequence` and
+    /// stops after `limit` rows instead of decoding the whole run.
+    fn events_after(
+        &self,
+        run_id: &RunId,
+        after_sequence: Option<u64>,
+        limit: Option<usize>,
+    ) -> Result<Vec<EventEnvelope>, RunLogError> {
+        let connection = self.connection()?;
+        // SQLite treats a negative LIMIT as unbounded, which is what we want
+        // when the caller did not ask for one. usize -> i64 saturates rather
+        // than wrapping so a huge limit cannot become a small or negative one.
+        let bound: i64 = match limit {
+            Some(limit) => i64::try_from(limit).unwrap_or(i64::MAX),
+            None => -1,
+        };
+        let after: i64 = match after_sequence {
+            Some(after) => i64::try_from(after).unwrap_or(i64::MAX),
+            None => -1,
+        };
+        let mut statement = connection
+            .prepare(
+                "SELECT run_id, sequence, event_id, envelope_json FROM events \
+                 WHERE run_id = ?1 AND sequence > ?2 ORDER BY sequence ASC LIMIT ?3",
+            )
+            .map_err(|error| storage("prepare bounded run event read", error))?;
+        let rows = statement
+            .query_map(params![run_id.as_str(), after, bound], read_stored_event)
+            .map_err(|error| storage("read bounded run events", error))?;
+        rows.map(|row| {
+            row.map_err(|error| storage("read bounded run event row", error))
+                .and_then(decode_stored_event)
+        })
+        .collect()
+    }
+
     fn last_sequence(&self, run_id: &RunId) -> Result<Option<u64>, RunLogError> {
         let connection = self.connection()?;
         let sequence: Option<i64> = connection
@@ -655,6 +692,62 @@ mod tests {
         assert_eq!(reopened.runs().unwrap(), vec![run.clone()]);
         assert_eq!(reopened.events(&run).unwrap(), vec![event]);
         assert_eq!(reopened.last_sequence(&run).unwrap(), Some(1));
+    }
+
+    // The indexed SQLite override and the filter-based default in the trait must
+    // be observationally identical, or a store swap silently changes what
+    // callers see. Checked against InMemoryRunEventSink, which uses the default.
+    #[test]
+    fn bounded_reads_match_the_default_implementation_and_full_reads() {
+        let sqlite = SqliteRunEventSink::open_in_memory().unwrap();
+        let memory = InMemoryRunEventSink::new();
+        let run = RunId::parse("run_bounded").unwrap();
+        let other = RunId::parse("run_other").unwrap();
+        for index in 0..25 {
+            let content = format!("event {index}");
+            sqlite.append(message(run.clone(), &content)).unwrap();
+            memory.append(message(run.clone(), &content)).unwrap();
+            // Interleave a second run so a missing run_id predicate would show up.
+            sqlite.append(message(other.clone(), &content)).unwrap();
+            memory.append(message(other.clone(), &content)).unwrap();
+        }
+
+        let full = sqlite.events(&run).unwrap();
+        assert_eq!(full.len(), 25);
+
+        for after in [None, Some(0), Some(1), Some(12), Some(25), Some(99)] {
+            for limit in [None, Some(1), Some(7), Some(1000)] {
+                let from_sqlite = sqlite.events_after(&run, after, limit).unwrap();
+                let from_default = memory.events_after(&run, after, limit).unwrap();
+                // The two sinks mint their own event ids and timestamps, so only
+                // the selected sequence window is comparable across them. That
+                // window is precisely what the two implementations must agree on.
+                let sqlite_window: Vec<u64> =
+                    from_sqlite.iter().map(|event| event.sequence).collect();
+                let default_window: Vec<u64> =
+                    from_default.iter().map(|event| event.sequence).collect();
+                assert_eq!(
+                    sqlite_window, default_window,
+                    "sqlite and default disagree for after={after:?} limit={limit:?}"
+                );
+
+                let expected: Vec<_> = full
+                    .iter()
+                    .filter(|event| after.is_none_or(|after| event.sequence > after))
+                    .take(limit.unwrap_or(usize::MAX))
+                    .cloned()
+                    .collect();
+                assert_eq!(
+                    from_sqlite, expected,
+                    "bounded read disagrees with the filtered full read for \
+                     after={after:?} limit={limit:?}"
+                );
+                assert!(from_sqlite.iter().all(|event| event.run_id == run));
+            }
+        }
+
+        // An unbounded bounded-read is exactly the full read.
+        assert_eq!(sqlite.events_after(&run, None, None).unwrap(), full);
     }
 
     #[test]
