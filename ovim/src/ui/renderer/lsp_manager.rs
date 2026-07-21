@@ -115,24 +115,19 @@ pub fn render_lsp_manager(frame: &mut Frame, panel: &LspManagerPanel) {
 
 fn render_filter_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
     let icon = "/ ";
-    let query = &panel.filter_query;
+    let query = panel.filter_query();
 
     let text = if panel.filter_focused {
         Line::from(vec![
             Span::styled(icon, Style::default().fg(colors::HINT_KEY)),
             Span::styled(
-                if query.is_empty() {
-                    "Filter..."
-                } else {
-                    query.as_str()
-                },
+                if query.is_empty() { "Filter..." } else { query },
                 Style::default().fg(if query.is_empty() {
                     colors::TEXT_MUTED
                 } else {
                     colors::TEXT_BRIGHT
                 }),
             ),
-            Span::styled("█", Style::default().fg(colors::TEXT_BRIGHT)),
         ])
     } else if query.is_empty() {
         Line::from(Span::styled(
@@ -142,7 +137,7 @@ fn render_filter_bar(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
     } else {
         Line::from(vec![
             Span::styled(icon, Style::default().fg(colors::HINT_KEY)),
-            Span::styled(query.as_str(), Style::default().fg(colors::TEXT)),
+            Span::styled(query, Style::default().fg(colors::TEXT)),
         ])
     };
 
@@ -188,7 +183,7 @@ fn render_detail_separator(frame: &mut Frame, area: Rect) {
 fn render_entry_list(frame: &mut Frame, panel: &LspManagerPanel, area: Rect) {
     let filtered = panel.filtered_entries();
     if filtered.is_empty() {
-        let msg = if panel.filter_query.is_empty() {
+        let msg = if panel.filter_query().is_empty() {
             "No languages configured"
         } else {
             "No matching languages"

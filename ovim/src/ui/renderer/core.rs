@@ -522,10 +522,15 @@ fn set_cursor_position(
     if editor.mode() == crate::mode::Mode::LspManager {
         if let Some(panel) = editor.lsp_manager_panel() {
             if panel.filter_focused {
+                use unicode_width::UnicodeWidthStr;
+
                 let mgr_area = super::lsp_manager::get_lsp_manager_area(frame.area());
                 let inner_x = mgr_area.x + 1;
                 let inner_y = mgr_area.y + 1;
-                let cursor_x = inner_x + 2 + panel.filter_query.len() as u16;
+                let cursor = panel.filter_cursor();
+                let input_width = UnicodeWidthStr::width(&panel.filter_query()[..cursor]);
+                let max_x = mgr_area.right().saturating_sub(2);
+                let cursor_x = (inner_x + 2 + input_width as u16).min(max_x);
                 frame.set_cursor_position((cursor_x, inner_y));
             }
         }

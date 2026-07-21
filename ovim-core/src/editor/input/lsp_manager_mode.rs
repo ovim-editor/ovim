@@ -83,12 +83,43 @@ fn handle_filter_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         }
         KeyCode::Backspace => {
             if let Some(panel) = editor.lsp_manager_panel_mut() {
-                panel.filter_query.pop();
+                if panel.filter_input_mut().backspace() {
+                    panel.jump_to_top();
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if let Some(panel) = editor.lsp_manager_panel_mut() {
+                if panel.filter_input_mut().delete() {
+                    panel.jump_to_top();
+                }
+            }
+        }
+        KeyCode::Left => {
+            if let Some(panel) = editor.lsp_manager_panel_mut() {
+                panel.filter_input_mut().move_left();
+            }
+        }
+        KeyCode::Right => {
+            if let Some(panel) = editor.lsp_manager_panel_mut() {
+                panel.filter_input_mut().move_right();
+            }
+        }
+        KeyCode::Home => {
+            if let Some(panel) = editor.lsp_manager_panel_mut() {
+                panel.filter_input_mut().move_home();
+            }
+        }
+        KeyCode::End => {
+            if let Some(panel) = editor.lsp_manager_panel_mut() {
+                panel.filter_input_mut().move_end();
             }
         }
         KeyCode::Char(c) => {
             if let Some(panel) = editor.lsp_manager_panel_mut() {
-                panel.filter_query.push(c);
+                if panel.filter_input_mut().insert(c) {
+                    panel.jump_to_top();
+                }
             }
         }
         _ => {}
@@ -127,5 +158,56 @@ fn handle_update(editor: &mut Editor) {
 
     if let Some(lang_id) = lang_id {
         editor.request_lsp_install(&lang_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Modifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, Modifiers::NONE)
+    }
+
+    fn editor_with_filter_focused() -> Editor {
+        let mut editor = Editor::new();
+        editor.open_lsp_manager();
+        editor.lsp_manager_panel_mut().unwrap().filter_focused = true;
+        editor
+    }
+
+    #[test]
+    fn filter_supports_unicode_safe_mid_string_edits() {
+        let mut editor = editor_with_filter_focused();
+        for character in "a🙂z".chars() {
+            handle_lsp_manager_mode(&mut editor, key(KeyCode::Char(character))).unwrap();
+        }
+
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Left)).unwrap();
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Backspace)).unwrap();
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Char('é'))).unwrap();
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Delete)).unwrap();
+
+        let panel = editor.lsp_manager_panel().unwrap();
+        assert_eq!(panel.filter_query(), "aé");
+        assert_eq!(panel.filter_cursor(), 3);
+    }
+
+    #[test]
+    fn home_end_and_delete_edit_the_filter_at_the_cursor() {
+        let mut editor = editor_with_filter_focused();
+        for character in "rust".chars() {
+            handle_lsp_manager_mode(&mut editor, key(KeyCode::Char(character))).unwrap();
+        }
+
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Home)).unwrap();
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Delete)).unwrap();
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::End)).unwrap();
+        handle_lsp_manager_mode(&mut editor, key(KeyCode::Char('y'))).unwrap();
+
+        let panel = editor.lsp_manager_panel().unwrap();
+        assert_eq!(panel.filter_query(), "usty");
+        assert_eq!(panel.filter_cursor(), 4);
     }
 }

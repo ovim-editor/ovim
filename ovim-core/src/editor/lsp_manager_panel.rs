@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use crate::language_config::{self, LanguageConfig, LanguageRegistry};
 
+use super::SingleLineInput;
+
 /// Message sent from background install task to the editor
 #[derive(Debug, Clone)]
 pub struct InstallProgress {
@@ -75,10 +77,10 @@ pub struct LspManagerPanel {
     pub entries: Vec<LspManagerEntry>,
     pub selected_index: usize,
     pub scroll_offset: usize,
-    pub filter_query: String,
     pub filter_focused: bool,
     pub show_detail: bool,
     pub active_installs: HashMap<String, InstallStatus>,
+    filter_input: SingleLineInput,
     /// Running server language IDs (set from outside via LspManager state)
     running_servers: Vec<String>,
 }
@@ -90,10 +92,10 @@ impl LspManagerPanel {
             entries: Vec::new(),
             selected_index: 0,
             scroll_offset: 0,
-            filter_query: String::new(),
             filter_focused: false,
             show_detail: true,
             active_installs: HashMap::new(),
+            filter_input: SingleLineInput::default(),
             running_servers,
         };
         panel.rebuild_entries();
@@ -194,12 +196,12 @@ impl LspManagerPanel {
         }
     }
 
-    /// Get filtered entries (respecting filter_query)
+    /// Get entries matching the active filter query.
     pub fn filtered_entries(&self) -> Vec<(usize, &LspManagerEntry)> {
-        if self.filter_query.is_empty() {
+        if self.filter_input.is_empty() {
             self.entries.iter().enumerate().collect()
         } else {
-            let query = self.filter_query.to_lowercase();
+            let query = self.filter_input.text().to_lowercase();
             self.entries
                 .iter()
                 .enumerate()
@@ -213,6 +215,21 @@ impl LspManagerPanel {
                 })
                 .collect()
         }
+    }
+
+    /// Return the active filter text.
+    pub fn filter_query(&self) -> &str {
+        self.filter_input.text()
+    }
+
+    /// Return the filter cursor as a UTF-8 byte offset.
+    pub fn filter_cursor(&self) -> usize {
+        self.filter_input.cursor()
+    }
+
+    /// Return the editable filter state.
+    pub(crate) fn filter_input_mut(&mut self) -> &mut SingleLineInput {
+        &mut self.filter_input
     }
 
     /// Move selection down
