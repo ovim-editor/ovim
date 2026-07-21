@@ -27,7 +27,7 @@ impl Editor {
         let cmd = match test_name {
             Some(name) => format!("cargo test -- {} --exact", name),
             None => {
-                self.set_lsp_status("No test function found near cursor".to_string());
+                self.set_status_message("No test function found near cursor".to_string());
                 return;
             }
         };
@@ -47,7 +47,7 @@ impl Editor {
         if let Some(cmd) = self.build.last_test_command.clone() {
             self.run_make_with_command(&cmd);
         } else {
-            self.set_lsp_status("No previous test command".to_string());
+            self.set_status_message("No previous test command".to_string());
         }
     }
 
@@ -81,7 +81,7 @@ impl Editor {
             receiver: rx,
             command: cmd.to_string(),
         });
-        self.set_lsp_status(format!("Running: {}", cmd));
+        self.set_status_message(format!("Running: {}", cmd));
     }
 
     /// Determines the test filter for the current file.

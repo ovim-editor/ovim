@@ -48,6 +48,27 @@ fn test_lsp_status_error_emits_deduped_toast() {
 }
 
 #[test]
+fn generic_status_message_does_not_impersonate_an_lsp_notification() {
+    let mut editor = Editor::with_content("fn main() {}\n");
+
+    editor.set_status_message("Delete failed: permission denied");
+
+    assert_eq!(editor.status_message(), "Delete failed: permission denied");
+    assert!(!editor.has_visible_toasts());
+}
+
+#[test]
+fn generic_feedback_does_not_overwrite_the_lsp_subsystem_status() {
+    let mut editor = Editor::with_content("fn main() {}\n");
+    editor.set_lsp_status("LSP: rust-analyzer ready".to_owned());
+
+    editor.set_status_message("Saved file");
+
+    assert_eq!(editor.status_message(), "Saved file");
+    assert_eq!(editor.lsp_status(), "LSP: rust-analyzer ready");
+}
+
+#[test]
 fn test_tick_toasts_prunes_expired_entries() {
     let mut editor = Editor::with_content("fn main() {}\n");
     editor.push_toast(

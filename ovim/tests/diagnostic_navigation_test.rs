@@ -171,5 +171,5 @@ fn test_show_diagnostic_at_cursor_hides_diagnostics_after_file_path_change() {
     test.editor.show_diagnostic_at_cursor();
 
     assert_eq!(test.editor.mode(), ovim::mode::Mode::Normal);
-    assert_eq!(test.editor.lsp_status(), "No diagnostics at cursor");
+    assert_eq!(test.editor.status_message(), "No diagnostics at cursor");
 }

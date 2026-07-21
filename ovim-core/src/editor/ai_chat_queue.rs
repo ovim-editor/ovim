@@ -86,7 +86,7 @@ impl Editor {
             QueuedChatInputKind::FollowUp => "Message queued for the next round",
             QueuedChatInputKind::Command => "Slash command queued for the end of this round",
         };
-        self.set_lsp_status(status.to_string());
+        self.set_status_message(status.to_string());
     }
 
     /// Apply steers at ovim's post-tool continuation boundary (OpenAI,
@@ -115,13 +115,13 @@ impl Editor {
             self.remove_queued_ai_chat_input(id);
             if let Some(content) = content {
                 if let Err(record_error) = self.record_accepted_ai_chat_steer(content) {
-                    self.set_lsp_status(format!(
+                    self.set_status_message(format!(
                         "Walkthrough question reached the agent through the tool result, but its durable user message could not be recorded: {record_error}"
                     ));
                     return;
                 }
             }
-            self.set_lsp_status(format!(
+            self.set_status_message(format!(
                 "Provider steering was unavailable ({error}); the walkthrough question was delivered through the tool result"
             ));
             return;
@@ -131,7 +131,7 @@ impl Editor {
                 item.kind = QueuedChatInputKind::FollowUp;
             }
         }
-        self.set_lsp_status(format!(
+        self.set_status_message(format!(
             "Could not steer the active turn; queued for next round: {error}"
         ));
     }
@@ -207,7 +207,7 @@ impl Editor {
             chat.history.selected_node_id = None;
             chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
         }
-        self.set_lsp_status("Queued message moved back to the composer".to_string());
+        self.set_status_message("Queued message moved back to the composer".to_string());
         true
     }
 

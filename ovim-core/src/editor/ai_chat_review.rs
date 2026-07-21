@@ -31,7 +31,7 @@ impl Editor {
             chat.agent_edits.clear();
             chat.view_mode = ChatViewMode::DockedChat;
         }
-        self.set_lsp_status("Accepted AI changes and returned to chat".to_string());
+        self.set_status_message("Accepted AI changes and returned to chat".to_string());
     }
 
     /// Whether review mode is active.

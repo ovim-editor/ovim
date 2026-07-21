@@ -35,7 +35,7 @@ impl Editor {
         // Queue, approval, and slash-command notices describe the previous
         // interaction. Do not let them masquerade as the status of a newly
         // submitted agent turn, especially in headless snapshots.
-        self.set_lsp_status(String::new());
+        self.set_status_message(String::new());
 
         // Allocate stable ovim run/agent/turn identity before provider work.
         let runtime_turn = self
@@ -386,7 +386,9 @@ impl Editor {
                 }
                 StreamChunk::SteerAccepted { id, content } => {
                     if let Err(error) = self.accept_provider_ai_chat_steer(id, content) {
-                        self.set_lsp_status(format!("Failed to record accepted steer: {error}"));
+                        self.set_status_message(format!(
+                            "Failed to record accepted steer: {error}"
+                        ));
                     }
                     changed = true;
                 }
@@ -727,7 +729,7 @@ impl Editor {
                         receiver: result_rx,
                     });
             }
-            self.set_lsp_status("Terra is reviewing the proposed shell program".into());
+            self.set_status_message("Terra is reviewing the proposed shell program");
         } else {
             debug_assert_eq!(
                 request.dynamic.static_analysis.disposition,
@@ -1006,7 +1008,7 @@ impl Editor {
             });
             chat.waiting = true;
         }
-        self.set_lsp_status("Agent shell program is running".into());
+        self.set_status_message("Agent shell program is running");
     }
 
     fn poll_pending_shell_execution(&mut self) -> bool {
@@ -1197,7 +1199,7 @@ impl Editor {
                         conversation.append_error(detail);
                     }
                     self.clear_streaming_state();
-                    self.set_lsp_status(String::new());
+                    self.set_status_message(String::new());
                     // No job, stream, or pending state is left to complete this
                     // turn — falling through would re-arm the waiting spinner
                     // forever. Only the Dynamic arm may fall through (its
@@ -1246,12 +1248,12 @@ impl Editor {
                     if let Some(chat) = self.ai_state.chat.as_mut() {
                         chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                     }
-                    self.set_lsp_status(String::new());
+                    self.set_status_message(String::new());
                     return self.execute_tool_call_batch(remaining_tool_calls, model_name);
                 }
             }
         }
-        self.set_lsp_status(String::new());
+        self.set_status_message(String::new());
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = true;
         }
@@ -1313,7 +1315,7 @@ impl Editor {
         } else if let Some(error) = received.setup_error {
             self.open_exa_setup_dialog(Some(error));
         }
-        self.set_lsp_status(String::new());
+        self.set_status_message(String::new());
         self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name)
     }
 
@@ -1428,6 +1430,6 @@ impl Editor {
         } else {
             request.message
         };
-        self.set_lsp_status(status);
+        self.set_status_message(status);
     }
 }

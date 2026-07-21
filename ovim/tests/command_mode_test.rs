@@ -331,7 +331,7 @@ fn test_command_copy_missing_mark_reports_e20() {
 
     InputHandler::execute_command_string(&mut test.editor, "1 copy 'z").unwrap();
 
-    assert_eq!(test.editor.lsp_status(), "E20: Mark not set");
+    assert_eq!(test.editor.status_message(), "E20: Mark not set");
 }
 
 #[test]
@@ -340,7 +340,7 @@ fn test_command_move_missing_mark_reports_e20() {
 
     InputHandler::execute_command_string(&mut test.editor, "%move 'z").unwrap();
 
-    assert_eq!(test.editor.lsp_status(), "E20: Mark not set");
+    assert_eq!(test.editor.status_message(), "E20: Mark not set");
 }
 
 /// Test :set command

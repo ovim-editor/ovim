@@ -182,7 +182,7 @@ impl Editor {
         if server_ids.is_empty() {
             // Only set "waiting" status if there isn't already a more specific
             // error (e.g., "LSP: rust-analyzer not found in PATH").
-            if !self.lsp.state.lsp_status.starts_with("LSP:") {
+            if !self.lsp_status().starts_with("LSP:") {
                 self.set_lsp_status("LSP: waiting for server...".to_string());
             }
             return Err(anyhow!("No LSP servers ready for {}", language_id));

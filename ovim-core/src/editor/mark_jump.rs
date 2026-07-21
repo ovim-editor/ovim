@@ -349,7 +349,10 @@ impl Editor {
             if needs_file_switch {
                 // Load the target file
                 if self.load_file(&entry.file_path).is_err() {
-                    self.set_lsp_status(format!("Tag pop failed: cannot load {}", entry.file_path));
+                    self.set_status_message(format!(
+                        "Tag pop failed: cannot load {}",
+                        entry.file_path
+                    ));
                     return false;
                 }
             }
@@ -376,7 +379,7 @@ impl Editor {
                 .file_name()
                 .and_then(|s| s.to_str())
                 .unwrap_or(&entry.file_path);
-            self.set_lsp_status(format!(
+            self.set_status_message(format!(
                 "Tag: {}:{}:{} ({} remaining)",
                 file_name,
                 clamped_line + 1,
@@ -386,7 +389,7 @@ impl Editor {
 
             true
         } else {
-            self.set_lsp_status("Tag stack empty".to_string());
+            self.set_status_message("Tag stack empty".to_string());
             false
         }
     }

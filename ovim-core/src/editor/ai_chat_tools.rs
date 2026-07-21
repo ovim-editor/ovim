@@ -780,7 +780,7 @@ impl Editor {
                     Some(pending.approval_root),
                     pending.runtime_tool_started,
                 );
-                self.set_lsp_status(format!("Approved {tool_name} for this invocation"));
+                self.set_status_message(format!("Approved {tool_name} for this invocation"));
             } else {
                 let tool_name = pending.tool_call.name.clone();
                 self.finish_dynamic_tool(
@@ -790,7 +790,7 @@ impl Editor {
                     response,
                     ToolResult::Error(format!("user denied {tool_name}")),
                 );
-                self.set_lsp_status(format!("Denied {tool_name}"));
+                self.set_status_message(format!("Denied {tool_name}"));
             }
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.waiting = true;
@@ -826,7 +826,7 @@ impl Editor {
                 chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                 chat.waiting = true;
             }
-            self.set_lsp_status("Denied outside-project tool access".to_string());
+            self.set_status_message("Denied outside-project tool access".to_string());
             return self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name);
         }
 
@@ -875,7 +875,7 @@ impl Editor {
                     chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                     chat.waiting = true;
                 }
-                self.set_lsp_status(format!(
+                self.set_status_message(format!(
                     "Approved outside-project access: {}",
                     pending.requested_path.display()
                 ));
@@ -894,7 +894,7 @@ impl Editor {
                     dynamic_response: None,
                     dynamic_turn: None,
                 });
-                self.set_lsp_status(req.message);
+                self.set_status_message(req.message);
                 true
             }
         }
@@ -1004,7 +1004,7 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.pending_no_repo_folder_approval = Some(folder.clone());
         }
-        self.set_lsp_status(format!(
+        self.set_status_message(format!(
             "You're not in a git repo. Allow AI tool access to folder: {}? Press Ctrl-Y to allow, Ctrl-N to deny.",
             folder.display()
         ));
@@ -1026,13 +1026,13 @@ impl Editor {
         if allow {
             let root = normalize_path(&folder);
             self.ai_state.no_repo_session_allowed_root = Some(root.clone());
-            self.set_lsp_status(format!(
+            self.set_status_message(format!(
                 "Approved AI tool access for folder: {}",
                 root.display()
             ));
         } else {
             self.ai_state.no_repo_session_allowed_root = None;
-            self.set_lsp_status("Denied no-repo folder tool access".to_string());
+            self.set_status_message("Denied no-repo folder tool access".to_string());
         }
         true
     }
@@ -1223,7 +1223,7 @@ impl Editor {
                     });
                     chat.waiting = true;
                 }
-                self.set_lsp_status("Searching the web with Exa".to_string());
+                self.set_status_message("Searching the web with Exa".to_string());
                 return true;
             }
 
@@ -1288,7 +1288,7 @@ impl Editor {
                         dynamic_response: None,
                         dynamic_turn: None,
                     });
-                    self.set_lsp_status(req.message);
+                    self.set_status_message(req.message);
                     return true;
                 }
             }

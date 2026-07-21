@@ -509,13 +509,13 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
 
     // Parse substitute pattern: /pattern/replacement/flags
     if !substitute_part.starts_with('/') {
-        editor.set_lsp_status("E146: Invalid substitute syntax".to_string());
+        editor.set_status_message("E146: Invalid substitute syntax".to_string());
         return Ok(()); // Invalid format
     }
 
     let Some((raw_pattern, raw_replacement, flags_str)) = split_substitute_parts(substitute_part)
     else {
-        editor.set_lsp_status("E146: Invalid substitute syntax".to_string());
+        editor.set_status_message("E146: Invalid substitute syntax".to_string());
         return Ok(()); // Invalid format - need at least /pattern/replacement/
     };
 
@@ -523,7 +523,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
     let pattern = if raw_pattern.is_empty() {
         let last = editor.registers().get_last_search().to_string();
         if last.is_empty() {
-            editor.set_lsp_status("E35: No previous regular expression".to_string());
+            editor.set_status_message("E35: No previous regular expression".to_string());
             return Ok(());
         }
         last
@@ -558,7 +558,7 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
     {
         Ok(r) => r,
         Err(_) => {
-            editor.set_lsp_status(format!("Invalid regex pattern: {}", pattern));
+            editor.set_status_message(format!("Invalid regex pattern: {}", pattern));
             return Ok(());
         }
     };
@@ -596,10 +596,10 @@ fn handle_substitute_command(editor: &mut Editor, range_str: &str, cmd_part: &st
         }
 
         if matches.is_empty() {
-            editor.set_lsp_status("Pattern not found".to_string());
+            editor.set_status_message("Pattern not found".to_string());
         } else {
             let count = matches.len();
-            editor.set_lsp_status(format!(
+            editor.set_status_message(format!(
                 "replace with {} ({} matches) (y/n/a/q/l)",
                 replacement, count
             ));
@@ -663,7 +663,7 @@ fn handle_global_command(
 
     // Extract pattern and command
     if !rest.starts_with('/') {
-        editor.set_lsp_status("Invalid global command format".to_string());
+        editor.set_status_message("Invalid global command format".to_string());
         return Ok(());
     }
 
@@ -686,7 +686,7 @@ fn handle_global_command(
     }
 
     let Some(pattern_end) = pattern_end else {
-        editor.set_lsp_status("Invalid global command: missing closing /".to_string());
+        editor.set_status_message("Invalid global command: missing closing /".to_string());
         return Ok(());
     };
 
@@ -709,7 +709,7 @@ fn handle_global_command(
     let regex = match Regex::new(pattern) {
         Ok(r) => r,
         Err(_) => {
-            editor.set_lsp_status(format!("Invalid regex pattern: {}", pattern));
+            editor.set_status_message(format!("Invalid regex pattern: {}", pattern));
             return Ok(());
         }
     };
@@ -717,7 +717,7 @@ fn handle_global_command(
     // Find all matching lines (optionally restricted by Ex range)
     let line_count = editor.buffer().line_count();
     if line_count == 0 {
-        editor.set_lsp_status("No matching lines found".to_string());
+        editor.set_status_message("No matching lines found".to_string());
         return Ok(());
     }
 
@@ -739,7 +739,7 @@ fn handle_global_command(
     }
 
     if matching_lines.is_empty() {
-        editor.set_lsp_status("No matching lines found".to_string());
+        editor.set_status_message("No matching lines found".to_string());
         return Ok(());
     }
 
@@ -778,7 +778,7 @@ fn handle_global_command(
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
             }
 
-            editor.set_lsp_status(format!("Deleted {} line(s)", matching_lines.len()));
+            editor.set_status_message(format!("Deleted {} line(s)", matching_lines.len()));
         }
         "p" | "print" => {
             // Print all matching lines to status
@@ -798,7 +798,7 @@ fn handle_global_command(
                 output.join("\n")
             };
 
-            editor.set_lsp_status(result);
+            editor.set_status_message(result);
         }
         "y" | "yank" => {
             // Yank all matching lines. Each yanked line must include its
@@ -814,7 +814,7 @@ fn handle_global_command(
             }
             editor.yank_to_register(yanked_text);
 
-            editor.set_lsp_status(format!("Yanked {} line(s)", matching_lines.len()));
+            editor.set_status_message(format!("Yanked {} line(s)", matching_lines.len()));
         }
         _ if sub_command.starts_with("s/") => {
             // Parse substitute pattern once, outside the loop
@@ -872,10 +872,10 @@ fn handle_global_command(
                 }
             }
 
-            editor.set_lsp_status(format!("Substituted on {} line(s)", matching_lines.len()));
+            editor.set_status_message(format!("Substituted on {} line(s)", matching_lines.len()));
         }
         _ => {
-            editor.set_lsp_status(format!("Unsupported global command: {}", sub_command));
+            editor.set_status_message(format!("Unsupported global command: {}", sub_command));
         }
     }
 
@@ -946,12 +946,12 @@ fn parse_range_with_status(
     match parse_range_internal(editor, range_str) {
         Ok(range) => Some(range),
         Err(ParseRangeError::MarkNotSet) => {
-            editor.set_lsp_status("E20: Mark not set".to_string());
+            editor.set_status_message("E20: Mark not set".to_string());
             None
         }
         Err(ParseRangeError::InvalidRange) => {
             if let Some(status) = invalid_status {
-                editor.set_lsp_status(status.to_string());
+                editor.set_status_message(status.to_string());
             }
             None
         }
@@ -966,12 +966,12 @@ fn parse_range_endpoint_with_status(
     match parse_range_endpoint_internal(editor, endpoint) {
         Ok(line) => Some(line),
         Err(ParseRangeError::MarkNotSet) => {
-            editor.set_lsp_status("E20: Mark not set".to_string());
+            editor.set_status_message("E20: Mark not set".to_string());
             None
         }
         Err(ParseRangeError::InvalidRange) => {
             if let Some(status) = invalid_status {
-                editor.set_lsp_status(status.to_string());
+                editor.set_status_message(status.to_string());
             }
             None
         }
@@ -1115,14 +1115,14 @@ fn handle_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &str) -
                     }
 
                     let line_count = insert_text.lines().count();
-                    editor.set_lsp_status(format!("{} lines filtered", line_count));
+                    editor.set_status_message(format!("{} lines filtered", line_count));
                 } else {
                     let stderr = String::from_utf8_lossy(&output.stderr);
-                    editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+                    editor.set_status_message(format!("Command failed: {}", stderr.trim()));
                 }
             }
             Err(e) => {
-                editor.set_lsp_status(format!("Failed to run command: {}", e));
+                editor.set_status_message(format!("Failed to run command: {}", e));
             }
         }
     } else {
@@ -1170,7 +1170,7 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 let output_text = stdout.to_string();
 
                 if output_text.is_empty() {
-                    editor.set_lsp_status("Command produced no output".to_string());
+                    editor.set_status_message("Command produced no output".to_string());
                     return Ok(());
                 }
 
@@ -1233,18 +1233,18 @@ fn handle_read_shell_command(editor: &mut Editor, range_str: &str, shell_cmd: &s
                 );
 
                 let line_count = text.lines().count();
-                editor.set_lsp_status(format!(
+                editor.set_status_message(format!(
                     "{} line{} inserted",
                     line_count,
                     if line_count == 1 { "" } else { "s" }
                 ));
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+                editor.set_status_message(format!("Command failed: {}", stderr.trim()));
             }
         }
         Err(e) => {
-            editor.set_lsp_status(format!("Failed to run command: {}", e));
+            editor.set_status_message(format!("Failed to run command: {}", e));
         }
     }
 
@@ -1298,7 +1298,7 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
     {
         Ok(child) => child,
         Err(e) => {
-            editor.set_lsp_status(format!("Failed to run command: {}", e));
+            editor.set_status_message(format!("Failed to run command: {}", e));
             return Ok(());
         }
     };
@@ -1306,7 +1306,7 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
     // Write content to stdin
     if let Some(ref mut stdin) = child.stdin {
         if let Err(e) = stdin.write_all(content.as_bytes()) {
-            editor.set_lsp_status(format!("Failed to write to command: {}", e));
+            editor.set_status_message(format!("Failed to write to command: {}", e));
             return Ok(());
         }
     }
@@ -1336,14 +1336,14 @@ fn handle_write_to_command(editor: &mut Editor, range_str: &str, shell_cmd: &str
                         format!("{} lines written: {}", line_count, trimmed)
                     }
                 };
-                editor.set_lsp_status(msg);
+                editor.set_status_message(msg);
             } else {
                 let stderr = String::from_utf8_lossy(&output.stderr);
-                editor.set_lsp_status(format!("Command failed: {}", stderr.trim()));
+                editor.set_status_message(format!("Command failed: {}", stderr.trim()));
             }
         }
         Err(e) => {
-            editor.set_lsp_status(format!("Failed to wait for command: {}", e));
+            editor.set_status_message(format!("Failed to wait for command: {}", e));
         }
     }
 
@@ -1388,10 +1388,10 @@ pub fn execute_command_string_api(editor: &mut Editor, command: &str) -> Command
     // re-checks the standard dispatcher and then handles substitute / global /
     // range / etc.). That handler reports outcomes on the status line rather
     // than returning them, so clear the line first and read it back afterwards.
-    editor.set_lsp_status(String::new());
+    editor.set_status_message(String::new());
     match execute_command_string(editor, command) {
         Ok(()) => {
-            let status = editor.lsp_status().trim().to_string();
+            let status = editor.status_message().trim().to_string();
             if status.is_empty() {
                 ok_silent()
             } else if is_vim_error_status(&status) {
@@ -1474,7 +1474,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             match editor.build.last_shell_command.clone() {
                 Some(last) => last,
                 None => {
-                    editor.set_lsp_status("No previous shell command".to_string());
+                    editor.set_status_message("No previous shell command".to_string());
                     return Ok(());
                 }
             }
@@ -1500,7 +1500,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 if msg.contains('\n') {
                     editor.set_hover_info(msg);
                 } else {
-                    editor.set_lsp_status(msg);
+                    editor.set_status_message(msg);
                 }
             }
             return Ok(());
@@ -1511,7 +1511,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 // Fall through to custom input-specific command handling below
             } else {
                 // It's a real error from a known command
-                editor.set_lsp_status(err_resp.error);
+                editor.set_status_message(err_resp.error);
                 return Ok(());
             }
         }
@@ -1749,7 +1749,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             }
 
             let sorted_count = lines.len();
-            editor.set_lsp_status(format!("{} lines sorted", sorted_count));
+            editor.set_status_message(format!("{} lines sorted", sorted_count));
             return Ok(());
         }
     }
@@ -1759,7 +1759,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // (helper `parse_copy_move_dest` accepts both the spaced and unspaced forms)
     if let Some(dest_str) = parse_copy_move_dest(cmd_part, "copy", "t") {
         if dest_str.is_empty() {
-            editor.set_lsp_status("E488: Trailing characters".to_string());
+            editor.set_status_message("E488: Trailing characters".to_string());
             return Ok(());
         }
 
@@ -1822,7 +1822,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 );
 
                 let count = lines_copied;
-                editor.set_lsp_status(format!(
+                editor.set_status_message(format!(
                     "{} line{} copied",
                     count,
                     if count == 1 { "" } else { "s" }
@@ -1836,7 +1836,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     // Format: :[range]move {address} or :[range]m {address}
     if let Some(dest_str) = parse_copy_move_dest(cmd_part, "move", "m") {
         if dest_str.is_empty() {
-            editor.set_lsp_status("E488: Trailing characters".to_string());
+            editor.set_status_message("E488: Trailing characters".to_string());
             return Ok(());
         }
 
@@ -1848,7 +1848,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                 // Bug 2 fix: Check for invalid moves (moving to within the range)
                 // Should be <= end_line to prevent moving into self
                 if dest_line >= start_line && dest_line <= end_line {
-                    editor.set_lsp_status("E134: Move lines into themselves".to_string());
+                    editor.set_status_message("E134: Move lines into themselves".to_string());
                     return Ok(());
                 }
 
@@ -1926,7 +1926,7 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                     editor.push_recorded_undo(edits, cursor_before, cursor_after);
                 }
 
-                editor.set_lsp_status(format!(
+                editor.set_status_message(format!(
                     "{} line{} moved",
                     line_count,
                     if line_count == 1 { "" } else { "s" }
@@ -2014,14 +2014,14 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
                             editor
                                 .buffer_mut()
                                 .insert_text_at(line, CharCol::ZERO, &contents);
-                            editor.set_lsp_status(format!(
+                            editor.set_status_message(format!(
                                 "Read {} lines from {}",
                                 contents.lines().count(),
                                 display_target
                             ));
                         }
                         Err(e) => {
-                            editor.set_lsp_status(format!("Error reading file: {}", e));
+                            editor.set_status_message(format!("Error reading file: {}", e));
                         }
                     }
                 }
@@ -2051,21 +2051,21 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
             match editor.set_color_scheme(scheme_name.trim()) {
                 Ok(_) => {
                     let message = format!("Color scheme set to '{}'", scheme_name.trim());
-                    editor.set_lsp_status(message);
+                    editor.set_status_message(message);
                 }
                 Err(e) => {
                     let available = editor.list_color_schemes().join(", ");
                     let message = format!("{}. Available schemes: {}", e, available);
-                    editor.set_lsp_status(message);
+                    editor.set_status_message(message);
                 }
             }
-        } else if editor.lsp_status().is_empty() {
+        } else if editor.status_message().is_empty() {
             // Truly unrecognized ex-command (no handler set a status). Report it
             // the way Vim does (E492) so the user gets feedback on typos instead
             // of silence, and so the headless API can surface it as an error.
             // Guarded on an empty status so a recognized command that failed and
             // already set its own error (e.g. E20 from `:copy 'z`) isn't clobbered.
-            editor.set_lsp_status(format!("E492: Not an editor command: {}", command));
+            editor.set_status_message(format!("E492: Not an editor command: {}", command));
         }
     }
 
@@ -2082,6 +2082,6 @@ mod tests {
         let range = parse_range_with_status(&mut editor, "1,'a", None);
 
         assert_eq!(range, None);
-        assert_eq!(editor.lsp_status(), "E20: Mark not set");
+        assert_eq!(editor.status_message(), "E20: Mark not set");
     }
 }

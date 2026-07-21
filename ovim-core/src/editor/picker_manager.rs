@@ -500,7 +500,7 @@ impl Editor {
         match action {
             PickerAction::OpenFile { path, line, col } => {
                 if let Err(e) = self.load_file(&path) {
-                    self.set_lsp_status(format!("Failed to load file {}: {}", path, e));
+                    self.set_status_message(format!("Failed to load file {}: {}", path, e));
                     return Ok(());
                 }
                 self.buffer_mut()
@@ -512,7 +512,7 @@ impl Editor {
             PickerAction::OpenFileWithTag { path, line, col } => {
                 self.push_tag();
                 if let Err(e) = self.load_file(&path) {
-                    self.set_lsp_status(format!("Failed to load file {}: {}", path, e));
+                    self.set_status_message(format!("Failed to load file {}: {}", path, e));
                     return Ok(());
                 }
                 self.buffer_mut()
@@ -538,7 +538,7 @@ impl Editor {
     fn select_debug_config(&mut self, index: usize) {
         let configs = &self.dap_manager.available_debug_configs;
         if index >= configs.len() {
-            self.set_lsp_status("Invalid debug config index".to_string());
+            self.set_status_message("Invalid debug config index".to_string());
             return;
         }
         let config = configs[index].clone();
@@ -564,7 +564,7 @@ impl Editor {
                 run_config: Some(config),
             });
         } else {
-            self.set_lsp_status("No DAP adapter configured for this language".to_string());
+            self.set_status_message("No DAP adapter configured for this language".to_string());
         }
     }
 }

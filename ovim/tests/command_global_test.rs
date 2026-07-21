@@ -10,7 +10,7 @@ fn test_command_global_percent_delete_matching_lines() {
     InputHandler::execute_command_string(&mut test.editor, "%g/foo/d").unwrap();
 
     assert_eq!(test.buffer_content(), "keep\nkeep2\n");
-    assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
     test.assert_cursor(1, 0);
 }
 
@@ -21,7 +21,7 @@ fn test_command_global_percent_delete_non_matching_lines_g_bang() {
     InputHandler::execute_command_string(&mut test.editor, "%g!/foo/d").unwrap();
 
     assert_eq!(test.buffer_content(), "foo 1\ndrop foo 2\n");
-    assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
     test.assert_cursor(0, 0);
 }
 
@@ -32,7 +32,7 @@ fn test_command_vglobal_percent_delete_non_matching_lines_v() {
     InputHandler::execute_command_string(&mut test.editor, "%v/foo/d").unwrap();
 
     assert_eq!(test.buffer_content(), "foo 1\ndrop foo 2\n");
-    assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
 }
 
 #[test]
@@ -41,7 +41,7 @@ fn test_command_global_percent_default_print_command() {
 
     InputHandler::execute_command_string(&mut test.editor, "%g/foo/").unwrap();
 
-    let status = test.editor.lsp_status();
+    let status = test.editor.status_message();
     assert!(status.contains("2: foo two"), "status: {}", status);
     assert!(status.contains("3: three foo"), "status: {}", status);
 }
@@ -53,7 +53,7 @@ fn test_command_global_percent_yank_matching_lines() {
     InputHandler::execute_command_string(&mut test.editor, "%g/foo/y").unwrap();
 
     assert_eq!(test.buffer_content(), "one\nfoo two\nthree foo\nfour\n");
-    assert_eq!(test.editor.lsp_status(), "Yanked 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Yanked 2 line(s)");
 
     let yanked = test
         .get_register_content('"')
@@ -68,7 +68,7 @@ fn test_command_global_percent_substitute_on_matching_lines() {
     InputHandler::execute_command_string(&mut test.editor, "%g/foo/s/foo/bar/").unwrap();
 
     assert_eq!(test.buffer_content(), "one\nbar two\nthree bar\nfour\n");
-    assert_eq!(test.editor.lsp_status(), "Substituted on 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Substituted on 2 line(s)");
 }
 
 #[test]
@@ -78,7 +78,7 @@ fn test_command_global_range_restricts_matches() {
     InputHandler::execute_command_string(&mut test.editor, "2,3g/foo/d").unwrap();
 
     assert_eq!(test.buffer_content(), "foo\nfoo\n");
-    assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
 }
 
 #[test]
@@ -89,7 +89,7 @@ fn test_command_global_percent_pattern_with_pipe_is_not_command_chain() {
     InputHandler::execute_command_string(&mut test.editor, "%g/foo|bar/d").unwrap();
 
     assert_eq!(test.buffer_content(), "keep\nbaz\n");
-    assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+    assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
 }
 
 #[test]
@@ -109,7 +109,7 @@ fn test_command_global_percent_delete_undo_redo_macro_flow() {
         content "keep\nfoo\nbar\nbaz\n";
         step ":%g/foo|bar/d<Enter>" => |test| {
             assert_eq!(test.buffer_content(), "keep\nbaz\n");
-            assert_eq!(test.editor.lsp_status(), "Deleted 2 line(s)");
+            assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
         }
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "keep\nfoo\nbar\nbaz\n");
@@ -127,5 +127,5 @@ fn test_command_global_no_matches_is_non_destructive() {
     InputHandler::execute_command_string(&mut test.editor, "%g/foo/d").unwrap();
 
     assert_eq!(test.buffer_content(), "one\ntwo\nthree\n");
-    assert_eq!(test.editor.lsp_status(), "No matching lines found");
+    assert_eq!(test.editor.status_message(), "No matching lines found");
 }

@@ -44,7 +44,7 @@ pub(super) fn handle_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
             }
             KeyCode::Enter => {
                 if let Err(error) = editor.submit_code_explanation_question() {
-                    editor.set_lsp_status(error);
+                    editor.set_status_message(error);
                 }
             }
             KeyCode::Backspace => {
@@ -80,8 +80,7 @@ pub(super) fn handle_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
             }
             KeyCode::Enter => {
                 if editor.ai_code_explanation_answering() {
-                    editor
-                        .set_lsp_status("Wait for the walkthrough answer before continuing".into());
+                    editor.set_status_message("Wait for the walkthrough answer before continuing");
                 } else {
                     editor.advance_or_finish_code_explanation();
                 }
@@ -91,8 +90,8 @@ pub(super) fn handle_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
             }
             KeyCode::Char(' ') => {
                 if editor.ai_code_explanation_answering() {
-                    editor.set_lsp_status(
-                        "The current walkthrough question is still being answered".into(),
+                    editor.set_status_message(
+                        "The current walkthrough question is still being answered",
                     );
                 } else {
                     editor.begin_code_explanation_question();

@@ -135,7 +135,7 @@ fn test_write_to_shell_command() {
     InputHandler::execute_command_string(&mut test.editor, "w !cat").unwrap();
 
     // Status should mention lines written
-    let status = test.editor.lsp_status();
+    let status = test.editor.status_message();
     assert!(
         status.contains("written") || status.contains("line"),
         "Status should mention lines written, got: {}",

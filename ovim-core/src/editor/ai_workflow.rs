@@ -23,7 +23,7 @@ impl Editor {
         let workflows = crate::ai::workflow::load_workflows()?;
         let count = workflows.len();
         self.ai_state.workflows = workflows;
-        self.set_lsp_status(format!("Loaded {count} workflow(s)"));
+        self.set_status_message(format!("Loaded {count} workflow(s)"));
         Ok(count)
     }
 
@@ -96,7 +96,7 @@ impl Editor {
                 task,
             });
 
-        self.set_lsp_status(format!("Workflow '{}' started (run #{run_id})", name));
+        self.set_status_message(format!("Workflow '{}' started (run #{run_id})", name));
         Ok(run_id)
     }
 
@@ -146,7 +146,7 @@ impl Editor {
                             Some(format!("Workflow '{}' {}", run.workflow_name, run.message));
                     }
                     if let Some(msg) = progress_status {
-                        self.set_lsp_status(msg);
+                        self.set_status_message(msg);
                     }
                 }
             }
@@ -191,7 +191,7 @@ impl Editor {
                 }
             }
             if let Some(message) = status_message {
-                self.set_lsp_status(message);
+                self.set_status_message(message);
             }
         }
 

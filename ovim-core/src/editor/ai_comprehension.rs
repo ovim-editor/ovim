@@ -45,13 +45,13 @@ impl Editor {
             return false;
         }
         chat.comprehension_policy = policy;
-        self.set_lsp_status(match policy {
-            ComprehensionPolicy::Off => "Comprehension checkpoints disabled".into(),
+        self.set_status_message(match policy {
+            ComprehensionPolicy::Off => "Comprehension checkpoints disabled",
             ComprehensionPolicy::Publish => {
-                "Comprehension required before the agent publishes changes".into()
+                "Comprehension required before the agent publishes changes"
             }
             ComprehensionPolicy::Commit => {
-                "Comprehension required before agent commits or publishes changes".into()
+                "Comprehension required before agent commits or publishes changes"
             }
         });
         true

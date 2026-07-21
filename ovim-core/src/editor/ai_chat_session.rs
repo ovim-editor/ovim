@@ -119,10 +119,10 @@ impl Editor {
             }
         }
 
-        self.set_lsp_status(if enabled {
-            "YOLO mode enabled for this chat; tool approvals are bypassed".into()
+        self.set_status_message(if enabled {
+            "YOLO mode enabled for this chat; tool approvals are bypassed"
         } else {
-            "YOLO mode disabled; normal tool approval policy restored".into()
+            "YOLO mode disabled; normal tool approval policy restored"
         });
         true
     }

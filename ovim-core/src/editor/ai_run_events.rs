@@ -154,7 +154,7 @@ impl Editor {
 
     pub(crate) fn fork_ai_chat_runtime_from(&mut self, node_id: NodeId) -> bool {
         if self.active_ai_runtime_turn().is_some() {
-            self.set_lsp_status("Wait for or stop the active agent turn before forking".into());
+            self.set_status_message("Wait for or stop the active agent turn before forking");
             return false;
         }
         let key = self.ai_chat_conversation_key();
@@ -165,7 +165,7 @@ impl Editor {
             .and_then(|nodes| nodes.get(&node_id))
             .cloned()
         else {
-            self.set_lsp_status("This historical message predates replay metadata".into());
+            self.set_status_message("This historical message predates replay metadata");
             return false;
         };
         let locator = self.ai_runtime_conversation_locator();
@@ -180,11 +180,11 @@ impl Editor {
             target.clone(),
             source.event_id,
         ) {
-            self.set_lsp_status(format!("Unable to fork agent history: {error}"));
+            self.set_status_message(format!("Unable to fork agent history: {error}"));
             return false;
         }
         if let Err(error) = self.ai_state.agent_runtime.select_branch(&locator, &target) {
-            self.set_lsp_status(format!("Unable to select forked agent history: {error}"));
+            self.set_status_message(format!("Unable to select forked agent history: {error}"));
             return false;
         }
         if let Some(conversation) = self.conversation_mut() {
@@ -199,7 +199,7 @@ impl Editor {
 
     pub(crate) fn switch_ai_chat_runtime_branch(&mut self, node_id: NodeId) -> bool {
         if self.active_ai_runtime_turn().is_some() {
-            self.set_lsp_status("Wait for or stop the active agent turn before switching".into());
+            self.set_status_message("Wait for or stop the active agent turn before switching");
             return false;
         }
         let Some(leaf_id) = self
@@ -216,12 +216,12 @@ impl Editor {
             .and_then(|nodes| nodes.get(&leaf_id))
             .map(|node| node.branch.clone())
         else {
-            self.set_lsp_status("This historical branch predates replay metadata".into());
+            self.set_status_message("This historical branch predates replay metadata");
             return false;
         };
         let locator = self.ai_runtime_conversation_locator();
         if let Err(error) = self.ai_state.agent_runtime.select_branch(&locator, &target) {
-            self.set_lsp_status(format!("Unable to select agent history: {error}"));
+            self.set_status_message(format!("Unable to select agent history: {error}"));
             return false;
         }
         if let Some(conversation) = self.conversation_mut() {

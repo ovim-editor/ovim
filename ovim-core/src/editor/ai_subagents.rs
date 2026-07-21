@@ -690,7 +690,7 @@ impl Editor {
             allow,
             (!allow).then(|| "Denied from the Ovim agent tree".to_string()),
         )?;
-        self.set_lsp_status(format!(
+        self.set_status_message(format!(
             "{} {} approval for {}",
             if allow { "Allowed" } else { "Denied" },
             approval.tool_name,
@@ -772,7 +772,7 @@ impl Editor {
                 previous_cursor,
             });
         chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
-        self.set_lsp_status(match kind {
+        self.set_status_message(match kind {
             super::ai_chat_state::AgentComposerActionKind::Message => {
                 format!(
                     "Type a message for {} and press Enter; Esc cancels",
@@ -796,7 +796,7 @@ impl Editor {
         };
         chat.input = action.previous_input;
         chat.input_cursor = action.previous_cursor.min(chat.input.len());
-        self.set_lsp_status("Cancelled delegated-agent action".into());
+        self.set_status_message("Cancelled delegated-agent action");
         true
     }
 
@@ -838,7 +838,7 @@ impl Editor {
         };
         if action.kind == super::ai_chat_state::AgentComposerActionKind::Message {
             match self.execute_ai_subagent_control_tool(&call) {
-                ToolResult::Success(_) => self.set_lsp_status(status.into()),
+                ToolResult::Success(_) => self.set_status_message(status),
                 ToolResult::Error(error) => return Err(error),
             }
         } else {
@@ -877,7 +877,7 @@ impl Editor {
                 );
             }
         });
-        self.set_lsp_status(status.into());
+        self.set_status_message(status);
         Ok(())
     }
 
@@ -1349,7 +1349,7 @@ impl Editor {
             task,
         });
         chat.waiting = true;
-        self.set_lsp_status("Waiting for delegated-agent activity".into());
+        self.set_status_message("Waiting for delegated-agent activity");
         Ok(())
     }
 
@@ -1412,7 +1412,7 @@ impl Editor {
                     response,
                     result,
                 );
-                self.set_lsp_status(String::new());
+                self.set_status_message(String::new());
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.waiting = true;
                 }
@@ -1442,7 +1442,7 @@ impl Editor {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                 }
-                self.set_lsp_status(String::new());
+                self.set_status_message(String::new());
                 self.execute_tool_call_batch(remaining_tool_calls, model_name)
             }
         }

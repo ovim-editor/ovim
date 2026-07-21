@@ -53,7 +53,7 @@ impl Editor {
 
     pub(crate) fn dismiss_exa_setup_dialog(&mut self) {
         if let Err(error) = crate::ai::exa::dismiss_onboarding() {
-            self.set_lsp_status(format!("Could not save Exa setup preference: {error}"));
+            self.set_status_message(format!("Could not save Exa setup preference: {error}"));
         }
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.exa_setup = None;
@@ -90,7 +90,7 @@ impl Editor {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.exa_setup = None;
                 }
-                self.set_lsp_status("Exa web search enabled".to_string());
+                self.set_status_message("Exa web search enabled".to_string());
             }
             Err(error) => {
                 if let Some(setup) = self

@@ -42,7 +42,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 Some(crate::dap::PendingDebugAction::FetchRunConfigs)
             ) {
                 editor.dap_manager_mut().pending_action = None;
-                editor.set_lsp_status(String::new());
+                editor.set_status_message(String::new());
             }
             Ok(true)
         }
@@ -212,7 +212,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             } else {
                 editor.dap_manager_mut().pending_action =
                     Some(crate::dap::PendingDebugAction::FetchRunConfigs);
-                editor.set_lsp_status("Loading run configurations...".to_string());
+                editor.set_status_message("Loading run configurations...".to_string());
             }
             Ok(true)
         }

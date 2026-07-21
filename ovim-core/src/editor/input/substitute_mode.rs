@@ -33,7 +33,7 @@ pub fn handle_substitute_confirm_mode(editor: &mut Editor, key_event: KeyEvent) 
         }
         _ => {
             // Show prompt in status
-            editor.set_lsp_status("replace with ... (y/n/a/q/l)".to_string());
+            editor.set_status_message("replace with ... (y/n/a/q/l)".to_string());
         }
     }
     Ok(())

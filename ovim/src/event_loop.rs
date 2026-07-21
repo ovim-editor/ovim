@@ -152,8 +152,8 @@ fn process_external_file_change(editor: &mut Editor) {
         Ok(false) | Err(_) => {}
         Ok(true) if editor.is_modified() => {
             let status = "File changed on disk; local changes were kept (use :e! to reload)";
-            if editor.lsp_status() != status {
-                editor.set_lsp_status(status.to_string());
+            if editor.status_message() != status {
+                editor.set_status_message(status);
                 editor.mark_dirty();
             }
         }
@@ -165,12 +165,12 @@ fn process_external_file_change(editor: &mut Editor) {
                 if editor.buffer().needs_rehighlight() {
                     editor.process_viewport_rehighlight();
                 }
-                editor.set_lsp_status("File reloaded after external change".to_string());
+                editor.set_status_message("File reloaded after external change");
                 editor.mark_dirty();
             }
             Ok(false) => {}
             Err(error) => {
-                editor.set_lsp_status(format!("External file change: {error}"));
+                editor.set_status_message(format!("External file change: {error}"));
                 editor.mark_dirty();
             }
         },
@@ -276,37 +276,37 @@ async fn process_pending_debug_action(editor: &mut Editor) {
         } => {
             editor.dap_manager_mut().run_config = run_config;
             if let Err(e) = editor.start_debug_session(&command, &args).await {
-                editor.set_lsp_status(format!("Debug start failed: {}", e));
+                editor.set_status_message(format!("Debug start failed: {e}"));
             }
             editor.mark_dirty();
         }
         PendingDebugAction::Stop => {
             if let Err(e) = editor.stop_debug_session().await {
-                editor.set_lsp_status(format!("Debug stop failed: {}", e));
+                editor.set_status_message(format!("Debug stop failed: {e}"));
             }
             editor.mark_dirty();
         }
         PendingDebugAction::Continue => {
             if let Err(e) = editor.debug_continue().await {
-                editor.set_lsp_status(format!("Debug continue failed: {}", e));
+                editor.set_status_message(format!("Debug continue failed: {e}"));
             }
             editor.mark_dirty();
         }
         PendingDebugAction::StepOver => {
             if let Err(e) = editor.debug_step_over().await {
-                editor.set_lsp_status(format!("Debug step failed: {}", e));
+                editor.set_status_message(format!("Debug step failed: {e}"));
             }
             editor.mark_dirty();
         }
         PendingDebugAction::StepIn => {
             if let Err(e) = editor.debug_step_in().await {
-                editor.set_lsp_status(format!("Debug step in failed: {}", e));
+                editor.set_status_message(format!("Debug step in failed: {e}"));
             }
             editor.mark_dirty();
         }
         PendingDebugAction::StepOut => {
             if let Err(e) = editor.debug_step_out().await {
-                editor.set_lsp_status(format!("Debug step out failed: {}", e));
+                editor.set_status_message(format!("Debug step out failed: {e}"));
             }
             editor.mark_dirty();
         }
@@ -320,7 +320,7 @@ async fn process_pending_debug_action(editor: &mut Editor) {
                 let _ = editor.debug_sync_breakpoints(path).await;
             }
             if let Err(e) = editor.dap_manager_mut().configuration_done().await {
-                editor.set_lsp_status(format!("configurationDone failed: {}", e));
+                editor.set_status_message(format!("configurationDone failed: {e}"));
             }
             editor.mark_dirty();
         }
@@ -365,10 +365,10 @@ async fn process_pending_debug_action(editor: &mut Editor) {
                 .await
             {
                 Ok((result, _type, _var_ref)) => {
-                    editor.set_lsp_status(format!("{expression} = {result}"));
+                    editor.set_status_message(format!("{expression} = {result}"));
                 }
                 Err(e) => {
-                    editor.set_lsp_status(format!("Eval error: {e}"));
+                    editor.set_status_message(format!("Eval error: {e}"));
                 }
             }
             editor.mark_dirty();
@@ -400,7 +400,7 @@ async fn process_dap_launch_or_attach(editor: &mut Editor) {
                 project_root,
             } => {
                 let root = project_root.unwrap_or_else(|| default_root.clone());
-                editor.set_lsp_status(format!("Running gradle {} --debug-jvm...", task));
+                editor.set_status_message(format!("Running gradle {task} --debug-jvm..."));
                 editor.mark_dirty();
                 match spawn_gradle_and_wait(&task, &args, &root).await {
                     Ok(child) => {
@@ -465,7 +465,7 @@ async fn process_dap_launch_or_attach(editor: &mut Editor) {
             editor.dap_manager_mut().pending_action = Some(PendingDebugAction::SyncBreakpoints);
         }
         Err(e) => {
-            editor.set_lsp_status(format!("Debug launch/attach failed: {}", e));
+            editor.set_status_message(format!("Debug launch/attach failed: {e}"));
         }
     }
     editor.mark_dirty();
@@ -484,7 +484,7 @@ async fn process_dap_fetch_run_configs(editor: &mut Editor) {
         configs.extend(ovim::debug_config::parse_lsp_run_configs(&lsp_configs));
     }
 
-    editor.set_lsp_status(String::new());
+    editor.clear_status_message();
 
     if configs.is_empty() {
         let dap_start = editor
@@ -505,9 +505,8 @@ async fn process_dap_fetch_run_configs(editor: &mut Editor) {
                 run_config: None,
             });
         } else {
-            editor.set_lsp_status(
-                "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter."
-                    .to_string(),
+            editor.set_status_message(
+                "No debug configs found. Create .ovim/debug.toml or configure a DAP adapter.",
             );
         }
     } else if configs.len() == 1 {
@@ -818,7 +817,7 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
 
     // Leave the TUI so the command gets a normal terminal
     if let Err(e) = ui.terminal_mut().suspend() {
-        editor.set_lsp_status(format!("Failed to suspend terminal: {e}"));
+        editor.set_status_message(format!("Failed to suspend terminal: {e}"));
         return;
     }
 
@@ -869,13 +868,13 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
 
     match status {
         Ok(s) if s.success() => {
-            editor.set_lsp_status(format!(":!{command}"));
+            editor.set_status_message(format!(":!{command}"));
         }
         Ok(s) => {
-            editor.set_lsp_status(format!("shell returned {s}"));
+            editor.set_status_message(format!("shell returned {s}"));
         }
         Err(e) => {
-            editor.set_lsp_status(format!("Failed to run command: {e}"));
+            editor.set_status_message(format!("Failed to run command: {e}"));
         }
     }
 }
@@ -2321,7 +2320,7 @@ fn create_view_snapshot(editor: &Editor, dimensions: Option<(u16, u16)>) -> View
         command_cursor: editor.command_cursor(),
         search_query: editor.search_buffer().to_string(),
         search_forward: editor.search_forward(),
-        status: editor.lsp_status().to_string(),
+        status: editor.status_message().to_string(),
         active_session: editor.active_session().map(str::to_string),
     }
 }
@@ -3151,7 +3150,7 @@ mod tests {
 
         apply_java_status(&mut editor, "Java: Ready".to_string());
 
-        assert_eq!(editor.lsp_status(), "Java: Ready");
+        assert_eq!(editor.status_message(), "Java: Ready");
         assert!(editor.take_diagnostics_refresh_request());
     }
 
@@ -3161,7 +3160,7 @@ mod tests {
 
         apply_java_status(&mut editor, "Kotlin: Ready".to_string());
 
-        assert_eq!(editor.lsp_status(), "Kotlin: Ready");
+        assert_eq!(editor.status_message(), "Kotlin: Ready");
         assert!(editor.take_diagnostics_refresh_request());
     }
 
@@ -3171,7 +3170,7 @@ mod tests {
 
         apply_java_status(&mut editor, "Java: Starting Hyperion LSP...".to_string());
 
-        assert_eq!(editor.lsp_status(), "Java: Starting Hyperion LSP...");
+        assert_eq!(editor.status_message(), "Java: Starting Hyperion LSP...");
         assert!(!editor.take_diagnostics_refresh_request());
     }
 

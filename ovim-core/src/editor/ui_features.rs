@@ -404,12 +404,12 @@ impl Editor {
                     self.ui_panels.quickfix_list.first();
                     self.jump_to_quickfix_entry();
                     self.open_quickfix_window();
-                    self.set_lsp_status(format!("{} error(s)/warning(s)", entry_count));
+                    self.set_status_message(format!("{} error(s)/warning(s)", entry_count));
                 } else if result.success {
                     self.close_quickfix_window();
-                    self.set_lsp_status("Build succeeded — no errors".to_string());
+                    self.set_status_message("Build succeeded — no errors".to_string());
                 } else {
-                    self.set_lsp_status("Build failed (no parseable errors)".to_string());
+                    self.set_status_message("Build failed (no parseable errors)".to_string());
                 }
                 true
             }
@@ -419,7 +419,7 @@ impl Editor {
                 false
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                self.set_lsp_status("Make job failed (thread panicked)".to_string());
+                self.set_status_message("Make job failed (thread panicked)".to_string());
                 true
             }
         }
@@ -708,25 +708,25 @@ impl Editor {
         use crate::language_config::LanguageRegistry;
 
         let Some(registry) = LanguageRegistry::try_get() else {
-            self.set_lsp_status("Language registry not initialized".to_string());
+            self.set_status_message("Language registry not initialized".to_string());
             return;
         };
 
         let Some(lang) = registry.get_by_id(language_id) else {
-            self.set_lsp_status(format!("Unknown language: {language_id}"));
+            self.set_status_message(format!("Unknown language: {language_id}"));
             return;
         };
 
         let Some(lsp) = &lang.lsp else {
-            self.set_lsp_status(format!("No LSP configured for {}", lang.name));
+            self.set_status_message(format!("No LSP configured for {}", lang.name));
             return;
         };
 
         let Some(auto_install) = &lsp.auto_install else {
             if let Some(hint) = &lsp.install_hint {
-                self.set_lsp_status(hint.clone());
+                self.set_status_message(hint.clone());
             } else {
-                self.set_lsp_status(format!("No install method for {}", lang.name));
+                self.set_status_message(format!("No install method for {}", lang.name));
             }
             return;
         };
@@ -766,7 +766,7 @@ impl Editor {
                 crate::language_config::InstallMethod::Npm { global, .. } => {
                     let packages = auto.method.npm_packages();
                     if packages.is_empty() {
-                        return self.set_lsp_status(format!(
+                        return self.set_status_message(format!(
                             "No uninstall method configured for {}",
                             lang.name
                         ));
@@ -790,7 +790,7 @@ impl Editor {
             format!("No uninstall method for {}", lang.name)
         };
 
-        self.set_lsp_status(hint);
+        self.set_status_message(hint);
     }
 
     /// Poll install progress channel and update panel state

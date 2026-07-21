@@ -213,8 +213,8 @@ pub struct LspState {
     pub hover_position: Option<(usize, usize)>,
     /// Per-document sync state (tracked by canonical file path)
     pub document_sync: HashMap<String, DocumentSyncState>,
-    /// LSP status message (errors, warnings, or info)
-    pub lsp_status: String,
+    /// Latest status published by the LSP subsystem.
+    pub status: String,
     /// Active LSP servers (language_id -> server_name)
     pub active_lsp_servers: HashMap<String, String>,
     /// Flag to indicate LSP needs initialization for current file
@@ -271,7 +271,7 @@ impl LspState {
             hover_h_scroll: 0,
             hover_position: None,
             document_sync: HashMap::new(),
-            lsp_status: String::new(),
+            status: String::new(),
             active_lsp_servers: HashMap::new(),
             needs_lsp_init: false,
             pending_did_close_file: None,

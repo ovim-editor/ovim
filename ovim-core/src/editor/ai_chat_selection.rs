@@ -115,7 +115,7 @@ impl Editor {
         }
         let copied = self.copy_ai_chat_text_selection();
         if copied {
-            self.set_lsp_status("Copied selected chat text".to_string());
+            self.set_status_message("Copied selected chat text".to_string());
         }
         copied
     }

@@ -255,15 +255,13 @@ impl Editor {
             .durable_chat_bindings
             .insert(ui_key, DurableChatBinding { binding, locator });
         if let Some(status) = fallback_status {
-            self.set_lsp_status(status.into());
+            self.set_status_message(status);
         } else if !resume {
-            self.set_lsp_status(if fresh_run_is_unbound {
+            self.set_status_message(if fresh_run_is_unbound {
                 "Started a fresh AI conversation that will not be resumable; the previous \
-                 conversation is still available via ovim --resume"
-                    .into()
+                conversation is still available via ovim --resume"
             } else {
                 "Started a fresh AI conversation; launch ovim with --resume to restore it later"
-                    .into()
             });
         }
         Ok(())
@@ -721,7 +719,7 @@ mod tests {
             default_open.set_ai_conversation_resume_enabled(false);
             default_open.open_ai_chat(ChatOpts::default()).unwrap();
             assert!(default_open.ai_chat_messages().is_empty());
-            assert!(default_open.lsp_status().contains("--resume"));
+            assert!(default_open.status_message().contains("--resume"));
         }
 
         let mut resumed = durable_editor(&file, layout);
@@ -882,7 +880,7 @@ mod tests {
             .clone();
         assert_ne!(first_run, second_run);
         assert!(second
-            .lsp_status()
+            .status_message()
             .contains("may still be active; started an independent chat"));
         assert_eq!(
             first
@@ -957,7 +955,7 @@ mod tests {
             .binding
             .clone();
         assert_eq!(restored.run_id, crashed_run);
-        assert!(resumed.lsp_status().contains("Recovered"));
+        assert!(resumed.status_message().contains("Recovered"));
         let messages = resumed.conversation().unwrap().messages();
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[0].content, "crashed question");

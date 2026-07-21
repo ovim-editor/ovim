@@ -205,7 +205,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             ('g', KeyCode::Char('n')) => {
                 // gn - extend selection to next search match
                 if !editor.search_select_next() {
-                    editor.set_lsp_status("Pattern not found".to_string());
+                    editor.set_status_message("Pattern not found".to_string());
                 }
                 editor.clear_count();
                 return Ok(());
@@ -213,7 +213,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             ('g', KeyCode::Char('N')) => {
                 // gN - extend selection to previous search match
                 if !editor.search_select_prev() {
-                    editor.set_lsp_status("Pattern not found".to_string());
+                    editor.set_status_message("Pattern not found".to_string());
                 }
                 editor.clear_count();
                 return Ok(());
@@ -548,14 +548,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         // Search forward for selected text (* in visual mode)
         KeyCode::Char('*') => {
             if !helpers::search_visual_selection_forward(editor) {
-                editor.set_lsp_status("Pattern not found".to_string());
+                editor.set_status_message("Pattern not found".to_string());
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Search backward for selected text (# in visual mode)
         KeyCode::Char('#') => {
             if !helpers::search_visual_selection_backward(editor) {
-                editor.set_lsp_status("Pattern not found".to_string());
+                editor.set_status_message("Pattern not found".to_string());
             }
             helpers::exit_visual_mode_to_normal(editor);
         }

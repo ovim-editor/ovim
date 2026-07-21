@@ -2274,6 +2274,22 @@ impl Editor {
         }
     }
 
+    /// Set the latest user-facing editor status message.
+    pub fn set_status_message(&mut self, message: impl Into<String>) {
+        self.ui_panels.status_message = message.into();
+        self.mark_dirty();
+    }
+
+    /// Return the latest user-facing editor status message.
+    pub fn status_message(&self) -> &str {
+        &self.ui_panels.status_message
+    }
+
+    /// Clear the current user-facing editor status message.
+    pub fn clear_status_message(&mut self) {
+        self.set_status_message(String::new());
+    }
+
     /// Push a toast notification into the top-right toast center.
     pub fn push_toast(&mut self, request: ToastRequest) -> u64 {
         let id = self.ui_panels.toast_center.push(request);

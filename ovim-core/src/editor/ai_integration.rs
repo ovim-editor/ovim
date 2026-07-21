@@ -22,7 +22,7 @@ impl Editor {
     /// Select a specific AI profile. Reports and returns false when unknown.
     pub fn ai_set_profile(&mut self, profile_name: &str) -> bool {
         let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
-            self.set_lsp_status(format!("Unknown AI profile: {profile_name}"));
+            self.set_status_message(format!("Unknown AI profile: {profile_name}"));
             return false;
         };
         self.ai_state.active_profile = profile_name.to_string();
@@ -37,7 +37,7 @@ impl Editor {
         {
             self.ai_state.prompt.model_picker_index = idx;
         }
-        self.set_lsp_status(format!(
+        self.set_status_message(format!(
             "AI profile: {} ({}/{})",
             profile_name, profile.provider, profile.model
         ));
@@ -48,7 +48,7 @@ impl Editor {
     pub fn ai_cycle_profile(&mut self, forward: bool) {
         let names = self.ai_profile_names_sorted();
         if names.is_empty() {
-            self.set_lsp_status("No AI profiles configured".to_string());
+            self.set_status_message("No AI profiles configured".to_string());
             return;
         }
 
@@ -130,7 +130,7 @@ impl Editor {
     pub fn ai_apply_model_picker_selection(&mut self) {
         let names = self.ai_profile_names_sorted();
         if names.is_empty() {
-            self.set_lsp_status("No AI profiles configured".to_string());
+            self.set_status_message("No AI profiles configured".to_string());
             self.ai_close_model_picker();
             return;
         }
@@ -156,7 +156,7 @@ impl Editor {
         self.ai_state.prompt.model_picker_open = false;
         self.ai_state.prompt.model_picker_index = 0;
         self.set_mode(Mode::AiPrompt);
-        self.set_lsp_status("AI prompt: type instruction and press Enter".to_string());
+        self.set_status_message("AI prompt: type instruction and press Enter".to_string());
         Ok(())
     }
 
@@ -175,7 +175,7 @@ impl Editor {
             allow_edits: true,
             ..Default::default()
         })?;
-        self.set_lsp_status(
+        self.set_status_message(
             "AI chat opened with selection context. Describe the change; surrounding edits are allowed."
                 .to_string(),
         );
@@ -184,12 +184,12 @@ impl Editor {
 
     fn capture_ai_selection_from_visual(&mut self) -> Result<bool> {
         if self.mode() == Mode::VisualBlock {
-            self.set_lsp_status("AI edit does not support visual block mode".to_string());
+            self.set_status_message("AI edit does not support visual block mode".to_string());
             return Ok(false);
         }
 
         let Some(((start_line, start_col), (end_line, end_col))) = self.visual_selection() else {
-            self.set_lsp_status("No visual selection to edit".to_string());
+            self.set_status_message("No visual selection to edit".to_string());
             return Ok(false);
         };
 
@@ -225,7 +225,7 @@ impl Editor {
         };
 
         if end_char <= start_char {
-            self.set_lsp_status("Visual selection is empty".to_string());
+            self.set_status_message("Visual selection is empty".to_string());
             return Ok(false);
         }
 
@@ -250,19 +250,19 @@ impl Editor {
     pub fn submit_ai_prompt_job(&mut self) -> Result<()> {
         let prompt = self.ai_state.prompt.input.trim().to_string();
         if prompt.is_empty() {
-            self.set_lsp_status("AI prompt is empty".to_string());
+            self.set_status_message("AI prompt is empty".to_string());
             return Ok(());
         }
 
         let Some(selection) = self.ai_state.active_selection.clone() else {
-            self.set_lsp_status("No selection queued for AI edit".to_string());
+            self.set_status_message("No selection queued for AI edit".to_string());
             self.set_mode(Mode::Normal);
             return Ok(());
         };
 
         let profile_name = self.ai_state.active_profile.clone();
         let Some(profile) = self.ai_state.config.resolve_profile(&profile_name).cloned() else {
-            self.set_lsp_status(format!("Unknown AI profile: {}", profile_name));
+            self.set_status_message(format!("Unknown AI profile: {}", profile_name));
             return Ok(());
         };
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
@@ -344,7 +344,7 @@ impl Editor {
         self.ai_state.prompt.model_picker_index = 0;
         self.ai_state.active_selection = None;
         self.set_mode(Mode::Normal);
-        self.set_lsp_status(format!("AI job {} started ({})", job_id, provider_label));
+        self.set_status_message(format!("AI job {} started ({})", job_id, provider_label));
         Ok(())
     }
 
@@ -396,9 +396,9 @@ impl Editor {
                             format!("apply failed: {}", err),
                             AiRegionStatus::Failed,
                         );
-                        self.set_lsp_status(format!("AI apply failed: {}", err));
+                        self.set_status_message(format!("AI apply failed: {}", err));
                     } else {
-                        self.set_lsp_status(format!(
+                        self.set_status_message(format!(
                             "AI edit applied ({}/{})",
                             job_result.provider, job_result.model
                         ));
@@ -411,7 +411,7 @@ impl Editor {
                         format!("request failed: {}", err),
                         AiRegionStatus::Failed,
                     );
-                    self.set_lsp_status(format!("AI job failed: {}", err));
+                    self.set_status_message(format!("AI job failed: {}", err));
                 }
             }
         }
@@ -487,7 +487,7 @@ impl Editor {
         if self.hover_content_type() == HoverContentType::AiReasoning {
             self.clear_hover();
         }
-        self.set_lsp_status("AI region accepted".to_string());
+        self.set_status_message("AI region accepted".to_string());
         true
     }
 
@@ -550,7 +550,7 @@ impl Editor {
         }
         self.request_diagnostics_refresh();
         self.ai_state.last_observed_buffer_version = self.buffer().version();
-        self.set_lsp_status("AI region reverted".to_string());
+        self.set_status_message("AI region reverted".to_string());
         self.mark_dirty();
         Ok(true)
     }
@@ -569,7 +569,7 @@ impl Editor {
         };
 
         if self.ai_state.regions[region_idx].status == AiRegionStatus::Running {
-            self.set_lsp_status("AI region is already generating".to_string());
+            self.set_status_message("AI region is already generating".to_string());
             return Ok(true);
         }
 
@@ -598,7 +598,7 @@ impl Editor {
         };
 
         let Some(profile) = self.ai_state.config.resolve_profile(&profile_name).cloned() else {
-            self.set_lsp_status(format!("Unknown AI profile: {}", profile_name));
+            self.set_status_message(format!("Unknown AI profile: {}", profile_name));
             return Ok(true);
         };
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
@@ -664,7 +664,7 @@ impl Editor {
         });
 
         self.ai_state.selection_hold_until_exit = false;
-        self.set_lsp_status(format!("AI retry started ({})", provider_label));
+        self.set_status_message(format!("AI retry started ({})", provider_label));
         Ok(true)
     }
 
@@ -699,7 +699,7 @@ impl Editor {
             if self.hover_content_type() == HoverContentType::AiReasoning {
                 self.clear_hover();
             }
-            self.set_lsp_status("AI generation cancelled".to_string());
+            self.set_status_message("AI generation cancelled".to_string());
             return true;
         }
 
@@ -708,7 +708,7 @@ impl Editor {
         if self.hover_content_type() == HoverContentType::AiReasoning {
             self.clear_hover();
         }
-        self.set_lsp_status("AI region selection cleared".to_string());
+        self.set_status_message("AI region selection cleared".to_string());
         true
     }
 
@@ -1310,7 +1310,10 @@ mod tests {
         assert!(!editor.ai_set_profile("missing-profile"));
 
         assert_eq!(editor.ai_state.active_profile, active);
-        assert_eq!(editor.lsp_status(), "Unknown AI profile: missing-profile");
+        assert_eq!(
+            editor.status_message(),
+            "Unknown AI profile: missing-profile"
+        );
     }
 
     #[test]

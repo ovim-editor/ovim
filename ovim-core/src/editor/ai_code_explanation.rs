@@ -126,9 +126,7 @@ impl Editor {
     /// wrong code.
     pub fn replay_code_explanation(&mut self, tool_call_id: &str) -> bool {
         if self.ai_chat_waiting() || self.ai_chat_has_pending_code_explanation() {
-            self.set_lsp_status(
-                "Finish the active agent work before replaying a walkthrough".into(),
-            );
+            self.set_status_message("Finish the active agent work before replaying a walkthrough");
             return false;
         }
         let Some(tool_call) = self
@@ -136,7 +134,7 @@ impl Editor {
             .filter(|call| call.name == "explain_with_codebase")
             .cloned()
         else {
-            self.set_lsp_status("That walkthrough is no longer available to replay".into());
+            self.set_status_message("That walkthrough is no longer available to replay");
             return false;
         };
 
@@ -146,7 +144,7 @@ impl Editor {
                 let message = match error {
                     ToolResult::Success(message) | ToolResult::Error(message) => message,
                 };
-                self.set_lsp_status(format!("Could not replay walkthrough: {message}"));
+                self.set_status_message(format!("Could not replay walkthrough: {message}"));
                 false
             }
         }
@@ -217,9 +215,8 @@ impl Editor {
 
         self.ai_state.ai_attention_generation =
             self.ai_state.ai_attention_generation.saturating_add(1);
-        self.set_lsp_status(
-            "Walkthrough ready — Left/Right pages, Space asks, Enter advances, Esc dismisses"
-                .into(),
+        self.set_status_message(
+            "Walkthrough ready — Left/Right pages, Space asks, Enter advances, Esc dismisses",
         );
         Ok(())
     }
@@ -249,7 +246,7 @@ impl Editor {
         };
         if changed {
             if let Err(error) = self.show_current_code_explanation_step() {
-                self.set_lsp_status(format!("Could not show walkthrough step: {error:?}"));
+                self.set_status_message(format!("Could not show walkthrough step: {error:?}"));
             }
         }
         changed
@@ -272,9 +269,8 @@ impl Editor {
             cursor: 0,
         };
         pending.answer_scroll = 0;
-        self.set_lsp_status(
-            "Ask about this walkthrough step — Enter sends, Shift-Enter adds a line, Esc cancels"
-                .into(),
+        self.set_status_message(
+            "Ask about this walkthrough step — Enter sends, Shift-Enter adds a line, Esc cancels",
         );
         true
     }
@@ -295,7 +291,7 @@ impl Editor {
             return false;
         }
         pending.interaction = CodeExplanationInteraction::Navigating;
-        self.set_lsp_status("Cancelled walkthrough question".into());
+        self.set_status_message("Cancelled walkthrough question");
         true
     }
 
@@ -440,7 +436,7 @@ impl Editor {
                 self.resolve_code_explanation_continuation(&tool_call, continuation, outcome);
             }
         }
-        self.set_lsp_status(format!(
+        self.set_status_message(format!(
             "Answering walkthrough question for step {}",
             step_index + 1
         ));
@@ -496,8 +492,8 @@ impl Editor {
             }
         }
         pending.interaction = CodeExplanationInteraction::Navigating;
-        self.set_lsp_status(
-            "Walkthrough answer ready — Up/Down reads the reply; Enter continues".into(),
+        self.set_status_message(
+            "Walkthrough answer ready — Up/Down reads the reply; Enter continues",
         );
     }
 
@@ -615,7 +611,7 @@ impl Editor {
             self.resolve_code_explanation_continuation(&pending.tool_call, continuation, result);
         }
 
-        self.set_lsp_status(outcome);
+        self.set_status_message(outcome);
         true
     }
 
@@ -1278,7 +1274,7 @@ mod tests {
             crate::editor::AiChatActivity::WaitingCodeExplanation
         );
         assert_eq!(
-            editor.lsp_status(),
+            editor.status_message(),
             "Walkthrough answer ready — Up/Down reads the reply; Enter continues"
         );
         let messages = editor.ai_chat_messages();

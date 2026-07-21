@@ -361,7 +361,7 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                 .add_modifier(Modifier::BOLD),
         ));
     } else {
-        // Normal right-side: diagnostics, LSP, position
+        // Normal right-side: diagnostics, latest status, position
         let (errors, warnings, _info, _hints) = editor.cached_diagnostic_count();
         let diagnostics = if errors > 0 || warnings > 0 {
             format!(" E:{} W:{} ", errors, warnings)
@@ -369,8 +369,8 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
             String::new()
         };
 
-        let lsp_status = if !editor.lsp_status().is_empty() {
-            format!(" {} ", editor.lsp_status())
+        let status_message = if !editor.status_message().is_empty() {
+            format!(" {} ", editor.status_message())
         } else if !editor.active_lsp_servers().is_empty() {
             " LSP ".to_string()
         } else {
@@ -388,19 +388,19 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
             ));
         }
 
-        if !lsp_status.is_empty() {
-            let lsp_color = if editor.lsp_status().contains("Failed")
-                || editor.lsp_status().contains("Error")
+        if !status_message.is_empty() {
+            let status_color = if editor.status_message().contains("Failed")
+                || editor.status_message().contains("Error")
             {
                 error_color
-            } else if editor.lsp_status().contains("ready") {
+            } else if editor.status_message().contains("ready") {
                 Color::Green
             } else {
                 ui_color(theme, UiGroup::Info)
             };
             right_spans.push(Span::styled(
-                lsp_status,
-                Style::default().fg(Color::Black).bg(lsp_color),
+                status_message,
+                Style::default().fg(Color::Black).bg(status_color),
             ));
         }
 
@@ -535,9 +535,9 @@ pub fn render_path_completion(frame: &mut Frame, editor: &Editor, status_area: R
 }
 
 /// Renders the message line (command line area when not in command/search mode).
-/// Shows LSP status messages, command feedback, or blank.
+/// Shows editor status messages, command feedback, or blank.
 pub fn render_message_line(frame: &mut Frame, editor: &Editor, area: Rect) {
-    let message = editor.lsp_status();
+    let message = editor.status_message();
     let text = if message.is_empty() {
         String::new()
     } else {
@@ -837,13 +837,9 @@ pub fn render_margin_widgets(
             spans.push(Span::raw(" "));
         }
 
-        // LSP status badge
+        // LSP availability badge
         if has_lsp {
-            let status_text = if !editor.lsp_status().is_empty() {
-                editor.lsp_status().to_string()
-            } else {
-                "LSP ready".to_string()
-            };
+            let status_text = "LSP ready".to_string();
             let lsp_color = if status_text.contains("Failed") || status_text.contains("Error") {
                 ui_color(theme, UiGroup::Error)
             } else if status_text.contains("ready") {

@@ -238,7 +238,7 @@ impl Editor {
                 let enabled = enabled.unwrap_or_else(|| !self.ai_chat_yolo_mode());
                 self.set_ai_chat_yolo_mode(enabled);
             }
-            Err(message) => self.set_lsp_status(message),
+            Err(message) => self.set_status_message(message),
         }
         Ok(true)
     }
@@ -297,7 +297,7 @@ impl Editor {
         self.render_cache.ai_chat_rendered_text_rows.clear();
         self.render_cache.ai_chat_text_selection = None;
         self.render_cache.ai_chat_text_selecting = false;
-        self.set_lsp_status("AI chat cleared".to_string());
+        self.set_status_message("AI chat cleared".to_string());
         Ok(())
     }
 }

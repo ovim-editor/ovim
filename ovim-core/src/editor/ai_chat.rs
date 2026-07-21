@@ -37,7 +37,7 @@ impl Editor {
         let mode_before = self.mode();
 
         if let Err(error) = self.prepare_durable_ai_chat(buffer_id, &opts.name) {
-            self.set_lsp_status(format!(
+            self.set_status_message(format!(
                 "Durable AI history unavailable; agent edits are disabled: {error}"
             ));
         }
@@ -387,9 +387,9 @@ impl Editor {
             if let Some(conv) = self.conversation_mut() {
                 conv.append_error("Generation stopped by user.".to_string());
             }
-            self.set_lsp_status("AI generation stopped".to_string());
+            self.set_status_message("AI generation stopped".to_string());
         } else {
-            self.set_lsp_status("AI folder access prompt cancelled".to_string());
+            self.set_status_message("AI folder access prompt cancelled".to_string());
         }
         true
     }
@@ -419,7 +419,7 @@ impl Editor {
                 )
             })
         {
-            self.set_lsp_status("Shell process has already exited".into());
+            self.set_status_message("Shell process has already exited");
             return false;
         }
         if force {
@@ -430,10 +430,10 @@ impl Editor {
         if let Some(transcript) = chat.shell_transcripts.get_mut(&tool_call_id) {
             transcript.phase = super::ai_chat_state::ShellTranscriptPhase::InterruptRequested;
         }
-        self.set_lsp_status(if force {
-            "Force-stopping agent shell program".into()
+        self.set_status_message(if force {
+            "Force-stopping agent shell program"
         } else {
-            "Interrupting agent shell program".into()
+            "Interrupting agent shell program"
         });
         true
     }
@@ -1160,14 +1160,14 @@ mod tests {
     async fn submitting_new_turn_clears_stale_chat_notice() {
         let mut editor = Editor::default();
         open_test_chat(&mut editor);
-        editor.set_lsp_status("Queued message moved back to the composer".into());
+        editor.set_status_message("Queued message moved back to the composer");
         let chat = editor.ai_state.chat.as_mut().unwrap();
         chat.input = "new request".into();
         chat.input_cursor = chat.input.len();
 
         editor.submit_ai_chat_message().unwrap();
 
-        assert_eq!(editor.lsp_status(), "");
+        assert_eq!(editor.status_message(), "");
         editor.cancel_ai_chat_generation();
     }
 
@@ -1783,7 +1783,7 @@ mod tests {
         }
         let result = response_rx.await.unwrap().unwrap();
         assert!(result.contains("completed"), "{result}");
-        assert!(editor.lsp_status().is_empty());
+        assert!(editor.status_message().is_empty());
         let events = editor.ai_state.agent_runtime.events(&run_id).unwrap();
         let start_index = events
             .iter()
@@ -1891,7 +1891,7 @@ mod tests {
         assert!(editor.poll_pending_auto_mode_classification());
         assert!(editor.ai_chat_has_pending_tool_approval());
         assert!(editor
-            .lsp_status()
+            .status_message()
             .contains("the user did not authorize credential access"));
         assert!(matches!(
             response.try_recv(),

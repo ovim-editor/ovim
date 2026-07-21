@@ -123,7 +123,7 @@ impl Editor {
             }
         }
         if added > 0 {
-            self.set_lsp_status(format!(
+            self.set_status_message(format!(
                 "Attached {added} image{}",
                 if added == 1 { "" } else { "s" }
             ));

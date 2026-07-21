@@ -64,7 +64,7 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
         }
         if key_event.code == KeyCode::Enter {
             if pending_work {
-                editor.set_lsp_status(
+                editor.set_status_message(
                     "AI work is still pending. Wait before accepting review.".to_string(),
                 );
                 return Ok(());
@@ -142,13 +142,13 @@ pub fn handle_ai_chat_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
     if editor.ai_agent_has_pending_approval() && key_event.modifiers.contains(Modifiers::CONTROL) {
         if key_event.code == KeyCode::Char('y') {
             if let Err(error) = editor.ai_agent_resolve_pending_approval(true) {
-                editor.set_lsp_status(format!("Failed to allow child approval: {error}"));
+                editor.set_status_message(format!("Failed to allow child approval: {error}"));
             }
             return Ok(());
         }
         if key_event.code == KeyCode::Char('n') {
             if let Err(error) = editor.ai_agent_resolve_pending_approval(false) {
-                editor.set_lsp_status(format!("Failed to deny child approval: {error}"));
+                editor.set_status_message(format!("Failed to deny child approval: {error}"));
             }
             return Ok(());
         }
@@ -465,7 +465,7 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         KeyCode::Enter => match editor.submit_ai_agent_composer_action() {
             Ok(true) => {}
             Ok(false) => editor.submit_ai_chat_message()?,
-            Err(error) => editor.set_lsp_status(error),
+            Err(error) => editor.set_status_message(error),
         },
         KeyCode::Tab => {
             editor.schedule_ai_chat_message()?;
@@ -706,7 +706,7 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 if let Some(agent_id) = selected
                     && let Err(error) = editor.interrupt_ai_agent_from_ui(agent_id)
                 {
-                    editor.set_lsp_status(format!("Could not interrupt child: {error}"));
+                    editor.set_status_message(format!("Could not interrupt child: {error}"));
                 }
             }
             KeyCode::Char('m') => {
@@ -714,7 +714,7 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     && let Err(error) = editor
                         .begin_ai_agent_composer_action(agent_id, AgentComposerActionKind::Message)
                 {
-                    editor.set_lsp_status(error);
+                    editor.set_status_message(error);
                 }
             }
             KeyCode::Char('r') => {
@@ -722,19 +722,19 @@ fn handle_tree_panel(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     && let Err(error) = editor
                         .begin_ai_agent_composer_action(agent_id, AgentComposerActionKind::Followup)
                 {
-                    editor.set_lsp_status(error);
+                    editor.set_status_message(error);
                 }
             }
             KeyCode::Char('a') => {
                 if let Err(error) = editor.ai_agent_resolve_approval_for(selected.as_deref(), true)
                 {
-                    editor.set_lsp_status(error);
+                    editor.set_status_message(error);
                 }
             }
             KeyCode::Char('d') => {
                 if let Err(error) = editor.ai_agent_resolve_approval_for(selected.as_deref(), false)
                 {
-                    editor.set_lsp_status(error);
+                    editor.set_status_message(error);
                 }
             }
             KeyCode::Char('q') => {

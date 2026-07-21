@@ -208,7 +208,7 @@ impl InputHandler {
         // 2. There's a pending viewport command (e.g., 'z' waiting for 't')
         //    This prevents scroll changes between multi-key sequences like 'zt'
         if editor.buffer_mut().take_ai_lock_blocked() {
-            editor.set_lsp_status("AI lock active for selected region".to_string());
+            editor.set_status_message("AI lock active for selected region".to_string());
         }
 
         // When the mapping layer handled this key it already ran the scroll
@@ -299,7 +299,7 @@ impl InputHandler {
         if let Some(mapping) = editor.keymaps().get_mapping(map_mode, &sequence).cloned() {
             editor.clear_pending_mapping();
             if remap_depth >= MAX_MAPPING_REMAP_DEPTH {
-                editor.set_lsp_status("Mapping recursion limit reached".to_string());
+                editor.set_status_message("Mapping recursion limit reached".to_string());
                 return Ok(true);
             }
 

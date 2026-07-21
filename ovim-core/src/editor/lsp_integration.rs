@@ -192,7 +192,8 @@ impl Editor {
 
     /// Set LSP status message
     pub fn set_lsp_status(&mut self, status: String) {
-        self.lsp.state.lsp_status = status.clone();
+        self.lsp.state.status = status.clone();
+        self.set_status_message(status.clone());
 
         if let Some((level, ttl, sticky, dedupe_key)) = classify_status_toast(&status) {
             let request = ToastRequest::new(ToastSource::Lsp, level, status)
@@ -257,7 +258,7 @@ impl Editor {
 
     /// Get current LSP status
     pub fn lsp_status(&self) -> &str {
-        &self.lsp.state.lsp_status
+        &self.lsp.state.status
     }
 
     fn document_sync_request_plan(
@@ -1062,18 +1063,23 @@ impl Editor {
 
     /// Register a new LSP server
     pub fn register_lsp_server(&mut self, language_id: String, server_name: String) {
-        self.lsp.state.lsp_status = format!("LSP: {} ready", server_name);
+        let status = format!("LSP: {server_name} ready");
         self.lsp
             .state
             .active_lsp_servers
             .insert(language_id, server_name);
+        self.set_lsp_status(status);
     }
 
     /// Unregister an LSP server
     pub fn unregister_lsp_server(&mut self, language_id: &str) {
         self.lsp.state.active_lsp_servers.remove(language_id);
         if self.lsp.state.active_lsp_servers.is_empty() {
-            self.lsp.state.lsp_status.clear();
+            let status_was_visible = self.status_message() == self.lsp_status();
+            self.lsp.state.status.clear();
+            if status_was_visible {
+                self.clear_status_message();
+            }
         }
     }
 
@@ -1150,8 +1156,8 @@ impl Editor {
         ));
 
         // Current status
-        if !self.lsp.state.lsp_status.is_empty() {
-            info.push_str(&format!("\nStatus: {}\n", self.lsp.state.lsp_status));
+        if !self.lsp_status().is_empty() {
+            info.push_str(&format!("\nStatus: {}\n", self.lsp_status()));
         }
 
         info

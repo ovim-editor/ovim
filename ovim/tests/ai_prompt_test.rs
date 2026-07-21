@@ -189,7 +189,7 @@ fn test_ai_lock_blocks_inside_and_allows_outside_edits() {
     test.keys("ix<Esc>");
     assert_eq!(test.buffer_content(), "hello world\n");
     assert_eq!(
-        test.editor.lsp_status(),
+        test.editor.status_message(),
         "AI lock active for selected region"
     );
 
@@ -235,7 +235,7 @@ fn test_o_blocked_by_ai_lock_stays_normal_mode() {
         step "o" => |test| {
             test.assert_mode(Mode::Normal);
             assert_eq!(test.buffer_content(), "alpha\nbeta\ngamma\n");
-            assert_eq!(test.editor.lsp_status(), "AI lock active for selected region");
+            assert_eq!(test.editor.status_message(), "AI lock active for selected region");
         }
     }
 }
@@ -272,7 +272,7 @@ fn test_visual_block_delete_mixed_ai_lock_lines_keeps_undo_history() {
 
     assert_eq!(test.buffer_content(), "aa_bb_cc\ndd__ff\ngg__ii\n");
     assert_eq!(
-        test.editor.lsp_status(),
+        test.editor.status_message(),
         "AI lock active for selected region"
     );
 

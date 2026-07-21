@@ -94,7 +94,7 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
             } else {
                 "hidden"
             };
-            editor.set_lsp_status(format!("Hidden files: {state}"));
+            editor.set_status_message(format!("Hidden files: {state}"));
         }
         KeyCode::Char('I') => {
             editor.file_tree_mut().toggle_ignored();
@@ -103,7 +103,7 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
             } else {
                 "hidden"
             };
-            editor.set_lsp_status(format!("Git-ignored files: {state}"));
+            editor.set_status_message(format!("Git-ignored files: {state}"));
         }
         // f - live filter loaded entries, F - clear filter
         KeyCode::Char('f') | KeyCode::Char('/') => {
@@ -114,7 +114,7 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         }
         KeyCode::Char('F') => {
             editor.file_tree_mut().clear_filter();
-            editor.set_lsp_status("File filter cleared".to_string());
+            editor.set_status_message("File filter cleared");
         }
         // ? - contextual key reference
         KeyCode::Char('?') => {
@@ -134,7 +134,7 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         KeyCode::Char('d') => {
             if let Some(node) = editor.file_tree().selected_node() {
                 if editor.file_tree().selected_is_root() {
-                    editor.set_lsp_status("The explorer root cannot be deleted".to_string());
+                    editor.set_status_message("The explorer root cannot be deleted");
                     return Ok(());
                 }
                 let path = node.path().to_path_buf();
@@ -148,7 +148,7 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         KeyCode::Char('R') => {
             if let Some(node) = editor.file_tree().selected_node() {
                 if editor.file_tree().selected_is_root() {
-                    editor.set_lsp_status("The explorer root cannot be renamed".to_string());
+                    editor.set_status_message("The explorer root cannot be renamed");
                     return Ok(());
                 }
                 let original_path = node.path().to_path_buf();
@@ -163,16 +163,16 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         }
         // y/X/p - copy, cut, and paste using an explorer-local clipboard
         KeyCode::Char('y') => match editor.file_tree_mut().copy_selected() {
-            Ok(path) => editor.set_lsp_status(format!("Copied: {}", path.display())),
-            Err(error) => editor.set_lsp_status(format!("Copy failed: {error}")),
+            Ok(path) => editor.set_status_message(format!("Copied: {}", path.display())),
+            Err(error) => editor.set_status_message(format!("Copy failed: {error}")),
         },
         KeyCode::Char('X') => match editor.file_tree_mut().cut_selected() {
-            Ok(path) => editor.set_lsp_status(format!("Cut: {}", path.display())),
-            Err(error) => editor.set_lsp_status(format!("Cut failed: {error}")),
+            Ok(path) => editor.set_status_message(format!("Cut: {}", path.display())),
+            Err(error) => editor.set_status_message(format!("Cut failed: {error}")),
         },
         KeyCode::Char('p') => match editor.file_tree_mut().paste_to_selected() {
-            Ok(path) => editor.set_lsp_status(format!("Pasted: {}", path.display())),
-            Err(error) => editor.set_lsp_status(format!("Paste failed: {error}")),
+            Ok(path) => editor.set_status_message(format!("Pasted: {}", path.display())),
+            Err(error) => editor.set_status_message(format!("Paste failed: {error}")),
         },
         // g - first key of gg (go to top)
         KeyCode::Char('g') => {
@@ -211,15 +211,15 @@ fn handle_prompt_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
                 if is_real_directory {
                     if let Err(e) = std::fs::remove_dir_all(&path) {
-                        editor.set_lsp_status(format!("Delete failed: {e}"));
+                        editor.set_status_message(format!("Delete failed: {e}"));
                     } else {
-                        editor.set_lsp_status(format!("Deleted: {}", path.display()));
+                        editor.set_status_message(format!("Deleted: {}", path.display()));
                         editor.file_tree_mut().refresh();
                     }
                 } else if let Err(e) = std::fs::remove_file(&path) {
-                    editor.set_lsp_status(format!("Delete failed: {e}"));
+                    editor.set_status_message(format!("Delete failed: {e}"));
                 } else {
-                    editor.set_lsp_status(format!("Deleted: {}", path.display()));
+                    editor.set_status_message(format!("Deleted: {}", path.display()));
                     editor.file_tree_mut().refresh();
                 }
             }
@@ -291,7 +291,7 @@ fn create_from_prompt(editor: &mut Editor, input: &str) {
     }
     let is_directory = input.ends_with('/') || input.ends_with(std::path::MAIN_SEPARATOR);
     match editor.file_tree().resolve_new_path(input) {
-        Ok(new_path) if new_path.exists() => editor.set_lsp_status(format!(
+        Ok(new_path) if new_path.exists() => editor.set_status_message(format!(
             "Create failed: {} already exists",
             new_path.display()
         )),
@@ -313,14 +313,14 @@ fn create_from_prompt(editor: &mut Editor, input: &str) {
             };
             match result {
                 Ok(()) => {
-                    editor.set_lsp_status(format!("Created: {}", new_path.display()));
+                    editor.set_status_message(format!("Created: {}", new_path.display()));
                     editor.file_tree_mut().refresh();
                     editor.file_tree_mut().reveal_path(&new_path);
                 }
-                Err(error) => editor.set_lsp_status(format!("Create failed: {error}")),
+                Err(error) => editor.set_status_message(format!("Create failed: {error}")),
             }
         }
-        Err(error) => editor.set_lsp_status(format!("Create failed: {error}")),
+        Err(error) => editor.set_status_message(format!("Create failed: {error}")),
     }
 }
 
@@ -351,15 +351,17 @@ fn rename_from_prompt(editor: &mut Editor, original_path: &std::path::Path, inpu
         return;
     }
     match editor.file_tree().resolve_rename_path(original_path, input) {
-        Ok(new_path) if new_path != original_path && new_path.exists() => editor.set_lsp_status(
-            format!("Rename failed: {} already exists", new_path.display()),
-        ),
+        Ok(new_path) if new_path != original_path && new_path.exists() => editor
+            .set_status_message(format!(
+                "Rename failed: {} already exists",
+                new_path.display()
+            )),
         Ok(new_path) if new_path == original_path => {}
         Ok(new_path) => {
             if let Err(error) = std::fs::rename(original_path, &new_path) {
-                editor.set_lsp_status(format!("Rename failed: {error}"));
+                editor.set_status_message(format!("Rename failed: {error}"));
             } else {
-                editor.set_lsp_status(format!(
+                editor.set_status_message(format!(
                     "Renamed: {} -> {}",
                     original_path
                         .file_name()
@@ -371,7 +373,7 @@ fn rename_from_prompt(editor: &mut Editor, original_path: &std::path::Path, inpu
                 editor.file_tree_mut().reveal_path(&new_path);
             }
         }
-        Err(error) => editor.set_lsp_status(format!("Rename failed: {error}")),
+        Err(error) => editor.set_status_message(format!("Rename failed: {error}")),
     }
 }
 
@@ -414,14 +416,14 @@ mod tests {
             editor.file_tree().pending_action(),
             FileTreeAction::None
         ));
-        assert!(editor.lsp_status().contains("cannot be deleted"));
+        assert!(editor.status_message().contains("cannot be deleted"));
 
         handle_filetree_mode(&mut editor, key('R')).unwrap();
         assert!(matches!(
             editor.file_tree().pending_action(),
             FileTreeAction::None
         ));
-        assert!(editor.lsp_status().contains("cannot be renamed"));
+        assert!(editor.status_message().contains("cannot be renamed"));
     }
 
     #[test]

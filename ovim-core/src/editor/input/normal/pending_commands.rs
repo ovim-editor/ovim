@@ -452,7 +452,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         ('Z', KeyCode::Char('Z')) => {
             if editor.is_chat_scratch_buffer() {
                 if let Err(error) = editor.finish_chat_scratch(true) {
-                    editor.set_lsp_status(format!("Could not finish chat scratch: {error}"));
+                    editor.set_status_message(format!("Could not finish chat scratch: {error}"));
                 }
             } else {
                 if editor.buffer().file_path().is_some()
@@ -460,7 +460,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 {
                     // OV-00204: Don't quit if save fails — show error instead
                     if let Err(e) = editor.buffer_mut().save() {
-                        editor.set_lsp_status(format!("Save failed: {}", e));
+                        editor.set_status_message(format!("Save failed: {}", e));
                         return Ok(true);
                     }
                 }
