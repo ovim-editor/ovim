@@ -56,7 +56,7 @@ pub struct TreeNode {
 impl TreeNode {
     /// Creates a new tree node from a path
     pub fn from_path(path: &Path, depth: usize) -> Option<Self> {
-        let metadata = fs::metadata(path).ok()?;
+        let metadata = fs::symlink_metadata(path).ok()?;
         let is_dir = metadata.is_dir();
         let name = path
             .file_name()
@@ -785,17 +785,40 @@ impl FileTree {
         {
             anyhow::bail!("Path must stay inside the selected directory");
         }
-        Ok(parent.join(relative))
+        let target = parent.join(relative);
+        self.ensure_nearest_existing_ancestor_is_inside_root(&target)?;
+        Ok(target)
+    }
+
+    /// Create a file or directory from the add prompt, then refresh and reveal it.
+    pub fn create_entry(&mut self, input: &str) -> anyhow::Result<PathBuf> {
+        let is_directory = input.ends_with('/') || input.ends_with(std::path::MAIN_SEPARATOR);
+        let target = self.resolve_new_path(input)?;
+        if target.exists() {
+            anyhow::bail!("{} already exists", target.display());
+        }
+
+        if is_directory {
+            fs::create_dir_all(&target)?;
+        } else {
+            let parent = target
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Cannot create a filesystem root"))?;
+            fs::create_dir_all(parent)?;
+            fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&target)?;
+        }
+
+        self.refresh();
+        self.reveal_path(&target);
+        Ok(target)
     }
 
     /// Validate and resolve a new basename for an existing entry.
     pub fn resolve_rename_path(&self, original: &Path, input: &str) -> anyhow::Result<PathBuf> {
-        let original = original
-            .canonicalize()
-            .unwrap_or_else(|_| original.to_path_buf());
-        if self.root_path() == Some(original.as_path()) {
-            anyhow::bail!("The explorer root cannot be renamed");
-        }
+        let original = self.resolve_mutable_entry_path(original, "renamed")?;
         let name = Path::new(input);
         if input.is_empty()
             || name.components().count() != 1
@@ -807,6 +830,77 @@ impl FileTree {
             .parent()
             .ok_or_else(|| anyhow::anyhow!("Cannot rename a filesystem root"))?;
         Ok(parent.join(name))
+    }
+
+    /// Rename an entry, returning `None` when the name is unchanged or empty.
+    pub fn rename_entry(
+        &mut self,
+        original: &Path,
+        input: &str,
+    ) -> anyhow::Result<Option<PathBuf>> {
+        if input.is_empty() {
+            return Ok(None);
+        }
+        let target = self.resolve_rename_path(original, input)?;
+        let original = self.resolve_mutable_entry_path(original, "renamed")?;
+        if target == original {
+            return Ok(None);
+        }
+        if target.exists() {
+            anyhow::bail!("{} already exists", target.display());
+        }
+
+        fs::rename(&original, &target)?;
+        self.refresh();
+        self.reveal_path(&target);
+        Ok(Some(target))
+    }
+
+    /// Delete a non-root entry without following directory symlinks.
+    pub fn delete_entry(&mut self, path: &Path) -> anyhow::Result<PathBuf> {
+        let path = self.resolve_mutable_entry_path(path, "deleted")?;
+        remove_path(&path)?;
+        self.refresh();
+        Ok(path)
+    }
+
+    fn ensure_nearest_existing_ancestor_is_inside_root(&self, path: &Path) -> anyhow::Result<()> {
+        let root = self
+            .root_path()
+            .ok_or_else(|| anyhow::anyhow!("The explorer has no root"))?;
+        let mut ancestor = path;
+        while fs::symlink_metadata(ancestor).is_err() {
+            ancestor = ancestor
+                .parent()
+                .ok_or_else(|| anyhow::anyhow!("Path has no existing ancestor"))?;
+        }
+        let resolved = ancestor.canonicalize()?;
+        if !resolved.starts_with(root) {
+            anyhow::bail!("Path must stay inside the explorer root");
+        }
+        Ok(())
+    }
+
+    fn resolve_mutable_entry_path(&self, path: &Path, operation: &str) -> anyhow::Result<PathBuf> {
+        let root = self
+            .root_path()
+            .ok_or_else(|| anyhow::anyhow!("The explorer has no root"))?;
+        let name = path
+            .file_name()
+            .ok_or_else(|| anyhow::anyhow!("Cannot mutate a filesystem root"))?;
+        let parent = path
+            .parent()
+            .ok_or_else(|| anyhow::anyhow!("Cannot mutate a filesystem root"))?
+            .canonicalize()?;
+        let resolved = parent.join(name);
+        if !parent.starts_with(root) {
+            anyhow::bail!("Path must stay inside the explorer root");
+        }
+        if resolved == root {
+            anyhow::bail!("The explorer root cannot be {operation}");
+        }
+        fs::symlink_metadata(&resolved)?;
+        Ok(resolved)
     }
 
     /// Gets the pending action
@@ -995,6 +1089,70 @@ mod tests {
             .resolve_rename_path(directory.path(), "renamed")
             .is_err());
         assert!(tree.cut_selected().is_err());
+        assert!(tree.delete_entry(directory.path()).is_err());
+    }
+
+    #[test]
+    fn create_rename_and_delete_transactions_refresh_the_tree() {
+        let directory = tempdir().unwrap();
+        let mut tree = FileTree::new();
+        tree.open(directory.path());
+
+        let created = tree.create_entry("nested/page.astro").unwrap();
+        assert!(created.is_file());
+        assert_eq!(
+            tree.selected_node().map(TreeNode::path),
+            Some(created.as_path())
+        );
+
+        let renamed = tree.rename_entry(&created, "index.astro").unwrap().unwrap();
+        assert!(!created.exists());
+        assert!(renamed.exists());
+        assert_eq!(
+            tree.selected_node().map(TreeNode::path),
+            Some(renamed.as_path())
+        );
+
+        let deleted = tree.delete_entry(&renamed).unwrap();
+        assert_eq!(deleted, renamed);
+        assert!(!deleted.exists());
+        assert!(!names(&tree).contains(&"index.astro"));
+    }
+
+    #[test]
+    fn create_transaction_rejects_collisions() {
+        let directory = tempdir().unwrap();
+        fs::write(directory.path().join("existing.txt"), "keep").unwrap();
+        let mut tree = FileTree::new();
+        tree.open(directory.path());
+
+        assert!(tree.create_entry("existing.txt").is_err());
+        assert_eq!(
+            fs::read_to_string(directory.path().join("existing.txt")).unwrap(),
+            "keep"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutations_do_not_follow_symlinks_outside_the_root() {
+        use std::os::unix::fs::symlink;
+
+        let directory = tempdir().unwrap();
+        let outside = tempdir().unwrap();
+        let outside_file = outside.path().join("important.txt");
+        fs::write(&outside_file, "keep").unwrap();
+        symlink(outside.path(), directory.path().join("outside-dir")).unwrap();
+        let link = directory.path().join("outside-file");
+        symlink(&outside_file, &link).unwrap();
+
+        let mut tree = FileTree::new();
+        tree.open(directory.path());
+
+        assert!(tree.create_entry("outside-dir/escape.txt").is_err());
+        tree.delete_entry(&link).unwrap();
+        assert!(!link.exists());
+        assert_eq!(fs::read_to_string(outside_file).unwrap(), "keep");
     }
 
     #[test]

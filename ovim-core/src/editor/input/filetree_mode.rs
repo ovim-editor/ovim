@@ -203,24 +203,12 @@ fn handle_prompt_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
 
         FileTreeAction::DeleteConfirm { path, .. } => match key_event.code {
             KeyCode::Char('y') | KeyCode::Char('Y') => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-                // Perform the delete
-                let is_real_directory = std::fs::symlink_metadata(&path)
-                    .is_ok_and(|metadata| metadata.is_dir() && !metadata.file_type().is_symlink());
-                if is_real_directory {
-                    if let Err(e) = std::fs::remove_dir_all(&path) {
-                        editor.set_status_message(format!("Delete failed: {e}"));
-                    } else {
-                        editor.set_status_message(format!("Deleted: {}", path.display()));
-                        editor.file_tree_mut().refresh();
+                clear_prompt(editor);
+                match editor.file_tree_mut().delete_entry(&path) {
+                    Ok(deleted) => {
+                        editor.set_status_message(format!("Deleted: {}", deleted.display()))
                     }
-                } else if let Err(e) = std::fs::remove_file(&path) {
-                    editor.set_status_message(format!("Delete failed: {e}"));
-                } else {
-                    editor.set_status_message(format!("Deleted: {}", path.display()));
-                    editor.file_tree_mut().refresh();
+                    Err(error) => editor.set_status_message(format!("Delete failed: {error}")),
                 }
             }
             _ => {
@@ -289,37 +277,8 @@ fn create_from_prompt(editor: &mut Editor, input: &str) {
     if input.is_empty() {
         return;
     }
-    let is_directory = input.ends_with('/') || input.ends_with(std::path::MAIN_SEPARATOR);
-    match editor.file_tree().resolve_new_path(input) {
-        Ok(new_path) if new_path.exists() => editor.set_status_message(format!(
-            "Create failed: {} already exists",
-            new_path.display()
-        )),
-        Ok(new_path) => {
-            let result = if is_directory {
-                std::fs::create_dir_all(&new_path)
-            } else {
-                new_path
-                    .parent()
-                    .map(std::fs::create_dir_all)
-                    .transpose()
-                    .and_then(|_| {
-                        std::fs::OpenOptions::new()
-                            .write(true)
-                            .create_new(true)
-                            .open(&new_path)
-                            .map(|_| ())
-                    })
-            };
-            match result {
-                Ok(()) => {
-                    editor.set_status_message(format!("Created: {}", new_path.display()));
-                    editor.file_tree_mut().refresh();
-                    editor.file_tree_mut().reveal_path(&new_path);
-                }
-                Err(error) => editor.set_status_message(format!("Create failed: {error}")),
-            }
-        }
+    match editor.file_tree_mut().create_entry(input) {
+        Ok(created) => editor.set_status_message(format!("Created: {}", created.display())),
         Err(error) => editor.set_status_message(format!("Create failed: {error}")),
     }
 }
@@ -347,32 +306,16 @@ fn handle_rename_prompt(
 }
 
 fn rename_from_prompt(editor: &mut Editor, original_path: &std::path::Path, input: &str) {
-    if input.is_empty() {
-        return;
-    }
-    match editor.file_tree().resolve_rename_path(original_path, input) {
-        Ok(new_path) if new_path != original_path && new_path.exists() => editor
-            .set_status_message(format!(
-                "Rename failed: {} already exists",
-                new_path.display()
-            )),
-        Ok(new_path) if new_path == original_path => {}
-        Ok(new_path) => {
-            if let Err(error) = std::fs::rename(original_path, &new_path) {
-                editor.set_status_message(format!("Rename failed: {error}"));
-            } else {
-                editor.set_status_message(format!(
-                    "Renamed: {} -> {}",
-                    original_path
-                        .file_name()
-                        .unwrap_or_default()
-                        .to_string_lossy(),
-                    input
-                ));
-                editor.file_tree_mut().refresh();
-                editor.file_tree_mut().reveal_path(&new_path);
-            }
-        }
+    match editor.file_tree_mut().rename_entry(original_path, input) {
+        Ok(Some(_)) => editor.set_status_message(format!(
+            "Renamed: {} -> {}",
+            original_path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy(),
+            input
+        )),
+        Ok(None) => {}
         Err(error) => editor.set_status_message(format!("Rename failed: {error}")),
     }
 }
