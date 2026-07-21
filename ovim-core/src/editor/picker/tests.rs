@@ -177,3 +177,20 @@ fn test_cursor_movement_in_filter_field() {
     picker.move_cursor_end();
     assert_eq!(picker.file_filter_cursor(), 3);
 }
+
+#[test]
+fn unicode_editing_uses_valid_byte_boundaries_in_both_fields() {
+    let mut picker = Picker::new_live_grep(PathBuf::from("."), PathBuf::from("."));
+    picker.insert_text("a🙂z");
+    picker.move_cursor_left();
+    picker.backspace_query();
+    assert_eq!(picker.query(), "az");
+    assert_eq!(picker.query_cursor(), 1);
+
+    picker.toggle_field();
+    picker.insert_text("éx");
+    picker.move_cursor_left();
+    picker.delete_char();
+    assert_eq!(picker.file_filter(), "é");
+    assert_eq!(picker.file_filter_cursor(), 2);
+}

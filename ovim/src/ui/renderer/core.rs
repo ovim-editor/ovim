@@ -534,6 +534,8 @@ fn set_cursor_position(
 
     if editor.mode() == crate::mode::Mode::Picker {
         if let Some(picker) = editor.picker() {
+            use unicode_width::UnicodeWidthStr;
+
             let picker_area = super::picker_widget::get_picker_area(frame.area());
             // Inner area is picker_area inset by 1 on each side (border)
             let inner_x = picker_area.x + 1;
@@ -546,19 +548,22 @@ fn set_cursor_position(
                 match picker.active_field() {
                     PickerField::Query => {
                         // icon(1) + space(1) + cursor_pos
-                        let pos = picker.query_cursor();
-                        (inner_x + 2 + pos as u16).min(inner_x + search_width as u16 - 1)
+                        let cursor = picker.query_cursor();
+                        let width = UnicodeWidthStr::width(&picker.query()[..cursor]);
+                        (inner_x + 2 + width as u16).min(inner_x + search_width as u16 - 1)
                     }
                     PickerField::FileFilter => {
                         // search_width + sep(1) + icon(1) + space(1) + cursor_pos
-                        let pos = picker.file_filter_cursor();
+                        let cursor = picker.file_filter_cursor();
+                        let width = UnicodeWidthStr::width(&picker.file_filter()[..cursor]);
                         let filter_start = inner_x + search_width as u16 + 1; // after separator
-                        (filter_start + 2 + pos as u16).min(inner_x + inner_width as u16 - 1)
+                        (filter_start + 2 + width as u16).min(inner_x + inner_width as u16 - 1)
                     }
                 }
             } else {
-                let cursor_pos = picker.query_cursor();
-                (inner_x + 2 + cursor_pos as u16).min(inner_x + inner_width as u16 - 1)
+                let cursor = picker.query_cursor();
+                let width = UnicodeWidthStr::width(&picker.query()[..cursor]);
+                (inner_x + 2 + width as u16).min(inner_x + inner_width as u16 - 1)
             };
 
             frame.set_cursor_position((cursor_x, cursor_y));
@@ -1115,7 +1120,7 @@ mod cursor_screen_position_tests {
     //! visible when many wrapped rows precede the cursor).
 
     use super::{should_dock_ai_chat, take_terminal_image_refresh, Renderer};
-    use crate::editor::Editor;
+    use crate::editor::{Editor, Picker};
     use crate::ui::renderer::line_cache::LineRenderCache;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;
@@ -1204,6 +1209,21 @@ mod cursor_screen_position_tests {
         let (cursor_x, _) = render_and_cursor_position(&mut editor, 40, 12);
 
         assert_eq!(cursor_x, 3);
+    }
+
+    #[test]
+    fn picker_cursor_uses_display_width_for_wide_unicode_input() {
+        let mut editor = Editor::default();
+        let mut picker = Picker::new_file_finder(".".into(), ".".into());
+        picker.insert_text("界x");
+        editor.set_picker(picker);
+        editor.set_mode(crate::mode::Mode::Picker);
+
+        let (cursor_x, _) = render_and_cursor_position(&mut editor, 40, 12);
+        let picker_area =
+            super::super::picker_widget::get_picker_area(ratatui::layout::Rect::new(0, 0, 40, 12));
+
+        assert_eq!(cursor_x, picker_area.x + 6);
     }
 
     #[test]

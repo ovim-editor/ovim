@@ -11,18 +11,14 @@ use backend::PickerBackend;
 use fuzzy_backend::FuzzyListKind;
 pub use result::{PickerAction, PickerField, PickerMode, PickerResult};
 
-use super::fuzzy;
+use super::{fuzzy, SingleLineInput};
 use std::path::{Path, PathBuf};
 
 pub struct Picker {
     /// Current search query
-    pub(super) query: String,
-    /// Cursor position in the query (byte offset)
-    pub(super) query_cursor: usize,
+    pub(super) query: SingleLineInput,
     /// File filter string (for LiveGrep mode)
-    pub(super) file_filter: String,
-    /// Cursor position in the file filter (char offset)
-    pub(super) file_filter_cursor: usize,
+    pub(super) file_filter: SingleLineInput,
     /// Which input field is currently active
     pub(super) active_field: PickerField,
     /// All available results (unfiltered)
@@ -46,7 +42,7 @@ impl Picker {
     pub fn start_grep_search(&mut self) {
         if let PickerBackend::Grep(ref mut g) = self.backend {
             g.start_search(
-                &self.query,
+                self.query.text(),
                 &self.base_dir,
                 &self.preferred_dir,
                 &mut self.all_results,
@@ -61,7 +57,7 @@ impl Picker {
     pub fn drain_grep_results(&mut self) -> bool {
         if let PickerBackend::Grep(ref mut g) = self.backend {
             g.drain_results(
-                &self.file_filter,
+                self.file_filter.text(),
                 &mut self.all_results,
                 &mut self.filtered_results,
                 &mut self.selected_index,
@@ -150,9 +146,9 @@ impl Picker {
 
     /// Updates the query and refreshes filtered results
     pub fn set_query(&mut self, query: String) {
-        self.query = query;
+        self.query = SingleLineInput::new(query);
         if let PickerBackend::Nucleo(ref mut s) = self.backend {
-            s.nucleo.update_query(&self.query);
+            s.nucleo.update_query(self.query.text());
             if s.nucleo.is_empty_pattern() {
                 s.rebuild_empty_pattern_order(&self.all_results, &self.preferred_dir);
             }
@@ -172,7 +168,7 @@ impl Picker {
                     .all_results
                     .iter()
                     .filter_map(|r| {
-                        fuzzy::fuzzy_score(&self.query, &r.display)
+                        fuzzy::fuzzy_score(self.query.text(), &r.display)
                             .map(|(score, positions)| (r.clone(), score, positions))
                     })
                     .collect();
@@ -210,9 +206,9 @@ impl Picker {
         let action = match &self.backend {
             PickerBackend::Nucleo(_) => Action::UpdateNucleoQuery,
             PickerBackend::Grep(g) => {
-                if self.query != g.last_grep_query {
+                if self.query.text() != g.last_grep_query {
                     Action::SetPendingFilter
-                } else if self.file_filter != g.last_filtered_file_filter {
+                } else if self.file_filter.text() != g.last_filtered_file_filter {
                     Action::ApplyFileFilter
                 } else {
                     Action::None
@@ -224,7 +220,7 @@ impl Picker {
         match action {
             Action::UpdateNucleoQuery => {
                 if let PickerBackend::Nucleo(s) = &mut self.backend {
-                    s.nucleo.update_query(&self.query);
+                    s.nucleo.update_query(self.query.text());
                 }
             }
             Action::SetPendingFilter => {
@@ -232,10 +228,10 @@ impl Picker {
             }
             Action::ApplyFileFilter => {
                 if let PickerBackend::Grep(g) = &mut self.backend {
-                    g.last_filtered_file_filter = self.file_filter.clone();
+                    g.last_filtered_file_filter = self.file_filter.text().to_owned();
                 }
                 filter::apply_file_filter_to(
-                    &self.file_filter,
+                    self.file_filter.text(),
                     &self.all_results,
                     &mut self.filtered_results,
                     &mut self.selected_index,
@@ -331,12 +327,12 @@ impl Picker {
 
     /// Gets the current query
     pub fn query(&self) -> &str {
-        &self.query
+        self.query.text()
     }
 
-    /// Gets the query cursor position (in characters, not bytes)
+    /// Gets the query cursor position as a UTF-8 byte offset.
     pub fn query_cursor(&self) -> usize {
-        self.query_cursor
+        self.query.cursor()
     }
 
     /// Gets filtered results
@@ -389,12 +385,12 @@ impl Picker {
 
     /// Gets the current file filter string
     pub fn file_filter(&self) -> &str {
-        &self.file_filter
+        self.file_filter.text()
     }
 
-    /// Gets the file filter cursor position
+    /// Gets the file filter cursor position as a UTF-8 byte offset.
     pub fn file_filter_cursor(&self) -> usize {
-        self.file_filter_cursor
+        self.file_filter.cursor()
     }
 
     /// Gets the currently active field
@@ -431,7 +427,7 @@ impl Picker {
             }
         } else if self.query.is_empty() {
             self.filtered_results.push(result);
-        } else if fuzzy::fuzzy_score(&self.query, &result.display).is_some() {
+        } else if fuzzy::fuzzy_score(self.query.text(), &result.display).is_some() {
             self.filtered_results.push(result);
             self.pending_filter = true;
         }

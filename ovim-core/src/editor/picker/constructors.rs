@@ -4,16 +4,15 @@ use super::grep_backend::GrepState;
 use super::nucleo_backend::NucleoState;
 use super::result::{PickerField, PickerResult};
 use super::Picker;
+use crate::editor::SingleLineInput;
 use std::path::PathBuf;
 
 impl Picker {
     /// Creates a new file finder picker
     pub fn new_file_finder(base_dir: PathBuf, preferred_dir: PathBuf) -> Self {
         Self {
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
+            query: SingleLineInput::default(),
+            file_filter: SingleLineInput::default(),
             active_field: PickerField::Query,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
@@ -28,10 +27,8 @@ impl Picker {
     /// Creates a new live grep picker
     pub fn new_live_grep(base_dir: PathBuf, preferred_dir: PathBuf) -> Self {
         Self {
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
+            query: SingleLineInput::default(),
+            file_filter: SingleLineInput::default(),
             active_field: PickerField::Query,
             all_results: Vec::new(),
             filtered_results: Vec::new(),
@@ -50,10 +47,8 @@ impl Picker {
         kind: FuzzyListKind,
     ) -> Self {
         Self {
-            query: String::new(),
-            query_cursor: 0,
-            file_filter: String::new(),
-            file_filter_cursor: 0,
+            query: SingleLineInput::default(),
+            file_filter: SingleLineInput::default(),
             active_field: PickerField::Query,
             all_results: results.clone(),
             filtered_results: results,
