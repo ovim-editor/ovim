@@ -21,6 +21,7 @@ pub enum Language {
     Json,
     Yaml,
     Html,
+    Astro,
     Css,
     Toml,
     Markdown,
@@ -112,6 +113,9 @@ impl LanguageRegistry {
 
             // HTML
             "html" | "htm" | "xhtml" => Some(Language::Html),
+
+            // Astro
+            "astro" => Some(Language::Astro),
 
             // CSS
             "css" | "scss" | "sass" | "less" => Some(Language::Css),
@@ -252,6 +256,7 @@ impl LanguageRegistry {
             Language::Json => tree_sitter_json::LANGUAGE.into(),
             Language::Yaml => tree_sitter_yaml::language(),
             Language::Html => tree_sitter_html::LANGUAGE.into(),
+            Language::Astro => tree_sitter_astro_next::LANGUAGE.into(),
             Language::Css => tree_sitter_css::LANGUAGE.into(),
             // TOML: tree-sitter-toml depends on tree-sitter 0.20, incompatible with our 0.23
             // Use JSON for highlighting fallback (similar key-value structure)
@@ -295,6 +300,7 @@ impl LanguageRegistry {
             Language::Dockerfile => tree_sitter_bash::HIGHLIGHT_QUERY, // Use Bash syntax for now
             Language::Json => tree_sitter_json::HIGHLIGHTS_QUERY,
             Language::Html => tree_sitter_html::HIGHLIGHTS_QUERY,
+            Language::Astro => tree_sitter_astro_next::HIGHLIGHTS_QUERY,
             Language::Css => tree_sitter_css::HIGHLIGHTS_QUERY,
             // TOML uses JSON highlighting as fallback (similar key-value structure)
             Language::Toml => tree_sitter_json::HIGHLIGHTS_QUERY,
@@ -351,6 +357,7 @@ impl LanguageRegistry {
             Language::Json => Some("json"),
             Language::Yaml => Some("yaml"),
             Language::Html => Some("html"),
+            Language::Astro => Some("astro"),
             Language::Css => Some("css"),
             Language::Toml => Some("toml"),
             Language::Markdown => Some("markdown"),
@@ -427,6 +434,9 @@ impl LanguageRegistry {
             // HTML
             "html" | "htm" | "xhtml" => Some(Language::Html),
 
+            // Astro
+            "astro" => Some(Language::Astro),
+
             // CSS
             "css" | "scss" | "sass" | "less" => Some(Language::Css),
 
@@ -461,6 +471,22 @@ impl LanguageRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detects_astro_files_and_markdown_fences() {
+        assert_eq!(
+            LanguageRegistry::detect_from_path("src/pages/index.astro"),
+            Some(Language::Astro)
+        );
+        assert_eq!(
+            LanguageRegistry::from_info_string("astro"),
+            Some(Language::Astro)
+        );
+        assert_eq!(
+            LanguageRegistry::get_lsp_language_id("src/pages/index.astro"),
+            Some("astro")
+        );
+    }
 
     #[test]
     fn detects_wgsl_files_and_markdown_fences() {

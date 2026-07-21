@@ -144,7 +144,7 @@ ovim lsp languages                   # List all languages
 
 Run `ovim lsp languages` to see all supported languages.
 
-**Languages with LSP**: Rust, TypeScript, JavaScript, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, CSS, TOML, Zig, Lua, Elixir
+**Languages with LSP**: Rust, TypeScript, JavaScript, Astro, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, CSS, TOML, Zig, Lua, Elixir
 
 **Syntax highlighting only**: Markdown, HCL
 

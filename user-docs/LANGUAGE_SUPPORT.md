@@ -21,6 +21,7 @@ These languages have full LSP support and will auto-install the language server 
 | JSON | `.json`, `.jsonc` | vscode-json-language-server | npm |
 | YAML | `.yaml`, `.yml` | yaml-language-server | npm |
 | HTML | `.html`, `.htm` | vscode-html-language-server | npm |
+| Astro | `.astro` | astro-ls | npm |
 | CSS | `.css`, `.scss`, `.sass` | vscode-css-language-server | npm |
 | TOML | `.toml` | taplo | cargo |
 | Ruby | `.rb`, `.rake`, `.gemspec` | solargraph | gem |

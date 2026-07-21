@@ -347,6 +347,30 @@ install_hint = "Install with: npm install -g vscode-langservers-extracted"
 method = { type = "npm", package = "vscode-langservers-extracted", global = true }
 
 # ============================================================================
+# Astro
+# ============================================================================
+
+[[language]]
+id = "astro"
+name = "Astro"
+extensions = ["astro"]
+
+[language.syntax]
+grammar = "tree-sitter-astro-next"
+official = { crate = "tree_sitter_astro_next", constant = "HIGHLIGHTS_QUERY" }
+
+[language.lsp]
+command = "astro-ls"
+args = ["--stdio"]
+fallback_commands = ["node_modules/.bin/astro-ls"]
+root_markers = ["astro.config.mjs", "astro.config.ts", "astro.config.js", "package.json", ".git"]
+install_hint = "Install with: npm install -g @astrojs/language-server"
+
+[language.lsp.auto_install]
+method = { type = "npm", package = "@astrojs/language-server", bin = "astro-ls", global = true }
+policy = "auto_on_missing_or_known_failure"
+
+# ============================================================================
 # CSS
 # ============================================================================
 
@@ -678,7 +702,7 @@ id = "tailwindcss"
 name = "Tailwind CSS"
 command = "tailwindcss-language-server"
 args = ["--stdio"]
-applies_to = ["typescript", "tsx", "typescriptreact", "javascript", "javascriptreact", "html", "css"]
+applies_to = ["typescript", "tsx", "typescriptreact", "javascript", "javascriptreact", "html", "astro", "css"]
 root_markers = ["tailwind.config.js", "tailwind.config.ts", "tailwind.config.cjs", "tailwind.config.mjs", "package.json"]
 # Tailwind v3: explicit config files. Tailwind v4: CSS-based config (no config file needed,
 # but the package is still in node_modules). node_modules/tailwindcss catches both versions.

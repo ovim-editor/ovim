@@ -781,6 +781,39 @@ mod tests {
     use super::*;
 
     #[test]
+    fn test_astro_highlighter_parses_component_syntax() {
+        let mut highlighter =
+            SyntaxHighlighter::new(Language::Astro).expect("Astro highlighter should be created");
+        let source = r#"---
+import Layout from "../layouts/Layout.astro";
+const title = "Hello";
+---
+
+<Layout title={title}>
+  <h1 class="heading">{title}</h1>
+</Layout>
+"#;
+
+        highlighter.parse(source);
+        let tree = highlighter.tree().expect("Astro parse tree");
+        assert!(!tree.root_node().has_error(), "{}", tree.root_node());
+
+        let highlights = highlighter.highlights_for_all_lines(source);
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Tag));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::Property));
+        assert!(highlights
+            .iter()
+            .flatten()
+            .any(|(_, group)| *group == HighlightGroup::String));
+    }
+
+    #[test]
     fn test_wgsl_highlighter_parses_standard_and_bevy_syntax() {
         let mut highlighter =
             SyntaxHighlighter::new(Language::Wgsl).expect("WGSL highlighter should be created");

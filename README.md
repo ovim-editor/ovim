@@ -60,7 +60,7 @@ LSP starts automatically. Syntax highlighting works. No setup needed.
 
 ## Language Support
 
-22 languages with LSP auto-install, 2 more with manual LSP setup, plus syntax-only languages.
+23 languages with LSP auto-install, 2 more with manual LSP setup, plus syntax-only languages.
 
 When you open a file and its language server isn't installed, ovim asks once:
 
@@ -72,6 +72,7 @@ When you open a file and its language server isn't installed, ovim asks once:
 |-----------|------------|
 | Rust | rust-analyzer |
 | TypeScript / JavaScript | typescript-language-server |
+| Astro | astro-ls |
 | Python | pyright |
 | Go | gopls |
 | Java, Kotlin, Scala, Groovy | hyperion-lsp |

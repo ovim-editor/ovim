@@ -923,6 +923,35 @@ mod tests {
     }
 
     #[test]
+    fn embedded_config_includes_astro_lsp_and_tailwind_companion() {
+        let (languages, companions) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let astro = languages
+            .iter()
+            .find(|language| language.id == "astro")
+            .expect("embedded Astro language config");
+
+        assert_eq!(astro.extensions, ["astro"]);
+        assert_eq!(
+            astro.syntax.as_ref().map(|syntax| syntax.grammar.as_str()),
+            Some("tree-sitter-astro-next")
+        );
+        let lsp = astro.lsp.as_ref().expect("Astro LSP config");
+        assert_eq!(lsp.command, "astro-ls");
+        assert_eq!(lsp.args, ["--stdio"]);
+        assert!(matches!(
+            lsp.auto_install.as_ref().map(|config| &config.method),
+            Some(InstallMethod::Npm { bin: Some(bin), .. }) if bin == "astro-ls"
+        ));
+
+        let tailwind = companions
+            .iter()
+            .find(|companion| companion.id == "tailwindcss")
+            .expect("embedded Tailwind companion config");
+        assert!(tailwind.applies_to.iter().any(|id| id == "astro"));
+    }
+
+    #[test]
     fn test_path_filename_detection() {
         let languages = vec![LanguageConfig {
             id: "ghostty".to_string(),
