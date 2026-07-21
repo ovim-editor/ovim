@@ -72,6 +72,16 @@ fn test_command_global_percent_substitute_on_matching_lines() {
 }
 
 #[test]
+fn test_command_global_substitute_honors_escaped_delimiters() {
+    let mut test = EditorTest::new("pick a/b\nskip a/b\n");
+
+    InputHandler::execute_command_string(&mut test.editor, r"%g/pick/s/a\/b/c\/d/").unwrap();
+
+    assert_eq!(test.buffer_content(), "pick c/d\nskip a/b\n");
+    assert_eq!(test.editor.status_message(), "Substituted on 1 line(s)");
+}
+
+#[test]
 fn test_command_global_range_restricts_matches() {
     let mut test = EditorTest::new("foo\nfoo\nfoo\nfoo\n");
 
