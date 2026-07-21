@@ -230,6 +230,20 @@ impl Editor {
         &mut self.ui_panels.file_tree
     }
 
+    /// Open a directory as an explorer workspace without assigning the
+    /// directory path to the current text buffer.
+    pub fn open_directory(&mut self, path: &std::path::Path) -> anyhow::Result<()> {
+        let root = path
+            .canonicalize()
+            .map_err(|error| anyhow::anyhow!("Could not open directory: {error}"))?;
+        if !root.is_dir() {
+            anyhow::bail!("Not a directory: {}", path.display());
+        }
+        self.ui_panels.file_tree.open(&root);
+        self.set_mode(Mode::FileTree);
+        Ok(())
+    }
+
     /// Opens the file tree explorer at the project root
     pub fn open_file_tree(&mut self) {
         use crate::language_config::find_project_root;
@@ -287,8 +301,8 @@ impl Editor {
         }
     }
 
-    /// Opens the file selected in the file tree.
-    /// Opens file and closes the tree, or toggles directory expansion.
+    /// Opens the file selected in the file tree while keeping the docked tree
+    /// visible, or toggles directory expansion.
     pub fn open_file_from_tree(&mut self) {
         if let Some(node) = self.ui_panels.file_tree.selected_node() {
             if node.is_dir() {
@@ -298,8 +312,7 @@ impl Editor {
                 // Open file (checks for existing buffer)
                 let path = node.path().to_path_buf();
                 if let Ok(()) = self.open_file(&path) {
-                    // Close tree and switch to Normal mode
-                    self.ui_panels.file_tree.close();
+                    // Focus the buffer; q remains the explicit way to close the tree.
                     self.set_mode(Mode::Normal);
                 }
             }
@@ -824,5 +837,44 @@ impl Editor {
     /// Get language IDs of currently running LSP servers
     fn get_running_lsp_servers(&self) -> Vec<String> {
         self.lsp.state.running_server_languages()
+    }
+}
+
+#[cfg(test)]
+mod file_tree_tests {
+    use super::*;
+
+    #[test]
+    fn opening_a_directory_focuses_the_tree_without_naming_the_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("main.rs"), "fn main() {}").unwrap();
+        let mut editor = Editor::new();
+
+        editor.open_directory(directory.path()).unwrap();
+
+        assert_eq!(editor.mode(), Mode::FileTree);
+        assert!(editor.file_tree().is_visible());
+        assert_eq!(
+            editor.file_tree().root_path(),
+            Some(directory.path().canonicalize().unwrap().as_path())
+        );
+        assert_eq!(editor.buffer().file_path(), None);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn opening_a_file_from_the_tree_keeps_the_sidebar_visible() {
+        let directory = tempfile::tempdir().unwrap();
+        let file = directory.path().join("main.rs");
+        std::fs::write(&file, "fn main() {}").unwrap();
+        let mut editor = Editor::new();
+        editor.open_directory(directory.path()).unwrap();
+        editor.file_tree_mut().reveal_path(&file);
+
+        editor.open_file_from_tree();
+
+        let canonical_file = file.canonicalize().unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert!(editor.file_tree().is_visible());
+        assert_eq!(editor.buffer().file_path(), canonical_file.to_str());
     }
 }

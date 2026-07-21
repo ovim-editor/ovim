@@ -12,6 +12,7 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 - **LSP auto-install** — open a file, the language server downloads and starts
 - **AI chat and editing** — `Space Space` to chat, visual select + `Space` to edit
 - **Vim keybindings** — operators + motions, text objects, visual mode, macros, marks, registers
+- **File explorer** — open a folder directly; filter, create, rename, copy, move, and delete safely
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
 - **Headless mode** — run without a terminal, control via REST API
 
@@ -37,6 +38,9 @@ cargo build --release
 # Open a file
 ovim file.rs
 
+# Open a folder in the file explorer
+ovim .
+
 # Jump to a specific line and column
 ovim src/main.rs:42:10
 ```
@@ -44,6 +48,14 @@ ovim src/main.rs:42:10
 LSP starts automatically. Syntax highlighting works. No setup needed.
 
 > This README uses `ovim` assuming the binary is on your `PATH`.
+
+### File explorer
+
+Open any directory with `ovim some-folder`, or press `-` while editing to open
+the project tree. Use `j`/`k` to move, `Enter` or `l` to open, and `h` to
+collapse or move to the parent. The explorer includes safe create, rename,
+delete, copy, cut, and paste actions; live filtering; hidden and git-ignored
+file toggles; and an in-panel `?` key reference.
 
 ## Screenshots
 

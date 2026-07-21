@@ -85,9 +85,10 @@ fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
 
     // File tree (if visible) + rest
     let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
+        let explorer_width = editor.file_tree().preferred_width(remaining_area.width);
         let horizontal_chunks = Layout::default()
             .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(50), Constraint::Min(1)].as_ref())
+            .constraints([Constraint::Length(explorer_width), Constraint::Min(1)].as_ref())
             .split(remaining_area);
         (Some(horizontal_chunks[0]), horizontal_chunks[1])
     } else {
@@ -467,6 +468,7 @@ fn set_cursor_position(
     ctx: &OverlayContext,
     command_chunk: Rect,
     chat_area: Option<Rect>,
+    file_tree_area: Option<Rect>,
 ) {
     if editor.ai_chat_has_pending_code_explanation() || editor.ai_shell_inspector_is_open() {
         return;
@@ -476,6 +478,47 @@ fn set_cursor_position(
     let cursor_pos = editor.buffer().cursor();
     let cursor_line = cursor_pos.line();
     let cursor_col = cursor_pos.col();
+
+    if editor.mode() == crate::mode::Mode::FileTree {
+        if let Some(area) = file_tree_area {
+            use ovim_core::editor::FileTreeAction;
+            use unicode_width::UnicodeWidthStr;
+
+            let action = editor.file_tree().pending_action();
+            let prompt = match action {
+                FileTreeAction::Add { input, cursor } => Some(("new: ", input, *cursor)),
+                FileTreeAction::Rename { input, cursor, .. } => Some(("rename: ", input, *cursor)),
+                FileTreeAction::Filter { input, cursor } => Some(("filter: ", input, *cursor)),
+                FileTreeAction::None | FileTreeAction::DeleteConfirm { .. } => None,
+            };
+            if let Some((prefix, input, cursor)) = prompt {
+                let cursor = cursor.min(input.len());
+                let input_width = UnicodeWidthStr::width(&input[..cursor]);
+                let x = area
+                    .x
+                    .saturating_add((prefix.len() + input_width) as u16)
+                    .min(area.right().saturating_sub(1));
+                frame.set_cursor_position((x, area.bottom().saturating_sub(1)));
+            } else {
+                let tree = editor.file_tree();
+                let row = tree.selected_index().saturating_sub(tree.scroll_offset());
+                let footer = if tree.help_visible() { 6 } else { 1 };
+                let last_tree_row = area.bottom().saturating_sub(footer).saturating_sub(1);
+                let y = area
+                    .y
+                    .saturating_add(1)
+                    .saturating_add(row as u16)
+                    .min(last_tree_row);
+                let x = tree
+                    .selected_node()
+                    .map(|node| area.x.saturating_add((node.depth() * 2) as u16))
+                    .unwrap_or(area.x)
+                    .min(area.right().saturating_sub(1));
+                frame.set_cursor_position((x, y));
+            }
+        }
+        return;
+    }
 
     if editor.mode() == crate::mode::Mode::LspManager {
         if let Some(panel) = editor.lsp_manager_panel() {
@@ -954,7 +997,14 @@ impl Renderer {
         render_overlays(frame, editor, &theme, &ctx, areas.command_chunk);
         super::overlays::render_ai_code_explanation(frame, editor);
         render_blocking_modals(frame, editor, &theme);
-        set_cursor_position(frame, editor, &ctx, areas.command_chunk, areas.chat_area);
+        set_cursor_position(
+            frame,
+            editor,
+            &ctx,
+            areas.command_chunk,
+            areas.chat_area,
+            areas.file_tree_area,
+        );
     }
 
     /// Renders the editor state to the terminal
@@ -965,6 +1015,7 @@ impl Renderer {
             | crate::mode::Mode::Command
             | crate::mode::Mode::Search
             | crate::mode::Mode::RenameInput
+            | crate::mode::Mode::FileTree
             | crate::mode::Mode::AiPrompt
             | crate::mode::Mode::AiChat => SetCursorStyle::BlinkingBar,
             _ => SetCursorStyle::SteadyBlock,

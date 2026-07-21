@@ -143,6 +143,13 @@ fn edit_file(editor: &mut Editor, raw_filename: &str, force: bool) -> CommandRes
         Ok(path) => path.to_string_lossy().to_string(),
         Err(e) => return err(format!("Failed to expand path '{}': {}", raw_filename, e)),
     };
+    let path = std::path::Path::new(&filename);
+    if path.is_dir() {
+        return match editor.open_directory(path) {
+            Ok(()) => ok(format!("Exploring: {}", path.display())),
+            Err(error) => err(format!("Failed to open directory: {error}")),
+        };
+    }
     match editor.load_file(&filename) {
         Ok(_) => {
             let buf_name = editor
@@ -2013,6 +2020,23 @@ mod tests {
     use crate::command_result::CommandResult;
     use crate::editor::Editor;
     use crate::unicode::CharCol;
+
+    #[test]
+    fn edit_directory_opens_the_explorer_instead_of_a_text_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("main.rs"), "fn main() {}").unwrap();
+        let mut editor = Editor::new();
+
+        let result = execute_command(&mut editor, &format!("edit {}", directory.path().display()));
+
+        assert!(matches!(result, CommandResult::Success(_)));
+        assert_eq!(editor.mode(), crate::mode::Mode::FileTree);
+        assert_eq!(
+            editor.file_tree().root_path(),
+            Some(directory.path().canonicalize().unwrap().as_path())
+        );
+        assert_eq!(editor.buffer().file_path(), None);
+    }
 
     #[tokio::test(flavor = "multi_thread")]
     async fn write_refuses_to_overwrite_external_changes_without_bang() {

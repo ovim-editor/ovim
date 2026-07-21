@@ -8,7 +8,7 @@ pub struct Cli {
     #[command(subcommand)]
     pub command: Option<Command>,
 
-    /// File to open (supports FILE:LINE:COL syntax)
+    /// File or directory to open (files support FILE:LINE:COL syntax)
     pub file: Option<String>,
 
     /// Run in headless mode with REST API enabled (no TUI)
