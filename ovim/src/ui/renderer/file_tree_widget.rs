@@ -110,22 +110,22 @@ pub fn render_file_tree(frame: &mut Frame, editor: &Editor, area: Rect) {
     if has_prompt && footer_height > 0 {
         let prompt_line = match action {
             FileTreeAction::None => unreachable!(),
-            FileTreeAction::Add { input, .. } => Line::from(vec![
+            FileTreeAction::Add { input } => Line::from(vec![
                 Span::styled("new: ", Style::default().fg(Color::Yellow)),
-                Span::raw(input),
+                Span::raw(input.text()),
             ]),
             FileTreeAction::Rename { input, .. } => Line::from(vec![
                 Span::styled("rename: ", Style::default().fg(Color::Yellow)),
-                Span::raw(input),
+                Span::raw(input.text()),
             ]),
             FileTreeAction::DeleteConfirm { name, .. } => Line::from(vec![
                 Span::styled("delete ", Style::default().fg(Color::Red)),
                 Span::styled(name, Style::default().fg(Color::White)),
                 Span::styled("? (y/N)", Style::default().fg(Color::Red)),
             ]),
-            FileTreeAction::Filter { input, .. } => Line::from(vec![
+            FileTreeAction::Filter { input } => Line::from(vec![
                 Span::styled("filter: ", Style::default().fg(Color::Yellow)),
-                Span::raw(input),
+                Span::raw(input.text()),
             ]),
         };
         let prompt = Paragraph::new(prompt_line).style(Style::default().bg(Color::Rgb(30, 34, 42)));

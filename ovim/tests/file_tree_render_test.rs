@@ -1,4 +1,4 @@
-use ovim::editor::{Editor, FileTreeAction};
+use ovim::editor::{Editor, FileTreeAction, SingleLineInput};
 use ovim::mode::Mode;
 use ovim::ui::{render_editor_to_ansi, strip_ansi};
 
@@ -30,8 +30,7 @@ fn file_tree_text_prompt_renders_at_the_bottom_of_the_panel() {
     editor
         .file_tree_mut()
         .set_pending_action(FileTreeAction::Filter {
-            input: "astro".to_string(),
-            cursor: 5,
+            input: SingleLineInput::new("astro"),
         });
 
     let ansi = render_editor_to_ansi(&mut editor, 80, 16).unwrap();

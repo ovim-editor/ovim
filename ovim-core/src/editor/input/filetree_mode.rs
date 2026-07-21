@@ -7,7 +7,7 @@
 //! a adds a file, d deletes (with confirmation), and R renames.
 
 use crate::editor::filetree::FileTreeAction;
-use crate::editor::Editor;
+use crate::editor::{Editor, SingleLineInput};
 use crate::mode::Mode;
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
@@ -107,11 +107,10 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
         }
         // f - live filter loaded entries, F - clear filter
         KeyCode::Char('f') | KeyCode::Char('/') => {
-            let input = editor.file_tree().filter().to_string();
-            let cursor = input.len();
+            let input = SingleLineInput::new(editor.file_tree().filter());
             editor
                 .file_tree_mut()
-                .set_pending_action(FileTreeAction::Filter { input, cursor });
+                .set_pending_action(FileTreeAction::Filter { input });
         }
         KeyCode::Char('F') => {
             editor.file_tree_mut().clear_filter();
@@ -127,8 +126,7 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
                 editor
                     .file_tree_mut()
                     .set_pending_action(FileTreeAction::Add {
-                        input: String::new(),
-                        cursor: 0,
+                        input: SingleLineInput::default(),
                     });
             }
         }
@@ -155,12 +153,10 @@ pub fn handle_filetree_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<
                 }
                 let original_path = node.path().to_path_buf();
                 let name = node.name().to_string();
-                let cursor = name.len();
                 editor
                     .file_tree_mut()
                     .set_pending_action(FileTreeAction::Rename {
-                        input: name,
-                        cursor,
+                        input: SingleLineInput::new(name),
                         original_path,
                     });
             }
@@ -235,313 +231,167 @@ fn handle_prompt_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
         },
 
-        FileTreeAction::Add { mut input, cursor } => match key_event.code {
-            KeyCode::Esc => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-            }
-            KeyCode::Enter => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-                if !input.is_empty() {
-                    let is_directory =
-                        input.ends_with('/') || input.ends_with(std::path::MAIN_SEPARATOR);
-                    match editor.file_tree().resolve_new_path(&input) {
-                        Ok(new_path) if new_path.exists() => {
-                            editor.set_lsp_status(format!(
-                                "Create failed: {} already exists",
-                                new_path.display()
-                            ));
-                        }
-                        Ok(new_path) => {
-                            let result = if is_directory {
-                                std::fs::create_dir_all(&new_path)
-                            } else {
-                                new_path
-                                    .parent()
-                                    .map(std::fs::create_dir_all)
-                                    .transpose()
-                                    .and_then(|_| {
-                                        std::fs::OpenOptions::new()
-                                            .write(true)
-                                            .create_new(true)
-                                            .open(&new_path)
-                                            .map(|_| ())
-                                    })
-                            };
-                            match result {
-                                Ok(()) => {
-                                    editor
-                                        .set_lsp_status(format!("Created: {}", new_path.display()));
-                                    editor.file_tree_mut().refresh();
-                                    editor.file_tree_mut().reveal_path(&new_path);
-                                }
-                                Err(error) => {
-                                    editor.set_lsp_status(format!("Create failed: {error}"))
-                                }
-                            }
-                        }
-                        Err(error) => editor.set_lsp_status(format!("Create failed: {error}")),
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                if cursor == 0 {
-                    if input.is_empty() {
-                        editor
-                            .file_tree_mut()
-                            .set_pending_action(FileTreeAction::None);
-                    }
-                } else {
-                    let prev = input[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    input.remove(prev);
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Add {
-                            input,
-                            cursor: prev,
-                        });
-                }
-            }
-            KeyCode::Left => {
-                if cursor > 0 {
-                    let prev = input[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Add {
-                            input,
-                            cursor: prev,
-                        });
-                }
-            }
-            KeyCode::Right => {
-                if cursor < input.len() {
-                    let next = input[cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| cursor + i)
-                        .unwrap_or(input.len());
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Add {
-                            input,
-                            cursor: next,
-                        });
-                }
-            }
-            KeyCode::Char(ch) => {
-                input.insert(cursor, ch);
-                let new_cursor = cursor + ch.len_utf8();
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::Add {
-                        input,
-                        cursor: new_cursor,
-                    });
-            }
-            _ => {}
-        },
-
+        FileTreeAction::Add { input } => handle_add_prompt(editor, input, key_event.code),
         FileTreeAction::Rename {
-            mut input,
-            cursor,
+            input,
             original_path,
-        } => match key_event.code {
-            KeyCode::Esc => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-            }
-            KeyCode::Enter => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-                if !input.is_empty() {
-                    match editor
-                        .file_tree()
-                        .resolve_rename_path(&original_path, &input)
-                    {
-                        Ok(new_path) if new_path != original_path && new_path.exists() => {
-                            editor.set_lsp_status(format!(
-                                "Rename failed: {} already exists",
-                                new_path.display()
-                            ));
-                        }
-                        Ok(new_path) if new_path == original_path => {}
-                        Ok(new_path) => {
-                            if let Err(error) = std::fs::rename(&original_path, &new_path) {
-                                editor.set_lsp_status(format!("Rename failed: {error}"));
-                            } else {
-                                editor.set_lsp_status(format!(
-                                    "Renamed: {} -> {}",
-                                    original_path
-                                        .file_name()
-                                        .unwrap_or_default()
-                                        .to_string_lossy(),
-                                    input
-                                ));
-                                editor.file_tree_mut().refresh();
-                                editor.file_tree_mut().reveal_path(&new_path);
-                            }
-                        }
-                        Err(error) => editor.set_lsp_status(format!("Rename failed: {error}")),
-                    }
-                }
-            }
-            KeyCode::Backspace => {
-                if cursor == 0 {
-                    if input.is_empty() {
-                        editor
-                            .file_tree_mut()
-                            .set_pending_action(FileTreeAction::None);
-                    }
-                } else {
-                    let prev = input[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    input.remove(prev);
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Rename {
-                            input,
-                            cursor: prev,
-                            original_path,
-                        });
-                }
-            }
-            KeyCode::Left => {
-                if cursor > 0 {
-                    let prev = input[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Rename {
-                            input,
-                            cursor: prev,
-                            original_path,
-                        });
-                }
-            }
-            KeyCode::Right => {
-                if cursor < input.len() {
-                    let next = input[cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(i, _)| cursor + i)
-                        .unwrap_or(input.len());
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Rename {
-                            input,
-                            cursor: next,
-                            original_path,
-                        });
-                }
-            }
-            KeyCode::Char(ch) => {
-                input.insert(cursor, ch);
-                let new_cursor = cursor + ch.len_utf8();
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::Rename {
-                        input,
-                        cursor: new_cursor,
-                        original_path,
-                    });
-            }
-            _ => {}
-        },
-
-        FileTreeAction::Filter { mut input, cursor } => match key_event.code {
-            KeyCode::Esc => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-            }
-            KeyCode::Enter => {
-                editor
-                    .file_tree_mut()
-                    .set_pending_action(FileTreeAction::None);
-            }
-            KeyCode::Backspace => {
-                if cursor == 0 {
-                    if input.is_empty() {
-                        editor
-                            .file_tree_mut()
-                            .set_pending_action(FileTreeAction::None);
-                    }
-                } else {
-                    let previous = input[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(index, _)| index)
-                        .unwrap_or(0);
-                    input.remove(previous);
-                    update_filter(editor, input, previous);
-                }
-            }
-            KeyCode::Left => {
-                if cursor > 0 {
-                    let previous = input[..cursor]
-                        .char_indices()
-                        .next_back()
-                        .map(|(index, _)| index)
-                        .unwrap_or(0);
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Filter {
-                            input,
-                            cursor: previous,
-                        });
-                }
-            }
-            KeyCode::Right => {
-                if cursor < input.len() {
-                    let next = input[cursor..]
-                        .char_indices()
-                        .nth(1)
-                        .map(|(index, _)| cursor + index)
-                        .unwrap_or(input.len());
-                    editor
-                        .file_tree_mut()
-                        .set_pending_action(FileTreeAction::Filter {
-                            input,
-                            cursor: next,
-                        });
-                }
-            }
-            KeyCode::Char(character) => {
-                input.insert(cursor, character);
-                let next = cursor + character.len_utf8();
-                update_filter(editor, input, next);
-            }
-            _ => {}
-        },
+        } => handle_rename_prompt(editor, input, original_path, key_event.code),
+        FileTreeAction::Filter { input } => handle_filter_prompt(editor, input, key_event.code),
     }
 
     Ok(())
 }
 
-fn update_filter(editor: &mut Editor, input: String, cursor: usize) {
-    editor.file_tree_mut().set_filter(input.clone());
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PromptEdit {
+    Cancel,
+    Submit,
+    Changed,
+    Unchanged,
+}
+
+fn edit_prompt(input: &mut SingleLineInput, key: KeyCode) -> PromptEdit {
+    match key {
+        KeyCode::Esc => PromptEdit::Cancel,
+        KeyCode::Enter => PromptEdit::Submit,
+        KeyCode::Backspace if input.is_empty() => PromptEdit::Cancel,
+        KeyCode::Backspace => changed_if(input.backspace()),
+        KeyCode::Left => changed_if(input.move_left()),
+        KeyCode::Right => changed_if(input.move_right()),
+        KeyCode::Char(character) => changed_if(input.insert(character)),
+        _ => PromptEdit::Unchanged,
+    }
+}
+
+fn changed_if(changed: bool) -> PromptEdit {
+    if changed {
+        PromptEdit::Changed
+    } else {
+        PromptEdit::Unchanged
+    }
+}
+
+fn handle_add_prompt(editor: &mut Editor, mut input: SingleLineInput, key: KeyCode) {
+    match edit_prompt(&mut input, key) {
+        PromptEdit::Cancel => clear_prompt(editor),
+        PromptEdit::Submit => {
+            clear_prompt(editor);
+            create_from_prompt(editor, input.text());
+        }
+        PromptEdit::Changed => editor
+            .file_tree_mut()
+            .set_pending_action(FileTreeAction::Add { input }),
+        PromptEdit::Unchanged => {}
+    }
+}
+
+fn create_from_prompt(editor: &mut Editor, input: &str) {
+    if input.is_empty() {
+        return;
+    }
+    let is_directory = input.ends_with('/') || input.ends_with(std::path::MAIN_SEPARATOR);
+    match editor.file_tree().resolve_new_path(input) {
+        Ok(new_path) if new_path.exists() => editor.set_lsp_status(format!(
+            "Create failed: {} already exists",
+            new_path.display()
+        )),
+        Ok(new_path) => {
+            let result = if is_directory {
+                std::fs::create_dir_all(&new_path)
+            } else {
+                new_path
+                    .parent()
+                    .map(std::fs::create_dir_all)
+                    .transpose()
+                    .and_then(|_| {
+                        std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&new_path)
+                            .map(|_| ())
+                    })
+            };
+            match result {
+                Ok(()) => {
+                    editor.set_lsp_status(format!("Created: {}", new_path.display()));
+                    editor.file_tree_mut().refresh();
+                    editor.file_tree_mut().reveal_path(&new_path);
+                }
+                Err(error) => editor.set_lsp_status(format!("Create failed: {error}")),
+            }
+        }
+        Err(error) => editor.set_lsp_status(format!("Create failed: {error}")),
+    }
+}
+
+fn handle_rename_prompt(
+    editor: &mut Editor,
+    mut input: SingleLineInput,
+    original_path: std::path::PathBuf,
+    key: KeyCode,
+) {
+    match edit_prompt(&mut input, key) {
+        PromptEdit::Cancel => clear_prompt(editor),
+        PromptEdit::Submit => {
+            clear_prompt(editor);
+            rename_from_prompt(editor, &original_path, input.text());
+        }
+        PromptEdit::Changed => editor
+            .file_tree_mut()
+            .set_pending_action(FileTreeAction::Rename {
+                input,
+                original_path,
+            }),
+        PromptEdit::Unchanged => {}
+    }
+}
+
+fn rename_from_prompt(editor: &mut Editor, original_path: &std::path::Path, input: &str) {
+    if input.is_empty() {
+        return;
+    }
+    match editor.file_tree().resolve_rename_path(original_path, input) {
+        Ok(new_path) if new_path != original_path && new_path.exists() => editor.set_lsp_status(
+            format!("Rename failed: {} already exists", new_path.display()),
+        ),
+        Ok(new_path) if new_path == original_path => {}
+        Ok(new_path) => {
+            if let Err(error) = std::fs::rename(original_path, &new_path) {
+                editor.set_lsp_status(format!("Rename failed: {error}"));
+            } else {
+                editor.set_lsp_status(format!(
+                    "Renamed: {} -> {}",
+                    original_path
+                        .file_name()
+                        .unwrap_or_default()
+                        .to_string_lossy(),
+                    input
+                ));
+                editor.file_tree_mut().refresh();
+                editor.file_tree_mut().reveal_path(&new_path);
+            }
+        }
+        Err(error) => editor.set_lsp_status(format!("Rename failed: {error}")),
+    }
+}
+
+fn handle_filter_prompt(editor: &mut Editor, mut input: SingleLineInput, key: KeyCode) {
+    match edit_prompt(&mut input, key) {
+        PromptEdit::Cancel | PromptEdit::Submit => clear_prompt(editor),
+        PromptEdit::Changed => {
+            editor.file_tree_mut().set_filter(input.text().to_owned());
+            editor
+                .file_tree_mut()
+                .set_pending_action(FileTreeAction::Filter { input });
+        }
+        PromptEdit::Unchanged => {}
+    }
+}
+
+fn clear_prompt(editor: &mut Editor) {
     editor
         .file_tree_mut()
-        .set_pending_action(FileTreeAction::Filter { input, cursor });
+        .set_pending_action(FileTreeAction::None);
 }
 
 #[cfg(test)]
@@ -598,5 +448,29 @@ mod tests {
             .flattened()
             .iter()
             .any(|node| node.name() == "Cargo.toml"));
+    }
+
+    #[test]
+    fn filter_prompt_edits_unicode_at_character_boundaries() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut editor = Editor::new();
+        editor.open_directory(directory.path()).unwrap();
+
+        handle_filetree_mode(&mut editor, key('f')).unwrap();
+        handle_filetree_mode(&mut editor, key('é')).unwrap();
+        handle_filetree_mode(&mut editor, key('x')).unwrap();
+        handle_filetree_mode(&mut editor, KeyEvent::new(KeyCode::Left, Modifiers::NONE)).unwrap();
+        handle_filetree_mode(
+            &mut editor,
+            KeyEvent::new(KeyCode::Backspace, Modifiers::NONE),
+        )
+        .unwrap();
+
+        let FileTreeAction::Filter { input } = editor.file_tree().pending_action() else {
+            panic!("filter prompt should remain active");
+        };
+        assert_eq!(input.text(), "x");
+        assert_eq!(input.cursor(), 0);
+        assert_eq!(editor.file_tree().filter(), "x");
     }
 }

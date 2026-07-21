@@ -3,6 +3,8 @@ use std::ffi::OsStr;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
+use super::SingleLineInput;
+
 /// A file staged for a copy or move operation inside the explorer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FileTreeClipboardKind {
@@ -22,17 +24,16 @@ pub enum FileTreeAction {
     /// No pending action
     None,
     /// Adding a new file — input is the filename
-    Add { input: String, cursor: usize },
+    Add { input: SingleLineInput },
     /// Renaming a file — input is the new name, original_path is the file being renamed
     Rename {
-        input: String,
-        cursor: usize,
+        input: SingleLineInput,
         original_path: PathBuf,
     },
     /// Confirming file deletion
     DeleteConfirm { path: PathBuf, name: String },
     /// Filtering the entries currently visible in the tree
-    Filter { input: String, cursor: usize },
+    Filter { input: SingleLineInput },
 }
 
 /// Represents a node in the file tree

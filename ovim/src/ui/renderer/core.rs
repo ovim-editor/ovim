@@ -486,14 +486,13 @@ fn set_cursor_position(
 
             let action = editor.file_tree().pending_action();
             let prompt = match action {
-                FileTreeAction::Add { input, cursor } => Some(("new: ", input, *cursor)),
-                FileTreeAction::Rename { input, cursor, .. } => Some(("rename: ", input, *cursor)),
-                FileTreeAction::Filter { input, cursor } => Some(("filter: ", input, *cursor)),
+                FileTreeAction::Add { input } => Some(("new: ", input)),
+                FileTreeAction::Rename { input, .. } => Some(("rename: ", input)),
+                FileTreeAction::Filter { input } => Some(("filter: ", input)),
                 FileTreeAction::None | FileTreeAction::DeleteConfirm { .. } => None,
             };
-            if let Some((prefix, input, cursor)) = prompt {
-                let cursor = cursor.min(input.len());
-                let input_width = UnicodeWidthStr::width(&input[..cursor]);
+            if let Some((prefix, input)) = prompt {
+                let input_width = UnicodeWidthStr::width(&input.text()[..input.cursor()]);
                 let x = area
                     .x
                     .saturating_add((prefix.len() + input_width) as u16)
