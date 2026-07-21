@@ -560,7 +560,7 @@ pub fn render_search_line(frame: &mut Frame, editor: &Editor, area: Rect) {
     } else {
         "?"
     };
-    let search_text = format!("{}{}", search_prefix, editor.search.search_buffer);
+    let search_text = format!("{}{}", search_prefix, editor.search_buffer());
 
     let search_line = Line::from(vec![Span::styled(
         search_text,

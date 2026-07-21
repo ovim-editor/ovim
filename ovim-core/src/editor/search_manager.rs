@@ -5,22 +5,57 @@ use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col,
 impl Editor {
     /// Gets the search buffer
     pub fn search_buffer(&self) -> &str {
-        &self.search.search_buffer
+        self.search.search_input.text()
+    }
+
+    /// Gets the search cursor as a UTF-8 byte offset.
+    pub fn search_cursor(&self) -> usize {
+        self.search.search_input.cursor()
     }
 
     /// Clears the search buffer
     pub fn clear_search_buffer(&mut self) {
-        self.search.search_buffer.clear();
+        self.search.search_input.clear();
     }
 
-    /// Appends a character to the search buffer
-    pub fn append_to_search_buffer(&mut self, ch: char) {
-        self.search.search_buffer.push(ch);
+    /// Inserts a character at the search cursor.
+    pub fn insert_search_char(&mut self, ch: char) -> bool {
+        self.search.search_input.insert(ch)
+    }
+
+    /// Inserts text at the search cursor.
+    pub fn insert_into_search_buffer(&mut self, text: &str) -> bool {
+        self.search.search_input.insert_str(text)
     }
 
     /// Removes the last character from the search buffer
-    pub fn backspace_search_buffer(&mut self) {
-        self.search.search_buffer.pop();
+    pub fn backspace_search_buffer(&mut self) -> bool {
+        self.search.search_input.backspace()
+    }
+
+    /// Removes the character at the search cursor.
+    pub fn delete_from_search_buffer(&mut self) -> bool {
+        self.search.search_input.delete()
+    }
+
+    /// Moves the search cursor one character left.
+    pub fn move_search_cursor_left(&mut self) {
+        self.search.search_input.move_left();
+    }
+
+    /// Moves the search cursor one character right.
+    pub fn move_search_cursor_right(&mut self) {
+        self.search.search_input.move_right();
+    }
+
+    /// Moves the search cursor to the beginning of the query.
+    pub fn move_search_cursor_home(&mut self) {
+        self.search.search_input.move_home();
+    }
+
+    /// Moves the search cursor to the end of the query.
+    pub fn move_search_cursor_end(&mut self) {
+        self.search.search_input.move_end();
     }
 
     /// Sets the search direction
@@ -71,7 +106,7 @@ impl Editor {
         // An empty pattern (`/<CR>` or `?<CR>`) repeats the last search in the
         // requested direction (Vim behavior), rather than wiping the active
         // search. Only fall back to clearing when there is no last search.
-        let pattern = if self.search.search_buffer.is_empty() {
+        let pattern = if self.search.search_input.is_empty() {
             let last = self.registers.get_last_search().to_string();
             if last.is_empty() {
                 self.clear_search_highlight();
@@ -81,9 +116,9 @@ impl Editor {
             last
         } else {
             // Update the / register with the search pattern
-            self.registers
-                .set_last_search(self.search.search_buffer.clone());
-            self.search.search_buffer.clone()
+            let query = self.search.search_input.text().to_owned();
+            self.registers.set_last_search(query.clone());
+            query
         };
 
         let mut search = Search::new_with_options(

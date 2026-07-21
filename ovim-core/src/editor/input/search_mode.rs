@@ -11,13 +11,13 @@ use anyhow::Result;
 pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
         KeyCode::Char(ch) => {
-            // Add character to search buffer
-            editor.append_to_search_buffer(ch);
-            // Incremental search: update highlighting immediately
-            editor.execute_search();
+            if editor.insert_search_char(ch) {
+                // Incremental search: update highlighting immediately
+                editor.execute_search();
+            }
         }
         KeyCode::Backspace => {
-            if editor.search.search_buffer.is_empty() {
+            if editor.search_buffer().is_empty() {
                 // Backspace on empty search buffer exits search mode (like Neovim)
                 editor.restore_search_start_position();
                 editor.clear_search_buffer();
@@ -31,9 +31,27 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     editor.set_mode(Mode::Normal);
                 }
             } else {
-                editor.backspace_search_buffer();
+                if editor.backspace_search_buffer() {
+                    editor.execute_search();
+                }
+            }
+        }
+        KeyCode::Delete => {
+            if editor.delete_from_search_buffer() {
                 editor.execute_search();
             }
+        }
+        KeyCode::Left => {
+            editor.move_search_cursor_left();
+        }
+        KeyCode::Right => {
+            editor.move_search_cursor_right();
+        }
+        KeyCode::Home => {
+            editor.move_search_cursor_home();
+        }
+        KeyCode::End => {
+            editor.move_search_cursor_end();
         }
         KeyCode::Enter => {
             // Execute the search and accept it
@@ -78,4 +96,47 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         _ => {}
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Modifiers;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, Modifiers::NONE)
+    }
+
+    #[test]
+    fn search_supports_unicode_safe_mid_string_edits() {
+        let mut editor = Editor::new();
+        editor.set_mode(Mode::Search);
+
+        for character in "a🙂z".chars() {
+            handle_search_mode(&mut editor, key(KeyCode::Char(character))).unwrap();
+        }
+        handle_search_mode(&mut editor, key(KeyCode::Left)).unwrap();
+        handle_search_mode(&mut editor, key(KeyCode::Backspace)).unwrap();
+        handle_search_mode(&mut editor, key(KeyCode::Char('é'))).unwrap();
+        handle_search_mode(&mut editor, key(KeyCode::Delete)).unwrap();
+
+        assert_eq!(editor.search_buffer(), "aé");
+        assert_eq!(editor.search_cursor(), 3);
+        assert_eq!(editor.mode(), Mode::Search);
+    }
+
+    #[test]
+    fn home_end_and_delete_edit_the_search_at_the_cursor() {
+        let mut editor = Editor::new();
+        editor.set_mode(Mode::Search);
+
+        editor.insert_into_search_buffer("rust");
+        handle_search_mode(&mut editor, key(KeyCode::Home)).unwrap();
+        handle_search_mode(&mut editor, key(KeyCode::Delete)).unwrap();
+        handle_search_mode(&mut editor, key(KeyCode::End)).unwrap();
+        handle_search_mode(&mut editor, key(KeyCode::Char('y'))).unwrap();
+
+        assert_eq!(editor.search_buffer(), "usty");
+        assert_eq!(editor.search_cursor(), 4);
+    }
 }

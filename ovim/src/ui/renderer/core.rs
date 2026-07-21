@@ -581,8 +581,11 @@ fn set_cursor_position(
         let cmd_cursor_x = (input_width + 1).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + cmd_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::Search {
-        let search_cursor_x = (editor.search.search_buffer.len() + 1)
-            .min(command_chunk.width.saturating_sub(1) as usize);
+        use unicode_width::UnicodeWidthStr;
+
+        let cursor = editor.search_cursor();
+        let input_width = UnicodeWidthStr::width(&editor.search_buffer()[..cursor]);
+        let search_cursor_x = (input_width + 1).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + search_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::RenameInput {
         use unicode_width::UnicodeWidthStr;

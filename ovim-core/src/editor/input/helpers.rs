@@ -1487,7 +1487,7 @@ fn setup_and_execute_search(editor: &mut Editor, text: &str, forward: bool) -> b
     // Create and execute the search
     editor.clear_search_buffer();
     for ch in escaped.chars() {
-        editor.append_to_search_buffer(ch);
+        editor.insert_search_char(ch);
     }
     editor.set_search_forward(forward);
 

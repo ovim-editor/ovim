@@ -1,4 +1,4 @@
-use super::search::Search;
+use super::{search::Search, SingleLineInput};
 use crate::mode::Mode;
 
 /// Visual search state - saved when entering search from visual mode
@@ -13,8 +13,8 @@ pub struct VisualSearchState {
 /// Search-related state for the editor
 #[derive(Debug, Clone)]
 pub struct SearchContext {
-    /// Search buffer (for / and ? commands)
-    pub search_buffer: String,
+    /// Editable search query (for / and ? commands).
+    pub(super) search_input: SingleLineInput,
     /// Search direction: true for forward (/), false for backward (?)
     pub search_forward: bool,
     /// Current search state
@@ -29,7 +29,7 @@ impl SearchContext {
     /// Create a new SearchContext with default values
     pub fn new() -> Self {
         Self {
-            search_buffer: String::new(),
+            search_input: SingleLineInput::default(),
             search_forward: true,
             current_search: None,
             search_start_pos: None,

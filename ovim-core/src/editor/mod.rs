@@ -2094,7 +2094,7 @@ impl Editor {
             }
             Mode::Search => {
                 // Insert text into search buffer
-                self.search.search_buffer.push_str(text);
+                self.insert_into_search_buffer(text);
             }
             Mode::Picker => {
                 if let Some(picker) = self.picker_mut() {
