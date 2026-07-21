@@ -6,6 +6,11 @@ use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
+mod range;
+
+pub use range::parse_range;
+use range::{parse_range_endpoint_with_status, parse_range_with_status};
+
 /// Handles input in Command mode
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     match key_event.code {
@@ -880,154 +885,6 @@ fn handle_global_command(
     }
 
     Ok(())
-}
-
-/// Parses an Ex command range (e.g., "1,5", "%", ".", "'a,'b")
-/// Returns (start_line, end_line) as 0-indexed, inclusive
-pub fn parse_range(editor: &Editor, range_str: &str) -> Option<(usize, usize)> {
-    parse_range_internal(editor, range_str).ok()
-}
-
-#[derive(Debug, Clone, Copy)]
-enum ParseRangeError {
-    MarkNotSet,
-    InvalidRange,
-}
-
-fn parse_range_internal(
-    editor: &Editor,
-    range_str: &str,
-) -> Result<(usize, usize), ParseRangeError> {
-    let range_str = range_str.trim();
-
-    if range_str.is_empty() {
-        // No range - current line only
-        let cursor_line = editor.buffer().cursor().line();
-        return Ok((cursor_line, cursor_line));
-    }
-
-    // Handle % (all lines)
-    if range_str == "%" {
-        if editor.buffer().line_count() == 0 {
-            return Err(ParseRangeError::InvalidRange);
-        }
-        return Ok((0, editor.buffer().line_count().saturating_sub(1)));
-    }
-
-    // Handle visual selection markers
-    if range_str == "'<,'>" || range_str.contains("'<") {
-        if let Some(((start_line, _), (end_line, _))) = editor.visual_selection() {
-            return Ok((start_line, end_line));
-        }
-        return Err(ParseRangeError::InvalidRange);
-    }
-
-    // Handle ranges with comma (e.g., "1,5", ".,$ ", "'a,'b")
-    if let Some(comma_idx) = range_str.find(',') {
-        let start_part = range_str[..comma_idx].trim();
-        let end_part = range_str[comma_idx + 1..].trim();
-
-        let start = parse_range_endpoint_internal(editor, start_part)?;
-        let end = parse_range_endpoint_internal(editor, end_part)?;
-
-        return Ok((start.min(end), start.max(end)));
-    }
-
-    // Single endpoint
-    let line = parse_range_endpoint_internal(editor, range_str)?;
-    Ok((line, line))
-}
-
-fn parse_range_with_status(
-    editor: &mut Editor,
-    range_str: &str,
-    invalid_status: Option<&str>,
-) -> Option<(usize, usize)> {
-    match parse_range_internal(editor, range_str) {
-        Ok(range) => Some(range),
-        Err(ParseRangeError::MarkNotSet) => {
-            editor.set_status_message("E20: Mark not set".to_string());
-            None
-        }
-        Err(ParseRangeError::InvalidRange) => {
-            if let Some(status) = invalid_status {
-                editor.set_status_message(status.to_string());
-            }
-            None
-        }
-    }
-}
-
-fn parse_range_endpoint_with_status(
-    editor: &mut Editor,
-    endpoint: &str,
-    invalid_status: Option<&str>,
-) -> Option<usize> {
-    match parse_range_endpoint_internal(editor, endpoint) {
-        Ok(line) => Some(line),
-        Err(ParseRangeError::MarkNotSet) => {
-            editor.set_status_message("E20: Mark not set".to_string());
-            None
-        }
-        Err(ParseRangeError::InvalidRange) => {
-            if let Some(status) = invalid_status {
-                editor.set_status_message(status.to_string());
-            }
-            None
-        }
-    }
-}
-
-fn parse_range_endpoint_internal(
-    editor: &Editor,
-    endpoint: &str,
-) -> Result<usize, ParseRangeError> {
-    let endpoint = endpoint.trim();
-    let cursor_line = editor.buffer().cursor().line();
-    let last_line = editor.buffer().line_count().saturating_sub(1);
-
-    // . = current line
-    if endpoint == "." {
-        return Ok(cursor_line);
-    }
-
-    // $ = last line
-    if endpoint == "$" {
-        return Ok(last_line);
-    }
-
-    // 'x = mark
-    if endpoint.starts_with('\'') && endpoint.len() == 2 {
-        let mark_char = endpoint
-            .chars()
-            .nth(1)
-            .ok_or(ParseRangeError::InvalidRange)?;
-        if let Some(mark) = editor.nav.marks.get_mark(mark_char) {
-            return Ok(mark.line);
-        }
-        return Err(ParseRangeError::MarkNotSet);
-    }
-
-    // +N or -N (relative to current line)
-    if let Some(rest) = endpoint.strip_prefix('+') {
-        let offset: usize = rest.parse().map_err(|_| ParseRangeError::InvalidRange)?;
-        return Ok((cursor_line + offset).min(last_line));
-    }
-    if let Some(rest) = endpoint.strip_prefix('-') {
-        let offset: usize = rest.parse().map_err(|_| ParseRangeError::InvalidRange)?;
-        return Ok(cursor_line.saturating_sub(offset));
-    }
-
-    // Plain number (1-indexed in Vim, convert to 0-indexed)
-    if let Ok(line_num) = endpoint.parse::<usize>() {
-        if line_num == 0 {
-            return Ok(0);
-        }
-        // Convert to 0-indexed and clamp to valid range
-        return Ok((line_num.saturating_sub(1)).min(last_line));
-    }
-
-    Err(ParseRangeError::InvalidRange)
 }
 
 /// Handles shell command execution (:! or :.! or :%!)
@@ -2070,18 +1927,4 @@ fn execute_command_single(editor: &mut Editor, command: &str) -> Result<()> {
     }
 
     Ok(())
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_parse_range_with_status_reports_missing_mark() {
-        let mut editor = Editor::with_content("a\nb\nc\n");
-        let range = parse_range_with_status(&mut editor, "1,'a", None);
-
-        assert_eq!(range, None);
-        assert_eq!(editor.status_message(), "E20: Mark not set");
-    }
 }
