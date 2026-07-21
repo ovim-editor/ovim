@@ -602,19 +602,19 @@ impl Editor {
     // ==================== Rename Input ====================
 
     pub fn rename_buffer(&self) -> &str {
-        &self.editing.rename_buffer
+        self.editing.rename_input.text()
     }
 
     pub fn rename_cursor(&self) -> usize {
-        self.editing.rename_cursor
+        self.editing.rename_input.cursor()
     }
 
     pub fn set_rename_buffer(&mut self, s: String) {
-        self.editing.rename_buffer = s;
+        self.editing.rename_input = SingleLineInput::new(s);
     }
 
-    pub fn set_rename_cursor(&mut self, pos: usize) {
-        self.editing.rename_cursor = pos;
+    pub(crate) fn rename_input_mut(&mut self) -> &mut SingleLineInput {
+        &mut self.editing.rename_input
     }
 
     // ==================== AI Prompt ====================

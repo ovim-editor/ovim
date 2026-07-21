@@ -572,9 +572,11 @@ fn set_cursor_position(
             .min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + search_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::RenameInput {
-        // "rename: " is 8 chars
-        let rename_cursor_x =
-            (editor.rename_cursor() + 8).min(command_chunk.width.saturating_sub(1) as usize);
+        use unicode_width::UnicodeWidthStr;
+
+        let cursor = editor.rename_cursor();
+        let input_width = UnicodeWidthStr::width(&editor.rename_buffer()[..cursor]);
+        let rename_cursor_x = (input_width + 8).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + rename_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::AiChat && chat_area.is_some() {
         if let Some(position) = editor.render_cache.ai_chat_exa_input_cursor_pos {
@@ -1163,16 +1165,31 @@ mod cursor_screen_position_tests {
         assert!(editor.render_cache.ai_chat_image_thumbnails.is_empty());
     }
 
-    /// Renders `editor` to a `WIDTH x HEIGHT` test terminal and returns the
-    /// hardware cursor's `y` coordinate (absolute terminal row).
-    fn render_and_cursor_y(editor: &mut Editor, width: u16, height: u16) -> u16 {
+    /// Renders `editor` to a test terminal and returns the hardware cursor.
+    fn render_and_cursor_position(editor: &mut Editor, width: u16, height: u16) -> (u16, u16) {
         let backend = TestBackend::new(width, height);
         let mut terminal = Terminal::new(backend).unwrap();
         let mut line_cache = LineRenderCache::new();
         terminal
             .draw(|f| Renderer::render_to_frame(f, editor, &mut line_cache))
             .unwrap();
-        terminal.get_cursor_position().unwrap().y
+        let position = terminal.get_cursor_position().unwrap();
+        (position.x, position.y)
+    }
+
+    fn render_and_cursor_y(editor: &mut Editor, width: u16, height: u16) -> u16 {
+        render_and_cursor_position(editor, width, height).1
+    }
+
+    #[test]
+    fn rename_cursor_uses_display_width_for_unicode_input() {
+        let mut editor = Editor::default();
+        editor.set_rename_buffer("éx".to_owned());
+        editor.set_mode(crate::mode::Mode::RenameInput);
+
+        let (cursor_x, _) = render_and_cursor_position(&mut editor, 40, 12);
+
+        assert_eq!(cursor_x, 10);
     }
 
     #[test]

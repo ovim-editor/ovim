@@ -1,4 +1,4 @@
-use super::ReplaceModeState;
+use super::{ReplaceModeState, SingleLineInput};
 use crate::change::ChangeToken;
 use crate::repeat_action::RepeatAction;
 
@@ -41,8 +41,6 @@ pub struct EditingState {
     pub pending_register_insert: bool,
     /// Awaiting one normal-mode command for Ctrl-O in insert mode
     pub insert_normal_pending: bool,
-    /// Rename input buffer (for LSP rename mode)
-    pub rename_buffer: String,
-    /// Cursor position within the rename input buffer
-    pub rename_cursor: usize,
+    /// Text and cursor state for LSP rename mode.
+    pub rename_input: SingleLineInput,
 }
