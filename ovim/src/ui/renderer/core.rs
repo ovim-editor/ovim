@@ -564,8 +564,11 @@ fn set_cursor_position(
             frame.set_cursor_position((cursor_x, cursor_y));
         }
     } else if editor.mode() == crate::mode::Mode::Command {
-        let cmd_cursor_x =
-            (editor.command_cursor() + 1).min(command_chunk.width.saturating_sub(1) as usize);
+        use unicode_width::UnicodeWidthStr;
+
+        let cursor = editor.command_cursor();
+        let input_width = UnicodeWidthStr::width(&editor.command_line()[..cursor]);
+        let cmd_cursor_x = (input_width + 1).min(command_chunk.width.saturating_sub(1) as usize);
         frame.set_cursor_position((command_chunk.x + cmd_cursor_x as u16, command_chunk.y));
     } else if editor.mode() == crate::mode::Mode::Search {
         let search_cursor_x = (editor.search.search_buffer.len() + 1)
@@ -1190,6 +1193,17 @@ mod cursor_screen_position_tests {
         let (cursor_x, _) = render_and_cursor_position(&mut editor, 40, 12);
 
         assert_eq!(cursor_x, 10);
+    }
+
+    #[test]
+    fn command_cursor_uses_display_width_for_unicode_input() {
+        let mut editor = Editor::default();
+        editor.set_command_line("éx");
+        editor.set_mode(crate::mode::Mode::Command);
+
+        let (cursor_x, _) = render_and_cursor_position(&mut editor, 40, 12);
+
+        assert_eq!(cursor_x, 3);
     }
 
     #[test]

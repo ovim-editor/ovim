@@ -1,9 +1,9 @@
+use super::SingleLineInput;
+
 /// Context for command-line mode (`:` commands)
 pub struct CommandContext {
-    /// Current command being typed
-    pub command_line: String,
-    /// Cursor position in command line (byte index)
-    pub command_cursor: usize,
+    /// Current command text and its UTF-8-safe cursor.
+    pub input: SingleLineInput,
     /// History of executed commands
     pub command_history: Vec<String>,
     /// Current position in history during navigation
@@ -13,8 +13,7 @@ pub struct CommandContext {
 impl CommandContext {
     pub fn new() -> Self {
         Self {
-            command_line: String::new(),
-            command_cursor: 0,
+            input: SingleLineInput::default(),
             command_history: Vec::new(),
             command_history_index: None,
         }

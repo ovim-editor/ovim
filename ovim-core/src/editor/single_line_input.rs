@@ -9,22 +9,33 @@ pub struct SingleLineInput {
 }
 
 impl SingleLineInput {
+    /// Create an input with the cursor at the end, discarding line breaks.
     pub fn new(text: impl Into<String>) -> Self {
-        let text = text.into();
+        let mut text = text.into();
+        text.retain(|character| !matches!(character, '\n' | '\r'));
         let cursor = text.len();
         Self { text, cursor }
     }
 
+    /// Return the input text.
     pub fn text(&self) -> &str {
         &self.text
     }
 
+    /// Return the cursor as a UTF-8 byte offset.
     pub fn cursor(&self) -> usize {
         self.cursor
     }
 
+    /// Return whether the input contains no text.
     pub fn is_empty(&self) -> bool {
         self.text.is_empty()
+    }
+
+    /// Remove all text and reset the cursor to the beginning.
+    pub fn clear(&mut self) {
+        self.text.clear();
+        self.cursor = 0;
     }
 
     /// Insert a printable character at the cursor. Newline characters are
@@ -38,6 +49,29 @@ impl SingleLineInput {
         true
     }
 
+    /// Insert text at the cursor, ignoring line breaks.
+    pub fn insert_str(&mut self, text: &str) -> bool {
+        if text.is_empty() {
+            return false;
+        }
+        if text.contains(['\n', '\r']) {
+            let filtered: String = text
+                .chars()
+                .filter(|character| !matches!(character, '\n' | '\r'))
+                .collect();
+            if filtered.is_empty() {
+                return false;
+            }
+            self.text.insert_str(self.cursor, &filtered);
+            self.cursor += filtered.len();
+        } else {
+            self.text.insert_str(self.cursor, text);
+            self.cursor += text.len();
+        }
+        true
+    }
+
+    /// Remove the character before the cursor.
     pub fn backspace(&mut self) -> bool {
         let Some(previous) = self.previous_boundary() else {
             return false;
@@ -47,6 +81,7 @@ impl SingleLineInput {
         true
     }
 
+    /// Remove the character at the cursor.
     pub fn delete(&mut self) -> bool {
         if self.cursor >= self.text.len() {
             return false;
@@ -55,6 +90,7 @@ impl SingleLineInput {
         true
     }
 
+    /// Move the cursor one character left.
     pub fn move_left(&mut self) -> bool {
         let Some(previous) = self.previous_boundary() else {
             return false;
@@ -63,6 +99,7 @@ impl SingleLineInput {
         true
     }
 
+    /// Move the cursor one character right.
     pub fn move_right(&mut self) -> bool {
         if self.cursor >= self.text.len() {
             return false;
@@ -75,6 +112,7 @@ impl SingleLineInput {
         true
     }
 
+    /// Move the cursor to the beginning.
     pub fn move_home(&mut self) -> bool {
         if self.cursor == 0 {
             return false;
@@ -83,6 +121,7 @@ impl SingleLineInput {
         true
     }
 
+    /// Move the cursor to the end.
     pub fn move_end(&mut self) -> bool {
         if self.cursor == self.text.len() {
             return false;
@@ -143,5 +182,18 @@ mod tests {
         assert_eq!(input.cursor(), 0);
         assert!(input.move_end());
         assert_eq!(input.cursor(), input.text().len());
+    }
+
+    #[test]
+    fn inserting_text_filters_line_breaks_and_clear_resets_the_cursor() {
+        let mut input = SingleLineInput::new("a\n");
+        assert_eq!(input.text(), "a");
+        assert!(input.insert_str("b\nc\r"));
+        assert_eq!(input.text(), "abc");
+        assert_eq!(input.cursor(), 3);
+
+        input.clear();
+        assert!(input.is_empty());
+        assert_eq!(input.cursor(), 0);
     }
 }
