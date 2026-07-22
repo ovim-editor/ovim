@@ -759,7 +759,10 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
     let y = if concept_page {
         buffer.y + buffer.height.saturating_sub(height) / 2
     } else {
-        buffer.bottom().saturating_sub(height)
+        let selection_rows = editor.ai_state.active_selection.as_ref().map(|selection| {
+            walkthrough_selection_screen_rows(editor, selection.start_line, selection.end_line)
+        });
+        walkthrough_code_card_y(buffer, height, selection_rows)
     };
     let area = Rect::new(
         buffer.x + buffer.width.saturating_sub(layout_width) / 2,
@@ -797,6 +800,62 @@ pub fn render_ai_code_explanation(frame: &mut Frame, editor: &mut Editor) {
     );
     frame.render_widget(Clear, area);
     frame.render_widget(card, area);
+}
+
+fn walkthrough_selection_screen_rows(
+    editor: &Editor,
+    selection_start: usize,
+    selection_end: usize,
+) -> (isize, isize) {
+    let start_line = selection_start.min(selection_end);
+    let end_line = selection_start.max(selection_end);
+    let viewport_start = editor.scroll_offset();
+
+    if editor.options.wrap {
+        if let Some(wrap_map) = editor.wrap_map() {
+            let viewport_row =
+                wrap_map.viewport_top_visual_row(viewport_start, editor.scroll_subrow());
+            let start_row = wrap_map.logical_to_visual(start_line);
+            let end_row = wrap_map
+                .logical_to_visual(end_line)
+                .saturating_add(wrap_map.visual_lines_for(end_line) as usize)
+                .saturating_sub(1);
+            return (
+                start_row as isize - viewport_row as isize,
+                end_row as isize - viewport_row as isize,
+            );
+        }
+    }
+
+    (
+        start_line as isize - viewport_start as isize,
+        end_line as isize - viewport_start as isize,
+    )
+}
+
+fn walkthrough_code_card_y(
+    buffer: Rect,
+    card_height: u16,
+    selection_rows: Option<(isize, isize)>,
+) -> u16 {
+    let top_y = buffer.y;
+    let bottom_y = buffer.bottom().saturating_sub(card_height);
+    let Some((selection_start, selection_end)) = selection_rows else {
+        return bottom_y;
+    };
+    let selection_start = buffer.y as isize + selection_start;
+    let selection_end = buffer.y as isize + selection_end + 1;
+    let overlaps = |card_y: u16| {
+        let card_start = card_y as isize;
+        let card_end = card_start + card_height as isize;
+        selection_start < card_end && selection_end > card_start
+    };
+
+    if overlaps(bottom_y) && !overlaps(top_y) {
+        top_y
+    } else {
+        bottom_y
+    }
 }
 
 struct WalkthroughDiscussion {
@@ -1387,7 +1446,7 @@ pub fn render_ai_chat_image_modal_frame(frame: &mut Frame, editor: &Editor) {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::{backend::TestBackend, style::Modifier, Terminal};
+    use ratatui::{backend::TestBackend, layout::Rect, style::Modifier, Terminal};
 
     use crate::editor::Editor;
     use ovim_core::ai::chat_types::{ChatOpts, ToolCallInfo};
@@ -1654,5 +1713,25 @@ mod tests {
         assert!((4..=6).contains(&title_row), "title row: {title_row}");
         assert!(body_row > title_row);
         assert!(rows.iter().any(|row| row.contains("Space ask")));
+    }
+
+    #[test]
+    fn code_walkthrough_card_moves_above_a_selection_at_viewport_bottom() {
+        let buffer = Rect::new(0, 2, 100, 20);
+
+        assert_eq!(
+            super::walkthrough_code_card_y(buffer, 6, Some((16, 19))),
+            buffer.y
+        );
+    }
+
+    #[test]
+    fn code_walkthrough_card_stays_below_a_selection_at_viewport_top() {
+        let buffer = Rect::new(0, 2, 100, 20);
+
+        assert_eq!(
+            super::walkthrough_code_card_y(buffer, 6, Some((1, 3))),
+            buffer.bottom() - 6
+        );
     }
 }
