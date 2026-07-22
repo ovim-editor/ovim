@@ -7,22 +7,35 @@ use super::Editor;
 impl Editor {
     /// Submit the current chat input as a user message and spawn the AI request.
     pub fn submit_ai_chat_message(&mut self) -> Result<()> {
-        let chat = match self.ai_state.chat.as_mut() {
-            Some(c) => c,
+        let (input, has_pending_images) = match self.ai_state.chat.as_ref() {
+            Some(chat) => (
+                chat.input.trim().to_string(),
+                !chat.pending_images.is_empty(),
+            ),
             None => return Ok(()),
         };
-
-        let input = chat.input.trim().to_string();
-        if input.is_empty() && chat.pending_images.is_empty() {
+        if input.is_empty() && !has_pending_images {
             return Ok(());
         }
 
-        if chat.runtime_turn.is_some() {
+        // A prior terminal event may have failed only because persistence was
+        // unavailable. Retry it before deciding whether this input is a steer
+        // for an active turn or a new message.
+        if !self.retry_pending_ai_runtime_termination() {
+            return Ok(());
+        }
+
+        if self
+            .ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.runtime_turn.is_some())
+        {
             self.queue_current_ai_chat_input(super::ai_chat_state::QueuedChatInputKind::Steer);
             return Ok(());
         }
 
-        if chat.pending_images.is_empty() && self.try_execute_ai_chat_slash_command(&input)? {
+        if !has_pending_images && self.try_execute_ai_chat_slash_command(&input)? {
             return Ok(());
         }
 
@@ -38,9 +51,18 @@ impl Editor {
         self.set_status_message(String::new());
 
         // Allocate stable ovim run/agent/turn identity before provider work.
-        let runtime_turn = self
-            .begin_ai_runtime_turn(&runtime_input)
-            .map_err(|error| anyhow::anyhow!("failed to start agent turn: {error}"))?;
+        let runtime_turn = match self.begin_ai_runtime_turn(&runtime_input) {
+            Ok(turn) => turn,
+            Err(error) => {
+                let message = format!("Unable to start AI turn: {error}");
+                crate::log_warn!("agent_runtime", "{message}");
+                self.set_status_message(message);
+                // Runtime persistence errors are recoverable UI failures. Keep
+                // the draft intact and never let them terminate the editor's
+                // top-level input loop.
+                return Ok(());
+            }
+        };
         let user_event_id = runtime_turn.initiating_event.caused_by.clone();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.runtime_turn = Some(Box::new(runtime_turn));
@@ -1324,16 +1346,28 @@ impl Editor {
         turn: &crate::agent_runtime::PendingTurnRef,
         detail: String,
     ) {
-        if let Err(error) = self.ai_state.agent_runtime.fail_turn(turn, detail) {
-            crate::log_warn!("agent_runtime", "failed to terminate dynamic turn: {error}");
-        }
-        if let Some(chat) = self.ai_state.chat.as_mut() {
-            if chat
-                .runtime_turn
-                .as_ref()
-                .is_some_and(|active| active.turn_id == turn.turn_id)
-            {
-                chat.runtime_turn = None;
+        match self.ai_state.agent_runtime.fail_turn(turn, detail.clone()) {
+            Ok(_) | Err(crate::agent_runtime::AgentRuntimeError::TurnAlreadyTerminal) => {
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    if chat
+                        .runtime_turn
+                        .as_ref()
+                        .is_some_and(|active| active.turn_id == turn.turn_id)
+                    {
+                        chat.runtime_turn = None;
+                        chat.pending_runtime_termination = None;
+                    }
+                }
+            }
+            Err(error) => {
+                // Keep the editor's turn reference so termination can be
+                // retried after transient failures such as a full disk.
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.pending_runtime_termination = Some(
+                        super::ai_chat_state::PendingRuntimeTermination::Failed(detail),
+                    );
+                }
+                crate::log_warn!("agent_runtime", "failed to terminate dynamic turn: {error}");
             }
         }
     }
@@ -1431,5 +1465,53 @@ impl Editor {
             request.message
         };
         self.set_status_message(status);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ai::chat_types::ChatOpts;
+
+    #[test]
+    fn stale_runtime_turn_does_not_escape_the_chat_input_loop() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+
+        // Simulate a runtime turn whose UI handle was lost after a transient
+        // persistence failure.
+        let _active_turn = editor.begin_ai_runtime_turn("first message").unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.input = "retry after freeing disk space".into();
+        chat.input_cursor = chat.input.len();
+
+        assert!(editor.submit_ai_chat_message().is_ok());
+        assert_eq!(editor.ai_chat_input(), "retry after freeing disk space");
+        assert_eq!(
+            editor.status_message(),
+            "Unable to start AI turn: a turn is already active"
+        );
+    }
+
+    #[test]
+    fn pending_runtime_termination_is_retried_before_the_next_turn() {
+        let mut editor = Editor::default();
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+
+        let active_turn = editor.begin_ai_runtime_turn("first message").unwrap();
+        let chat = editor.ai_state.chat.as_mut().unwrap();
+        chat.runtime_turn = Some(Box::new(active_turn));
+        chat.pending_runtime_termination = Some(
+            super::super::ai_chat_state::PendingRuntimeTermination::Failed("disk was full".into()),
+        );
+        chat.input = "retry after freeing disk space".into();
+        chat.input_cursor = chat.input.len();
+
+        assert!(editor.retry_pending_ai_runtime_termination());
+        assert!(editor.active_ai_runtime_turn().is_none());
+        assert_eq!(editor.ai_chat_input(), "retry after freeing disk space");
+        assert!(editor
+            .begin_ai_runtime_turn("retry after freeing disk space")
+            .is_ok());
     }
 }

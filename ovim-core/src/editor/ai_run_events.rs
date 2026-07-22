@@ -289,19 +289,83 @@ impl Editor {
             AiTurnTerminal::Failed => self
                 .ai_state
                 .agent_runtime
-                .fail_turn(&turn, detail.unwrap_or_default()),
-            AiTurnTerminal::Interrupted => {
-                self.ai_state.agent_runtime.interrupt_turn(&turn, detail)
+                .fail_turn(&turn, detail.clone().unwrap_or_default()),
+            AiTurnTerminal::Interrupted => self
+                .ai_state
+                .agent_runtime
+                .interrupt_turn(&turn, detail.clone()),
+        };
+        match result {
+            Ok(_) | Err(AgentRuntimeError::TurnAlreadyTerminal) => {
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.runtime_turn = None;
+                    chat.pending_runtime_termination = None;
+                }
             }
+            Err(error) => {
+                let pending = match terminal {
+                    AiTurnTerminal::Completed => {
+                        super::ai_chat_state::PendingRuntimeTermination::Completed
+                    }
+                    AiTurnTerminal::Failed => {
+                        super::ai_chat_state::PendingRuntimeTermination::Failed(
+                            detail.unwrap_or_default(),
+                        )
+                    }
+                    AiTurnTerminal::Interrupted => {
+                        super::ai_chat_state::PendingRuntimeTermination::Interrupted(
+                            detail.unwrap_or_default(),
+                        )
+                    }
+                };
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.pending_runtime_termination = Some(pending);
+                }
+                crate::log_warn!("agent_runtime", "failed to terminate AI turn: {error}");
+            }
+        }
+    }
+
+    /// Retry a terminal event that previously failed to persist. Returns false
+    /// when the caller must preserve its draft and try again later.
+    pub(crate) fn retry_pending_ai_runtime_termination(&mut self) -> bool {
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_runtime_termination.take());
+        let Some(pending) = pending else {
+            return true;
+        };
+        let Some(turn) = self.active_ai_runtime_turn() else {
+            return true;
+        };
+
+        let result = match &pending {
+            super::ai_chat_state::PendingRuntimeTermination::Completed => {
+                self.ai_state.agent_runtime.complete_turn(&turn)
+            }
+            super::ai_chat_state::PendingRuntimeTermination::Failed(detail) => {
+                self.ai_state.agent_runtime.fail_turn(&turn, detail.clone())
+            }
+            super::ai_chat_state::PendingRuntimeTermination::Interrupted(detail) => self
+                .ai_state
+                .agent_runtime
+                .interrupt_turn(&turn, Some(detail.clone())),
         };
         match result {
             Ok(_) | Err(AgentRuntimeError::TurnAlreadyTerminal) => {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.runtime_turn = None;
                 }
+                true
             }
             Err(error) => {
-                crate::log_warn!("agent_runtime", "failed to terminate AI turn: {error}");
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.pending_runtime_termination = Some(pending);
+                }
+                self.set_status_message(format!("Unable to finalize previous AI turn: {error}"));
+                false
             }
         }
     }

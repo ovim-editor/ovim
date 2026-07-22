@@ -464,7 +464,11 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         }
         KeyCode::Enter => match editor.submit_ai_agent_composer_action() {
             Ok(true) => {}
-            Ok(false) => editor.submit_ai_chat_message()?,
+            Ok(false) => {
+                if let Err(error) = editor.submit_ai_chat_message() {
+                    editor.set_status_message(format!("Unable to submit AI chat message: {error}"));
+                }
+            }
             Err(error) => editor.set_status_message(error),
         },
         KeyCode::Tab => {

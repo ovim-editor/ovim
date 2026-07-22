@@ -19,6 +19,13 @@ pub enum ComprehensionPolicy {
     Commit,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum PendingRuntimeTermination {
+    Completed,
+    Failed(String),
+    Interrupted(String),
+}
+
 impl ComprehensionPolicy {
     pub fn as_str(self) -> &'static str {
         match self {
@@ -593,6 +600,9 @@ pub struct AiChatState {
     pub runtime_branch: crate::agent_runtime::BranchLocator,
     /// Active ovim turn. Provider continuations and dynamic tools share it.
     pub runtime_turn: Option<Box<crate::agent_runtime::PendingTurnRef>>,
+    /// Terminal transition that could not be persisted. Retained so the next
+    /// submission can retry it before starting a new turn.
+    pub(crate) pending_runtime_termination: Option<PendingRuntimeTermination>,
     /// Buffer ID that mutations target. Updated by `open_file`.
     pub active_buffer_id: BufferId,
     /// Chat input text.
@@ -829,6 +839,7 @@ impl AiChatState {
             origin_buffer_id: active_buffer_id,
             runtime_branch: crate::agent_runtime::BranchLocator("branch-0".into()),
             runtime_turn: None,
+            pending_runtime_termination: None,
             active_buffer_id,
             input: String::new(),
             input_cursor: 0,
