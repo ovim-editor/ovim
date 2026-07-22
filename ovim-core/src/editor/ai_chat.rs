@@ -1024,15 +1024,32 @@ mod tests {
             )
         });
 
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
-        while kill.published_child().is_none() {
+        let is_ready_output = |event: &super::super::ai_chat_state::ShellProgressEvent| {
+            matches!(
+                event,
+                super::super::ai_chat_state::ShellProgressEvent::Output { bytes, .. }
+                    if bytes.windows(b"ready".len()).any(|window| window == b"ready")
+            )
+        };
+
+        // Wait for the script to actually emit "ready" before interrupting,
+        // rather than a fixed sleep after spawn. The child pid is published at
+        // fork, before the login shell (`-lc`) has sourced its profile and run
+        // `echo ready`; on a loaded runner that startup can outlast any fixed
+        // delay, so a timed interrupt could land before the trap is even armed
+        // and race the "ready" output away entirely.
+        let mut events = Vec::new();
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(4);
+        while !events.iter().any(is_ready_output) {
             assert!(
                 std::time::Instant::now() < deadline,
-                "shell child never spawned"
+                "shell never emitted ready output"
             );
+            while let Ok(event) = progress_rx.try_recv() {
+                events.push(event);
+            }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        std::thread::sleep(std::time::Duration::from_millis(30));
         kill.interrupt();
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
@@ -1047,16 +1064,14 @@ mod tests {
             worker.join().unwrap(),
             crate::ai::tools::ToolResult::Error(_)
         ));
-        let events = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect::<Vec<_>>();
+        while let Ok(event) = progress_rx.try_recv() {
+            events.push(event);
+        }
         assert!(events.iter().any(|event| matches!(
             event,
             super::super::ai_chat_state::ShellProgressEvent::Spawned { .. }
         )));
-        assert!(events.iter().any(|event| matches!(
-            event,
-            super::super::ai_chat_state::ShellProgressEvent::Output { bytes, .. }
-                if bytes.windows(b"ready".len()).any(|window| window == b"ready")
-        )));
+        assert!(events.iter().any(is_ready_output));
     }
 
     // macOS-only: the killpg(pgid, 0) probe below detects the "group empty
