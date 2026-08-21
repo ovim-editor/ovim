@@ -375,10 +375,14 @@ pub(super) fn discover_repo_root_from_start(start: &Path) -> Option<PathBuf> {
         return Some(normalize_path(repo.path()));
     }
 
-    // Fallback for marker-only setups (e.g. tests, partial repos).
-    let mut dir = probe;
+    // Fallback for marker-only setups (e.g. partial repositories). An empty
+    // marker is meaningful only on the directory being edited; accepting one
+    // from an ancestor such as `/tmp` would silently widen the AI tool
+    // boundary. Plausible partial metadata can still identify an ancestor.
+    let mut dir = probe.clone();
     loop {
-        if dir.join(".git").exists() {
+        let marker = dir.join(".git");
+        if is_plausible_git_marker(&marker) || (dir == probe && marker.exists()) {
             return Some(normalize_path(&dir));
         }
         if !dir.pop() {
@@ -386,6 +390,31 @@ pub(super) fn discover_repo_root_from_start(start: &Path) -> Option<PathBuf> {
         }
     }
     None
+}
+
+fn is_plausible_git_marker(marker: &Path) -> bool {
+    if marker.is_dir() {
+        return ["HEAD", "config", "objects", "refs", "commondir"]
+            .iter()
+            .any(|entry| marker.join(entry).exists());
+    }
+
+    if !marker.is_file() {
+        return false;
+    }
+    let Ok(metadata) = std::fs::metadata(marker) else {
+        return false;
+    };
+    if metadata.len() > 4096 {
+        return false;
+    }
+
+    std::fs::read_to_string(marker).is_ok_and(|contents| {
+        contents
+            .trim_start()
+            .strip_prefix("gitdir:")
+            .is_some_and(|target| !target.trim().is_empty())
+    })
 }
 
 pub(super) fn to_relative_path_for_boundary(path: &Path, boundary_root: &Path) -> String {
@@ -445,6 +474,33 @@ mod tests {
         let reference = root.join("references").join("guide.md");
         fs::write(&reference, "guide\n").expect("write reference");
         reference
+    }
+
+    #[test]
+    fn ignores_empty_git_marker_in_shared_ancestor() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        fs::create_dir(temp.path().join(".git")).expect("empty marker");
+        let project = temp.path().join("project");
+        fs::create_dir(&project).expect("project directory");
+        let file = project.join("notes.txt");
+        fs::write(&file, "hello\n").expect("project file");
+
+        assert_eq!(discover_repo_root_from_start(&file), None);
+    }
+
+    #[test]
+    fn recognizes_partial_git_directory_with_head_marker() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let project = temp.path().join("project");
+        fs::create_dir_all(project.join(".git")).expect("git directory");
+        fs::write(project.join(".git/HEAD"), "ref: refs/heads/main\n").expect("HEAD marker");
+        let file = project.join("notes.txt");
+        fs::write(&file, "hello\n").expect("project file");
+
+        assert_eq!(
+            discover_repo_root_from_start(&file),
+            Some(normalize_path(&project))
+        );
     }
 
     #[test]
