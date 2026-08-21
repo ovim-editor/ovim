@@ -5,6 +5,13 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
 
@@ -12,14 +19,44 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
+        with:
+          key: headless
       - name: Format
         run: cargo fmt --all --check
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --no-default-features --features lua --locked -- -D warnings
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --no-default-features --features lua --locked
+
+  gui:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: gui
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: ovim/gui/package-lock.json
+      - name: Install Linux GUI dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev
+      - name: Check SolidJS frontend
+        run: |
+          npm ci --prefix ovim/gui
+          npm run check --prefix ovim/gui
+          npm test --prefix ovim/gui
+          npm run build --prefix ovim/gui
+      - name: Clippy native GUI
+        run: cargo clippy -p ovim --all-targets --locked -- -D warnings
