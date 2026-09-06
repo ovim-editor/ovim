@@ -1,3 +1,4 @@
+mod gui;
 mod handlers;
 pub mod mcp;
 mod mcp_handler;
@@ -19,6 +20,7 @@ pub use state::{
     VisualSelection, AGENT_API_SCHEMA_VERSION, SNAPSHOT_SCHEMA_VERSION,
 };
 
+use crate::gui::server::GuiChannel;
 use anyhow::Result;
 use axum::{
     http::Request,
@@ -67,6 +69,7 @@ pub async fn start_server(
     tx: mpsc::Sender<ApiRequest>,
     port_tx: tokio::sync::oneshot::Sender<u16>,
     capability: SessionCapability,
+    gui: GuiChannel,
 ) -> Result<()> {
     anyhow::ensure!(
         capability.is_configured(),
@@ -81,7 +84,7 @@ pub async fn start_server(
     let security = security::ApiSecurity::new(capability, actual_addr.port());
     let state = ApiState::new(tx);
     let app = security::secure_router(
-        create_router(state).layer(middleware::from_fn(deprecation_middleware)),
+        create_router(state, gui).layer(middleware::from_fn(deprecation_middleware)),
         security,
     );
 

@@ -19,6 +19,7 @@ pub mod browser;
 #[cfg(feature = "gui")]
 mod menu;
 pub mod protocol;
+pub mod server;
 #[cfg(feature = "gui")]
 pub mod window;
 
@@ -461,7 +462,13 @@ fn projected_workspace_path(editor: &Editor) -> Option<std::path::PathBuf> {
         })
 }
 
-async fn handle_request(
+/// The workspace a diff command compares, or the message shown when the
+/// editor is not sitting in one.
+fn workspace_or_error(workspace: Option<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
+    workspace.ok_or_else(|| "Open a file in a Git worktree first".to_string())
+}
+
+pub(crate) async fn handle_request(
     request: GuiRequest,
     editor: &mut Editor,
     dimensions: &mut (u16, u16),
@@ -515,15 +522,29 @@ async fn handle_request(
             let result = draft_vector_feedback(editor, &feedback);
             (reply, result)
         }
-        GuiRequest::DiffWorkspace { reply } => {
-            let result = projected_workspace_path(editor)
-                .ok_or_else(|| anyhow::anyhow!("Open a file in a Git worktree first"))
-                .and_then(|path| {
-                    ovim_core::native_diff::worktree_root(&path)
-                        .map_err(|error| anyhow::anyhow!("{error:#}"))
+        GuiRequest::DiffReview { spec, reply } => {
+            // Walking Git objects is real work, so it runs on the blocking
+            // pool and answers from there. Awaiting it here would stall the
+            // editor loop -- including the snapshot tick -- for the whole walk.
+            let workspace = projected_workspace_path(editor);
+            tokio::task::spawn_blocking(move || {
+                let result = workspace_or_error(workspace).and_then(|path| {
+                    ovim_core::native_diff::review(&path, spec.as_deref())
+                        .map_err(|error| format!("{error:#}"))
                 });
-            let response = result.map_err(|error| error.to_string());
-            let _ = reply.send(response);
+                let _ = reply.send(result);
+            });
+            return;
+        }
+        GuiRequest::DiffFilePatch { spec, path, reply } => {
+            let workspace = projected_workspace_path(editor);
+            tokio::task::spawn_blocking(move || {
+                let result = workspace_or_error(workspace).and_then(|root| {
+                    ovim_core::native_diff::file_patch(&root, spec.as_deref(), &path)
+                        .map_err(|error| format!("{error:#}"))
+                });
+                let _ = reply.send(result);
+            });
             return;
         }
         GuiRequest::OpenDiffBuffer {

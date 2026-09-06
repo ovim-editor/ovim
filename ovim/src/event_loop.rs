@@ -14,6 +14,7 @@ use ovim::frontend::{
     handle_viewport_resize, process_editor_tick, process_external_file_change,
     process_picker_results, refresh_after_input, FrontendChannels,
 };
+use ovim::gui::server::GuiServer;
 use ovim::session::SessionInfo;
 use ovim::ui::UI;
 
@@ -106,6 +107,7 @@ pub async fn run_headless_loop(
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
     initial_dimensions: (u16, u16),
+    mut gui: GuiServer,
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let mut channels = FrontendChannels::new(java_status_rx);
@@ -133,7 +135,21 @@ pub async fn run_headless_loop(
                 if editor.buffer().version() != version_before {
                     last_edit = Instant::now();
                 }
+                // Automation and a watching frontend share one editor, so a
+                // keystroke sent over `/v1/keys` has to reach the stream too.
+                gui.publish(editor);
                 if editor.should_quit() { break; }
+            }
+            Some(request) = gui.recv() => {
+                let version_before = editor.buffer().version();
+                let keep_running = gui.handle(request, editor).await;
+                if editor.buffer().version() != version_before {
+                    last_edit = Instant::now();
+                }
+                // Publish before checking for shutdown so the frontend sees the
+                // result of its own command rather than waiting for the tick.
+                gui.publish(editor);
+                if !keep_running || editor.should_quit() { break; }
             }
             Some((path, cache)) = channels.preview_rx.recv() => {
                 editor.insert_preview(path, cache);
@@ -173,6 +189,9 @@ pub async fn run_headless_loop(
                 {
                     editor.process_pending_rehighlight().await;
                 }
+                // Also the tick on which a newly arrived subscriber is noticed,
+                // so its first frame never waits for the next edit.
+                gui.publish(editor);
             }
         }
     }

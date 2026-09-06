@@ -19,18 +19,18 @@ use tauri::{DragDropEvent, Emitter, EventTarget, Manager, RunEvent, State, Windo
 #[derive(Clone, Default)]
 struct GuiExitGate(Arc<AtomicBool>);
 
+// The diff is computed by whichever host runs the editor, not here. Reading a
+// Git worktree from this process would only work while the editor happens to
+// be local, so both commands are plain passthroughs to the bridge.
 #[tauri::command]
 async fn gui_diff_state(
     bridge: State<'_, GuiBridge>,
     spec: Option<String>,
 ) -> Result<ovim_core::native_diff::DiffReview, String> {
-    let workspace = bridge.diff_workspace().await?;
-    tauri::async_runtime::spawn_blocking(move || {
-        ovim_core::native_diff::review(&workspace, spec.as_deref())
-    })
-    .await
-    .map_err(|error| format!("Diff state task failed: {error}"))?
-    .map_err(|error| format!("Could not read diff: {error:#}"))
+    bridge
+        .diff_review(spec)
+        .await
+        .map_err(|error| format!("Could not read diff: {error}"))
 }
 
 #[tauri::command]
@@ -39,14 +39,10 @@ async fn gui_diff_open_file(
     spec: Option<String>,
     path: String,
 ) -> Result<(), String> {
-    let workspace = bridge.diff_workspace().await?;
-    let selected_path = path.clone();
-    let content = tauri::async_runtime::spawn_blocking(move || {
-        ovim_core::native_diff::file_patch(&workspace, spec.as_deref(), &selected_path)
-    })
-    .await
-    .map_err(|error| format!("Diff file task failed: {error}"))?
-    .map_err(|error| format!("Could not open diff: {error:#}"))?;
+    let content = bridge
+        .diff_file_patch(spec, path.clone())
+        .await
+        .map_err(|error| format!("Could not open diff: {error}"))?;
     bridge
         .open_diff_buffer(format!("Diff · {path}"), content)
         .await

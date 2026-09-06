@@ -196,6 +196,28 @@ must set `Host` explicitly to the remote port.
 (`pub fn`, `.send()` without `.await`). `RemoteTransport` needs an async
 client, so R4 writes its own rather than extending `OvimClient`.
 
+**R3 landed; notes for R4.**
+
+- The routes are `POST /v1/gui/command` (a `GuiCommand` in, a `GuiReply` out,
+  `204 No Content` for a fire-and-forget command) and `GET /v1/gui/stream`
+  (SSE, `event: snapshot`, 15s keep-alive). They live only under `/v1`, not on
+  the deprecated unversioned paths. A command that failed *in the editor*
+  still answers `200` with an `Err` reply, exactly as `LocalTransport` does,
+  so `RemoteTransport` can be a thin byte-for-byte shim.
+- Snapshot production is lazy on `watch::Sender::receiver_count()`. A session
+  with no stream subscriber never projects a `GuiSnapshot` at all. Because
+  `Sender::subscribe` marks the current value as already seen, the frame on
+  record is cleared when the last subscriber leaves; a new subscriber
+  therefore never reads a stale frame, and the publisher, seeing nothing on
+  record, projects a fresh one on its next 50ms tick.
+- `GuiCommand::Shutdown` stops the headless session. R4 must not wire it to
+  the local window closing -- that would defeat the session persistence R6 is
+  built on. Use it only for an explicit "quit the remote editor".
+- `GuiCommand::DiffWorkspace` is gone. `DiffReview { spec }` and
+  `DiffFilePatch { spec, path }` replace it and return the computed values, so
+  `GuiReply::Path` is gone too and the command count is 32, not 31. The two
+  Tauri diff commands are now pure passthroughs; the frontend was unchanged.
+
 **Test harness for R4 already exists.** R2 added `RecordingTransport` and
 `every_typed_helper_sends_the_command_variant_it_is_named_for` in
 `gui/bridge.rs`, which pins all 31 helpers to their command variants. R4
