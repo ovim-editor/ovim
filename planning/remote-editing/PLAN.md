@@ -220,6 +220,6 @@ client, so R4 writes its own rather than extending `OvimClient`.
 
 **Test harness for R4 already exists.** R2 added `RecordingTransport` and
 `every_typed_helper_sends_the_command_variant_it_is_named_for` in
-`gui/bridge.rs`, which pins all 31 helpers to their command variants. R4
+`gui/bridge.rs`, which pins every helper to its command variant. R4
 should reuse that harness to prove the remote transport is wire-equivalent to
 the local one.
