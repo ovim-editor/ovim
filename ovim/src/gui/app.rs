@@ -1,9 +1,7 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
 use super::browser::BrowserHost;
-use super::{
-    GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource, RemoteEndpoint, RemoteTransport,
-};
+use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource, RemoteLaunch, RemoteTransport};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -457,7 +455,7 @@ fn gui_open_external(url: String) -> Result<(), String> {
 ///
 /// `remote` swaps the transport under the bridge and nothing else: every Tauri
 /// command below keeps talking to `GuiBridge` and cannot tell the difference.
-pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteEndpoint>) -> Result<()> {
+pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
     // plugin. The bundler uses it to distinguish deb/AppImage/MSI installs.
     std::hint::black_box(tauri::utils::platform::bundle_type());
@@ -470,15 +468,19 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteEndpoint>) 
     let browser_smoke_client =
         std::env::var_os("OVIM_BROWSER_SMOKE").map(|_| browser_client.clone());
     let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
-    let (bridge, editor_is_ours) = match remote {
-        Some(endpoint) => (
+    // The tunnel, if there is one, has to outlive every window event, so it
+    // is bound here and dropped only once `run` returns. Dropping it closes
+    // the forward and the multiplexed connection and nothing else.
+    let (bridge, editor_is_ours, _tunnel) = match remote {
+        Some(launch) => (
             GuiBridge::new(Arc::new(
-                RemoteTransport::connect(endpoint)
+                RemoteTransport::connect(launch.endpoint)
                     .context("Failed to reach the remote Ovim session")?,
             )),
             false,
+            launch.tunnel,
         ),
-        None => (GuiBridge::spawn(file, resume, services)?, true),
+        None => (GuiBridge::spawn(file, resume, services)?, true, None),
     };
     // A remote session deliberately outlives the windows that drive it -- that
     // is what lets a later run reconnect to warm language servers and undo
