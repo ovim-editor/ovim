@@ -536,3 +536,20 @@ the obvious next candidate, but it needs its own correctness argument.
 visible (only Tab/Enter/Ctrl-Y accept). The exclusion was kept because it could
 not be verified live -- no language server would attach to a headless session
 in the development environment.
+
+## Test hazard: `test_clipboard_register_yank`
+
+`ovim/tests/register_operations_test.rs::test_clipboard_register_yank` drives
+`"+yiw` / `"+p` through the *real* system clipboard. On Wayland, clipboard
+ownership requires the writing process to stay alive and serve the selection,
+so a short-lived test process can lose it before reading back -- the paste then
+produces nothing and the assertion fails with the unpasted buffer.
+
+Measured at roughly 3 failures in 19 runs locally. Investigated during R8 and
+**not** attributable to it: the `register.rs` changes there are purely additive
+(two free functions, a generation counter) and the read path is untouched. It
+is environmental, not a regression, and it predates the remote-editing work.
+
+Worth making independent of the machine's clipboard, since it will be flaky in
+CI for the same reason. Left alone here rather than edited inside an unrelated
+change.
