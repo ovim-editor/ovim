@@ -114,6 +114,7 @@ impl GuiServer {
             return false;
         }
         super::handle_request(request, editor, &mut self.dimensions, &mut self.revision).await;
+        refuse_frontend_only_requests(editor);
         true
     }
 
@@ -159,6 +160,30 @@ impl GuiServer {
     /// it, however much the editor underneath is changing.
     pub fn frames_built(&self) -> u64 {
         self.frames_built
+    }
+}
+
+/// Consume the requests only an interactive frontend can carry out.
+///
+/// `:terminal`, `:!cmd` and `:openwin` do not act; they queue a request for
+/// the frontend to pick up on its next turn round the loop. This session has
+/// no terminal to hand over and no window server of its own, and a request
+/// left queued is worse than a refused one: `execute_command_string_api`
+/// consumes a queued terminal or window request on the *next* ex command and
+/// fails in its place, so an unrelated `:set number` sent afterwards comes
+/// back as an error and never runs.
+///
+/// The local GUI loop drains the same three after every request, which is why
+/// a window driving an editor in this process already behaves correctly. This
+/// keeps a frontend on the other end of the API from behaving differently.
+fn refuse_frontend_only_requests(editor: &mut Editor) {
+    let terminal = editor.take_pending_terminal_session().is_some();
+    let shell = editor.take_pending_shell_command().is_some();
+    if terminal || shell {
+        editor.set_status_message(super::SHELL_FRONTEND_REQUIRED.to_string());
+    }
+    if editor.take_pending_window_open().is_some() {
+        editor.set_status_message(super::WINDOW_OVER_THE_API_UNSUPPORTED.to_string());
     }
 }
 
@@ -218,6 +243,118 @@ mod tests {
 
         assert_eq!(server.frames_built(), published);
         assert!(channel.subscribe().borrow().is_none());
+    }
+
+    /// One keystroke, the way a window sends it.
+    fn typed(key: &str) -> crate::gui::GuiKeyInput {
+        crate::gui::GuiKeyInput {
+            key: key.to_string(),
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+        }
+    }
+
+    /// Answer one command the way `run_headless_loop` does.
+    ///
+    /// The reply travels a `oneshot`, which holds the value, so it can be
+    /// collected after `handle` returns rather than from another task.
+    async fn serve(
+        server: &mut GuiServer,
+        editor: &mut Editor,
+        command: GuiCommand,
+    ) -> Result<Option<GuiReply>, String> {
+        let (reply, receiver) = super::super::GuiReplySender::channel(command.reply_kind());
+        let request = GuiRequest::from_parts(command, reply).expect("a matching reply channel");
+        server.handle(request, editor).await;
+        receiver.recv().await
+    }
+
+    /// Type an ex command at the editor's command line, key by key.
+    async fn type_ex_command(server: &mut GuiServer, editor: &mut Editor, command: &str) {
+        let mut keys: Vec<String> = command.chars().map(|c| c.to_string()).collect();
+        keys.push("Enter".to_string());
+        for key in keys {
+            serve(server, editor, GuiCommand::Key { input: typed(&key) })
+                .await
+                .expect("a keystroke should reach the editor");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_terminal_typed_at_the_command_line_is_refused_instead_of_poisoning_the_next_command()
+    {
+        // `:terminal` queues a request for an interactive frontend. Left
+        // queued, the *next* ex command through the API consumes it and fails
+        // in its place -- so an unrelated `set number` came back as an error
+        // and never ran, which is a failure with no visible cause at all.
+        let (_channel, mut server) = gui_channel((80, 24));
+        let mut editor = Editor::with_content("fn main() {}\n");
+
+        type_ex_command(&mut server, &mut editor, ":terminal").await;
+
+        assert_eq!(
+            editor.status_message().trim(),
+            super::super::SHELL_FRONTEND_REQUIRED,
+            "the refusal belongs on the command that asked for it"
+        );
+        let reply = serve(
+            &mut server,
+            &mut editor,
+            GuiCommand::EditorCommand {
+                command: "set number".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, Some(GuiReply::Unit(Ok(()))));
+        assert!(
+            editor.options.number,
+            "the next command has to actually run"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_shell_command_typed_at_the_command_line_is_refused_rather_than_dropped() {
+        // Nothing else ever takes this one, so leaving it queued means `:!cmd`
+        // does nothing and says nothing. The local GUI refuses it in words.
+        let (_channel, mut server) = gui_channel((80, 24));
+        let mut editor = Editor::with_content("fn main() {}\n");
+
+        type_ex_command(&mut server, &mut editor, ":!echo hello").await;
+
+        assert_eq!(
+            editor.status_message().trim(),
+            super::super::SHELL_FRONTEND_REQUIRED
+        );
+    }
+
+    #[tokio::test]
+    async fn opening_a_project_window_is_refused_by_a_session_driven_over_the_api() {
+        // The window would open where the editor runs, which for a frontend on
+        // another host is the wrong machine; and left queued it would fail the
+        // next ex command instead of this one.
+        let (_channel, mut server) = gui_channel((80, 24));
+        let mut editor = Editor::with_content("fn main() {}\n");
+
+        type_ex_command(&mut server, &mut editor, ":openwin").await;
+
+        assert_eq!(
+            editor.status_message().trim(),
+            super::super::WINDOW_OVER_THE_API_UNSUPPORTED
+        );
+        let reply = serve(
+            &mut server,
+            &mut editor,
+            GuiCommand::EditorCommand {
+                command: "set number".to_string(),
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(reply, Some(GuiReply::Unit(Ok(()))));
+        assert!(editor.options.number);
     }
 
     #[tokio::test]
