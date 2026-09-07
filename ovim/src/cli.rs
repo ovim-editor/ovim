@@ -147,6 +147,11 @@ pub enum Command {
         /// session is on this machine. Under `ssh -L` this is the local end of
         /// the tunnel, while the descriptor still fixes the Host header the
         /// session requires.
+        ///
+        /// The link itself is plain HTTP, so this must name a loopback port or
+        /// the local end of an encrypted tunnel. Pointing it straight at
+        /// another machine would put the capability and the buffer on the
+        /// network in the clear.
         #[arg(long, value_name = "HOST:PORT", requires = "remote_session")]
         remote_endpoint: Option<String>,
     },

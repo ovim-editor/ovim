@@ -759,7 +759,7 @@ pub enum GuiReplyKind {
 
 /// The answer to a [`GuiCommand`].
 ///
-/// Thirty-one commands share four reply shapes, so the reply is tagged by
+/// Thirty-two commands share five reply shapes, so the reply is tagged by
 /// shape rather than by command. Both this enum and [`GuiCommand`] use
 /// adjacent tagging: an internal tag would collide with the payload's own
 /// fields (`EditorCommand` has a `command` field) and cannot wrap a `Result`.
@@ -767,9 +767,9 @@ pub enum GuiReplyKind {
 #[serde(tag = "reply", content = "result", rename_all = "camelCase")]
 pub enum GuiReply {
     Unit(Result<(), String>),
-    /// Boxed because a projected frame dwarfs the other three replies, and
-    /// every command that returns one of those would otherwise pay for its
-    /// size. `Box` is transparent to serde, so the JSON is unaffected.
+    /// Boxed because a projected frame dwarfs the other replies, and every
+    /// command that returns one of those would otherwise pay for its size.
+    /// `Box` is transparent to serde, so the JSON is unaffected.
     Snapshot(Box<Result<GuiSnapshot, String>>),
     VectorSource(Result<GuiVectorSource, String>),
     /// A changed-file summary computed on the editor's host.
