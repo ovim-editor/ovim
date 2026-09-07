@@ -173,12 +173,49 @@ impl RemoteOptions {
 }
 
 /// Start or reattach a remote session and forward its port to this machine.
+///
+/// The multiplexing master the bootstrap leaves behind is this function's to
+/// clean up: [`SshTunnel`] adopts it on success, but a launch that gets past
+/// the bootstrap and then fails -- a refused version, a forward that never
+/// binds -- would otherwise leave an authenticated connection sitting on the
+/// machine until [`CONTROL_PERSIST`] expired.
 pub fn launch(target: &RemoteTarget) -> Result<RemoteLaunch> {
     validate_destination(&target.destination)?;
-    let program = ssh_program()?;
-    let socket = ControlSocket::create()?;
+    launch_with(&ssh_program()?, target)
+}
 
-    let report = bootstrap(&program, &socket, target)?;
+/// [`launch`] against a named client, so the teardown can be asserted on with
+/// a stub in place of a host.
+fn launch_with(program: &Path, target: &RemoteTarget) -> Result<RemoteLaunch> {
+    let socket = ControlSocket::create()?;
+    let path = socket.path.clone();
+
+    let launched = launch_over(program, socket, target);
+    if launched.is_err() {
+        close_control_master(program, &target.destination, &path);
+    }
+    launched
+}
+
+/// Ask a multiplexing master to exit, if one is listening on this socket.
+///
+/// Nothing here can act on a failure: there may be no master at all, which is
+/// the ordinary case when the connection never authenticated.
+fn close_control_master(program: &Path, destination: &str, socket: &Path) {
+    let _ = Command::new(program)
+        .args(control_exit_arguments(destination, socket))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+}
+
+fn launch_over(
+    program: &Path,
+    socket: ControlSocket,
+    target: &RemoteTarget,
+) -> Result<RemoteLaunch> {
+    let report = bootstrap(program, &socket, target)?;
     check_versions(target, &report)?;
     ovim_core::log_info!(
         "gui",
@@ -189,7 +226,7 @@ pub fn launch(target: &RemoteTarget) -> Result<RemoteLaunch> {
         report.project
     );
 
-    let tunnel = SshTunnel::open(&program, socket, &target.destination, report.session.port)?;
+    let tunnel = SshTunnel::open(program, socket, &target.destination, report.session.port)?;
     let endpoint = RemoteEndpoint::from_session(&report.session, Some(&tunnel.local_address()))
         .context("The remote session descriptor cannot be used to reach it")?;
     Ok(RemoteLaunch {
@@ -1697,6 +1734,44 @@ wait
 
     #[cfg(unix)]
     #[test]
+    fn a_launch_that_fails_after_authenticating_still_closes_the_master() {
+        use std::os::unix::fs::PermissionsExt;
+
+        // The bootstrap is the invocation that authenticates, so by the time it
+        // can fail on remote state there is a master holding a live connection.
+        // Leaving it for ControlPersist to reap would keep it on the machine
+        // for a minute after the launch the user watched be refused.
+        let workspace = tempfile::tempdir().expect("a temporary directory should be creatable");
+        let log = workspace.path().join("invocations");
+        let program = workspace.path().join("ssh");
+        std::fs::write(
+            &program,
+            format!(
+                "#!/bin/sh\n\
+                 printf '%s\\n' \"$*\" >> {log}\n\
+                 cat > /dev/null\n\
+                 case \"$*\" in *'-O exit'*) exit 0 ;; esac\n\
+                 echo '/srv/project does not exist' >&2\n\
+                 exit {EXIT_NO_PATH}\n",
+                log = log.display()
+            ),
+        )
+        .unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+        let error = launch_with(&program, &target())
+            .expect_err("a path the host does not have is not a launch");
+
+        assert!(error.to_string().contains("/srv/project"), "{error}");
+        let invocations = std::fs::read_to_string(&log).expect("the stub should have been run");
+        assert!(
+            invocations.lines().any(|line| line.contains("-O exit")),
+            "the master was left running: {invocations}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
     fn a_recycled_pid_is_not_mistaken_for_the_session_that_wrote_the_descriptor() {
         let workspace = tempfile::tempdir().expect("a temporary directory should be creatable");
         let sessions = workspace.path().join("sessions");
@@ -1735,7 +1810,11 @@ wait
         };
 
         let first = run_script(&bootstrap_script(&project, false, 20), &binaries, &sessions);
-        orphan(&parse_report(&first.stdout).expect("the first report should parse").session);
+        orphan(
+            &parse_report(&first.stdout)
+                .expect("the first report should parse")
+                .session,
+        );
 
         // Reattaching here would tunnel to a port the bystander never served.
         let replaced = parse_report(

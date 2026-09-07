@@ -282,7 +282,10 @@ the local one.
   may be fish or csh.
 - **Reattach beats start.** The session name is derived on the remote host from
   the resolved path: `gui-<basename>-<cksum>`. A descriptor whose PID is alive
-  is reused; a stale one is deleted and replaced. A session that is alive but
+  *and whose arguments name that session* is reused; a stale one is deleted and
+  replaced. The second half is not pedantry: a descriptor outlives the process
+  that wrote it, so a bare `kill -0` would reattach to whatever inherited the
+  number, and `--fresh` would kill it. A session that is alive but
   wedged is *not* killed automatically -- that would throw away exactly the
   state this architecture exists to keep -- so it fails at the transport
   handshake and `--fresh` is the documented way out.
@@ -296,6 +299,9 @@ the local one.
   than `-N`, so it holds this process's stdin pipe: a GUI killed outright still
   closes the pipe, `cat` sees end of file, and the tunnel takes itself down.
   `ControlPersist` then reaps the master, and `ssh` unlinks its own socket.
+  A launch that fails *after* the bootstrap -- a refused version, a forward
+  that never binds -- asks the master to exit too, so a refusal the user
+  watched does not leave an authenticated connection on the machine.
 - The forwarded port is chosen by binding `127.0.0.1:0` and reading back what
   the kernel gave. `ExitOnForwardFailure=yes` turns the remaining race into a
   clean non-zero exit, and `SshTunnel::open` retries three times.

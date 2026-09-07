@@ -268,32 +268,52 @@ struct GuiLaunch {
 /// Run the native shell in-process so `ovim gui` works in source builds,
 /// standalone CLI distributions, and desktop packages without path probing.
 fn cmd_gui(launch: GuiLaunch) -> Result<()> {
-    let is_remote = launch.remote.is_some() || launch.remote_session.is_some();
-    // Resolved before the window exists, so an unreachable host or an
-    // unreadable descriptor is a startup error naming the cause rather than a
-    // window that never draws.
-    let remote = crate::gui::ssh::RemoteOptions {
-        destination: launch.remote,
-        path: launch.file.clone(),
-        fresh: launch.fresh,
-        allow_version_mismatch: launch.allow_version_mismatch,
-        session_file: launch.remote_session,
-        endpoint: launch.remote_endpoint,
-    }
-    .resolve()?;
-    // A remote launch already told the far side what to open; the path here
-    // belongs to that host and must not be opened on this one.
-    let file = (!is_remote)
-        .then(|| launch.file.as_deref().map(FileArg::parse))
-        .flatten();
-    #[cfg(feature = "gui")]
-    {
-        crate::gui::app::run(file, launch.resume, remote)
-    }
+    // Refused before anything is arranged. Resolving first would bring a
+    // session up on the remote host and tunnel to it, only to say there is no
+    // window to put it in.
     #[cfg(not(feature = "gui"))]
     {
-        let _ = (file, launch.resume, remote);
+        let GuiLaunch {
+            file,
+            resume,
+            remote,
+            fresh,
+            allow_version_mismatch,
+            remote_session,
+            remote_endpoint,
+        } = launch;
+        let _ = (
+            file,
+            resume,
+            remote,
+            fresh,
+            allow_version_mismatch,
+            remote_session,
+            remote_endpoint,
+        );
         anyhow::bail!("This Ovim build does not include the native GUI feature")
+    }
+    #[cfg(feature = "gui")]
+    {
+        let is_remote = launch.remote.is_some() || launch.remote_session.is_some();
+        // Resolved before the window exists, so an unreachable host or an
+        // unreadable descriptor is a startup error naming the cause rather than
+        // a window that never draws.
+        let remote = crate::gui::ssh::RemoteOptions {
+            destination: launch.remote,
+            path: launch.file.clone(),
+            fresh: launch.fresh,
+            allow_version_mismatch: launch.allow_version_mismatch,
+            session_file: launch.remote_session,
+            endpoint: launch.remote_endpoint,
+        }
+        .resolve()?;
+        // A remote launch already told the far side what to open; the path here
+        // belongs to that host and must not be opened on this one.
+        let file = (!is_remote)
+            .then(|| launch.file.as_deref().map(FileArg::parse))
+            .flatten();
+        crate::gui::app::run(file, launch.resume, remote)
     }
 }
 
