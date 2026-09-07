@@ -283,6 +283,20 @@ impl Link {
         self.connection.send_replace(state);
     }
 
+    /// Say the link is up, and forget any permission to replace the session.
+    ///
+    /// "Start a new session" answers a question *this* outage asked. The
+    /// answer is normally consumed by the attempt it triggered, but a user
+    /// pressing the button twice while a bootstrap that takes seconds is
+    /// already running leaves a second one set behind a link that has come
+    /// back. Left set, it would be applied to whatever outage came next --
+    /// silently replacing a session nobody was asked about, which is the one
+    /// thing this module exists to prevent. One answer, one outage.
+    fn mark_connected(&self) {
+        self.retry_fresh.store(false, Ordering::SeqCst);
+        self.set_connection(GuiConnection::Connected);
+    }
+
     /// Remember the viewport a `Snapshot` command carried.
     ///
     /// The frontend sends one when it subscribes and on every resize, so this
@@ -389,7 +403,7 @@ async fn attach(
     if let Some(ready) = ready.take() {
         let _ = ready.send(Ok(()));
     }
-    link.set_connection(GuiConnection::Connected);
+    link.mark_connected();
     // Asked for as the stream comes up rather than after it: the session only
     // publishes when its projection changes, so a buffer nobody touched during
     // the outage would produce no frame at all and the window would keep
@@ -496,6 +510,75 @@ async fn hold(link: &Link, failure: Failure, backoff: &mut Backoff) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gui::remote::RemoteEndpoint;
+    use crate::gui::ssh::LinkFailure;
+    use ovim_core::session::SessionCapability;
+
+    /// A link that always rebuilds, and remembers what each rebuild was
+    /// allowed to do about the session on the far side.
+    #[derive(Debug)]
+    struct RecordingLink {
+        endpoint: RemoteEndpoint,
+        asked: Mutex<Vec<bool>>,
+    }
+
+    impl RemoteLink for RecordingLink {
+        fn reconnect(&self, allow_new_session: bool) -> Result<RemoteEndpoint, LinkFailure> {
+            self.asked
+                .lock()
+                .expect("the recording lock is never poisoned")
+                .push(allow_new_session);
+            Ok(self.endpoint.clone())
+        }
+
+        fn can_start_a_session(&self) -> bool {
+            true
+        }
+    }
+
+    fn recording_link() -> (Arc<Link>, Arc<RecordingLink>) {
+        // Nothing is ever dialled: these tests stop at `rebuild`, which is
+        // where the answer to "may this replace the session?" is spent.
+        let endpoint = RemoteEndpoint::new("127.0.0.1:1", 1, SessionCapability::generate());
+        let source = Arc::new(RecordingLink {
+            endpoint: endpoint.clone(),
+            asked: Mutex::new(Vec::new()),
+        });
+        let link = Arc::new(Link::new(
+            Wire::new(&endpoint).expect("an endpoint yields a wire"),
+            Arc::clone(&source) as Arc<dyn RemoteLink>,
+        ));
+        (link, source)
+    }
+
+    #[tokio::test]
+    async fn asking_for_a_new_session_applies_to_the_next_attempt_and_no_later_one() {
+        // The user answers a question one outage asked. Carrying that answer
+        // into every later attempt would eventually replace a session nobody
+        // was asked about.
+        let (link, source) = recording_link();
+
+        link.request_reconnect(true).unwrap();
+        rebuild(&link).await.unwrap();
+        rebuild(&link).await.unwrap();
+
+        assert_eq!(*source.asked.lock().unwrap(), vec![true, false]);
+    }
+
+    #[tokio::test]
+    async fn permission_to_replace_the_session_does_not_outlive_the_outage_that_asked() {
+        // The banner's button stays clickable while a bootstrap that takes
+        // seconds runs, so a second press can land after the link is already
+        // back. Applied to whatever outage came next, it would silently
+        // discard a session's undo history and warm language servers.
+        let (link, source) = recording_link();
+
+        link.request_reconnect(true).unwrap();
+        link.mark_connected();
+        rebuild(&link).await.unwrap();
+
+        assert_eq!(*source.asked.lock().unwrap(), vec![false]);
+    }
 
     #[test]
     fn the_wait_doubles_and_then_stops_growing() {

@@ -237,10 +237,12 @@ client, so R4 writes its own rather than extending `OvimClient`.
 - The stream is decoded by a small hand-written SSE decoder rather than a
   dependency: both ends of the stream are ours and the format in use is three
   field names and a blank line.
-- A stream that dies annotates the last frame's status line with
-  `remote::CONNECTION_LOST` and stops. That is deliberately a placeholder for
-  R6: the watch channel can only carry snapshots, so there is nowhere else for
-  a connection state to live.
+- A stream that dies annotated the last frame's status line with
+  `remote::CONNECTION_LOST` and stopped. That was deliberately a placeholder
+  for R6: the watch channel can only carry snapshots, so there was nowhere
+  else for a connection state to live. R6 gave it its own channel and removed
+  the placeholder, along with the constant -- see the R6 notes below for why
+  rewriting a frame's revision locally was a hazard as well as a stopgap.
 - Verified live on one machine, including through a forwarded port: a GUI
   window driven by a headless session, and the session outliving the window.
   `ovim/tests/remote_session_test.rs` is the ignored end-to-end test that does
