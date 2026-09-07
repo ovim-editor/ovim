@@ -19,6 +19,7 @@ pub mod browser;
 #[cfg(feature = "gui")]
 mod menu;
 pub mod protocol;
+pub mod remote;
 pub mod server;
 #[cfg(feature = "gui")]
 pub mod window;
@@ -39,8 +40,9 @@ pub use protocol::{
     GuiKeyInput, GuiLayoutNode, GuiLine, GuiLspEntry, GuiLspManager, GuiPane, GuiPicker,
     GuiPickerItem, GuiProblem, GuiProblemList, GuiPrompt, GuiQueuedChatInput, GuiReply,
     GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure, GuiTestPanel, GuiTheme,
-    GuiVectorSource,
+    GuiVectorSource, SNAPSHOT_EVENT,
 };
+pub use remote::{RemoteEndpoint, RemoteTransport};
 
 use crate::cli::FileArg;
 use crate::color::Color;

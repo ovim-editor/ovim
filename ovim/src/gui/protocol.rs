@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// The Server-Sent Events name every snapshot frame is published under.
+///
+/// Shared by the route that writes the stream and the transport that reads it,
+/// so a rename cannot leave one end silently ignoring the other.
+pub const SNAPSHOT_EVENT: &str = "snapshot";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiKeyInput {

@@ -218,6 +218,34 @@ client, so R4 writes its own rather than extending `OvimClient`.
   `GuiReply::Path` is gone too and the command count is 32, not 31. The two
   Tauri diff commands are now pure passthroughs; the frontend was unchanged.
 
+**R4 landed; notes for R5.**
+
+- `RemoteTransport` (`ovim/src/gui/remote.rs`) owns its own two-worker Tokio
+  runtime. Every request and the snapshot stream run on it, so a `send` future
+  can be polled by whatever runtime Tauri hands it and the synchronous
+  `send_oneway` has a reactor to reach even though it runs from a plain thread.
+- `RemoteEndpoint` keeps the address dialled and the session's own port as two
+  separate fields and always sets `Host` from the latter, pinned in the
+  client's default headers. `RemoteEndpoint::from_session` takes both, plus the
+  capability, from the session descriptor, so the only thing R5 has to supply
+  is where to dial.
+- The launch surface is `ovim gui --remote-session <descriptor>
+  [--remote-endpoint HOST:PORT]`, also accepted by the `ovim-gui` binary. The
+  capability is never an argument -- it travels in the descriptor. R5 replaces
+  this pair with `--remote user@host`, which will fetch the descriptor over SSH
+  and forward the port itself; the transport underneath needs no change.
+- The stream is decoded by a small hand-written SSE decoder rather than a
+  dependency: both ends of the stream are ours and the format in use is three
+  field names and a blank line.
+- A stream that dies annotates the last frame's status line with
+  `remote::CONNECTION_LOST` and stops. That is deliberately a placeholder for
+  R6: the watch channel can only carry snapshots, so there is nowhere else for
+  a connection state to live.
+- Verified live on one machine, including through a forwarded port: a GUI
+  window driven by a headless session, and the session outliving the window.
+  `ovim/tests/remote_session_test.rs` is the ignored end-to-end test that does
+  it, driven by `OVIM_REMOTE_SESSION` and `OVIM_REMOTE_ENDPOINT`.
+
 **Test harness for R4 already exists.** R2 added `RecordingTransport` and
 `every_typed_helper_sends_the_command_variant_it_is_named_for` in
 `gui/bridge.rs`, which pins every helper to its command variant. R4

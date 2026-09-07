@@ -1022,7 +1022,10 @@ impl GuiBridge {
 }
 
 #[cfg(test)]
-mod tests {
+// `pub(crate)` so the remote transport can be driven through the very same
+// sweep as the local one; a helper wired to the wrong command variant has to
+// fail identically over either transport.
+pub(crate) mod tests {
     use super::*;
     use crate::editor::Editor;
     use crate::gui::protocol;
@@ -1271,8 +1274,22 @@ mod tests {
         }
     }
 
+    /// What [`exercise_every_helper`] should put on the wire, in order.
+    ///
+    /// `sample_commands` is the protocol's own list of one value per variant,
+    /// built with the same field values the sweep uses, so deriving the
+    /// expectation from it keeps the two from drifting apart. Its deliberate
+    /// trailing duplicate is dropped here; everything else must appear once.
+    pub(crate) fn every_command_once() -> Vec<GuiCommand> {
+        let mut seen = HashSet::new();
+        protocol::sample_commands()
+            .into_iter()
+            .filter(|command| seen.insert(discriminant(command)))
+            .collect()
+    }
+
     /// Call every typed helper once, with a distinct argument per field.
-    async fn exercise_every_helper(bridge: &GuiBridge) {
+    pub(crate) async fn exercise_every_helper(bridge: &GuiBridge) {
         let key = GuiKeyInput {
             key: "j".to_string(),
             shift: true,
@@ -1385,16 +1402,7 @@ mod tests {
 
         exercise_every_helper(&bridge).await;
 
-        // `sample_commands` is the protocol's own list of one value per
-        // variant, built with the same field values used above, so comparing
-        // against it keeps the sweep and the protocol from drifting apart. Its
-        // deliberate trailing duplicate is dropped here; everything else must
-        // appear once, in order.
-        let mut seen = HashSet::new();
-        let expected: Vec<_> = protocol::sample_commands()
-            .into_iter()
-            .filter(|command| seen.insert(discriminant(command)))
-            .collect();
+        let expected = every_command_once();
         assert_eq!(expected.len(), 32, "the sweep should reach every variant");
         assert_eq!(transport.received(), expected);
     }

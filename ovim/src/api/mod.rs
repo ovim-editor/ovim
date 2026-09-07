@@ -3,7 +3,9 @@ mod handlers;
 pub mod mcp;
 mod mcp_handler;
 mod routes;
-mod security;
+// `pub(crate)` so the GUI transport tests can put a stub session behind the
+// real Host and capability guard rather than an imitation of it.
+pub(crate) mod security;
 mod state;
 
 pub use mcp::{get_resources, get_tools, JsonRpcRequest, JsonRpcResponse};

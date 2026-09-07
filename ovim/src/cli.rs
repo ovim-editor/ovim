@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
@@ -129,6 +130,25 @@ pub enum Command {
         /// Resume persisted AI conversations instead of starting fresh chats
         #[arg(long)]
         resume: bool,
+
+        /// Drive an editor that is already running elsewhere.
+        ///
+        /// Takes the session descriptor a headless run writes
+        /// (`<cache>/ovim/sessions/<name>.json` on that host), copied to this
+        /// machine. It carries both the capability and the port the session
+        /// listens on, so neither is ever typed on a command line where the
+        /// process table and the shell history would keep it.
+        #[arg(long, value_name = "PATH")]
+        remote_session: Option<PathBuf>,
+
+        /// Where to reach that session: HOST:PORT, or a bare port on loopback.
+        ///
+        /// Defaults to the port in the descriptor, which is right when the
+        /// session is on this machine. Under `ssh -L` this is the local end of
+        /// the tunnel, while the descriptor still fixes the Host header the
+        /// session requires.
+        #[arg(long, value_name = "HOST:PORT", requires = "remote_session")]
+        remote_endpoint: Option<String>,
     },
 
     // ── File Operations ──────────────────────────────────────────────
@@ -631,8 +651,40 @@ mod tests {
             Some(Command::Gui {
                 file: Some(ref file),
                 resume: true,
+                remote_session: None,
+                remote_endpoint: None,
             }) if file == "src/main.rs"
         ));
+    }
+
+    #[test]
+    fn a_remote_gui_takes_its_capability_from_a_descriptor_and_never_from_an_argument() {
+        let cli = Cli::try_parse_from([
+            "ovim",
+            "gui",
+            "--remote-session",
+            "dev.json",
+            "--remote-endpoint",
+            "127.0.0.1:9000",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gui {
+                remote_session: Some(ref path),
+                remote_endpoint: Some(ref endpoint),
+                ..
+            }) if path == std::path::Path::new("dev.json") && endpoint == "127.0.0.1:9000"
+        ));
+    }
+
+    #[test]
+    fn an_endpoint_without_a_descriptor_is_refused_rather_than_dialled_anonymously() {
+        // Dialling with no capability could only end in a 401, and the flag
+        // pair is the whole of the remote surface, so clap rejects it here.
+        let result = Cli::try_parse_from(["ovim", "gui", "--remote-endpoint", "127.0.0.1:9000"]);
+
+        assert!(result.is_err());
     }
 
     #[test]

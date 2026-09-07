@@ -10,7 +10,7 @@
 //! they carry the same bearer capability and Host guard as every other route.
 
 use crate::gui::server::GuiChannel;
-use crate::gui::{GuiCommand, GuiSnapshot};
+use crate::gui::{GuiCommand, GuiSnapshot, SNAPSHOT_EVENT};
 use axum::{
     extract::State,
     http::StatusCode,
@@ -32,10 +32,6 @@ use tokio::sync::watch;
 /// any other intermediary is free to reap the connection, and the frontend
 /// would only discover it on the next edit.
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
-
-/// The name every snapshot frame is published under, so a client can register
-/// one listener rather than parsing untyped messages.
-const SNAPSHOT_EVENT: &str = "snapshot";
 
 pub(super) fn router(gui: GuiChannel) -> Router {
     Router::new()
@@ -142,34 +138,39 @@ mod tests {
     /// The editor is never spawned onto another task: it embeds a Lua state and
     /// so is deliberately not `Send`, which is also why the real session drives
     /// it from its own event loop rather than from the server's tasks.
-    fn secured_app() -> (Router, String, GuiServer) {
+    fn secured_app() -> (Router, SessionCapability, GuiServer) {
         let capability = SessionCapability::generate();
-        let secret = capability.expose_secret().to_string();
         let (channel, server) = gui_channel((80, 24));
         let (tx, _rx) = mpsc::channel(8);
         let app = security::secure_router(
             create_router(ApiState::new(tx), channel),
-            security::ApiSecurity::new(capability, PORT),
+            security::ApiSecurity::new(capability.clone(), PORT),
         );
-        (app, secret, server)
+        (app, capability, server)
     }
 
-    fn command_request(secret: &str, command: &GuiCommand) -> Request<Body> {
+    fn command_request(capability: &SessionCapability, command: &GuiCommand) -> Request<Body> {
         Request::builder()
             .method("POST")
             .uri("/v1/gui/command")
             .header("host", format!("127.0.0.1:{PORT}"))
-            .header("authorization", format!("Bearer {secret}"))
+            .header(
+                "authorization",
+                format!("Bearer {}", capability.expose_secret()),
+            )
             .header("content-type", "application/json")
             .body(Body::from(serde_json::to_vec(command).unwrap()))
             .unwrap()
     }
 
-    fn stream_request(secret: &str) -> Request<Body> {
+    fn stream_request(capability: &SessionCapability) -> Request<Body> {
         Request::builder()
             .uri("/v1/gui/stream")
             .header("host", format!("127.0.0.1:{PORT}"))
-            .header("authorization", format!("Bearer {secret}"))
+            .header(
+                "authorization",
+                format!("Bearer {}", capability.expose_secret()),
+            )
             .body(Body::empty())
             .unwrap()
     }
@@ -199,14 +200,14 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_posted_over_the_api_comes_back_as_the_reply_it_declared() {
-        let (app, secret, mut server) = secured_app();
+        let (app, capability, mut server) = secured_app();
         let mut editor = Editor::with_content("fn main() {}\n");
         let command = GuiCommand::EditorCommand {
             command: "set number".to_string(),
         };
 
         let (response, keep_running) = tokio::join!(
-            app.oneshot(command_request(&secret, &command)),
+            app.oneshot(command_request(&capability, &command)),
             serve_one(&mut server, &mut editor)
         );
 
@@ -226,7 +227,7 @@ mod tests {
         // The command fixes the reply shape at both ends. A route that guessed
         // instead would still return valid JSON, so the only thing that catches
         // it is comparing what came back against `reply_kind`.
-        let (app, secret, mut server) = secured_app();
+        let (app, capability, mut server) = secured_app();
         let mut editor = Editor::with_content("fn main() {}\n");
 
         for command in [
@@ -245,7 +246,7 @@ mod tests {
             GuiCommand::SelectTab { index: 0 },
         ] {
             let (response, _) = tokio::join!(
-                app.clone().oneshot(command_request(&secret, &command)),
+                app.clone().oneshot(command_request(&capability, &command)),
                 serve_one(&mut server, &mut editor)
             );
 
@@ -263,11 +264,11 @@ mod tests {
     async fn a_fire_and_forget_command_is_answered_without_waiting_for_a_reply() {
         // `Shutdown` never answers, so a route that waited for one would hang
         // the request until the session died.
-        let (app, secret, mut server) = secured_app();
+        let (app, capability, mut server) = secured_app();
         let mut editor = Editor::with_content("fn main() {}\n");
 
         let (response, keep_running) = tokio::join!(
-            app.oneshot(command_request(&secret, &GuiCommand::Shutdown)),
+            app.oneshot(command_request(&capability, &GuiCommand::Shutdown)),
             serve_one(&mut server, &mut editor)
         );
 
@@ -277,7 +278,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unauthenticated_command_never_reaches_the_editor() {
-        let (app, _secret, mut server) = secured_app();
+        let (app, _capability, mut server) = secured_app();
 
         // The app is cloned so the router -- and with it the sending end of the
         // conversation -- outlives the request; otherwise `recv` would return
@@ -309,7 +310,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unauthenticated_stream_is_refused_before_a_subscription_exists() {
-        let (app, _secret, mut server) = secured_app();
+        let (app, _capability, mut server) = secured_app();
 
         let response = app
             .oneshot(
@@ -330,7 +331,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_subscriber_receives_a_snapshot_that_an_unwatched_session_never_builds() {
-        let (app, secret, mut server) = secured_app();
+        let (app, capability, mut server) = secured_app();
         let mut editor = Editor::with_content("fn main() {}\n");
 
         // Nothing is streaming yet, so ticking the publisher costs nothing.
@@ -339,7 +340,7 @@ mod tests {
         server.publish(&editor);
         assert_eq!(server.frames_built(), 0);
 
-        let response = app.oneshot(stream_request(&secret)).await.unwrap();
+        let response = app.oneshot(stream_request(&capability)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(
             response
@@ -397,13 +398,13 @@ mod tests {
         // describes the repository the editor is sitting in, and the caller
         // never needs to be able to reach it.
         let (_directory, root) = repository_with_one_change();
-        let (app, secret, mut server) = secured_app();
+        let (app, capability, mut server) = secured_app();
         let mut editor = Editor::with_content("");
         editor.set_workspace_root(&root).unwrap();
 
         let (response, _) = tokio::join!(
             app.clone().oneshot(command_request(
-                &secret,
+                &capability,
                 &GuiCommand::DiffReview { spec: None }
             )),
             serve_one(&mut server, &mut editor)
@@ -427,7 +428,7 @@ mod tests {
 
         let (response, _) = tokio::join!(
             app.oneshot(command_request(
-                &secret,
+                &capability,
                 &GuiCommand::DiffFilePatch {
                     spec: None,
                     path: "a.txt".to_string(),
@@ -443,5 +444,85 @@ mod tests {
         };
         let patch = patch.expect("a.txt is changed in the worktree");
         assert!(patch.contains("+three"), "{patch}");
+    }
+
+    /// Serve a router on a loopback port and report where to reach it.
+    async fn serve(app: Router) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
+        });
+        address
+    }
+
+    #[tokio::test]
+    async fn a_remote_transport_drives_a_real_session_over_a_socket() {
+        // The whole conversation end to end: the real routes behind the real
+        // security layer, over a real socket, driving a real editor -- and
+        // dialled on a port that is not the one the session claims to listen
+        // on, which is the shape an SSH tunnel produces.
+        let (app, capability, mut server) = secured_app();
+        let mut editor = Editor::with_content(
+            "fn main() {}
+",
+        );
+        let address = serve(app).await;
+        assert_ne!(
+            address.port(),
+            PORT,
+            "the ports must differ to prove anything"
+        );
+
+        let transport = crate::gui::RemoteTransport::open(crate::gui::RemoteEndpoint::new(
+            address.to_string(),
+            PORT,
+            capability,
+        ))
+        .await
+        .expect("the session should accept the transport");
+        let bridge = crate::gui::GuiBridge::new(std::sync::Arc::new(transport));
+        let mut updates = bridge.subscribe();
+
+        // The editor is driven from this task rather than spawned: it embeds a
+        // Lua state and so is deliberately not `Send`.
+        let (result, _) = tokio::join!(
+            bridge.editor_command("set number".to_string()),
+            serve_one(&mut server, &mut editor)
+        );
+        result.expect("the command should have been carried out");
+        assert!(editor.options.number, "the command reached the real editor");
+
+        // Publishing happens on the session's tick; the subscription exists
+        // from the moment the stream handler ran, so the frame that follows
+        // the command travels the SSE feed to this subscriber.
+        tokio::time::timeout(Duration::from_secs(5), updates.changed())
+            .await
+            .expect("a frame should arrive over the stream")
+            .unwrap();
+        let first = updates.borrow_and_update().clone().unwrap();
+        let text: String = first.lines[0]
+            .segments
+            .iter()
+            .map(|segment| segment.text.as_str())
+            .collect();
+        assert_eq!(text, "fn main() {}");
+
+        let (result, _) = tokio::join!(
+            bridge.paste("edited".to_string()),
+            serve_one(&mut server, &mut editor)
+        );
+        result.expect("the paste should have been carried out");
+        tokio::time::timeout(Duration::from_secs(5), updates.changed())
+            .await
+            .expect("an edit should produce another frame")
+            .unwrap();
+        let second = updates.borrow_and_update().clone().unwrap();
+        assert!(
+            second.revision > first.revision,
+            "{} should follow {}",
+            second.revision,
+            first.revision
+        );
     }
 }
