@@ -2302,6 +2302,19 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_reply_survives_a_json_round_trip() {
+        // `GuiReply::Snapshot` is the one reply that carries a projected
+        // frame, and `protocol`'s own reply round trip can only build its
+        // `Err` arm because that module has no editor to project from. The
+        // `Ok` arm is the one a transport actually carries.
+        let mut editor = Editor::with_content("fn main() {}\n");
+        editor.set_file_path("src/sample.rs".to_string());
+        let reply = GuiReply::Snapshot(Box::new(Ok(snapshot(&editor, 4))));
+
+        assert_eq!(protocol::round_trip(&reply), reply);
+    }
+
+    #[test]
     fn the_snapshot_wire_format_stays_camel_case() {
         // The TypeScript frontend reads these exact keys. Adding `Deserialize`
         // must not have renamed anything, so a few representative fields --
