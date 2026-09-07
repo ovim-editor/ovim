@@ -205,8 +205,9 @@ Ovim bridges the two machines' clipboards in both directions, following the
   entirely; the window's own paste gesture (`Cmd-V` on macOS, `Ctrl-Shift-V`
   elsewhere) is explicit and keeps working either way.
 
-Both directions cap at 1 MiB. An oversized yank is refused loudly rather than
-spending a minute of your uplink on text nobody is going to paste; it is still
+Both directions cap at 1 MiB. An oversized yank is not bridged — the alternative
+is spending a minute of your uplink on text nobody is going to paste — and the
+refusal goes to the log rather than to the status line. The text is still
 sitting in the remote register, with `:w` and shell pipes as better ways to
 move it.
 
@@ -238,9 +239,12 @@ under 7 per second at 150 ms. Predictive echo hides this while it is
 speculating, but the first unmodelled key — an Enter, a Backspace, an `Esc` —
 ends the run and the catch-up becomes visible.
 
-Bandwidth is not the constraint. Frames are viewport-sized and only sent on
-change, which is a few kilobytes gzipped; splits multiply that, since each pane
-carries its own lines.
+Latency is what you feel, but bandwidth is not free either. Frames are
+viewport-sized and only sent on change — and each change sends a whole frame,
+uncompressed: roughly 20 KB for an 80×24 view of highlighted code and 45 KB for
+120×35. Splits multiply that, since each pane carries its own lines. Nothing on
+the path compresses it, so on a link under a couple of Mbit/s the frames matter
+as much as the round trips do.
 
 Read-only queries are exempt from the serialisation. A diff review that walks
 Git objects for several seconds does not block the keys you type while it runs.
@@ -251,13 +255,19 @@ Remote editing is complete enough for daily use, but these limits are real:
 
 - **No interactive remote terminal.** `:terminal`, `:term` and `:shell` need a
   real terminal to attach to, and the GUI has none — see
-  [Terminal sessions](terminal.md). Over a remote link they are refused on the
-  status line with *"Interactive terminal sessions require the TUI frontend"*.
-  Use a separate `ssh` window, or the AI chat's shell tool.
+  [Terminal sessions](terminal.md). Typed over a remote link they do nothing
+  at all: the request is queued for a frontend that can host a terminal, the
+  remote session is headless, and no message is shown. Use a separate `ssh`
+  window, or the AI chat's shell tool.
 
-  `:!command` is **not** affected: it runs on the remote host, where the code
-  is, and puts its output on the status line. `:!uname -n` reports the remote
-  machine's name, not your laptop's.
+  `:!command` typed at the command line goes the same way, for the same
+  reason — the interactive path queues it for a terminal-owning frontend. It
+  does work through the session's API, where it runs on the remote host, where
+  the code is, and reports its output. From that host:
+
+  ```bash
+  ovim exec '!uname -n' -s gui-api-1106417393   # the remote machine's name
+  ```
 - **`strok` vector preview runs locally.** The Vector tab shells out to `strok`
   on the machine running the window, so it needs `strok` on your laptop rather
   than on the remote host. See [AI setup](ai.md).
@@ -265,10 +275,10 @@ Remote editing is complete enough for daily use, but these limits are real:
   a path on your laptop, which the remote editor cannot read. Pasting an image
   from the clipboard does work, because that carries the bytes.
 - **`:openwin` is not host-aware.** The path it produces is not tagged with
-  which machine it belongs to, so over a remote link it is refused on the
-  status line with *"Opening project windows requires the GUI frontend"* —
-  the remote editor is headless and has no window to open. Launch the second
-  window with its own `ovim gui --remote` instead.
+  which machine it belongs to, and the remote editor is headless and has no
+  window to open, so over a remote link it is queued and dropped in the same
+  silence as `:terminal`. Launch the second window with its own
+  `ovim gui --remote` instead.
 - **One host per window.** There is no mixed local/remote or multi-root
   workspace; a window talks to exactly one editor.
 - **The GUI protocol is unversioned**, which is why the version check above
