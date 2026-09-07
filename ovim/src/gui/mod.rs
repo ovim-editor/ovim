@@ -16,6 +16,7 @@ pub mod app;
 pub mod bridge;
 #[cfg(feature = "gui")]
 pub mod browser;
+pub mod clipboard;
 mod echo;
 #[cfg(feature = "gui")]
 mod menu;
@@ -37,13 +38,13 @@ pub use bridge::{
 };
 pub use protocol::{
     GuiAgentOption, GuiAiChat, GuiAiProfileOption, GuiChatMessage, GuiChatSetup,
-    GuiChatSetupAction, GuiCodeAttachment, GuiCodeExplanation, GuiCodeExplanationDiscussion,
-    GuiCodeExplanationPage, GuiCommand, GuiCompletion, GuiCompletionItem, GuiCursor, GuiDebugFrame,
-    GuiDebugPanel, GuiDiagnostics, GuiFileTree, GuiFileTreeItem, GuiGitChanges, GuiHover,
-    GuiKeyInput, GuiLayoutNode, GuiLine, GuiLspEntry, GuiLspManager, GuiPane, GuiPicker,
-    GuiPickerItem, GuiProblem, GuiProblemList, GuiPrompt, GuiQueuedChatInput, GuiReply,
-    GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure, GuiTestPanel, GuiTheme,
-    GuiVectorSource, SNAPSHOT_EVENT,
+    GuiChatSetupAction, GuiClipboard, GuiClipboardText, GuiCodeAttachment, GuiCodeExplanation,
+    GuiCodeExplanationDiscussion, GuiCodeExplanationPage, GuiCommand, GuiCompletion,
+    GuiCompletionItem, GuiCursor, GuiDebugFrame, GuiDebugPanel, GuiDiagnostics, GuiFileTree,
+    GuiFileTreeItem, GuiGitChanges, GuiHover, GuiKeyInput, GuiLayoutNode, GuiLine, GuiLspEntry,
+    GuiLspManager, GuiPane, GuiPicker, GuiPickerItem, GuiProblem, GuiProblemList, GuiPrompt,
+    GuiQueuedChatInput, GuiReply, GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure,
+    GuiTestPanel, GuiTheme, GuiVectorSource, SNAPSHOT_EVENT,
 };
 pub use reconnect::{ConnectionLoss, GuiConnection};
 pub use remote::{RemoteEndpoint, RemoteTransport};
@@ -61,6 +62,7 @@ use crate::mode::Mode;
 use crate::syntax::{HighlightGroup, UiGroup};
 use crate::unicode::GraphemeCol;
 use anyhow::{Context, Result};
+use clipboard::clipboard_text;
 use std::path::Path;
 use std::sync::mpsc as std_mpsc;
 use std::time::{Duration, Instant};
@@ -944,6 +946,23 @@ pub(crate) async fn handle_request(
             }
             (reply, result)
         }
+        GuiRequest::ReadClipboard { reply } => {
+            let _ = reply.send(clipboard_text(editor));
+            return;
+        }
+        GuiRequest::WriteClipboard { text, reply } => {
+            let result = match clipboard::within_limit(&text) {
+                // Straight into the `+` register, which is where `p` reads
+                // from under `clipboard=unnamedplus` and where `"+p` reads
+                // from whatever the option says.
+                Ok(()) => {
+                    editor.registers_mut().set_clipboard(text);
+                    Ok(())
+                }
+                Err(error) => Err(anyhow::anyhow!(error)),
+            };
+            (reply, result)
+        }
         GuiRequest::Shutdown => unreachable!(),
     };
 
@@ -1112,6 +1131,13 @@ pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
         theme: theme(editor),
         predictable_insert: echo::predictable_insert(editor),
         input_epoch: inputs,
+        clipboard: GuiClipboard {
+            // Read as a boolean rather than by value: nothing in the editor
+            // distinguishes `unnamedplus` from `unnamed`, so a frontend must
+            // not pretend to either.
+            shared: !editor.options.clipboard.is_empty(),
+            generation: editor.registers().clipboard_generation(),
+        },
         should_quit: editor.should_quit(),
     }
 }

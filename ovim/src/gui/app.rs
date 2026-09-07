@@ -628,6 +628,19 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;
                 let drop_bridge = app.state::<GuiBridge>().inner().clone();
+                // A yank on the editor's host reaches this machine's clipboard
+                // by following the frames; this machine's clipboard reaches the
+                // editor when the window is activated, which is the one moment
+                // between "copied in a browser" and "pressed `p`" that this
+                // process gets to see. See `gui::clipboard` for the policy.
+                let focus_clipboard = super::clipboard::start(
+                    &drop_bridge,
+                    Arc::new(super::clipboard::SystemClipboard),
+                )
+                .map(|(handle, follow)| {
+                    tauri::async_runtime::spawn(follow);
+                    handle
+                });
                 let close_window = window.clone();
                 let close_gate = setup_exit_gate.clone();
                 window.on_window_event(move |event| match event {
@@ -643,6 +656,13 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
                         tauri::async_runtime::spawn(async move {
                             let _ = bridge.attach_images(paths).await;
                         });
+                    }
+                    WindowEvent::Focused(true) => {
+                        if let Some(clipboard) = focus_clipboard.clone() {
+                            tauri::async_runtime::spawn(async move {
+                                clipboard.push_latest().await;
+                            });
+                        }
                     }
                     _ => {}
                 });

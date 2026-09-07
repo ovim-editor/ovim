@@ -150,7 +150,48 @@ pub struct GuiSnapshot {
     /// what the editor has consumed of one client's typing, and overstating
     /// makes that client speak for less rather than more.
     pub input_epoch: u64,
+    /// What the editor's system-clipboard policy is doing.
+    ///
+    /// A frontend driving an editor on another host has to mirror the policy
+    /// rather than invent one, and the two facts it needs are cheap enough to
+    /// ride on every frame. The clipboard *text* deliberately does not: a
+    /// yanked buffer can be megabytes, and a snapshot is a full projection
+    /// with no delta encoding, so a large yank would be re-sent with every
+    /// keystroke's frame. [`GuiCommand::ReadClipboard`] fetches it once, when
+    /// the generation says there is something new to fetch.
+    pub clipboard: GuiClipboard,
     pub should_quit: bool,
+}
+
+/// The editor's system-clipboard policy, as seen from a frame.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiClipboard {
+    /// Whether `set clipboard=` asks for system-clipboard integration.
+    ///
+    /// False for `set clipboard=`, true for `unnamedplus` and `unnamed`. A
+    /// user who has not opted into clipboard integration must not acquire it
+    /// by moving the editor to another host, so this gates the direction that
+    /// sends the frontend's clipboard to the editor.
+    pub shared: bool,
+    /// How many times the editor has written the system clipboard.
+    ///
+    /// Rises only for a write the editor made -- so a yank, or a delete under
+    /// `unnamedplus`, or an explicit `"+y` whatever the option says. It does
+    /// not rise for a clipboard some other program on the editor's host
+    /// changed, which is the difference between mirroring the editor and
+    /// synchronising two machines' clipboards.
+    pub generation: u64,
+}
+
+/// The text the editor last put on its host's system clipboard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiClipboardText {
+    /// The generation this text belongs to, which a frontend records so a
+    /// yank that lands between the frame and this answer is still noticed.
+    pub generation: u64,
+    pub text: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -713,6 +754,20 @@ pub enum GuiCommand {
     SelectDebugFrame {
         index: usize,
     },
+    /// The text the editor last put on its own host's system clipboard.
+    ///
+    /// Asked for when [`GuiClipboard::generation`] on a frame differs from the
+    /// one already mirrored, so the payload crosses the link once per yank
+    /// rather than once per frame.
+    ReadClipboard,
+    /// Put the frontend's system clipboard into the editor's `+` register.
+    ///
+    /// The other half of the bridge: without it a `p` on a remote editor pastes
+    /// whatever the *editor's* host has on its clipboard, which on a headless
+    /// host is usually nothing at all.
+    WriteClipboard {
+        text: String,
+    },
     Shutdown,
 }
 
@@ -728,6 +783,7 @@ impl GuiCommand {
             GuiCommand::VectorSource => GuiReplyKind::VectorSource,
             GuiCommand::DiffReview { .. } => GuiReplyKind::DiffReview,
             GuiCommand::DiffFilePatch { .. } => GuiReplyKind::DiffPatch,
+            GuiCommand::ReadClipboard => GuiReplyKind::Clipboard,
             GuiCommand::Shutdown => GuiReplyKind::None,
             GuiCommand::VectorFeedback { .. }
             | GuiCommand::OpenDiffBuffer { .. }
@@ -755,8 +811,36 @@ impl GuiCommand {
             | GuiCommand::SelectFileTree { .. }
             | GuiCommand::SelectProblem { .. }
             | GuiCommand::SelectLsp { .. }
-            | GuiCommand::SelectDebugFrame { .. } => GuiReplyKind::Unit,
+            | GuiCommand::SelectDebugFrame { .. }
+            | GuiCommand::WriteClipboard { .. } => GuiReplyKind::Unit,
         }
+    }
+
+    /// Whether this command has to reach the editor in the order it was issued.
+    ///
+    /// In a modal editor almost every command means whatever the mode, pending
+    /// operator, count and cursor make it mean *when it arrives*: `d` before
+    /// its motion and `d` after it delete different things, and two characters
+    /// that swap places corrupt the buffer with nothing on screen to say so.
+    /// So the answer is yes by default, and a new variant added later inherits
+    /// the safe side of it.
+    ///
+    /// The exceptions are the read-only queries. None of them touches editor
+    /// state, so where they sit in the sequence cannot change what any other
+    /// command does; and their own answer already describes the editor at
+    /// whatever moment the session got round to them, which no client could
+    /// pin down anyway. They are also the slow ones -- the diff commands walk
+    /// Git objects on the session's blocking pool -- so keeping them out of
+    /// the ordered queue is what stops a repository walk from sitting in front
+    /// of the keys typed during it.
+    pub fn must_keep_its_place(&self) -> bool {
+        !matches!(
+            self,
+            GuiCommand::VectorSource
+                | GuiCommand::DiffReview { .. }
+                | GuiCommand::DiffFilePatch { .. }
+                | GuiCommand::ReadClipboard
+        )
     }
 }
 
@@ -773,6 +857,7 @@ pub enum GuiReplyKind {
     VectorSource,
     DiffReview,
     DiffPatch,
+    Clipboard,
 }
 
 /// The answer to a [`GuiCommand`].
@@ -794,6 +879,8 @@ pub enum GuiReply {
     DiffReview(Result<ovim_core::native_diff::DiffReview, String>),
     /// A unified patch for one file, computed on the editor's host.
     DiffPatch(Result<String, String>),
+    /// The text the editor last put on its own host's system clipboard.
+    Clipboard(Result<GuiClipboardText, String>),
 }
 
 impl GuiReply {
@@ -805,6 +892,7 @@ impl GuiReply {
             GuiReply::VectorSource(_) => GuiReplyKind::VectorSource,
             GuiReply::DiffReview(_) => GuiReplyKind::DiffReview,
             GuiReply::DiffPatch(_) => GuiReplyKind::DiffPatch,
+            GuiReply::Clipboard(_) => GuiReplyKind::Clipboard,
         }
     }
 }
@@ -951,6 +1039,10 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
             activate: false,
         },
         GuiCommand::SelectDebugFrame { index: 2 },
+        GuiCommand::ReadClipboard,
+        GuiCommand::WriteClipboard {
+            text: "clipboard text".to_string(),
+        },
         GuiCommand::Shutdown,
         GuiCommand::Key { input: plain_key },
     ]
@@ -964,13 +1056,13 @@ mod tests {
 
     #[test]
     fn the_command_sample_covers_every_variant_exactly_once() {
-        // `GuiRequest` has 32 variants and `GuiCommand` mirrors it one for
+        // `GuiRequest` has 34 variants and `GuiCommand` mirrors it one for
         // one, so this count is what stops a new variant from being added
         // without round-trip coverage. The trailing duplicate in the sample is
         // a second `Key` with different modifiers, which is deliberate.
         let commands = sample_commands();
         let distinct: HashSet<_> = commands.iter().map(discriminant).collect();
-        assert_eq!(distinct.len(), 32);
+        assert_eq!(distinct.len(), 34);
     }
 
     #[test]
@@ -1007,6 +1099,24 @@ mod tests {
     }
 
     #[test]
+    fn a_command_that_leaves_the_ordered_queue_is_one_that_only_reads() {
+        // Ordering is the default so that a variant added later cannot opt out
+        // of it by being forgotten. The exceptions are exactly the queries,
+        // and each of those answers with a computed value rather than the
+        // `Unit` an editor-state change comes back as.
+        for command in sample_commands() {
+            let reads_only = matches!(
+                command.reply_kind(),
+                GuiReplyKind::VectorSource
+                    | GuiReplyKind::DiffReview
+                    | GuiReplyKind::DiffPatch
+                    | GuiReplyKind::Clipboard
+            );
+            assert_eq!(command.must_keep_its_place(), !reads_only, "{command:?}");
+        }
+    }
+
+    #[test]
     fn every_reply_variant_survives_a_json_round_trip() {
         for reply in [
             GuiReply::Unit(Ok(())),
@@ -1021,6 +1131,11 @@ mod tests {
             GuiReply::DiffPatch(Ok("@@ -1 +1 @@\n-old\n+new\n".to_string())),
             GuiReply::DiffPatch(Err("no workspace".to_string())),
             GuiReply::Snapshot(Box::new(Err("the editor stopped".to_string()))),
+            GuiReply::Clipboard(Ok(GuiClipboardText {
+                generation: 7,
+                text: "yanked".to_string(),
+            })),
+            GuiReply::Clipboard(Err("the yank is too large to bridge".to_string())),
         ] {
             assert_eq!(round_trip(&reply), reply);
         }
@@ -1037,6 +1152,7 @@ mod tests {
                 GuiReplyKind::VectorSource => GuiReply::VectorSource(Err("unused".to_string())),
                 GuiReplyKind::DiffReview => GuiReply::DiffReview(Err("unused".to_string())),
                 GuiReplyKind::DiffPatch => GuiReply::DiffPatch(Err("unused".to_string())),
+                GuiReplyKind::Clipboard => GuiReply::Clipboard(Err("unused".to_string())),
             };
             assert_eq!(reply.kind(), kind, "{command:?}");
         }

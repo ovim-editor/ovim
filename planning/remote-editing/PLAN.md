@@ -130,7 +130,8 @@ confirmation state, limited to safely predictable keys.
 
 ### R8 — Clipboard bridging
 A yank on the remote fills a remote register. Bridge it to the local system
-clipboard, and the reverse for paste. Daily papercut if skipped.
+clipboard, and the reverse for paste. Daily papercut if skipped. Mirrors the
+`clipboard` option rather than adding a policy.
 
 ### R9 — Documentation
 `user-docs/remote.md`, plus README and CLAUDE.md updates.
@@ -426,17 +427,105 @@ the local one.
   `rust-analyzer` would not attach to a headless session on this machine, so
   every measurement above is LSP-free and the menu never opened.
 
+**R8 landed; notes for R9.**
+
+- **The clipboard policy is Ovim's own, observed rather than reinvented.** The
+  `clipboard` option (`unnamedplus` by default, `unnamed`, or empty) already
+  decides *whether* a yank belongs on the system clipboard; the only new
+  question is *whose*. `ovim/src/gui/clipboard.rs` answers that and adds no
+  case of its own.
+- **Editor to laptop** rides on a counter, not on the text. `ClipboardProvider`
+  bumps a generation on every write, `GuiSnapshot.clipboard.generation` carries
+  it, and the client fetches with `GuiCommand::ReadClipboard` only when it
+  moves. The text deliberately never rides on a frame: a snapshot is a full
+  projection with no delta encoding, so a megabyte yank would be re-sent with
+  every subsequent keystroke's frame. The counter rises exactly when a local
+  Ovim would have written the user's clipboard -- a yank or delete under
+  `unnamedplus`, an explicit `"+y` whatever the option says -- so mirroring
+  every rise reproduces the local exposure rather than inventing a new one.
+  It is compared for *inequality*, because a replaced session starts counting
+  from one again; the same trap `Link::publish` guards the revision against.
+- **Laptop to editor** is gated on the option read as a boolean
+  (`clipboard.shared`), because this is the direction that moves the user's
+  clipboard onto another host. `unnamedplus` is the declaration that makes it
+  defensible; somebody on `set clipboard=` gets nothing, and their Cmd-V still
+  works because `gui_paste` is an explicit per-paste gesture and always was.
+  The trigger is window activation -- the one moment between "copied in a
+  browser" and "pressed `p`" this process can see. `p` cannot ask at the time:
+  the snapshot stream is the only channel running the other way and it carries
+  frames, not questions. **A pending-paste request on the frame would be the
+  honest fix and is a follow-up**, but it makes every `p` cost a round trip.
+- **Both directions run in this process, not in the webview.** The client
+  already links `ovim-core`, so it has the same `arboard` the editor does:
+  identical semantics to a local Ovim, no clipboard-permission prompt, no
+  dependence on a DOM gesture, and no clipboard content through the IPC. The
+  image path had to go through the webview because only a `ClipboardEvent`
+  carries image bytes; text has no such constraint.
+- **1 MiB either way**, enforced where the text is (the editor refuses to hand
+  over more; the client refuses to send more). Roughly fifteen thousand lines
+  of source, past anything anyone pastes by hand, and about a second of a
+  laptop's uplink where the image path's 20 MiB would be twenty. The asymmetry
+  is deliberate: a pasted screenshot has no smaller form, whereas an oversized
+  yank is still in the remote register with better ways to travel.
+- Nothing is queued while disconnected: `RemoteTransport::send` refuses, the
+  push forgets what it tried to send, and the next activation sends whatever is
+  on the clipboard *then* -- which is the value the user would expect anyway.
+- A push raises the editor's generation, so the mirror that follows would write
+  the text straight back. It is skipped by comparing against what this
+  machine's clipboard already holds, which costs one read per yank and stops
+  the two directions chasing each other.
+- Verified live: a headless session started with no display (so `arboard` is
+  unavailable there, exactly as on a real remote), driven through a `socat`
+  forward, with an in-memory stand-in for the laptop's clipboard so that one
+  machine cannot fake the round trip. `yy` on the session reached the
+  stand-in; text put on the stand-in was pasted by `p` on the session;
+  `set clipboard=` flipped `shared` to false on the very next frame.
+  `remote_session_test::a_yank_crosses_the_link_to_this_clipboard_and_this_clipboard_crosses_back`
+  is that drill, ignored by default.
+- Not verified: the `WindowEvent::Focused(true)` hook itself, which needs a
+  real window. The handler is two lines over `push_latest`, which the test
+  drives directly.
+- R9 should document `clipboard` under remote editing: what crosses, in which
+  direction, and that `set clipboard=` turns the laptop-to-editor half off.
+
 ## Known follow-ups after R7
 
-**Concurrent key sends can reorder.** `RemoteTransport::dispatch` spawns a task
-per command, so two POSTs can race and reach the session out of order. This is
-pre-existing from R4, not introduced by predictive echo. In a modal editor an
-out-of-order key is a correctness problem, not just a display one: `d` arriving
-after its motion means something different from `d` arriving before it. The
-epoch fence added in R7 degrades a reorder into a dropped prediction rather
-than wrong text on screen, but it does not stop the reorder itself. Fixing it
-means serialising sends per transport -- a single-writer task with an ordered
-queue -- rather than one task per command.
+**Concurrent key sends could reorder -- fixed.** `RemoteTransport::dispatch`
+spawned a task per command, so two POSTs could race and reach the session out
+of order. Pre-existing from R4, and a correctness problem rather than a display
+one: `d` arriving after its motion means something different from `d` arriving
+before it, and R7's epoch fence only degraded a reorder into a dropped
+prediction, leaving the wrong text already in the buffer. The fix:
+
+- `GuiCommand::must_keep_its_place` splits the command set in two, with
+  ordering as the default so a variant added later inherits the safe side.
+  Everything that touches editor state goes through `write_in_order`, a single
+  writer task that awaits each answer before starting the next request -- the
+  answer cannot arrive before the editor has taken the command in, so issue
+  order is arrival order.
+- The exceptions are the three read-only queries (`VectorSource`,
+  `DiffReview`, `DiffFilePatch`), which keep a task each. **Head-of-line
+  blocking is real and this is what handles it**: a diff review walks Git
+  objects on the session's blocking pool and can take seconds, and keys typed
+  while a diff panel refreshes must not wait behind it. Letting a query be
+  overtaken is safe because it changes no editor state -- so its position in
+  the sequence cannot change what any other command does -- and its answer
+  already describes the editor as of whenever the session got round to it,
+  which no client could pin down even before.
+- The writer re-checks the connection before each send, so a command that was
+  merely *waiting* when the link died is dropped rather than released into a
+  session that was edited meanwhile. Releasing a backlog on reconnect is the
+  replay R6 refused, arriving by a different door.
+- **The cost: the ordered lane carries one command per round trip**, so
+  sustained typing faster than 1/RTT builds a backlog that drains in the
+  pauses. At the 40ms where R7 says predictive echo becomes required that is
+  25 keys/s, which is the rate R7 measured real typing at; at 150ms it is
+  under 7. Predictive echo hides the visual part (`outstanding = sentEpoch -
+  frame.inputEpoch` simply grows), but an unmodelled key ends the run and the
+  catch-up becomes visible. Lifting it needs the session to accept a batch, or
+  a sequence number it can reorder on -- both are protocol changes, and both
+  would have to answer what a *dropped* command does to a sequence the far
+  side is waiting to complete. Not attempted here.
 
 **Backspace is not predicted.** Auto-indent and `backspace=` interact in ways
 R7 could not prove safe. It is the most common excluded key in real typing and
@@ -447,3 +536,20 @@ the obvious next candidate, but it needs its own correctness argument.
 visible (only Tab/Enter/Ctrl-Y accept). The exclusion was kept because it could
 not be verified live -- no language server would attach to a headless session
 in the development environment.
+
+## Test hazard: `test_clipboard_register_yank`
+
+`ovim/tests/register_operations_test.rs::test_clipboard_register_yank` drives
+`"+yiw` / `"+p` through the *real* system clipboard. On Wayland, clipboard
+ownership requires the writing process to stay alive and serve the selection,
+so a short-lived test process can lose it before reading back -- the paste then
+produces nothing and the assertion fails with the unpasted buffer.
+
+Measured at roughly 3 failures in 19 runs locally. Investigated during R8 and
+**not** attributable to it: the `register.rs` changes there are purely additive
+(two free functions, a generation counter) and the read path is untouched. It
+is environmental, not a regression, and it predates the remote-editing work.
+
+Worth making independent of the machine's clipboard, since it will be flaky in
+CI for the same reason. Left alone here rather than edited inside an unrelated
+change.

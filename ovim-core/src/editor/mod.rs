@@ -146,7 +146,7 @@ pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
 pub use picker::{Picker, PickerAction, PickerField, PickerMode, PickerResult};
 pub use picker_state::PickerState;
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
-pub use register::{RegisterManager, RegisterType};
+pub use register::{read_system_clipboard, write_system_clipboard, RegisterManager, RegisterType};
 pub use render_cache::RenderCache;
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
