@@ -758,6 +758,32 @@ impl GuiCommand {
             | GuiCommand::SelectDebugFrame { .. } => GuiReplyKind::Unit,
         }
     }
+
+    /// Whether this command has to reach the editor in the order it was issued.
+    ///
+    /// In a modal editor almost every command means whatever the mode, pending
+    /// operator, count and cursor make it mean *when it arrives*: `d` before
+    /// its motion and `d` after it delete different things, and two characters
+    /// that swap places corrupt the buffer with nothing on screen to say so.
+    /// So the answer is yes by default, and a new variant added later inherits
+    /// the safe side of it.
+    ///
+    /// The exceptions are the read-only queries. None of them touches editor
+    /// state, so where they sit in the sequence cannot change what any other
+    /// command does; and their own answer already describes the editor at
+    /// whatever moment the session got round to them, which no client could
+    /// pin down anyway. They are also the slow ones -- the diff commands walk
+    /// Git objects on the session's blocking pool -- so keeping them out of
+    /// the ordered queue is what stops a repository walk from sitting in front
+    /// of the keys typed during it.
+    pub fn must_keep_its_place(&self) -> bool {
+        !matches!(
+            self,
+            GuiCommand::VectorSource
+                | GuiCommand::DiffReview { .. }
+                | GuiCommand::DiffFilePatch { .. }
+        )
+    }
 }
 
 /// Which [`GuiReply`] a [`GuiCommand`] answers with.
@@ -1004,6 +1030,21 @@ mod tests {
         .unwrap();
 
         assert_eq!(json["payload"]["displayColumn"], 8);
+    }
+
+    #[test]
+    fn a_command_that_leaves_the_ordered_queue_is_one_that_only_reads() {
+        // Ordering is the default so that a variant added later cannot opt out
+        // of it by being forgotten. The exceptions are exactly the queries,
+        // and each of those answers with a computed value rather than the
+        // `Unit` an editor-state change comes back as.
+        for command in sample_commands() {
+            let reads_only = matches!(
+                command.reply_kind(),
+                GuiReplyKind::VectorSource | GuiReplyKind::DiffReview | GuiReplyKind::DiffPatch
+            );
+            assert_eq!(command.must_keep_its_place(), !reads_only, "{command:?}");
+        }
     }
 
     #[test]

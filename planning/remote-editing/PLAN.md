@@ -428,15 +428,42 @@ the local one.
 
 ## Known follow-ups after R7
 
-**Concurrent key sends can reorder.** `RemoteTransport::dispatch` spawns a task
-per command, so two POSTs can race and reach the session out of order. This is
-pre-existing from R4, not introduced by predictive echo. In a modal editor an
-out-of-order key is a correctness problem, not just a display one: `d` arriving
-after its motion means something different from `d` arriving before it. The
-epoch fence added in R7 degrades a reorder into a dropped prediction rather
-than wrong text on screen, but it does not stop the reorder itself. Fixing it
-means serialising sends per transport -- a single-writer task with an ordered
-queue -- rather than one task per command.
+**Concurrent key sends could reorder -- fixed.** `RemoteTransport::dispatch`
+spawned a task per command, so two POSTs could race and reach the session out
+of order. Pre-existing from R4, and a correctness problem rather than a display
+one: `d` arriving after its motion means something different from `d` arriving
+before it, and R7's epoch fence only degraded a reorder into a dropped
+prediction, leaving the wrong text already in the buffer. The fix:
+
+- `GuiCommand::must_keep_its_place` splits the command set in two, with
+  ordering as the default so a variant added later inherits the safe side.
+  Everything that touches editor state goes through `write_in_order`, a single
+  writer task that awaits each answer before starting the next request -- the
+  answer cannot arrive before the editor has taken the command in, so issue
+  order is arrival order.
+- The exceptions are the three read-only queries (`VectorSource`,
+  `DiffReview`, `DiffFilePatch`), which keep a task each. **Head-of-line
+  blocking is real and this is what handles it**: a diff review walks Git
+  objects on the session's blocking pool and can take seconds, and keys typed
+  while a diff panel refreshes must not wait behind it. Letting a query be
+  overtaken is safe because it changes no editor state -- so its position in
+  the sequence cannot change what any other command does -- and its answer
+  already describes the editor as of whenever the session got round to it,
+  which no client could pin down even before.
+- The writer re-checks the connection before each send, so a command that was
+  merely *waiting* when the link died is dropped rather than released into a
+  session that was edited meanwhile. Releasing a backlog on reconnect is the
+  replay R6 refused, arriving by a different door.
+- **The cost: the ordered lane carries one command per round trip**, so
+  sustained typing faster than 1/RTT builds a backlog that drains in the
+  pauses. At the 40ms where R7 says predictive echo becomes required that is
+  25 keys/s, which is the rate R7 measured real typing at; at 150ms it is
+  under 7. Predictive echo hides the visual part (`outstanding = sentEpoch -
+  frame.inputEpoch` simply grows), but an unmodelled key ends the run and the
+  catch-up becomes visible. Lifting it needs the session to accept a batch, or
+  a sequence number it can reorder on -- both are protocol changes, and both
+  would have to answer what a *dropped* command does to a sequence the far
+  side is waiting to complete. Not attempted here.
 
 **Backspace is not predicted.** Auto-indent and `backspace=` interact in ways
 R7 could not prove safe. It is the most common excluded key in real typing and

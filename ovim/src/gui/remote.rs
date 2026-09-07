@@ -20,6 +20,11 @@
 //!   failed inside the editor still answers `200` with an `Err` reply, so this
 //!   transport passes replies through untouched and only invents an error when
 //!   the link itself failed.
+//! * **Order is part of what a command means.** Two POSTs issued back to back
+//!   are two independent requests, and nothing in HTTP makes the second reach
+//!   the session after the first. In a modal editor that is a corruption bug
+//!   rather than a rendering one, so ordered commands leave through a single
+//!   writer task -- see [`write_in_order`].
 
 use super::bridge::{GuiTransport, GuiTransportFuture, EDITOR_STOPPED};
 use super::protocol::{GuiCommand, GuiReply, GuiReplyKind, GuiSnapshot, SNAPSHOT_EVENT};
@@ -33,7 +38,7 @@ use reqwest::StatusCode;
 use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::{oneshot, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 
 /// The link to the editor failed, so the command never reached it.
 ///
@@ -230,9 +235,58 @@ impl Wire {
     }
 }
 
+/// One queued command and the channel its answer is owed on.
+struct Envelope {
+    command: GuiCommand,
+    answer: oneshot::Sender<Result<Option<GuiReply>, String>>,
+}
+
+/// Put ordered commands on the wire one at a time, in the order they were
+/// queued.
+///
+/// Two concurrent POSTs are two independent requests: they may travel on
+/// different connections, and the session hands each to its own task before
+/// anything reaches the editor's single request queue. Nothing about that
+/// preserves the order they were issued in, and in a modal editor the order is
+/// the meaning -- a `d` that overtakes its motion deletes something else, a
+/// count that arrives after the operator it belonged to is simply lost, and two
+/// typed characters that swap places corrupt the buffer with nothing on screen
+/// to say so. R7's epoch fence turns such a reorder into a dropped prediction
+/// rather than wrong text drawn locally, but the wrong text is already in the
+/// buffer by then.
+///
+/// A single writer awaiting each answer before starting the next request is
+/// what makes the session receive them in issue order, since the answer cannot
+/// arrive before the editor has taken the command in. The cost is that the
+/// ordered lane carries one command per round trip; see the module notes in
+/// `planning/remote-editing/PLAN.md` for why that is the right trade here and
+/// what would lift it.
+///
+/// The connection is re-checked here rather than only at
+/// [`GuiTransport::send`]: a command sits in this queue for as long as the one
+/// in front of it takes, and a link that dies in between must drop what is
+/// waiting instead of releasing it into a session that has been edited
+/// meanwhile. Releasing a backlog on reconnect is the replay R6 refused, just
+/// arriving by a different door.
+async fn write_in_order(link: Arc<Link>, mut queue: mpsc::UnboundedReceiver<Envelope>) {
+    while let Some(Envelope { command, answer }) = queue.recv().await {
+        let result = if link.is_connected() {
+            post_command(&link.wire(), command).await
+        } else {
+            Err(EDITOR_DISCONNECTED.to_string())
+        };
+        // The caller may have gone away; the command still had to be sent in
+        // its place, so a closed answer channel is not a reason to skip it.
+        let _ = answer.send(result);
+    }
+}
+
 /// The transport: a supervised link to a session, and the runtime it runs on.
 pub struct RemoteTransport {
     link: Arc<Link>,
+    /// The ordered lane. See [`write_in_order`].
+    ordered: mpsc::UnboundedSender<Envelope>,
+    writer: tokio::task::JoinHandle<()>,
     supervisor: tokio::task::JoinHandle<()>,
     /// Owned so that requests never depend on the caller's runtime.
     ///
@@ -290,9 +344,13 @@ impl RemoteTransport {
         let link = Arc::new(Link::new(Wire::new(&launch.endpoint)?, launch.link));
         let (ready_tx, ready_rx) = oneshot::channel();
         let supervisor = runtime.spawn(supervise(Arc::clone(&link), ready_tx));
+        let (ordered, queue) = mpsc::unbounded_channel();
+        let writer = runtime.spawn(write_in_order(Arc::clone(&link), queue));
         Ok((
             Self {
                 link,
+                ordered,
+                writer,
                 supervisor,
                 runtime: Some(runtime),
             },
@@ -315,13 +373,38 @@ impl RemoteTransport {
         self.link.request_reconnect(allow_new_session)
     }
 
-    /// Start the request immediately and hand back where its answer will land.
+    /// Queue the request immediately and hand back where its answer will land.
     ///
-    /// Eager like the local transport's send: the caller's first `await` is
-    /// not what puts the command on the wire.
+    /// Eager like the local transport's send: the caller's first `await` is not
+    /// what decides this command's place in the sequence. Taking that place
+    /// here, synchronously, is what makes "issued before" mean "arrives
+    /// before" -- two `send` calls from one task are ordered by the calls
+    /// themselves rather than by which future is polled first.
+    ///
+    /// Two lanes, split by [`GuiCommand::must_keep_its_place`]. Everything that
+    /// touches editor state goes through [`write_in_order`]; the read-only
+    /// queries get a task each, as every command used to. That is not a
+    /// loophole but the point of the split: the diff commands walk a Git
+    /// repository on the session's blocking pool and can take seconds, and a
+    /// keystroke typed while a diff panel refreshes must not wait behind it.
+    /// A query cannot change what any other command does, so letting it
+    /// overtake one costs nothing -- and its answer was never pinned to a
+    /// moment in the sequence anyway, since it describes the editor as of
+    /// whenever the session got round to it.
     fn dispatch(&self, command: GuiCommand) -> oneshot::Receiver<Result<Option<GuiReply>, String>> {
         let (answer_tx, answer_rx) = oneshot::channel();
         self.link.note_viewport(&command);
+        if command.must_keep_its_place() {
+            // A failed send drops the answer channel with the envelope, which
+            // the caller reads as the editor being unreachable -- the same
+            // wording a spawned request gets when the runtime goes away under
+            // it, and only reachable for the same reason.
+            let _ = self.ordered.send(Envelope {
+                command,
+                answer: answer_tx,
+            });
+            return answer_rx;
+        }
         let link = Arc::clone(&self.link);
         self.runtime().spawn(async move {
             let _ = answer_tx.send(post_command(&link.wire(), command).await);
@@ -418,6 +501,7 @@ impl GuiTransport for RemoteTransport {
 impl Drop for RemoteTransport {
     fn drop(&mut self) {
         self.supervisor.abort();
+        self.writer.abort();
         // Dropping a runtime from inside another one panics, and a GUI shell
         // may well be tearing this down from an async context. Handing the
         // runtime its own shutdown avoids waiting for tasks here.
@@ -671,6 +755,14 @@ mod tests {
     const FAILING_COMMAND: &str = "make the editor refuse";
     /// A command the stub answers as a broken conversation instead.
     const UNAVAILABLE_COMMAND: &str = "make the conversation fail";
+    /// A command the stub sits on before recording it, followed by a number of
+    /// milliseconds.
+    ///
+    /// This is how a test forces an arrival order the client never asked for:
+    /// commands issued in one order but held for descending times are recorded
+    /// in exactly the reverse of it, unless something made them travel one at
+    /// a time.
+    const HOLD_COMMAND: &str = "hold for ";
 
     /// A session that answers like the real one without running an editor.
     struct StubSession {
@@ -690,6 +782,9 @@ mod tests {
         /// The revision the next published frame carries, so a test can make
         /// the session look like a replacement that started counting again.
         revision: Mutex<u64>,
+        /// How long a diff query takes, standing in for the Git walk the real
+        /// session runs on its blocking pool.
+        diff_delay: Mutex<Duration>,
     }
 
     impl StubSession {
@@ -724,6 +819,26 @@ mod tests {
         /// Answer the stream route with `status` until told otherwise.
         fn refuse_stream(&self, status: Option<AxumStatus>) {
             *self.refuse_stream.lock().unwrap() = status;
+        }
+
+        /// Make every diff query take `delay`, as a repository walk would.
+        fn hold_diffs_for(&self, delay: Duration) {
+            *self.diff_delay.lock().unwrap() = delay;
+        }
+
+        /// How long to sit on `command` before recording it as arrived.
+        fn hold_for(&self, command: &GuiCommand) -> Duration {
+            match command {
+                GuiCommand::EditorCommand { command } => command
+                    .strip_prefix(HOLD_COMMAND)
+                    .and_then(|milliseconds| milliseconds.parse().ok())
+                    .map(Duration::from_millis)
+                    .unwrap_or_default(),
+                GuiCommand::DiffReview { .. } | GuiCommand::DiffFilePatch { .. } => {
+                    *self.diff_delay.lock().unwrap()
+                }
+                _ => Duration::ZERO,
+            }
         }
     }
 
@@ -799,6 +914,12 @@ mod tests {
             GuiCommand::EditorCommand { command } => command.clone(),
             _ => String::new(),
         };
+        // Recorded after the hold, not before it: the list is what the session
+        // took in, and a command still travelling has not arrived.
+        let hold = stub.hold_for(&command);
+        if !hold.is_zero() {
+            tokio::time::sleep(hold).await;
+        }
         stub.received.lock().unwrap().push(command);
         if scripted == UNAVAILABLE_COMMAND {
             return (
@@ -901,6 +1022,7 @@ mod tests {
             streams: Mutex::new(0),
             refuse_stream: Mutex::new(None),
             revision: Mutex::new(0),
+            diff_delay: Mutex::new(Duration::ZERO),
         });
         let routes = Router::new()
             .route("/gui/command", post(stub_command))
@@ -1076,6 +1198,118 @@ mod tests {
         let arrived = Arc::clone(&stub);
         eventually(|| arrived.received().len() == expected.len()).await;
         assert_eq!(stub.received(), expected);
+    }
+
+    /// Only the ex commands, in the order the stub recorded them.
+    fn editor_commands(stub: &StubSession) -> Vec<String> {
+        stub.received()
+            .into_iter()
+            .filter_map(|command| match command {
+                GuiCommand::EditorCommand { command } => Some(command),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn commands_reach_the_session_in_the_order_they_were_issued() {
+        // The bug this pins down is a correctness one, not a rendering one: an
+        // operator that overtakes its motion deletes something else, and a
+        // count that lands after the operator it belonged to is simply gone.
+        //
+        // The stub holds each command for a time that falls as the sequence
+        // advances, so a client that put them all on the wire at once would
+        // have them recorded in exactly the reverse of the order it issued
+        // them in. Nothing but sending them one at a time produces this list.
+        let (stub, endpoint) = stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let issued: Vec<String> = (0..6)
+            .map(|index| format!("{HOLD_COMMAND}{}", 250 - index * 40))
+            .collect();
+
+        let sends: Vec<_> = issued
+            .iter()
+            .map(|command| {
+                transport.send(GuiCommand::EditorCommand {
+                    command: command.clone(),
+                })
+            })
+            .collect();
+        for outcome in futures::future::join_all(sends).await {
+            outcome.expect("every command should be answered");
+        }
+
+        assert_eq!(editor_commands(&stub), issued);
+    }
+
+    #[tokio::test]
+    async fn a_repository_walk_does_not_hold_up_the_keys_typed_during_it() {
+        // The reason the ordered queue is not simply every command. A diff
+        // review walks Git objects on the session's blocking pool and can take
+        // seconds; the keys typed while a diff panel refreshes must not wait
+        // behind it. A query changes no editor state, so letting it be
+        // overtaken cannot change what anything else does.
+        let (stub, endpoint) = stub_session().await;
+        stub.hold_diffs_for(Duration::from_millis(600));
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+
+        let review = transport.send(GuiCommand::DiffReview { spec: None });
+        let typed = async {
+            let started = std::time::Instant::now();
+            let outcome = transport
+                .send(GuiCommand::EditorCommand {
+                    command: "set number".to_string(),
+                })
+                .await;
+            (outcome, started.elapsed())
+        };
+        let (review, (typed, waited)) = futures::future::join(review, typed).await;
+
+        review.expect("the review answers once its walk is done");
+        typed.expect("the key is answered on its own");
+        assert!(
+            waited < Duration::from_millis(300),
+            "the key waited {waited:?}"
+        );
+        // And it reached the session first, which is the same fact stated
+        // where a slow machine cannot argue with it.
+        assert_eq!(editor_commands(&stub), vec!["set number".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_command_waiting_its_turn_is_dropped_when_the_link_dies_under_it() {
+        // Queueing is how ordering is bought, and a queue is exactly what R6
+        // refused to let a reconnect release: the session kept being edited
+        // while the client was blind, so a key delivered late acts on a buffer
+        // nobody watched move. The refusal at `send` covers a key typed during
+        // the outage; this covers one that was already waiting when it began.
+        let (stub, forwarder, endpoint) = forwarded_stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+
+        let ahead = transport.send(GuiCommand::EditorCommand {
+            command: format!("{HOLD_COMMAND}2000"),
+        });
+        let waiting = transport.send(GuiCommand::EditorCommand {
+            command: "d".to_string(),
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        forwarder.cut();
+        connection_reaches(&mut connection, |state| !state.is_connected()).await;
+        assert!(ahead.await.is_err(), "the cut should have failed it");
+        assert!(
+            waiting.await.is_err(),
+            "the queued command should be refused"
+        );
+        forwarder.mend();
+        connection_reaches(&mut connection, GuiConnection::is_connected).await;
+
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !editor_commands(&stub).iter().any(|command| command == "d"),
+            "a queued command must not be delivered after the link returns: {:?}",
+            editor_commands(&stub)
+        );
     }
 
     #[tokio::test]
