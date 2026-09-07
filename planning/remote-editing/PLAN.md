@@ -425,3 +425,25 @@ the local one.
 - Not measured: the effect of the completion-menu exclusion on the hit rate.
   `rust-analyzer` would not attach to a headless session on this machine, so
   every measurement above is LSP-free and the menu never opened.
+
+## Known follow-ups after R7
+
+**Concurrent key sends can reorder.** `RemoteTransport::dispatch` spawns a task
+per command, so two POSTs can race and reach the session out of order. This is
+pre-existing from R4, not introduced by predictive echo. In a modal editor an
+out-of-order key is a correctness problem, not just a display one: `d` arriving
+after its motion means something different from `d` arriving before it. The
+epoch fence added in R7 degrades a reorder into a dropped prediction rather
+than wrong text on screen, but it does not stop the reorder itself. Fixing it
+means serialising sends per transport -- a single-writer task with an ordered
+queue -- rather than one task per command.
+
+**Backspace is not predicted.** Auto-indent and `backspace=` interact in ways
+R7 could not prove safe. It is the most common excluded key in real typing and
+the obvious next candidate, but it needs its own correctness argument.
+
+**The completion-menu exclusion may be stricter than necessary.** Reading
+`insert_mode.rs`, a plain character still inserts literally while a menu is
+visible (only Tab/Enter/Ctrl-Y accept). The exclusion was kept because it could
+not be verified live -- no language server would attach to a headless session
+in the development environment.
