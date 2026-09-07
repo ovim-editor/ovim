@@ -367,3 +367,95 @@ the local one.
   `EXIT_SESSION_GONE`), for the same reason R5 could not verify its own --
   no reachable sshd here. The bootstrap script itself is exercised against a
   real `/bin/sh` in `gui::ssh`'s tests.
+
+**R7 landed; notes for R8.**
+
+- **The speculation lives in the frontend, but it cannot be built from the
+  frame alone.** `ovim/gui/src/predictiveEcho.ts` owns every rule; the server
+  contributes two facts a client could not work out, both on `GuiSnapshot`:
+  - `predictable_insert` (`ovim/src/gui/echo.rs`) -- the editor's own answer to
+    "is the next plain printable character certain to be inserted literally?".
+    A pending `i_CTRL-R`, half a typed mapping, a visible completion menu, a
+    visual-block insert and the two modal consent dialogs all change what a
+    character means *without changing a single rendered cell*. A client
+    watching the projection cannot tell any of them from ordinary typing.
+  - `input_epoch` -- how many commands the conversation has taken in. This is
+    mosh's acknowledged state number and it is the load-bearing one. Without
+    it a client cannot tell a frame that already reflects its typing from one
+    that predates it; the first draft measured a real mispredict from exactly
+    that (a character drawn before the `o` that opened its line had landed).
+    It counts *every* command and every client, so it can only overstate what
+    the editor has consumed of one client's typing, and overstating leaves less
+    outstanding. That is the safe direction for a command from *another*
+    client, which the frame already reflects: the run is simply not drawn.
+    It is not safe for a non-key command from *this* one. A click or a paste
+    sent between two keystrokes is counted by the editor but not by the
+    client, so the frame that accounts for it leaves one key too few
+    outstanding, and the run is taken as the *last* of the keys rather than
+    all of them -- the wrong character in the right place, for one round trip.
+    A single global counter cannot tell the two apart; closing it means the
+    client counting every command it sends, or the frame carrying a
+    per-client acknowledgement rather than a total.
+- **The run is derived per frame, never patched across frames.** `outstanding
+  = sentEpoch - frame.inputEpoch`; if those keys are all plain printables and
+  the frame certifies a plain insert state, the run is drawn from the frame's
+  own cursor, and otherwise nothing is drawn. There is no rebase step because
+  there is nothing to rebase, and a frame that cannot be spoken for drops the
+  whole run rather than repairing part of it.
+- **Deriving it also fixes typing through an unmodelled key.** Keys typed
+  while `o`/`<CR>`/`<BS>` is still in flight are journalled but not drawn; the
+  frame that accounts for the unmodelled key adopts them all at once. Gating
+  on "nothing outstanding" instead would have meant a burst that never pauses
+  never starts predicting at all.
+- **The safe set**: transport remote and connected; `predictable_insert`;
+  `INSERT`; no prompt, picker, completion or LSP-manager overlay; not the
+  dashboard; not read-only; `horizontalOffset == 0`; the cursor line rendered
+  as exactly one unwrapped row starting at column 0; `cursor.displayColumn ==
+  cursor.column` (the only way to tell a tab from the spaces it is projected
+  as); the key a single code point in `U+0020..U+007E` or `U+00A1..U+02FF`
+  with no modifier but Shift. `}`, `)` and `]` are refused on an
+  otherwise-blank line, where `electric_dedent_close_bracket` re-indents
+  instead of inserting. Excluded outright: Enter, Tab, Backspace, everything
+  modal, and every non-Latin or multi-code-point grapheme.
+- **`OVIM_REMOTE_LATENCY_MS`** makes a loopback session feel like a distant
+  one: `RemoteTransport` applies half of it in each direction, and the two
+  measurement harnesses read the same variable.
+  `remote_session_test::a_keystroke_costs_a_round_trip_when_nothing_speaks_for_it`
+  times the transport leg; `gui/src/predictiveEcho.measure.test.ts` types the
+  same sample twice, with the speculation on and off, at the same cadence.
+- Measured against a real headless session at 25 keys/s. Keypress to visible,
+  median: 0.0ms predicting at every latency, against 1.9ms / 51.2ms / 151.3ms
+  not predicting at 0 / 50 / 150ms injected RTT. A clean line predicts 98-100%
+  of its keystrokes; a realistic edit with `<CR>`, `<BS>`, `<Esc>` and `<Tab>`
+  in it predicts 93% of printable keys at 0ms and 76% at 150ms, the difference
+  being the run that cannot be drawn until an unmodelled key comes back. Zero
+  mispredicts in every run.
+- Not measured: the effect of the completion-menu exclusion on the hit rate.
+  `rust-analyzer` would not attach to a headless session on this machine, so
+  every measurement above is LSP-free and the menu never opened.
+
+## Known follow-ups after R7
+
+**Concurrent key sends can reorder.** `RemoteTransport::dispatch` spawns a task
+per command, so two POSTs can race and reach the session out of order. This is
+pre-existing from R4, not introduced by predictive echo. In a modal editor an
+out-of-order key is a correctness problem, not just a display one: `d` arriving
+after its motion means something different from `d` arriving before it. The
+epoch fence added in R7 bounds how long the display can disagree -- the run is
+re-derived from each frame rather than patched, so the frame that accounts for
+both keys puts the screen right -- but it does not stop the reorder, and it
+does not keep a wrong character off the screen in the meantime: with two keys
+in flight and the second consumed first, the frame that counts one of them
+leaves the *last* key outstanding, and that is the one drawn. Fixing it means
+serialising sends per transport -- a single-writer task with an ordered queue
+-- rather than one task per command.
+
+**Backspace is not predicted.** Auto-indent and `backspace=` interact in ways
+R7 could not prove safe. It is the most common excluded key in real typing and
+the obvious next candidate, but it needs its own correctness argument.
+
+**The completion-menu exclusion may be stricter than necessary.** Reading
+`insert_mode.rs`, a plain character still inserts literally while a menu is
+visible (only Tab/Enter/Ctrl-Y accept). The exclusion was kept because it could
+not be verified live -- no language server would attach to a headless session
+in the development environment.
