@@ -952,6 +952,11 @@ mod tests {
                 "@@ -1 +1 @@\n-old\n+new\n".to_string()
             )))
             .into_response(),
+            GuiReplyKind::Clipboard => Json(GuiReply::Clipboard(Ok(protocol::GuiClipboardText {
+                generation: 1,
+                text: "yanked".to_string(),
+            })))
+            .into_response(),
         }
     }
 

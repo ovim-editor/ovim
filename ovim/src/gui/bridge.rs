@@ -7,7 +7,7 @@
 //! without any of the typed helpers on `GuiBridge` changing shape.
 
 use super::protocol::{
-    GuiCommand, GuiKeyInput, GuiReply, GuiReplyKind, GuiSnapshot, GuiVectorSource,
+    GuiClipboardText, GuiCommand, GuiKeyInput, GuiReply, GuiReplyKind, GuiSnapshot, GuiVectorSource,
 };
 use super::reconnect::GuiConnection;
 use crate::cli::FileArg;
@@ -172,6 +172,13 @@ pub enum GuiRequest {
         index: usize,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    ReadClipboard {
+        reply: oneshot::Sender<Result<GuiClipboardText, String>>,
+    },
+    WriteClipboard {
+        text: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Shutdown,
 }
 
@@ -187,6 +194,7 @@ pub enum GuiReplySender {
     VectorSource(oneshot::Sender<Result<GuiVectorSource, String>>),
     DiffReview(oneshot::Sender<Result<DiffReview, String>>),
     DiffPatch(oneshot::Sender<Result<String, String>>),
+    Clipboard(oneshot::Sender<Result<GuiClipboardText, String>>),
 }
 
 impl GuiReplySender {
@@ -227,6 +235,13 @@ impl GuiReplySender {
                     GuiReplyReceiver::DiffPatch(rx),
                 )
             }
+            GuiReplyKind::Clipboard => {
+                let (tx, rx) = oneshot::channel();
+                (
+                    GuiReplySender::Clipboard(tx),
+                    GuiReplyReceiver::Clipboard(rx),
+                )
+            }
         }
     }
 
@@ -238,6 +253,7 @@ impl GuiReplySender {
             GuiReplySender::VectorSource(_) => GuiReplyKind::VectorSource,
             GuiReplySender::DiffReview(_) => GuiReplyKind::DiffReview,
             GuiReplySender::DiffPatch(_) => GuiReplyKind::DiffPatch,
+            GuiReplySender::Clipboard(_) => GuiReplyKind::Clipboard,
         }
     }
 }
@@ -250,6 +266,7 @@ pub enum GuiReplyReceiver {
     VectorSource(oneshot::Receiver<Result<GuiVectorSource, String>>),
     DiffReview(oneshot::Receiver<Result<DiffReview, String>>),
     DiffPatch(oneshot::Receiver<Result<String, String>>),
+    Clipboard(oneshot::Receiver<Result<GuiClipboardText, String>>),
 }
 
 impl GuiReplyReceiver {
@@ -273,6 +290,9 @@ impl GuiReplyReceiver {
                 rx.await.map_err(|_| REPLY_CLOSED.to_string())?,
             )),
             GuiReplyReceiver::DiffPatch(rx) => Some(GuiReply::DiffPatch(
+                rx.await.map_err(|_| REPLY_CLOSED.to_string())?,
+            )),
+            GuiReplyReceiver::Clipboard(rx) => Some(GuiReply::Clipboard(
                 rx.await.map_err(|_| REPLY_CLOSED.to_string())?,
             )),
         })
@@ -434,6 +454,12 @@ impl GuiRequest {
             }
             (GuiCommand::SelectDebugFrame { index }, GuiReplySender::Unit(reply)) => {
                 GuiRequest::SelectDebugFrame { index, reply }
+            }
+            (GuiCommand::ReadClipboard, GuiReplySender::Clipboard(reply)) => {
+                GuiRequest::ReadClipboard { reply }
+            }
+            (GuiCommand::WriteClipboard { text }, GuiReplySender::Unit(reply)) => {
+                GuiRequest::WriteClipboard { text, reply }
             }
             (GuiCommand::Shutdown, GuiReplySender::None) => GuiRequest::Shutdown,
             (command, reply) => {
@@ -621,6 +647,13 @@ impl GuiRequest {
             ),
             GuiRequest::SelectDebugFrame { index, reply } => (
                 GuiCommand::SelectDebugFrame { index },
+                GuiReplySender::Unit(reply),
+            ),
+            GuiRequest::ReadClipboard { reply } => {
+                (GuiCommand::ReadClipboard, GuiReplySender::Clipboard(reply))
+            }
+            GuiRequest::WriteClipboard { text, reply } => (
+                GuiCommand::WriteClipboard { text },
                 GuiReplySender::Unit(reply),
             ),
             GuiRequest::Shutdown => (GuiCommand::Shutdown, GuiReplySender::None),
@@ -1052,6 +1085,22 @@ impl GuiBridge {
         self.unit(GuiCommand::SelectChatAgent { agent_id }).await
     }
 
+    /// The text the editor last put on its own host's system clipboard.
+    ///
+    /// Only worth asking when [`GuiSnapshot::clipboard`]'s generation has
+    /// moved; see [`crate::gui::clipboard`] for the policy around it.
+    pub async fn read_clipboard(&self) -> Result<GuiClipboardText, String> {
+        match self.transport.send(GuiCommand::ReadClipboard).await? {
+            Some(GuiReply::Clipboard(result)) => result,
+            other => Err(mismatched_reply(GuiReplyKind::Clipboard, other.as_ref())),
+        }
+    }
+
+    /// Put this machine's clipboard into the editor's `+` register.
+    pub async fn write_clipboard(&self, text: String) -> Result<(), String> {
+        self.unit(GuiCommand::WriteClipboard { text }).await
+    }
+
     /// Ask the editor to stop, from a context that cannot await.
     ///
     /// The editor is on its way out either way, so a transport that has
@@ -1178,6 +1227,12 @@ pub(crate) mod tests {
                     GuiReplySender::DiffReview(tx) => {
                         let _ = tx.send(Ok(protocol::sample_diff_review()));
                     }
+                    GuiReplySender::Clipboard(tx) => {
+                        let _ = tx.send(Ok(GuiClipboardText {
+                            generation: 1,
+                            text: "yanked".to_string(),
+                        }));
+                    }
                     GuiReplySender::DiffPatch(tx) => {
                         let _ = tx.send(Ok("@@ -1 +1 @@\n-old\n+new\n".to_string()));
                     }
@@ -1262,23 +1317,43 @@ pub(crate) mod tests {
     ///
     /// This is what catches a typed helper wired to the wrong variant, and it
     /// is the harness a remote transport will be tested against.
-    struct RecordingTransport {
+    pub(crate) struct RecordingTransport {
         received: Mutex<Vec<GuiCommand>>,
         snapshot: GuiSnapshot,
         updates: watch::Sender<Option<GuiSnapshot>>,
+        /// An answer for a command whose canned reply is not specific enough.
+        #[allow(clippy::type_complexity)]
+        scripted: Option<Box<dyn Fn(&GuiCommand) -> Option<GuiReply> + Send + Sync>>,
+        remote: bool,
     }
 
     impl RecordingTransport {
-        fn new() -> Arc<Self> {
+        pub(crate) fn new() -> Arc<Self> {
             let (updates, _) = watch::channel(None);
             Arc::new(Self {
                 received: Mutex::new(Vec::new()),
                 snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1, 0),
                 updates,
+                scripted: None,
+                remote: false,
             })
         }
 
-        fn received(&self) -> Vec<GuiCommand> {
+        /// A transport that reports itself remote and scripts some answers.
+        pub(crate) fn remote_answering(
+            answer: impl Fn(&GuiCommand) -> Option<GuiReply> + Send + Sync + 'static,
+        ) -> Self {
+            let (updates, _) = watch::channel(None);
+            Self {
+                received: Mutex::new(Vec::new()),
+                snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1, 0),
+                updates,
+                scripted: Some(Box::new(answer)),
+                remote: true,
+            }
+        }
+
+        pub(crate) fn received(&self) -> Vec<GuiCommand> {
             self.received.lock().unwrap().clone()
         }
     }
@@ -1289,9 +1364,13 @@ pub(crate) mod tests {
             command: GuiCommand,
         ) -> GuiTransportFuture<'_, Result<Option<GuiReply>, String>> {
             let kind = command.reply_kind();
+            let scripted = self.scripted.as_ref().and_then(|answer| answer(&command));
             self.received.lock().unwrap().push(command);
             let snapshot = self.snapshot.clone();
             Box::pin(async move {
+                if let Some(scripted) = scripted {
+                    return Ok(Some(scripted));
+                }
                 Ok(match kind {
                     GuiReplyKind::None => None,
                     GuiReplyKind::Unit => Some(GuiReply::Unit(Ok(()))),
@@ -1308,6 +1387,12 @@ pub(crate) mod tests {
                     GuiReplyKind::DiffPatch => Some(GuiReply::DiffPatch(Ok(
                         "@@ -1 +1 @@\n-old\n+new\n".to_string(),
                     ))),
+                    GuiReplyKind::Clipboard => {
+                        Some(GuiReply::Clipboard(Ok(protocol::GuiClipboardText {
+                            generation: 1,
+                            text: "yanked".to_string(),
+                        })))
+                    }
                 })
             })
         }
@@ -1319,6 +1404,10 @@ pub(crate) mod tests {
 
         fn subscribe(&self) -> watch::Receiver<Option<GuiSnapshot>> {
             self.updates.subscribe()
+        }
+
+        fn is_remote(&self) -> bool {
+            self.remote
         }
     }
 
@@ -1437,6 +1526,11 @@ pub(crate) mod tests {
             .unwrap();
         bridge.select_lsp(9, false).await.unwrap();
         bridge.select_debug_frame(2).await.unwrap();
+        bridge.read_clipboard().await.unwrap();
+        bridge
+            .write_clipboard("clipboard text".to_string())
+            .await
+            .unwrap();
         bridge.shutdown();
     }
 
@@ -1451,7 +1545,7 @@ pub(crate) mod tests {
         exercise_every_helper(&bridge).await;
 
         let expected = every_command_once();
-        assert_eq!(expected.len(), 32, "the sweep should reach every variant");
+        assert_eq!(expected.len(), 34, "the sweep should reach every variant");
         assert_eq!(transport.received(), expected);
     }
 

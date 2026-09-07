@@ -130,7 +130,8 @@ confirmation state, limited to safely predictable keys.
 
 ### R8 — Clipboard bridging
 A yank on the remote fills a remote register. Bridge it to the local system
-clipboard, and the reverse for paste. Daily papercut if skipped.
+clipboard, and the reverse for paste. Daily papercut if skipped. Mirrors the
+`clipboard` option rather than adding a policy.
 
 ### R9 — Documentation
 `user-docs/remote.md`, plus README and CLAUDE.md updates.
@@ -425,6 +426,67 @@ the local one.
 - Not measured: the effect of the completion-menu exclusion on the hit rate.
   `rust-analyzer` would not attach to a headless session on this machine, so
   every measurement above is LSP-free and the menu never opened.
+
+**R8 landed; notes for R9.**
+
+- **The clipboard policy is Ovim's own, observed rather than reinvented.** The
+  `clipboard` option (`unnamedplus` by default, `unnamed`, or empty) already
+  decides *whether* a yank belongs on the system clipboard; the only new
+  question is *whose*. `ovim/src/gui/clipboard.rs` answers that and adds no
+  case of its own.
+- **Editor to laptop** rides on a counter, not on the text. `ClipboardProvider`
+  bumps a generation on every write, `GuiSnapshot.clipboard.generation` carries
+  it, and the client fetches with `GuiCommand::ReadClipboard` only when it
+  moves. The text deliberately never rides on a frame: a snapshot is a full
+  projection with no delta encoding, so a megabyte yank would be re-sent with
+  every subsequent keystroke's frame. The counter rises exactly when a local
+  Ovim would have written the user's clipboard -- a yank or delete under
+  `unnamedplus`, an explicit `"+y` whatever the option says -- so mirroring
+  every rise reproduces the local exposure rather than inventing a new one.
+  It is compared for *inequality*, because a replaced session starts counting
+  from one again; the same trap `Link::publish` guards the revision against.
+- **Laptop to editor** is gated on the option read as a boolean
+  (`clipboard.shared`), because this is the direction that moves the user's
+  clipboard onto another host. `unnamedplus` is the declaration that makes it
+  defensible; somebody on `set clipboard=` gets nothing, and their Cmd-V still
+  works because `gui_paste` is an explicit per-paste gesture and always was.
+  The trigger is window activation -- the one moment between "copied in a
+  browser" and "pressed `p`" this process can see. `p` cannot ask at the time:
+  the snapshot stream is the only channel running the other way and it carries
+  frames, not questions. **A pending-paste request on the frame would be the
+  honest fix and is a follow-up**, but it makes every `p` cost a round trip.
+- **Both directions run in this process, not in the webview.** The client
+  already links `ovim-core`, so it has the same `arboard` the editor does:
+  identical semantics to a local Ovim, no clipboard-permission prompt, no
+  dependence on a DOM gesture, and no clipboard content through the IPC. The
+  image path had to go through the webview because only a `ClipboardEvent`
+  carries image bytes; text has no such constraint.
+- **1 MiB either way**, enforced where the text is (the editor refuses to hand
+  over more; the client refuses to send more). Roughly fifteen thousand lines
+  of source, past anything anyone pastes by hand, and about a second of a
+  laptop's uplink where the image path's 20 MiB would be twenty. The asymmetry
+  is deliberate: a pasted screenshot has no smaller form, whereas an oversized
+  yank is still in the remote register with better ways to travel.
+- Nothing is queued while disconnected: `RemoteTransport::send` refuses, the
+  push forgets what it tried to send, and the next activation sends whatever is
+  on the clipboard *then* -- which is the value the user would expect anyway.
+- A push raises the editor's generation, so the mirror that follows would write
+  the text straight back. It is skipped by comparing against what this
+  machine's clipboard already holds, which costs one read per yank and stops
+  the two directions chasing each other.
+- Verified live: a headless session started with no display (so `arboard` is
+  unavailable there, exactly as on a real remote), driven through a `socat`
+  forward, with an in-memory stand-in for the laptop's clipboard so that one
+  machine cannot fake the round trip. `yy` on the session reached the
+  stand-in; text put on the stand-in was pasted by `p` on the session;
+  `set clipboard=` flipped `shared` to false on the very next frame.
+  `remote_session_test::a_yank_crosses_the_link_to_this_clipboard_and_this_clipboard_crosses_back`
+  is that drill, ignored by default.
+- Not verified: the `WindowEvent::Focused(true)` hook itself, which needs a
+  real window. The handler is two lines over `push_latest`, which the test
+  drives directly.
+- R9 should document `clipboard` under remote editing: what crosses, in which
+  direction, and that `set clipboard=` turns the laptop-to-editor half off.
 
 ## Known follow-ups after R7
 

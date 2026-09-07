@@ -10,6 +10,11 @@
 //!     cargo test --test remote_session_test -- --ignored --nocapture
 //! ```
 //!
+//! They all drive the one session the variable names, and some of them type
+//! into it, so run them one at a time against a session started for the
+//! purpose -- two of them editing one buffer at once is not a failure of
+//! either.
+//!
 //! `OVIM_REMOTE_ENDPOINT` optionally says where to dial -- `HOST:PORT`, or a
 //! bare port on loopback. That is how the same test covers a forwarded port:
 //! the descriptor still fixes the Host header the session insists on, while
@@ -367,4 +372,135 @@ async fn a_forward_that_dies_and_comes_back_leaves_the_session_untouched() {
             .await
             .expect("the reattached session should take keys again");
     }
+}
+
+/// A clipboard in memory, standing in for the laptop's.
+///
+/// Deliberately not the real one. The session in this test runs on the same
+/// machine as the test, so a real clipboard on both ends would be one
+/// clipboard, and the bridge would appear to work while doing nothing.
+#[derive(Default)]
+struct TestClipboard {
+    held: std::sync::Mutex<Option<String>>,
+}
+
+impl TestClipboard {
+    fn contents(&self) -> Option<String> {
+        self.held.lock().unwrap().clone()
+    }
+
+    fn put(&self, text: &str) {
+        *self.held.lock().unwrap() = Some(text.to_string());
+    }
+}
+
+impl ovim::gui::clipboard::LocalClipboard for TestClipboard {
+    fn read(&self) -> Option<String> {
+        self.held.lock().unwrap().clone()
+    }
+
+    fn write(&self, text: &str) {
+        *self.held.lock().unwrap() = Some(text.to_string());
+    }
+}
+
+/// Wait until this machine's clipboard holds something matching `wanted`.
+async fn clipboard_reaches(local: &TestClipboard, wanted: impl Fn(&str) -> bool) -> String {
+    for _ in 0..200 {
+        if let Some(held) = local.contents() {
+            if wanted(&held) {
+                return held;
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    panic!(
+        "the clipboard never reached the expected contents (last: {:?})",
+        local.contents()
+    );
+}
+
+#[tokio::test]
+#[ignore = "needs a running headless session and socat; see the module comment"]
+async fn a_yank_crosses_the_link_to_this_clipboard_and_this_clipboard_crosses_back() {
+    // The papercut this chunk exists for, end to end and through a real
+    // forward: yank on the session and the text is on this machine's
+    // clipboard; copy on this machine and `p` on the session pastes it.
+    let descriptor = PathBuf::from(
+        std::env::var("OVIM_REMOTE_SESSION")
+            .expect("OVIM_REMOTE_SESSION must name a session descriptor"),
+    );
+    let session: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&descriptor).expect("a readable descriptor"))
+            .expect("a descriptor is JSON");
+    let session_port = session["port"].as_u64().expect("a port") as u16;
+    let forwarder = Socat::in_front_of(session_port);
+
+    let endpoint =
+        RemoteEndpoint::from_session_file(&descriptor, Some(&forwarder.port.to_string()))
+            .expect("the descriptor should describe a reachable session");
+    let bridge =
+        GuiBridge::new(Arc::new(RemoteTransport::open(endpoint).await.expect(
+            "the session should accept the transport through the forwarder",
+        )));
+    let local = Arc::new(TestClipboard::default());
+    let (clipboard, follow) = ovim::gui::clipboard::start(&bridge, local.clone())
+        .expect("a session on the far side of a transport needs the bridge");
+    tokio::spawn(follow);
+    let mut updates = bridge.subscribe();
+    let first = next_frame(&mut updates).await;
+    println!(
+        "connected through port {}: first line {:?}, clipboard {:?}",
+        forwarder.port,
+        line_text(&first, 0),
+        first.clipboard
+    );
+    assert!(
+        first.clipboard.shared,
+        "this test assumes the session's default clipboard=unnamedplus"
+    );
+
+    // Session to laptop: yank the first line and watch it arrive here.
+    for key in ["Escape", "g", "g", "y", "y"] {
+        bridge
+            .key(typed(key))
+            .await
+            .unwrap_or_else(|error| panic!("{key} should reach the session: {error}"));
+    }
+    let arrived = clipboard_reaches(&local, |held| held.contains("yank me")).await;
+    println!("the session's yank reached this machine: {arrived:?}");
+
+    // Laptop to session: copy here, hand it over on activation, and paste.
+    local.put("pasted from the laptop");
+    clipboard.push_latest().await;
+    for key in ["G", "p"] {
+        bridge
+            .key(typed(key))
+            .await
+            .unwrap_or_else(|error| panic!("{key} should reach the session: {error}"));
+    }
+    let mut pasted = next_frame(&mut updates).await;
+    for _ in 0..40 {
+        if (0..pasted.lines.len())
+            .any(|index| line_text(&pasted, index).contains("pasted from the laptop"))
+        {
+            println!("this machine's clipboard was pasted into the session");
+            // Put the buffer and the cursor back: these tests may share one
+            // session, and one that edits has to leave what it found.
+            for key in ["u", "g", "g"] {
+                bridge
+                    .key(typed(key))
+                    .await
+                    .expect("the session should take the tidying up");
+            }
+            return;
+        }
+        pasted = next_frame(&mut updates).await;
+    }
+    panic!(
+        "the session never pasted this machine's clipboard: {:?}",
+        (0..pasted.lines.len())
+            .map(|index| line_text(&pasted, index))
+            .collect::<Vec<_>>()
+    );
 }

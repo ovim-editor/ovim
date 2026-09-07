@@ -29,6 +29,26 @@ fn with_clipboard<T>(
     f(cb).ok()
 }
 
+/// Put `text` on the system clipboard of the machine this process runs on.
+///
+/// Free-standing because a process can need the clipboard without owning an
+/// editor: the graphical frontend may be driving an editor on another host,
+/// where `RegisterManager`'s own provider reaches the *wrong* machine's
+/// clipboard. Sharing `with_clipboard` keeps both callers behind the one mutex
+/// the platform requires.
+pub fn write_system_clipboard(text: &str) -> bool {
+    with_clipboard(|clipboard| clipboard.set_text(text.to_string())).is_some()
+}
+
+/// Read the system clipboard of the machine this process runs on.
+///
+/// `None` when there is no clipboard to read -- over SSH, headless, or on a
+/// Wayland session without a seat. See [`write_system_clipboard`] for why this
+/// exists beside [`RegisterManager`].
+pub fn read_system_clipboard() -> Option<String> {
+    with_clipboard(|clipboard| clipboard.get_text())
+}
+
 /// System clipboard provider.
 ///
 /// Reads/writes go through the process-wide `CLIPBOARD` mutex.
@@ -38,18 +58,28 @@ fn with_clipboard<T>(
 struct ClipboardProvider {
     /// Fallback when the system clipboard is unavailable.
     cached: String,
+    /// How many times this editor has written the clipboard.
+    ///
+    /// A frontend on another machine mirrors those writes onto its own
+    /// clipboard, and it needs to know that one happened without being handed
+    /// the text on every frame. Counting them is the whole signal: it rises
+    /// only for a write the editor itself made, so a clipboard changed by some
+    /// other program on this host is not mistaken for something to mirror.
+    generation: u64,
 }
 
 impl ClipboardProvider {
     fn new() -> Self {
         Self {
             cached: String::new(),
+            generation: 0,
         }
     }
 
     fn write(&mut self, text: String) {
         with_clipboard(|cb| cb.set_text(text.clone()));
         self.cached = text;
+        self.generation = self.generation.wrapping_add(1);
     }
 
     fn read(&self) -> String {
@@ -368,6 +398,25 @@ impl RegisterManager {
     /// Gets the clipboard content (reads from system clipboard with fallback to cache)
     pub fn get_clipboard(&self) -> String {
         self.clipboard.read()
+    }
+
+    /// How many times this editor has written the system clipboard.
+    ///
+    /// The signal a frontend on another machine watches so it can mirror those
+    /// writes onto its own clipboard. It rises only for a write this editor
+    /// made, never for one some other program on this host made.
+    pub fn clipboard_generation(&self) -> u64 {
+        self.clipboard.generation
+    }
+
+    /// The text this editor last put on the system clipboard.
+    ///
+    /// Deliberately not [`RegisterManager::get_clipboard`], which reads back
+    /// whatever the host's clipboard holds now. A remote frontend is mirroring
+    /// what *the editor* copied, and on a headless host the two differ --
+    /// there is often no clipboard there to read at all.
+    pub fn last_clipboard_write(&self) -> &str {
+        &self.clipboard.cached
     }
 
     /// Lists all non-empty registers as (name, content) pairs
