@@ -21,6 +21,7 @@ mod menu;
 pub mod protocol;
 pub mod remote;
 pub mod server;
+pub mod ssh;
 #[cfg(feature = "gui")]
 pub mod window;
 
@@ -43,6 +44,7 @@ pub use protocol::{
     GuiVectorSource, SNAPSHOT_EVENT,
 };
 pub use remote::{RemoteEndpoint, RemoteTransport};
+pub use ssh::{RemoteLaunch, RemoteTarget};
 
 use crate::cli::FileArg;
 use crate::color::Color;

@@ -123,7 +123,7 @@ pub enum Command {
     /// Open Ovim's native Tauri GUI
     #[command(next_help_heading = "Editor")]
     Gui {
-        /// File or directory to open
+        /// File or directory to open (a path on the remote host with --remote)
         #[arg(value_name = "FILE")]
         file: Option<String>,
 
@@ -131,7 +131,32 @@ pub enum Command {
         #[arg(long)]
         resume: bool,
 
+        /// Edit on another host over SSH: `--remote user@host /path/to/project`.
+        ///
+        /// Takes `[user@]host` or a `Host` alias from your SSH config; put a
+        /// port, an identity, or a proxy there rather than here. Ovim starts a
+        /// headless session on that host, or reattaches to the one it already
+        /// has for that project, and tunnels its loopback port here.
+        #[arg(long, value_name = "USER@HOST", conflicts_with = "remote_session")]
+        remote: Option<String>,
+
+        /// Replace the remote session for this project instead of reattaching.
+        ///
+        /// Reattaching is the default because it preserves warm language
+        /// servers and undo history. Use this when the session is wedged.
+        #[arg(long, requires = "remote")]
+        fresh: bool,
+
+        /// Connect even when the two Ovim versions are a feature release apart.
+        #[arg(long, requires = "remote")]
+        allow_version_mismatch: bool,
+
         /// Drive an editor that is already running elsewhere.
+        ///
+        /// The low-level form of `--remote`, kept because it is the only way
+        /// in when the tunnel is somebody else's: an existing forward, a VPN,
+        /// a container, or a headless session on this machine. It is also what
+        /// the end-to-end transport test drives.
         ///
         /// Takes the session descriptor a headless run writes
         /// (`<cache>/ovim/sessions/<name>.json` on that host), copied to this
@@ -651,10 +676,55 @@ mod tests {
             Some(Command::Gui {
                 file: Some(ref file),
                 resume: true,
+                remote: None,
+                fresh: false,
+                allow_version_mismatch: false,
                 remote_session: None,
                 remote_endpoint: None,
             }) if file == "src/main.rs"
         ));
+    }
+
+    #[test]
+    fn one_remote_flag_and_a_path_are_the_whole_of_the_remote_surface() {
+        let cli =
+            Cli::try_parse_from(["ovim", "gui", "--remote", "user@host", "/srv/project"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gui {
+                file: Some(ref path),
+                remote: Some(ref destination),
+                fresh: false,
+                ..
+            }) if path == "/srv/project" && destination == "user@host"
+        ));
+    }
+
+    #[test]
+    fn the_ssh_bootstrap_and_the_hand_built_descriptor_cannot_both_be_asked_for() {
+        // They answer the same question -- where is the editor -- and letting
+        // both through would leave which one wins to argument order.
+        let result = Cli::try_parse_from([
+            "ovim",
+            "gui",
+            "--remote",
+            "user@host",
+            "--remote-session",
+            "dev.json",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reattaching_can_only_be_declined_for_a_remote_launch() {
+        assert!(Cli::try_parse_from(["ovim", "gui", "--fresh"]).is_err());
+        assert!(Cli::try_parse_from(["ovim", "gui", "--allow-version-mismatch"]).is_err());
+        assert!(
+            Cli::try_parse_from(["ovim", "gui", "--remote", "user@host", "--fresh", "/srv"])
+                .is_ok()
+        );
     }
 
     #[test]

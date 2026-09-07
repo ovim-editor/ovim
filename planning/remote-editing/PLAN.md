@@ -251,3 +251,57 @@ client, so R4 writes its own rather than extending `OvimClient`.
 `gui/bridge.rs`, which pins every helper to its command variant. R4
 should reuse that harness to prove the remote transport is wire-equivalent to
 the local one.
+
+**R5 landed; notes for R6.**
+
+- The launch surface is `ovim gui --remote user@host /path/to/project`, with
+  `--fresh` and `--allow-version-mismatch` beside it, on both the `ovim` and
+  `ovim-gui` binaries. `--remote-session` / `--remote-endpoint` stay as the
+  low-level pair: they are the only way in when the tunnel is somebody else's
+  (an existing forward, a VPN, a container, a headless session on this
+  machine), and they are what `remote_session_test.rs` drives. clap makes them
+  conflict with `--remote`, since both answer "where is the editor".
+- Everything lives in `ovim/src/gui/ssh.rs`. `RemoteOptions::resolve` is the
+  single place the flag combinations mean anything, so the clap parser and
+  `ovim-gui`'s hand-rolled one cannot drift apart.
+- **The capability is never written to disk locally.** It arrives on the
+  bootstrap's stdout, inside the SSH channel, and goes straight into
+  `RemoteEndpoint`. There is no local descriptor file to secure or clean up.
+- **Two invocations, one authentication.** The bootstrap runs with
+  `ControlMaster=auto` + `ControlPersist=60` and leaves a master behind; the
+  forward runs with `ControlMaster=no` over it. The control socket is per
+  launch, under `$XDG_RUNTIME_DIR/ovim-ssh/<8 hex>` (0700), chosen from a list
+  of bases and rejected unless `len + 9 <= 104` -- `ssh` binds `path.XXXXXXXX`
+  before renaming, and overrunning `sun_path` fails without naming the cause.
+  A shared per-host socket would allow zero authentications for a second
+  window, but one window's teardown would then cut another's connection, and a
+  socket left by a killed process makes `ssh` silently disable multiplexing --
+  which looks exactly like the double prompt being avoided.
+- **The bootstrap script travels on stdin** (`ssh <dest> /bin/sh -s`), not as
+  an argument: `ssh host <script>` is interpreted by the *login* shell, which
+  may be fish or csh.
+- **Reattach beats start.** The session name is derived on the remote host from
+  the resolved path: `gui-<basename>-<cksum>`. A descriptor whose PID is alive
+  is reused; a stale one is deleted and replaced. A session that is alive but
+  wedged is *not* killed automatically -- that would throw away exactly the
+  state this architecture exists to keep -- so it fails at the transport
+  handshake and `--fresh` is the documented way out.
+- **Version policy: patch drift warns, feature drift refuses**, with
+  `--allow-version-mismatch` as the override. The GUI protocol is unversioned,
+  so a mismatch fails as a missing field rather than as anything that names the
+  cause; but a source build on the laptop against a released host is the normal
+  case, and refusing on every patch difference would make the feature unusable.
+- **Teardown does not touch the session.** `SshTunnel::drop` kills the forward
+  and asks the master to exit. The forward's remote command is `cat` rather
+  than `-N`, so it holds this process's stdin pipe: a GUI killed outright still
+  closes the pipe, `cat` sees end of file, and the tunnel takes itself down.
+  `ControlPersist` then reaps the master, and `ssh` unlinks its own socket.
+- The forwarded port is chosen by binding `127.0.0.1:0` and reading back what
+  the kernel gave. `ExitOnForwardFailure=yes` turns the remaining race into a
+  clean non-zero exit, and `SshTunnel::open` retries three times.
+- Not verified against a real remote host: this machine's sshd accepts only
+  keys that are not present, and forcing it would have meant editing
+  `authorized_keys`. What *was* verified live: the bootstrap script against the
+  real `ovim` binary (start, then reattach, then `--fresh` replacing the
+  process), the resulting session driven end to end by `remote_session_test`,
+  and the authentication-rejected path against the real sshd on this machine.
