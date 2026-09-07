@@ -1584,7 +1584,15 @@ function App() {
         // echoed one: what is drawn ahead of the editor is measured from the
         // last thing the editor actually said.
         showEcho(recordSent(echo(), authoritative, input, echoOptions()).state);
-        return mutate("gui_key", { input });
+        // A key the transport could not put on the wire is one the editor's
+        // input epoch will never count, and the speculation is measured
+        // against that epoch: leaving the key counted here would draw every
+        // later keystroke one place ahead of the truth for the rest of the
+        // session. A single POST can fail without the link itself going down,
+        // so this cannot be left to the connection state.
+        return mutateStrict("gui_key", { input }).catch(() =>
+            showEcho(discard()),
+        );
     };
     const sendLiteral = async (keys: string) => {
         for (const key of keys) {
