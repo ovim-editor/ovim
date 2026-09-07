@@ -385,9 +385,17 @@ the local one.
     that predates it; the first draft measured a real mispredict from exactly
     that (a character drawn before the `o` that opened its line had landed).
     It counts *every* command and every client, so it can only overstate what
-    the editor has consumed of one client's typing -- and overstating leaves
-    less outstanding, which is the safe direction. That is also why a mouse
-    click or a paste mid-run pauses the speculation instead of misplacing it.
+    the editor has consumed of one client's typing, and overstating leaves less
+    outstanding. That is the safe direction for a command from *another*
+    client, which the frame already reflects: the run is simply not drawn.
+    It is not safe for a non-key command from *this* one. A click or a paste
+    sent between two keystrokes is counted by the editor but not by the
+    client, so the frame that accounts for it leaves one key too few
+    outstanding, and the run is taken as the *last* of the keys rather than
+    all of them -- the wrong character in the right place, for one round trip.
+    A single global counter cannot tell the two apart; closing it means the
+    client counting every command it sends, or the frame carrying a
+    per-client acknowledgement rather than a total.
 - **The run is derived per frame, never patched across frames.** `outstanding
   = sentEpoch - frame.inputEpoch`; if those keys are all plain printables and
   the frame certifies a plain insert state, the run is drawn from the frame's

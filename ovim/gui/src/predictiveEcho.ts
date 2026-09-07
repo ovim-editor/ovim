@@ -36,7 +36,11 @@ import type {
  *   difference between drawing a character in the right place and drawing it
  *   in the wrong one. It counts every client and every command, so it can only
  *   overstate what the editor has consumed of this one's typing, and
- *   overstating leaves less outstanding: the safe direction to be wrong in.
+ *   overstating leaves less outstanding -- which is the safe direction for a
+ *   command from another client, and not for a non-key command from this one:
+ *   a click or a paste sent between two keystrokes is counted by the editor
+ *   and not here, and the run then comes out one key short at its start. See
+ *   the R7 notes in `planning/remote-editing/PLAN.md`.
  *
  * The run is therefore *derived* on every frame rather than carried across
  * frames and patched. There is no rebase step, because there is nothing to
