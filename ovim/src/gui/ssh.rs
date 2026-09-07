@@ -535,7 +535,21 @@ if [ -f "$descriptor" ]; then
   pid=$(sed -n 's/.*"pid": *\([0-9][0-9]*\).*/\1/p' "$descriptor" | head -n 1)
 fi
 alive=0
-if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
+if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then
+  # A descriptor outlives the process that wrote it, so a number that answers
+  # to signal 0 is not yet evidence that this session is the thing answering.
+  # Ovim's own liveness check guards against a recycled pid by comparing start
+  # times; the process's arguments are the portable equivalent from here.
+  # Getting it wrong is not academic: --fresh would kill whatever inherited the
+  # number, and a reattach would tunnel to a port serving somebody else.
+  args=$(ps -ww -p "$pid" -o args= 2>/dev/null) || args=$(ps -p "$pid" -o args= 2>/dev/null) || args=
+  case "$args" in
+    *"--session $name"*) alive=1 ;;
+    # No usable ps leaves the bare pid, which is all there ever was.
+    '') alive=1 ;;
+    *) alive=0 ;;
+  esac
+fi
 
 if [ "$alive" = 1 ] && [ "$fresh" = 1 ]; then
   kill "$pid" 2>/dev/null
@@ -1593,7 +1607,12 @@ cat > "$OVIM_SESSION_DIR/$name.json" <<EOF
   "start_time": null
 }
 EOF
-exec sleep 60
+# No exec: a real Ovim keeps the arguments it was started with, and the
+# launcher reads them back to tell this session from a recycled pid.
+trap 'kill $waiting 2>/dev/null; exit 0' TERM
+sleep 30 &
+waiting=$!
+wait
 "#
             .replace("VERSION", env!("CARGO_PKG_VERSION")),
         )
@@ -1673,6 +1692,80 @@ exec sleep 60
 
         let _ = Command::new("kill")
             .arg(started.session.pid.to_string())
+            .status();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_recycled_pid_is_not_mistaken_for_the_session_that_wrote_the_descriptor() {
+        let workspace = tempfile::tempdir().expect("a temporary directory should be creatable");
+        let sessions = workspace.path().join("sessions");
+        let binaries = workspace.path().join("bin");
+        let project = workspace.path().join("project");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&binaries).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        stub_ovim(&binaries);
+        let project = project.to_string_lossy().into_owned();
+
+        // Something that is emphatically not an Ovim session, standing in for
+        // whatever inherits the number after the session it named is gone.
+        let mut bystander = Command::new("/bin/sh")
+            .args(["-c", "exec sleep 30"])
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("a shell should be runnable");
+
+        // Kill the session outright -- so the descriptor survives, as it does
+        // after a crash -- and leave its pid pointing at the bystander.
+        let orphan = |session: &SessionInfo| {
+            let _ = Command::new("kill")
+                .args(["-9", &session.pid.to_string()])
+                .status();
+            let path = sessions.join(format!("{}.json", session.session_name));
+            let rewritten = std::fs::read_to_string(&path)
+                .expect("the descriptor should outlive the process that wrote it")
+                .replace(
+                    &format!("\"pid\": {}", session.pid),
+                    &format!("\"pid\": {}", bystander.id()),
+                );
+            std::fs::write(&path, rewritten).unwrap();
+        };
+
+        let first = run_script(&bootstrap_script(&project, false, 20), &binaries, &sessions);
+        orphan(&parse_report(&first.stdout).expect("the first report should parse").session);
+
+        // Reattaching here would tunnel to a port the bystander never served.
+        let replaced = parse_report(
+            &run_script(&bootstrap_script(&project, false, 20), &binaries, &sessions).stdout,
+        )
+        .expect("the second report should parse");
+        assert_eq!(
+            replaced.origin,
+            SessionOrigin::Started,
+            "a pid that is not this session must not be reattached to"
+        );
+
+        // And --fresh is the dangerous direction, because it kills what it finds.
+        orphan(&replaced.session);
+        let refreshed = parse_report(
+            &run_script(&bootstrap_script(&project, true, 20), &binaries, &sessions).stdout,
+        )
+        .expect("the third report should parse");
+        assert!(
+            bystander
+                .try_wait()
+                .expect("the bystander should be waitable")
+                .is_none(),
+            "--fresh killed a process that was never an Ovim session"
+        );
+
+        let _ = bystander.kill();
+        let _ = bystander.wait();
+        let _ = Command::new("kill")
+            .arg(refreshed.session.pid.to_string())
             .status();
     }
 
