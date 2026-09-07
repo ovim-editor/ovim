@@ -19,6 +19,7 @@ pub mod browser;
 #[cfg(feature = "gui")]
 mod menu;
 pub mod protocol;
+pub mod reconnect;
 pub mod remote;
 pub mod server;
 pub mod ssh;
@@ -43,6 +44,7 @@ pub use protocol::{
     GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure, GuiTestPanel, GuiTheme,
     GuiVectorSource, SNAPSHOT_EVENT,
 };
+pub use reconnect::{ConnectionLoss, GuiConnection};
 pub use remote::{RemoteEndpoint, RemoteTransport};
 pub use ssh::{RemoteLaunch, RemoteTarget};
 

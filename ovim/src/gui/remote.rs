@@ -23,6 +23,8 @@
 
 use super::bridge::{GuiTransport, GuiTransportFuture, EDITOR_STOPPED};
 use super::protocol::{GuiCommand, GuiReply, GuiReplyKind, GuiSnapshot, SNAPSHOT_EVENT};
+use super::reconnect::{supervise, Failure, GuiConnection, Link};
+use super::ssh::RemoteLaunch;
 use anyhow::{Context, Result};
 use futures::StreamExt;
 use ovim_core::session::{SessionCapability, SessionInfo};
@@ -42,12 +44,11 @@ use tokio::sync::{oneshot, watch};
 const EDITOR_UNREACHABLE: &str = "The Ovim editor could not be reached";
 /// The editor answered, but not with something this frontend understands.
 const REPLY_UNREADABLE: &str = "The Ovim editor answered in a form this frontend cannot read";
-/// What a subscriber is told when the snapshot stream ends.
+/// What a command is answered with while the link is down.
 ///
-/// Reconnecting is R6. Until then the only honest thing to do is to say so in
-/// the status line, because a stream that stops without a word looks exactly
-/// like an editor that has become slow.
-pub const CONNECTION_LOST: &str = "Lost the connection to the remote Ovim session";
+/// Not queued for later: see [`RemoteTransport::send`].
+pub(super) const EDITOR_DISCONNECTED: &str =
+    "The remote Ovim session is not reachable right now, so the input was dropped";
 /// A `403` from the Host guard is the one failure whose cause is impossible to
 /// guess from the status alone.
 const HOST_HINT: &str =
@@ -173,13 +174,32 @@ fn parse_address(address: &str) -> Result<String> {
     Ok(address.to_string())
 }
 
-/// The transport: an HTTP client, the stream that feeds subscribers, and the
-/// runtime both run on.
-pub struct RemoteTransport {
+/// One reachable set of URLs and the client that speaks to them.
+///
+/// Replaced wholesale on every reconnection rather than mutated: an SSH
+/// forward that is rebuilt lands on a different local port, so the address,
+/// the URLs derived from it, and the client that pins the Host header all
+/// change together or not at all.
+pub(super) struct Wire {
     client: reqwest::Client,
     command_url: String,
-    updates: Arc<watch::Sender<Option<GuiSnapshot>>>,
-    stream: tokio::task::JoinHandle<()>,
+    stream_url: String,
+}
+
+impl Wire {
+    pub(super) fn new(endpoint: &RemoteEndpoint) -> Result<Self> {
+        Ok(Self {
+            client: endpoint.client()?,
+            command_url: endpoint.url("/gui/command"),
+            stream_url: endpoint.url("/gui/stream"),
+        })
+    }
+}
+
+/// The transport: a supervised link to a session, and the runtime it runs on.
+pub struct RemoteTransport {
+    link: Arc<Link>,
+    supervisor: tokio::task::JoinHandle<()>,
     /// Owned so that requests never depend on the caller's runtime.
     ///
     /// Tauri polls `send` futures on its own runtime, but `send_oneway` runs
@@ -194,9 +214,11 @@ impl RemoteTransport {
     ///
     /// Failing here rather than in the window is the point: a wrong
     /// capability, a wrong port, or a tunnel that is not up should read as a
-    /// startup error and not as an editor that never draws.
-    pub fn connect(endpoint: RemoteEndpoint) -> Result<Self> {
-        let (transport, ready) = Self::start(endpoint)?;
+    /// startup error and not as an editor that never draws. Once the first
+    /// handshake has worked, no later failure comes back this way -- it goes
+    /// to the connection state instead, and the reconnection loop takes over.
+    pub fn connect(launch: RemoteLaunch) -> Result<Self> {
+        let (transport, ready) = Self::start(launch)?;
         let handshake = transport
             .runtime()
             .block_on(ready)
@@ -207,9 +229,14 @@ impl RemoteTransport {
 
     /// Connect from inside a runtime, where [`Self::connect`] would panic.
     pub async fn open(endpoint: RemoteEndpoint) -> Result<Self> {
-        let (transport, ready) = Self::start(endpoint)?;
+        Self::open_launch(RemoteLaunch::preconnected(endpoint)).await
+    }
+
+    /// [`Self::open`], for a launch that knows how to rebuild its own link.
+    pub async fn open_launch(launch: RemoteLaunch) -> Result<Self> {
+        let (transport, ready) = Self::start(launch)?;
         // Only a channel is awaited here; the request itself is made by the
-        // stream task on this transport's own runtime, so the socket never
+        // supervisor on this transport's own runtime, so the socket never
         // outlives the reactor that registered it.
         let handshake = ready
             .await
@@ -218,29 +245,21 @@ impl RemoteTransport {
         Ok(transport)
     }
 
-    /// Build the transport and start its stream, without waiting for it.
-    fn start(endpoint: RemoteEndpoint) -> Result<(Self, oneshot::Receiver<Result<(), String>>)> {
+    /// Build the transport and start its supervisor, without waiting for it.
+    fn start(launch: RemoteLaunch) -> Result<(Self, oneshot::Receiver<Result<(), String>>)> {
         let runtime = tokio::runtime::Builder::new_multi_thread()
             .worker_threads(2)
             .enable_all()
             .thread_name("ovim-gui-remote")
             .build()
             .context("Failed to create the remote GUI runtime")?;
-        let client = endpoint.client()?;
-        let updates = Arc::new(watch::channel(None).0);
+        let link = Arc::new(Link::new(Wire::new(&launch.endpoint)?, launch.link));
         let (ready_tx, ready_rx) = oneshot::channel();
-        let stream = runtime.spawn(stream_snapshots(
-            client.clone(),
-            endpoint.url("/gui/stream"),
-            Arc::clone(&updates),
-            ready_tx,
-        ));
+        let supervisor = runtime.spawn(supervise(Arc::clone(&link), ready_tx));
         Ok((
             Self {
-                client,
-                command_url: endpoint.url("/gui/command"),
-                updates,
-                stream,
+                link,
+                supervisor,
                 runtime: Some(runtime),
             },
             ready_rx,
@@ -253,26 +272,54 @@ impl RemoteTransport {
             .expect("the runtime is taken only while dropping the transport")
     }
 
+    /// Ask the supervisor to try again now instead of waiting out its backoff.
+    ///
+    /// `allow_new_session` is the user answering the one question this code
+    /// must not answer for them: the session they were editing has ended, and
+    /// a replacement would come up with none of its state.
+    pub fn request_reconnect(&self, allow_new_session: bool) -> Result<(), String> {
+        self.link.request_reconnect(allow_new_session)
+    }
+
     /// Start the request immediately and hand back where its answer will land.
     ///
     /// Eager like the local transport's send: the caller's first `await` is
     /// not what puts the command on the wire.
     fn dispatch(&self, command: GuiCommand) -> oneshot::Receiver<Result<Option<GuiReply>, String>> {
         let (answer_tx, answer_rx) = oneshot::channel();
-        let client = self.client.clone();
-        let url = self.command_url.clone();
+        self.link.note_viewport(&command);
+        let link = Arc::clone(&self.link);
         self.runtime().spawn(async move {
-            let _ = answer_tx.send(post_command(&client, &url, command).await);
+            let _ = answer_tx.send(post_command(&link.wire(), command).await);
         });
         answer_rx
     }
 }
 
 impl GuiTransport for RemoteTransport {
+    /// Send one command, or drop it if there is nowhere to send it.
+    ///
+    /// **Keystrokes typed while the link is down are dropped, never queued.**
+    /// Queueing reads as the kinder option and is the dangerous one: in a modal
+    /// editor a key means whatever the editor's mode, pending operator, count
+    /// and cursor position make it mean at the moment it arrives. Replaying
+    /// `dd` against a buffer whose cursor moved -- or whose mode changed,
+    /// because the session kept running and an agent or a test runner touched
+    /// it -- deletes the wrong line, and the user has no way to know it
+    /// happened. Dropping loses only the keys nobody could see the effect of
+    /// anyway; the connection indicator says so while it is happening, so the
+    /// loss is visible rather than silent.
+    ///
+    /// Failing here instead of letting the request time out matters for the
+    /// same reason: a pile of pending requests released at once on reconnect
+    /// would be a replay by another name.
     fn send(
         &self,
         command: GuiCommand,
     ) -> GuiTransportFuture<'_, Result<Option<GuiReply>, String>> {
+        if !self.link.is_connected() {
+            return Box::pin(std::future::ready(Err(EDITOR_DISCONNECTED.to_string())));
+        }
         let answer = self.dispatch(command);
         Box::pin(async move {
             answer
@@ -289,6 +336,9 @@ impl GuiTransport for RemoteTransport {
                 "A GUI command expecting a {:?} reply cannot be sent one-way",
                 command.reply_kind()
             ));
+        }
+        if !self.link.is_connected() {
+            return Err(EDITOR_DISCONNECTED.to_string());
         }
         let answer = self.dispatch(command);
         // The trait method is synchronous and HTTP is not. Blocking the
@@ -315,13 +365,21 @@ impl GuiTransport for RemoteTransport {
     }
 
     fn subscribe(&self) -> watch::Receiver<Option<GuiSnapshot>> {
-        self.updates.subscribe()
+        self.link.subscribe()
+    }
+
+    fn connection(&self) -> watch::Receiver<GuiConnection> {
+        self.link.watch_connection()
+    }
+
+    fn request_reconnect(&self, allow_new_session: bool) -> Result<(), String> {
+        RemoteTransport::request_reconnect(self, allow_new_session)
     }
 }
 
 impl Drop for RemoteTransport {
     fn drop(&mut self) {
-        self.stream.abort();
+        self.supervisor.abort();
         // Dropping a runtime from inside another one panics, and a GUI shell
         // may well be tearing this down from an async context. Handing the
         // runtime its own shutdown avoids waiting for tasks here.
@@ -337,13 +395,13 @@ impl Drop for RemoteTransport {
 /// including one carrying an editor-level `Err`, which is passed through
 /// untouched -- and anything else is a failure of the link rather than of the
 /// command.
-async fn post_command(
-    client: &reqwest::Client,
-    url: &str,
+pub(super) async fn post_command(
+    wire: &Wire,
     command: GuiCommand,
 ) -> Result<Option<GuiReply>, String> {
-    let response = client
-        .post(url)
+    let response = wire
+        .client
+        .post(&wire.command_url)
         .json(&command)
         .send()
         .await
@@ -398,52 +456,48 @@ fn terse(error: &reqwest::Error) -> String {
     if error.is_timeout() {
         return "the connection timed out".to_string();
     }
+    // What a forward dying under an open stream looks like from here. reqwest
+    // words it as "error decoding response body", which is true and tells a
+    // user nothing about what happened to their laptop's network.
+    if error.is_body() || error.is_decode() {
+        return "the connection dropped".to_string();
+    }
     error.to_string()
 }
 
-/// Read snapshots from the session for as long as it keeps sending them.
+/// Open the snapshot stream, saying what to do about it if it will not open.
 ///
-/// The handshake result is reported separately from the frames so that startup
-/// can fail loudly while a later failure only has the status line to speak
-/// through.
-async fn stream_snapshots(
-    client: reqwest::Client,
-    url: String,
-    updates: Arc<watch::Sender<Option<GuiSnapshot>>>,
-    ready: oneshot::Sender<Result<(), String>>,
-) {
-    let response = match connect_stream(&client, &url).await {
-        Ok(response) => {
-            let _ = ready.send(Ok(()));
-            response
-        }
-        Err(error) => {
-            let _ = ready.send(Err(error));
-            return;
-        }
-    };
-    let reason = pump_snapshots(response, &updates).await;
-    report_connection_lost(&updates, &reason);
-}
-
-async fn connect_stream(client: &reqwest::Client, url: &str) -> Result<reqwest::Response, String> {
-    let response = tokio::time::timeout(HANDSHAKE_TIMEOUT, client.get(url).send())
-        .await
-        .map_err(|_| format!("{EDITOR_UNREACHABLE}: it did not answer in time"))?
-        .map_err(|error| format!("{EDITOR_UNREACHABLE}: {}", terse(&error)))?;
+/// The status is carried into the failure rather than only its wording,
+/// because the four things that can go wrong here want four different answers
+/// and only the status tells them apart.
+pub(super) async fn connect_stream(wire: &Wire) -> Result<reqwest::Response, Failure> {
+    let response =
+        match tokio::time::timeout(HANDSHAKE_TIMEOUT, wire.client.get(&wire.stream_url).send())
+            .await
+        {
+            Err(_) => {
+                return Err(Failure::retryable(format!(
+                    "{EDITOR_UNREACHABLE}: it did not answer in time"
+                )))
+            }
+            Ok(Err(error)) => {
+                return Err(Failure::retryable(format!(
+                    "{EDITOR_UNREACHABLE}: {}",
+                    terse(&error)
+                )))
+            }
+            Ok(Ok(response)) => response,
+        };
     if response.status().is_success() {
         return Ok(response);
     }
     let status = response.status();
     let body = response.bytes().await.unwrap_or_default();
-    Err(request_failure(status, &body))
+    Err(Failure::from_status(status, request_failure(status, &body)))
 }
 
 /// Publish every snapshot frame, returning why the stream ended.
-async fn pump_snapshots(
-    response: reqwest::Response,
-    updates: &watch::Sender<Option<GuiSnapshot>>,
-) -> String {
+pub(super) async fn pump_snapshots(response: reqwest::Response, link: &Link) -> String {
     let mut frames = response.bytes_stream();
     let mut decoder = SseDecoder::default();
     while let Some(chunk) = frames.next().await {
@@ -456,11 +510,7 @@ async fn pump_snapshots(
                 continue;
             }
             match serde_json::from_str::<GuiSnapshot>(&frame.data) {
-                // `send_replace` rather than `send`: a frame is worth keeping
-                // even while no part of the frontend is listening yet.
-                Ok(snapshot) => {
-                    updates.send_replace(Some(snapshot));
-                }
+                Ok(snapshot) => link.publish(snapshot),
                 Err(error) => {
                     ovim_core::log_warn!("gui", "Unreadable remote snapshot: {}", error);
                 }
@@ -468,25 +518,6 @@ async fn pump_snapshots(
         }
     }
     "the session closed the snapshot stream".to_string()
-}
-
-/// Say in the status line that the editor has stopped talking.
-///
-/// The subscription itself stays open, because a `watch` channel can only
-/// carry snapshots and closing it would leave the window frozen with no
-/// explanation at all. Annotating the last frame puts the reason where the
-/// user is already looking.
-fn report_connection_lost(updates: &watch::Sender<Option<GuiSnapshot>>, reason: &str) {
-    ovim_core::log_warn!("gui", "Remote snapshot stream ended: {}", reason);
-    let last = updates.borrow().clone();
-    let Some(mut frame) = last else {
-        // Nothing was ever drawn, so there is no frame to annotate. Startup
-        // reports this case through the handshake instead.
-        return;
-    };
-    frame.revision = frame.revision.wrapping_add(1);
-    frame.status_message = format!("{CONNECTION_LOST}: {reason}");
-    updates.send_replace(Some(frame));
 }
 
 /// One decoded Server-Sent Events frame.
@@ -575,6 +606,7 @@ mod tests {
     use crate::editor::Editor;
     use crate::gui::bridge::tests::{every_command_once, exercise_every_helper};
     use crate::gui::protocol::GuiVectorSource;
+    use crate::gui::reconnect::ConnectionLoss;
     use crate::gui::{protocol, GuiBridge};
     use axum::extract::State;
     use axum::http::{HeaderMap, StatusCode as AxumStatus};
@@ -582,7 +614,6 @@ mod tests {
     use axum::response::{IntoResponse, Json, Response};
     use axum::routing::{get, post};
     use axum::{Json as JsonExtractor, Router};
-    use futures::stream::Stream;
     use std::convert::Infallible;
     use std::sync::Mutex;
     use tokio::net::TcpListener;
@@ -604,7 +635,18 @@ mod tests {
         hosts: Mutex<Vec<String>>,
         snapshot: GuiSnapshot,
         updates: watch::Sender<Option<GuiSnapshot>>,
-        stop: watch::Sender<bool>,
+        /// Bumped to end every open stream, the way a dropped link would.
+        /// A counter rather than a flag so the same session can be cut, come
+        /// back, and be cut again.
+        epoch: watch::Sender<u64>,
+        /// How many streams have been opened, which is how a test sees that a
+        /// client really did reattach rather than never having left.
+        streams: Mutex<u64>,
+        /// What the stream route answers with instead of a stream.
+        refuse_stream: Mutex<Option<AxumStatus>>,
+        /// The revision the next published frame carries, so a test can make
+        /// the session look like a replacement that started counting again.
+        revision: Mutex<u64>,
     }
 
     impl StubSession {
@@ -612,17 +654,88 @@ mod tests {
             self.received.lock().unwrap().clone()
         }
 
+        fn streams(&self) -> u64 {
+            *self.streams.lock().unwrap()
+        }
+
         /// Push a frame to whoever is streaming.
         fn publish(&self, status_message: &str) {
+            let mut revision = self.revision.lock().unwrap();
+            *revision += 1;
             let mut snapshot = self.snapshot.clone();
-            snapshot.revision += 1;
+            snapshot.revision = *revision;
             snapshot.status_message = status_message.to_string();
             self.updates.send_replace(Some(snapshot));
         }
 
-        /// End the snapshot stream the way a dropped link would.
+        /// Start counting frames again from one, as a new session process would.
+        fn restart_revisions(&self) {
+            *self.revision.lock().unwrap() = 0;
+        }
+
+        /// End every open snapshot stream the way a dropped link would.
         fn close_stream(&self) {
-            self.stop.send_replace(true);
+            self.epoch.send_modify(|epoch| *epoch += 1);
+        }
+
+        /// Answer the stream route with `status` until told otherwise.
+        fn refuse_stream(&self, status: Option<AxumStatus>) {
+            *self.refuse_stream.lock().unwrap() = status;
+        }
+    }
+
+    /// A forwarder in front of a stub session, which a test can cut and mend.
+    ///
+    /// This is the shape of the failure R6 exists for: an `ssh -L` or a `socat`
+    /// dies while the session on the far side of it carries on. It accepts
+    /// connections either way, so a cut link fails the way a dead forward does
+    /// -- the socket closes under the request -- rather than the way a port
+    /// nobody has bound does.
+    struct Forwarder {
+        address: std::net::SocketAddr,
+        open: Arc<std::sync::atomic::AtomicBool>,
+        live: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>>,
+    }
+
+    impl Forwarder {
+        async fn in_front_of(target: std::net::SocketAddr) -> Self {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let open = Arc::new(std::sync::atomic::AtomicBool::new(true));
+            let live: Arc<Mutex<Vec<tokio::task::JoinHandle<()>>>> =
+                Arc::new(Mutex::new(Vec::new()));
+            let accepting = Arc::clone(&open);
+            let pumps = Arc::clone(&live);
+            tokio::spawn(async move {
+                while let Ok((mut client, _)) = listener.accept().await {
+                    if !accepting.load(std::sync::atomic::Ordering::SeqCst) {
+                        continue;
+                    }
+                    pumps.lock().unwrap().push(tokio::spawn(async move {
+                        if let Ok(mut session) = tokio::net::TcpStream::connect(target).await {
+                            let _ = tokio::io::copy_bidirectional(&mut client, &mut session).await;
+                        }
+                    }));
+                }
+            });
+            Self {
+                address,
+                open,
+                live,
+            }
+        }
+
+        /// Kill the forward: existing connections die and new ones go nowhere.
+        fn cut(&self) {
+            self.open.store(false, std::sync::atomic::Ordering::SeqCst);
+            for pump in self.live.lock().unwrap().drain(..) {
+                pump.abort();
+            }
+        }
+
+        /// Bring the forward back.
+        fn mend(&self) {
+            self.open.store(true, std::sync::atomic::Ordering::SeqCst);
         }
     }
 
@@ -678,19 +791,23 @@ mod tests {
         }
     }
 
-    async fn stub_stream(
-        State(stub): State<Arc<StubSession>>,
-    ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+    async fn stub_stream(State(stub): State<Arc<StubSession>>) -> Response {
+        if let Some(status) = *stub.refuse_stream.lock().unwrap() {
+            return (status, Json(serde_json::json!({ "error": EDITOR_STOPPED }))).into_response();
+        }
+        *stub.streams.lock().unwrap() += 1;
         let updates = stub.updates.subscribe();
-        let stop = stub.stop.subscribe();
-        let frames =
-            futures::stream::unfold((updates, stop), |(mut updates, mut stop)| async move {
+        let mut epochs = stub.epoch.subscribe();
+        let opened = *epochs.borrow_and_update();
+        let frames = futures::stream::unfold(
+            (updates, epochs),
+            move |(mut updates, mut epochs)| async move {
                 loop {
-                    if *stop.borrow_and_update() {
+                    if *epochs.borrow_and_update() != opened {
                         return None;
                     }
                     tokio::select! {
-                        _ = stop.changed() => return None,
+                        _ = epochs.changed() => return None,
                         changed = updates.changed() => changed.ok()?,
                     }
                     let frame = updates.borrow_and_update().clone();
@@ -699,11 +816,14 @@ mod tests {
                             .event(SNAPSHOT_EVENT)
                             .json_data(&snapshot)
                             .expect("a snapshot serializes");
-                        return Some((Ok(event), (updates, stop)));
+                        return Some((Ok::<Event, Infallible>(event), (updates, epochs)));
                     }
                 }
-            });
-        Sse::new(frames).keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+            },
+        );
+        Sse::new(frames)
+            .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)))
+            .into_response()
     }
 
     /// Serve a stub session on a loopback port, behind the real security layer.
@@ -712,13 +832,32 @@ mod tests {
     /// single most confusing way a remote transport can fail, and a stub guard
     /// would only prove that the test agrees with itself.
     async fn stub_session() -> (Arc<StubSession>, RemoteEndpoint) {
+        let (stub, address, capability) = serve_stub().await;
+        (
+            stub,
+            RemoteEndpoint::new(address.to_string(), SESSION_PORT, capability),
+        )
+    }
+
+    /// The same stub, reached through a forwarder a test can cut.
+    async fn forwarded_stub_session() -> (Arc<StubSession>, Forwarder, RemoteEndpoint) {
+        let (stub, address, capability) = serve_stub().await;
+        let forwarder = Forwarder::in_front_of(address).await;
+        let endpoint = RemoteEndpoint::new(forwarder.address.to_string(), SESSION_PORT, capability);
+        (stub, forwarder, endpoint)
+    }
+
+    async fn serve_stub() -> (Arc<StubSession>, std::net::SocketAddr, SessionCapability) {
         let capability = SessionCapability::generate();
         let stub = Arc::new(StubSession {
             received: Mutex::new(Vec::new()),
             hosts: Mutex::new(Vec::new()),
             snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1),
             updates: watch::channel(None).0,
-            stop: watch::channel(false).0,
+            epoch: watch::channel(0).0,
+            streams: Mutex::new(0),
+            refuse_stream: Mutex::new(None),
+            revision: Mutex::new(0),
         });
         let routes = Router::new()
             .route("/gui/command", post(stub_command))
@@ -733,10 +872,40 @@ mod tests {
         tokio::spawn(async move {
             let _ = axum::serve(listener, app).await;
         });
-        (
-            stub,
-            RemoteEndpoint::new(address.to_string(), SESSION_PORT, capability),
-        )
+        (stub, address, capability)
+    }
+
+    /// The next frame a subscriber is handed, with a deadline.
+    async fn next_frame(
+        updates: &mut watch::Receiver<Option<GuiSnapshot>>,
+        within: Duration,
+    ) -> GuiSnapshot {
+        tokio::time::timeout(within, updates.changed())
+            .await
+            .expect("a frame should arrive")
+            .expect("the subscription should stay open");
+        updates
+            .borrow_and_update()
+            .clone()
+            .expect("a published frame is never empty")
+    }
+
+    /// Wait for the connection state to satisfy `ready`, and return it.
+    async fn connection_reaches(
+        connection: &mut watch::Receiver<GuiConnection>,
+        ready: impl Fn(&GuiConnection) -> bool,
+    ) -> GuiConnection {
+        for _ in 0..400 {
+            let state = connection.borrow_and_update().clone();
+            if ready(&state) {
+                return state;
+            }
+            let _ = tokio::time::timeout(Duration::from_millis(50), connection.changed()).await;
+        }
+        panic!(
+            "the connection never reached the expected state (last: {:?})",
+            connection.borrow().clone()
+        );
     }
 
     /// Wait for a condition the stub reaches on another task.
@@ -944,34 +1113,282 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_stream_that_dies_says_so_rather_than_going_quiet() {
-        // Reconnection is R6. Until then a dropped link must at least reach
-        // the status line, because a stream that stops without a word is
-        // indistinguishable from an editor that has become slow.
-        let (stub, endpoint) = stub_session().await;
+    async fn a_stream_that_dies_mid_session_comes_back_with_fresh_frames() {
+        // The payoff case, end to end: the forward dies under a session that
+        // never notices, and the window carries on against the same session.
+        let (stub, forwarder, endpoint) = forwarded_stub_session().await;
         let transport = RemoteTransport::open(endpoint).await.unwrap();
         let mut updates = transport.subscribe();
-        stub.publish("saved");
-        tokio::time::timeout(Duration::from_secs(5), updates.changed())
-            .await
-            .expect("a published frame should arrive")
-            .unwrap();
+        let mut connection = transport.connection();
+        stub.publish("before");
+        assert_eq!(
+            next_frame(&mut updates, Duration::from_secs(5))
+                .await
+                .status_message,
+            "before"
+        );
 
+        forwarder.cut();
+        connection_reaches(&mut connection, |state| !state.is_connected()).await;
+        // The session kept working while nobody could see it, which is the
+        // property the whole architecture exists for.
+        stub.publish("while the link was down");
+        forwarder.mend();
+
+        connection_reaches(&mut connection, GuiConnection::is_connected).await;
+        stub.publish("after");
+        let mut frame = next_frame(&mut updates, Duration::from_secs(10)).await;
+        while frame.status_message != "after" {
+            frame = next_frame(&mut updates, Duration::from_secs(10)).await;
+        }
+        assert!(stub.streams() >= 2, "the client should have reattached");
+    }
+
+    #[tokio::test]
+    async fn a_reattached_client_is_handed_a_frame_even_though_nothing_changed() {
+        // The quiet way to show a stale window: the editor was untouched
+        // during the outage, so a session that only publishes on change would
+        // publish nothing, and the frontend would keep rendering the frame it
+        // had when the link died. The reattach asks for one.
+        let (stub, forwarder, endpoint) = forwarded_stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+        // The viewport a reattach replays is the one the frontend last asked
+        // for, which it does on subscribe and on every resize.
+        transport
+            .send(GuiCommand::Snapshot {
+                columns: 120,
+                rows: 40,
+            })
+            .await
+            .unwrap();
+        let mut updates = transport.subscribe();
+
+        forwarder.cut();
+        connection_reaches(&mut connection, |state| !state.is_connected()).await;
+        forwarder.mend();
+        connection_reaches(&mut connection, GuiConnection::is_connected).await;
+
+        let frame = next_frame(&mut updates, Duration::from_secs(10)).await;
+        assert_eq!(frame.lines, stub.snapshot.lines);
+        assert!(
+            stub.received()
+                .iter()
+                .filter(|command| matches!(
+                    command,
+                    GuiCommand::Snapshot {
+                        columns: 120,
+                        rows: 40
+                    }
+                ))
+                .count()
+                >= 2,
+            "the reattach should have replayed the viewport: {:?}",
+            stub.received()
+        );
+    }
+
+    #[tokio::test]
+    async fn revisions_never_go_backwards_across_a_reconnect() {
+        // The frontend drops any frame whose revision is below the newest it
+        // has seen. A session that was replaced starts counting from one
+        // again, and without this the window would look connected and never
+        // redraw again.
+        let (stub, forwarder, endpoint) = forwarded_stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut updates = transport.subscribe();
+        let mut connection = transport.connection();
+        for _ in 0..5 {
+            stub.publish("before");
+        }
+        let before = next_frame(&mut updates, Duration::from_secs(5))
+            .await
+            .revision;
+
+        forwarder.cut();
+        connection_reaches(&mut connection, |state| !state.is_connected()).await;
+        stub.restart_revisions();
+        forwarder.mend();
+        connection_reaches(&mut connection, GuiConnection::is_connected).await;
+        stub.publish("after");
+
+        let after = next_frame(&mut updates, Duration::from_secs(10)).await;
+        assert!(
+            after.revision > before,
+            "revision went from {before} to {}",
+            after.revision
+        );
+    }
+
+    #[tokio::test]
+    async fn keystrokes_typed_while_the_link_is_down_are_dropped_rather_than_queued() {
+        // Replaying keys against a buffer that moved under them is how a
+        // modal editor deletes the wrong line. They are refused at once, and
+        // the connection state is what tells the user why.
+        let (stub, forwarder, endpoint) = forwarded_stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+        let sent_before = stub.received().len();
+
+        forwarder.cut();
+        connection_reaches(&mut connection, |state| !state.is_connected()).await;
+        let refusal = transport
+            .send(GuiCommand::EditorCommand {
+                command: "d".to_string(),
+            })
+            .await
+            .unwrap_err();
+        forwarder.mend();
+        connection_reaches(&mut connection, GuiConnection::is_connected).await;
+
+        assert_eq!(refusal, EDITOR_DISCONNECTED);
+        // And nothing arrives late: the command was never on the wire, so
+        // there is nothing for the reconnection to deliver.
+        tokio::time::sleep(Duration::from_millis(200)).await;
+        assert!(
+            !stub.received()[sent_before..]
+                .iter()
+                .any(|command| matches!(
+                    command,
+                    GuiCommand::EditorCommand { command } if command == "d"
+                )),
+            "a dropped command must not arrive later: {:?}",
+            stub.received()
+        );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_has_ended_is_reported_instead_of_being_replaced() {
+        // The session's own way of saying its editor has stopped. Retrying
+        // cannot bring back what it was holding, and starting a replacement
+        // would look like a recovery while discarding all of it, so the loop
+        // stops and hands the decision over.
+        let (stub, endpoint) = stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+
+        stub.refuse_stream(Some(AxumStatus::SERVICE_UNAVAILABLE));
         stub.close_stream();
 
-        tokio::time::timeout(Duration::from_secs(5), updates.changed())
-            .await
-            .expect("the end of the stream should be reported")
-            .unwrap();
-        let frame = updates.borrow_and_update().clone().unwrap();
+        let state = connection_reaches(&mut connection, |state| {
+            matches!(state, GuiConnection::Lost { .. })
+        })
+        .await;
         assert!(
-            frame.status_message.starts_with(CONNECTION_LOST),
-            "{:?}",
-            frame.status_message
+            matches!(
+                state,
+                GuiConnection::Lost {
+                    reason: ConnectionLoss::SessionGone,
+                    can_start_a_session: false,
+                    ..
+                }
+            ),
+            "{state:?}"
         );
-        // The last frame is otherwise left alone, so the window keeps showing
-        // what the editor last said rather than blanking.
-        assert_eq!(frame.lines, stub.snapshot.lines);
+    }
+
+    #[tokio::test]
+    async fn credentials_that_stop_working_stop_the_retrying_too() {
+        // A capability the session no longer accepts is a setting, not a
+        // network condition. Retrying it every fifteen seconds for ten minutes
+        // helps nobody, and on a host that counts failures it makes things
+        // worse.
+        let (stub, endpoint) = stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+
+        stub.refuse_stream(Some(AxumStatus::UNAUTHORIZED));
+        stub.close_stream();
+
+        let state = connection_reaches(&mut connection, |state| {
+            matches!(state, GuiConnection::Lost { .. })
+        })
+        .await;
+        assert!(
+            matches!(
+                state,
+                GuiConnection::Lost {
+                    reason: ConnectionLoss::Authentication,
+                    ..
+                }
+            ),
+            "{state:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_session_keeps_being_retried_with_a_growing_wait() {
+        // The laptop-lid case: nothing answers, and the only right response is
+        // to keep trying for long enough that a lid opened five minutes later
+        // finds the window still attached.
+        let (_stub, forwarder, endpoint) = forwarded_stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+
+        forwarder.cut();
+
+        let first = connection_reaches(&mut connection, |state| {
+            matches!(state, GuiConnection::Reconnecting { .. })
+        })
+        .await;
+        let later = connection_reaches(
+            &mut connection,
+            |state| matches!(state, GuiConnection::Reconnecting { attempt, .. } if *attempt >= 3),
+        )
+        .await;
+
+        let (
+            GuiConnection::Reconnecting {
+                attempt: first_attempt,
+                retry_in_ms: first_wait,
+                ..
+            },
+            GuiConnection::Reconnecting {
+                attempt: later_attempt,
+                retry_in_ms: later_wait,
+                ..
+            },
+        ) = (&first, &later)
+        else {
+            panic!("{first:?} / {later:?}")
+        };
+        assert_eq!(*first_attempt, 1);
+        assert!(later_attempt >= &3, "{later:?}");
+        assert!(later_wait > first_wait, "{first_wait} then {later_wait}");
+    }
+
+    #[tokio::test]
+    async fn giving_up_leaves_a_door_open_rather_than_a_dead_window() {
+        // Whatever stops the automatic attempts, a manual one must still be
+        // possible: a state that can only be left by relaunching throws away
+        // the session it was trying to protect.
+        let (stub, endpoint) = stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let mut connection = transport.connection();
+        stub.refuse_stream(Some(AxumStatus::UNAUTHORIZED));
+        stub.close_stream();
+        connection_reaches(&mut connection, |state| {
+            matches!(state, GuiConnection::Lost { .. })
+        })
+        .await;
+
+        stub.refuse_stream(None);
+        transport.request_reconnect(false).unwrap();
+
+        connection_reaches(&mut connection, GuiConnection::is_connected).await;
+    }
+
+    #[tokio::test]
+    async fn a_window_that_did_not_start_the_session_cannot_start_a_replacement() {
+        // `--remote-session` points at a session somebody else arranged. There
+        // is no bootstrap here to run, and pretending otherwise would end in a
+        // window that says it recovered and did not.
+        let (_stub, endpoint) = stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+
+        let refusal = transport.request_reconnect(true).unwrap_err();
+
+        assert!(refusal.contains("--remote"), "{refusal}");
     }
 
     #[test]

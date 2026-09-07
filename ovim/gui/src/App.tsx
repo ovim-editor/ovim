@@ -32,6 +32,7 @@ import { isGuiNativeControl, trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
 import { projectWindowInvocation } from "./projectWindow";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
+import { acceptsInput, connectionIndicator } from "./connection";
 import {
     readWorkbenchLayout,
     workspaceLayoutIdentity,
@@ -47,6 +48,7 @@ import {
 import type {
     GuiAiChat,
     GuiCodeExplanation,
+    GuiConnection,
     GuiDiffReview,
     GuiKeyInput,
     GuiLayoutNode,
@@ -1159,6 +1161,12 @@ function App() {
     const [view, setView] = createSignal<GuiSnapshot>(mockSnapshot);
     const [error, setError] = createSignal("");
     const [connected, setConnected] = createSignal(!native);
+    // The link to the editor, on its own channel. A local editor never leaves
+    // "connected", so this costs nothing when there is no link to lose.
+    const [connection, setConnection] = createSignal<GuiConnection>({
+        state: "connected",
+    });
+    const linkStatus = () => connectionIndicator(connection());
     const [composition, setComposition] = createSignal("");
     const [pendingExit, setPendingExit] = createSignal<
         "close" | "quit" | undefined
@@ -1496,7 +1504,15 @@ function App() {
         else focusEditorInput();
     };
 
-    const sendKey = (input: GuiKeyInput) => mutate("gui_key", { input });
+    const sendKey = (input: GuiKeyInput) => {
+        // Dropped rather than queued while the link is down. A key means
+        // whatever the editor's mode, pending operator and cursor position
+        // make it mean when it arrives, and the remote session keeps running
+        // while this window cannot see it -- so a key replayed on reconnect
+        // can edit the wrong place with nothing to show that it did.
+        if (!acceptsInput(connection())) return Promise.resolve();
+        return mutate("gui_key", { input });
+    };
     const sendLiteral = async (keys: string) => {
         for (const key of keys) {
             await sendKey({
@@ -1508,6 +1524,14 @@ function App() {
             });
         }
     };
+    // Ask for another attempt at the link, on the user's say-so.
+    const reconnect = (allowNewSession: boolean) => {
+        if (!native) return;
+        void invoke("gui_reconnect", { allowNewSession }).catch((reason) =>
+            setError(String(reason)),
+        );
+    };
+
     const windowAction = async (action: string) => {
         if (!native) return;
         try {
@@ -3026,6 +3050,19 @@ function App() {
                 ...lastDimensions,
                 onEvent: snapshots,
             }).catch((reason) => setError(String(reason)));
+            const link = new Channel<GuiConnection>();
+            link.onmessage = (state) => {
+                setConnection(state);
+                if (state.state !== "connected") return;
+                // A resize that happened while the link was down was recorded
+                // here and never delivered, so the sync that follows a
+                // reconnect must not be skipped as a no-op.
+                lastDimensions = { columns: 0, rows: 0 };
+                requestAnimationFrame(syncDimensions);
+            };
+            void invoke("gui_connection", { onEvent: link }).catch((reason) =>
+                setError(String(reason)),
+            );
         }
         restoreInputFocus();
         onCleanup(() => {
@@ -3048,7 +3085,13 @@ function App() {
     return (
         <main
             class="app"
-            classList={{ "walkthrough-open": Boolean(walkthrough()) }}
+            classList={{
+                "walkthrough-open": Boolean(walkthrough()),
+                // The editor underneath is a photograph of a moment that has
+                // passed. Dimming it says so without hiding it, which matters
+                // because reading is still useful while typing is not.
+                "link-down": Boolean(linkStatus()),
+            }}
             style={themeVars()}
         >
             <header
@@ -3090,6 +3133,49 @@ function App() {
                     />
                 </div>
             </header>
+
+            <Show when={linkStatus()}>
+                {(status) => (
+                    <div
+                        class={`link-banner link-${status().tone}`}
+                        // Politely while it is still trying, because the
+                        // attempt count changes and re-announcing every few
+                        // seconds helps nobody; assertively once it has
+                        // stopped, because then there is a decision to make.
+                        role={status().tone === "lost" ? "alert" : "status"}
+                        aria-live={
+                            status().tone === "lost" ? "assertive" : "polite"
+                        }
+                    >
+                        <span class="link-pulse" aria-hidden="true" />
+                        <div class="link-text">
+                            <strong>{status().headline}</strong>
+                            <span>{status().detail}</span>
+                        </div>
+                        <div class="link-actions">
+                            <For each={status().actions}>
+                                {(action) => (
+                                    <button
+                                        type="button"
+                                        class="link-action"
+                                        classList={{
+                                            destructive: Boolean(
+                                                action.warning,
+                                            ),
+                                        }}
+                                        title={action.warning}
+                                        onClick={() =>
+                                            reconnect(action.allowNewSession)
+                                        }
+                                    >
+                                        {action.label}
+                                    </button>
+                                )}
+                            </For>
+                        </div>
+                    </div>
+                )}
+            </Show>
 
             <section
                 class="workbench"
@@ -3789,14 +3875,29 @@ function App() {
                                 </div>
                             )}
                         </Show>
-                        <Show when={!connected()}>
-                            <span
-                                class="connecting"
-                                role="status"
-                                aria-live="polite"
-                            >
-                                connecting…
-                            </span>
+                        <Show
+                            when={linkStatus()}
+                            fallback={
+                                <Show when={!connected()}>
+                                    <span
+                                        class="connecting"
+                                        role="status"
+                                        aria-live="polite"
+                                    >
+                                        connecting…
+                                    </span>
+                                </Show>
+                            }
+                        >
+                            {(status) => (
+                                <span
+                                    class={`connecting link-${status().tone}-chip`}
+                                    role="status"
+                                    aria-live="polite"
+                                >
+                                    {status().label}
+                                </span>
+                            )}
                         </Show>
                     </div>
 

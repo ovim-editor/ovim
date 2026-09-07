@@ -71,6 +71,13 @@ const EXIT_NO_BINARY: i32 = 10;
 const EXIT_NO_PATH: i32 = 11;
 /// A session was started but never wrote a descriptor.
 const EXIT_NO_SESSION: i32 = 12;
+/// A reattach-only bootstrap found no session to reattach to.
+///
+/// Only [`LaunchMode::ReattachOnly`] can produce it, and only a reconnection
+/// asks for that mode: the session the window was driving has ended, and
+/// starting a replacement would silently throw away the undo history and the
+/// warm language servers the user is trying to get back to.
+const EXIT_SESSION_GONE: i32 = 13;
 
 /// What to open, and where.
 #[derive(Clone, Debug)]
@@ -85,22 +92,176 @@ pub struct RemoteTarget {
     pub allow_version_mismatch: bool,
 }
 
+/// What a failed attempt to reach the session says about trying again.
+///
+/// A reconnection has to tell these apart: three of the four are answered by
+/// waiting, and the fourth is answered by stopping. Lumping them together
+/// produces either a client that hammers a host which will never let it in, or
+/// one that gives up on a laptop lid that was only closed for a minute.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LinkFailureKind {
+    /// The host or the network is not there. Waiting is the whole cure.
+    Unreachable,
+    /// The host refused the credentials, or its identity did not check out.
+    /// Repeating the attempt only repeats the refusal.
+    Authentication,
+    /// The remote session itself has ended. Its undo history and its warm
+    /// language servers went with it, so whether to start a replacement is the
+    /// user's decision and not this code's.
+    SessionGone,
+    /// Something about this pair of machines has to change first -- no `ovim`
+    /// on the far side, a path that does not exist, a version that cannot
+    /// speak this protocol.
+    Unusable,
+}
+
+/// A failure to establish the link, kept alongside what to do about it.
+#[derive(Debug)]
+pub struct LinkFailure {
+    pub kind: LinkFailureKind,
+    pub error: anyhow::Error,
+}
+
+impl LinkFailure {
+    fn new(kind: LinkFailureKind, error: anyhow::Error) -> Self {
+        Self { kind, error }
+    }
+}
+
+impl std::fmt::Display for LinkFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self.error.fmt(formatter)
+    }
+}
+
+/// Whatever carries the conversation, and how to build it again.
+///
+/// The transport above it does not know whether it is talking through an SSH
+/// tunnel this process owns, a forward somebody else set up, or a session on
+/// this very machine. It only knows that when the link drops it can ask for
+/// another one and be told where to dial.
+pub trait RemoteLink: Send + Sync + std::fmt::Debug {
+    /// Re-establish the link and say where to dial.
+    ///
+    /// `allow_new_session` is false for every automatic attempt. Reattaching
+    /// is the point of remote editing, so starting a replacement session is
+    /// only ever done because a user asked for it in as many words.
+    fn reconnect(&self, allow_new_session: bool) -> Result<RemoteEndpoint, LinkFailure>;
+
+    /// Whether this link can rebuild anything at all, which decides whether a
+    /// session that has ended can be replaced from here.
+    fn can_start_a_session(&self) -> bool {
+        false
+    }
+}
+
+/// A link somebody else arranged: an existing forward, a VPN, or a session on
+/// this machine.
+///
+/// There is nothing to rebuild, so reconnecting is retrying the same address.
+/// That is not a limitation to work around: whoever set the forward up is the
+/// only one who can bring it back, and retrying is exactly what lets a client
+/// ride out a `socat` or an `ssh -L` being restarted underneath it.
+#[derive(Debug)]
+pub struct PreconnectedLink {
+    endpoint: RemoteEndpoint,
+}
+
+impl PreconnectedLink {
+    pub fn new(endpoint: RemoteEndpoint) -> Self {
+        Self { endpoint }
+    }
+}
+
+impl RemoteLink for PreconnectedLink {
+    fn reconnect(&self, _allow_new_session: bool) -> Result<RemoteEndpoint, LinkFailure> {
+        Ok(self.endpoint.clone())
+    }
+}
+
+/// A link this process built over SSH, and can build again.
+///
+/// Reconnecting reruns the bootstrap in [`LaunchMode::ReattachOnly`] and then
+/// re-forwards, which is what tells a dead tunnel apart from a dead session:
+/// the first comes back with the same descriptor, the second exits with
+/// [`EXIT_SESSION_GONE`].
+#[derive(Debug)]
+pub struct SshLink {
+    program: PathBuf,
+    target: RemoteTarget,
+    /// Replaced on every reconnection. Dropping the old one closes the old
+    /// forward and asks its master to exit, so a link that is being rebuilt
+    /// never leaves a second authenticated connection behind.
+    tunnel: std::sync::Mutex<Option<SshTunnel>>,
+}
+
+impl SshLink {
+    fn new(program: PathBuf, target: RemoteTarget, tunnel: SshTunnel) -> Self {
+        Self {
+            program,
+            target,
+            tunnel: std::sync::Mutex::new(Some(tunnel)),
+        }
+    }
+}
+
+impl RemoteLink for SshLink {
+    fn reconnect(&self, allow_new_session: bool) -> Result<RemoteEndpoint, LinkFailure> {
+        let mode = if allow_new_session {
+            LaunchMode::Reattach
+        } else {
+            LaunchMode::ReattachOnly
+        };
+        // The old tunnel goes first. Its forward is either dead or about to be
+        // replaced, and its control master holds an authenticated connection
+        // that a new bootstrap must not have to compete with.
+        drop(
+            self.tunnel
+                .lock()
+                .expect("the tunnel lock is never poisoned")
+                .take(),
+        );
+        let socket = ControlSocket::create()
+            .map_err(|error| LinkFailure::new(LinkFailureKind::Unusable, error))?;
+        let report = bootstrap(&self.program, &socket, &self.target, mode)?;
+        let tunnel = SshTunnel::open(
+            &self.program,
+            socket,
+            &self.target.destination,
+            report.session.port,
+        )
+        .map_err(|error| LinkFailure::new(LinkFailureKind::Unreachable, error))?;
+        let endpoint = RemoteEndpoint::from_session(&report.session, Some(&tunnel.local_address()))
+            .map_err(|error| LinkFailure::new(LinkFailureKind::Unusable, error))?;
+        *self
+            .tunnel
+            .lock()
+            .expect("the tunnel lock is never poisoned") = Some(tunnel);
+        Ok(endpoint)
+    }
+
+    fn can_start_a_session(&self) -> bool {
+        true
+    }
+}
+
 /// A reachable remote editor, and whatever has to stay alive to reach it.
 #[derive(Debug)]
 pub struct RemoteLaunch {
     /// Where to dial, which port the session thinks it is on, and its capability.
     pub endpoint: RemoteEndpoint,
-    /// The tunnel, when this process built one. Dropping it closes the tunnel
-    /// and leaves the remote session running.
-    pub tunnel: Option<SshTunnel>,
+    /// How to get back to the session when the link drops. Holding it is also
+    /// what keeps a tunnel this process built open: dropping the last handle
+    /// closes the forward and leaves the remote session running.
+    pub link: std::sync::Arc<dyn RemoteLink>,
 }
 
 impl RemoteLaunch {
     /// A launch against an endpoint somebody else arranged to be reachable.
     pub fn preconnected(endpoint: RemoteEndpoint) -> Self {
         Self {
+            link: std::sync::Arc::new(PreconnectedLink::new(endpoint.clone())),
             endpoint,
-            tunnel: None,
         }
     }
 }
@@ -177,8 +338,13 @@ pub fn launch(target: &RemoteTarget) -> Result<RemoteLaunch> {
     validate_destination(&target.destination)?;
     let program = ssh_program()?;
     let socket = ControlSocket::create()?;
+    let mode = if target.fresh {
+        LaunchMode::Fresh
+    } else {
+        LaunchMode::Reattach
+    };
 
-    let report = bootstrap(&program, &socket, target)?;
+    let report = bootstrap(&program, &socket, target, mode).map_err(|failure| failure.error)?;
     check_versions(target, &report)?;
     ovim_core::log_info!(
         "gui",
@@ -194,7 +360,7 @@ pub fn launch(target: &RemoteTarget) -> Result<RemoteLaunch> {
         .context("The remote session descriptor cannot be used to reach it")?;
     Ok(RemoteLaunch {
         endpoint,
-        tunnel: Some(tunnel),
+        link: std::sync::Arc::new(SshLink::new(program, target.clone(), tunnel)),
     })
 }
 
@@ -424,43 +590,70 @@ fn bootstrap(
     program: &Path,
     socket: &ControlSocket,
     target: &RemoteTarget,
-) -> Result<BootstrapReport> {
-    let script = bootstrap_script(&target.path, target.fresh, SESSION_READY_SECONDS);
+    mode: LaunchMode,
+) -> Result<BootstrapReport, LinkFailure> {
+    let script = bootstrap_script(&target.path, mode, SESSION_READY_SECONDS);
     let mut child = Command::new(program)
         .args(bootstrap_arguments(&target.destination, &socket.path))
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
-        .with_context(|| format!("Failed to run {}", program.display()))?;
+        .with_context(|| format!("Failed to run {}", program.display()))
+        .map_err(|error| LinkFailure::new(LinkFailureKind::Unusable, error))?;
 
     // Written and closed before the output is read: the script only starts
     // running once sh has it, and sh only finishes reading at end of file.
     child
         .stdin
         .take()
-        .context("The ssh client accepted no input")?
-        .write_all(script.as_bytes())
-        .context("Failed to send the bootstrap script to the remote host")?;
+        .context("The ssh client accepted no input")
+        .and_then(|mut stdin| {
+            stdin
+                .write_all(script.as_bytes())
+                .context("Failed to send the bootstrap script to the remote host")
+        })
+        .map_err(|error| LinkFailure::new(LinkFailureKind::Unreachable, error))?;
 
     let output = wait_with_deadline(&mut child, BOOTSTRAP_TIMEOUT).map_err(|error| {
-        anyhow::anyhow!(
-            "{error} while starting Ovim on {}.\n\
-             Run 'ssh {}' by hand to see what the connection is waiting for.",
-            target.destination,
-            target.destination
+        LinkFailure::new(
+            LinkFailureKind::Unreachable,
+            anyhow::anyhow!(
+                "{error} while starting Ovim on {}.\n\
+                 Run 'ssh {}' by hand to see what the connection is waiting for.",
+                target.destination,
+                target.destination
+            ),
         )
     })?;
 
     if !output.status.success() {
-        return Err(bootstrap_failure(target, output.code, &output.stderr));
+        return Err(LinkFailure::new(
+            bootstrap_fault(output.code, &output.stderr),
+            bootstrap_failure(target, output.code, &output.stderr),
+        ));
     }
-    parse_report(&output.stdout).with_context(|| {
-        format!(
-            "The bootstrap on {} answered in a form this Ovim cannot read",
-            target.destination
-        )
-    })
+    parse_report(&output.stdout)
+        .with_context(|| {
+            format!(
+                "The bootstrap on {} answered in a form this Ovim cannot read",
+                target.destination
+            )
+        })
+        .map_err(|error| LinkFailure::new(LinkFailureKind::Unusable, error))
+}
+
+/// What the bootstrap is allowed to do about the session it finds.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum LaunchMode {
+    /// Reuse a live session, or start one if there is none. What a launch does.
+    Reattach,
+    /// Replace whatever is there. What `--fresh` does.
+    Fresh,
+    /// Reuse a live session, and fail rather than start one. What a
+    /// reconnection does, so that a session which has ended is reported to the
+    /// user instead of being quietly replaced by an empty one.
+    ReattachOnly,
 }
 
 /// The POSIX shell script that runs on the remote host.
@@ -472,13 +665,15 @@ fn bootstrap(
 /// Reattaching beats starting: a session that is already running holds warm
 /// language servers, undo history, and in-flight work, and finding it again is
 /// the whole reason for putting the editor on the far side of the link.
-fn bootstrap_script(project: &str, fresh: bool, ready_seconds: u32) -> String {
+fn bootstrap_script(project: &str, mode: LaunchMode, ready_seconds: u32) -> String {
     let project = shell_quote(project);
-    let fresh = u8::from(fresh);
+    let fresh = u8::from(mode == LaunchMode::Fresh);
+    let reattach_only = u8::from(mode == LaunchMode::ReattachOnly);
     format!(
         r#"set -u
 project={project}
 fresh={fresh}
+reattach_only={reattach_only}
 ready={ready_seconds}
 
 # A tilde arrives literally, because the path is quoted all the way here.
@@ -550,6 +745,12 @@ fi
 
 if [ "$alive" = 1 ]; then
   state=reattached
+elif [ "$reattach_only" = 1 ]; then
+  # A reconnection asked for this session and only this session. Starting a
+  # replacement here would look like a recovery while quietly discarding the
+  # undo history and the language servers the reconnection exists to preserve.
+  echo "$name is no longer running" >&2
+  exit {EXIT_SESSION_GONE}
 else
   state=started
   rm -f "$descriptor"
@@ -988,6 +1189,13 @@ fn bootstrap_failure(target: &RemoteTarget, code: Option<i32>, stderr: &str) -> 
             target.path,
             target.path
         ),
+        Some(EXIT_SESSION_GONE) => anyhow::anyhow!(
+            "The Ovim session for '{}' on {destination} has ended.\n\
+             Its open buffers, undo history and language servers went with it. Reconnecting \
+             cannot bring them back, so nothing was restarted automatically; start a new \
+             session when you are ready to.",
+            target.path
+        ),
         // 255 is ssh's own failure, as opposed to any exit status the remote
         // command produced, so the cause is in the transport rather than in
         // anything Ovim did.
@@ -998,55 +1206,113 @@ fn bootstrap_failure(target: &RemoteTarget, code: Option<i32>, stderr: &str) -> 
     }
 }
 
-fn ssh_transport_failure(destination: &str, detail: &str) -> anyhow::Error {
+/// What `ssh` itself failed on, read out of whatever it said.
+///
+/// Split out from the wording so that the message a user reads and the
+/// decision a reconnection makes are driven by one list of phrases rather than
+/// two that can drift apart.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TransportFault {
+    Unresolvable,
+    HostKey,
+    Authentication,
+    Unreachable,
+    Unknown,
+}
+
+fn transport_fault(detail: &str) -> TransportFault {
     let lowered = detail.to_ascii_lowercase();
-    if lowered.contains("could not resolve")
-        || lowered.contains("name or service not known")
-        || lowered.contains("nodename nor servname")
-        || lowered.contains("no address associated")
-    {
-        return anyhow::anyhow!(
+    let says = |phrases: &[&str]| phrases.iter().any(|phrase| lowered.contains(phrase));
+    if says(&[
+        "could not resolve",
+        "name or service not known",
+        "nodename nor servname",
+        "no address associated",
+    ]) {
+        return TransportFault::Unresolvable;
+    }
+    if says(&[
+        "host key verification failed",
+        "remote host identification has changed",
+    ]) {
+        return TransportFault::HostKey;
+    }
+    if says(&[
+        "permission denied",
+        "too many authentication failures",
+        "no supported authentication",
+        "authentication failed",
+    ]) {
+        return TransportFault::Authentication;
+    }
+    if says(&[
+        "connection refused",
+        "no route to host",
+        "network is unreachable",
+        "timed out",
+        "connection closed",
+        "connection reset",
+    ]) {
+        return TransportFault::Unreachable;
+    }
+    TransportFault::Unknown
+}
+
+fn ssh_transport_failure(destination: &str, detail: &str) -> anyhow::Error {
+    match transport_fault(detail) {
+        TransportFault::Unresolvable => anyhow::anyhow!(
             "The host in '{destination}' could not be resolved: {detail}\n\
              Check the spelling, or give it a Host entry in your SSH config if it is an alias."
-        );
-    }
-    if lowered.contains("host key verification failed")
-        || lowered.contains("remote host identification has changed")
-    {
-        return anyhow::anyhow!(
+        ),
+        TransportFault::HostKey => anyhow::anyhow!(
             "{destination} did not pass host key verification: {detail}\n\
              Run 'ssh {destination}' once by hand to see the key and decide whether to accept it. \
              Ovim will not answer that question for you."
-        );
-    }
-    if lowered.contains("permission denied")
-        || lowered.contains("too many authentication failures")
-        || lowered.contains("no supported authentication")
-        || lowered.contains("authentication failed")
-    {
-        return anyhow::anyhow!(
+        ),
+        TransportFault::Authentication => anyhow::anyhow!(
             "{destination} refused the SSH authentication: {detail}\n\
              Check that 'ssh {destination}' works on its own. If it needs a key, add it with \
              'ssh-add' or 'ssh-copy-id {destination}'."
-        );
-    }
-    if lowered.contains("connection refused")
-        || lowered.contains("no route to host")
-        || lowered.contains("network is unreachable")
-        || lowered.contains("timed out")
-        || lowered.contains("connection closed")
-        || lowered.contains("connection reset")
-    {
-        return anyhow::anyhow!(
+        ),
+        TransportFault::Unreachable => anyhow::anyhow!(
             "{destination} could not be reached over SSH: {detail}\n\
              Check that the host is up and that it accepts SSH. If it listens on a \
              non-standard port, put the Port in your SSH config rather than in --remote."
-        );
+        ),
+        TransportFault::Unknown => anyhow::anyhow!(
+            "The SSH connection to {destination} failed: {detail}\n\
+             Run 'ssh {destination}' by hand; whatever stops it there stops Ovim here."
+        ),
     }
-    anyhow::anyhow!(
-        "The SSH connection to {destination} failed: {detail}\n\
-         Run 'ssh {destination}' by hand; whatever stops it there stops Ovim here."
-    )
+}
+
+/// What a failed bootstrap means for trying again.
+///
+/// A name that does not resolve and a laptop with no wifi both look like a
+/// host that is not there, and both are answered by waiting. A refused key is
+/// answered by stopping: retrying it every fifteen seconds for ten minutes
+/// helps nobody and, on a host that counts failures, makes things worse.
+fn bootstrap_fault(code: Option<i32>, stderr: &str) -> LinkFailureKind {
+    match code {
+        Some(EXIT_SESSION_GONE) => LinkFailureKind::SessionGone,
+        // The remote host answered and said what is wrong with it. Waiting
+        // cannot install an `ovim` or create a directory.
+        Some(EXIT_NO_BINARY) | Some(EXIT_NO_PATH) => LinkFailureKind::Unusable,
+        // The session was asked for and did not come up in time. It may on the
+        // next attempt, on a host that is merely slow.
+        Some(EXIT_NO_SESSION) => LinkFailureKind::Unreachable,
+        Some(255) | None => match transport_fault(&first_meaningful_line(stderr)) {
+            TransportFault::Authentication | TransportFault::HostKey => {
+                LinkFailureKind::Authentication
+            }
+            // An unexplained ssh failure is treated as worth another try. The
+            // retry budget bounds how long that guess can cost.
+            TransportFault::Unresolvable
+            | TransportFault::Unreachable
+            | TransportFault::Unknown => LinkFailureKind::Unreachable,
+        },
+        Some(_) => LinkFailureKind::Unusable,
+    }
 }
 
 fn forward_failure(
@@ -1195,7 +1461,7 @@ mod tests {
                 );
             }
         }
-        assert!(!bootstrap_script("/srv/project", false, 30).contains(capability));
+        assert!(!bootstrap_script("/srv/project", LaunchMode::Reattach, 30).contains(capability));
         // And the capability really did survive the trip, so the assertion
         // above is not passing because nothing was parsed.
         assert_eq!(parsed.session.capability.expose_secret(), capability);
@@ -1203,7 +1469,7 @@ mod tests {
 
     #[test]
     fn the_bootstrap_script_quotes_a_path_that_would_otherwise_run_a_command() {
-        let script = bootstrap_script("/srv/it's here; rm -rf /", false, 30);
+        let script = bootstrap_script("/srv/it's here; rm -rf /", LaunchMode::Reattach, 30);
 
         assert!(script.contains(r"project='/srv/it'\''s here; rm -rf /'"));
         // Nothing outside the quoted assignment reintroduces the path.
@@ -1212,9 +1478,10 @@ mod tests {
 
     #[test]
     fn the_bootstrap_script_reattaches_before_it_starts_anything() {
-        let script = bootstrap_script("/srv/project", false, 30);
+        let script = bootstrap_script("/srv/project", LaunchMode::Reattach, 30);
 
         assert!(script.contains("fresh=0"));
+        assert!(script.contains("reattach_only=0"));
         assert!(script.contains("state=reattached"));
         assert!(script.contains("--headless --session"));
         // The session name is derived from the resolved path, which is what
@@ -1224,7 +1491,7 @@ mod tests {
 
     #[test]
     fn a_fresh_launch_replaces_the_session_instead_of_reattaching() {
-        let script = bootstrap_script("/srv/project", true, 30);
+        let script = bootstrap_script("/srv/project", LaunchMode::Fresh, 30);
 
         assert!(script.contains("fresh=1"));
         assert!(script.contains(r#"kill -9 "$pid""#));
@@ -1642,7 +1909,7 @@ exec sleep 60
         std::fs::create_dir_all(&binaries).unwrap();
         std::fs::create_dir_all(&project).unwrap();
         stub_ovim(&binaries);
-        let script = bootstrap_script(&project.to_string_lossy(), false, 20);
+        let script = bootstrap_script(&project.to_string_lossy(), LaunchMode::Reattach, 20);
 
         let first = run_script(&script, &binaries, &sessions);
         assert!(
@@ -1688,13 +1955,138 @@ exec sleep 60
         // An empty bin directory and a PATH that has no ovim on it. The test
         // binary's PATH might, so the check is on the exit status meaning
         // rather than on it always being reached.
-        let missing_path = bootstrap_script("/nonexistent/project/dir", false, 2);
+        let missing_path = bootstrap_script("/nonexistent/project/dir", LaunchMode::Reattach, 2);
         stub_ovim(&binaries);
         let refused = run_script(&missing_path, &binaries, &sessions);
 
         assert_eq!(refused.code, Some(EXIT_NO_PATH));
         let message = bootstrap_failure(&target(), refused.code, &refused.stderr).to_string();
         assert!(message.contains("resolved on the remote host"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_reconnection_reattaches_and_refuses_to_start_a_replacement() {
+        // The single most important thing R6 does not do. A session that has
+        // ended took its undo history and its language servers with it, so a
+        // reconnection that quietly started a new one would look like a
+        // recovery and be a loss.
+        let workspace = tempfile::tempdir().expect("a temporary directory should be creatable");
+        let sessions = workspace.path().join("sessions");
+        let binaries = workspace.path().join("bin");
+        let project = workspace.path().join("project");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&binaries).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        stub_ovim(&binaries);
+        let project = project.to_string_lossy().to_string();
+
+        // Nothing is running yet, which is what a reconnection finds when the
+        // session it was driving has ended.
+        let gone = run_script(
+            &bootstrap_script(&project, LaunchMode::ReattachOnly, 20),
+            &binaries,
+            &sessions,
+        );
+        assert_eq!(gone.code, Some(EXIT_SESSION_GONE));
+        assert_eq!(
+            bootstrap_fault(gone.code, &gone.stderr),
+            LinkFailureKind::SessionGone
+        );
+        let message = bootstrap_failure(&target(), gone.code, &gone.stderr).to_string();
+        assert!(message.contains("has ended"), "{message}");
+        assert!(
+            std::fs::read_dir(&sessions).unwrap().next().is_none(),
+            "a reattach-only bootstrap must not leave a session behind"
+        );
+
+        // With one running, the very same invocation finds it.
+        let started = run_script(
+            &bootstrap_script(&project, LaunchMode::Reattach, 20),
+            &binaries,
+            &sessions,
+        );
+        let started = parse_report(&started.stdout).expect("the first report should parse");
+        let reattached = run_script(
+            &bootstrap_script(&project, LaunchMode::ReattachOnly, 20),
+            &binaries,
+            &sessions,
+        );
+        let reattached = parse_report(&reattached.stdout).expect("the reattach should parse");
+
+        assert_eq!(reattached.origin, SessionOrigin::Reattached);
+        assert_eq!(
+            reattached.session.session_name, started.session.session_name,
+            "a reconnection must land on the session it left"
+        );
+
+        let _ = Command::new("kill")
+            .arg(started.session.pid.to_string())
+            .status();
+    }
+
+    #[test]
+    fn what_ssh_says_decides_whether_waiting_could_help() {
+        // The four classes the reconnection tells apart, read out of the one
+        // thing the far side actually gives us.
+        let cases = [
+            (
+                "ssh: connect to host build-host port 22: Connection refused",
+                LinkFailureKind::Unreachable,
+            ),
+            (
+                "ssh: Could not resolve hostname build-host: Name or service not known",
+                LinkFailureKind::Unreachable,
+            ),
+            (
+                "user@host: Permission denied (publickey).",
+                LinkFailureKind::Authentication,
+            ),
+            (
+                "Host key verification failed.",
+                LinkFailureKind::Authentication,
+            ),
+            (
+                "something nobody has seen before",
+                LinkFailureKind::Unreachable,
+            ),
+        ];
+
+        for (stderr, expected) in cases {
+            assert_eq!(bootstrap_fault(Some(255), stderr), expected, "{stderr}");
+        }
+        // And what the remote script itself says about the far side.
+        assert_eq!(
+            bootstrap_fault(Some(EXIT_SESSION_GONE), ""),
+            LinkFailureKind::SessionGone
+        );
+        assert_eq!(
+            bootstrap_fault(Some(EXIT_NO_BINARY), ""),
+            LinkFailureKind::Unusable
+        );
+        assert_eq!(
+            bootstrap_fault(Some(EXIT_NO_SESSION), ""),
+            LinkFailureKind::Unreachable
+        );
+    }
+
+    #[test]
+    fn a_link_nobody_here_built_reconnects_to_the_same_address() {
+        // `--remote-session` points at a forward somebody else arranged. There
+        // is nothing to rebuild, and retrying the address is exactly what
+        // rides out that forward being restarted underneath.
+        let session: SessionInfo =
+            serde_json::from_str(&descriptor(&"33".repeat(32))).expect("the descriptor parses");
+        let endpoint = RemoteEndpoint::from_session(&session, Some("127.0.0.1:40001"))
+            .expect("a forwarded endpoint should be buildable");
+        let link = PreconnectedLink::new(endpoint);
+
+        let again = link
+            .reconnect(false)
+            .expect("the address is still the address");
+
+        assert!(format!("{again:?}").contains("40001"));
+        assert!(!link.can_start_a_session());
     }
 
     #[test]
