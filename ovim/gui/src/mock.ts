@@ -235,6 +235,8 @@ export const mockSnapshot: GuiSnapshot = {
     lspManager: undefined,
     debug: undefined,
     theme,
+    predictableInsert: false,
+    inputEpoch: 0,
     shouldQuit: false,
 };
 

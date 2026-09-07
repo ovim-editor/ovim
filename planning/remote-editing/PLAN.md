@@ -367,3 +367,61 @@ the local one.
   `EXIT_SESSION_GONE`), for the same reason R5 could not verify its own --
   no reachable sshd here. The bootstrap script itself is exercised against a
   real `/bin/sh` in `gui::ssh`'s tests.
+
+**R7 landed; notes for R8.**
+
+- **The speculation lives in the frontend, but it cannot be built from the
+  frame alone.** `ovim/gui/src/predictiveEcho.ts` owns every rule; the server
+  contributes two facts a client could not work out, both on `GuiSnapshot`:
+  - `predictable_insert` (`ovim/src/gui/echo.rs`) -- the editor's own answer to
+    "is the next plain printable character certain to be inserted literally?".
+    A pending `i_CTRL-R`, half a typed mapping, a visible completion menu, a
+    visual-block insert and the two modal consent dialogs all change what a
+    character means *without changing a single rendered cell*. A client
+    watching the projection cannot tell any of them from ordinary typing.
+  - `input_epoch` -- how many commands the conversation has taken in. This is
+    mosh's acknowledged state number and it is the load-bearing one. Without
+    it a client cannot tell a frame that already reflects its typing from one
+    that predates it; the first draft measured a real mispredict from exactly
+    that (a character drawn before the `o` that opened its line had landed).
+    It counts *every* command and every client, so it can only overstate what
+    the editor has consumed of one client's typing -- and overstating leaves
+    less outstanding, which is the safe direction. That is also why a mouse
+    click or a paste mid-run pauses the speculation instead of misplacing it.
+- **The run is derived per frame, never patched across frames.** `outstanding
+  = sentEpoch - frame.inputEpoch`; if those keys are all plain printables and
+  the frame certifies a plain insert state, the run is drawn from the frame's
+  own cursor, and otherwise nothing is drawn. There is no rebase step because
+  there is nothing to rebase, and a frame that cannot be spoken for drops the
+  whole run rather than repairing part of it.
+- **Deriving it also fixes typing through an unmodelled key.** Keys typed
+  while `o`/`<CR>`/`<BS>` is still in flight are journalled but not drawn; the
+  frame that accounts for the unmodelled key adopts them all at once. Gating
+  on "nothing outstanding" instead would have meant a burst that never pauses
+  never starts predicting at all.
+- **The safe set**: transport remote and connected; `predictable_insert`;
+  `INSERT`; no prompt, picker, completion or LSP-manager overlay; not the
+  dashboard; not read-only; `horizontalOffset == 0`; the cursor line rendered
+  as exactly one unwrapped row starting at column 0; `cursor.displayColumn ==
+  cursor.column` (the only way to tell a tab from the spaces it is projected
+  as); the key a single code point in `U+0020..U+007E` or `U+00A1..U+02FF`
+  with no modifier but Shift. `}`, `)` and `]` are refused on an
+  otherwise-blank line, where `electric_dedent_close_bracket` re-indents
+  instead of inserting. Excluded outright: Enter, Tab, Backspace, everything
+  modal, and every non-Latin or multi-code-point grapheme.
+- **`OVIM_REMOTE_LATENCY_MS`** makes a loopback session feel like a distant
+  one: `RemoteTransport` applies half of it in each direction, and the two
+  measurement harnesses read the same variable.
+  `remote_session_test::a_keystroke_costs_a_round_trip_when_nothing_speaks_for_it`
+  times the transport leg; `gui/src/predictiveEcho.measure.test.ts` types the
+  same sample twice, with the speculation on and off, at the same cadence.
+- Measured against a real headless session at 25 keys/s. Keypress to visible,
+  median: 0.0ms predicting at every latency, against 1.9ms / 51.2ms / 151.3ms
+  not predicting at 0 / 50 / 150ms injected RTT. A clean line predicts 98-100%
+  of its keystrokes; a realistic edit with `<CR>`, `<BS>`, `<Esc>` and `<Tab>`
+  in it predicts 93% of printable keys at 0ms and 76% at 150ms, the difference
+  being the run that cannot be drawn until an unmodelled key comes back. Zero
+  mispredicts in every run.
+- Not measured: the effect of the completion-menu exclusion on the hit rate.
+  `rust-analyzer` would not attach to a headless session on this machine, so
+  every measurement above is LSP-free and the menu never opened.

@@ -34,6 +34,17 @@ import { projectWindowInvocation } from "./projectWindow";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
 import { acceptsInput, connectionIndicator } from "./connection";
 import {
+    discard,
+    expire,
+    nextExpiry,
+    noPredictions,
+    recordSent,
+    reconcile,
+    withEcho,
+    type EchoOptions,
+    type EchoState,
+} from "./predictiveEcho";
+import {
     readWorkbenchLayout,
     workspaceLayoutIdentity,
     writeWorkbenchLayout,
@@ -1205,6 +1216,16 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
+    // The last frame the editor actually sent. `view()` is that frame with any
+    // outstanding predictive echo written into it, so everything that renders
+    // keeps reading one signal, and with nothing outstanding the two are the
+    // same object.
+    let authoritative: GuiSnapshot = mockSnapshot;
+    // Only a remote link speculates. Asked once, because a transport does not
+    // change under a running window.
+    let linkIsRemote = false;
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    const [echo, setEcho] = createSignal<EchoState>(noPredictions);
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1421,6 +1442,45 @@ function App() {
         );
     };
 
+    const echoOptions = (): EchoOptions => ({
+        remote: linkIsRemote,
+        connection: connection(),
+        now: performance.now(),
+    });
+
+    /** Re-arm the timer that clears speculation nobody ever answered. */
+    const scheduleExpiry = (state: EchoState) => {
+        if (expiryTimer !== undefined) clearTimeout(expiryTimer);
+        expiryTimer = undefined;
+        const deadline = nextExpiry(state);
+        if (deadline === undefined) return;
+        expiryTimer = setTimeout(
+            () => showEcho(expire(echo(), performance.now())),
+            Math.max(0, deadline - performance.now()),
+        );
+    };
+
+    /**
+     * Redraw the last real frame with the outstanding speculation in it.
+     *
+     * `retainProjection` still does the structural sharing, so a predicted
+     * character rerenders one line rather than the window -- and with nothing
+     * outstanding `withEcho` hands back the frame itself, so a local session
+     * takes the identical path it took before any of this existed.
+     */
+    const showEcho = (state: EchoState) => {
+        const drawnBefore = echo().run?.keys.length ?? 0;
+        setEcho(state);
+        // A key that could not be spoken for still moves the bookkeeping, and
+        // redrawing for it would be a viewport-sized diff per keystroke for no
+        // visible difference.
+        if (drawnBefore || state.run?.keys.length)
+            setView((previous) =>
+                retainProjection(previous, withEcho(authoritative, state)),
+            );
+        scheduleExpiry(state);
+    };
+
     const accept = (snapshot: GuiSnapshot) => {
         if (!shouldAcceptRevision(latestSnapshotRevision, snapshot.revision))
             return;
@@ -1431,7 +1491,16 @@ function App() {
             Boolean(view().picker || view().lspManager) &&
             !snapshot.picker &&
             !snapshot.lspManager;
-        setView((previous) => retainProjection(previous, snapshot));
+        authoritative = snapshot;
+        // The authority is adopted first and the speculation re-derived on top
+        // of it, so a frame that contradicts what is on screen replaces it in
+        // the same paint rather than a frame later.
+        const settled = reconcile(echo(), snapshot, echoOptions()).state;
+        setEcho(settled);
+        setView((previous) =>
+            retainProjection(previous, withEcho(snapshot, settled)),
+        );
+        scheduleExpiry(settled);
         setConnected(true);
         setError("");
         requestAnimationFrame(syncDimensions);
@@ -1511,6 +1580,10 @@ function App() {
         // while this window cannot see it -- so a key replayed on reconnect
         // can edit the wrong place with nothing to show that it did.
         if (!acceptsInput(connection())) return Promise.resolve();
+        // Recorded against the last authoritative frame, never against the
+        // echoed one: what is drawn ahead of the editor is measured from the
+        // last thing the editor actually said.
+        showEcho(recordSent(echo(), authoritative, input, echoOptions()).state);
         return mutate("gui_key", { input });
     };
     const sendLiteral = async (keys: string) => {
@@ -2248,6 +2321,9 @@ function App() {
                                                 selected: segment.selected,
                                                 "search-match":
                                                     segment.searchMatch,
+                                                speculative: Boolean(
+                                                    segment.speculative,
+                                                ),
                                             }}
                                             style={{
                                                 color: segment.token
@@ -3053,7 +3129,13 @@ function App() {
             const link = new Channel<GuiConnection>();
             link.onmessage = (state) => {
                 setConnection(state);
-                if (state.state !== "connected") return;
+                if (state.state !== "connected") {
+                    // Chunk R6 drops input while the link is down rather than
+                    // queueing it, so a prediction made just before the outage
+                    // is speaking for a keystroke that will never be sent.
+                    showEcho(discard());
+                    return;
+                }
                 // A resize that happened while the link was down was recorded
                 // here and never delivered, so the sync that follows a
                 // reconnect must not be skipped as a no-op.
@@ -3063,6 +3145,11 @@ function App() {
             void invoke("gui_connection", { onEvent: link }).catch((reason) =>
                 setError(String(reason)),
             );
+            void invoke<boolean>("gui_link_is_remote")
+                .then((remote) => {
+                    linkIsRemote = remote;
+                })
+                .catch((reason) => setError(String(reason)));
         }
         restoreInputFocus();
         onCleanup(() => {
@@ -3079,6 +3166,7 @@ function App() {
             unlistenMenu?.();
             unlistenClose?.();
             unlistenBrowserKey?.();
+            if (expiryTimer !== undefined) clearTimeout(expiryTimer);
         });
     });
 

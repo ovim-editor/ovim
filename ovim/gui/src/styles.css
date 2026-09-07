@@ -968,6 +968,25 @@ button:focus-visible {
     background: var(--search);
     border-radius: var(--radius-1);
 }
+/* Predicted locally, not yet confirmed by the remote editor.
+ *
+ * mosh's underline, in Ovim's accent: a dotted rule under the run says "the
+ * server has not agreed to this yet" without touching the glyphs themselves,
+ * so fast typing does not turn into a light show. Deliberately not a colour
+ * change -- syntax colour is information about the code, and borrowing it to
+ * mean something about the network would make both harder to read. It lasts
+ * one round trip, so it has to be legible at a glance and forgettable. */
+.code-segment.speculative {
+    text-decoration: underline dotted
+        color-mix(in srgb, var(--accent) 55%, transparent);
+    text-decoration-thickness: 1px;
+    text-underline-offset: 2px;
+}
+@media (forced-colors: active) {
+    .code-segment.speculative {
+        text-decoration-color: Highlight;
+    }
+}
 .code-segment.cursor {
     position: relative;
 }
@@ -2593,8 +2612,7 @@ button:focus-visible {
     align-items: center;
     gap: var(--space-4);
     padding: var(--space-2) var(--space-4);
-    font:
-        var(--text-technical) / 1.35 var(--ui-font);
+    font: var(--text-technical) / 1.35 var(--ui-font);
     border-bottom: 1px solid transparent;
     animation: link-banner-in var(--duration-enter) var(--ease-out);
 }

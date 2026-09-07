@@ -688,6 +688,16 @@ pub trait GuiTransport: Send + Sync {
     fn request_reconnect(&self, _allow_new_session: bool) -> Result<(), String> {
         Err("This editor runs in this window, so there is no link to reconnect.".to_string())
     }
+
+    /// Whether a keystroke has to cross a network to reach the editor.
+    ///
+    /// The frontend asks once, at startup, and speculates locally only when the
+    /// answer is yes. An in-process editor answers within a frame, so
+    /// predicting for it would be a way of being wrong occasionally in exchange
+    /// for nothing at all.
+    fn is_remote(&self) -> bool {
+        false
+    }
 }
 
 /// The in-process transport: the editor runs on a thread in this process and
@@ -845,6 +855,11 @@ impl GuiBridge {
     /// Ask the transport for another attempt at the link.
     pub fn request_reconnect(&self, allow_new_session: bool) -> Result<(), String> {
         self.transport.request_reconnect(allow_new_session)
+    }
+
+    /// Whether keystrokes cross a network on their way to the editor.
+    pub fn is_remote(&self) -> bool {
+        self.transport.is_remote()
     }
 
     pub async fn snapshot(&self, columns: u16, rows: u16) -> Result<GuiSnapshot, String> {
@@ -1192,7 +1207,7 @@ pub(crate) mod tests {
         // One call per reply shape, because the shape is what the bridge has
         // to unwrap; the fire-and-forget shutdown is included because it is
         // the only path where "no answer" is the correct answer.
-        let projected = super::super::snapshot(&Editor::with_content("fn main() {}\n"), 7);
+        let projected = super::super::snapshot(&Editor::with_content("fn main() {}\n"), 7, 0);
         let (bridge, editor) = local_bridge(projected.clone());
 
         assert_eq!(bridge.snapshot(120, 40).await.unwrap(), projected);
@@ -1235,7 +1250,7 @@ pub(crate) mod tests {
         let bridge = GuiBridge::new(Arc::new(LocalTransport::new(request_tx, update_tx.clone())));
         let mut updates = bridge.subscribe();
 
-        let projected = super::super::snapshot(&Editor::with_content("hello\n"), 3);
+        let projected = super::super::snapshot(&Editor::with_content("hello\n"), 3, 0);
         update_tx.send_replace(Some(projected.clone()));
 
         updates.changed().await.unwrap();
@@ -1258,7 +1273,7 @@ pub(crate) mod tests {
             let (updates, _) = watch::channel(None);
             Arc::new(Self {
                 received: Mutex::new(Vec::new()),
-                snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1),
+                snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1, 0),
                 updates,
             })
         }
