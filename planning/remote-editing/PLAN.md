@@ -71,10 +71,12 @@ its own `lines`.
   `gui::app`, `gui::browser`, `gui::menu` are (`#[cfg(feature = "gui")]`).
   `GuiSnapshot`, `GuiRequest`, and `snapshot()` therefore already compile
   without Tauri, so the headless server can produce snapshots directly.
-- `GuiRequest` has 31 variants, each embedding a `oneshot::Sender` reply
-  channel. It is not serializable as written and must be split into a
-  serializable command payload plus a transport-owned reply channel.
-- `GuiSnapshot` and its ~20 nested types derive `Serialize` only.
+- `GuiRequest` has 31 variants, all but `Shutdown` embedding a
+  `oneshot::Sender` reply channel. It is not serializable as written and must
+  be split into a serializable command payload plus a transport-owned reply
+  channel.
+- `GuiSnapshot` and its ~35 nested types derive `Serialize` only
+  (`GuiKeyInput` derives `Deserialize` only, and `GuiVectorSource` neither).
 - The API already authenticates: bearer `SessionCapability` plus a Host-header
   guard (`ovim/src/api/security.rs`).
 - The API asserts a loopback bind (`ovim/src/api/mod.rs`). SSH forwarding
@@ -83,7 +85,7 @@ its own `lines`.
   `127.0.0.1:{port}` or `localhost:{port}` for the **server's own** port. Under
   `ssh -L` the local port generally differs, so the client must set the Host
   header explicitly to the remote port. This is a real trap; see R4.
-- `gui/mod.rs` is 3648 lines, past the 3k refactor threshold in `CLAUDE.md`.
+- `gui/mod.rs` is 3685 lines, past the 3k refactor threshold in `CLAUDE.md`.
   Extracting the protocol types is required cleanup, not incidental churn.
 - `FileArg::parse` (`ovim/src/cli.rs`) splits on `:` from the right, so any
   URI-style target is mangled. Use a separate `--remote` flag, not a scheme.
@@ -142,8 +144,8 @@ GUI terminal gap); local file drag-drop into a remote window.
 
 ## Remote-incompatible surface (audited)
 
-Of 33 Tauri commands in `ovim/src/gui/app.rs`, 28 are pure passthrough to the
-bridge and work over any transport unchanged. The exceptions:
+Of the 32 Tauri commands in `ovim/src/gui/app.rs`, 27 are pure passthrough to
+the bridge and work over any transport unchanged. The exceptions:
 
 1. **`gui_diff_state` / `gui_diff_open_file`** — both take the `PathBuf`
    returned by `GuiCommand::DiffWorkspace` and run `native_diff::review()` /
@@ -152,8 +154,10 @@ bridge and work over any transport unchanged. The exceptions:
    local. Fix in R3 by replacing it with commands that return the computed
    `DiffReview` / patch, so the work happens where the repository is.
 
-2. **`GuiCommand::AttachImages { paths }`** — drag-drop yields paths on the
-   laptop, but the handler opens them on the editor's host. `AttachImageData`
+2. **`GuiCommand::AttachImages { paths }`** (not a Tauri command; it is
+   reached from the drag-drop handler in `run()`) — drag-drop yields paths on
+   the laptop, but the handler opens them on the editor's host.
+   `AttachImageData`
    (raw bytes) already exists and is transport-independent; route drag-drop
    through it under a remote transport.
 
