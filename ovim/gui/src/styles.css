@@ -2574,6 +2574,114 @@ button:focus-visible {
     margin-left: auto;
     color: var(--warning);
 }
+.link-reconnecting-chip {
+    color: var(--warning);
+}
+.link-lost-chip {
+    color: var(--error);
+}
+
+/* The link indicator.
+ *
+ * Nothing at all while the link is healthy, and a full-width strip under the
+ * title bar when it is not: a dropped link means every keystroke is being
+ * dropped with it, which is not something to learn from a small chip in the
+ * corner. It sits outside the workbench so it stays crisp while the stale
+ * editor beneath it dims. */
+.link-banner {
+    display: flex;
+    align-items: center;
+    gap: var(--space-4);
+    padding: var(--space-2) var(--space-4);
+    font:
+        var(--text-technical) / 1.35 var(--ui-font);
+    border-bottom: 1px solid transparent;
+    animation: link-banner-in var(--duration-enter) var(--ease-out);
+}
+.link-reconnecting {
+    background: color-mix(in srgb, var(--warning) 15%, var(--canvas));
+    border-bottom-color: color-mix(in srgb, var(--warning) 45%, transparent);
+    color: color-mix(in srgb, var(--warning) 82%, var(--text-primary));
+}
+.link-lost {
+    background: color-mix(in srgb, var(--error) 17%, var(--canvas));
+    border-bottom-color: color-mix(in srgb, var(--error) 50%, transparent);
+    color: color-mix(in srgb, var(--error) 82%, var(--text-primary));
+}
+.link-pulse {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    border-radius: var(--radius-pill);
+    background: currentColor;
+}
+.link-reconnecting .link-pulse {
+    animation: link-pulse 1.4s ease-in-out infinite;
+}
+.link-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+}
+.link-text strong {
+    font-size: var(--text-control);
+    font-weight: 600;
+}
+.link-text span {
+    color: color-mix(in srgb, currentColor 72%, transparent);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+.link-actions {
+    flex: none;
+    margin-left: auto;
+    display: flex;
+    gap: var(--space-2);
+}
+.link-action {
+    height: var(--control-compact);
+    padding: 0 var(--space-4);
+    border: 1px solid color-mix(in srgb, currentColor 45%, transparent);
+    border-radius: var(--radius-2);
+    background: color-mix(in srgb, var(--canvas) 55%, transparent);
+    font-size: var(--text-control);
+    white-space: nowrap;
+    transition: background var(--duration-fast) var(--ease-out);
+}
+.link-action:hover {
+    background: color-mix(in srgb, currentColor 18%, var(--canvas));
+}
+/* Starting a new session discards the old one's state, so it never looks like
+ * the obvious button to press. */
+.link-action.destructive {
+    border-style: dashed;
+    color: color-mix(in srgb, currentColor 78%, var(--text-secondary));
+}
+.app.link-down .workbench {
+    opacity: 0.62;
+    transition: opacity var(--duration-standard) var(--ease-out);
+}
+@keyframes link-banner-in {
+    from {
+        opacity: 0;
+        transform: translateY(-6px);
+    }
+    to {
+        opacity: 1;
+        transform: none;
+    }
+}
+@keyframes link-pulse {
+    0%,
+    100% {
+        opacity: 0.35;
+    }
+    50% {
+        opacity: 1;
+    }
+}
 .prompt {
     display: flex;
     align-items: center;

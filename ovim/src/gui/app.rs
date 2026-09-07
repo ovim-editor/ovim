@@ -1,7 +1,10 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
 use super::browser::BrowserHost;
-use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource, RemoteLaunch, RemoteTransport};
+use super::{
+    GuiBridge, GuiConnection, GuiKeyInput, GuiSnapshot, GuiVectorSource, RemoteLaunch,
+    RemoteTransport,
+};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -216,6 +219,48 @@ async fn gui_subscribe(
         }
     });
     Ok(())
+}
+
+/// Stream the state of the link to the editor to one webview.
+///
+/// A second channel beside `gui_subscribe` rather than a field on the snapshot:
+/// a snapshot only arrives while the link works, and the moment worth
+/// reporting is the one where none can.
+#[tauri::command]
+async fn gui_connection(
+    bridge: State<'_, GuiBridge>,
+    on_event: Channel<GuiConnection>,
+) -> Result<(), String> {
+    let mut connection = bridge.connection();
+    on_event
+        .send(connection.borrow_and_update().clone())
+        .map_err(|error| error.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        // A local editor's sender is dropped immediately, so this ends after
+        // the one value above and the webview keeps showing "connected".
+        while connection.changed().await.is_ok() {
+            let state = connection.borrow_and_update().clone();
+            if on_event.send(state).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Try the link again now, on the user's say-so.
+///
+/// `allow_new_session` is only ever true because the user answered the
+/// question a lost session poses. Nothing automatic sets it: a replacement
+/// session comes up with none of the state the old one had, and it looks
+/// exactly like a successful reconnection while doing so.
+#[tauri::command]
+async fn gui_reconnect(
+    bridge: State<'_, GuiBridge>,
+    allow_new_session: bool,
+) -> Result<(), String> {
+    bridge.request_reconnect(allow_new_session)
 }
 
 #[tauri::command]
@@ -468,19 +513,19 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
     let browser_smoke_client =
         std::env::var_os("OVIM_BROWSER_SMOKE").map(|_| browser_client.clone());
     let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
-    // The tunnel, if there is one, has to outlive every window event, so it
-    // is bound here and dropped only once `run` returns. Dropping it closes
-    // the forward and the multiplexed connection and nothing else.
-    let (bridge, editor_is_ours, _tunnel) = match remote {
+    // The transport owns the link, tunnel included, so a reconnection can
+    // rebuild it without reaching back out here. Dropping the bridge at exit
+    // therefore closes the forward and the multiplexed connection, and leaves
+    // the remote session running.
+    let (bridge, editor_is_ours) = match remote {
         Some(launch) => (
             GuiBridge::new(Arc::new(
-                RemoteTransport::connect(launch.endpoint)
+                RemoteTransport::connect(launch)
                     .context("Failed to reach the remote Ovim session")?,
             )),
             false,
-            launch.tunnel,
         ),
-        None => (GuiBridge::spawn(file, resume, services)?, true, None),
+        None => (GuiBridge::spawn(file, resume, services)?, true),
     };
     // A remote session deliberately outlives the windows that drive it -- that
     // is what lets a later run reconnect to warm language servers and undo
@@ -499,6 +544,8 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
             gui_vector_preview,
             gui_vector_feedback,
             gui_subscribe,
+            gui_connection,
+            gui_reconnect,
             gui_key,
             gui_paste,
             gui_attach_image,

@@ -9,6 +9,7 @@
 use super::protocol::{
     GuiCommand, GuiKeyInput, GuiReply, GuiReplyKind, GuiSnapshot, GuiVectorSource,
 };
+use super::reconnect::GuiConnection;
 use crate::cli::FileArg;
 use crate::editor::EditorServices;
 use anyhow::{Context, Result};
@@ -666,6 +667,27 @@ pub trait GuiTransport: Send + Sync {
     /// keeps only the newest snapshot instead of building an unbounded queue,
     /// which is what both a slow webview and a saturated network link need.
     fn subscribe(&self) -> watch::Receiver<Option<GuiSnapshot>>;
+
+    /// Watch the state of the link to the editor.
+    ///
+    /// Separate from [`GuiTransport::subscribe`] on purpose. A snapshot only
+    /// arrives while the link works, so connection state carried on one could
+    /// never change at the moment it has something to say -- which is exactly
+    /// when the link has just died. A transport with no link to lose leaves
+    /// this at [`GuiConnection::Connected`] and drops the sender, so the
+    /// frontend reads one value and never hears from it again.
+    fn connection(&self) -> watch::Receiver<GuiConnection> {
+        watch::channel(GuiConnection::Connected).1
+    }
+
+    /// Ask for another attempt at the link, now.
+    ///
+    /// `allow_new_session` is the one thing reconnection will not decide by
+    /// itself: replacing a session that has ended discards its undo history
+    /// and its warm language servers, so it happens only when a user says so.
+    fn request_reconnect(&self, _allow_new_session: bool) -> Result<(), String> {
+        Err("This editor runs in this window, so there is no link to reconnect.".to_string())
+    }
 }
 
 /// The in-process transport: the editor runs on a thread in this process and
@@ -812,6 +834,17 @@ impl GuiBridge {
     /// retain the newest snapshot instead of building an unbounded queue.
     pub fn subscribe(&self) -> watch::Receiver<Option<GuiSnapshot>> {
         self.transport.subscribe()
+    }
+
+    /// Watch the state of the link to the editor, which for an in-process one
+    /// is a single [`GuiConnection::Connected`] that never changes.
+    pub fn connection(&self) -> watch::Receiver<GuiConnection> {
+        self.transport.connection()
+    }
+
+    /// Ask the transport for another attempt at the link.
+    pub fn request_reconnect(&self, allow_new_session: bool) -> Result<(), String> {
+        self.transport.request_reconnect(allow_new_session)
     }
 
     pub async fn snapshot(&self, columns: u16, rows: u16) -> Result<GuiSnapshot, String> {

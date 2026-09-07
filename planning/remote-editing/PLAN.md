@@ -237,10 +237,12 @@ client, so R4 writes its own rather than extending `OvimClient`.
 - The stream is decoded by a small hand-written SSE decoder rather than a
   dependency: both ends of the stream are ours and the format in use is three
   field names and a blank line.
-- A stream that dies annotates the last frame's status line with
-  `remote::CONNECTION_LOST` and stops. That is deliberately a placeholder for
-  R6: the watch channel can only carry snapshots, so there is nowhere else for
-  a connection state to live.
+- A stream that dies annotated the last frame's status line with
+  `remote::CONNECTION_LOST` and stopped. That was deliberately a placeholder
+  for R6: the watch channel can only carry snapshots, so there was nowhere
+  else for a connection state to live. R6 gave it its own channel and removed
+  the placeholder, along with the constant -- see the R6 notes below for why
+  rewriting a frame's revision locally was a hazard as well as a stopgap.
 - Verified live on one machine, including through a forwarded port: a GUI
   window driven by a headless session, and the session outliving the window.
   `ovim/tests/remote_session_test.rs` is the ignored end-to-end test that does
@@ -305,3 +307,65 @@ the local one.
   real `ovim` binary (start, then reattach, then `--fresh` replacing the
   process), the resulting session driven end to end by `remote_session_test`,
   and the authentication-rejected path against the real sshd on this machine.
+
+**R6 landed; notes for R7.**
+
+- **Connection state has its own channel, not a field on `GuiSnapshot`.**
+  `GuiTransport::connection() -> watch::Receiver<GuiConnection>` beside
+  `subscribe()`, bridged to the webview by `gui_connection` beside
+  `gui_subscribe`. A snapshot only arrives while the link works, so a field on
+  it could not change at the one moment it has something to say. The default
+  trait implementation hands back a receiver whose sender is already dropped,
+  so `LocalTransport` reads `Connected` once and is never heard from again.
+- **The frontend does assume monotonic revisions.** `shouldAcceptRevision`
+  (`gui/src/stateProjection.ts`) drops any frame below the newest seen. Within
+  one session that never fires, because `GuiServer`'s counter only rises. Two
+  things could make it fire: R4's placeholder annotated the last frame at
+  `revision + 1`, which could push the client's floor past the session's own
+  counter and silently eat the first genuine frame after a reconnect (removed);
+  and a session that was *replaced* starts counting from one again. `Link::publish`
+  therefore keeps a floor and raises any frame that would go backwards. Nothing
+  is rewritten while the far side is the monotonic one.
+- **Input during an outage is dropped, never queued.** `RemoteTransport::send`
+  refuses while disconnected instead of letting requests pile up behind a
+  connect timeout. In a modal editor a key means whatever the mode, pending
+  operator, count and cursor make it mean when it *arrives*, and the session
+  keeps being edited while the client cannot see it -- so a replayed `dd` can
+  delete the wrong line with nothing to show that it did. This is load-bearing
+  for R7: predictive echo may only ever speculate *locally*, and must discard
+  its speculation rather than send it when the link is down.
+- **Backoff**: 500ms doubling to a 15s ceiling, ±25% jitter, 10-minute budget
+  (~44 attempts). Running out is `Lost { GaveUp }`, which is a state the user
+  can leave -- every terminal state offers a manual retry, because a dead end
+  that can only be left by relaunching throws away the session it was
+  protecting.
+- **Four failure classes, told apart at two places.** `Failure::from_status`
+  reads the session's own answer (`401`/`403` -> authentication, `503` -> the
+  editor stopped, `404` -> a protocol this Ovim does not serve, 5xx ->
+  retry); `bootstrap_fault` reads what `ssh` said, sharing its phrase list with
+  the message the user reads so the two cannot drift. A client using
+  `--remote-session` cannot tell a dead forward from a dead session -- there is
+  no bootstrap to ask -- so it keeps retrying, which is what rides out a
+  `socat` or `ssh -L` being restarted underneath it.
+- **Reconnect reattaches, and the remote script enforces it.**
+  `LaunchMode::ReattachOnly` exits `EXIT_SESSION_GONE` rather than starting a
+  replacement. A replacement would come up empty and look identical, which is
+  the worst outcome available. Starting one is a separate, labelled action in
+  the banner, and only offered when this process owns the SSH link.
+- `RemoteLaunch` now carries an `Arc<dyn RemoteLink>` instead of an
+  `Option<SshTunnel>`, and the transport owns it -- so `SshLink` can drop the
+  old tunnel and build a new forward (on a new local port, with a new
+  `RemoteEndpoint` and a new pinned Host header) without reaching back into
+  `app.rs`.
+- Verified live on one machine: a headless session driven through a `socat`
+  forward, the forward's process group killed mid-stream, the session edited by
+  a second client while the first was blind, then the forward restarted. The
+  client reported `Reconnecting { attempt: 1, retry_in_ms: 566, detail: "the
+  stream failed: the connection dropped" }`, refused a keystroke during the
+  outage, came back `Connected`, and rendered the edit it had never seen, at a
+  higher revision. `remote_session_test::a_forward_that_dies_and_comes_back_leaves_the_session_untouched`
+  is that drill, ignored by default.
+- Not verified live: the SSH-owned reconnect paths (re-forwarding, and
+  `EXIT_SESSION_GONE`), for the same reason R5 could not verify its own --
+  no reachable sshd here. The bootstrap script itself is exercised against a
+  real `/bin/sh` in `gui::ssh`'s tests.

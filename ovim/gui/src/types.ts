@@ -339,3 +339,32 @@ export interface GuiSnapshot {
     theme: GuiTheme;
     shouldQuit: boolean;
 }
+
+// Why the automatic reconnection attempts stopped.
+export type ConnectionLoss =
+    | "gaveUp"
+    | "sessionGone"
+    | "authentication"
+    | "unusable";
+
+/**
+ * The state of the link to the editor.
+ *
+ * It arrives on its own IPC channel rather than as a field on `GuiSnapshot`,
+ * because a snapshot only arrives while the link works and the moment worth
+ * reporting is the one where none can.
+ */
+export type GuiConnection =
+    | { state: "connected" }
+    | {
+          state: "reconnecting";
+          attempt: number;
+          retryInMs: number;
+          detail: string;
+      }
+    | {
+          state: "lost";
+          reason: ConnectionLoss;
+          detail: string;
+          canStartASession: boolean;
+      };
