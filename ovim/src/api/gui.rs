@@ -12,7 +12,7 @@
 use crate::gui::server::GuiChannel;
 use crate::gui::{GuiCommand, GuiSnapshot, SNAPSHOT_EVENT};
 use axum::{
-    extract::State,
+    extract::{DefaultBodyLimit, State},
     http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -33,9 +33,23 @@ use tokio::sync::watch;
 /// would only discover it on the next edit.
 const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
+/// The largest command body this route will buffer.
+///
+/// Axum's 2 MiB default is smaller than what the conversation legitimately
+/// carries. `native_diff` hands back patches of up to 4 MiB and the frontend
+/// posts one straight back as [`GuiCommand::OpenDiffBuffer`]; `AttachImageData`
+/// spells image bytes as a JSON array of numbers, which costs several bytes
+/// per byte. In-process those commands meet no limit at all, so keeping the
+/// default here would make a remote frontend fail where a local one succeeds,
+/// and with a `413` that names nothing the user can act on.
+const MAX_COMMAND_BODY: usize = 16 * 1024 * 1024;
+
 pub(super) fn router(gui: GuiChannel) -> Router {
     Router::new()
-        .route("/gui/command", post(gui_command))
+        .route(
+            "/gui/command",
+            post(gui_command).layer(DefaultBodyLimit::max(MAX_COMMAND_BODY)),
+        )
         .route("/gui/stream", get(gui_stream))
         .with_state(gui)
 }
@@ -87,8 +101,11 @@ fn snapshot_stream(
                 // The current value is taken as-is the first time round and
                 // waited for afterwards.
                 if !std::mem::take(&mut offer_current) && updates.changed().await.is_err() {
-                    // The editor is gone; ending the stream closes the
-                    // connection, which is how the client learns.
+                    // Only reachable once every `GuiChannel` is gone, which
+                    // cannot happen while this router is still serving: the
+                    // handler's state holds one. A session that stops takes
+                    // its process with it, so what the client learns from is
+                    // the closed socket rather than this arm.
                     return None;
                 }
                 let frame = updates.borrow_and_update().clone();
@@ -274,6 +291,63 @@ mod tests {
 
         assert_eq!(response.unwrap().status(), StatusCode::NO_CONTENT);
         assert!(!keep_running, "shutdown should stop the session");
+    }
+
+    #[tokio::test]
+    async fn a_command_body_larger_than_the_default_limit_still_reaches_the_editor() {
+        // A patch may be up to 4 MiB and the frontend posts it straight back
+        // as an `OpenDiffBuffer`, so Axum's 2 MiB default would fail the
+        // remote path where the in-process one has no limit at all -- and
+        // with a 413 that reads as a broken link.
+        let (app, capability, mut server) = secured_app();
+        let mut editor = Editor::with_content("fn main() {}\n");
+        let command = GuiCommand::OpenDiffBuffer {
+            title: "Diff · big.rs".to_string(),
+            content: "+line\n".repeat(600_000),
+        };
+        assert!(
+            serde_json::to_vec(&command).unwrap().len() > 2 * 1024 * 1024,
+            "the body has to exceed the default limit to prove anything"
+        );
+
+        let (response, _) = tokio::join!(
+            app.oneshot(command_request(&capability, &command)),
+            serve_one(&mut server, &mut editor)
+        );
+
+        assert_eq!(response.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn the_gui_conversation_is_absent_from_the_deprecated_unversioned_paths() {
+        // The GUI pair is a new surface, so it is published only under `/v1`.
+        // The requests are fully authorized: a 404 here has to mean there is
+        // no such route, not that the guard turned it away.
+        let (app, capability, _server) = secured_app();
+
+        for (method, path) in [("POST", "/gui/command"), ("GET", "/gui/stream")] {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("host", format!("127.0.0.1:{PORT}"))
+                        .header(
+                            "authorization",
+                            format!("Bearer {}", capability.expose_secret()),
+                        )
+                        .header("content-type", "application/json")
+                        .body(Body::from(
+                            serde_json::to_vec(&GuiCommand::SelectTab { index: 0 }).unwrap(),
+                        ))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "{path}");
+        }
     }
 
     #[tokio::test]
