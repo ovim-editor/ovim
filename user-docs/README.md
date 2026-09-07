@@ -15,6 +15,7 @@ ovim file.rs --headless --session dev       # Headless mode with named session
 - [Configuration](configuration.md) - `init.lua`, `languages.toml`, and common tweaks
 - [AI Setup](ai.md) - ChatGPT sign-in, Lua-first AI config, API keys, and `ai.toml` compatibility
 - [Headless & Automation](headless.md) - Sessions, REST API, subcommands
+- [Remote Editing](remote.md) - `ovim gui --remote user@host`, session persistence, latency
 - [Language Support](LANGUAGE_SUPPORT.md) - LSP + syntax support and adding languages
 - [Options](options.md) - `:set` options reference (scrolling, wrap, clipboard, etc.)
 - [Terminal Sessions](terminal.md) - `:terminal`, `:term`, `:shell`, and `:!command`

@@ -18,6 +18,7 @@ ovim gives you what Neovim distros give you. LSP, tree-sitter highlighting, AI c
 - **Lua config** — `vim.opt.number = true` just works. Configure when you want to, not because you have to.
 - **Headless mode** — run without a terminal, control via REST API
 - **Native GUI** — a GPU-composited desktop shell with DOM-native editor widgets
+- **Remote editing over SSH** — `ovim gui --remote user@host /project` runs the editor on the remote host against its real toolchain; the session survives disconnects
 
 ## Install
 
@@ -83,6 +84,23 @@ the project tree. Use `j`/`k` to move, `Enter` or `l` to open, and `h` to
 collapse or move to the parent. The explorer includes safe create, rename,
 delete, copy, cut, and paste actions; live filtering; hidden and git-ignored
 file toggles; and an in-panel `?` key reference.
+
+### Remote editing
+
+Open a project on another machine and keep the window here:
+
+```bash
+ovim gui --remote user@host /srv/checkout/api
+```
+
+The editor, its language servers, its git and its test runner all run on the
+remote host, so there are no path translations and no half-working LSP. The
+session outlives the window: close the laptop, reopen, and warm language
+servers, undo history and in-flight work are still there. Predictive local echo
+keeps insert-mode typing responsive over a slow link.
+
+See [Remote Editing](user-docs/remote.md) for requirements, limits, and what
+latency does to it.
 
 ## Screenshots
 
@@ -272,6 +290,7 @@ Key modules:
 - [Configuration](user-docs/configuration.md)
 - [AI Setup](user-docs/ai.md)
 - [Headless & Automation](user-docs/headless.md)
+- [Remote Editing](user-docs/remote.md)
 - [Terminal Sessions](user-docs/terminal.md)
 - [Language Support](user-docs/LANGUAGE_SUPPORT.md)
 - [Options Reference](user-docs/options.md)

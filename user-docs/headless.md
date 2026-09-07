@@ -159,16 +159,21 @@ ovim session cleanup --max-age 7
 
 When headless, ovim exposes endpoints like:
 
-- `GET /health`
-- `GET /snapshot`
-- `POST /keys`
-- `POST /paste`
-- `POST /resize`
-- `POST /command`
-- `POST /edit`
-- `POST /insert`
-- `POST /delete-lines`
-- `GET /lines`
+- `GET /v1/health`
+- `GET /v1/snapshot`
+- `POST /v1/keys`
+- `POST /v1/paste`
+- `POST /v1/resize`
+- `POST /v1/command`
+- `POST /v1/edit`
+- `POST /v1/insert`
+- `POST /v1/delete-lines`
+- `GET /v1/lines`
+- `POST /v1/mcp`
+
+The same routes are still served without the `/v1` prefix for backward
+compatibility. Those unversioned paths are deprecated; new surface is published
+only under `/v1`.
 
 Use `ovim snapshot -s <name>` instead of calling the API directly unless you need custom tooling.
 
@@ -177,3 +182,59 @@ descriptor and send `Authorization: Bearer <capability>` on every request.
 Requests with a missing/wrong capability, an unexpected Host, or any browser
 Origin are rejected. The API intentionally has no browser CORS mode or remote
 bind mode.
+
+## GUI protocol (remote editing)
+
+The same session API also carries the conversation the native GUI has with the
+editor, which is what lets a GUI on one machine drive a headless session on
+another. See [Remote editing](remote.md) for the user-facing feature; this is
+the wire surface it rides on.
+
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/v1/gui/command` | POST | One GUI command in, its reply out |
+| `/v1/gui/stream` | GET | Server-sent stream of projected frames |
+
+Both are published only under `/v1`, and both sit behind the same bearer
+capability and Host guard as everything else.
+
+A command is a tagged JSON object — `command` names the variant and `payload`
+carries its fields:
+
+```bash
+PORT=... CAP=...   # both from the session descriptor
+
+curl -s -X POST "http://127.0.0.1:$PORT/v1/gui/command" \
+  -H "Authorization: Bearer $CAP" -H 'Content-Type: application/json' \
+  -d '{"command":"snapshot","payload":{"columns":80,"rows":24}}'
+
+curl -s -X POST "http://127.0.0.1:$PORT/v1/gui/command" \
+  -H "Authorization: Bearer $CAP" -H 'Content-Type: application/json' \
+  -d '{"command":"key","payload":{"input":{"key":"G"}}}'
+```
+
+The reply is `{"reply":…,"result":{"Ok":…}}`. A command with no answer to give
+(`shutdown`) returns `204 No Content` instead. A command that failed *inside the
+editor* still answers `200`, with `{"Err":"…"}` in place of `Ok`, so transport
+failures and editor failures stay distinguishable.
+
+`GET /v1/gui/stream` is Server-Sent Events with `event: snapshot` and a 15 s
+keep-alive:
+
+```bash
+curl -N "http://127.0.0.1:$PORT/v1/gui/stream" -H "Authorization: Bearer $CAP"
+```
+
+A frame is a complete, viewport-sized projection of the editor — resolved
+highlight segments, layout tree, panels, theme — published on change rather
+than on a timer. Frames are only projected while somebody is subscribed, so an
+automation session that never opens the stream pays nothing for it.
+
+Two caveats for anyone writing a client:
+
+- **Set the `Host` header explicitly** when you reach the session through a
+  forwarded port. The guard compares `Host` against the *session's own* port,
+  which under `ssh -L` is not the port you dialled. An HTTP client that derives
+  `Host` from the URL will get `403` on every request.
+- **`{"command":"shutdown"}` stops the session.** Do not wire it to a window
+  closing; that is exactly what remote reattach depends on not happening.
