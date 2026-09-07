@@ -249,12 +249,15 @@ Git objects for several seconds does not block the keys you type while it runs.
 
 Remote editing is complete enough for daily use, but these limits are real:
 
-- **No remote terminal.** `:terminal`, `:term`, `:shell` and `:!command` need a
-  real terminal, and the GUI has none — see
-  [Terminal sessions](terminal.md). A local GUI window says so on the status
-  line; over a remote link the request is currently dropped with no message at
-  all. Use a separate `ssh` window, or the AI chat's shell tool, which does run
-  on the remote host.
+- **No interactive remote terminal.** `:terminal`, `:term` and `:shell` need a
+  real terminal to attach to, and the GUI has none — see
+  [Terminal sessions](terminal.md). Over a remote link they are refused on the
+  status line with *"Interactive terminal sessions require the TUI frontend"*.
+  Use a separate `ssh` window, or the AI chat's shell tool.
+
+  `:!command` is **not** affected: it runs on the remote host, where the code
+  is, and puts its output on the status line. `:!uname -n` reports the remote
+  machine's name, not your laptop's.
 - **`strok` vector preview runs locally.** The Vector tab shells out to `strok`
   on the machine running the window, so it needs `strok` on your laptop rather
   than on the remote host. See [AI setup](ai.md).
@@ -262,8 +265,10 @@ Remote editing is complete enough for daily use, but these limits are real:
   a path on your laptop, which the remote editor cannot read. Pasting an image
   from the clipboard does work, because that carries the bytes.
 - **`:openwin` is not host-aware.** The path it produces is not tagged with
-  which machine it belongs to, so it currently does nothing over a remote link.
-  Launch the second window with its own `ovim gui --remote` instead.
+  which machine it belongs to, so over a remote link it is refused on the
+  status line with *"Opening project windows requires the GUI frontend"* —
+  the remote editor is headless and has no window to open. Launch the second
+  window with its own `ovim gui --remote` instead.
 - **One host per window.** There is no mixed local/remote or multi-root
   workspace; a window talks to exactly one editor.
 - **The GUI protocol is unversioned**, which is why the version check above
