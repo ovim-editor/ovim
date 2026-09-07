@@ -433,10 +433,14 @@ per command, so two POSTs can race and reach the session out of order. This is
 pre-existing from R4, not introduced by predictive echo. In a modal editor an
 out-of-order key is a correctness problem, not just a display one: `d` arriving
 after its motion means something different from `d` arriving before it. The
-epoch fence added in R7 degrades a reorder into a dropped prediction rather
-than wrong text on screen, but it does not stop the reorder itself. Fixing it
-means serialising sends per transport -- a single-writer task with an ordered
-queue -- rather than one task per command.
+epoch fence added in R7 bounds how long the display can disagree -- the run is
+re-derived from each frame rather than patched, so the frame that accounts for
+both keys puts the screen right -- but it does not stop the reorder, and it
+does not keep a wrong character off the screen in the meantime: with two keys
+in flight and the second consumed first, the frame that counts one of them
+leaves the *last* key outstanding, and that is the one drawn. Fixing it means
+serialising sends per transport -- a single-writer task with an ordered queue
+-- rather than one task per command.
 
 **Backspace is not predicted.** Auto-indent and `backspace=` interact in ways
 R7 could not prove safe. It is the most common excluded key in real typing and
