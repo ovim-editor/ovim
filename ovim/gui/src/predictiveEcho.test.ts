@@ -432,6 +432,70 @@ describe("predictive echo", () => {
         expect(state.run?.keys).toHaveLength(MAX_OUTSTANDING_PREDICTIONS);
     });
 
+    it("leaves a closing bracket on an otherwise blank line to the editor even when a frame is what would draw it", () => {
+        // The `{<CR>}` shape, which is how anyone types a closing brace: the
+        // bracket is refused while `<CR>` is outstanding, and the frame that
+        // accounts for `<CR>` must not adopt it either --
+        // `electric_dedent_close_bracket` will re-indent the line rather than
+        // insert at the cursor.
+        const before = frame({
+            text: ["fn main() {", "}"],
+            line: 0,
+            column: 11,
+        });
+        let state = recordSent(
+            ready(before),
+            before,
+            typed("Enter"),
+            options(),
+        ).state;
+        state = recordSent(state, before, typed("}"), options()).state;
+        expect(state.run?.keys ?? []).toHaveLength(0);
+
+        const opened = frame({
+            text: ["fn main() {", "    ", "}"],
+            line: 1,
+            column: 4,
+            epoch: 1,
+        });
+        const settled = reconcile(state, opened, options()).state;
+
+        expect(settled.run?.keys ?? []).toHaveLength(0);
+        expect(withEcho(opened, settled)).toBe(opened);
+    });
+
+    it("still adopts a closing bracket that is only a character", () => {
+        // The same shape, except the run puts something in front of the
+        // bracket: by the time the editor reads it the line is no longer
+        // blank, so it is an insertion like any other.
+        const before = frame({
+            text: ["fn main() {", "}"],
+            line: 0,
+            column: 11,
+        });
+        let state = recordSent(
+            ready(before),
+            before,
+            typed("Enter"),
+            options(),
+        ).state;
+        state = typeRun(state, before, "f()");
+
+        const opened = frame({
+            text: ["fn main() {", "    ", "}"],
+            line: 1,
+            column: 4,
+            epoch: 1,
+        });
+        const settled = reconcile(state, opened, options()).state;
+
+        expect(settled.run?.keys.map((key) => key.character)).toEqual([
+            "f",
+            "(",
+            ")",
+        ]);
+    });
+
     it("leaves a closing bracket on an otherwise blank line to the editor", () => {
         // `electric_dedent_close_bracket` re-indents the line, which is not an
         // insertion at all.

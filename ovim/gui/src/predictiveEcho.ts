@@ -349,16 +349,31 @@ export const reconcile = (
     const line = renderedLine(snapshot, snapshot.cursor.line);
     if (!line || !linesUpWithItsColumns(line)) return nothingDrawn;
 
+    // The same refusal {@link recordSent} makes, applied to the run this frame
+    // implies rather than to the key just typed: an outstanding `}` typed while
+    // an unmodelled key was in flight -- the `{<CR>}` shape, which is how the
+    // bracket is usually typed -- was never offered to that check.
+    const anchor = {
+        line: snapshot.cursor.line,
+        column: snapshot.cursor.column,
+    };
+    const grown: SentKey[] = [];
+    for (const key of keys) {
+        if (
+            wouldReIndent(
+                snapshot,
+                { anchor, keys: grown },
+                key.character ?? "",
+            )
+        )
+            return nothingDrawn;
+        grown.push(key);
+    }
+
     return {
         state: {
             ...settled,
-            run: {
-                anchor: {
-                    line: snapshot.cursor.line,
-                    column: snapshot.cursor.column,
-                },
-                keys,
-            },
+            run: { anchor, keys },
         },
         confirmed,
         dropped: false,
