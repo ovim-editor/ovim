@@ -158,7 +158,12 @@ fn expand_escapes(s: &str) -> String {
 /// Execute a subcommand
 pub fn execute_subcommand(command: Command) -> Result<()> {
     match command {
-        Command::Gui { file, resume } => cmd_gui(file, resume),
+        Command::Gui {
+            file,
+            resume,
+            remote_session,
+            remote_endpoint,
+        } => cmd_gui(file, resume, remote_session, remote_endpoint),
 
         // File operations (direct file I/O, no session needed)
         Command::Edit {
@@ -240,14 +245,26 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
 
 /// Run the native shell in-process so `ovim gui` works in source builds,
 /// standalone CLI distributions, and desktop packages without path probing.
-fn cmd_gui(file: Option<String>, resume: bool) -> Result<()> {
+fn cmd_gui(
+    file: Option<String>,
+    resume: bool,
+    remote_session: Option<std::path::PathBuf>,
+    remote_endpoint: Option<String>,
+) -> Result<()> {
+    // Resolved before the window exists, so an unreadable descriptor is a
+    // startup error naming the file rather than a window that never draws.
+    let remote = remote_session
+        .map(|path| {
+            crate::gui::RemoteEndpoint::from_session_file(&path, remote_endpoint.as_deref())
+        })
+        .transpose()?;
     #[cfg(feature = "gui")]
     {
-        crate::gui::app::run(file.as_deref().map(FileArg::parse), resume)
+        crate::gui::app::run(file.as_deref().map(FileArg::parse), resume, remote)
     }
     #[cfg(not(feature = "gui"))]
     {
-        let _ = (file, resume);
+        let _ = (file, resume, remote);
         anyhow::bail!("This Ovim build does not include the native GUI feature")
     }
 }

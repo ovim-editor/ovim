@@ -16,6 +16,12 @@ use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+/// The Server-Sent Events name every snapshot frame is published under.
+///
+/// Shared by the route that writes the stream and the transport that reads it,
+/// so a rename cannot leave one end silently ignoring the other.
+pub const SNAPSHOT_EVENT: &str = "snapshot";
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiKeyInput {
@@ -582,7 +588,19 @@ pub enum GuiCommand {
     VectorFeedback {
         feedback: String,
     },
-    DiffWorkspace,
+    /// The changed-file summary for the editor's workspace.
+    ///
+    /// The review is computed where the repository is rather than handing back
+    /// the worktree path, so a frontend on another host is never asked to open
+    /// a Git repository it cannot see.
+    DiffReview {
+        spec: Option<String>,
+    },
+    /// The patch for one file named by a [`GuiCommand::DiffReview`] listing.
+    DiffFilePatch {
+        spec: Option<String>,
+        path: String,
+    },
     OpenDiffBuffer {
         title: String,
         content: String,
@@ -690,7 +708,8 @@ impl GuiCommand {
         match self {
             GuiCommand::Snapshot { .. } => GuiReplyKind::Snapshot,
             GuiCommand::VectorSource => GuiReplyKind::VectorSource,
-            GuiCommand::DiffWorkspace => GuiReplyKind::Path,
+            GuiCommand::DiffReview { .. } => GuiReplyKind::DiffReview,
+            GuiCommand::DiffFilePatch { .. } => GuiReplyKind::DiffPatch,
             GuiCommand::Shutdown => GuiReplyKind::None,
             GuiCommand::VectorFeedback { .. }
             | GuiCommand::OpenDiffBuffer { .. }
@@ -734,12 +753,13 @@ pub enum GuiReplyKind {
     Unit,
     Snapshot,
     VectorSource,
-    Path,
+    DiffReview,
+    DiffPatch,
 }
 
 /// The answer to a [`GuiCommand`].
 ///
-/// Thirty-one commands share four reply shapes, so the reply is tagged by
+/// Thirty-two commands share five reply shapes, so the reply is tagged by
 /// shape rather than by command. Both this enum and [`GuiCommand`] use
 /// adjacent tagging: an internal tag would collide with the payload's own
 /// fields (`EditorCommand` has a `command` field) and cannot wrap a `Result`.
@@ -747,15 +767,15 @@ pub enum GuiReplyKind {
 #[serde(tag = "reply", content = "result", rename_all = "camelCase")]
 pub enum GuiReply {
     Unit(Result<(), String>),
-    /// Boxed because a projected frame dwarfs the other three replies, and
-    /// every command that returns one of those would otherwise pay for its
-    /// size. `Box` is transparent to serde, so the JSON is unaffected.
+    /// Boxed because a projected frame dwarfs the other replies, and every
+    /// command that returns one of those would otherwise pay for its size.
+    /// `Box` is transparent to serde, so the JSON is unaffected.
     Snapshot(Box<Result<GuiSnapshot, String>>),
     VectorSource(Result<GuiVectorSource, String>),
-    /// A path on the editor's host. Serializing it requires valid UTF-8, which
-    /// every path Ovim opens already is because the buffer stores paths as
-    /// `String`.
-    Path(Result<PathBuf, String>),
+    /// A changed-file summary computed on the editor's host.
+    DiffReview(Result<ovim_core::native_diff::DiffReview, String>),
+    /// A unified patch for one file, computed on the editor's host.
+    DiffPatch(Result<String, String>),
 }
 
 impl GuiReply {
@@ -765,7 +785,8 @@ impl GuiReply {
             GuiReply::Unit(_) => GuiReplyKind::Unit,
             GuiReply::Snapshot(_) => GuiReplyKind::Snapshot,
             GuiReply::VectorSource(_) => GuiReplyKind::VectorSource,
-            GuiReply::Path(_) => GuiReplyKind::Path,
+            GuiReply::DiffReview(_) => GuiReplyKind::DiffReview,
+            GuiReply::DiffPatch(_) => GuiReplyKind::DiffPatch,
         }
     }
 }
@@ -782,6 +803,24 @@ where
     let json = serde_json::to_string(value).expect("GUI protocol values serialize as JSON");
     serde_json::from_str(&json)
         .unwrap_or_else(|error| panic!("GUI protocol value did not deserialize: {error}\n{json}"))
+}
+
+/// A changed-file summary standing in for one a real repository produces.
+#[cfg(test)]
+pub(super) fn sample_diff_review() -> ovim_core::native_diff::DiffReview {
+    ovim_core::native_diff::DiffReview {
+        root: PathBuf::from("workspace/project"),
+        spec: "origin/main...WORKTREE".to_string(),
+        display_spec: "origin/main...working tree".to_string(),
+        files: vec![ovim_core::native_diff::DiffFile {
+            path: "src/main.rs".to_string(),
+            old_path: Some("src/lib.rs".to_string()),
+            status: "renamed".to_string(),
+            additions: 12,
+            deletions: 3,
+            binary: false,
+        }],
+    }
 }
 
 /// One value of every [`GuiCommand`] variant.
@@ -813,7 +852,13 @@ pub(super) fn sample_commands() -> Vec<GuiCommand> {
         GuiCommand::VectorFeedback {
             feedback: "lighter stroke".to_string(),
         },
-        GuiCommand::DiffWorkspace,
+        GuiCommand::DiffReview {
+            spec: Some("origin/main...WORKTREE".to_string()),
+        },
+        GuiCommand::DiffFilePatch {
+            spec: Some("origin/main...WORKTREE".to_string()),
+            path: "src/main.rs".to_string(),
+        },
         GuiCommand::OpenDiffBuffer {
             title: "Diff · src/main.rs".to_string(),
             content: "@@ -1 +1 @@\n-old\n+new\n".to_string(),
@@ -901,13 +946,13 @@ mod tests {
 
     #[test]
     fn the_command_sample_covers_every_variant_exactly_once() {
-        // `GuiRequest` has 31 variants and `GuiCommand` mirrors it one for
+        // `GuiRequest` has 32 variants and `GuiCommand` mirrors it one for
         // one, so this count is what stops a new variant from being added
         // without round-trip coverage. The trailing duplicate in the sample is
         // a second `Key` with different modifiers, which is deliberate.
         let commands = sample_commands();
         let distinct: HashSet<_> = commands.iter().map(discriminant).collect();
-        assert_eq!(distinct.len(), 31);
+        assert_eq!(distinct.len(), 32);
     }
 
     #[test]
@@ -953,8 +998,10 @@ mod tests {
                 file_name: "close.strok".to_string(),
             })),
             GuiReply::VectorSource(Err("not a vector buffer".to_string())),
-            GuiReply::Path(Ok(PathBuf::from("workspace/project"))),
-            GuiReply::Path(Err("no workspace".to_string())),
+            GuiReply::DiffReview(Ok(sample_diff_review())),
+            GuiReply::DiffReview(Err("no workspace".to_string())),
+            GuiReply::DiffPatch(Ok("@@ -1 +1 @@\n-old\n+new\n".to_string())),
+            GuiReply::DiffPatch(Err("no workspace".to_string())),
             GuiReply::Snapshot(Box::new(Err("the editor stopped".to_string()))),
         ] {
             assert_eq!(round_trip(&reply), reply);
@@ -970,7 +1017,8 @@ mod tests {
                 GuiReplyKind::Unit => GuiReply::Unit(Ok(())),
                 GuiReplyKind::Snapshot => GuiReply::Snapshot(Box::new(Err("unused".to_string()))),
                 GuiReplyKind::VectorSource => GuiReply::VectorSource(Err("unused".to_string())),
-                GuiReplyKind::Path => GuiReply::Path(Err("unused".to_string())),
+                GuiReplyKind::DiffReview => GuiReply::DiffReview(Err("unused".to_string())),
+                GuiReplyKind::DiffPatch => GuiReply::DiffPatch(Err("unused".to_string())),
             };
             assert_eq!(reply.kind(), kind, "{command:?}");
         }

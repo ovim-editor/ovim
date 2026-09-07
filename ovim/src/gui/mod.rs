@@ -19,6 +19,8 @@ pub mod browser;
 #[cfg(feature = "gui")]
 mod menu;
 pub mod protocol;
+pub mod remote;
+pub mod server;
 #[cfg(feature = "gui")]
 pub mod window;
 
@@ -38,8 +40,9 @@ pub use protocol::{
     GuiKeyInput, GuiLayoutNode, GuiLine, GuiLspEntry, GuiLspManager, GuiPane, GuiPicker,
     GuiPickerItem, GuiProblem, GuiProblemList, GuiPrompt, GuiQueuedChatInput, GuiReply,
     GuiReplyKind, GuiSegment, GuiSnapshot, GuiTab, GuiTestFailure, GuiTestPanel, GuiTheme,
-    GuiVectorSource,
+    GuiVectorSource, SNAPSHOT_EVENT,
 };
+pub use remote::{RemoteEndpoint, RemoteTransport};
 
 use crate::cli::FileArg;
 use crate::color::Color;
@@ -288,7 +291,7 @@ async fn run_editor(
                 let rejected_terminal = editor.take_pending_terminal_session().is_some();
                 let rejected_shell = editor.take_pending_shell_command().is_some();
                 if rejected_terminal || rejected_shell {
-                    editor.set_status_message("External shell sessions require the TUI frontend".to_string());
+                    editor.set_status_message(SHELL_FRONTEND_REQUIRED.to_string());
                 }
                 if let Some(pending) = editor.take_pending_window_open() {
                     dispatch_window_open(pending, &window_status_tx);
@@ -461,7 +464,30 @@ fn projected_workspace_path(editor: &Editor) -> Option<std::path::PathBuf> {
         })
 }
 
-async fn handle_request(
+/// What an editor driven through the GUI conversation says when a command
+/// needs a terminal it cannot be handed.
+///
+/// `:terminal` and `:!cmd` queue a request for the frontend to pick up. A
+/// window can no more give one a real terminal than a headless session can, so
+/// both refuse in the same words rather than differing by transport.
+pub(crate) const SHELL_FRONTEND_REQUIRED: &str = "External shell sessions require the TUI frontend";
+
+/// What a session driven over the session API says to `:openwin`.
+///
+/// The window would open where the *editor* runs, which for a frontend on
+/// another host is the wrong machine entirely. Making the request host-aware
+/// is recorded as a follow-up; until then it is refused where it was made
+/// instead of being left queued for nobody.
+pub(crate) const WINDOW_OVER_THE_API_UNSUPPORTED: &str =
+    "Opening project windows is not supported over the session API";
+
+/// The workspace a diff command compares, or the message shown when the
+/// editor is not sitting in one.
+fn workspace_or_error(workspace: Option<std::path::PathBuf>) -> Result<std::path::PathBuf, String> {
+    workspace.ok_or_else(|| "Open a file in a Git worktree first".to_string())
+}
+
+pub(crate) async fn handle_request(
     request: GuiRequest,
     editor: &mut Editor,
     dimensions: &mut (u16, u16),
@@ -515,15 +541,29 @@ async fn handle_request(
             let result = draft_vector_feedback(editor, &feedback);
             (reply, result)
         }
-        GuiRequest::DiffWorkspace { reply } => {
-            let result = projected_workspace_path(editor)
-                .ok_or_else(|| anyhow::anyhow!("Open a file in a Git worktree first"))
-                .and_then(|path| {
-                    ovim_core::native_diff::worktree_root(&path)
-                        .map_err(|error| anyhow::anyhow!("{error:#}"))
+        GuiRequest::DiffReview { spec, reply } => {
+            // Walking Git objects is real work, so it runs on the blocking
+            // pool and answers from there. Awaiting it here would stall the
+            // editor loop -- including the snapshot tick -- for the whole walk.
+            let workspace = projected_workspace_path(editor);
+            tokio::task::spawn_blocking(move || {
+                let result = workspace_or_error(workspace).and_then(|path| {
+                    ovim_core::native_diff::review(&path, spec.as_deref())
+                        .map_err(|error| format!("{error:#}"))
                 });
-            let response = result.map_err(|error| error.to_string());
-            let _ = reply.send(response);
+                let _ = reply.send(result);
+            });
+            return;
+        }
+        GuiRequest::DiffFilePatch { spec, path, reply } => {
+            let workspace = projected_workspace_path(editor);
+            tokio::task::spawn_blocking(move || {
+                let result = workspace_or_error(workspace).and_then(|root| {
+                    ovim_core::native_diff::file_patch(&root, spec.as_deref(), &path)
+                        .map_err(|error| format!("{error:#}"))
+                });
+                let _ = reply.send(result);
+            });
             return;
         }
         GuiRequest::OpenDiffBuffer {

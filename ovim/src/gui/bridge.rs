@@ -12,6 +12,7 @@ use super::protocol::{
 use crate::cli::FileArg;
 use crate::editor::EditorServices;
 use anyhow::{Context, Result};
+use ovim_core::native_diff::DiffReview;
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -21,9 +22,9 @@ use std::time::Duration;
 use tokio::sync::{mpsc, oneshot, watch};
 
 /// The editor is gone and no command can reach it any more.
-const EDITOR_STOPPED: &str = "The Ovim editor thread has stopped";
+pub(crate) const EDITOR_STOPPED: &str = "The Ovim editor thread has stopped";
 /// The editor took the command but dropped the answer.
-const REPLY_CLOSED: &str = "The Ovim editor thread closed the response";
+pub(crate) const REPLY_CLOSED: &str = "The Ovim editor thread closed the response";
 
 /// One editor request, with the channel its answer travels back on.
 ///
@@ -44,8 +45,14 @@ pub enum GuiRequest {
         feedback: String,
         reply: oneshot::Sender<Result<(), String>>,
     },
-    DiffWorkspace {
-        reply: oneshot::Sender<Result<std::path::PathBuf, String>>,
+    DiffReview {
+        spec: Option<String>,
+        reply: oneshot::Sender<Result<DiffReview, String>>,
+    },
+    DiffFilePatch {
+        spec: Option<String>,
+        path: String,
+        reply: oneshot::Sender<Result<String, String>>,
     },
     OpenDiffBuffer {
         title: String,
@@ -177,7 +184,8 @@ pub enum GuiReplySender {
     Unit(oneshot::Sender<Result<(), String>>),
     Snapshot(oneshot::Sender<Result<GuiSnapshot, String>>),
     VectorSource(oneshot::Sender<Result<GuiVectorSource, String>>),
-    Path(oneshot::Sender<Result<std::path::PathBuf, String>>),
+    DiffReview(oneshot::Sender<Result<DiffReview, String>>),
+    DiffPatch(oneshot::Sender<Result<String, String>>),
 }
 
 impl GuiReplySender {
@@ -204,9 +212,19 @@ impl GuiReplySender {
                     GuiReplyReceiver::VectorSource(rx),
                 )
             }
-            GuiReplyKind::Path => {
+            GuiReplyKind::DiffReview => {
                 let (tx, rx) = oneshot::channel();
-                (GuiReplySender::Path(tx), GuiReplyReceiver::Path(rx))
+                (
+                    GuiReplySender::DiffReview(tx),
+                    GuiReplyReceiver::DiffReview(rx),
+                )
+            }
+            GuiReplyKind::DiffPatch => {
+                let (tx, rx) = oneshot::channel();
+                (
+                    GuiReplySender::DiffPatch(tx),
+                    GuiReplyReceiver::DiffPatch(rx),
+                )
             }
         }
     }
@@ -217,7 +235,8 @@ impl GuiReplySender {
             GuiReplySender::Unit(_) => GuiReplyKind::Unit,
             GuiReplySender::Snapshot(_) => GuiReplyKind::Snapshot,
             GuiReplySender::VectorSource(_) => GuiReplyKind::VectorSource,
-            GuiReplySender::Path(_) => GuiReplyKind::Path,
+            GuiReplySender::DiffReview(_) => GuiReplyKind::DiffReview,
+            GuiReplySender::DiffPatch(_) => GuiReplyKind::DiffPatch,
         }
     }
 }
@@ -228,7 +247,8 @@ pub enum GuiReplyReceiver {
     Unit(oneshot::Receiver<Result<(), String>>),
     Snapshot(oneshot::Receiver<Result<GuiSnapshot, String>>),
     VectorSource(oneshot::Receiver<Result<GuiVectorSource, String>>),
-    Path(oneshot::Receiver<Result<std::path::PathBuf, String>>),
+    DiffReview(oneshot::Receiver<Result<DiffReview, String>>),
+    DiffPatch(oneshot::Receiver<Result<String, String>>),
 }
 
 impl GuiReplyReceiver {
@@ -248,7 +268,10 @@ impl GuiReplyReceiver {
             GuiReplyReceiver::VectorSource(rx) => Some(GuiReply::VectorSource(
                 rx.await.map_err(|_| REPLY_CLOSED.to_string())?,
             )),
-            GuiReplyReceiver::Path(rx) => Some(GuiReply::Path(
+            GuiReplyReceiver::DiffReview(rx) => Some(GuiReply::DiffReview(
+                rx.await.map_err(|_| REPLY_CLOSED.to_string())?,
+            )),
+            GuiReplyReceiver::DiffPatch(rx) => Some(GuiReply::DiffPatch(
                 rx.await.map_err(|_| REPLY_CLOSED.to_string())?,
             )),
         })
@@ -277,8 +300,11 @@ impl GuiRequest {
             (GuiCommand::VectorFeedback { feedback }, GuiReplySender::Unit(reply)) => {
                 GuiRequest::VectorFeedback { feedback, reply }
             }
-            (GuiCommand::DiffWorkspace, GuiReplySender::Path(reply)) => {
-                GuiRequest::DiffWorkspace { reply }
+            (GuiCommand::DiffReview { spec }, GuiReplySender::DiffReview(reply)) => {
+                GuiRequest::DiffReview { spec, reply }
+            }
+            (GuiCommand::DiffFilePatch { spec, path }, GuiReplySender::DiffPatch(reply)) => {
+                GuiRequest::DiffFilePatch { spec, path, reply }
             }
             (GuiCommand::OpenDiffBuffer { title, content }, GuiReplySender::Unit(reply)) => {
                 GuiRequest::OpenDiffBuffer {
@@ -443,9 +469,14 @@ impl GuiRequest {
                 GuiCommand::VectorFeedback { feedback },
                 GuiReplySender::Unit(reply),
             ),
-            GuiRequest::DiffWorkspace { reply } => {
-                (GuiCommand::DiffWorkspace, GuiReplySender::Path(reply))
-            }
+            GuiRequest::DiffReview { spec, reply } => (
+                GuiCommand::DiffReview { spec },
+                GuiReplySender::DiffReview(reply),
+            ),
+            GuiRequest::DiffFilePatch { spec, path, reply } => (
+                GuiCommand::DiffFilePatch { spec, path },
+                GuiReplySender::DiffPatch(reply),
+            ),
             GuiRequest::OpenDiffBuffer {
                 title,
                 content,
@@ -805,10 +836,28 @@ impl GuiBridge {
         self.unit(GuiCommand::VectorFeedback { feedback }).await
     }
 
-    pub async fn diff_workspace(&self) -> Result<PathBuf, String> {
-        match self.transport.send(GuiCommand::DiffWorkspace).await? {
-            Some(GuiReply::Path(result)) => result,
-            other => Err(mismatched_reply(GuiReplyKind::Path, other.as_ref())),
+    /// The changed-file summary for the editor's workspace, computed on the
+    /// editor's host so the repository never has to be reachable from here.
+    pub async fn diff_review(&self, spec: Option<String>) -> Result<DiffReview, String> {
+        match self.transport.send(GuiCommand::DiffReview { spec }).await? {
+            Some(GuiReply::DiffReview(result)) => result,
+            other => Err(mismatched_reply(GuiReplyKind::DiffReview, other.as_ref())),
+        }
+    }
+
+    /// The unified patch for one file of a [`GuiBridge::diff_review`] listing.
+    pub async fn diff_file_patch(
+        &self,
+        spec: Option<String>,
+        path: String,
+    ) -> Result<String, String> {
+        match self
+            .transport
+            .send(GuiCommand::DiffFilePatch { spec, path })
+            .await?
+        {
+            Some(GuiReply::DiffPatch(result)) => result,
+            other => Err(mismatched_reply(GuiReplyKind::DiffPatch, other.as_ref())),
         }
     }
 
@@ -973,7 +1022,10 @@ impl GuiBridge {
 }
 
 #[cfg(test)]
-mod tests {
+// `pub(crate)` so the remote transport can be driven through the very same
+// sweep as the local one; a helper wired to the wrong command variant has to
+// fail identically over either transport.
+pub(crate) mod tests {
     use super::*;
     use crate::editor::Editor;
     use crate::gui::protocol;
@@ -1017,22 +1069,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_rebuilt_request_answers_on_the_channel_its_command_asked_for() {
-        let command = GuiCommand::DiffWorkspace;
+        let command = GuiCommand::DiffReview {
+            spec: Some("origin/main...WORKTREE".to_string()),
+        };
         let (reply, receiver) = GuiReplySender::channel(command.reply_kind());
         let request = GuiRequest::from_parts(command, reply).unwrap();
 
-        let GuiRequest::DiffWorkspace { reply } = request else {
-            panic!("a DiffWorkspace command must rebuild a DiffWorkspace request");
+        let GuiRequest::DiffReview { spec, reply } = request else {
+            panic!("a DiffReview command must rebuild a DiffReview request");
         };
-        reply
-            .send(Ok(std::path::PathBuf::from("workspace/project")))
-            .unwrap();
+        assert_eq!(spec.as_deref(), Some("origin/main...WORKTREE"));
+        reply.send(Ok(protocol::sample_diff_review())).unwrap();
 
         assert_eq!(
             receiver.recv().await.unwrap(),
-            Some(GuiReply::Path(Ok(std::path::PathBuf::from(
-                "workspace/project"
-            ))))
+            Some(GuiReply::DiffReview(Ok(protocol::sample_diff_review())))
         );
     }
 
@@ -1076,8 +1127,11 @@ mod tests {
                             file_name: "close.strok".to_string(),
                         }));
                     }
-                    GuiReplySender::Path(tx) => {
-                        let _ = tx.send(Ok(PathBuf::from("workspace/project")));
+                    GuiReplySender::DiffReview(tx) => {
+                        let _ = tx.send(Ok(protocol::sample_diff_review()));
+                    }
+                    GuiReplySender::DiffPatch(tx) => {
+                        let _ = tx.send(Ok("@@ -1 +1 @@\n-old\n+new\n".to_string()));
                     }
                 }
                 if stopping {
@@ -1114,8 +1168,8 @@ mod tests {
             "close.strok"
         );
         assert_eq!(
-            bridge.diff_workspace().await.unwrap(),
-            PathBuf::from("workspace/project")
+            bridge.diff_review(None).await.unwrap(),
+            protocol::sample_diff_review()
         );
         bridge
             .editor_command("set number".to_string())
@@ -1132,7 +1186,7 @@ mod tests {
                     rows: 40
                 },
                 GuiCommand::VectorSource,
-                GuiCommand::DiffWorkspace,
+                GuiCommand::DiffReview { spec: None },
                 GuiCommand::EditorCommand {
                     command: "set number".to_string()
                 },
@@ -1200,9 +1254,12 @@ mod tests {
                             file_name: "close.strok".to_string(),
                         })))
                     }
-                    GuiReplyKind::Path => {
-                        Some(GuiReply::Path(Ok(PathBuf::from("workspace/project"))))
+                    GuiReplyKind::DiffReview => {
+                        Some(GuiReply::DiffReview(Ok(protocol::sample_diff_review())))
                     }
+                    GuiReplyKind::DiffPatch => Some(GuiReply::DiffPatch(Ok(
+                        "@@ -1 +1 @@\n-old\n+new\n".to_string(),
+                    ))),
                 })
             })
         }
@@ -1217,8 +1274,22 @@ mod tests {
         }
     }
 
+    /// What [`exercise_every_helper`] should put on the wire, in order.
+    ///
+    /// `sample_commands` is the protocol's own list of one value per variant,
+    /// built with the same field values the sweep uses, so deriving the
+    /// expectation from it keeps the two from drifting apart. Its deliberate
+    /// trailing duplicate is dropped here; everything else must appear once.
+    pub(crate) fn every_command_once() -> Vec<GuiCommand> {
+        let mut seen = HashSet::new();
+        protocol::sample_commands()
+            .into_iter()
+            .filter(|command| seen.insert(discriminant(command)))
+            .collect()
+    }
+
     /// Call every typed helper once, with a distinct argument per field.
-    async fn exercise_every_helper(bridge: &GuiBridge) {
+    pub(crate) async fn exercise_every_helper(bridge: &GuiBridge) {
         let key = GuiKeyInput {
             key: "j".to_string(),
             shift: true,
@@ -1239,7 +1310,17 @@ mod tests {
             .vector_feedback("lighter stroke".to_string())
             .await
             .unwrap();
-        bridge.diff_workspace().await.unwrap();
+        bridge
+            .diff_review(Some("origin/main...WORKTREE".to_string()))
+            .await
+            .unwrap();
+        bridge
+            .diff_file_patch(
+                Some("origin/main...WORKTREE".to_string()),
+                "src/main.rs".to_string(),
+            )
+            .await
+            .unwrap();
         bridge
             .open_diff_buffer(
                 "Diff · src/main.rs".to_string(),
@@ -1321,17 +1402,8 @@ mod tests {
 
         exercise_every_helper(&bridge).await;
 
-        // `sample_commands` is the protocol's own list of one value per
-        // variant, built with the same field values used above, so comparing
-        // against it keeps the sweep and the protocol from drifting apart. Its
-        // deliberate trailing duplicate is dropped here; everything else must
-        // appear once, in order.
-        let mut seen = HashSet::new();
-        let expected: Vec<_> = protocol::sample_commands()
-            .into_iter()
-            .filter(|command| seen.insert(discriminant(command)))
-            .collect();
-        assert_eq!(expected.len(), 31, "the sweep should reach every variant");
+        let expected = every_command_once();
+        assert_eq!(expected.len(), 32, "the sweep should reach every variant");
         assert_eq!(transport.received(), expected);
     }
 
@@ -1349,7 +1421,7 @@ mod tests {
             Err(EDITOR_STOPPED.to_string())
         );
         assert_eq!(bridge.vector_source().await.unwrap_err(), EDITOR_STOPPED);
-        assert_eq!(bridge.diff_workspace().await.unwrap_err(), EDITOR_STOPPED);
+        assert_eq!(bridge.diff_review(None).await.unwrap_err(), EDITOR_STOPPED);
         assert_eq!(bridge.select_tab(1).await, Err(EDITOR_STOPPED.to_string()));
         // Shutdown swallows the failure: the editor is already gone, which is
         // what shutdown was asking for.

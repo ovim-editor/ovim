@@ -1,7 +1,9 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
 use super::browser::BrowserHost;
-use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource};
+use super::{
+    GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource, RemoteEndpoint, RemoteTransport,
+};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -19,18 +21,18 @@ use tauri::{DragDropEvent, Emitter, EventTarget, Manager, RunEvent, State, Windo
 #[derive(Clone, Default)]
 struct GuiExitGate(Arc<AtomicBool>);
 
+// The diff is computed by whichever host runs the editor, not here. Reading a
+// Git worktree from this process would only work while the editor happens to
+// be local, so both commands are plain passthroughs to the bridge.
 #[tauri::command]
 async fn gui_diff_state(
     bridge: State<'_, GuiBridge>,
     spec: Option<String>,
 ) -> Result<ovim_core::native_diff::DiffReview, String> {
-    let workspace = bridge.diff_workspace().await?;
-    tauri::async_runtime::spawn_blocking(move || {
-        ovim_core::native_diff::review(&workspace, spec.as_deref())
-    })
-    .await
-    .map_err(|error| format!("Diff state task failed: {error}"))?
-    .map_err(|error| format!("Could not read diff: {error:#}"))
+    bridge
+        .diff_review(spec)
+        .await
+        .map_err(|error| format!("Could not read diff: {error}"))
 }
 
 #[tauri::command]
@@ -39,14 +41,10 @@ async fn gui_diff_open_file(
     spec: Option<String>,
     path: String,
 ) -> Result<(), String> {
-    let workspace = bridge.diff_workspace().await?;
-    let selected_path = path.clone();
-    let content = tauri::async_runtime::spawn_blocking(move || {
-        ovim_core::native_diff::file_patch(&workspace, spec.as_deref(), &selected_path)
-    })
-    .await
-    .map_err(|error| format!("Diff file task failed: {error}"))?
-    .map_err(|error| format!("Could not open diff: {error:#}"))?;
+    let content = bridge
+        .diff_file_patch(spec, path.clone())
+        .await
+        .map_err(|error| format!("Could not open diff: {error}"))?;
     bridge
         .open_diff_buffer(format!("Diff · {path}"), content)
         .await
@@ -455,7 +453,11 @@ fn gui_open_external(url: String) -> Result<(), String> {
 }
 
 /// Run the native application on the calling thread until its last window closes.
-pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
+/// Run the desktop shell, over an editor in this process or in another one.
+///
+/// `remote` swaps the transport under the bridge and nothing else: every Tauri
+/// command below keeps talking to `GuiBridge` and cannot tell the difference.
+pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteEndpoint>) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
     // plugin. The bundler uses it to distinguish deb/AppImage/MSI installs.
     std::hint::black_box(tauri::utils::platform::bundle_type());
@@ -468,8 +470,21 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     let browser_smoke_client =
         std::env::var_os("OVIM_BROWSER_SMOKE").map(|_| browser_client.clone());
     let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
-    let bridge = GuiBridge::spawn(file, resume, services)?;
-    let shutdown_bridge = bridge.clone();
+    let (bridge, editor_is_ours) = match remote {
+        Some(endpoint) => (
+            GuiBridge::new(Arc::new(
+                RemoteTransport::connect(endpoint)
+                    .context("Failed to reach the remote Ovim session")?,
+            )),
+            false,
+        ),
+        None => (GuiBridge::spawn(file, resume, services)?, true),
+    };
+    // A remote session deliberately outlives the windows that drive it -- that
+    // is what lets a later run reconnect to warm language servers and undo
+    // history -- so only an editor this process started is this process's to
+    // stop on exit.
+    let shutdown_bridge = editor_is_ours.then(|| bridge.clone());
     let exit_gate = GuiExitGate::default();
     let setup_exit_gate = exit_gate.clone();
     let run_exit_gate = exit_gate.clone();
@@ -591,7 +606,11 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
                 let _ = window.emit("ovim://close-requested", "quit");
             }
         }
-        RunEvent::Exit => shutdown_bridge.shutdown(),
+        RunEvent::Exit => {
+            if let Some(bridge) = &shutdown_bridge {
+                bridge.shutdown();
+            }
+        }
         _ => {}
     });
     Ok(())

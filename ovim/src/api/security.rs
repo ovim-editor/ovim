@@ -10,13 +10,13 @@ use serde_json::json;
 
 /// Security boundary for one loopback automation session.
 #[derive(Clone)]
-pub(super) struct ApiSecurity {
+pub(crate) struct ApiSecurity {
     capability: SessionCapability,
     port: u16,
 }
 
 impl ApiSecurity {
-    pub(super) fn new(capability: SessionCapability, port: u16) -> Self {
+    pub(crate) fn new(capability: SessionCapability, port: u16) -> Self {
         Self { capability, port }
     }
 
@@ -101,7 +101,7 @@ async fn require_session_capability(
     next.run(request).await
 }
 
-pub(super) fn secure_router(router: Router, security: ApiSecurity) -> Router {
+pub(crate) fn secure_router(router: Router, security: ApiSecurity) -> Router {
     router.layer(axum::middleware::from_fn_with_state(
         security,
         require_session_capability,
