@@ -397,7 +397,16 @@ pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String
         None
     };
 
-    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), None)?;
+    // Without explicit prefixes libgit2 honours the repository's
+    // `diff.mnemonicprefix`, which renames `a/` and `b/` after whatever each
+    // side is (`c/` for a commit, `i/` for the index, `w/` for the worktree).
+    // This patch is shown to the user and highlighted with the diff grammar,
+    // so it should read the same on every machine rather than varying with
+    // whatever the reader happens to have in their gitconfig.
+    // `native_diff::build_diff` pins the prefixes for the same reason.
+    let mut options = DiffOptions::new();
+    options.old_prefix("a").new_prefix("b");
+    let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?;
 
     let mut patch = String::new();
 
@@ -436,6 +445,40 @@ pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `diff.mnemonicprefix` replaces `a/` and `b/` with a letter naming each
+    /// side (`c/` for a commit, `i/` for the index, `w/` for the worktree).
+    /// libgit2 honours it, so before the prefixes were pinned this patch came
+    /// out as `diff --git c/a.txt c/a.txt` for anyone who had the option set
+    /// globally. The patch is parsed and highlighted as a diff downstream and
+    /// is shown to the user, so it has to read the same everywhere.
+    #[test]
+    fn commit_patch_ignores_the_repository_diff_prefix_config() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        repo.config()
+            .unwrap()
+            .set_bool("diff.mnemonicprefix", true)
+            .unwrap();
+
+        let file = temp.path().join("a.txt");
+        std::fs::write(&file, "one\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(std::path::Path::new("a.txt")).unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Ovim", "ovim@example.com").unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &signature, &signature, "c1", &tree, &[])
+            .unwrap();
+
+        let patch = commit_diff(&file, &oid.to_string()).unwrap();
+
+        assert!(
+            patch.contains("diff --git a/a.txt b/a.txt"),
+            "commit patch inherited the repo's diff prefix config: {patch}"
+        );
+    }
 
     #[test]
     fn test_empty_status() {
