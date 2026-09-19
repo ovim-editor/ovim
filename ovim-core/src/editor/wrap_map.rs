@@ -509,8 +509,16 @@ impl RowIndex {
             } else {
                 self.tree[i] -= old - new;
             }
-            // `usize::isolate_lowest_one` is still unstable; this is it.
-            i += i & i.wrapping_neg();
+            // Advance to the next Fenwick node: add the lowest set bit.
+            // `usize::isolate_lowest_one` says this directly but is too new
+            // for every stable toolchain ovim builds on, so spell it out.
+            // Clippy on newer toolchains recognises the pattern and asks for
+            // the method, hence the allow; `unknown_lints` covers the older
+            // toolchains where that lint does not exist yet.
+            #[allow(unknown_lints, clippy::manual_isolate_lowest_one)]
+            {
+                i += i & i.wrapping_neg();
+            }
         }
     }
     fn line_at(&self, row: usize) -> usize {
