@@ -297,9 +297,14 @@ pub(crate) async fn stream(request: Request, tx: UnboundedSender<StreamChunk>) -
     drop(stdin);
     drop(child);
     let detail = stderr_task.await.unwrap_or_default();
+    let detail = if detail.trim().is_empty() {
+        "the helper closed its output without a completion event or diagnostic"
+    } else {
+        detail.trim()
+    };
     bail!(
         "Claude runtime exited without completing the turn: {}",
-        super::redact_high_risk_tokens(detail.trim())
+        super::redact_high_risk_tokens(detail)
     )
 }
 

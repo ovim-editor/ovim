@@ -1,6 +1,7 @@
 import { startEditorMcp } from "./editor-mcp.mjs";
 import { createInterface } from "node:readline";
-import { pathToFileURL } from "node:url";
+import { fileURLToPath } from "node:url";
+import { realpathSync } from "node:fs";
 
 /** Translate SDK events, never execute tools or call Anthropic APIs here. */
 export async function runTurn(request, query, emit, ask, signal) {
@@ -243,5 +244,7 @@ async function main() {
     });
 }
 
-if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href)
+// Node resolves the module path, but argv retains aliases such as macOS's
+// /var → /private/var. Compare filesystem identities before deciding to run.
+if (process.argv[1] && realpathSync(fileURLToPath(import.meta.url)) === realpathSync(process.argv[1]))
     await main();
