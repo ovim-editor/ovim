@@ -307,7 +307,8 @@ impl Editor {
     /// Priority:
     /// 1. Git root of the current file (walk up looking for `.git`)
     /// 2. Parent directory of the current file
-    /// 3. `current_dir()` as last resort
+    /// 3. The open workspace root
+    /// 4. `current_dir()` as last resort
     ///
     /// This prevents scanning the user's entire home directory (and triggering
     /// macOS iCloud Drive / TCC permission dialogs) when ovim is launched from ~.
@@ -338,6 +339,11 @@ impl Editor {
             if let Some(parent) = abs_path.parent() {
                 return parent.to_path_buf();
             }
+        }
+
+        // An empty workspace still supplies the context for dashboard searches.
+        if let Some(root) = self.file_tree().root_path() {
+            return root.to_path_buf();
         }
 
         // Fallback: current working directory

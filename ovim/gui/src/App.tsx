@@ -13,6 +13,7 @@ import { listen } from "@tauri-apps/api/event";
 import DOMPurify from "dompurify";
 import { marked } from "marked";
 import { mockSnapshot } from "./mock";
+import { version } from "../package.json";
 import MarkdownDocument from "./MarkdownDocument";
 import ChatModelPicker from "./ChatModelPicker";
 import ChatComposer, { type ChatInputUpdate } from "./ChatComposer";
@@ -3616,7 +3617,7 @@ function App() {
                             fallback={
                                 <Dashboard
                                     send={runEditorShortcut}
-                                    version="1.2.7"
+                                    version={version}
                                 />
                             }
                         >

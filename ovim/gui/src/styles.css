@@ -2750,6 +2750,7 @@ button:focus-visible {
     max-height: min(590px, calc(100% - 70px));
     display: grid;
     grid-template-rows: 46px auto minmax(0, 1fr) 29px;
+    grid-template-areas: "heading" "filter" "results" "footer";
     background: var(--surface-2);
     border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
     border-radius: var(--radius-4);
@@ -2757,6 +2758,7 @@ button:focus-visible {
     overflow: hidden;
 }
 .picker header {
+    grid-area: heading;
     padding: 0 14px;
     display: flex;
     align-items: center;
@@ -2784,12 +2786,14 @@ kbd {
     box-shadow: 0 1px 0 color-mix(in srgb, var(--text-primary) 9%, transparent);
 }
 .picker-filter {
+    grid-area: filter;
     padding: 6px 14px;
     color: var(--text-secondary);
     border-bottom: 1px solid var(--border);
     font-size: 10px;
 }
 .picker-results {
+    grid-area: results;
     min-height: 0;
     overflow-y: auto;
     padding: 6px;
@@ -2834,6 +2838,7 @@ kbd {
     white-space: nowrap;
 }
 .picker footer {
+    grid-area: footer;
     padding: 0 11px;
     display: flex;
     align-items: center;

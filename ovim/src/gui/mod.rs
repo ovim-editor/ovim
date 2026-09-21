@@ -1235,20 +1235,8 @@ impl GuiBridge {
     }
 }
 
-async fn run_editor(
-    file: Option<FileArg>,
-    resume: bool,
-    services: EditorServices,
-    mut requests: mpsc::UnboundedReceiver<GuiRequest>,
-    updates: watch::Sender<Option<GuiSnapshot>>,
-    ready: std_mpsc::SyncSender<Result<(), String>>,
-) {
-    let mut editor = Editor::new().with_services(services);
-    if let Err(error) = editor.enable_lua() {
-        editor.set_status_message(format!("Lua configuration: {error}"));
-    }
-    editor.language_catalog().install_as_process_catalog();
-
+// A workspace supplies search context without dismissing the startup dashboard.
+async fn open_startup_file(editor: &mut Editor, file: Option<FileArg>) {
     if let Some(file) = file {
         let path = Path::new(&file.path);
         let result = if path.is_dir() {
@@ -1268,10 +1256,27 @@ async fn run_editor(
                     );
                     editor.buffer_mut().validate_cursor_position();
                 }
+                editor.set_mode(Mode::Normal);
             }
-            editor.set_mode(Mode::Normal);
         }
     }
+}
+
+async fn run_editor(
+    file: Option<FileArg>,
+    resume: bool,
+    services: EditorServices,
+    mut requests: mpsc::UnboundedReceiver<GuiRequest>,
+    updates: watch::Sender<Option<GuiSnapshot>>,
+    ready: std_mpsc::SyncSender<Result<(), String>>,
+) {
+    let mut editor = Editor::new().with_services(services);
+    if let Err(error) = editor.enable_lua() {
+        editor.set_status_message(format!("Lua configuration: {error}"));
+    }
+    editor.language_catalog().install_as_process_catalog();
+
+    open_startup_file(&mut editor, file).await;
 
     editor.set_ai_conversation_resume_enabled(resume);
     editor.enable_lsp();
@@ -3851,6 +3856,37 @@ mod tests {
             .iter()
             .flat_map(|line| &line.segments)
             .all(|segment| segment.selected));
+    }
+
+    #[tokio::test]
+    async fn gui_startup_preserves_dashboard_until_a_file_is_opened() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("sample.txt");
+        std::fs::write(&path, "first\nsecond\n").unwrap();
+        let mut editor = Editor::new();
+
+        open_startup_file(&mut editor, None).await;
+        assert!(snapshot(&editor, 1).dashboard);
+        open_startup_file(
+            &mut editor,
+            Some(FileArg::parse(directory.path().to_str().unwrap())),
+        )
+        .await;
+        assert!(snapshot(&editor, 2).dashboard);
+        assert_eq!(
+            editor.picker_base_dir(),
+            directory.path().canonicalize().unwrap()
+        );
+
+        open_startup_file(
+            &mut editor,
+            Some(FileArg::parse(&format!("{}:2:2", path.display()))),
+        )
+        .await;
+        assert!(!snapshot(&editor, 3).dashboard);
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        assert_eq!(editor.buffer().cursor().col().0, 1);
     }
 
     #[tokio::test(flavor = "multi_thread")]
