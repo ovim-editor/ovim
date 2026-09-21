@@ -166,7 +166,13 @@ impl Editor {
         }
         let result = match operation {
             EditorBridgeTool::Context => {
-                let context = self.build_tool_execution_context();
+                let mut context = self.build_tool_execution_context();
+                context.scope_context.project_root = self
+                    .ai_state
+                    .chat
+                    .as_ref()
+                    .and_then(|chat| chat.external_agent.as_ref())
+                    .map(|state| state.root.clone());
                 match crate::ai::tools::builtins::execute_builtin(name, &args, &context) {
                     ToolResult::Success(orientation) => ToolResult::Success(format!(
                         "{orientation}\n\n{}",
@@ -271,6 +277,34 @@ impl Editor {
                 entry.tool_call_id = tool_id.into();
             }
         }
+    }
+
+    pub(crate) fn abort_editor_mcp_walkthrough(&mut self) {
+        let pending = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut());
+        let Some(pending) = pending else {
+            return;
+        };
+        if !matches!(
+            pending.continuation,
+            Some(CodeExplanationContinuation::EditorMcp { .. })
+        ) {
+            return;
+        }
+        if let Some(CodeExplanationContinuation::EditorMcp {
+            rpc_id, response, ..
+        }) = pending.continuation.take()
+        {
+            let _ = response.send(tool_reply(
+                rpc_id,
+                ToolResult::Error("Provider turn ended before the walkthrough completed".into()),
+            ));
+        }
+        self.finish_code_explanation(true);
+        self.set_status_message("Provider turn ended; walkthrough closed");
     }
 
     pub(crate) fn cancel_editor_mcp_request(&mut self, id: &str) {
@@ -388,6 +422,21 @@ mod tests {
         .await
         .unwrap();
         assert!(context.to_string().contains("second.rs"));
+        assert!(!context.to_string().contains("Workspace: unavailable"));
+        let mut walkthrough = request(
+            &mut editor,
+            "code",
+            "tools/call",
+            json!({"name":"explain_with_codebase", "arguments":{"steps":[{"type":"code", "path":"second.rs", "start_line":1, "comment":"The file contains the example."}]}}),
+        );
+        let early = walkthrough.try_recv();
+        assert!(
+            early.is_err(),
+            "Code walkthrough returned early instead of presenting: {early:?}"
+        );
+        assert!(editor.ai_chat_has_pending_code_explanation());
+        assert!(editor.finish_code_explanation(false));
+        assert_eq!(walkthrough.await.unwrap()["result"]["isError"], false);
         let outside = tempfile::NamedTempFile::new().unwrap();
         result = request(
             &mut editor,
@@ -519,5 +568,29 @@ mod tests {
             .any(|entry| entry.tool_call_id == "native-call"));
         assert!(editor.replay_code_explanation("native-call"));
         assert!(editor.ai_chat_has_pending_code_explanation());
+    }
+    #[tokio::test]
+    async fn provider_failure_closes_pending_walkthrough_and_completes_response() {
+        let mut editor = editor();
+        let stream = attach(&mut editor);
+        let answer = request(
+            &mut editor,
+            "walk",
+            "tools/call",
+            json!({"name":"explain_with_codebase", "arguments":{"steps":[{"type":"concept", "title":"Overview", "body":"One idea."}]}}),
+        );
+        stream
+            .send(StreamChunk::Error("Provider disconnected".into()))
+            .unwrap();
+        editor.poll_pending_ai_chat_job();
+        assert_eq!(answer.await.unwrap()["result"]["isError"], true);
+        assert!(!editor.ai_chat_has_pending_code_explanation());
+        assert!(editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .external_agent
+            .is_none());
     }
 }

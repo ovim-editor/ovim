@@ -870,8 +870,16 @@ impl Editor {
             )));
         }
 
+        // Provider-owned turns already bind a canonical workspace, including
+        // ordinary folders without Git metadata. Keep walkthrough navigation
+        // on that same authority even if the visible file changes.
         let root = self
-            .ai_effective_project_root()
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.external_agent.as_ref())
+            .map(|state| state.root.clone())
+            .or_else(|| self.ai_effective_project_root())
             .map(|root| root.canonicalize().unwrap_or(root));
         let safe_range = self.ai_code_explanation_safe_range_lines();
         let presentation_width = self.ai_code_explanation_presentation_width();

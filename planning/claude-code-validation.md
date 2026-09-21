@@ -2,13 +2,13 @@
 
 ## Local checks (2026-09-21)
 
-- `cargo test -p ovim-core --lib`: 1,748 passed, 1 existing ignored.
-- `cargo test -p ovim --lib`: 304 passed, 2 existing ignored.
+- `cargo test -p ovim-core --lib`: 1,749 passed, 1 existing ignored.
+- `cargo test -p ovim --lib`: 305 passed, 2 existing ignored.
 - `cargo clippy -p ovim --all-targets --locked -- -D warnings`: passed.
 - `npm test --prefix ovim/claude-runtime`: 12 passed, including an independent official MCP client.
 - In `ovim/gui`, `npm run check`: passed; `npm test -- --run`: 107 passed.
-- In `ovim/gui`, `npx playwright test e2e/claude-chat.spec.ts --project=chromium`:
-  all three scenarios passed. Inspected approval, question and walkthrough screenshots.
+- In `ovim/gui`, `npx playwright test --project=chromium`: all 12 scenarios
+  passed, including all three Claude scenarios. Inspected approval, question and walkthrough screenshots.
   The editor remains visible; permission text preserves line breaks; Allow once
   and Deny buttons fit the panel; a Norwegian answer with emoji remains intact;
   both Claude and Codex appear in the picker; Ovim-only policies are hidden.
@@ -27,7 +27,7 @@ projection fixtures, not a live model.
 
 Core tests cover the narrow generated tool list, replacing a definition without
 inheriting its bridge authority, invalid inputs, file creation rejection, absolute
-and symlink path escapes, unsaved-buffer preservation, live context, correlated
+and symlink path escapes, code walkthroughs in folders without Git, unsaved-buffer preservation, live context, correlated
 walkthrough cancellation, questions without duplicate queued turns, native tool
 history and snapshot replay. Node checks cover authentication, cross-turn token
 rejection, browser-origin rejection, request-size limits, notifications, cancellation,

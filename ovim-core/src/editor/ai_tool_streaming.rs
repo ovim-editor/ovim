@@ -570,6 +570,7 @@ impl Editor {
 
     /// Clear all streaming state and mark the chat as no longer waiting.
     pub(crate) fn clear_streaming_state(&mut self) {
+        self.abort_editor_mcp_walkthrough();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = false;
             chat.external_agent = None;
