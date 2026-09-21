@@ -75,3 +75,48 @@ Exercise these scenarios in both GUI Ovim and terminal Ovim:
 7. Open a read-only query and request an edit. Verify no write tools are exposed,
    while Ovim context and navigation remain available.
    Switch back to Codex after the turn and verify its existing controls return.
+
+## Follow-up: model selection and macOS startup (2026-09-21)
+
+Acceptance criteria: the GUI and terminal select a model within the Claude
+profile; the configured model reaches the official SDK unchanged; changing
+profiles preserves the choice and unsent draft; active turns reject changes
+without partial mutation. Both interfaces display the same effective effort as
+the runtime request. Fable defaults to Medium, Opus/Sonnet to High, and Haiku
+omits effort even after a previous override. User/profile effort overrides take
+precedence where supported. Narrow terminal pickers keep the selected row visible
+and mouse targets match the scrolled rows.
+
+The exact current model IDs were checked against Anthropic's model reference
+and Claude Code configuration documentation. The provider owns a single curated
+preset table; it does not claim account-specific availability. Arbitrary explicit
+IDs/aliases remain selectable through `/model`. No authentication or entitlement
+checks are replaced.
+
+The screenshot's silent exit was reproduced without inference: Node canonicalizes
+its entry module URL but preserves a symlink in argv. The helper's old comparison
+silently skipped startup through aliased directories, including the path shape
+used by macOS temporary directories. A real subprocess regression test copies the
+helper beside an SDK fixture and launches through both direct and symlinked paths,
+including spaces and Unicode. The fixture cannot make model requests. Both paths
+now emit the requested model's text and a completed turn. This verifies the
+startup defect locally; a successful real Claude response on macOS still requires
+the user's other machine/account.
+
+Validation commands and evidence:
+
+- `cargo test --workspace --lib`: native/frontend and core behavioral suites.
+- `cargo clippy -p ovim --all-targets --locked -- -D warnings`: native GUI included.
+- `npm test --prefix ovim/claude-runtime`: 14 offline SDK/transport tests, including
+  the direct/aliased subprocess regression and exact Fable model/effort forwarding.
+- `npm run check --prefix ovim/gui` and GUI unit tests: reactive model selection,
+  selected-row identity, exact model callback arguments, and composer focus.
+- Chromium Playwright: 13 scenarios, including the actual model picker at
+  1154×1054. Inspected `claude-model-picker.png`: all exact IDs visible, Fable
+  selected, default Medium shown, and the popover leaves the composer accessible.
+- Rebuilt tracked GUI assets so installed builds include the selector changes.
+
+On an account with access, additionally select Fable/Opus/Sonnet before the first
+message, verify the response and displayed effort, and switch models between
+turns. The no-live-inference constraint and unavailable WebKit dependencies from
+the earlier validation still apply.
