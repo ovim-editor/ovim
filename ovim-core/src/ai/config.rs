@@ -44,6 +44,23 @@ pub struct AiProfileConfig {
 }
 
 impl AiProfileConfig {
+    /// Shared boundary for interactive and restored chat model selections.
+    /// Most providers select models through profiles; Claude also accepts aliases.
+    pub(crate) fn validate_chat_model(&self, model: &str) -> Result<()> {
+        if model.is_empty()
+            || model.len() > 512
+            || model.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            anyhow::bail!(
+                "Model must be a nonempty alias or model ID without whitespace (at most 512 bytes)"
+            );
+        }
+        if self.provider != AiProviderKind::ClaudeCode && self.model != model {
+            anyhow::bail!("Configure this provider's model in its AI profile");
+        }
+        Ok(())
+    }
+
     /// One precedence rule for runtime requests and both interfaces. Models
     /// without effort support must not inherit a stale override or profile value.
     pub fn resolve_reasoning_effort<'a>(&'a self, selection: Option<&'a str>) -> Option<&'a str> {

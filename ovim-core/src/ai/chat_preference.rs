@@ -13,12 +13,6 @@ pub(crate) struct ChatSelection {
     pub model: Option<String>,
 }
 
-pub(crate) fn valid_model(model: &str) -> bool {
-    !model.is_empty()
-        && model.len() <= 512
-        && !model.chars().any(|c| c.is_whitespace() || c.is_control())
-}
-
 impl ChatSelection {
     pub fn resolve<'a>(&self, config: &'a AiConfig) -> Option<&'a AiProfileConfig> {
         let profile = config.resolve_profile(&self.profile)?;
@@ -26,9 +20,7 @@ impl ChatSelection {
             return None;
         }
         if let Some(model) = &self.model {
-            if !valid_model(model)
-                || (profile.provider != AiProviderKind::ClaudeCode && model != &profile.model)
-            {
+            if profile.validate_chat_model(model).is_err() {
                 return None;
             }
         }

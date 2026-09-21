@@ -68,11 +68,7 @@ impl Editor {
                 .and_then(|selection| selection.model.as_deref()),
         };
         model
-            .filter(|model| {
-                crate::ai::chat_preference::valid_model(model)
-                    && (profile.provider == crate::ai::AiProviderKind::ClaudeCode
-                        || *model == profile.model)
-            })
+            .filter(|model| profile.validate_chat_model(model).is_ok())
             .unwrap_or(&profile.model)
     }
 
@@ -116,14 +112,8 @@ impl Editor {
             self.set_status_message(format!("Unknown AI profile: {profile_name}"));
             return false;
         };
-        if !crate::ai::chat_preference::valid_model(model) {
-            self.set_status_message(
-                "Model must be a nonempty alias or model ID without whitespace (at most 512 bytes)",
-            );
-            return false;
-        }
-        if profile.provider != crate::ai::AiProviderKind::ClaudeCode && profile.model != model {
-            self.set_status_message("Configure this provider's model in its AI profile");
+        if let Err(error) = profile.validate_chat_model(model) {
+            self.set_status_message(error.to_string());
             return false;
         }
         let selection = crate::ai::chat_preference::ChatSelection {
