@@ -166,6 +166,7 @@ impl Editor {
                 chat.reasoning_effort_override = None;
             }
         }
+        self.mark_dirty();
         true
     }
 
@@ -646,6 +647,21 @@ mod model_selection_tests {
                 .as_deref(),
             Some("opus[1m]")
         );
+    }
+
+    #[test]
+    fn explicit_matching_profile_stops_following_the_chat_default() {
+        let mut editor = editor();
+        assert!(editor.ai_select_chat_profile("local"));
+        assert!(editor.ai_state.chat.as_ref().unwrap().follow_chat_default);
+        editor
+            .open_ai_chat(crate::ai::ChatOpts {
+                profile: Some("local".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(editor.ai_chat_effective_profile(), "local");
+        assert!(!editor.ai_state.chat.as_ref().unwrap().follow_chat_default);
     }
 
     #[tokio::test]

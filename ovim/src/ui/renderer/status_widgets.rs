@@ -1347,6 +1347,19 @@ mod tests {
             editor.ai_state.config.profiles["claude_code"].model,
             "default"
         );
+
+        let mut cache = crate::ui::ansi::AnsiRenderCache::new();
+        cache.render(&mut editor, 160, 45, true).unwrap();
+        assert!(cache.would_hit(&editor, 160, 45, true));
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts {
+                profile: Some("local".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(!cache.would_hit(&editor, 160, 45, true));
+        let screen = cache.render(&mut editor, 160, 45, true).unwrap();
+        assert!(screen.contains("M:local"), "{screen}");
     }
 
     #[test]

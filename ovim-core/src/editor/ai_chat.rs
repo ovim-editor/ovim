@@ -34,6 +34,11 @@ impl Editor {
                 if changes_selection && !self.apply_ai_chat_selection(profile, None) {
                     anyhow::bail!("{}", self.status_message());
                 }
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    // Explicit options remain explicit even when their value
+                    // happens to equal the remembered/default selection.
+                    chat.follow_chat_default = false;
+                }
             }
             let mode_before = self.mode();
             if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -42,6 +47,7 @@ impl Editor {
             self.set_mode(Mode::AiChat);
             self.maybe_prompt_codex_auth_on_chat_open();
             self.maybe_prompt_exa_on_chat_open();
+            self.mark_dirty();
             return Ok(());
         }
 
@@ -130,6 +136,7 @@ impl Editor {
             }
         }
 
+        self.mark_dirty();
         Ok(())
     }
 
