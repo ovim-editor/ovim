@@ -171,6 +171,7 @@ impl Editor {
                 "For Ollama specifically: emit structured tool calls, not raw JSON in content."
             }
             crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::ClaudeCode
             | crate::ai::AiProviderKind::CodexAppServer
             | crate::ai::AiProviderKind::OpenAi
             | crate::ai::AiProviderKind::Anthropic => {
@@ -212,6 +213,10 @@ impl Editor {
             .clone();
         if let Some(effort) = chat.reasoning_effort_override.as_ref() {
             profile.reasoning_effort = Some(effort.clone());
+        }
+
+        if profile.provider.owns_agent_loop() {
+            return self.spawn_external_agent(profile);
         }
 
         let model_name = profile.model.clone();
@@ -567,6 +572,7 @@ impl Editor {
     pub(crate) fn clear_streaming_state(&mut self) {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.waiting = false;
+            chat.external_agent = None;
             chat.pending_job = None;
             chat.pending_tool_approval = None;
             chat.pending_auto_mode_classification = None;

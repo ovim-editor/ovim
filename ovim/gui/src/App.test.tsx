@@ -25,6 +25,48 @@ import App, {
 import { mockSnapshot } from "./mock";
 import type { GuiAiChat, GuiCodeExplanation } from "./types";
 
+it("Claude chat presents permission choices and hides Ovim agent policies", () => {
+    const onApproval = vi.fn();
+    const chat: GuiAiChat = {
+        ...mockSnapshot.aiChat!,
+        profile: "claude_code",
+        externalAgent: true,
+        profiles: [
+            { id: "claude_code", provider: "claude_code", model: "default" },
+        ],
+        approval: "Claude Code: Bash\nRun the project tests?",
+    };
+    render(() => (
+        <ChatPanel chat={chat} focusInput={() => {}} onApproval={onApproval} />
+    ));
+    expect(screen.queryByRole("button", { name: /YOLO/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /COMPREHENSION/ })).toBeNull();
+    expect(screen.getByText(/Run the project tests/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
+    fireEvent.click(screen.getByRole("button", { name: "Deny" }));
+    expect(onApproval.mock.calls).toEqual([[true], [false]]);
+});
+
+it("Claude questions keep an answer action in the composer while the agent waits", () => {
+    const chat: GuiAiChat = {
+        ...mockSnapshot.aiChat!,
+        externalAgent: true,
+        externalQuestion: true,
+        waiting: true,
+        activity: "waiting_tool_approval",
+        input: "Blue",
+        inputCursor: 4,
+    };
+    render(() => <ChatComposer chat={chat} />);
+    expect(
+        screen.getByPlaceholderText("Answer Claude Code’s question…"),
+    ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Send message" })).toBeTruthy();
+    expect(
+        screen.queryByRole("button", { name: "Stop generation" }),
+    ).toBeNull();
+});
+
 class ResizeObserverMock {
     observe() {}
     unobserve() {}

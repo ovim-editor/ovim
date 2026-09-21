@@ -343,6 +343,13 @@ impl Editor {
             branch.branch_id.clone(),
         )
         .invalidate()?;
+        services
+            .catalog
+            .delete_provider_session(&crate::run_log::ProviderSessionKey {
+                provider: "claude_code".into(),
+                agent_id: binding.binding.root_agent_id.clone(),
+                branch_id: branch.branch_id.clone(),
+            })?;
         Ok(())
     }
 }

@@ -1962,6 +1962,9 @@ impl Editor {
     /// tools. Merely registering a profile or opening a chat never exposes
     /// them; the durable root binding must be active and exact.
     pub(crate) fn ai_subagent_parent_tools_visible(&self) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            return false;
+        }
         self.active_subagent_root().is_ok()
             && self
                 .ai_state

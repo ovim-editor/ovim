@@ -4305,6 +4305,7 @@ dependencies = [
  "dashmap",
  "dirs 5.0.1",
  "encoding_rs",
+ "flate2",
  "fs2",
  "futures-core",
  "git2",

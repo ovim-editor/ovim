@@ -402,6 +402,71 @@ Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
 `ai.toml` still works, but it is legacy compatibility.
 
+## Claude Code
+
+Select the built-in `claude_code` profile from the model picker, or enter
+`/model claude_code`. Both GUI Ovim and terminal Ovim keep their normal chat
+interface. The official Claude Agent SDK runs your installed, unmodified
+Claude Code executable. Claude owns its tools, permissions, settings, skills,
+context management, and authentication.
+
+Install Node.js 18.18 or newer and Claude Code on your PATH, then sign in using
+Claude's own terminal flow:
+
+```sh
+claude auth login
+```
+
+Ovim includes a pinned, unmodified SDK module. It does not install npm packages
+on startup, read Claude credential files, or implement its own Claude login.
+Your usual Claude environment and user/project settings apply. Account or
+organization restrictions reported by Claude also apply in Ovim.
+
+Codex remains the shipped default. Choosing a profile changes the default for
+new chats and queries in the current Ovim session. To start with Claude Code
+after restarting, put this in your `init.lua`:
+
+```lua
+vim.ai.default_profile = "claude_code"
+```
+
+The built-in profile uses Claude Code's configured model. To choose one explicitly:
+
+```lua
+vim.ai.setup({
+  default_profile = "claude_code",
+  profiles = {
+    claude_code = { provider = "claude_code", model = "sonnet" },
+  },
+})
+```
+
+Permission prompts offer **Allow once** and **Deny** in the GUI; terminal users
+press Enter or Escape. Claude's questions appear in the conversation: type an
+answer, an option number, or comma-separated numbers for a multiple-selection
+question. Escape stops the active turn. Closing the panel keeps it running;
+closing Ovim stops its runtime process tree.
+
+Read-only queries expose only Claude's Read, Glob, and Grep tools and disable
+MCP tools. Editable chats use Claude's normal permission rules. Ovim's YOLO,
+Terra approval classifier, comprehension gates, and delegated-agent tools do
+not govern Claude tools. They are not exposed as Claude controls. `/compact`
+goes to Claude Code once a native session exists. Use Claude's settings for its system prompt and tools,
+rather than Ovim inference-profile prompt or tool overrides.
+
+Ovim supplies the current editor snapshot and attached context as user input.
+Claude edits files on disk; Ovim's usual external-change handling reconciles
+open buffers and preserves unsaved edits. Native sessions resume only when the
+branch, configuration, and visible conversation match the saved checkpoint.
+After interrupted work, a branch change, or a provider switch, Ovim can start a
+new native session using the visible conversation as context. `/clear` starts
+a fresh conversation. Profile and effort changes wait until the current turn
+has finished or been stopped.
+
+For current subscription conditions, see Anthropic's
+[Agent SDK usage guidance](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)
+and [authentication rules](https://code.claude.com/docs/en/legal-and-compliance#authentication-and-credential-use).
+
 ## Codex configuration
 
 ```lua

@@ -64,7 +64,8 @@ export default function ChatComposer(props: {
         | undefined;
     let mutations = Promise.resolve();
     const hasActiveRun = () =>
-        props.chat.waiting || props.chat.activity !== "idle";
+        !props.chat.externalQuestion &&
+        (props.chat.waiting || props.chat.activity !== "idle");
 
     const resize = () => {
         if (!input) return;
@@ -192,7 +193,13 @@ export default function ChatComposer(props: {
                 class="chat-input"
                 aria-label="AI chat input"
                 value={draft()}
-                placeholder="Ask Ovim about this code…"
+                placeholder={
+                    props.chat.externalQuestion
+                        ? "Answer Claude Code’s question…"
+                        : props.chat.externalAgent
+                          ? "Ask Claude Code about this code…"
+                          : "Ask Ovim about this code…"
+                }
                 rows={2}
                 autocomplete="off"
                 autocapitalize="off"
@@ -232,9 +239,11 @@ export default function ChatComposer(props: {
             />
             <footer>
                 <span>
-                    {hasActiveRun()
-                        ? "working"
-                        : "Enter to send · drop images to attach · Esc to return"}
+                    {props.chat.externalQuestion
+                        ? "Enter to answer · Esc to cancel"
+                        : hasActiveRun()
+                          ? "working"
+                          : "Enter to send · drop images to attach · Esc to return"}
                 </span>
                 <span class="chat-composer-actions">
                     <b>{props.chat.reasoningEffort}</b>

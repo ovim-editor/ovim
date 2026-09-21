@@ -184,6 +184,15 @@ impl Editor {
         AI_CHAT_SLASH_COMMANDS
             .iter()
             .filter(|spec| {
+                !self.ai_chat_uses_external_agent()
+                    || !matches!(
+                        spec.kind,
+                        AiChatSlashCommandKind::Exa
+                            | AiChatSlashCommandKind::Comprehension
+                            | AiChatSlashCommandKind::Yolo
+                    )
+            })
+            .filter(|spec| {
                 spec.command
                     .strip_prefix('/')
                     .is_some_and(|name| name.starts_with(fragment))
@@ -272,6 +281,13 @@ impl Editor {
     /// Parse and execute editor-owned chat commands before provider submission.
     /// Returns `true` when the input was a slash command, including invalid ones.
     pub(super) fn try_execute_ai_chat_slash_command(&mut self, input: &str) -> Result<bool> {
+        // Claude owns native commands such as /compact. Ovim still owns its
+        // profile picker and conversation clear action.
+        if self.ai_chat_uses_external_agent()
+            && (input == "/compact" || input.starts_with("/compact "))
+        {
+            return Ok(false);
+        }
         let Some(command) = AiChatSlashCommand::parse(input) else {
             return Ok(false);
         };
@@ -283,7 +299,13 @@ impl Editor {
             }
             Ok(AiChatSlashCommand::Exa) => {
                 self.clear_ai_chat_input();
-                self.open_exa_setup_dialog(None);
+                if self.ai_chat_uses_external_agent() {
+                    self.set_status_message(
+                        "Configure Claude Code search tools through Claude's settings",
+                    );
+                } else {
+                    self.open_exa_setup_dialog(None);
+                }
             }
             Ok(AiChatSlashCommand::Model { profile: None }) => {
                 self.clear_ai_chat_input();

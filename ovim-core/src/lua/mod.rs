@@ -303,6 +303,35 @@ mod tests {
     use super::*;
 
     #[test]
+    fn claude_profile_is_available_without_changing_codex_defaults() {
+        let context = LuaContext::new().unwrap();
+        let bridge = EditorBridge::new();
+        setup_vim_api(context.lua(), bridge.clone()).unwrap();
+        context.load_builtin().unwrap();
+        let snapshot = bridge.take_ai_config_if_dirty().unwrap();
+        assert_eq!(snapshot.0["chat"], "codex_sol");
+        let profile = snapshot.2["claude_code"]
+            .clone()
+            .into_profile_config("claude_code".into());
+        assert_eq!(profile.provider, crate::ai::AiProviderKind::ClaudeCode);
+        assert!(profile.api_key_env.is_none());
+        context
+            .lua()
+            .load("vim.ai.default_profile = 'claude_code'")
+            .exec()
+            .unwrap();
+        let snapshot = bridge.take_ai_config_if_dirty().unwrap();
+        assert_eq!(snapshot.0["chat"], "claude_code");
+        assert_eq!(snapshot.0["query"], "claude_code");
+        assert_eq!(snapshot.1.as_deref(), Some("claude_code"));
+        assert!(context
+            .lua()
+            .load("vim.ai.setup({profiles={bad={provider='claude_cod',model='default'}}})")
+            .exec()
+            .is_err());
+    }
+
+    #[test]
     fn builtin_chat_profile_enables_embedded_browser_scope() {
         let context = LuaContext::new().unwrap();
         let bridge = EditorBridge::new();

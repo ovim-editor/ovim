@@ -370,7 +370,7 @@ pub fn infer_provider(model: &str) -> AiProviderKind {
 /// Default API key environment variable for a given provider.
 pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
     match provider {
-        AiProviderKind::Codex | AiProviderKind::CodexAppServer => None,
+        AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => None,
         AiProviderKind::OpenAi => Some("OPENAI_API_KEY".to_string()),
         AiProviderKind::Anthropic => Some("ANTHROPIC_API_KEY".to_string()),
         AiProviderKind::Ollama => None,
@@ -380,6 +380,7 @@ pub fn default_api_key_env(provider: AiProviderKind) -> Option<String> {
 /// Parse a provider string (e.g. from Lua) into AiProviderKind.
 pub fn parse_provider_str(s: &str) -> Option<AiProviderKind> {
     match s.to_lowercase().as_str() {
+        "claude_code" => Some(AiProviderKind::ClaudeCode),
         "codex" => Some(AiProviderKind::Codex),
         "codex_app_server" => Some(AiProviderKind::CodexAppServer),
         "openai" => Some(AiProviderKind::OpenAi),

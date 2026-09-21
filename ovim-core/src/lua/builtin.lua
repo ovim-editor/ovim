@@ -139,6 +139,10 @@ vim.ai.setup({
     },
 
     profiles = {
+        claude_code = {
+            provider = "claude_code",
+            model = "default", -- Use Claude Code's configured model.
+        },
         codex_astra = {
             scope = "project",
             scope_network = true,

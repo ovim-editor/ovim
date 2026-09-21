@@ -19,13 +19,26 @@ impl Editor {
             self.set_status_message(format!("Unknown AI profile: {profile_name}"));
             return false;
         };
+        let provider = profile.provider;
+        let model = profile.model.clone();
+        if self.ai_chat_has_pending_work() {
+            self.set_status_message("Wait for or stop the active turn before changing profiles");
+            return false;
+        }
+        for context in ["chat", "query"] {
+            self.ai_state
+                .config
+                .contexts
+                .insert(context.into(), profile_name.into());
+        }
+        self.ai_state.config.default_profile = profile_name.into();
         self.ai_state.active_profile = profile_name.to_string();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.opts.profile = Some(profile_name.to_string());
         }
         self.set_status_message(format!(
             "AI profile: {} ({}/{})",
-            profile_name, profile.provider, profile.model
+            profile_name, provider, model
         ));
         true
     }

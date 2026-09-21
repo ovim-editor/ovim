@@ -858,6 +858,7 @@ export const ChatPanel = (props: {
     onRemoveImage?: (index: number) => void;
     onProfile?: (profile: string) => void;
     onReasoningEffort?: (effort: string) => void;
+    onApproval?: (allow: boolean) => void;
     onYolo?: () => void;
     onComprehension?: () => void;
     onMessage?: (index: number) => void;
@@ -954,45 +955,50 @@ export const ChatPanel = (props: {
                         focusInput={props.focusInput}
                     />
                 </div>
-                <div class="chat-policy-controls">
-                    <button
-                        type="button"
-                        classList={{ enabled: props.chat.yoloMode }}
-                        aria-pressed={props.chat.yoloMode}
-                        title={
-                            props.chat.yoloMode
-                                ? "Disable approval bypass for this chat"
-                                : "Bypass Terra and interactive approvals for this chat"
-                        }
-                        onClick={() => {
-                            props.onYolo?.();
-                            queueMicrotask(props.focusInput);
-                        }}
-                    >
-                        YOLO {props.chat.yoloMode ? "ON" : "OFF"}
-                    </button>
-                    <button
-                        type="button"
-                        classList={{
-                            enabled: props.chat.comprehensionPolicy !== "off",
-                        }}
-                        aria-pressed={props.chat.comprehensionPolicy !== "off"}
-                        title={
-                            props.chat.comprehensionCheckpoint
-                                ? `Checkpoint: ${props.chat.comprehensionCheckpoint}`
-                                : "Require demonstrated comprehension at the configured boundary"
-                        }
-                        onClick={() => {
-                            props.onComprehension?.();
-                            queueMicrotask(props.focusInput);
-                        }}
-                    >
-                        COMPREHENSION
-                        {props.chat.comprehensionPolicy === "off"
-                            ? " OFF"
-                            : `: ${props.chat.comprehensionPolicy.toUpperCase()}`}
-                    </button>
-                </div>
+                <Show when={!props.chat.externalAgent}>
+                    <div class="chat-policy-controls">
+                        <button
+                            type="button"
+                            classList={{ enabled: props.chat.yoloMode }}
+                            aria-pressed={props.chat.yoloMode}
+                            title={
+                                props.chat.yoloMode
+                                    ? "Disable approval bypass for this chat"
+                                    : "Bypass Terra and interactive approvals for this chat"
+                            }
+                            onClick={() => {
+                                props.onYolo?.();
+                                queueMicrotask(props.focusInput);
+                            }}
+                        >
+                            YOLO {props.chat.yoloMode ? "ON" : "OFF"}
+                        </button>
+                        <button
+                            type="button"
+                            classList={{
+                                enabled:
+                                    props.chat.comprehensionPolicy !== "off",
+                            }}
+                            aria-pressed={
+                                props.chat.comprehensionPolicy !== "off"
+                            }
+                            title={
+                                props.chat.comprehensionCheckpoint
+                                    ? `Checkpoint: ${props.chat.comprehensionCheckpoint}`
+                                    : "Require demonstrated comprehension at the configured boundary"
+                            }
+                            onClick={() => {
+                                props.onComprehension?.();
+                                queueMicrotask(props.focusInput);
+                            }}
+                        >
+                            COMPREHENSION
+                            {props.chat.comprehensionPolicy === "off"
+                                ? " OFF"
+                                : `: ${props.chat.comprehensionPolicy.toUpperCase()}`}
+                        </button>
+                    </div>
+                </Show>
             </header>
             <div class="chat-body">
                 <Show when={props.chat.agents.length}>
@@ -1171,9 +1177,20 @@ export const ChatPanel = (props: {
                         >
                             <b>Approval required</b>
                             <span>{approval()}</span>
-                            <small>
-                                Use the keyboard choices shown by Ovim.
-                            </small>
+                            <div class="approval-actions">
+                                <button
+                                    type="button"
+                                    onClick={() => { props.onApproval?.(true); queueMicrotask(props.focusInput); }}
+                                >
+                                    Allow once
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => { props.onApproval?.(false); queueMicrotask(props.focusInput); }}
+                                >
+                                    Deny
+                                </button>
+                            </div>
                         </div>
                     )}
                 </Show>
@@ -2428,6 +2445,11 @@ function App() {
                     }
                     onReasoningEffort={(effort) =>
                         void mutate("gui_select_reasoning_effort", { effort })
+                    }
+                    onApproval={(allow) =>
+                        void mutate("gui_ai_policy", {
+                            action: allow ? "approve-tool" : "deny-tool",
+                        })
                     }
                     onYolo={() =>
                         void mutate("gui_ai_policy", { action: "toggle-yolo" })

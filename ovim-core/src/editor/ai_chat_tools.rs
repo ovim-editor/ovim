@@ -215,6 +215,7 @@ impl Editor {
 
         match profile.provider {
             crate::ai::AiProviderKind::Codex
+            | crate::ai::AiProviderKind::ClaudeCode
             | crate::ai::AiProviderKind::CodexAppServer
             | crate::ai::AiProviderKind::OpenAi
             | crate::ai::AiProviderKind::Ollama => schema::tools_to_openai_schema(&tools),
@@ -996,6 +997,9 @@ impl Editor {
 
     /// Resolve a paused outside-project tool request.
     pub fn ai_chat_resolve_pending_tool_approval(&mut self, allow: bool, remember: bool) -> bool {
+        if self.resolve_external_permission(allow) {
+            return true;
+        }
         let pending = self
             .ai_state
             .chat
@@ -1232,6 +1236,9 @@ impl Editor {
     /// On first chat open in a no-repo session, ask once whether project tools
     /// may access the current folder as the project boundary.
     pub(crate) fn maybe_prompt_no_repo_session_folder_access_on_chat_open(&mut self) {
+        if self.ai_chat_uses_external_agent() {
+            return;
+        }
         if self.ai_repo_root().is_some() || self.ai_state.no_repo_session_prompted {
             return;
         }

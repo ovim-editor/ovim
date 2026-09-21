@@ -51,6 +51,9 @@ pub async fn request_ai_edit(
         }
 
         let response_text = match profile.provider {
+            AiProviderKind::ClaudeCode => {
+                anyhow::bail!("Claude Code is an agent runtime; use AI chat")
+            }
             AiProviderKind::Codex => {
                 let mut input = build_user_prompt(request);
                 if !extra_messages.is_empty() {
@@ -267,7 +270,9 @@ pub(crate) fn append_project_context(system_prompt: &str, project_context: &str)
 /// Build the API endpoint URL for the given provider.
 fn provider_url(profile: &AiProfileConfig) -> String {
     let (default_base, path) = match profile.provider {
-        AiProviderKind::Codex | AiProviderKind::CodexAppServer => ("", ""),
+        AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => {
+            ("", "")
+        }
         AiProviderKind::OpenAi => ("https://api.openai.com/v1", "/chat/completions"),
         AiProviderKind::Anthropic => ("https://api.anthropic.com", "/v1/messages"),
         AiProviderKind::Ollama => ("http://127.0.0.1:11434", "/api/chat"),
@@ -285,7 +290,7 @@ fn provider_headers(
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
     match profile.provider {
-        AiProviderKind::Codex | AiProviderKind::CodexAppServer => {}
+        AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => {}
         AiProviderKind::OpenAi => {
             let api_key = read_api_key(profile, registry)?;
             headers.insert(
@@ -312,6 +317,7 @@ fn provider_headers(
 /// Provider label for error messages.
 fn provider_label(provider: AiProviderKind) -> &'static str {
     match provider {
+        AiProviderKind::ClaudeCode => "Claude Code",
         AiProviderKind::Codex => "Codex inference",
         AiProviderKind::CodexAppServer => "Codex app-server",
         AiProviderKind::OpenAi => "OpenAI",
@@ -327,7 +333,8 @@ fn apply_optional_params(body: &mut Value, profile: &AiProfileConfig, tools: Opt
             AiProviderKind::Ollama => {
                 body["options"] = json!({ "temperature": temp });
             }
-            AiProviderKind::Codex | AiProviderKind::CodexAppServer => {}
+            AiProviderKind::ClaudeCode | AiProviderKind::Codex | AiProviderKind::CodexAppServer => {
+            }
             _ => {
                 body["temperature"] = json!(temp);
             }
@@ -598,6 +605,9 @@ async fn stream_ai_chat_inner(
         .context("failed to create AI HTTP client")?;
 
     match profile.provider {
+        AiProviderKind::ClaudeCode => {
+            anyhow::bail!("Claude Code requires the external agent runtime")
+        }
         AiProviderKind::Codex | AiProviderKind::CodexAppServer => {
             super::codex_inference::strategy_for(profile.provider)
                 .stream(super::codex_inference::CodexInferenceRequest {

@@ -579,6 +579,8 @@ pub struct GuiFileTreeItem {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiAiChat {
+    pub external_agent: bool,
+    pub external_question: bool,
     pub profile: String,
     pub pending_code_attachment: Option<GuiCodeAttachment>,
     pub profiles: Vec<GuiAiProfileOption>,
@@ -1600,6 +1602,14 @@ async fn handle_request(
         }
         GuiRequest::AiPolicy { action, reply } => {
             let changed = match action.as_str() {
+                "approve-tool" | "deny-tool" => {
+                    let allow = action == "approve-tool";
+                    if editor.ai_chat_has_pending_no_repo_folder_approval() {
+                        editor.ai_chat_resolve_pending_no_repo_folder_approval(allow)
+                    } else {
+                        editor.ai_chat_resolve_pending_tool_approval(allow, false)
+                    }
+                }
                 "toggle-yolo" => editor.set_ai_chat_yolo_mode(!editor.ai_chat_yolo_mode()),
                 "toggle-comprehension" => {
                     editor.toggle_ai_chat_comprehension_policy();
@@ -3075,6 +3085,8 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             .collect::<std::collections::HashMap<_, _>>();
         let selected_queued_id = editor.ai_chat_history_selected_queued_id();
         GuiAiChat {
+            external_agent: editor.ai_chat_uses_external_agent(),
+            external_question: editor.ai_chat_has_external_question(),
             profile: editor.ai_chat_effective_profile(),
             pending_code_attachment: editor.ai_chat_pending_code_attachment().map(|attachment| {
                 GuiCodeAttachment {
@@ -3104,7 +3116,8 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                 .collect(),
             reasoning_effort: editor.ai_chat_reasoning_effort(),
             reasoning_effort_selection: editor.ai_chat_reasoning_effort_selection(),
-            reasoning_efforts: ovim_core::editor::AI_CHAT_REASONING_EFFORTS
+            reasoning_efforts: editor
+                .ai_chat_reasoning_efforts()
                 .iter()
                 .map(|effort| (*effort).to_string())
                 .collect(),
@@ -3628,6 +3641,30 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn claude_profile_projects_the_external_runtime_to_gui() {
+        let mut editor = Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.name = "claude_code".into();
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        assert!(editor.ai_set_profile("claude_code"));
+        activate_gui_ai_chat(&mut editor).unwrap();
+        let view = snapshot(&editor, 1);
+        let chat = view.ai_chat.unwrap();
+        assert_eq!(chat.profile, "claude_code");
+        assert!(chat.external_agent);
+        assert!(!chat.yolo_mode);
+        assert_eq!(chat.comprehension_policy, "off");
+        assert!(!chat.reasoning_efforts.contains(&"none".to_string()));
+        assert!(chat.setup.is_none());
+    }
 
     #[test]
     fn gui_projection_cache_reuses_warm_layout_and_releases_stale_line_versions() {

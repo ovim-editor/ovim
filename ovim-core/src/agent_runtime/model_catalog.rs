@@ -307,7 +307,8 @@ impl SubagentModelCatalog {
                     )
                 } else {
                     let effort = configured_effort(profile_name, profile)?;
-                    let child_supported = profile.provider != AiProviderKind::CodexAppServer;
+                    let child_supported = profile.provider.supports_ovim_tools()
+                        && profile.provider != AiProviderKind::CodexAppServer;
                     (
                         BTreeSet::from([effort.clone()]),
                         effort,

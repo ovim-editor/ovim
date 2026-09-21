@@ -27,6 +27,16 @@ impl Editor {
             return Ok(());
         }
 
+        if self.ai_chat_has_external_question() && (has_pending_images || has_code_attachment) {
+            self.set_status_message(
+                "Claude Code questions accept text answers; remove attachments before answering",
+            );
+            return Ok(());
+        }
+        if self.answer_external_question(&input) {
+            return Ok(());
+        }
+
         // A prior terminal event may have failed only because persistence was
         // unavailable. Retry it before deciding whether this input is a steer
         // for an active turn or a new message.
@@ -222,6 +232,46 @@ impl Editor {
         let mut changed = false;
         for chunk in chunks {
             match chunk {
+                StreamChunk::ExternalToolStart(call) => {
+                    if let Err(error) = self.observe_external_tool(call, &model_name) {
+                        self.cancel_ai_chat_generation();
+                        self.set_status_message(error.to_string());
+                        return true;
+                    }
+                    changed = true;
+                }
+                StreamChunk::ExternalToolResult { id, content, error } => {
+                    if let Err(error) = self.observe_external_result(id, content, error) {
+                        self.cancel_ai_chat_generation();
+                        self.set_status_message(error.to_string());
+                        return true;
+                    }
+                    changed = true;
+                }
+                StreamChunk::ExternalPermission {
+                    name,
+                    input,
+                    reason,
+                    response,
+                } => {
+                    self.receive_external_permission(name, input, reason, response);
+                    changed = true;
+                }
+                StreamChunk::ExternalPermissionCancelled => {
+                    self.resolve_external_permission(false);
+                    changed = true;
+                }
+                StreamChunk::ExternalSession(id) => {
+                    if let Some(state) = self
+                        .ai_state
+                        .chat
+                        .as_mut()
+                        .and_then(|chat| chat.external_agent.as_mut())
+                    {
+                        state.session_id = Some(id);
+                    }
+                    changed = true;
+                }
                 StreamChunk::Content(text) => {
                     self.append_code_explanation_answer(&text);
                     if let Some(chat) = self.ai_state.chat.as_mut() {
@@ -561,6 +611,14 @@ impl Editor {
                         chat.current_undo_group = None;
                     }
 
+                    if let Err(error) = self.checkpoint_external_agent() {
+                        self.ai_runtime_fail_turn(error.to_string());
+                        if let Some(conv) = self.conversation_mut() {
+                            conv.append_error(error.to_string());
+                        }
+                        self.clear_streaming_state();
+                        return true;
+                    }
                     self.ai_runtime_complete_turn();
                     self.finish_code_explanation_answer(None);
                     self.clear_streaming_state();

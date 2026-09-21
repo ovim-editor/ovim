@@ -53,8 +53,22 @@ impl Editor {
             .unwrap_or_else(|| "default".into())
     }
 
+    pub fn ai_chat_reasoning_efforts(&self) -> &'static [&'static str] {
+        if self.ai_chat_uses_external_agent() {
+            &["default", "low", "medium", "high", "xhigh", "max"]
+        } else {
+            AI_CHAT_REASONING_EFFORTS
+        }
+    }
+
     pub fn set_ai_chat_reasoning_effort(&mut self, effort: &str) -> bool {
-        if !AI_CHAT_REASONING_EFFORTS.contains(&effort) {
+        if self.ai_chat_has_pending_work() {
+            self.set_status_message(
+                "Wait for or stop the active turn before changing reasoning effort",
+            );
+            return false;
+        }
+        if !self.ai_chat_reasoning_efforts().contains(&effort) {
             self.set_status_message(format!("Unknown reasoning effort: {effort}"));
             return false;
         }
@@ -73,18 +87,19 @@ impl Editor {
 
     pub fn cycle_ai_chat_reasoning_effort(&mut self, forward: bool) -> bool {
         let current = self.ai_chat_reasoning_effort_selection();
-        let current = AI_CHAT_REASONING_EFFORTS
+        let efforts = self.ai_chat_reasoning_efforts();
+        let current = efforts
             .iter()
             .position(|effort| *effort == current)
             .unwrap_or(0);
         let next = if forward {
-            (current + 1) % AI_CHAT_REASONING_EFFORTS.len()
+            (current + 1) % efforts.len()
         } else if current == 0 {
-            AI_CHAT_REASONING_EFFORTS.len() - 1
+            efforts.len() - 1
         } else {
             current - 1
         };
-        self.set_ai_chat_reasoning_effort(AI_CHAT_REASONING_EFFORTS[next])
+        self.set_ai_chat_reasoning_effort(efforts[next])
     }
 
     /// Get the messages for the current chat conversation.
@@ -155,6 +170,9 @@ impl Editor {
 
     /// Whether this chat bypasses model and user tool-approval gates.
     pub fn ai_chat_yolo_mode(&self) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            return false;
+        }
         self.ai_state
             .chat
             .as_ref()
@@ -165,6 +183,10 @@ impl Editor {
     /// Set the per-chat approval bypass. Enabling it also releases work that
     /// is already blocked on a folder, tool, or Terra decision.
     pub fn set_ai_chat_yolo_mode(&mut self, enabled: bool) -> bool {
+        if self.ai_chat_uses_external_agent() {
+            self.set_status_message("Claude Code manages its own permissions");
+            return false;
+        }
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };
@@ -224,6 +246,9 @@ impl Editor {
 
     /// Whether a tool call is currently paused pending user approval.
     pub fn ai_chat_has_pending_tool_approval(&self) -> bool {
+        if self.external_permission_summary().is_some() && !self.ai_chat_has_external_question() {
+            return true;
+        }
         self.ai_state
             .chat
             .as_ref()
@@ -255,6 +280,9 @@ impl Editor {
 
     /// Human-readable summary of the pending approval, if any.
     pub fn ai_chat_pending_tool_approval_summary(&self) -> Option<String> {
+        if self.external_permission_summary().is_some() && !self.ai_chat_has_external_question() {
+            return self.external_permission_summary();
+        }
         let pending = self
             .ai_state
             .chat

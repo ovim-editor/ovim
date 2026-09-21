@@ -703,6 +703,7 @@ pub struct AiChatState {
     pub waiting: bool,
     /// Pending async chat job.
     pub pending_job: Option<PendingAiChatJob>,
+    pub(crate) external_agent: Option<super::ai_external_agent::ExternalAgentState>,
     /// Scratch buffer state for <C-g> editing.
     pub scratch: Option<ScratchBufferState>,
     /// Mode the editor was in before opening chat.
@@ -850,6 +851,10 @@ impl AiChatState {
 
     pub(crate) fn turn_blocker(&self) -> Option<AiTurnBlocker> {
         let blockers = [
+            self.external_agent
+                .as_ref()
+                .and_then(|state| state.permission.as_ref())
+                .map(|_| AiTurnBlocker::ToolApproval),
             self.pending_tool_approval
                 .as_ref()
                 .map(|_| AiTurnBlocker::ToolApproval),
@@ -884,6 +889,12 @@ impl AiChatState {
             AiChatActivity::WaitingFolderApproval
         } else if let Some(blocker) = blocker {
             blocker.activity()
+        } else if self
+            .external_agent
+            .as_ref()
+            .is_some_and(|state| state.has_running_tools())
+        {
+            AiChatActivity::RunningExternalTool
         } else if self.pending_job.is_some() || self.runtime_turn.is_some() || self.waiting {
             AiChatActivity::Inference
         } else if self.pending_code_explanation.is_some() {
@@ -932,6 +943,7 @@ impl AiChatState {
             comprehension_checkpoint: None,
             waiting: false,
             pending_job: None,
+            external_agent: None,
             scratch: None,
             mode_before_chat: mode_before,
             streaming_content: None,
@@ -996,6 +1008,14 @@ pub struct PendingAiChatJob {
     /// post-tool continuation boundary and leave this unset.
     pub steer_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::ai::chat_types::ProviderSteerUpdate>>,
+}
+
+impl Drop for PendingAiChatJob {
+    fn drop(&mut self) {
+        // Dropping a JoinHandle detaches its task. A chat job instead owns its
+        // provider process for its entire lifetime, including editor shutdown.
+        self.task.abort();
+    }
 }
 
 pub struct ScratchBufferState {

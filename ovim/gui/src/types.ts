@@ -70,6 +70,8 @@ export interface GuiAiProfileOption {
 }
 
 export interface GuiAiChat {
+    externalAgent?: boolean;
+    externalQuestion?: boolean;
     profile: string;
     pendingCodeAttachment?: {
         bufferId: number;

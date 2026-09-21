@@ -66,6 +66,8 @@ pub enum ToolApprovalMode {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AiProviderKind {
+    /// Official Claude Code runtime; Ovim only presents its events.
+    ClaudeCode,
     /// ChatGPT-subscription inference with Ovim owning the agent harness.
     Codex,
     /// Legacy Codex app-server transport, including its built-in harness.
@@ -75,9 +77,20 @@ pub enum AiProviderKind {
     Ollama,
 }
 
+impl AiProviderKind {
+    pub fn owns_agent_loop(self) -> bool {
+        self == Self::ClaudeCode
+    }
+
+    pub fn supports_ovim_tools(self) -> bool {
+        !self.owns_agent_loop()
+    }
+}
+
 impl std::fmt::Display for AiProviderKind {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         let value = match self {
+            Self::ClaudeCode => "claude_code",
             Self::Codex => "codex",
             Self::CodexAppServer => "codex_app_server",
             Self::OpenAi => "openai",

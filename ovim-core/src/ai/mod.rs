@@ -2,6 +2,7 @@ pub mod auto_classifier;
 pub mod auto_mode;
 pub mod change_set;
 pub mod chat_types;
+pub(crate) mod claude_code;
 mod codex_app_server;
 pub(crate) mod codex_auth;
 mod codex_inference;

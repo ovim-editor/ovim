@@ -418,7 +418,10 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
         return None;
     }
     let yolo_enabled = editor.ai_chat_yolo_mode();
-    let yolo_label = if yolo_enabled {
+    let external_agent = editor.ai_chat_uses_external_agent();
+    let yolo_label = if external_agent {
+        ""
+    } else if yolo_enabled {
         " YOLO ON "
     } else {
         " YOLO OFF "
@@ -438,10 +441,14 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
     };
 
     let comprehension = editor.ai_chat_comprehension_policy();
-    let comprehension_label = match comprehension {
-        ovim_core::editor::ComprehensionPolicy::Off => " COMPREHENSION OFF ",
-        ovim_core::editor::ComprehensionPolicy::Publish => " COMPREHENSION: PUBLISH ",
-        ovim_core::editor::ComprehensionPolicy::Commit => " COMPREHENSION: COMMIT ",
+    let comprehension_label = if external_agent {
+        ""
+    } else {
+        match comprehension {
+            ovim_core::editor::ComprehensionPolicy::Off => " COMPREHENSION OFF ",
+            ovim_core::editor::ComprehensionPolicy::Publish => " COMPREHENSION: PUBLISH ",
+            ovim_core::editor::ComprehensionPolicy::Commit => " COMPREHENSION: COMMIT ",
+        }
     };
     let available = area.width.saturating_sub(yolo_width);
     let comprehension_width =
@@ -493,18 +500,20 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
         Paragraph::new(Line::from(spans)).alignment(Alignment::Right),
         Rect::new(area.x, area.y, area.width, 1),
     );
-    editor.render_cache.ai_chat_interactions.yolo_toggle = Some(
-        crate::key_convert::convert_ratatui_rect(Rect::new(yolo_x, area.y, yolo_width, 1)),
-    );
+    editor.render_cache.ai_chat_interactions.yolo_toggle = (!external_agent).then(|| {
+        crate::key_convert::convert_ratatui_rect(Rect::new(yolo_x, area.y, yolo_width, 1))
+    });
     editor
         .render_cache
         .ai_chat_interactions
-        .comprehension_toggle = Some(crate::key_convert::convert_ratatui_rect(Rect::new(
-        comprehension_x,
-        area.y,
-        comprehension_width,
-        1,
-    )));
+        .comprehension_toggle = (!external_agent).then(|| {
+        crate::key_convert::convert_ratatui_rect(Rect::new(
+            comprehension_x,
+            area.y,
+            comprehension_width,
+            1,
+        ))
+    });
     let controls_x = comprehension_x.saturating_sub(controls_width);
     if show_model {
         editor
@@ -2337,6 +2346,10 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
     let allow_edits = editor.ai_chat_allow_edits();
     let hint = if pending_no_repo_approval {
         " [Enter allow] [Esc deny] "
+    } else if pending_tool_approval && editor.ai_chat_uses_external_agent() {
+        " [Enter allow once] [Esc deny] "
+    } else if editor.ai_chat_has_external_question() {
+        " [Enter answer] [Esc cancel] "
     } else if pending_tool_approval {
         " [Enter allow] [C-a allow chat] [Esc deny] "
     } else if allow_edits {
@@ -2371,7 +2384,7 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
     let active_profile = editor.ai_chat_effective_profile();
     let active_effort = editor.ai_chat_reasoning_effort_selection();
     let section = editor.ai_chat_model_picker_section();
-    let content_rows = profile_names.len() + ovim_core::editor::AI_CHAT_REASONING_EFFORTS.len() + 2;
+    let content_rows = profile_names.len() + editor.ai_chat_reasoning_efforts().len() + 2;
     let height = (content_rows as u16 + 2).min(area.height);
     let width = area.width.clamp(24, 52);
     let anchor = anchor.unwrap_or(Rect::new(area.x, area.y.saturating_sub(1), width, 1));
@@ -2420,7 +2433,7 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
                 .add_modifier(Modifier::BOLD),
         ),
     );
-    for effort in ovim_core::editor::AI_CHAT_REASONING_EFFORTS {
+    for effort in editor.ai_chat_reasoning_efforts() {
         let selected = *effort == active_effort;
         let marker = if selected { "●" } else { "○" };
         let detail = if *effort == "default" {
@@ -2472,7 +2485,8 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
     editor
         .render_cache
         .ai_chat_interactions
-        .effort_picker_options = ovim_core::editor::AI_CHAT_REASONING_EFFORTS
+        .effort_picker_options = editor
+        .ai_chat_reasoning_efforts()
         .iter()
         .enumerate()
         .filter_map(|(index, effort)| {
@@ -3018,6 +3032,55 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("MODEL PROFILES"), "{rendered}");
         assert!(rendered.contains("REASONING EFFORT"), "{rendered}");
+    }
+
+    #[test]
+    fn claude_profile_renders_in_terminal_without_ovim_policy_controls() {
+        let mut editor = Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.name = "claude_code".into();
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        assert!(editor.ai_set_profile("claude_code"));
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts {
+                profile: Some("claude_code".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        let backend = TestBackend::new(100, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let theme = crate::syntax::Theme::from_scheme(crate::syntax::ColorScheme::tokyonight());
+        terminal
+            .draw(|frame| {
+                super::render_chat_panel(frame, &mut editor, Rect::new(0, 0, 100, 22), &theme);
+            })
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("claude_code"), "{rendered}");
+        assert!(!rendered.contains("YOLO"), "{rendered}");
+        assert!(!rendered.contains("COMPREHENSION"), "{rendered}");
+        assert!(editor
+            .render_cache
+            .ai_chat_interactions
+            .yolo_toggle
+            .is_none());
+        assert!(editor
+            .render_cache
+            .ai_chat_interactions
+            .comprehension_toggle
+            .is_none());
     }
 
     #[test]

@@ -1722,9 +1722,9 @@ mod tests {
             chat.pending_job = Some(super::super::ai_chat_state::PendingAiChatJob {
                 receiver: rx,
                 task,
-                profile_name: previous.profile_name,
-                model_name: previous.model_name,
-                turn: previous.turn,
+                profile_name: previous.profile_name.clone(),
+                model_name: previous.model_name.clone(),
+                turn: previous.turn.clone(),
                 branch_generation: previous.branch_generation,
                 steer_tx: None,
             });

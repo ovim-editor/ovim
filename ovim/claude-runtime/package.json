@@ -1,0 +1,10 @@
+{
+  "name": "ovim-claude-runtime",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "vendor": "node vendor.mjs",
+    "test": "node --test ../../ovim-core/src/ai/claude/runtime.test.mjs"
+  },
+  "dependencies": { "@anthropic-ai/claude-agent-sdk": "0.3.278" }
+}

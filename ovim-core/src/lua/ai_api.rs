@@ -317,7 +317,10 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
                             ));
                         }
                     };
-                    b.set_ai_default_profile(s);
+                    b.set_ai_default_profile(s.clone());
+                    for context in ["chat", "query"] {
+                        b.set_ai_context(context.into(), s.clone());
+                    }
                     Ok(())
                 } else if key == "project_context" || key == "chat" || key == "agent" {
                     match key.as_str() {
@@ -354,6 +357,13 @@ pub fn setup_ai_api(lua: &Lua, bridge: EditorBridge) -> Result<Table<'_>> {
 
 /// Parse a Lua table into a LuaProfileConfig.
 fn parse_lua_profile(tbl: &Table) -> Result<LuaProfileConfig> {
+    if let Some(provider) = tbl.get::<_, Option<String>>("provider")? {
+        if crate::ai::parse_provider_str(&provider).is_none() {
+            return Err(mlua::Error::external(format!(
+                "Unknown AI provider: {provider}"
+            )));
+        }
+    }
     let model: String = tbl
         .get::<_, String>("model")
         .map_err(|_| mlua::Error::external("profile must have a 'model' field"))?;

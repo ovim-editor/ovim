@@ -108,7 +108,7 @@ export default function ChatModelPicker(props: Props) {
                     </small>
                 </span>
                 <em>
-                    {props.reasoningEffortSelection === "default"
+                    {props.reasoningEffortSelection === "default" && props.reasoningEffort !== "default"
                         ? `default · ${props.reasoningEffort}`
                         : props.reasoningEffort}
                 </em>

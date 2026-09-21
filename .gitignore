@@ -14,3 +14,5 @@
 .DS_Store
 /ovim/gui/test-results
 /ovim/gui/playwright-report
+
+/ovim/claude-runtime/node_modules
