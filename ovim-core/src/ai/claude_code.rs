@@ -13,6 +13,67 @@ use tokio::sync::mpsc::UnboundedSender;
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const SDK_VERSION: &str = "0.3.278";
 
+// Curated defaults verified against Anthropic's model reference on 2026-09-21:
+// https://platform.claude.com/docs/en/models/overview
+// These are choices, not account entitlements. The installed CLI enforces access.
+// Other IDs/aliases remain available through /model or the profile configuration.
+pub(crate) struct ModelPreset {
+    pub id: &'static str,
+    alias: &'static str,
+    supports_effort: bool,
+    default_effort: Option<&'static str>,
+}
+
+pub(crate) const MODEL_PRESETS: &[ModelPreset] = &[
+    ModelPreset {
+        id: "default",
+        alias: "default",
+        supports_effort: true,
+        default_effort: None,
+    },
+    ModelPreset {
+        id: "claude-sonnet-5",
+        alias: "sonnet",
+        supports_effort: true,
+        default_effort: Some("high"),
+    },
+    ModelPreset {
+        id: "claude-opus-5",
+        alias: "opus",
+        supports_effort: true,
+        default_effort: Some("high"),
+    },
+    ModelPreset {
+        id: "claude-fable-5-1",
+        alias: "fable",
+        supports_effort: true,
+        default_effort: Some("medium"),
+    },
+    ModelPreset {
+        id: "claude-haiku-4-5-20251001",
+        alias: "haiku",
+        supports_effort: false,
+        default_effort: None,
+    },
+];
+
+fn model_preset(model: &str) -> Option<&'static ModelPreset> {
+    let model = model.strip_suffix("[1m]").unwrap_or(model);
+    MODEL_PRESETS
+        .iter()
+        .find(|preset| preset.id == model || preset.alias == model)
+}
+
+pub(crate) fn supports_effort(model: &str) -> bool {
+    model_preset(model).is_none_or(|preset| preset.supports_effort)
+}
+
+// User-requested Fable default; Opus/Sonnet follow Anthropic's effort guidance:
+// https://platform.claude.com/docs/en/build-with-claude/effort
+pub(crate) fn default_effort(model: &str) -> Option<&'static str> {
+    model_preset(model).and_then(|preset| preset.default_effort)
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct Request {

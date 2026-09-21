@@ -2387,17 +2387,21 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
     if area.height < 5 || area.width < 24 {
         return;
     }
-    let profile_names = editor.ai_profile_names_sorted();
+    let model_options = editor.ai_chat_model_options();
+    let active_model = editor.ai_chat_selected_model().to_string();
     let active_profile = editor.ai_chat_effective_profile();
     let active_effort = editor.ai_chat_reasoning_effort_selection();
     let section = editor.ai_chat_model_picker_section();
-    let content_rows = profile_names.len() + editor.ai_chat_reasoning_efforts().len() + 2;
+    let content_rows = model_options.len() + editor.ai_chat_reasoning_efforts().len() + 2;
     let height = (content_rows as u16 + 2).min(area.height);
     let width = area.width.clamp(24, 52);
     let anchor = anchor.unwrap_or(Rect::new(area.x, area.y.saturating_sub(1), width, 1));
     let popup = Rect {
         x: anchor.x.min(area.right().saturating_sub(width)).max(area.x),
-        y: anchor.bottom().max(area.y),
+        y: anchor
+            .bottom()
+            .min(area.bottom().saturating_sub(height))
+            .max(area.y),
         width,
         height,
     };
@@ -2413,19 +2417,16 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
             .add_modifier(Modifier::BOLD),
     )];
     let mut model_rows = Vec::new();
-    for name in &profile_names {
-        let Some(profile) = editor.ai_state.config.resolve_profile(name) else {
-            continue;
-        };
-        let selected = name == &active_profile;
+    for option in &model_options {
+        let selected = option.id == active_profile && option.model == active_model;
         let marker = if selected { "●" } else { "○" };
-        let detail = format!("{marker} {}  {}", profile.display_name(), profile.model);
+        let detail = format!("{marker} {}  {}", option.label, option.model);
         items.push(ListItem::new(detail).style(if selected {
             Style::default().fg(Color::White).bg(BG_SELECTED_ROW)
         } else {
             Style::default().fg(TEXT_NORMAL)
         }));
-        model_rows.push(name.clone());
+        model_rows.push(option.clone());
     }
     items.push(
         ListItem::new(" REASONING EFFORT").style(
@@ -2444,7 +2445,10 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
         let selected = *effort == active_effort;
         let marker = if selected { "●" } else { "○" };
         let detail = if *effort == "default" {
-            format!("{marker} default  inherit from profile")
+            format!(
+                "{marker} default  {}",
+                editor.ai_chat_default_reasoning_effort()
+            )
         } else {
             format!("{marker} {effort}")
         };
@@ -2454,8 +2458,22 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
             Style::default().fg(TEXT_NORMAL)
         }));
     }
+    let selected_row = if section == ovim_core::editor::ChatModelPickerSection::Model {
+        1 + model_options
+            .iter()
+            .position(|option| option.id == active_profile && option.model == active_model)
+            .unwrap_or(0)
+    } else {
+        2 + model_options.len()
+            + editor
+                .ai_chat_reasoning_efforts()
+                .iter()
+                .position(|effort| *effort == active_effort)
+                .unwrap_or(0)
+    };
+    let mut state = ratatui::widgets::ListState::default().with_selected(Some(selected_row));
     frame.render_widget(Clear, popup);
-    frame.render_widget(
+    frame.render_stateful_widget(
         List::new(items).block(
             Block::default()
                 .title(" Model & effort · Tab section · ↑/↓ choose ")
@@ -2463,9 +2481,11 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
                 .border_style(Style::default().fg(Color::Rgb(82, 139, 255))),
         ),
         popup,
+        &mut state,
     );
 
-    let first_row = popup.y.saturating_add(2);
+    let first_row = popup.y.saturating_add(1);
+    let offset = state.offset();
     let visible_bottom = popup.bottom().saturating_sub(1);
     editor
         .render_cache
@@ -2474,7 +2494,8 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
         .into_iter()
         .enumerate()
         .filter_map(|(index, name)| {
-            let y = first_row + index as u16;
+            let row = (index + 1).checked_sub(offset)?;
+            let y = first_row + row as u16;
             (y < visible_bottom).then(|| {
                 (
                     crate::key_convert::convert_ratatui_rect(Rect::new(
@@ -2488,7 +2509,6 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
             })
         })
         .collect();
-    let effort_start = first_row + profile_names.len() as u16 + 1;
     editor
         .render_cache
         .ai_chat_interactions
@@ -2497,7 +2517,8 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
         .iter()
         .enumerate()
         .filter_map(|(index, effort)| {
-            let y = effort_start + index as u16;
+            let row = (model_options.len() + 2 + index).checked_sub(offset)?;
+            let y = first_row + row as u16;
             (y < visible_bottom).then(|| {
                 (
                     crate::key_convert::convert_ratatui_rect(Rect::new(
@@ -2751,7 +2772,7 @@ mod tests {
             .collect::<String>();
         assert!(rendered.contains("Commands"));
         assert!(rendered.contains("/clear"));
-        assert!(rendered.contains("/model [profile]"));
+        assert!(rendered.contains("/model [profile|model]"));
         assert!(rendered.contains("/effort"));
         assert!(rendered.contains("/comprehension"));
         assert_eq!(
@@ -2997,6 +3018,53 @@ mod tests {
     }
 
     #[test]
+    fn claude_model_picker_scrolls_and_maps_visible_mouse_targets() {
+        let mut editor = Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.name = "claude_code".into();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts::default())
+            .unwrap();
+        assert!(editor.ai_select_chat_model("claude_code", "claude-custom-version[1m]"));
+        editor.open_ai_chat_model_picker(ovim_core::editor::ChatModelPickerSection::Model);
+        let mut terminal = Terminal::new(TestBackend::new(70, 8)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_model_picker(
+                    frame,
+                    &mut editor,
+                    Some(Rect::new(0, 0, 50, 1)),
+                    Rect::new(0, 0, 70, 8),
+                );
+            })
+            .unwrap();
+        let interactions = &editor.render_cache.ai_chat_interactions;
+        assert!(interactions
+            .model_picker_options
+            .iter()
+            .any(|(area, option)| option.model == "claude-custom-version[1m]" && area.y < 7));
+        let (area, _) = interactions
+            .model_picker_options
+            .iter()
+            .find(|(_, option)| option.model == "claude-fable-5-1")
+            .unwrap();
+        let event = ovim_core::MouseEvent {
+            kind: ovim_core::MouseEventKind::Down(ovim_core::MouseButton::Left),
+            column: area.x,
+            row: area.y,
+        };
+        ovim_core::editor::handle_mouse_event(&mut editor, event).unwrap();
+        assert_eq!(editor.ai_chat_selected_model(), "claude-fable-5-1");
+    }
+
+    #[test]
     fn chat_header_model_and_effort_picker_expands_downward() {
         let mut editor = Editor::default();
         editor
@@ -3027,8 +3095,14 @@ mod tests {
         assert!(interactions
             .model_picker_options
             .iter()
-            .chain(interactions.effort_picker_options.iter())
-            .all(|(area, _)| area.y > model.y));
+            .map(|(area, _)| area)
+            .chain(
+                interactions
+                    .effort_picker_options
+                    .iter()
+                    .map(|(area, _)| area)
+            )
+            .all(|area| area.y > model.y));
 
         let rendered = terminal
             .backend()

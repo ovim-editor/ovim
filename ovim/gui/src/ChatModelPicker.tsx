@@ -13,11 +13,13 @@ import { trapDialogFocus } from "./focus";
 
 type Props = {
     profile: string;
+    model?: string;
     profiles: GuiAiProfileOption[];
     reasoningEffort: string;
     reasoningEffortSelection: string;
+    reasoningEffortDefault?: string;
     reasoningEfforts: string[];
-    onProfile?: (profile: string) => void;
+    onProfile?: (profile: string, model?: string) => void;
     onReasoningEffort?: (effort: string) => void;
     focusInput: () => void;
 };
@@ -31,7 +33,11 @@ export default function ChatModelPicker(props: Props) {
     let search!: HTMLInputElement;
 
     const selected = createMemo(() =>
-        props.profiles.find((profile) => profile.id === props.profile),
+        props.profiles.find(
+            (profile) =>
+                profile.id === props.profile &&
+                (!props.model || profile.model === props.model),
+        ),
     );
     const filtered = createMemo(() => {
         const needle = query().trim().toLowerCase();
@@ -89,13 +95,16 @@ export default function ChatModelPicker(props: Props) {
                 ref={trigger!}
                 type="button"
                 class="chat-run-trigger"
+                title={`${selected()?.label ?? props.profile} · ${selected()?.provider}/${selected()?.model}`}
                 aria-haspopup="dialog"
                 aria-expanded={open()}
                 onClick={() => {
                     setOpen((value) => !value);
                     if (!open()) return;
                     const current = filtered().findIndex(
-                        (profile) => profile.id === props.profile,
+                        (profile) =>
+                            profile.id === props.profile &&
+                            (!props.model || profile.model === props.model),
                     );
                     setActiveOption(Math.max(0, current));
                     queueMicrotask(() => search.focus());
@@ -108,7 +117,8 @@ export default function ChatModelPicker(props: Props) {
                     </small>
                 </span>
                 <em>
-                    {props.reasoningEffortSelection === "default" && props.reasoningEffort !== "default"
+                    {props.reasoningEffortSelection === "default" &&
+                    props.reasoningEffort !== "default"
                         ? `default · ${props.reasoningEffort}`
                         : props.reasoningEffort}
                 </em>
@@ -164,7 +174,11 @@ export default function ChatModelPicker(props: Props) {
                                     id={`chat-model-option-${index()}`}
                                     type="button"
                                     role="option"
-                                    aria-selected={profile.id === props.profile}
+                                    aria-selected={
+                                        profile.id === props.profile &&
+                                        (!props.model ||
+                                            profile.model === props.model)
+                                    }
                                     tabIndex={
                                         index() === activeOption() ? 0 : -1
                                     }
@@ -173,7 +187,10 @@ export default function ChatModelPicker(props: Props) {
                                         moveOption(event, index())
                                     }
                                     onClick={() => {
-                                        props.onProfile?.(profile.id);
+                                        props.onProfile?.(
+                                            profile.id,
+                                            profile.model,
+                                        );
                                         close(true);
                                     }}
                                 >
@@ -199,7 +216,7 @@ export default function ChatModelPicker(props: Props) {
                                         }
                                         title={
                                             effort === "default"
-                                                ? `Use profile default (${props.reasoningEffort})`
+                                                ? `Use default effort (${props.reasoningEffortDefault ?? props.reasoningEffort})`
                                                 : undefined
                                         }
                                         onClick={() => {

@@ -13,6 +13,94 @@ impl Editor {
         names
     }
 
+    /// Choices are owned by core so GUI, terminal keys and mouse stay consistent.
+    pub fn ai_chat_model_options(&self) -> Vec<crate::ai::AiChatModelOption> {
+        let mut options = Vec::new();
+        for name in self.ai_profile_names_sorted() {
+            let profile = &self.ai_state.config.profiles[&name];
+            let mut models = if profile.provider == crate::ai::AiProviderKind::ClaudeCode {
+                crate::ai::claude_code::MODEL_PRESETS
+                    .iter()
+                    .map(|preset| preset.id)
+                    .collect::<Vec<_>>()
+            } else {
+                Vec::new()
+            };
+            if !models.contains(&profile.model.as_str()) {
+                models.push(&profile.model);
+            }
+            for model in models {
+                options.push(crate::ai::AiChatModelOption {
+                    id: name.clone(),
+                    label: profile.display_name().into(),
+                    provider: profile.provider.to_string(),
+                    model: model.into(),
+                });
+            }
+        }
+        options
+    }
+
+    pub fn ai_chat_selected_model(&self) -> &str {
+        self.ai_state
+            .config
+            .resolve_profile(&self.ai_chat_effective_profile())
+            .map(|profile| profile.model.as_str())
+            .unwrap_or_default()
+    }
+
+    /// Select a model without inventing another profile. This updates the active
+    /// runtime configuration; startup defaults remain owned by the user's config.
+    pub fn ai_select_chat_model(&mut self, profile_name: &str, model: &str) -> bool {
+        let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
+            self.set_status_message(format!("Unknown AI profile: {profile_name}"));
+            return false;
+        };
+        if model.is_empty()
+            || model.len() > 512
+            || model.chars().any(|c| c.is_whitespace() || c.is_control())
+        {
+            self.set_status_message(
+                "Model must be a nonempty alias or model ID without whitespace (at most 512 bytes)",
+            );
+            return false;
+        }
+        if profile.provider != crate::ai::AiProviderKind::ClaudeCode && profile.model != model {
+            self.set_status_message("Configure this provider's model in its AI profile");
+            return false;
+        }
+        if !self.ai_set_profile(profile_name) {
+            return false;
+        }
+        self.ai_state
+            .config
+            .profiles
+            .get_mut(profile_name)
+            .expect("validated profile")
+            .model = model.into();
+        self.set_status_message(format!("AI profile: {profile_name} · {model}"));
+        true
+    }
+
+    pub fn ai_cycle_chat_model(&mut self, forward: bool) {
+        let options = self.ai_chat_model_options();
+        if options.is_empty() {
+            return;
+        }
+        let profile = self.ai_chat_effective_profile();
+        let model = self.ai_chat_selected_model();
+        let current = options
+            .iter()
+            .position(|option| option.id == profile && option.model == model)
+            .unwrap_or(0);
+        let next = if forward {
+            (current + 1) % options.len()
+        } else {
+            (current + options.len() - 1) % options.len()
+        };
+        self.ai_select_chat_model(&options[next].id, &options[next].model);
+    }
+
     /// Select a specific AI profile. Reports and returns false when unknown.
     pub fn ai_set_profile(&mut self, profile_name: &str) -> bool {
         let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
@@ -35,6 +123,11 @@ impl Editor {
         self.ai_state.active_profile = profile_name.to_string();
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.opts.profile = Some(profile_name.to_string());
+            if provider.owns_agent_loop()
+                && chat.reasoning_effort_override.as_deref() == Some("none")
+            {
+                chat.reasoning_effort_override = None;
+            }
         }
         self.set_status_message(format!(
             "AI profile: {} ({}/{})",
@@ -60,8 +153,7 @@ impl Editor {
         } else {
             current_idx - 1
         };
-        let selected = self.ai_set_profile(&names[next_idx]);
-        debug_assert!(selected, "profile came from the active configuration");
+        self.ai_set_profile(&names[next_idx]);
     }
 
     /// Attach the current visual selection to the editable AI chat.
@@ -263,4 +355,156 @@ pub(crate) fn remap_abs_char_through_edits(mut abs_char: usize, edits: &[Edit]) 
         }
     }
     abs_char
+}
+
+#[cfg(test)]
+mod model_selection_tests {
+    use super::super::ai_external_agent::tests::{attach, editor};
+
+    #[test]
+    fn claude_model_choices_change_one_profile_and_preserve_custom_ids() {
+        let mut editor = editor();
+        let before = editor.ai_state.config.profiles.len();
+        let models: Vec<_> = editor
+            .ai_chat_model_options()
+            .into_iter()
+            .filter(|option| option.id == "claude_code")
+            .map(|option| option.model)
+            .collect();
+        assert_eq!(
+            models,
+            [
+                "default",
+                "claude-sonnet-5",
+                "claude-opus-5",
+                "claude-fable-5-1",
+                "claude-haiku-4-5-20251001"
+            ]
+        );
+        editor.ai_state.chat.as_mut().unwrap().input = "keep my draft".into();
+        assert!(editor.ai_select_chat_model("claude_code", "opus"));
+        assert_eq!(editor.ai_chat_selected_model(), "opus");
+        assert_eq!(editor.ai_state.config.profiles["claude_code"].model, "opus");
+        assert_eq!(editor.ai_state.config.profiles.len(), before);
+        assert_eq!(editor.ai_chat_input(), "keep my draft");
+        assert!(editor.ai_set_profile("local"));
+        assert!(editor.ai_set_profile("claude_code"));
+        assert_eq!(editor.ai_chat_selected_model(), "opus");
+        assert_eq!(editor.ai_state.config.default_profile, "claude_code");
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/model claude-custom-version[1m]")
+            .unwrap());
+        assert_eq!(editor.ai_chat_selected_model(), "claude-custom-version[1m]");
+        assert_eq!(
+            editor
+                .ai_chat_model_options()
+                .iter()
+                .filter(|option| option.model == "claude-custom-version[1m]")
+                .count(),
+            1
+        );
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/model default")
+            .unwrap());
+        assert_eq!(editor.ai_chat_selected_model(), "default");
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/model local")
+            .unwrap());
+        assert_eq!(editor.ai_chat_effective_profile(), "local");
+    }
+
+    #[tokio::test]
+    async fn invalid_or_busy_model_selection_is_atomic() {
+        let mut editor = editor();
+        for model in ["", " ", "opus\n", "bad\0model", &"a".repeat(513)] {
+            assert!(!editor.ai_select_chat_model("claude_code", model));
+        }
+        assert!(!editor.ai_select_chat_model("unknown", "opus"));
+        assert!(!editor.ai_select_chat_model("local", "opus"));
+        assert_eq!(editor.ai_chat_selected_model(), "default");
+        let _sender = attach(&mut editor);
+        assert!(!editor.ai_select_chat_model("claude_code", "opus"));
+        editor.ai_cycle_chat_model(true);
+        assert_eq!(editor.ai_chat_selected_model(), "default");
+        assert_eq!(editor.ai_chat_effective_profile(), "claude_code");
+        assert_eq!(editor.ai_state.config.default_profile, "claude_code");
+    }
+
+    #[test]
+    fn model_effort_defaults_respect_overrides_and_haiku_capabilities() {
+        let mut editor = editor();
+        for (model, expected) in [
+            ("claude-fable-5-1", "medium"),
+            ("fable[1m]", "medium"),
+            ("claude-opus-5", "high"),
+            ("claude-sonnet-5", "high"),
+            ("claude-haiku-4-5-20251001", "default"),
+            ("default", "default"),
+            ("custom-deployment", "default"),
+        ] {
+            assert!(editor.ai_select_chat_model("claude_code", model));
+            assert_eq!(editor.ai_chat_reasoning_effort(), expected, "{model}");
+            assert_eq!(
+                editor.ai_chat_default_reasoning_effort(),
+                expected,
+                "{model}"
+            );
+            assert_eq!(editor.ai_chat_reasoning_effort_selection(), "default");
+            let profile = &editor.ai_state.config.profiles["claude_code"];
+            assert_eq!(
+                profile.resolve_reasoning_effort(None).unwrap_or("default"),
+                expected
+            );
+        }
+        assert!(editor.ai_select_chat_model("claude_code", "claude-fable-5-1"));
+        editor
+            .ai_state
+            .config
+            .profiles
+            .get_mut("claude_code")
+            .unwrap()
+            .reasoning_effort = Some("low".into());
+        assert_eq!(editor.ai_chat_reasoning_effort(), "low");
+        assert!(editor.set_ai_chat_reasoning_effort("max"));
+        assert_eq!(editor.ai_chat_reasoning_effort(), "max");
+        assert_eq!(editor.ai_chat_default_reasoning_effort(), "low");
+        assert!(editor.ai_select_chat_model("claude_code", "claude-haiku-4-5-20251001"));
+        assert_eq!(editor.ai_chat_reasoning_effort(), "default");
+        assert_eq!(editor.ai_chat_reasoning_effort_selection(), "default");
+        assert_eq!(editor.ai_chat_reasoning_efforts(), ["default"]);
+        assert!(!editor.set_ai_chat_reasoning_effort("high"));
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].resolve_reasoning_effort(Some("max")),
+            None
+        );
+        assert!(editor.ai_select_chat_model("claude_code", "claude-fable-5-1"));
+        assert_eq!(editor.ai_chat_reasoning_effort(), "max");
+        assert!(editor.set_ai_chat_reasoning_effort("default"));
+        assert_eq!(editor.ai_chat_reasoning_effort(), "low");
+        assert!(editor.ai_set_profile("local"));
+        assert!(editor.set_ai_chat_reasoning_effort("none"));
+        assert!(editor.ai_set_profile("claude_code"));
+        assert_eq!(editor.ai_chat_reasoning_effort_selection(), "default");
+        assert_eq!(editor.ai_chat_reasoning_effort(), "low");
+    }
+
+    #[test]
+    fn terminal_keyboard_selects_models_within_the_same_profile() {
+        let mut editor = editor();
+        editor.open_ai_chat_model_picker(super::super::ChatModelPickerSection::Model);
+        for expected in [
+            "claude-sonnet-5",
+            "claude-opus-5",
+            "claude-fable-5-1",
+            "claude-haiku-4-5-20251001",
+        ] {
+            super::super::input::InputHandler::handle_key_event(
+                &mut editor,
+                crate::KeyEvent::new(crate::KeyCode::Down, crate::Modifiers::NONE),
+            )
+            .unwrap();
+            assert_eq!(editor.ai_chat_effective_profile(), "claude_code");
+            assert_eq!(editor.ai_chat_selected_model(), expected);
+        }
+    }
 }

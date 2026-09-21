@@ -47,8 +47,8 @@ const AI_CHAT_SLASH_COMMANDS: &[AiChatSlashCompletion] = &[
     },
     AiChatSlashCompletion {
         command: "/model",
-        usage: "/model [profile]",
-        description: "Choose the chat model",
+        usage: "/model [profile|model]",
+        description: "Choose a profile, or a Claude model alias/ID",
         kind: AiChatSlashCommandKind::Model,
     },
     AiChatSlashCompletion {
@@ -314,7 +314,14 @@ impl Editor {
             Ok(AiChatSlashCommand::Model {
                 profile: Some(profile),
             }) => {
-                if self.ai_set_profile(&profile) {
+                let selected = if self.ai_state.config.profiles.contains_key(&profile) {
+                    self.ai_set_profile(&profile)
+                } else if self.ai_chat_uses_external_agent() {
+                    self.ai_select_chat_model(&self.ai_chat_effective_profile(), &profile)
+                } else {
+                    self.ai_set_profile(&profile)
+                };
+                if selected {
                     self.clear_ai_chat_input();
                 }
             }

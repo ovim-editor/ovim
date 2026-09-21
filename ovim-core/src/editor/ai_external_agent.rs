@@ -292,10 +292,9 @@ impl Editor {
         {
             bail!("Claude Code profiles use Claude's own tools and system prompt; configure these through Claude Code settings");
         }
-        let effort = chat
-            .reasoning_effort_override
-            .clone()
-            .or(profile.reasoning_effort.clone());
+        let effort = profile
+            .resolve_reasoning_effort(chat.reasoning_effort_override.as_deref())
+            .map(str::to_owned);
         if effort
             .as_deref()
             .is_some_and(|value| !["low", "medium", "high", "xhigh", "max"].contains(&value))

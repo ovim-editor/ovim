@@ -8,6 +8,15 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::PathBuf;
 
+/// A selectable profile/model pair shared by both chat interfaces.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub struct AiChatModelOption {
+    pub id: String,
+    pub label: String,
+    pub provider: String,
+    pub model: String,
+}
+
 #[derive(Debug, Clone)]
 pub struct AiProfileConfig {
     pub name: String,
@@ -35,6 +44,21 @@ pub struct AiProfileConfig {
 }
 
 impl AiProfileConfig {
+    /// One precedence rule for runtime requests and both interfaces. Models
+    /// without effort support must not inherit a stale override or profile value.
+    pub fn resolve_reasoning_effort<'a>(&'a self, selection: Option<&'a str>) -> Option<&'a str> {
+        if self.provider == AiProviderKind::ClaudeCode
+            && !super::claude_code::supports_effort(&self.model)
+        {
+            return None;
+        }
+        selection.or(self.reasoning_effort.as_deref()).or_else(|| {
+            (self.provider == AiProviderKind::ClaudeCode)
+                .then(|| super::claude_code::default_effort(&self.model))
+                .flatten()
+        })
+    }
+
     /// Presentation is separate from the stable configuration key.
     pub fn display_name(&self) -> &str {
         if self.provider == AiProviderKind::ClaudeCode && self.name == "claude_code" {

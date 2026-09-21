@@ -661,14 +661,14 @@ fn handle_model_selector(editor: &mut Editor, key_event: KeyEvent) -> Result<()>
         }
         KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
             if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model {
-                editor.ai_cycle_profile(false);
+                editor.ai_cycle_chat_model(false);
             } else {
                 editor.cycle_ai_chat_reasoning_effort(false);
             }
         }
         KeyCode::Down | KeyCode::Right | KeyCode::Char('j') | KeyCode::Char('l') => {
             if editor.ai_chat_model_picker_section() == ChatModelPickerSection::Model {
-                editor.ai_cycle_profile(true);
+                editor.ai_cycle_chat_model(true);
             } else {
                 editor.cycle_ai_chat_reasoning_effort(true);
             }

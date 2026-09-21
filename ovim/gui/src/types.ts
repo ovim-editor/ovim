@@ -74,6 +74,7 @@ export interface GuiAiChat {
     externalAgent?: boolean;
     externalQuestion?: boolean;
     profile: string;
+    model?: string;
     pendingCodeAttachment?: {
         bufferId: number;
         label: string;
@@ -86,6 +87,7 @@ export interface GuiAiChat {
     profiles: GuiAiProfileOption[];
     reasoningEffort: string;
     reasoningEffortSelection: string;
+    reasoningEffortDefault?: string;
     reasoningEfforts: string[];
     yoloMode: boolean;
     comprehensionPolicy: "off" | "publish" | "commit";

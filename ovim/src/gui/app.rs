@@ -307,8 +307,9 @@ async fn gui_remove_chat_image(bridge: State<'_, GuiBridge>, index: usize) -> Re
 async fn gui_select_ai_profile(
     bridge: State<'_, GuiBridge>,
     profile: String,
+    model: Option<String>,
 ) -> Result<(), String> {
-    bridge.select_ai_profile(profile).await
+    bridge.select_ai_profile(profile, model).await
 }
 
 #[tauri::command]

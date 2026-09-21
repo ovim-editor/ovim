@@ -441,7 +441,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
             .find(|(area, _)| area.contains(col, row))
             .map(|(_, profile)| profile.clone())
         {
-            editor.ai_set_profile(&profile);
+            editor.ai_select_chat_model(&profile.id, &profile.model);
             return Ok(None);
         }
         if let Some(effort) = editor

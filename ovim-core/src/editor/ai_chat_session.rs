@@ -30,22 +30,33 @@ impl Editor {
     }
 
     pub fn ai_chat_reasoning_effort(&self) -> String {
-        let Some(chat) = self.ai_state.chat.as_ref() else {
-            return "default".into();
-        };
-        chat.reasoning_effort_override
-            .clone()
-            .or_else(|| {
-                self.ai_state
-                    .config
-                    .resolve_profile(&self.ai_chat_effective_profile())
-                    .and_then(|profile| profile.reasoning_effort.clone())
-            })
-            .unwrap_or_else(|| "default".into())
+        let selection = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.reasoning_effort_override.as_deref());
+        self.ai_state
+            .config
+            .resolve_profile(&self.ai_chat_effective_profile())
+            .and_then(|profile| profile.resolve_reasoning_effort(selection))
+            .unwrap_or("default")
+            .into()
+    }
+
+    pub fn ai_chat_default_reasoning_effort(&self) -> String {
+        self.ai_state
+            .config
+            .resolve_profile(&self.ai_chat_effective_profile())
+            .and_then(|profile| profile.resolve_reasoning_effort(None))
+            .unwrap_or("default")
+            .into()
     }
 
     /// Picker value, kept separate from the effective profile-derived effort.
     pub fn ai_chat_reasoning_effort_selection(&self) -> String {
+        if self.ai_chat_reasoning_efforts() == ["default"] {
+            return "default".into();
+        }
         self.ai_state
             .chat
             .as_ref()
@@ -55,6 +66,9 @@ impl Editor {
 
     pub fn ai_chat_reasoning_efforts(&self) -> &'static [&'static str] {
         if self.ai_chat_uses_external_agent() {
+            if !crate::ai::claude_code::supports_effort(self.ai_chat_selected_model()) {
+                return &["default"];
+            }
             &["default", "low", "medium", "high", "xhigh", "max"]
         } else {
             AI_CHAT_REASONING_EFFORTS
@@ -78,7 +92,7 @@ impl Editor {
         chat.reasoning_effort_override = (effort != "default").then(|| effort.to_string());
         let effective = self.ai_chat_reasoning_effort();
         self.set_status_message(if effort == "default" {
-            format!("AI reasoning effort: {effective} (profile default)")
+            format!("AI reasoning effort: {effective} (default)")
         } else {
             format!("AI reasoning effort: {effective}")
         });

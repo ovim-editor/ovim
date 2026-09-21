@@ -157,13 +157,13 @@ test("read-only chats expose read built-ins and ignore configured MCP servers", 
 test("passes explicit model, effort, and native resume", async () => {
     const { options } = await run([result], {
         request: {
-            model: "sonnet",
-            effort: "high",
+            model: "claude-fable-5-1",
+            effort: "medium",
             resume: "previous-session",
         },
     });
-    assert.equal(options.model, "sonnet");
-    assert.equal(options.effort, "high");
+    assert.equal(options.model, "claude-fable-5-1");
+    assert.equal(options.effort, "medium");
     assert.equal(options.resume, "previous-session");
 });
 

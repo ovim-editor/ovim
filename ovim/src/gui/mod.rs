@@ -117,14 +117,7 @@ pub struct GuiAgentOption {
     pub depth: usize,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct GuiAiProfileOption {
-    pub label: String,
-    pub id: String,
-    pub provider: String,
-    pub model: String,
-}
+pub type GuiAiProfileOption = ovim_core::ai::AiChatModelOption;
 
 fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
     if let Some(summary) = editor.codex_auth_dialog_summary() {
@@ -583,10 +576,12 @@ pub struct GuiAiChat {
     pub external_agent: bool,
     pub external_question: bool,
     pub profile: String,
+    pub model: String,
     pub pending_code_attachment: Option<GuiCodeAttachment>,
     pub profiles: Vec<GuiAiProfileOption>,
     pub reasoning_effort: String,
     pub reasoning_effort_selection: String,
+    pub reasoning_effort_default: String,
     pub reasoning_efforts: Vec<String>,
     pub yolo_mode: bool,
     pub comprehension_policy: String,
@@ -854,6 +849,7 @@ enum GuiRequest {
     },
     SelectAiProfile {
         profile: String,
+        model: Option<String>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     SelectReasoningEffort {
@@ -1182,9 +1178,17 @@ impl GuiBridge {
             .await
     }
 
-    pub async fn select_ai_profile(&self, profile: String) -> Result<(), String> {
-        self.request(|reply| GuiRequest::SelectAiProfile { profile, reply })
-            .await
+    pub async fn select_ai_profile(
+        &self,
+        profile: String,
+        model: Option<String>,
+    ) -> Result<(), String> {
+        self.request(|reply| GuiRequest::SelectAiProfile {
+            profile,
+            model,
+            reply,
+        })
+        .await
     }
 
     pub async fn select_reasoning_effort(&self, effort: String) -> Result<(), String> {
@@ -1753,17 +1757,24 @@ async fn handle_request(
             }
             (reply, result)
         }
-        GuiRequest::SelectAiProfile { profile, reply } => {
+        GuiRequest::SelectAiProfile {
+            profile,
+            model,
+            reply,
+        } => {
             let result = if editor.mode() != Mode::AiChat {
                 Err(anyhow::anyhow!("AI chat is not active"))
-            } else if editor.ai_set_profile(&profile) {
+            } else if match model.as_deref() {
+                Some(model) => editor.ai_select_chat_model(&profile, model),
+                None => editor.ai_set_profile(&profile),
+            } {
                 if let Some(chat) = editor.ai_state.chat.as_mut() {
                     chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
                 }
                 refresh_after_input(editor);
                 Ok(())
             } else {
-                Err(anyhow::anyhow!("Unknown AI profile: {profile}"))
+                Err(anyhow::anyhow!("Could not select AI profile/model; stop any active turn and check the selection"))
             };
             (reply, result)
         }
@@ -3094,6 +3105,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             external_agent: editor.ai_chat_uses_external_agent(),
             external_question: editor.ai_chat_has_external_question(),
             profile: editor.ai_chat_effective_profile(),
+            model: editor.ai_chat_selected_model().to_string(),
             pending_code_attachment: editor.ai_chat_pending_code_attachment().map(|attachment| {
                 GuiCodeAttachment {
                     buffer_id: attachment.buffer_id,
@@ -3105,24 +3117,10 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                     linewise: attachment.linewise,
                 }
             }),
-            profiles: editor
-                .ai_profile_names_sorted()
-                .into_iter()
-                .filter_map(|id| {
-                    editor
-                        .ai_state
-                        .config
-                        .resolve_profile(&id)
-                        .map(|profile| GuiAiProfileOption {
-                            label: profile.display_name().into(),
-                            id,
-                            provider: profile.provider.to_string(),
-                            model: profile.model.clone(),
-                        })
-                })
-                .collect(),
+            profiles: editor.ai_chat_model_options(),
             reasoning_effort: editor.ai_chat_reasoning_effort(),
             reasoning_effort_selection: editor.ai_chat_reasoning_effort_selection(),
+            reasoning_effort_default: editor.ai_chat_default_reasoning_effort(),
             reasoning_efforts: editor
                 .ai_chat_reasoning_efforts()
                 .iter()
@@ -3649,8 +3647,8 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 mod tests {
     use super::*;
 
-    #[test]
-    fn claude_profile_projects_the_external_runtime_to_gui() {
+    #[tokio::test]
+    async fn claude_profile_projects_the_external_runtime_to_gui() {
         let mut editor = Editor::default();
         let mut profile = editor.ai_state.config.profiles["local"].clone();
         profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
@@ -3671,6 +3669,33 @@ mod tests {
         assert_eq!(chat.comprehension_policy, "off");
         assert!(!chat.reasoning_efforts.contains(&"none".to_string()));
         assert!(chat.setup.is_none());
+        assert_eq!(chat.model, "default");
+        assert!(chat
+            .profiles
+            .iter()
+            .any(|option| option.id == "claude_code" && option.model == "claude-fable-5-1"));
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::SelectAiProfile {
+                profile: "claude_code".into(),
+                model: Some("claude-fable-5-1".into()),
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 1,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap().unwrap();
+        assert_eq!(
+            snapshot(&editor, 2).ai_chat.unwrap().model,
+            "claude-fable-5-1"
+        );
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].model,
+            "claude-fable-5-1"
+        );
     }
 
     #[test]

@@ -57,3 +57,28 @@ test("Claude walkthrough uses the existing interactive reader", async ({ page },
     await expect(page.getByRole("button", {name:/next/i})).toBeVisible();
     await page.screenshot({path:testInfo.outputPath("claude-walkthrough.png"), fullPage:true});
 });
+
+test("Claude model presets are selectable in a narrow chat window", async ({page}, testInfo) => {
+    await page.setViewportSize({width:1154, height:1054});
+    await page.route("**/src/mock.ts", async route => {
+        const response = await route.fetch();
+        await route.fulfill({response, body:(await response.text()) + `
+Object.assign(mockSnapshot.aiChat, {
+    profile:"claude_code", model:"claude-fable-5-1", externalAgent:true, externalQuestion:false,
+    profiles:["default","claude-sonnet-5","claude-opus-5","claude-fable-5-1","claude-haiku-4-5-20251001"].map(model => ({id:"claude_code",label:"Claude Agent",provider:"claude_code",model})),
+    activity:"idle", waiting:false, approval:undefined, codeExplanation:undefined,
+    reasoningEffort:"medium", reasoningEffortSelection:"default", reasoningEffortDefault:"medium",
+    reasoningEfforts:["default","low","medium","high","xhigh","max"]
+});`});
+    });
+    await page.goto("/");
+    await page.getByRole("button", {name:/Claude Agent.*claude_code\/claude-fable-5-1/}).click();
+    await expect(page.getByRole("option")).toHaveCount(5);
+    await expect(page.getByRole("option", {selected:true})).toContainText("claude-fable-5-1");
+    for (const model of ["default","claude-sonnet-5","claude-opus-5","claude-fable-5-1","claude-haiku-4-5-20251001"])
+        await expect(page.getByRole("option", {name:new RegExp(model + "$")})).toBeVisible();
+    await page.screenshot({path:testInfo.outputPath("claude-model-picker.png"), fullPage:true});
+    await page.getByRole("option", {name:/haiku/}).click();
+    await expect(page.getByRole("dialog", {name:"AI run settings"})).toHaveCount(0);
+    await expect(page.getByLabel("AI chat input")).toBeFocused();
+});

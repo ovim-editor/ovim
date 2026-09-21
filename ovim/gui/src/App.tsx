@@ -857,7 +857,7 @@ export const ChatPanel = (props: {
     onSetupKey?: (key: string) => void;
     onInputWidth?: (columns: number) => void;
     onRemoveImage?: (index: number) => void;
-    onProfile?: (profile: string) => void;
+    onProfile?: (profile: string, model?: string) => void;
     onReasoningEffort?: (effort: string) => void;
     onApproval?: (allow: boolean) => void;
     onYolo?: () => void;
@@ -945,12 +945,14 @@ export const ChatPanel = (props: {
                     <b>AI chat</b>
                     <ChatModelPicker
                         profile={props.chat.profile}
+                        model={props.chat.model}
                         profiles={props.chat.profiles}
                         reasoningEffort={props.chat.reasoningEffort}
                         reasoningEffortSelection={
                             props.chat.reasoningEffortSelection
                         }
                         reasoningEfforts={props.chat.reasoningEfforts}
+                        reasoningEffortDefault={props.chat.reasoningEffortDefault}
                         onProfile={props.onProfile}
                         onReasoningEffort={props.onReasoningEffort}
                         focusInput={props.focusInput}
@@ -2441,8 +2443,8 @@ function App() {
                     onRemoveImage={(index) =>
                         void mutate("gui_remove_chat_image", { index })
                     }
-                    onProfile={(profile) =>
-                        void mutate("gui_select_ai_profile", { profile })
+                    onProfile={(profile, model) =>
+                        void mutate("gui_select_ai_profile", { profile, model })
                     }
                     onReasoningEffort={(effort) =>
                         void mutate("gui_select_reasoning_effort", { effort })

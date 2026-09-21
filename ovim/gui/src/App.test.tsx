@@ -929,7 +929,7 @@ describe("Ovim Solid workbench", () => {
             screen.getByRole("option", { name: /local.*ollama.*qwen-test/i }),
         );
         await Promise.resolve();
-        expect(onProfile).toHaveBeenCalledWith("local");
+        expect(onProfile).toHaveBeenCalledWith("local", "qwen-test");
         expect(focusInput).toHaveBeenCalledOnce();
 
         fireEvent.click(trigger);

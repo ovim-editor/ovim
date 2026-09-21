@@ -430,7 +430,30 @@ after restarting, put this in your `init.lua`:
 vim.ai.default_profile = "claude_code"
 ```
 
-The built-in profile uses Claude Code's configured model. To choose one explicitly:
+The model picker in both the GUI and terminal offers Claude Agent entries for
+`default`, `claude-sonnet-5`, `claude-opus-5`, `claude-fable-5-1`, and
+`claude-haiku-4-5-20251001`. Select a row to change the model within
+the same profile. In terminal Ovim, `/model` opens the picker; arrow keys select
+and Enter returns to the composer. With the Claude profile active, `/model opus`
+(or an explicit model ID) also changes the model. Named Ovim profiles take
+precedence, so `/model codex_sol` still switches providers.
+
+These exact IDs were checked against [Anthropic's model reference](https://platform.claude.com/docs/en/models/overview)
+on 2026-09-21. They are not a list of your account's entitlements. Other aliases,
+such as `fable`, and deployment-specific IDs can be entered with `/model`.
+Claude enforces model availability. Haiku does not expose reasoning effort;
+Ovim omits any previously selected effort when using it. `default` leaves the model unset, using your usual Claude
+configuration. Changes apply to this Ovim session and remain selected when you
+switch away and back. Stop an active turn before changing the selection.
+Ovim's model defaults are Medium for Fable 5.1 and High for Opus 5 and Sonnet 5,
+following [Anthropic's effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort)
+for Opus/Sonnet and choosing Medium for Fable's interactive use. An explicit
+`/effort` selection overrides the profile's `reasoning_effort`, which in turn
+overrides the model default. Choose Default effort to restore that precedence.
+The `default` model and unrecognized custom IDs leave effort to Claude unless
+an effort is explicitly configured. Haiku ignores effort overrides.
+
+To keep a model choice after restarting, configure it explicitly:
 
 ```lua
 vim.ai.setup({
@@ -555,7 +578,7 @@ Typing `/` or a partial command name opens an autocomplete popup. Use Up/Down
 to choose, then Tab or Enter to insert the command; click selection is also
 supported. Enter again executes a completed command.
 
-- `/model` opens the profile picker.
+- `/model` opens the profile and model picker.
 - `/model codex_sol` switches directly to a named profile.
 - `/effort` opens the combined picker on reasoning effort.
 - `/effort default|none|low|medium|high|xhigh|max` sets the per-chat effort.
