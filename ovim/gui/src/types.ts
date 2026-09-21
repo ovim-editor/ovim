@@ -64,6 +64,7 @@ export interface GuiPane {
 }
 
 export interface GuiAiProfileOption {
+    label?: string;
     id: string;
     provider: string;
     model: string;

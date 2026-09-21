@@ -37,7 +37,7 @@ export default function ChatModelPicker(props: Props) {
         const needle = query().trim().toLowerCase();
         if (!needle) return props.profiles;
         return props.profiles.filter((profile) =>
-            `${profile.id} ${profile.provider} ${profile.model}`
+            `${profile.label ?? ""} ${profile.id} ${profile.provider} ${profile.model}`
                 .toLowerCase()
                 .includes(needle),
         );
@@ -102,7 +102,7 @@ export default function ChatModelPicker(props: Props) {
                 }}
             >
                 <span>
-                    <b>{props.profile}</b>
+                    <b>{selected()?.label ?? props.profile}</b>
                     <small>
                         {selected()?.provider}/{selected()?.model}
                     </small>
@@ -178,7 +178,7 @@ export default function ChatModelPicker(props: Props) {
                                     }}
                                 >
                                     <span>
-                                        <b>{profile.id}</b>
+                                        <b>{profile.label ?? profile.id}</b>
                                         <small>{profile.provider}</small>
                                     </span>
                                     <em>{profile.model}</em>

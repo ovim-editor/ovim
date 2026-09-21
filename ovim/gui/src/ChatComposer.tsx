@@ -195,9 +195,9 @@ export default function ChatComposer(props: {
                 value={draft()}
                 placeholder={
                     props.chat.externalQuestion
-                        ? "Answer Claude Code’s question…"
+                        ? "Answer Claude’s question…"
                         : props.chat.externalAgent
-                          ? "Ask Claude Code about this code…"
+                          ? "Ask Claude about this code…"
                           : "Ask Ovim about this code…"
                 }
                 rows={2}

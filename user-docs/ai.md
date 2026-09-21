@@ -402,9 +402,9 @@ Use `vim.ai.setup(...)` in Lua to customize these defaults.
 
 `ai.toml` still works, but it is legacy compatibility.
 
-## Claude Code
+## Claude Agent
 
-Select the built-in `claude_code` profile from the model picker, or enter
+Select **Claude Agent** (the built-in `claude_code` profile) from the model picker, or enter
 `/model claude_code`. Both GUI Ovim and terminal Ovim keep their normal chat
 interface. The official Claude Agent SDK runs your installed, unmodified
 Claude Code executable. Claude owns its tools, permissions, settings, skills,
@@ -447,14 +447,30 @@ answer, an option number, or comma-separated numbers for a multiple-selection
 question. Escape stops the active turn. Closing the panel keeps it running;
 closing Ovim stops its runtime process tree.
 
-Read-only queries expose only Claude's Read, Glob, and Grep tools and disable
-MCP tools. Editable chats use Claude's normal permission rules. Ovim's YOLO,
+Read-only queries expose Claude's Read, Glob, and Grep tools plus Ovim's
+context and navigation MCP tools. Other configured MCP servers are excluded. Editable chats use Claude's normal permission rules. Ovim's YOLO,
 Terra approval classifier, comprehension gates, and delegated-agent tools do
 not govern Claude tools. They are not exposed as Claude controls. `/compact`
-goes to Claude Code once a native session exists. Use Claude's settings for its system prompt and tools,
-rather than Ovim inference-profile prompt or tool overrides.
+goes to Claude Code once a native session exists. Ovim appends brief editor
+integration guidance to Claude's standard prompt. Use Claude's settings for
+further customization, rather than Ovim inference-profile prompt or tool overrides.
 
 Ovim supplies the current editor snapshot and attached context as user input.
+The private MCP connection also exposes three tools:
+
+- `workspace_context` refreshes the active/open files, cursor, selection,
+  diagnostics and bounded editor snapshot, including unsaved visible content.
+- `open_file` shows an existing file in the current workspace, optionally at a
+  line/column, preserving unsaved buffers. File creation and paths escaping the
+  workspace (including symlink escapes) are rejected.
+- `explain_with_codebase` presents the normal interactive concept/code
+  walkthrough. Claude waits until you finish, dismiss it, or ask a question.
+  Questions return to the running Claude turn. Completed walkthroughs support replay.
+
+The connection is bound to the originating editor turn and cannot discover or
+control other Ovim sessions. It closes when that turn ends. Claude's normal
+permission flow applies; the server also enforces its limited tool and path scope.
+
 Claude edits files on disk; Ovim's usual external-change handling reconciles
 open buffers and preserves unsaved edits. Native sessions resume only when the
 branch, configuration, and visible conversation match the saved checkpoint.

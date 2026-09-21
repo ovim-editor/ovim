@@ -34,6 +34,17 @@ pub struct AiProfileConfig {
     pub retry: RetryPolicy,
 }
 
+impl AiProfileConfig {
+    /// Presentation is separate from the stable configuration key.
+    pub fn display_name(&self) -> &str {
+        if self.provider == AiProviderKind::ClaudeCode && self.name == "claude_code" {
+            "Claude Agent"
+        } else {
+            &self.name
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ProjectContextConfig {
     /// File names to search for (e.g. ".ovim.md", "AGENTS.md", "CLAUDE.md").

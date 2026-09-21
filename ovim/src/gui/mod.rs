@@ -120,6 +120,7 @@ pub struct GuiAgentOption {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiAiProfileOption {
+    pub label: String,
     pub id: String,
     pub provider: String,
     pub model: String,
@@ -3108,6 +3109,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                         .config
                         .resolve_profile(&id)
                         .map(|profile| GuiAiProfileOption {
+                            label: profile.display_name().into(),
                             id,
                             provider: profile.provider.to_string(),
                             model: profile.model.clone(),

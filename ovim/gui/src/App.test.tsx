@@ -59,7 +59,7 @@ it("Claude questions keep an answer action in the composer while the agent waits
     };
     render(() => <ChatComposer chat={chat} />);
     expect(
-        screen.getByPlaceholderText("Answer Claude Code’s question…"),
+        screen.getByPlaceholderText("Answer Claude’s question…"),
     ).toBeTruthy();
     expect(screen.getByRole("button", { name: "Send message" })).toBeTruthy();
     expect(

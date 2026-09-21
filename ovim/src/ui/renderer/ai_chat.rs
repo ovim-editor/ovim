@@ -465,7 +465,14 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
             .bg(Color::Rgb(35, 70, 92))
             .add_modifier(Modifier::BOLD)
     };
-    let model_label = format!(" M:{} ▾ ", editor.ai_chat_effective_profile());
+    let profile_key = editor.ai_chat_effective_profile();
+    let profile_label = editor
+        .ai_state
+        .config
+        .resolve_profile(&profile_key)
+        .map(|profile| profile.display_name())
+        .unwrap_or(&profile_key);
+    let model_label = format!(" M:{profile_label} ▾ ");
     let effort_label = format!(" E:{} ▾ ", editor.ai_chat_reasoning_effort());
     let model_width = text_display_width(&model_label) as u16;
     let effort_width = text_display_width(&effort_label) as u16;
@@ -2312,7 +2319,7 @@ fn render_model_selector_bar(frame: &mut Frame, editor: &Editor, area: Rect) {
             continue;
         };
         let model_short: String = profile.model.chars().take(20).collect();
-        let label = format!(" {}:{} ", name, model_short);
+        let label = format!(" {}:{} ", profile.display_name(), model_short);
         let label_w = text_display_width(&label);
         if used_width + label_w + 1 > w {
             break;
@@ -2412,7 +2419,7 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
         };
         let selected = name == &active_profile;
         let marker = if selected { "●" } else { "○" };
-        let detail = format!("{marker} {name}  {}", profile.model);
+        let detail = format!("{marker} {}  {}", profile.display_name(), profile.model);
         items.push(ListItem::new(detail).style(if selected {
             Style::default().fg(Color::White).bg(BG_SELECTED_ROW)
         } else {
@@ -3068,7 +3075,7 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect::<String>();
-        assert!(rendered.contains("claude_code"), "{rendered}");
+        assert!(rendered.contains("Claude Agent"), "{rendered}");
         assert!(!rendered.contains("YOLO"), "{rendered}");
         assert!(!rendered.contains("COMPREHENSION"), "{rendered}");
         assert!(editor
