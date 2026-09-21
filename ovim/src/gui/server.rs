@@ -40,6 +40,7 @@ pub fn gui_channel(dimensions: (u16, u16)) -> (GuiChannel, GuiServer) {
             updates,
             dimensions,
             revision: 1,
+            inputs: 0,
             last_snapshot: None,
             last_render_version: 0,
             frames_built: 0,
@@ -92,6 +93,9 @@ pub struct GuiServer {
     updates: Arc<watch::Sender<Option<GuiSnapshot>>>,
     dimensions: (u16, u16),
     revision: u64,
+    /// How many commands this conversation has taken in, published on every
+    /// frame so a frontend can tell which of its own keys a frame accounts for.
+    inputs: u64,
     /// The last frame published, or `None` while nothing is being streamed.
     last_snapshot: Option<GuiSnapshot>,
     last_render_version: u64,
@@ -113,7 +117,14 @@ impl GuiServer {
         if matches!(request, GuiRequest::Shutdown) {
             return false;
         }
-        super::handle_request(request, editor, &mut self.dimensions, &mut self.revision).await;
+        super::handle_request(
+            request,
+            editor,
+            &mut self.dimensions,
+            &mut self.revision,
+            &mut self.inputs,
+        )
+        .await;
         true
     }
 
@@ -143,7 +154,7 @@ impl GuiServer {
         // Project at the current revision so a runtime tick that did not touch
         // the visible state costs a comparison rather than a wire frame.
         self.frames_built += 1;
-        let mut next = super::snapshot(editor, self.revision);
+        let mut next = super::snapshot(editor, self.revision, self.inputs);
         if self.last_snapshot.as_ref() == Some(&next) {
             return;
         }
@@ -165,7 +176,7 @@ impl GuiServer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::gui::protocol::GuiReplyKind;
+    use crate::gui::protocol::{GuiKeyInput, GuiReplyKind};
 
     /// Move the editor's visible state on, the way an edit would.
     fn changed(editor: &mut Editor, message: &str) {
@@ -237,6 +248,44 @@ mod tests {
 
         let reply = sent.await.unwrap().unwrap().expect("a unit reply");
         assert_eq!(reply.kind(), GuiReplyKind::Unit);
+    }
+
+    #[tokio::test]
+    async fn every_command_the_session_takes_in_raises_the_count_on_the_frame() {
+        // The count is the fence a frontend measures its own speculation
+        // against: a frame that has not counted a key cannot be describing the
+        // buffer that key produced.
+        let (channel, mut server) = gui_channel((80, 24));
+        let mut editor = Editor::with_content("fn main() {}\n");
+        let updates = channel.subscribe();
+        server.publish(&editor);
+        assert_eq!(
+            updates.borrow().as_ref().map(|frame| frame.input_epoch),
+            Some(0)
+        );
+
+        for key in ["i", "x"] {
+            let input = GuiKeyInput {
+                key: key.to_string(),
+                shift: false,
+                control: false,
+                alt: false,
+                meta: false,
+            };
+            let sent = {
+                let channel = channel.clone();
+                tokio::spawn(async move { channel.send(GuiCommand::Key { input }).await })
+            };
+            let request = server.recv().await.expect("the key should arrive");
+            server.handle(request, &mut editor).await;
+            sent.await.unwrap().expect("the key should be taken");
+        }
+        server.publish(&editor);
+
+        let frame = updates.borrow().clone().expect("a frame");
+        assert_eq!(frame.input_epoch, 2);
+        // And the frame that counted them is one a frontend may speak for.
+        assert!(frame.predictable_insert);
     }
 
     #[tokio::test]

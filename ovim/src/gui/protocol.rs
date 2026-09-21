@@ -132,6 +132,24 @@ pub struct GuiSnapshot {
     pub lsp_manager: Option<GuiLspManager>,
     pub debug: Option<GuiDebugPanel>,
     pub theme: GuiTheme,
+    /// Whether a plain printable character typed now is certain to be inserted
+    /// literally at the cursor.
+    ///
+    /// The frontend's predictive echo speculates only while this is true. See
+    /// [`crate::gui::echo`] for why the editor has to answer this rather than
+    /// the client working it out from the projection: every state that makes
+    /// it false is invisible in the frame.
+    pub predictable_insert: bool,
+    /// How many commands the editor has taken in over this conversation.
+    ///
+    /// A frontend counts the keys it has sent and subtracts: what is left is
+    /// the run this frame does not yet account for, which is exactly the run
+    /// predictive echo may draw for itself. The count rises for every client
+    /// and for every command -- a mouse click moves the cursor a speculation is
+    /// anchored to as surely as a key does -- so it can only ever overstate
+    /// what the editor has consumed of one client's typing, and overstating
+    /// makes that client speak for less rather than more.
+    pub input_epoch: u64,
     pub should_quit: bool,
 }
 

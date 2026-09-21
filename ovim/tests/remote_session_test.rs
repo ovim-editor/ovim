@@ -122,6 +122,69 @@ async fn keystrokes_reach_a_live_session_and_its_snapshots_come_back() {
     drop(bridge);
 }
 
+/// What a keystroke costs when nothing speaks for it locally.
+///
+/// The number predictive echo exists to hide, measured through the real
+/// transport rather than modelled: from handing a key to the bridge to the
+/// frame that shows it coming back. Set `OVIM_REMOTE_LATENCY_MS` to make a
+/// loopback session feel like a distant one -- the transport applies half of it
+/// in each direction -- and the reading should come out at roughly that,
+/// whatever the editor itself costs on top.
+///
+/// The other half of the comparison is in the frontend, where the drawing
+/// happens: `ovim/gui/src/predictiveEcho.measure.test.ts` reads the same
+/// variable and times the same sample with the speculation switched on.
+#[tokio::test]
+#[ignore = "needs a running headless session; see the module comment"]
+async fn a_keystroke_costs_a_round_trip_when_nothing_speaks_for_it() {
+    let descriptor = PathBuf::from(
+        std::env::var("OVIM_REMOTE_SESSION")
+            .expect("OVIM_REMOTE_SESSION must name a session descriptor"),
+    );
+    let address = std::env::var("OVIM_REMOTE_ENDPOINT").ok();
+    let endpoint = RemoteEndpoint::from_session_file(&descriptor, address.as_deref())
+        .expect("the descriptor should describe a reachable session");
+    let bridge = GuiBridge::new(Arc::new(
+        RemoteTransport::open(endpoint)
+            .await
+            .expect("the session should accept the transport"),
+    ));
+    let mut updates = bridge.subscribe();
+    let first = next_frame(&mut updates).await;
+
+    bridge
+        .key(typed("i"))
+        .await
+        .expect("insert mode should be reachable");
+
+    let mut samples = Vec::new();
+    let mut baseline = line_text(&first, 0);
+    for key in ["e", "c", "h", "o"] {
+        let pressed = std::time::Instant::now();
+        bridge
+            .key(typed(key))
+            .await
+            .unwrap_or_else(|error| panic!("{key} should reach the editor: {error}"));
+        loop {
+            let frame = next_frame(&mut updates).await;
+            let line = line_text(&frame, 0);
+            if line != baseline {
+                baseline = line;
+                break;
+            }
+        }
+        samples.push(pressed.elapsed().as_secs_f64() * 1000.0);
+    }
+
+    bridge.key(typed("Escape")).await.expect("insert mode ends");
+    println!(
+        "keypress to visible over the real transport, no speculation: {samples:.1?}ms \
+         (session revision {} at the start)",
+        first.revision
+    );
+    drop(bridge);
+}
+
 /// A forwarder in front of the session, which this test can kill and restart.
 ///
 /// `socat` rather than an in-process proxy: the failure being reproduced is a

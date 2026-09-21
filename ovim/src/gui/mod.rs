@@ -16,6 +16,7 @@ pub mod app;
 pub mod bridge;
 #[cfg(feature = "gui")]
 pub mod browser;
+mod echo;
 #[cfg(feature = "gui")]
 mod menu;
 pub mod protocol;
@@ -260,10 +261,11 @@ async fn run_editor(
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut last_external_check = Instant::now();
     let mut revision = 1u64;
+    let mut inputs = 0u64;
     let mut dimensions = (120u16, 40u16);
 
     handle_viewport_resize(&mut editor, dimensions.0, dimensions.1);
-    let mut last_snapshot = snapshot(&editor, revision);
+    let mut last_snapshot = snapshot(&editor, revision, inputs);
     let mut last_render_version = editor.render_input_version();
     updates.send_replace(Some(last_snapshot.clone()));
     let _ = ready.send(Ok(()));
@@ -281,6 +283,7 @@ async fn run_editor(
                 publish_if_changed(
                     &editor,
                     &mut revision,
+                    inputs,
                     &mut last_snapshot,
                     &mut last_render_version,
                     &updates,
@@ -291,7 +294,8 @@ async fn run_editor(
                 if matches!(request, GuiRequest::Shutdown) {
                     break;
                 }
-                handle_request(request, &mut editor, &mut dimensions, &mut revision).await;
+                handle_request(request, &mut editor, &mut dimensions, &mut revision, &mut inputs)
+                    .await;
                 let rejected_terminal = editor.take_pending_terminal_session().is_some();
                 let rejected_shell = editor.take_pending_shell_command().is_some();
                 if rejected_terminal || rejected_shell {
@@ -303,6 +307,7 @@ async fn run_editor(
                 publish_if_changed(
                     &editor,
                     &mut revision,
+                    inputs,
                     &mut last_snapshot,
                     &mut last_render_version,
                     &updates,
@@ -314,6 +319,7 @@ async fn run_editor(
                 publish_if_changed(
                     &editor,
                     &mut revision,
+                    inputs,
                     &mut last_snapshot,
                     &mut last_render_version,
                     &updates,
@@ -345,6 +351,7 @@ fn dispatch_window_open(_pending: PendingWindowOpen, status: &mpsc::UnboundedSen
 fn publish_if_changed(
     editor: &Editor,
     revision: &mut u64,
+    inputs: u64,
     previous: &mut GuiSnapshot,
     previous_render_version: &mut u64,
     updates: &watch::Sender<Option<GuiSnapshot>>,
@@ -356,7 +363,7 @@ fn publish_if_changed(
     *previous_render_version = render_version;
     // Compare at the current revision so time-based runtime ticks that did not
     // affect the visible projection produce no webview traffic or DOM work.
-    let mut next = snapshot(editor, *revision);
+    let mut next = snapshot(editor, *revision, inputs);
     if next == *previous {
         return;
     }
@@ -479,7 +486,14 @@ pub(crate) async fn handle_request(
     editor: &mut Editor,
     dimensions: &mut (u16, u16),
     revision: &mut u64,
+    inputs: &mut u64,
 ) {
+    // Counted before the command is answered, and counted for every command
+    // rather than only for keystrokes. A frontend measures its own speculation
+    // against this number, and a mouse click or a paste moves the cursor the
+    // speculation is anchored to just as surely as a key does. Counting more
+    // than the client does can only make it speak for less.
+    *inputs = inputs.wrapping_add(1);
     let reply = match request {
         GuiRequest::Snapshot {
             columns,
@@ -491,7 +505,7 @@ pub(crate) async fn handle_request(
                 *dimensions = next;
                 handle_viewport_resize(editor, next.0, next.1);
             }
-            let _ = reply.send(Ok(snapshot(editor, *revision)));
+            let _ = reply.send(Ok(snapshot(editor, *revision, *inputs)));
             return;
         }
         GuiRequest::VectorSource { reply } => {
@@ -939,7 +953,11 @@ pub(crate) async fn handle_request(
 }
 
 /// Project the editor into a bounded DOM-friendly view model.
-pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
+///
+/// `inputs` is how many commands this conversation has taken in; it travels on
+/// the frame so a frontend can tell which of its own keys the frame accounts
+/// for. See [`echo`] for what that buys.
+pub fn snapshot(editor: &Editor, revision: u64, inputs: u64) -> GuiSnapshot {
     let buffer = editor.buffer();
     let cursor = buffer.cursor();
     let total_lines = buffer.line_count();
@@ -1092,6 +1110,8 @@ pub fn snapshot(editor: &Editor, revision: u64) -> GuiSnapshot {
         lsp_manager: lsp_manager(editor),
         debug: debug_panel(editor),
         theme: theme(editor),
+        predictable_insert: echo::predictable_insert(editor),
+        input_epoch: inputs,
         should_quit: editor.should_quit(),
     }
 }
@@ -2314,7 +2334,7 @@ mod tests {
         editor.ai_state.chat.as_mut().unwrap().input = "explain this rope".to_string();
         editor.set_status_message("written");
 
-        let view = snapshot(&editor, 12);
+        let view = snapshot(&editor, 12, 0);
 
         assert!(view.panes.len() > 1, "the fixture should produce splits");
         assert!(view.tabs.len() > 1, "the fixture should produce tabs");
@@ -2337,7 +2357,7 @@ mod tests {
         let mut editor = Editor::with_content("hello\n");
         editor.set_file_path("src/sample.rs".to_string());
 
-        let json = serde_json::to_value(snapshot(&editor, 1)).unwrap();
+        let json = serde_json::to_value(snapshot(&editor, 1, 0)).unwrap();
 
         assert_eq!(json["fileName"], "sample.rs");
         assert!(json["totalLines"].is_number());
@@ -2401,7 +2421,7 @@ mod tests {
             .cursor_mut()
             .set_position(10, GraphemeCol(4));
 
-        let view = snapshot(&editor, 7);
+        let view = snapshot(&editor, 7, 0);
 
         assert_eq!(view.revision, 7);
         assert_eq!(view.cursor.line, 10);
@@ -2440,7 +2460,7 @@ mod tests {
             attachment.source_context.as_deref(),
             Some("comparison: HEAD...WORKTREE\nfile: src/main.rs")
         );
-        let view = snapshot(&editor, 1);
+        let view = snapshot(&editor, 1, 0);
         let projected = view.ai_chat.unwrap().pending_code_attachment.unwrap();
         assert_eq!(projected.label, "src/main.rs:5–6");
         assert!(view.lines[4..=5]
@@ -2473,7 +2493,7 @@ mod tests {
         assert!(editor.ai_set_profile(&profile));
         assert!(editor.set_ai_chat_reasoning_effort("high"));
         assert_eq!(editor.ai_chat_input(), "a界b");
-        let projected = snapshot(&editor, 1).ai_chat.unwrap();
+        let projected = snapshot(&editor, 1, 0).ai_chat.unwrap();
         assert!(projected.profiles.iter().any(|option| option.id == profile));
         assert_eq!(projected.reasoning_effort_selection, "high");
         assert!(projected
@@ -2532,7 +2552,7 @@ mod tests {
         editor.ai_state.chat.as_mut().unwrap().streaming_thinking =
             Some("Inspecting the walkthrough state".into());
 
-        let chat_snapshot = snapshot(&editor, 1).ai_chat.unwrap();
+        let chat_snapshot = snapshot(&editor, 1, 0).ai_chat.unwrap();
         assert!(chat_snapshot.thinking_live);
         assert_eq!(
             chat_snapshot.streaming_thinking.as_deref(),
@@ -2559,7 +2579,7 @@ mod tests {
         ));
 
         assert!(editor.move_code_explanation(true));
-        let code_page = snapshot(&editor, 2)
+        let code_page = snapshot(&editor, 2, 0)
             .ai_chat
             .unwrap()
             .code_explanation
@@ -2599,7 +2619,7 @@ mod tests {
             .unwrap();
 
         attach_chat_images(&mut editor, std::slice::from_ref(&path)).unwrap();
-        let view = snapshot(&editor, 1);
+        let view = snapshot(&editor, 1, 0);
 
         assert_eq!(editor.ai_chat_pending_images().len(), 1);
         assert_eq!(
@@ -2610,7 +2630,7 @@ mod tests {
             .attach_ai_chat_image_data("clipboard.png", b"\x89PNG\r\n\x1a\nfixture".to_vec())
             .unwrap();
         assert_eq!(
-            snapshot(&editor, 2).ai_chat.unwrap().pending_images,
+            snapshot(&editor, 2, 0).ai_chat.unwrap().pending_images,
             vec![
                 path.file_name().unwrap().to_string_lossy().to_string(),
                 "Pasted image 2".to_string(),
@@ -2635,7 +2655,7 @@ mod tests {
 
         editor.submit_ai_chat_message().unwrap();
 
-        let view = snapshot(&editor, 1).ai_chat.unwrap();
+        let view = snapshot(&editor, 1, 0).ai_chat.unwrap();
         assert!(view.pending_images.is_empty());
         assert_eq!(view.messages[0].images, vec!["layout.png"]);
         editor.cancel_ai_chat_generation();
@@ -2728,7 +2748,7 @@ mod tests {
         editor.focus_next_window();
         editor.split_window_horizontal();
 
-        let view = snapshot(&editor, 3);
+        let view = snapshot(&editor, 3, 0);
 
         assert_eq!(view.panes.len(), 3);
         assert_eq!(view.panes.iter().filter(|pane| pane.focused).count(), 1);
@@ -2746,13 +2766,14 @@ mod tests {
     fn publish_gate_skips_idle_frames_and_emits_dirty_state_once() {
         let mut editor = Editor::with_content("hello\n");
         let mut revision = 1;
-        let mut previous = snapshot(&editor, revision);
+        let mut previous = snapshot(&editor, revision, 0);
         let mut render_version = editor.render_input_version();
         let (updates, receiver) = watch::channel(None);
 
         publish_if_changed(
             &editor,
             &mut revision,
+            0,
             &mut previous,
             &mut render_version,
             &updates,
@@ -2764,6 +2785,7 @@ mod tests {
         publish_if_changed(
             &editor,
             &mut revision,
+            0,
             &mut previous,
             &mut render_version,
             &updates,
@@ -2777,6 +2799,7 @@ mod tests {
         publish_if_changed(
             &editor,
             &mut revision,
+            0,
             &mut previous,
             &mut render_version,
             &updates,
@@ -2794,7 +2817,7 @@ mod tests {
         assert!(editor
             .set_ai_chat_comprehension_policy(ovim_core::editor::ComprehensionPolicy::Commit,));
 
-        let chat = snapshot(&editor, 1).ai_chat.expect("chat projection");
+        let chat = snapshot(&editor, 1, 0).ai_chat.expect("chat projection");
         assert!(chat.yolo_mode);
         assert_eq!(chat.comprehension_policy, "commit");
         assert!(chat.comprehension_checkpoint.is_none());

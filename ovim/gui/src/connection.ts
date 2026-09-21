@@ -78,7 +78,8 @@ export const connectionIndicator = (
                           {
                               label: "Start a new session",
                               allowNewSession: true,
-                              warning: "The old session's state is not recoverable.",
+                              warning:
+                                  "The old session's state is not recoverable.",
                           },
                       ]
                     : [tryAgain],

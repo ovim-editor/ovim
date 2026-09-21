@@ -54,6 +54,40 @@ pub(super) const EDITOR_DISCONNECTED: &str =
 const HOST_HINT: &str =
     "the session accepts only its own port in the Host header, not the port dialled";
 
+/// The environment variable that makes a loopback session feel like a distant
+/// one.
+///
+/// A round-trip time in milliseconds, applied as half of it in each direction:
+/// a command waits on its way out and its answer waits on the way back, and
+/// every snapshot frame waits on the way in. It exists so predictive echo can
+/// be argued about with numbers instead of with adjectives -- measuring it
+/// otherwise needs two machines and a link whose latency nobody controls.
+///
+/// Read once. Nothing in a shipped build sets it, and a session that does not
+/// set it pays a single relaxed atomic load per request.
+pub const LATENCY_VARIABLE: &str = "OVIM_REMOTE_LATENCY_MS";
+
+/// Half the injected round trip, or `None` when the knob is unset.
+fn injected_delay() -> Option<Duration> {
+    static DELAY: std::sync::OnceLock<Option<Duration>> = std::sync::OnceLock::new();
+    *DELAY.get_or_init(|| {
+        std::env::var(LATENCY_VARIABLE)
+            .ok()?
+            .trim()
+            .parse::<u64>()
+            .ok()
+            .filter(|milliseconds| *milliseconds > 0)
+            .map(|milliseconds| Duration::from_micros(milliseconds * 500))
+    })
+}
+
+/// Wait out one direction of the injected round trip.
+async fn cross_the_wire() {
+    if let Some(delay) = injected_delay() {
+        tokio::time::sleep(delay).await;
+    }
+}
+
 /// How long the initial stream handshake may take before startup gives up.
 const HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(10);
 /// How long [`GuiTransport::send_oneway`] blocks a non-runtime caller.
@@ -375,6 +409,10 @@ impl GuiTransport for RemoteTransport {
     fn request_reconnect(&self, allow_new_session: bool) -> Result<(), String> {
         RemoteTransport::request_reconnect(self, allow_new_session)
     }
+
+    fn is_remote(&self) -> bool {
+        true
+    }
 }
 
 impl Drop for RemoteTransport {
@@ -399,6 +437,7 @@ pub(super) async fn post_command(
     wire: &Wire,
     command: GuiCommand,
 ) -> Result<Option<GuiReply>, String> {
+    cross_the_wire().await;
     let response = wire
         .client
         .post(&wire.command_url)
@@ -406,6 +445,7 @@ pub(super) async fn post_command(
         .send()
         .await
         .map_err(|error| format!("{EDITOR_UNREACHABLE}: {}", terse(&error)))?;
+    cross_the_wire().await;
     let status = response.status();
     if status == StatusCode::NO_CONTENT {
         return Ok(None);
@@ -510,7 +550,10 @@ pub(super) async fn pump_snapshots(response: reqwest::Response, link: &Link) -> 
                 continue;
             }
             match serde_json::from_str::<GuiSnapshot>(&frame.data) {
-                Ok(snapshot) => link.publish(snapshot),
+                Ok(snapshot) => {
+                    cross_the_wire().await;
+                    link.publish(snapshot);
+                }
                 Err(error) => {
                     ovim_core::log_warn!("gui", "Unreadable remote snapshot: {}", error);
                 }
@@ -852,7 +895,7 @@ mod tests {
         let stub = Arc::new(StubSession {
             received: Mutex::new(Vec::new()),
             hosts: Mutex::new(Vec::new()),
-            snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1),
+            snapshot: super::super::snapshot(&Editor::with_content("fn main() {}\n"), 1, 0),
             updates: watch::channel(None).0,
             epoch: watch::channel(0).0,
             streams: Mutex::new(0),

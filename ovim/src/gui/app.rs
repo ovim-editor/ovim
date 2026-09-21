@@ -263,6 +263,16 @@ async fn gui_reconnect(
     bridge.request_reconnect(allow_new_session)
 }
 
+/// Whether keystrokes cross a network on their way to the editor.
+///
+/// Asked once, at startup, and the only thing that turns predictive local echo
+/// on. An in-process editor answers within a frame, so speculating for it would
+/// trade the chance of being wrong for no gain at all.
+#[tauri::command]
+async fn gui_link_is_remote(bridge: State<'_, GuiBridge>) -> Result<bool, String> {
+    Ok(bridge.is_remote())
+}
+
 #[tauri::command]
 async fn gui_key(bridge: State<'_, GuiBridge>, input: GuiKeyInput) -> Result<(), String> {
     bridge.key(input).await
@@ -546,6 +556,7 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
             gui_subscribe,
             gui_connection,
             gui_reconnect,
+            gui_link_is_remote,
             gui_key,
             gui_paste,
             gui_attach_image,
