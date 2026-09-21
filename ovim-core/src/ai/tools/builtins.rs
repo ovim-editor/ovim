@@ -275,7 +275,7 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(activate_skill_def());
     registry.register(read_file_def());
     registry.register(read_buffer_def());
-    registry.register(workspace_context_def());
+    registry.register_editor_bridge(workspace_context_def(), super::EditorBridgeTool::Context);
     registry.register(read_file_at_path_def());
     registry.register(view_image_def());
     registry.register(read_selection_def());
@@ -291,9 +291,12 @@ pub fn register_builtins(registry: &mut ToolRegistry) {
     registry.register(hover_def());
     registry.register(goto_definition_def());
     // Navigation tools (dispatched via execute_navigation_tool — always allowed)
-    registry.register(open_file_def());
+    registry.register_editor_bridge(open_file_def(), super::EditorBridgeTool::OpenFile);
     registry.register(select_text_def());
-    registry.register(explain_with_codebase_def());
+    registry.register_editor_bridge(
+        explain_with_codebase_def(),
+        super::EditorBridgeTool::Explain,
+    );
     registry.register(record_comprehension_checkpoint_def());
     // External tools (dispatched via execute_external_tool)
     registry.register(bash_def());

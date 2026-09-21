@@ -59,6 +59,8 @@ jobs:
           npm test --prefix ovim/gui
           npm run build --prefix ovim/gui
       - name: Check Claude SDK adapter
-        run: npm test --prefix ovim/claude-runtime
+        run: |
+          npm ci --prefix ovim/claude-runtime --omit=optional --ignore-scripts
+          npm test --prefix ovim/claude-runtime
       - name: Clippy native GUI
         run: cargo clippy -p ovim --all-targets --locked -- -D warnings

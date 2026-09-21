@@ -360,6 +360,16 @@ impl Editor {
             }
             self.ai_state.active_selection = None;
             match pending.continuation {
+                Some(super::ai_chat_state::CodeExplanationContinuation::EditorMcp {
+                    rpc_id,
+                    response,
+                    ..
+                }) => {
+                    let _ = response.send(super::ai_editor_mcp::tool_reply(
+                        rpc_id,
+                        crate::ai::ToolResult::Error("Walkthrough cancelled".into()),
+                    ));
+                }
                 None => {}
                 Some(super::ai_chat_state::CodeExplanationContinuation::Dynamic {
                     runtime_tool,

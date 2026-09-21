@@ -433,6 +433,11 @@ pub struct PendingSubagentControl {
 }
 
 pub enum CodeExplanationContinuation {
+    EditorMcp {
+        request_id: String,
+        rpc_id: serde_json::Value,
+        response: tokio::sync::oneshot::Sender<serde_json::Value>,
+    },
     Batch {
         runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
         runtime_turn: Option<crate::agent_runtime::PendingTurnRef>,

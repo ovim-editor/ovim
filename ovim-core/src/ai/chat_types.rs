@@ -19,6 +19,13 @@ pub enum ChatRole {
 #[derive(Debug)]
 pub enum StreamChunk {
     /// Provider-owned tool observations. These must never enter Ovim's executor.
+    /// A request on the private, turn-bound editor MCP connection.
+    ExternalEditorRequest {
+        id: String,
+        request: serde_json::Value,
+        response: tokio::sync::oneshot::Sender<serde_json::Value>,
+    },
+    ExternalEditorCancelled(String),
     ExternalToolStart(ToolCallInfo),
     ExternalToolResult {
         id: String,

@@ -575,6 +575,12 @@ impl Editor {
         ));
 
         match continuation {
+            Some(continuation @ CodeExplanationContinuation::EditorMcp { .. }) => {
+                // The question travels in the MCP result to the running Claude
+                // turn. Queueing another turn as well would ask it twice.
+                self.clear_ai_chat_input();
+                self.resolve_code_explanation_continuation(&tool_call, continuation, outcome);
+            }
             Some(CodeExplanationContinuation::Replay) | None => {
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.input = prompt;
@@ -790,6 +796,20 @@ impl Editor {
         result: ToolResult,
     ) {
         match continuation {
+            CodeExplanationContinuation::EditorMcp {
+                request_id,
+                rpc_id,
+                response,
+            } => {
+                let _ = response.send(super::ai_editor_mcp::walkthrough_reply(
+                    rpc_id,
+                    &request_id,
+                    result,
+                ));
+                if let Some(chat) = self.ai_state.chat.as_mut() {
+                    chat.waiting = true;
+                }
+            }
             CodeExplanationContinuation::Dynamic {
                 runtime_tool,
                 runtime_turn,

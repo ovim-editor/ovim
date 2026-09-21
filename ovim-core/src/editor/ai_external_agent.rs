@@ -10,6 +10,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 pub(crate) struct ExternalAgentState {
+    pub root: std::path::PathBuf,
     pub permission: Option<ExternalPermission>,
     pub session_id: Option<String>,
     tools: HashMap<String, (ToolCallInfo, crate::agent_runtime::PendingToolRef)>,
@@ -257,7 +258,7 @@ impl Editor {
         if pending.question().is_some() {
             let summary = pending.summary();
             if let Some(conv) = self.conversation_mut() {
-                conv.append_assistant_message(summary, "Claude Code".into());
+                conv.append_assistant_message(summary, "Claude Agent".into());
             }
         } else {
             let mut pending = state.permission.take().expect("question callback");
@@ -318,6 +319,7 @@ impl Editor {
         };
         let configuration = serde_json::to_string(&json!([
             claude_code::SDK_VERSION,
+            "ovim-editor-mcp-v1",
             profile.name,
             profile.model,
             effort,
@@ -368,7 +370,7 @@ impl Editor {
             content
         };
         let request = claude_code::Request {
-            cwd,
+            cwd: cwd.clone(),
             executable,
             model: profile.model.clone(),
             effort,
@@ -393,6 +395,7 @@ impl Editor {
         });
         let chat = self.ai_state.chat.as_mut().context("No active chat")?;
         chat.external_agent = Some(ExternalAgentState {
+            root: cwd,
             permission: None,
             session_id: None,
             tools: HashMap::new(),
@@ -418,7 +421,21 @@ impl Editor {
         Ok(())
     }
 
-    pub(crate) fn observe_external_tool(&mut self, call: ToolCallInfo, model: &str) -> Result<()> {
+    pub(crate) fn observe_external_tool(
+        &mut self,
+        mut call: ToolCallInfo,
+        model: &str,
+    ) -> Result<()> {
+        if let Some(name) = call.name.strip_prefix("mcp__ovim__") {
+            if self
+                .ai_state
+                .tool_registry
+                .editor_bridge_tools()
+                .any(|(tool, _)| tool.name == name)
+            {
+                call.name = name.to_owned();
+            }
+        }
         let state = self
             .ai_state
             .chat
@@ -476,6 +493,9 @@ impl Editor {
             .and_then(|chat| chat.external_agent.as_mut())
             .and_then(|state| state.tools.remove(&id))
             .context("Claude result has no matching tool observation")?;
+        if call.name == "explain_with_codebase" {
+            self.bind_editor_walkthrough_result(&call.id, &content);
+        }
         let result = if error {
             crate::ai::ToolResult::Error(content.clone())
         } else {
@@ -519,7 +539,7 @@ impl Editor {
                 return;
             }
             if let Some(conv) = self.conversation_mut() {
-                conv.append_assistant_message(summary.clone(), "Claude Code".into());
+                conv.append_assistant_message(summary.clone(), "Claude Agent".into());
             }
         }
         if let Some(state) = self
@@ -589,11 +609,11 @@ impl Editor {
 }
 
 #[cfg(test)]
-mod tests {
+pub(super) mod tests {
     use super::*;
     use crate::ai::{AiProviderKind, ChatOpts, ConversationTree};
 
-    fn editor() -> Editor {
+    pub(crate) fn editor() -> Editor {
         let mut editor = Editor::default();
         let mut profile = editor.ai_state.config.profiles["local"].clone();
         profile.name = "claude_code".into();
@@ -615,7 +635,7 @@ mod tests {
         editor
     }
 
-    fn attach(editor: &mut Editor) -> tokio::sync::mpsc::UnboundedSender<StreamChunk> {
+    pub(crate) fn attach(editor: &mut Editor) -> tokio::sync::mpsc::UnboundedSender<StreamChunk> {
         let turn = editor.begin_ai_runtime_turn("Inspect the fixture").unwrap();
         editor
             .conversation_mut()
@@ -627,6 +647,7 @@ mod tests {
         chat.waiting = true;
         chat.streaming_content = Some(String::new());
         chat.external_agent = Some(ExternalAgentState {
+            root: std::env::current_dir().unwrap(),
             permission: None,
             session_id: None,
             tools: HashMap::new(),

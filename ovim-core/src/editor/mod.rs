@@ -2959,3 +2959,5 @@ mod incremental_wrap_tests {
         assert_eq!(editor.scroll_subrow(), 1);
     }
 }
+
+mod ai_editor_mcp;

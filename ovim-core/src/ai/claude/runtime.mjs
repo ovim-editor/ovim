@@ -1,3 +1,4 @@
+import { startEditorMcp } from "./editor-mcp.mjs";
 import { createInterface } from "node:readline";
 import { pathToFileURL } from "node:url";
 
@@ -9,7 +10,10 @@ export async function runTurn(request, query, emit, ask, signal) {
     const options = {
         cwd: request.cwd,
         pathToClaudeCodeExecutable: request.executable,
-        systemPrompt: { type: "preset", preset: "claude_code" },
+        systemPrompt: { type: "preset", preset: "claude_code", append:
+            "You are assisting the user in Ovim. Editor snapshots are context at the time supplied, and unsaved buffer content can differ from disk. Use mcp__ovim__workspace_context to refresh the current file, cursor, selection and diagnostics when needed. Use mcp__ovim__open_file to show relevant existing project code to the user. Use mcp__ovim__explain_with_codebase for a finished, focused interactive walkthrough; follow its page guidance and wait for completion or dismissal. These editor tools do not grant filesystem writes or access outside the current workspace. Continue to use Claude Code's normal tools and permission rules for implementation."
+        },
+        ...(request.editorMcp ? { mcpServers: { ovim: request.editorMcp } } : {}),
         settingSources: ["user", "project", "local"],
         permissionMode: "default",
         includePartialMessages: true,
@@ -21,7 +25,9 @@ export async function runTurn(request, query, emit, ask, signal) {
         ...(!request.allowEdits
             ? {
                   tools: ["Read", "Glob", "Grep"],
-                  disallowedTools: ["mcp__*"],
+                  // Only our navigation/context server is available in a query.
+                  // User-configured MCP servers may have write tools.
+                  strictMcpConfig: true,
               }
             : {}),
         canUseTool: async (name, input, context) => {
@@ -161,6 +167,7 @@ async function main() {
     });
     const controller = new AbortController();
     const pending = new Map();
+    let editorMcp;
     let nextId = 0;
     let started = false;
     const emit = (event) => process.stdout.write(JSON.stringify(event) + "\n");
@@ -187,7 +194,7 @@ async function main() {
             if (started) {
                 if (
                     typeof input.id !== "string" ||
-                    typeof input.allow !== "boolean"
+                    (typeof input.allow !== "boolean" && !Object.hasOwn(input, "result"))
                 )
                     throw new Error("Invalid permission response");
                 const respond = pending.get(input.id);
@@ -198,18 +205,33 @@ async function main() {
             }
             started = true;
             const { query } = await import("./sdk.mjs");
+            editorMcp = await startEditorMcp((request, signal) => new Promise((resolve, reject) => {
+                const id = String(++nextId);
+                const abort = () => {
+                    emit({type: "editor_cancelled", id});
+                    reject(new Error("Editor request cancelled"));
+                };
+                signal.addEventListener("abort", abort, { once: true });
+                pending.set(id, (answer) => {
+                    signal.removeEventListener("abort", abort);
+                    resolve(answer.result);
+                });
+                emit({type: "editor_request", id, request});
+            }));
             await runTurn(
-                { ...input, abortController: controller },
+                { ...input, abortController: controller, editorMcp: editorMcp.config },
                 query,
                 emit,
                 ask,
                 controller.signal,
             );
+            await editorMcp.close();
             emit({ type: "done" });
             lines.close();
             process.stdin.destroy();
         } catch (error) {
             controller.abort();
+            if (editorMcp) await editorMcp.close();
             emit({
                 type: "error",
                 message: error instanceof Error ? error.message : String(error),

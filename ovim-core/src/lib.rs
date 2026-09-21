@@ -59,3 +59,6 @@ pub use navigation_types::{
     OutlineInfo, OutlineSymbol, SymbolSearchInfo, SymbolSearchResult, TraceInfo, TraceNode,
 };
 pub use rect::Rect;
+
+/// Shared Model Context Protocol contracts.
+pub mod mcp;

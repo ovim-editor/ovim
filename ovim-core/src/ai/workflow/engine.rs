@@ -354,7 +354,9 @@ async fn run_prompt_step(
     let mut content = String::new();
     while let Some(chunk) = rx.recv().await {
         match chunk {
-            crate::ai::StreamChunk::ExternalToolStart(_)
+            crate::ai::StreamChunk::ExternalEditorRequest { .. }
+            | crate::ai::StreamChunk::ExternalEditorCancelled(_)
+            | crate::ai::StreamChunk::ExternalToolStart(_)
             | crate::ai::StreamChunk::ExternalToolResult { .. }
             | crate::ai::StreamChunk::ExternalPermission { .. }
             | crate::ai::StreamChunk::ExternalSession(_)

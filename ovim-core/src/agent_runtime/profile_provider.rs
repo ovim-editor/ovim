@@ -317,7 +317,9 @@ impl ProfileAgentSession {
         chunk: StreamChunk,
     ) -> Result<Option<AgentProviderEvent>, AgentProviderError> {
         match chunk {
-            StreamChunk::ExternalToolStart(_)
+            StreamChunk::ExternalEditorRequest { .. }
+            | StreamChunk::ExternalEditorCancelled(_)
+            | StreamChunk::ExternalToolStart(_)
             | StreamChunk::ExternalToolResult { .. }
             | StreamChunk::ExternalPermission { .. }
             | StreamChunk::ExternalSession(_)

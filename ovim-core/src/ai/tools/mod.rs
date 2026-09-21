@@ -265,8 +265,21 @@ pub enum ToolResult {
 
 /// Registry of all available tools.
 pub struct ToolRegistry {
-    tools: HashMap<String, ToolDefinition>,
-    runtime_requirements: HashMap<String, RuntimeService>,
+    tools: HashMap<String, RegisteredTool>,
+}
+
+struct RegisteredTool {
+    definition: ToolDefinition,
+    runtime_service: Option<RuntimeService>,
+    editor_bridge: Option<EditorBridgeTool>,
+}
+
+/// Narrow editor operations available to provider-owned agents through MCP.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EditorBridgeTool {
+    Context,
+    OpenFile,
+    Explain,
 }
 
 impl ToolRegistry {
@@ -281,24 +294,46 @@ impl ToolRegistry {
     fn empty() -> Self {
         Self {
             tools: HashMap::new(),
-            runtime_requirements: HashMap::new(),
         }
     }
 
     /// Register a tool definition.
     pub fn register(&mut self, tool: ToolDefinition) {
-        self.runtime_requirements.remove(&tool.name);
-        self.tools.insert(tool.name.clone(), tool);
+        self.tools.insert(
+            tool.name.clone(),
+            RegisteredTool {
+                definition: tool,
+                runtime_service: None,
+                editor_bridge: None,
+            },
+        );
     }
 
     pub fn register_for_service(&mut self, tool: ToolDefinition, service: RuntimeService) {
-        self.runtime_requirements.insert(tool.name.clone(), service);
-        self.tools.insert(tool.name.clone(), tool);
+        self.register(tool.clone());
+        self.tools.get_mut(&tool.name).unwrap().runtime_service = Some(service);
+    }
+
+    pub(crate) fn register_editor_bridge(
+        &mut self,
+        tool: ToolDefinition,
+        operation: EditorBridgeTool,
+    ) {
+        self.register(tool.clone());
+        self.tools.get_mut(&tool.name).unwrap().editor_bridge = Some(operation);
+    }
+
+    pub(crate) fn editor_bridge_tools(
+        &self,
+    ) -> impl Iterator<Item = (&ToolDefinition, EditorBridgeTool)> {
+        self.tools
+            .values()
+            .filter_map(|tool| tool.editor_bridge.map(|op| (&tool.definition, op)))
     }
 
     /// Look up a tool by name.
     pub fn get(&self, name: &str) -> Option<&ToolDefinition> {
-        self.tools.get(name)
+        self.tools.get(name).map(|tool| &tool.definition)
     }
 
     /// Return all tools whose required scope fits within the given capabilities.
@@ -313,6 +348,7 @@ impl ToolRegistry {
     ) -> Vec<&ToolDefinition> {
         self.tools
             .values()
+            .map(|tool| &tool.definition)
             .filter(|tool| {
                 self.runtime_requirement_is_available(&tool.name, services)
                     && caps.contains(&tool.required_scope)
@@ -339,6 +375,7 @@ impl ToolRegistry {
     ) -> Vec<&ToolDefinition> {
         self.tools
             .values()
+            .map(|tool| &tool.definition)
             .filter(|t| {
                 if !self.runtime_requirement_is_available(&t.name, services) {
                     return false;
@@ -357,9 +394,10 @@ impl ToolRegistry {
     }
 
     fn runtime_requirement_is_available(&self, tool_name: &str, services: RuntimeServices) -> bool {
-        self.runtime_requirements
+        self.tools
             .get(tool_name)
-            .is_none_or(|required| services.contains(*required))
+            .and_then(|tool| tool.runtime_service)
+            .is_none_or(|required| services.contains(required))
     }
 }
 
@@ -387,6 +425,20 @@ mod tests {
             custom_input_schema: None,
             parameters: vec![],
         }
+    }
+
+    #[test]
+    fn replacing_a_definition_does_not_inherit_bridge_authority() {
+        let mut registry = ToolRegistry::new();
+        assert_eq!(registry.editor_bridge_tools().count(), 3);
+        registry.register(make_tool(
+            "open_file",
+            FileScope::File,
+            SideEffect::External,
+        ));
+        assert!(!registry
+            .editor_bridge_tools()
+            .any(|(tool, _)| tool.name == "open_file"));
     }
 
     #[test]

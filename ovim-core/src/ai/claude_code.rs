@@ -35,6 +35,13 @@ enum Event {
         text: String,
     },
     MessageEnd,
+    EditorRequest {
+        id: String,
+        request: Value,
+    },
+    EditorCancelled {
+        id: String,
+    },
     ToolStart {
         id: String,
         name: String,
@@ -124,6 +131,10 @@ pub(crate) async fn stream(request: Request, tx: UnboundedSender<StreamChunk>) -
     flate2::read::GzDecoder::new(include_bytes!("claude/sdk.mjs.gz").as_slice())
         .read_to_end(&mut sdk)?;
     std::fs::write(directory.path().join("sdk.mjs"), sdk)?;
+    std::fs::write(
+        directory.path().join("editor-mcp.mjs"),
+        include_str!("claude/editor-mcp.mjs"),
+    )?;
     let helper = directory.path().join("runtime.mjs");
     std::fs::write(&helper, include_str!("claude/runtime.mjs"))?;
     let mut command = tokio::process::Command::new("node");
@@ -200,8 +211,7 @@ pub(crate) async fn stream(request: Request, tx: UnboundedSender<StreamChunk>) -
                 _ => break,
             },
             answer = answers.join_next(), if !answers.is_empty() => {
-                let (id, answer): (String, super::chat_types::ExternalPermissionAnswer) = answer.context("Permission task missing")??;
-                let mut answer = serde_json::to_value(answer)?;
+                let (id, mut answer): (String, Value) = answer.context("Response task missing")??;
                 answer["id"] = Value::String(id);
                 stdin.write_all(&serde_json::to_vec(&answer)?).await?;
                 stdin.write_all(b"\n").await?;
@@ -209,6 +219,17 @@ pub(crate) async fn stream(request: Request, tx: UnboundedSender<StreamChunk>) -
             }
         };
         let chunk = match event {
+            Event::EditorRequest { id, request } => {
+                let (response, answer) = tokio::sync::oneshot::channel();
+                tx.send(StreamChunk::ExternalEditorRequest {
+                    id: id.clone(),
+                    request,
+                    response,
+                })?;
+                answers.spawn(async move { (id, serde_json::json!({"result": answer.await.unwrap_or(serde_json::json!({"error":"Editor request cancelled"}))})) });
+                continue;
+            }
+            Event::EditorCancelled { id } => StreamChunk::ExternalEditorCancelled(id),
             Event::Text { text } => StreamChunk::Content(text),
             Event::Thinking { text } => StreamChunk::Thinking(text),
             Event::MessageEnd => StreamChunk::AgentMessageComplete,
@@ -241,7 +262,13 @@ pub(crate) async fn stream(request: Request, tx: UnboundedSender<StreamChunk>) -
                     reason,
                     response,
                 })?;
-                answers.spawn(async move { (id, answer.await.unwrap_or_default()) });
+                answers.spawn(async move {
+                    (
+                        id,
+                        serde_json::to_value(answer.await.unwrap_or_default())
+                            .expect("permission serializes"),
+                    )
+                });
                 continue;
             }
             Event::PermissionCancelled => StreamChunk::ExternalPermissionCancelled,

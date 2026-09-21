@@ -33,7 +33,7 @@ pub fn tools_to_anthropic_schema(tools: &[&ToolDefinition]) -> Vec<serde_json::V
         .collect()
 }
 
-fn input_schema(tool: &ToolDefinition) -> serde_json::Value {
+pub(crate) fn input_schema(tool: &ToolDefinition) -> serde_json::Value {
     tool.custom_input_schema
         .as_ref()
         .map(|schema| schema.as_value().clone())

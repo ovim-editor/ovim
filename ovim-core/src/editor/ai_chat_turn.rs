@@ -232,6 +232,18 @@ impl Editor {
         let mut changed = false;
         for chunk in chunks {
             match chunk {
+                StreamChunk::ExternalEditorRequest {
+                    id,
+                    request,
+                    response,
+                } => {
+                    self.handle_editor_mcp_request(id, request, response);
+                    changed = true;
+                }
+                StreamChunk::ExternalEditorCancelled(id) => {
+                    self.cancel_editor_mcp_request(&id);
+                    changed = true;
+                }
                 StreamChunk::ExternalToolStart(call) => {
                     if let Err(error) = self.observe_external_tool(call, &model_name) {
                         self.cancel_ai_chat_generation();

@@ -130,10 +130,10 @@ test("preserves non-streamed text and excludes nested agent text", async () => {
 
 test("uses Claude defaults, own executable and settings without Ovim tools or credentials", async () => {
     const { options } = await run([result]);
-    assert.deepEqual(options.systemPrompt, {
-        type: "preset",
-        preset: "claude_code",
-    });
+    assert.equal(options.systemPrompt.type, "preset");
+    assert.equal(options.systemPrompt.preset, "claude_code");
+    assert.match(options.systemPrompt.append, /mcp__ovim__workspace_context/);
+    assert.match(options.systemPrompt.append, /mcp__ovim__explain_with_codebase/);
     assert.deepEqual(options.settingSources, ["user", "project", "local"]);
     assert.equal(options.pathToClaudeCodeExecutable, "/bin/claude");
     assert.equal(options.permissionMode, "default");
@@ -147,10 +147,11 @@ test("uses Claude defaults, own executable and settings without Ovim tools or cr
         assert.equal(options[name], undefined);
 });
 
-test("read-only chats expose only read tools and deny configured MCP tools", async () => {
+test("read-only chats expose read built-ins and ignore configured MCP servers", async () => {
     const { options } = await run([result], { request: { allowEdits: false } });
     assert.deepEqual(options.tools, ["Read", "Glob", "Grep"]);
-    assert.deepEqual(options.disallowedTools, ["mcp__*"]);
+    assert.equal(options.strictMcpConfig, true);
+    assert.equal(options.disallowedTools, undefined);
 });
 
 test("passes explicit model, effort, and native resume", async () => {
