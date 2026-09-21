@@ -196,12 +196,12 @@ impl Editor {
             // Execute each command using InputHandler
             InputHandler::execute_command_string(self, &cmd)?;
         }
-        // Process AI bridge commands and config
-        self.process_ai_bridge_commands();
+        // Resolve registrations before commands that may reference them.
         if let Some(ref bridge) = self.editor_bridge {
             let bridge = bridge.clone();
             self.sync_ai_config_from_bridge(&bridge);
         }
+        self.process_ai_bridge_commands();
         Ok(())
     }
 
@@ -343,13 +343,15 @@ impl Editor {
                     system_prompt,
                     initial_message,
                 } => {
-                    let _ = self.open_ai_chat(ChatOpts {
+                    if let Err(error) = self.open_ai_chat(ChatOpts {
                         name: name.unwrap_or_else(|| "chat".to_string()),
                         profile,
                         allow_edits: allow_edits.unwrap_or(true),
                         system_prompt,
                         initial_message,
-                    });
+                    }) {
+                        self.set_status_message(error.to_string());
+                    }
                 }
                 AiCommand::EditSelection { profile } => {
                     let _ = self.start_ai_chat_from_visual_with_profile(profile);
@@ -453,6 +455,23 @@ mod chat_preference_tests {
                 Some("sonnet")
             );
         }
+    }
+
+    #[test]
+    fn lua_can_register_and_open_a_profile_together_and_reports_invalid_options() {
+        let (mut editor, _dir) = configured_editor("");
+        editor.execute_lua("vim.ai.profiles.register('custom', {provider='claude_code', model='sonnet'}); vim.ai.open_chat({profile='custom'})").unwrap();
+        editor.process_lua_commands().unwrap();
+        assert_eq!(editor.ai_chat_effective_profile(), "custom");
+        assert_eq!(editor.ai_chat_selected_model(), "sonnet");
+        editor
+            .execute_lua("vim.ai.open_chat({profile='missing'})")
+            .unwrap();
+        editor.process_lua_commands().unwrap();
+        assert!(editor
+            .status_message()
+            .contains("Unknown AI profile: missing"));
+        assert_eq!(editor.ai_chat_effective_profile(), "custom");
     }
 
     #[test]
