@@ -1623,7 +1623,7 @@ describe("Ovim Solid workbench", () => {
     });
     it("confirms application quit while unsaved buffers exist", async () => {
         const result = render(() => <App />);
-        fireEvent.keyDown(window, { key: "q", metaKey: true, ctrlKey: true });
+        fireEvent.keyDown(window, { key: "q", metaKey: true });
         expect(
             screen.getByRole("dialog", {
                 name: "Save changes before leaving?",

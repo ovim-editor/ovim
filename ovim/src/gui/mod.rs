@@ -1360,7 +1360,11 @@ fn publish_if_changed(
     projection_cache: &mut GuiProjectionCache,
 ) {
     let render_version = editor.render_input_version();
-    if render_version == *previous_render_version {
+    // Quitting is shell state, not a render invalidation. It still has to cross
+    // the GUI snapshot boundary so the webview can approve the native close.
+    // Without this exception, `:qa!` succeeds after the confirmation dialog but
+    // the application remains open because `should_quit` is never published.
+    if render_version == *previous_render_version && editor.should_quit() == previous.should_quit {
         return;
     }
     *previous_render_version = render_version;
@@ -4301,6 +4305,34 @@ mod tests {
             &mut projection_cache,
         );
         assert!(receiver.borrow().is_none());
+    }
+
+    #[test]
+    fn publish_gate_emits_quit_state_without_a_render_change() {
+        let mut editor = Editor::with_content("hello\n");
+        let mut revision = 1;
+        let mut previous = snapshot(&editor, revision);
+        let mut render_version = editor.render_input_version();
+        let initial_render_version = render_version;
+        let (updates, receiver) = watch::channel(None);
+        let mut projection_cache = GuiProjectionCache::default();
+
+        editor.quit();
+        assert_eq!(editor.render_input_version(), initial_render_version);
+
+        publish_if_changed(
+            &editor,
+            &mut revision,
+            &mut previous,
+            &mut render_version,
+            &updates,
+            &mut projection_cache,
+        );
+
+        let update = receiver.borrow();
+        let update = update.as_ref().expect("quit snapshot should be published");
+        assert!(update.should_quit);
+        assert_eq!(update.revision, 2);
     }
 
     #[test]

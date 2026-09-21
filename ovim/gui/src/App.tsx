@@ -952,7 +952,9 @@ export const ChatPanel = (props: {
                             props.chat.reasoningEffortSelection
                         }
                         reasoningEfforts={props.chat.reasoningEfforts}
-                        reasoningEffortDefault={props.chat.reasoningEffortDefault}
+                        reasoningEffortDefault={
+                            props.chat.reasoningEffortDefault
+                        }
                         onProfile={props.onProfile}
                         onReasoningEffort={props.onReasoningEffort}
                         focusInput={props.focusInput}
@@ -1183,13 +1185,19 @@ export const ChatPanel = (props: {
                             <div class="approval-actions">
                                 <button
                                     type="button"
-                                    onClick={() => { props.onApproval?.(true); queueMicrotask(props.focusInput); }}
+                                    onClick={() => {
+                                        props.onApproval?.(true);
+                                        queueMicrotask(props.focusInput);
+                                    }}
                                 >
                                     Allow once
                                 </button>
                                 <button
                                     type="button"
-                                    onClick={() => { props.onApproval?.(false); queueMicrotask(props.focusInput); }}
+                                    onClick={() => {
+                                        props.onApproval?.(false);
+                                        queueMicrotask(props.focusInput);
+                                    }}
                                 >
                                     Deny
                                 </button>
@@ -1848,7 +1856,11 @@ function App() {
             performMenuAction(event.altKey ? "file.save-all" : "file.save");
             return;
         }
-        if (primaryModifier && event.key.toLowerCase() === "q") {
+        // Meta is the Command key even when the webview withholds or spoofs
+        // navigator.platform. Keep Ctrl+Q platform-specific so macOS Vim input
+        // is not stolen from the editor.
+        const quitModifier = event.metaKey || primaryModifier;
+        if (quitModifier && event.key.toLowerCase() === "q") {
             event.preventDefault();
             requestExit("quit");
             return;
