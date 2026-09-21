@@ -710,7 +710,7 @@ impl Editor {
                 .ai_state
                 .config
                 .profiles
-                .get(&self.ai_state.active_profile)
+                .get(&self.ai_chat_effective_profile())
                 .is_some_and(|profile| {
                     self.ai_state
                         .tool_registry

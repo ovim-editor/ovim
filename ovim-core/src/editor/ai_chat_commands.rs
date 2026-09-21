@@ -315,11 +315,11 @@ impl Editor {
                 profile: Some(profile),
             }) => {
                 let selected = if self.ai_state.config.profiles.contains_key(&profile) {
-                    self.ai_set_profile(&profile)
+                    self.ai_select_chat_profile(&profile)
                 } else if self.ai_chat_uses_external_agent() {
                     self.ai_select_chat_model(&self.ai_chat_effective_profile(), &profile)
                 } else {
-                    self.ai_set_profile(&profile)
+                    self.ai_select_chat_profile(&profile)
                 };
                 if selected {
                     self.clear_ai_chat_input();

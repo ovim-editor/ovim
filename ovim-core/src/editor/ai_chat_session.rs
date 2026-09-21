@@ -35,21 +35,19 @@ impl Editor {
             .chat
             .as_ref()
             .and_then(|chat| chat.reasoning_effort_override.as_deref());
-        self.ai_state
-            .config
-            .resolve_profile(&self.ai_chat_effective_profile())
-            .and_then(|profile| profile.resolve_reasoning_effort(selection))
-            .unwrap_or("default")
-            .into()
+        self.ai_chat_resolved_profile()
+            .and_then(|profile| {
+                profile
+                    .resolve_reasoning_effort(selection)
+                    .map(str::to_owned)
+            })
+            .unwrap_or_else(|| "default".into())
     }
 
     pub fn ai_chat_default_reasoning_effort(&self) -> String {
-        self.ai_state
-            .config
-            .resolve_profile(&self.ai_chat_effective_profile())
-            .and_then(|profile| profile.resolve_reasoning_effort(None))
-            .unwrap_or("default")
-            .into()
+        self.ai_chat_resolved_profile()
+            .and_then(|profile| profile.resolve_reasoning_effort(None).map(str::to_owned))
+            .unwrap_or_else(|| "default".into())
     }
 
     /// Picker value, kept separate from the effective profile-derived effort.

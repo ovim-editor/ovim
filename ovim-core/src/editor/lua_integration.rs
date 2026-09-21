@@ -74,6 +74,8 @@ impl Editor {
             )?;
             // Load built-in defaults (runs before user config)
             context.load_builtin()?;
+            bridge.take_ai_chat_context_assignment();
+            bridge.take_ai_profile_assignments();
             // Try to load user config
             match context.load_config() {
                 Ok(true) => {
@@ -120,6 +122,8 @@ impl Editor {
         let Some(ref mut context) = self.lua_context else {
             return Ok("Lua not enabled".to_string());
         };
+        self.ai_state.chat_preference.reload();
+        self.ai_state.chat_config_override = false;
         context.reload_config()?;
 
         // Process any commands that were queued during reload
@@ -135,6 +139,22 @@ impl Editor {
         if let Some(ref bridge) = self.editor_bridge {
             let bridge = bridge.clone();
             self.sync_ai_config_from_bridge(&bridge);
+        }
+        // Re-resolve an idle chat after reload while retaining its draft/history.
+        if !self.ai_chat_has_pending_work() {
+            let profile = self.ai_chat_context_profile("chat");
+            let model = self
+                .ai_chat_remembered_selection()
+                .and_then(|selection| selection.model.clone());
+            if let Some(chat) = self
+                .ai_state
+                .chat
+                .as_mut()
+                .filter(|chat| chat.follow_chat_default)
+            {
+                chat.opts.profile = profile;
+                chat.model_override = model;
+            }
         }
         Ok("Configuration reloaded".to_string())
     }
@@ -244,6 +264,17 @@ impl Editor {
             agent_loop,
         )) = bridge.take_ai_config_if_dirty()
         {
+            if bridge.take_ai_chat_context_assignment() {
+                self.ai_state.chat_config_override = true;
+            }
+            let authored_profiles = bridge.take_ai_profile_assignments();
+            if let Some(selection) = self.ai_state.chat_preference.selection.as_mut() {
+                if authored_profiles.contains(&selection.profile) {
+                    // An authored model beats the remembered model, without
+                    // replacing the saved preference on disk.
+                    selection.model = None;
+                }
+            }
             // Merge Lua profiles (Lua wins over TOML on conflict)
             for (name, lua_profile) in profiles {
                 let profile = lua_profile.into_profile_config(name.clone());
@@ -339,5 +370,104 @@ mod tests {
 
         assert!(!toast.sticky);
         assert_eq!(toast.ttl, Some(Duration::from_secs(8)));
+    }
+}
+
+#[cfg(all(test, feature = "lua"))]
+mod chat_preference_tests {
+    use super::*;
+    use crate::ai::chat_preference::{ChatPreference, ChatSelection};
+    use crate::ai::AiProviderKind;
+    use crate::lua::EditorBridge;
+
+    fn configured_editor(source: &str) -> (Editor, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let mut editor = Editor::default();
+        editor.ai_state.config = crate::ai::AiConfig::default();
+        editor.ai_state.chat_preference = ChatPreference::load(dir.path().join("preference.json"));
+        editor
+            .ai_state
+            .chat_preference
+            .remember(ChatSelection {
+                profile: "claude_code".into(),
+                provider: AiProviderKind::ClaudeCode,
+                model: Some("opus[1m]".into()),
+            })
+            .unwrap();
+        let context = LuaContext::new().unwrap();
+        let bridge = EditorBridge::new();
+        crate::lua::setup_vim_api(context.lua(), bridge.clone()).unwrap();
+        context.load_builtin().unwrap();
+        bridge.take_ai_chat_context_assignment();
+        bridge.take_ai_profile_assignments();
+        context.execute_void(source).unwrap();
+        editor.sync_ai_config_from_bridge(&bridge);
+        editor.lua_context = Some(context);
+        editor.editor_bridge = Some(bridge);
+        (editor, dir)
+    }
+
+    #[test]
+    fn builtins_and_unrelated_init_settings_do_not_override_the_saved_choice() {
+        let (mut editor, _dir) = configured_editor("vim.ai.contexts.query = 'codex_terra'");
+        assert_eq!(editor.ai_chat_effective_profile(), "claude_code");
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        assert_eq!(editor.ai_chat_selected_model(), "opus[1m]");
+        assert_eq!(editor.ai_chat_resolved_profile().unwrap().model, "opus[1m]");
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].model,
+            "default"
+        );
+        assert_eq!(
+            editor.ai_chat_context_profile("query").as_deref(),
+            Some("codex_terra")
+        );
+    }
+
+    #[test]
+    fn explicit_lua_settings_win_even_when_equal_to_builtins() {
+        for source in [
+            "vim.ai.contexts.chat = 'codex_sol'",
+            "vim.ai.default_profile = 'codex_sol'",
+            "vim.ai.setup({default_profile = 'codex_sol'})",
+            "vim.ai.setup({contexts = {chat = {profile = 'codex_sol'}}})",
+        ] {
+            let (mut editor, dir) = configured_editor(source);
+            assert_eq!(editor.ai_chat_effective_profile(), "codex_sol", "{source}");
+            editor.open_ai_chat(ChatOpts::default()).unwrap();
+            assert_eq!(editor.ai_chat_selected_model(), "gpt-5.6-sol", "{source}");
+            // A live picker change works, but does not rewrite authored config.
+            assert!(editor.ai_select_chat_model("claude_code", "sonnet"));
+            editor.execute_lua(source).unwrap();
+            editor.process_lua_commands().unwrap();
+            assert_eq!(
+                editor.ai_chat_context_profile("chat").as_deref(),
+                Some("codex_sol")
+            );
+            assert_eq!(
+                ChatPreference::load(dir.path().join("preference.json"))
+                    .selection
+                    .unwrap()
+                    .model
+                    .as_deref(),
+                Some("sonnet")
+            );
+        }
+    }
+
+    #[test]
+    fn authored_profile_model_beats_saved_model_without_changing_the_saved_file() {
+        let (mut editor, dir) = configured_editor("vim.ai.setup({profiles = {claude_code = {provider = 'claude_code', model = 'sonnet'}}})");
+        editor.open_ai_chat(ChatOpts::default()).unwrap();
+        assert_eq!(editor.ai_chat_effective_profile(), "claude_code");
+        assert_eq!(editor.ai_chat_selected_model(), "sonnet");
+        assert_eq!(
+            ChatPreference::load(dir.path().join("preference.json"))
+                .selection
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("opus[1m]")
+        );
     }
 }

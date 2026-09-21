@@ -4,7 +4,7 @@ use crate::ai::{
     DiagnosticScope, EditFormat, FileScope, ProfileScope, ProjectContextConfig, RetryPolicy,
 };
 use anyhow::Result;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 /// A thread-safe bridge between Lua and the Editor
@@ -47,6 +47,9 @@ struct EditorBridgeInner {
     agent_loop: AgentLoopConfig,
     /// Whether AI config has been modified since last sync
     ai_dirty: bool,
+    /// Pending authored chat context assignment, consumed by the editor.
+    ai_chat_context_assigned: bool,
+    ai_profiles_assigned: HashSet<String>,
 }
 
 /// AI profile configuration from Lua (before conversion to AiProfileConfig).
@@ -220,6 +223,8 @@ impl EditorBridge {
                 chat_context: ChatContextConfig::default(),
                 agent_loop: AgentLoopConfig::default(),
                 ai_dirty: false,
+                ai_chat_context_assigned: false,
+                ai_profiles_assigned: HashSet::new(),
             })),
         }
     }
@@ -337,8 +342,27 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        inner.ai_chat_context_assigned |= name == "chat";
         inner.ai_contexts.insert(name, profile);
         inner.ai_dirty = true;
+    }
+
+    /// Call once after builtins to distinguish defaults from authored settings,
+    /// then consume at each sync (including assignments of the same value).
+    pub fn take_ai_chat_context_assignment(&self) -> bool {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut inner.ai_chat_context_assigned)
+    }
+
+    pub fn take_ai_profile_assignments(&self) -> HashSet<String> {
+        let mut inner = self
+            .inner
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        std::mem::take(&mut inner.ai_profiles_assigned)
     }
 
     pub fn get_ai_context(&self, name: &str) -> Option<String> {
@@ -371,6 +395,7 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
+        inner.ai_profiles_assigned.insert(name.clone());
         inner.ai_profiles.insert(name, config);
         inner.ai_dirty = true;
     }

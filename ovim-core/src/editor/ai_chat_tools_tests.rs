@@ -258,6 +258,43 @@ fn read_buffer_requires_approval_before_reading_non_visible_unnamed_content() {
 }
 
 #[test]
+fn read_buffer_authorization_follows_the_selected_chat_profile() {
+    let mut editor = Editor::default();
+    let mut allowed = editor.ai_state.config.profiles["local"].clone();
+    allowed.name = "chat_reader".into();
+    allowed.tools = vec!["read_buffer".into()];
+    let mut denied = allowed.clone();
+    denied.name = "chat_denied".into();
+    denied.tools = vec!["workspace_context".into()];
+    editor
+        .ai_state
+        .config
+        .profiles
+        .insert(allowed.name.clone(), allowed);
+    editor
+        .ai_state
+        .config
+        .profiles
+        .insert(denied.name.clone(), denied);
+    editor.open_ai_chat(ChatOpts::default()).unwrap();
+    let call = ToolCallInfo {
+        id: "selected-profile-read".into(),
+        name: "read_buffer".into(),
+        arguments: serde_json::json!({"buffer_id": editor.buffer().id()}),
+    };
+    assert!(editor.ai_select_chat_profile("chat_reader"));
+    assert!(matches!(
+        editor.dispatch_tool_call_with_approval(&call, None),
+        ToolDispatchOutcome::Completed(ToolResult::Success(_))
+    ));
+    assert!(editor.ai_select_chat_profile("chat_denied"));
+    assert!(
+        matches!(editor.dispatch_tool_call_with_approval(&call, None),
+        ToolDispatchOutcome::Completed(ToolResult::Error(message)) if message.contains("unavailable"))
+    );
+}
+
+#[test]
 fn read_buffer_reads_visible_unnamed_buffer_without_extra_approval() {
     let mut editor = Editor::default();
     *editor.buffer_mut() = crate::buffer::Buffer::new_from_str("visible notes\n");

@@ -108,6 +108,8 @@ pub struct AiState {
     /// the process entry point (`ovim --resume`).
     pub(crate) resume_durable_conversations: bool,
     pub config: AiConfig,
+    pub(crate) chat_preference: crate::ai::chat_preference::ChatPreference,
+    pub(crate) chat_config_override: bool,
     /// Dedicated read-only delegated-agent control plane. It snapshots the
     /// startup config and never replaces root chat orchestration.
     pub(crate) subagents: Box<super::ai_subagents::AiSubagentService>,
@@ -185,6 +187,8 @@ impl AiState {
             durable_chat_bindings: HashMap::new(),
             resume_durable_conversations: false,
             config,
+            chat_preference: crate::ai::chat_preference::ChatPreference::default(),
+            chat_config_override: false,
             subagents,
             active_selection: None,
             codex_auth_dialog: None,

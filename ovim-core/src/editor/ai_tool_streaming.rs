@@ -200,17 +200,10 @@ impl Editor {
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no active chat session"))?;
 
-        let profile_name = chat
-            .opts
-            .profile
-            .clone()
-            .unwrap_or_else(|| self.ai_state.active_profile.clone());
+        let profile_name = self.ai_chat_effective_profile();
         let mut profile = self
-            .ai_state
-            .config
-            .resolve_profile(&profile_name)
-            .ok_or_else(|| anyhow::anyhow!("No AI profile '{}' configured", profile_name))?
-            .clone();
+            .ai_chat_resolved_profile()
+            .ok_or_else(|| anyhow::anyhow!("No AI profile '{}' configured", profile_name))?;
         if let Some(effort) = chat.reasoning_effort_override.as_ref() {
             profile.reasoning_effort = Some(effort.clone());
         }

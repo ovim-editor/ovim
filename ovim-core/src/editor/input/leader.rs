@@ -70,7 +70,6 @@ fn handle_first_leader_key(editor: &mut Editor, key: char) -> Result<()> {
             // <Space><Space> - Open AI chat
             editor.open_ai_chat(crate::ai::chat_types::ChatOpts {
                 name: "chat".into(),
-                profile: editor.ai_chat_context_profile("chat"),
                 allow_edits: true,
                 ..Default::default()
             })?;

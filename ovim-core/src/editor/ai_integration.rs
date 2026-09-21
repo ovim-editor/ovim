@@ -6,6 +6,12 @@ use crate::unicode::GraphemeCol;
 use anyhow::Result;
 
 impl Editor {
+    /// Enable user preference storage at application startup. Bare editors and
+    /// tests stay in memory unless their caller explicitly supplies storage.
+    pub fn load_ai_chat_preference(&mut self) {
+        self.ai_state.chat_preference = crate::ai::chat_preference::ChatPreference::discover();
+    }
+
     /// Returns configured AI profile names sorted for deterministic picker navigation.
     pub fn ai_profile_names_sorted(&self) -> Vec<String> {
         let mut names: Vec<String> = self.ai_state.config.profiles.keys().cloned().collect();
@@ -26,6 +32,12 @@ impl Editor {
             } else {
                 Vec::new()
             };
+            if name == self.ai_chat_effective_profile() {
+                let selected = self.ai_chat_selected_model();
+                if !selected.is_empty() && !models.contains(&selected) {
+                    models.push(selected);
+                }
+            }
             if !models.contains(&profile.model.as_str()) {
                 models.push(&profile.model);
             }
@@ -42,24 +54,69 @@ impl Editor {
     }
 
     pub fn ai_chat_selected_model(&self) -> &str {
-        self.ai_state
+        let Some(profile) = self
+            .ai_state
             .config
             .resolve_profile(&self.ai_chat_effective_profile())
-            .map(|profile| profile.model.as_str())
-            .unwrap_or_default()
+        else {
+            return "";
+        };
+        let model = match self.ai_state.chat.as_ref() {
+            Some(chat) => chat.model_override.as_deref(),
+            None => self
+                .ai_chat_remembered_selection()
+                .and_then(|selection| selection.model.as_deref()),
+        };
+        model
+            .filter(|model| {
+                crate::ai::chat_preference::valid_model(model)
+                    && (profile.provider == crate::ai::AiProviderKind::ClaudeCode
+                        || *model == profile.model)
+            })
+            .unwrap_or(&profile.model)
     }
 
-    /// Select a model without inventing another profile. This updates the active
-    /// runtime configuration; startup defaults remain owned by the user's config.
+    pub(crate) fn ai_chat_remembered_selection(
+        &self,
+    ) -> Option<&crate::ai::chat_preference::ChatSelection> {
+        if self.ai_state.chat_config_override {
+            return None;
+        }
+        self.ai_state
+            .chat_preference
+            .selection
+            .as_ref()
+            .filter(|selection| selection.resolve(&self.ai_state.config).is_some())
+    }
+
+    /// Resolve the same model for requests and presentation without changing
+    /// the profile used by queries, workflows or delegated agents.
+    pub(crate) fn ai_chat_resolved_profile(&self) -> Option<crate::ai::AiProfileConfig> {
+        let mut profile = self
+            .ai_state
+            .config
+            .resolve_profile(&self.ai_chat_effective_profile())?
+            .clone();
+        profile.model = self.ai_chat_selected_model().into();
+        Some(profile)
+    }
+
+    /// Interactive profile selection is chat-specific and remembered.
+    pub fn ai_select_chat_profile(&mut self, profile_name: &str) -> bool {
+        let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
+            self.set_status_message(format!("Unknown AI profile: {profile_name}"));
+            return false;
+        };
+        let model = profile.model.clone();
+        self.ai_select_chat_model(profile_name, &model)
+    }
+
     pub fn ai_select_chat_model(&mut self, profile_name: &str, model: &str) -> bool {
         let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
             self.set_status_message(format!("Unknown AI profile: {profile_name}"));
             return false;
         };
-        if model.is_empty()
-            || model.len() > 512
-            || model.chars().any(|c| c.is_whitespace() || c.is_control())
-        {
+        if !crate::ai::chat_preference::valid_model(model) {
             self.set_status_message(
                 "Model must be a nonempty alias or model ID without whitespace (at most 512 bytes)",
             );
@@ -69,16 +126,56 @@ impl Editor {
             self.set_status_message("Configure this provider's model in its AI profile");
             return false;
         }
-        if !self.ai_set_profile(profile_name) {
+        let selection = crate::ai::chat_preference::ChatSelection {
+            profile: profile_name.into(),
+            provider: profile.provider,
+            model: (profile.provider == crate::ai::AiProviderKind::ClaudeCode)
+                .then(|| model.into()),
+        };
+        if !self.apply_ai_chat_selection(profile_name, selection.model.clone()) {
             return false;
         }
-        self.ai_state
-            .config
-            .profiles
-            .get_mut(profile_name)
-            .expect("validated profile")
-            .model = model.into();
-        self.set_status_message(format!("AI profile: {profile_name} · {model}"));
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.follow_chat_default = chat.opts.name != "query";
+        }
+        // A live user choice wins until configuration is loaded again.
+        self.ai_state.chat_config_override = false;
+        match self.ai_state.chat_preference.remember(selection) {
+            Ok(()) => self.set_status_message(format!("AI profile: {profile_name} · {model}")),
+            Err(error) => {
+                crate::log_warn!("ai", "Could not save chat preference: {error:#}");
+                self.set_status_message(format!(
+                    "AI profile: {profile_name} · {model} (could not remember selection: {error})"
+                ));
+            }
+        }
+        true
+    }
+
+    /// Apply a session choice without changing defaults or writing preferences.
+    /// Programmatic chat options and interactive selectors share this boundary.
+    pub(crate) fn apply_ai_chat_selection(
+        &mut self,
+        profile_name: &str,
+        model: Option<String>,
+    ) -> bool {
+        let Some(profile) = self.ai_state.config.resolve_profile(profile_name) else {
+            self.set_status_message(format!("Unknown AI profile: {profile_name}"));
+            return false;
+        };
+        let owns_agent_loop = profile.provider.owns_agent_loop();
+        if self.ai_chat_has_pending_work() {
+            self.set_status_message("Wait for or stop the active turn before changing profiles");
+            return false;
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.opts.profile = Some(profile_name.into());
+            chat.model_override = model;
+            chat.follow_chat_default = false;
+            if owns_agent_loop && chat.reasoning_effort_override.as_deref() == Some("none") {
+                chat.reasoning_effort_override = None;
+            }
+        }
         true
     }
 
@@ -109,8 +206,7 @@ impl Editor {
         };
         let provider = profile.provider;
         let model = profile.model.clone();
-        if self.ai_chat_has_pending_work() {
-            self.set_status_message("Wait for or stop the active turn before changing profiles");
+        if !self.apply_ai_chat_selection(profile_name, None) {
             return false;
         }
         for context in ["chat", "query"] {
@@ -121,14 +217,6 @@ impl Editor {
         }
         self.ai_state.config.default_profile = profile_name.into();
         self.ai_state.active_profile = profile_name.to_string();
-        if let Some(chat) = self.ai_state.chat.as_mut() {
-            chat.opts.profile = Some(profile_name.to_string());
-            if provider.owns_agent_loop()
-                && chat.reasoning_effort_override.as_deref() == Some("none")
-            {
-                chat.reasoning_effort_override = None;
-            }
-        }
         self.set_status_message(format!(
             "AI profile: {} ({}/{})",
             profile_name, provider, model
@@ -178,15 +266,10 @@ impl Editor {
 
         self.open_ai_chat(crate::ai::chat_types::ChatOpts {
             name: "chat".into(),
-            profile: profile
-                .clone()
-                .or_else(|| self.ai_chat_context_profile("chat")),
+            profile: profile.clone(),
             allow_edits: true,
             ..Default::default()
         })?;
-        if let Some(profile) = profile {
-            self.ai_set_profile(&profile);
-        }
         let selection = self
             .ai_state
             .active_selection
@@ -362,7 +445,7 @@ mod model_selection_tests {
     use super::super::ai_external_agent::tests::{attach, editor};
 
     #[test]
-    fn claude_model_choices_change_one_profile_and_preserve_custom_ids() {
+    fn claude_model_choices_preserve_configured_profiles_and_custom_ids() {
         let mut editor = editor();
         let before = editor.ai_state.config.profiles.len();
         let models: Vec<_> = editor
@@ -384,12 +467,15 @@ mod model_selection_tests {
         editor.ai_state.chat.as_mut().unwrap().input = "keep my draft".into();
         assert!(editor.ai_select_chat_model("claude_code", "opus"));
         assert_eq!(editor.ai_chat_selected_model(), "opus");
-        assert_eq!(editor.ai_state.config.profiles["claude_code"].model, "opus");
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].model,
+            "default"
+        );
         assert_eq!(editor.ai_state.config.profiles.len(), before);
         assert_eq!(editor.ai_chat_input(), "keep my draft");
-        assert!(editor.ai_set_profile("local"));
-        assert!(editor.ai_set_profile("claude_code"));
-        assert_eq!(editor.ai_chat_selected_model(), "opus");
+        assert!(editor.ai_select_chat_profile("local"));
+        assert!(editor.ai_select_chat_profile("claude_code"));
+        assert_eq!(editor.ai_chat_selected_model(), "default");
         assert_eq!(editor.ai_state.config.default_profile, "claude_code");
         assert!(editor
             .try_execute_ai_chat_slash_command("/model claude-custom-version[1m]")
@@ -450,7 +536,7 @@ mod model_selection_tests {
                 "{model}"
             );
             assert_eq!(editor.ai_chat_reasoning_effort_selection(), "default");
-            let profile = &editor.ai_state.config.profiles["claude_code"];
+            let profile = editor.ai_chat_resolved_profile().unwrap();
             assert_eq!(
                 profile.resolve_reasoning_effort(None).unwrap_or("default"),
                 expected
@@ -474,7 +560,10 @@ mod model_selection_tests {
         assert_eq!(editor.ai_chat_reasoning_efforts(), ["default"]);
         assert!(!editor.set_ai_chat_reasoning_effort("high"));
         assert_eq!(
-            editor.ai_state.config.profiles["claude_code"].resolve_reasoning_effort(Some("max")),
+            editor
+                .ai_chat_resolved_profile()
+                .unwrap()
+                .resolve_reasoning_effort(Some("max")),
             None
         );
         assert!(editor.ai_select_chat_model("claude_code", "claude-fable-5-1"));
@@ -483,9 +572,112 @@ mod model_selection_tests {
         assert_eq!(editor.ai_chat_reasoning_effort(), "low");
         assert!(editor.ai_set_profile("local"));
         assert!(editor.set_ai_chat_reasoning_effort("none"));
-        assert!(editor.ai_set_profile("claude_code"));
+        assert!(editor.ai_select_chat_model("claude_code", "claude-fable-5-1"));
         assert_eq!(editor.ai_chat_reasoning_effort_selection(), "default");
         assert_eq!(editor.ai_chat_reasoning_effort(), "low");
+    }
+
+    #[test]
+    fn remembered_selection_survives_a_new_editor_without_changing_query_defaults() {
+        use crate::ai::chat_preference::ChatPreference;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preference.json");
+        let mut first = editor();
+        first.ai_state.chat_preference = ChatPreference::load(path.clone());
+        assert!(first.ai_select_chat_model("claude_code", "opus[1m]"));
+        assert!(first.ai_select_chat_profile("local"));
+        assert_eq!(first.ai_state.config.default_profile, "claude_code");
+        assert_eq!(
+            first.ai_chat_context_profile("query").as_deref(),
+            Some("claude_code")
+        );
+        assert!(first.ai_select_chat_model("claude_code", "opus[1m]"));
+        drop(first);
+
+        let mut reopened = editor();
+        reopened.ai_state.chat = None;
+        reopened.ai_state.chat_preference = ChatPreference::load(path.clone());
+        assert_eq!(reopened.ai_chat_selected_model(), "opus[1m]");
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts::default())
+            .unwrap();
+        assert_eq!(reopened.ai_chat_selected_model(), "opus[1m]");
+        assert_eq!(
+            reopened.ai_chat_resolved_profile().unwrap().model,
+            "opus[1m]"
+        );
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts {
+                profile: Some("local".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(reopened.ai_chat_effective_profile(), "local");
+        // A one-off explicit profile does not replace the remembered default.
+        assert_eq!(
+            ChatPreference::load(path.clone())
+                .selection
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("opus[1m]")
+        );
+        reopened.ai_state.chat = None;
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts::default())
+            .unwrap();
+        reopened.close_ai_chat();
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts::default())
+            .unwrap();
+        assert_eq!(reopened.ai_chat_selected_model(), "opus[1m]");
+
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts {
+                name: "query".into(),
+                allow_edits: false,
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(reopened.ai_chat_selected_model(), "default");
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts {
+                name: "explicit".into(),
+                profile: Some("claude_code".into()),
+                ..Default::default()
+            })
+            .unwrap();
+        assert_eq!(reopened.ai_chat_selected_model(), "default");
+        assert_eq!(
+            ChatPreference::load(path)
+                .selection
+                .unwrap()
+                .model
+                .as_deref(),
+            Some("opus[1m]")
+        );
+    }
+
+    #[tokio::test]
+    async fn rejected_selection_does_not_write_and_save_failure_is_visible() {
+        use crate::ai::chat_preference::ChatPreference;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preference.json");
+        let mut editor = editor();
+        editor.ai_state.chat_preference = ChatPreference::load(path.clone());
+        assert!(editor.ai_select_chat_model("claude_code", "opus"));
+        let saved = std::fs::read(&path).unwrap();
+        assert!(!editor.ai_select_chat_model("claude_code", "bad model"));
+        let _sender = attach(&mut editor);
+        assert!(!editor.ai_select_chat_profile("local"));
+        assert_eq!(std::fs::read(&path).unwrap(), saved);
+        editor.cancel_ai_chat_generation();
+        editor.ai_state.chat_preference = ChatPreference::load(dir.path().to_path_buf());
+        assert!(editor.ai_select_chat_profile("local"));
+        assert_eq!(editor.ai_chat_effective_profile(), "local");
+        assert!(editor
+            .status_message()
+            .contains("could not remember selection"));
     }
 
     #[test]

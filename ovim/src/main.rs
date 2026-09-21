@@ -120,6 +120,7 @@ async fn main() -> Result<()> {
     // Load Lua before the initial file so language plugins participate in
     // detection, syntax highlighting, LSP startup, and --render.
     let mut editor = Editor::new();
+    editor.load_ai_chat_preference();
     if let Err(e) = editor.enable_lua() {
         ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
     }

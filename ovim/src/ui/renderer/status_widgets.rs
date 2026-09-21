@@ -291,15 +291,13 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
             ));
         }
         let active_profile = editor.ai_chat_effective_profile();
-        let model_display = editor
-            .ai_state
-            .config
-            .resolve_profile(&active_profile)
-            .map(|p| {
-                let short: String = p.model.chars().take(16).collect();
-                format!(" {}:{} ", active_profile, short)
-            })
-            .unwrap_or_else(|| format!(" {} ", active_profile));
+        let model = editor.ai_chat_selected_model();
+        let model_display = if model.is_empty() {
+            format!(" {active_profile} ")
+        } else {
+            let short: String = model.chars().take(16).collect();
+            format!(" {active_profile}:{short} ")
+        };
         right_spans.push(Span::styled(
             model_display,
             Style::default()
@@ -1308,6 +1306,48 @@ mod tests {
     };
     use crate::editor::{ToastRequest, ToastSource};
     use unicode_width::UnicodeWidthStr;
+
+    #[test]
+    fn chat_status_line_shows_the_selected_model_without_mutating_configuration() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut editor = crate::editor::Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.name = "claude_code".into();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts::default())
+            .unwrap();
+        assert!(editor.ai_select_chat_model("claude_code", "opus[1m]"));
+        let mut terminal = Terminal::new(TestBackend::new(160, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_status_line(
+                    frame,
+                    &editor,
+                    &crate::syntax::Theme::default(),
+                    frame.area(),
+                );
+            })
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("claude_code:opus[1m]"), "{text}");
+        assert_eq!(
+            editor.ai_state.config.profiles["claude_code"].model,
+            "default"
+        );
+    }
 
     #[test]
     fn compact_path_hint_keeps_disambiguating_tail() {

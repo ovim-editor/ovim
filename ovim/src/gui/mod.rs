@@ -1275,6 +1275,7 @@ async fn run_editor(
     ready: std_mpsc::SyncSender<Result<(), String>>,
 ) {
     let mut editor = Editor::new().with_services(services);
+    editor.load_ai_chat_preference();
     if let Err(error) = editor.enable_lua() {
         editor.set_status_message(format!("Lua configuration: {error}"));
     }
@@ -1414,7 +1415,6 @@ fn activate_gui_ai_chat(editor: &mut Editor) -> Result<()> {
 
     editor.open_ai_chat(ovim_core::ai::chat_types::ChatOpts {
         name: "chat".into(),
-        profile: editor.ai_chat_context_profile("chat"),
         allow_edits: true,
         ..Default::default()
     })
@@ -1770,7 +1770,7 @@ async fn handle_request(
                 Err(anyhow::anyhow!("AI chat is not active"))
             } else if match model.as_deref() {
                 Some(model) => editor.ai_select_chat_model(&profile, model),
-                None => editor.ai_set_profile(&profile),
+                None => editor.ai_select_chat_profile(&profile),
             } {
                 if let Some(chat) = editor.ai_state.chat.as_mut() {
                     chat.focus = ovim_core::ai::chat_types::ChatFocus::TextInput;
@@ -3698,7 +3698,7 @@ mod tests {
         );
         assert_eq!(
             editor.ai_state.config.profiles["claude_code"].model,
-            "claude-fable-5-1"
+            "default"
         );
     }
 

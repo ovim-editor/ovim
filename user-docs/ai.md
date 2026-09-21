@@ -422,13 +422,26 @@ on startup, read Claude credential files, or implement its own Claude login.
 Your usual Claude environment and user/project settings apply. Account or
 organization restrictions reported by Claude also apply in Ovim.
 
-Codex remains the shipped default. Choosing a profile changes the default for
-new chats and queries in the current Ovim session. To start with Claude Code
-after restarting, put this in your `init.lua`:
+Codex remains the shipped default. Choosing a profile or Claude model in the
+GUI or terminal picker (including `/model`) remembers it for new chats across
+projects and restarts. Queries and configured profiles are unchanged. The
+preference is stored in Ovim's local data directory (`~/.local/share/ovim/chat-preference.json`
+on Linux); `OVIM_CHAT_PREFERENCE_FILE` can override that location. Missing,
+invalid, or no-longer-configured selections fall back to configured defaults.
+A failed save is reported in the status message; the live choice still works.
+
+Explicit settings in `init.lua` take precedence on startup and `:reload`.
+To always start chat with Claude Agent:
 
 ```lua
-vim.ai.default_profile = "claude_code"
+vim.ai.contexts.chat = "claude_code"
 ```
+
+`vim.ai.default_profile` also overrides the remembered choice and sets query
+defaults. An explicitly configured profile model beats its remembered model.
+A picker change still takes effect immediately; reloading configuration restores
+the explicit settings. A profile passed to `vim.ai.open_chat` applies only to that
+chat and does not replace the saved preference.
 
 The model picker in both the GUI and terminal offers Claude Agent entries for
 `default`, `claude-sonnet-5`, `claude-opus-5`, `claude-fable-5-1`, and
@@ -443,8 +456,9 @@ on 2026-09-21. They are not a list of your account's entitlements. Other aliases
 such as `fable`, and deployment-specific IDs can be entered with `/model`.
 Claude enforces model availability. Haiku does not expose reasoning effort;
 Ovim omits any previously selected effort when using it. `default` leaves the model unset, using your usual Claude
-configuration. Changes apply to this Ovim session and remain selected when you
-switch away and back. Stop an active turn before changing the selection.
+configuration. Ovim remembers the last selected profile/model pair. Selecting
+a profile by name uses its configured model. Stop an active turn before changing
+the selection.
 Ovim's model defaults are Medium for Fable 5.1 and High for Opus 5 and Sonnet 5,
 following [Anthropic's effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort)
 for Opus/Sonnet and choosing Medium for Fable's interactive use. An explicit

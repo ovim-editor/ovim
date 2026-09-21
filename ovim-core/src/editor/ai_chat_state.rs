@@ -651,6 +651,10 @@ impl AiChatActivity {
 
 pub struct AiChatState {
     pub opts: ChatOpts,
+    /// Session model choice; the configured profile remains unchanged.
+    pub model_override: Option<String>,
+    /// False for a one-off explicit profile or a query; reload preserves it.
+    pub follow_chat_default: bool,
     /// Buffer ID where the chat was originally opened.
     /// Used for the conversation key — never changes during the session.
     pub origin_buffer_id: BufferId,
@@ -919,8 +923,11 @@ impl AiChatState {
 
     pub fn new(opts: ChatOpts, active_buffer_id: BufferId, mode_before: Mode) -> Self {
         let allow_edits = opts.allow_edits;
+        let follow_chat_default = opts.profile.is_none() && opts.name != "query";
         Self {
             opts,
+            model_override: None,
+            follow_chat_default,
             origin_buffer_id: active_buffer_id,
             runtime_branch: crate::agent_runtime::BranchLocator("branch-0".into()),
             runtime_turn: None,
