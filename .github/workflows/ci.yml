@@ -58,9 +58,16 @@ jobs:
           npm run check --prefix ovim/gui
           npm test --prefix ovim/gui
           npm run build --prefix ovim/gui
+      - name: Check GUI layout in Chromium and WebKit
+        working-directory: ovim/gui
+        run: |
+          npx playwright install --with-deps chromium webkit
+          npm run test:layout
       - name: Check Claude SDK adapter
         run: |
           npm ci --prefix ovim/claude-runtime --omit=optional --ignore-scripts
           npm test --prefix ovim/claude-runtime
       - name: Clippy native GUI
         run: cargo clippy -p ovim --all-targets --locked -- -D warnings
+      - name: Test native GUI projections
+        run: cargo test -p ovim gui::tests --lib --locked

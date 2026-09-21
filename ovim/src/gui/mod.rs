@@ -37,7 +37,6 @@ const TICK_RATE: Duration = Duration::from_millis(50);
 const EXTERNAL_FILE_RATE: Duration = Duration::from_millis(500);
 const SNAPSHOT_OVERSCAN: usize = 4;
 const HORIZONTAL_OVERSCAN: usize = 96;
-const MAX_FILE_TREE_ITEMS: usize = 300;
 const MAX_PICKER_ITEMS: usize = 24;
 const MAX_COMPLETION_ITEMS: usize = 12;
 
@@ -554,6 +553,7 @@ pub struct GuiHover {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiFileTree {
+    pub reveal_generation: u32,
     pub root: String,
     pub selected: usize,
     pub items: Vec<GuiFileTreeItem>,
@@ -3050,16 +3050,14 @@ fn completion(editor: &Editor) -> Option<GuiCompletion> {
 fn file_tree(editor: &Editor) -> Option<GuiFileTree> {
     let tree = editor.file_tree();
     let selected = tree.selected_index();
-    let start = centered_window_start(selected, tree.flattened().len(), MAX_FILE_TREE_ITEMS);
     tree.is_visible().then(|| GuiFileTree {
+        reveal_generation: tree.reveal_generation(),
         root: tree.root_name().to_string(),
         selected,
         items: tree
             .flattened()
             .iter()
             .enumerate()
-            .skip(start)
-            .take(MAX_FILE_TREE_ITEMS)
             .map(|(index, node)| GuiFileTreeItem {
                 index,
                 name: node.name().to_string(),
@@ -3650,6 +3648,31 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn file_tree_projects_all_loaded_rows_and_repeated_reveals() {
+        let directory = tempfile::tempdir().unwrap();
+        for index in 0..420 {
+            std::fs::write(directory.path().join(format!("module-{index:03}.rs")), "").unwrap();
+        }
+        let mut editor = Editor::default();
+        editor.file_tree_mut().open(directory.path());
+        let target = directory.path().join("module-350.rs");
+        editor.open_file(&target).unwrap();
+        editor.toggle_file_tree();
+        let first = file_tree(&editor).unwrap();
+        assert!(first.items.len() > 420);
+        assert_eq!(first.items[first.selected].name, "module-350.rs");
+        editor.set_mode(Mode::Normal);
+        editor.toggle_file_tree();
+        let second = file_tree(&editor).unwrap();
+        assert_eq!(second.selected, first.selected);
+        assert_eq!(second.reveal_generation, first.reveal_generation + 1);
+        editor.file_tree_mut().select_next();
+        let next = file_tree(&editor).unwrap();
+        assert_eq!(next.reveal_generation, second.reveal_generation);
+        assert_eq!(next.selected, second.selected + 1);
+    }
 
     #[tokio::test]
     async fn claude_profile_projects_the_external_runtime_to_gui() {

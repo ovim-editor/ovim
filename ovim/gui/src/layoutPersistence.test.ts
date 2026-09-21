@@ -55,3 +55,21 @@ describe("workspace layout persistence", () => {
         expect(readWorkbenchLayout(storage, "/work/ovim")).toEqual(preference);
     });
 });
+
+it("reads legacy layouts and discards only invalid widths", () => {
+    const base = { activeDock: "explorer", activeContextPanel: "ai" };
+    for (const explorerWidth of [-1, 0, 239, 801, "320", null]) {
+        expect(
+            readWorkbenchLayout(
+                { getItem: () => JSON.stringify({ ...base, explorerWidth }) },
+                "workspace",
+            ),
+        ).toEqual(base);
+    }
+    expect(
+        readWorkbenchLayout(
+            { getItem: () => JSON.stringify({ ...base, explorerWidth: 480 }) },
+            "workspace",
+        ),
+    ).toEqual({ ...base, explorerWidth: 480 });
+});

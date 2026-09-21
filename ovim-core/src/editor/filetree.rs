@@ -179,6 +179,8 @@ pub struct FileTree {
     root: Option<TreeNode>,
     /// Currently selected index in the flattened tree
     selected_index: usize,
+    /// Explicit reveal intent, including repeated reveals of the same selection.
+    reveal_generation: u32,
     /// Whether the file tree is visible
     visible: bool,
     /// Cached flattened tree for rendering
@@ -207,6 +209,7 @@ impl FileTree {
         Self {
             root: None,
             selected_index: 0,
+            reveal_generation: 0,
             visible: false,
             flattened: Vec::new(),
             scroll_offset: 0,
@@ -540,8 +543,14 @@ impl FileTree {
         false
     }
 
-    /// Reveals a path in the tree: expands all parent directories and selects the target
+    /// Changes only when a caller explicitly asks to reveal a path.
+    pub fn reveal_generation(&self) -> u32 {
+        self.reveal_generation
+    }
+
+    /// Expands ancestors and selects the target; frontends observe the reveal generation.
     pub fn reveal_path(&mut self, target: &Path) {
+        self.reveal_generation = self.reveal_generation.wrapping_add(1);
         let normalized = target
             .canonicalize()
             .unwrap_or_else(|_| target.to_path_buf());

@@ -37,8 +37,9 @@ The 2px leading active rail is the sole persistent selection signal. A backgroun
 
 ### Primary dock
 
-- Default width: 260px.
-- User-resizable range: 200–420px.
+- Default Explorer width: 320px, remembered per workspace.
+- Explorer resizing: 240–800px, constrained by available window and editor space. Drag the divider, use its arrow keys (Shift for larger steps), or double-click/press Enter to reset.
+- Explorer rows stay single-line. Reveal and selection navigation bring the selected filename into view on both axes. Oversized selected names temporarily show both ends with middle ellipsis; manual horizontal scrolling exposes the complete name. Background updates preserve manual scrolling.
 - Hosts Explorer, Search, Source Control, and other navigation surfaces.
 - Header: title, optional scope, and a small action group; no two-line uppercase block when one line is enough.
 - Dock state and width persist per workspace.

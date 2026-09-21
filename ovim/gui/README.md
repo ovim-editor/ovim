@@ -39,6 +39,21 @@ on a line without a cursor. They also verify that font completion updates existi
 segments. WebKit covers the macOS GUI's rendering engine; Chromium covers the web
 preview. Screenshots are saved under `test-results/`.
 
+### Explorer layout checks
+
+```sh
+npm run test:layout -- e2e/explorer-layout.spec.ts
+cargo test -p ovim gui::tests --lib --locked
+```
+
+The browser scenarios use synthetic filenames to cover deep selection, names
+wider than the sidebar, repeated reveal, manual horizontal scrolling, all 420
+loaded rows, pointer and keyboard resizing, responsive width clamping, and
+workspace persistence. Snapshot-driven workbench scenarios also verify that
+reveal activates a hidden Explorer and resizing updates the editor viewport.
+Chromium and WebKit save screenshots under `test-results/`. The Rust projection
+test verifies that every loaded tree row and repeated reveal intent reach the GUI.
+
 ### Native browser smoke test
 
 The debug GUI includes an opt-in end-to-end smoke test for the embedded

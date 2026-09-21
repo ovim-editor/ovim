@@ -1,6 +1,8 @@
 import type { GuiSnapshot } from "./types";
+import { EXPLORER_MIN_WIDTH, EXPLORER_MAX_WIDTH } from "./explorerLayout";
 
 export type WorkbenchLayoutPreference = {
+    explorerWidth?: number;
     activeDock: "explorer" | "context";
     activeContextPanel: "ai" | "tests" | "debug" | "diff";
 };
@@ -42,7 +44,16 @@ export const readWorkbenchLayout = (
             )
         )
             return undefined;
-        return parsed as WorkbenchLayoutPreference;
+        return {
+            activeDock: parsed.activeDock!,
+            activeContextPanel: parsed.activeContextPanel!,
+            ...(typeof parsed.explorerWidth === "number" &&
+            Number.isFinite(parsed.explorerWidth) &&
+            parsed.explorerWidth >= EXPLORER_MIN_WIDTH &&
+            parsed.explorerWidth <= EXPLORER_MAX_WIDTH
+                ? { explorerWidth: parsed.explorerWidth }
+                : {}),
+        };
     } catch {
         return undefined;
     }

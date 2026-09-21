@@ -339,6 +339,7 @@ export interface GuiSnapshot {
     };
     hover?: { content: string; line?: number; displayColumn?: number };
     fileTree?: {
+        revealGeneration: number;
         root: string;
         selected: number;
         items: Array<{

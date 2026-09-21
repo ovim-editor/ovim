@@ -169,6 +169,7 @@ export const mockSnapshot: GuiSnapshot = {
     lspStatus: "rust-analyzer: Ready",
     statusMessage: "",
     fileTree: {
+        revealGeneration: 0,
         root: "ovim",
         selected: 5,
         items: [

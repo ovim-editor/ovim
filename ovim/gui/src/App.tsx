@@ -21,6 +21,8 @@ import BrowserPanel, { browserTabTitle } from "./BrowserPanel";
 import { createBrowserNavigation } from "./browserNavigation";
 import { createBrowserWorkbench } from "./browserWorkbench";
 import { browserShortcutAction, type BrowserKeyEvent } from "./browserKeys";
+import FileExplorer from "./FileExplorer";
+import { EXPLORER_DEFAULT_WIDTH } from "./explorerLayout";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import NativeDiffPanel from "./DiffPanel";
 import SurfaceCommandLine from "./SurfaceCommandLine";
@@ -1397,6 +1399,12 @@ function App() {
 
     const diffWorkspace = () => view().workspacePath || "";
 
+    const [explorerWidth, setExplorerWidth] = createSignal(
+        EXPLORER_DEFAULT_WIDTH,
+    );
+
+    const [contextDockWidth, setContextDockWidth] = createSignal(0);
+
     const layoutStorage = () => {
         try {
             return window.localStorage;
@@ -1410,6 +1418,7 @@ function App() {
         if (workspace === layoutWorkspace) return;
         layoutWorkspace = workspace;
         const preference = readWorkbenchLayout(layoutStorage(), workspace);
+        setExplorerWidth(preference?.explorerWidth ?? EXPLORER_DEFAULT_WIDTH);
         if (!preference) return;
         setActiveDock(preference.activeDock);
         setActiveContextPanel(preference.activeContextPanel);
@@ -1418,6 +1427,7 @@ function App() {
 
     createEffect(() => {
         const preference = {
+            explorerWidth: explorerWidth(),
             activeDock: activeDock(),
             activeContextPanel: activeContextPanel(),
         };
@@ -1476,6 +1486,12 @@ function App() {
     };
 
     const syncDimensions = () => {
+        const dock = editorBody?.querySelector<HTMLElement>(".side-dock");
+        setContextDockWidth(
+            dock && getComputedStyle(dock).position !== "absolute"
+                ? dock.getBoundingClientRect().width
+                : 0,
+        );
         if (!native) return;
         const next = dimensions();
         if (
@@ -1489,10 +1505,20 @@ function App() {
         );
     };
 
+    createEffect(() => {
+        void hasContextDock();
+        queueMicrotask(syncDimensions);
+    });
+
     const accept = (snapshot: GuiSnapshot) => {
         if (!shouldAcceptRevision(latestSnapshotRevision, snapshot.revision))
             return;
         latestSnapshotRevision = snapshot.revision;
+        const treeRevealed =
+            snapshot.fileTree &&
+            snapshot.fileTree.revealGeneration !==
+                view().fileTree?.revealGeneration &&
+            snapshot.fileTree.revealGeneration > 0;
         const chatOpened = !view().aiChat && Boolean(snapshot.aiChat);
         const chatClosed = Boolean(view().aiChat) && !snapshot.aiChat;
         const coreDialogClosed =
@@ -1500,6 +1526,7 @@ function App() {
             !snapshot.picker &&
             !snapshot.lspManager;
         setView((previous) => retainProjection(previous, snapshot));
+        if (treeRevealed) setActiveDock("explorer");
         setConnected(true);
         setError("");
         requestAnimationFrame(syncDimensions);
@@ -3289,120 +3316,20 @@ function App() {
 
                 <Show when={view().fileTree}>
                     {(tree) => (
-                        <aside class="explorer">
-                            <div class="panel-heading">
-                                <span>Explorer</span>
-                                <small>{tree().root}</small>
-                            </div>
-                            <div
-                                class="tree-list"
-                                role="tree"
-                                aria-label="Project files"
-                            >
-                                <For
-                                    each={tree().items}
-                                    fallback={
-                                        <p class="panel-empty compact">
-                                            This workspace is empty
-                                        </p>
-                                    }
-                                >
-                                    {(item) => (
-                                        <button
-                                            type="button"
-                                            role="treeitem"
-                                            aria-selected={
-                                                item.index === tree().selected
-                                            }
-                                            aria-expanded={
-                                                item.directory
-                                                    ? item.expanded
-                                                    : undefined
-                                            }
-                                            aria-level={item.depth + 1}
-                                            class="tree-item"
-                                            classList={{
-                                                selected:
-                                                    item.index ===
-                                                    tree().selected,
-                                            }}
-                                            style={{
-                                                "padding-left": `${10 + item.depth * 14}px`,
-                                            }}
-                                            title={item.path}
-                                            onClick={() => {
-                                                void mutate(
-                                                    "gui_select_file_tree",
-                                                    {
-                                                        index: item.index,
-                                                        activate: false,
-                                                    },
-                                                );
-                                                queueMicrotask(
-                                                    focusEditorInput,
-                                                );
-                                            }}
-                                            onDblClick={() => {
-                                                void mutate(
-                                                    "gui_select_file_tree",
-                                                    {
-                                                        index: item.index,
-                                                        activate: true,
-                                                    },
-                                                );
-                                                queueMicrotask(
-                                                    focusEditorInput,
-                                                );
-                                            }}
-                                            onKeyDown={(event) => {
-                                                if (event.key !== "Enter")
-                                                    return;
-                                                event.preventDefault();
-                                                void mutate(
-                                                    "gui_select_file_tree",
-                                                    {
-                                                        index: item.index,
-                                                        activate: true,
-                                                    },
-                                                );
-                                                queueMicrotask(
-                                                    focusEditorInput,
-                                                );
-                                            }}
-                                        >
-                                            <span
-                                                class={`tree-chevron ${item.directory ? "directory" : "file"}`}
-                                            >
-                                                <Show when={item.directory}>
-                                                    <Icon
-                                                        name={
-                                                            item.expanded
-                                                                ? "chevron-down"
-                                                                : "chevron-right"
-                                                        }
-                                                        size={16}
-                                                    />
-                                                </Show>
-                                            </span>
-                                            <Icon
-                                                name={
-                                                    item.directory
-                                                        ? "folder"
-                                                        : "file"
-                                                }
-                                                size={16}
-                                                tone={
-                                                    item.directory
-                                                        ? "warning"
-                                                        : "muted"
-                                                }
-                                            />
-                                            <span>{item.name}</span>
-                                        </button>
-                                    )}
-                                </For>
-                            </div>
-                        </aside>
+                        <FileExplorer
+                            tree={tree()}
+                            width={explorerWidth()}
+                            reservedWidth={contextDockWidth()}
+                            onWidthChange={setExplorerWidth}
+                            active={activeDock() === "explorer"}
+                            onSelect={(index, activate) => {
+                                void mutate("gui_select_file_tree", {
+                                    index,
+                                    activate,
+                                });
+                                queueMicrotask(focusEditorInput);
+                            }}
+                        />
                     )}
                 </Show>
 
