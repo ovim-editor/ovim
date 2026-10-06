@@ -137,6 +137,11 @@ impl Editor {
         self.build.test_panel.open
     }
 
+    pub(crate) fn set_test_panel_width_delta(&mut self, delta: i32) {
+        self.build.test_panel.width_delta = delta.clamp(-20, 80) as i16;
+        self.mark_dirty();
+    }
+
     /// `<Space>tt` / `:TestPanel` - toggle the test panel.
     pub fn toggle_test_panel(&mut self) {
         let panel = &mut self.build.test_panel;
@@ -151,6 +156,7 @@ impl Editor {
     /// Hide the test panel without affecting a test running in the background.
     pub fn close_test_panel(&mut self) {
         self.build.test_panel.open = false;
+        self.render_cache.test_panel_drag = None;
     }
 
     /// `<Space>to` / `:TestOutput` - open the raw output of the last

@@ -7,6 +7,7 @@ export default function ResizeDivider(props: {
     minimum: number;
     maximum: number;
     defaultValue: number;
+    reverse?: boolean;
     onChange: (value: number) => void;
 }) {
     let drag: { pointer: number; x: number; value: number } | undefined;
@@ -15,6 +16,7 @@ export default function ResizeDivider(props: {
         props.onChange(
             Math.round(Math.max(props.minimum, Math.min(value, props.maximum))),
         );
+    const direction = () => (props.reverse ? -1 : 1);
     const stop = () => {
         drag = undefined;
         setDragging(false);
@@ -39,10 +41,10 @@ export default function ResizeDivider(props: {
                 let next: number;
                 switch (event.key) {
                     case "ArrowLeft":
-                        next = props.value - step;
+                        next = props.value - step * direction();
                         break;
                     case "ArrowRight":
-                        next = props.value + step;
+                        next = props.value + step * direction();
                         break;
                     case "Home":
                         next = props.minimum;
@@ -73,7 +75,7 @@ export default function ResizeDivider(props: {
             }}
             onPointerMove={(event) => {
                 if (drag?.pointer === event.pointerId)
-                    change(drag.value + event.clientX - drag.x);
+                    change(drag.value + (event.clientX - drag.x) * direction());
             }}
             onPointerUp={(event) => {
                 if (drag?.pointer !== event.pointerId) return;

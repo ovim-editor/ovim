@@ -5,7 +5,7 @@
 //! source location on the line (stack frames, compiler errors), `[`/`]`
 //! switch between runs, `r` reruns, `s` stops, `x` clears, `i` types a line for
 //! the program's stdin (`D` ends the input), `+`/`-` resize the panel,
-//! `q`/`Esc` returns to the buffer.
+//! `q`/`Esc` hides the console and returns to the buffer.
 
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -23,7 +23,7 @@ pub fn handle_run_console_mode(editor: &mut Editor, key: KeyEvent) -> Result<()>
     let half = (editor.run_console().view_height / 2).max(1) as isize;
     match key.code {
         KeyCode::Esc | KeyCode::Char('q') => {
-            editor.set_mode(Mode::Normal);
+            editor.close_run_console();
         }
         // Taller / shorter console.
         KeyCode::Char('+') | KeyCode::Char('=') => {

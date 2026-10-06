@@ -644,6 +644,16 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         return Ok(None);
     }
 
+    if editor.is_test_panel_open()
+        && editor
+            .render_cache
+            .test_panel_area
+            .is_some_and(|area| col == area.x && area.contains(col, row))
+    {
+        editor.render_cache.test_panel_drag = Some((col, editor.test_panel().width_delta));
+        return Ok(None);
+    }
+
     // Exit visual mode if active
     if matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
         editor.set_mode(Mode::Normal);
@@ -747,6 +757,13 @@ fn handle_ai_chat_input_click(editor: &mut Editor, col: u16, row: u16) -> bool {
 }
 
 fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
+    if let Some((start, delta)) = editor.render_cache.test_panel_drag {
+        if editor.is_test_panel_open() {
+            let width = i32::from(delta) + i32::from(start) - i32::from(col);
+            editor.set_test_panel_width_delta(width);
+        }
+        return Ok(());
+    }
     if editor.render_cache.ai_chat_separator_dragging {
         if let Some(split_area) = editor.render_cache.ai_chat_split_area {
             editor.resize_ai_chat_panel(col, split_area);
@@ -810,6 +827,9 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
 }
 
 fn handle_left_release(editor: &mut Editor) -> Result<()> {
+    if editor.render_cache.test_panel_drag.take().is_some() {
+        return Ok(());
+    }
     if editor.render_cache.ai_chat_separator_dragging {
         editor.render_cache.ai_chat_separator_dragging = false;
         return Ok(());
@@ -1001,6 +1021,31 @@ mod tests {
         });
         editor.render_cache.ai_chat_last_total_rows = 100;
         editor
+    }
+
+    #[test]
+    fn dragging_test_separator_resizes_without_selecting_buffer_text() {
+        let mut editor = Editor::with_content("hello");
+        editor.toggle_test_panel();
+        editor.render_cache.test_panel_area = Some(crate::Rect {
+            x: 70,
+            y: 0,
+            width: 30,
+            height: 20,
+        });
+        handle_left_click(&mut editor, 70, 5).unwrap();
+        handle_left_drag(&mut editor, 55, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, 15);
+        assert!(!editor.render_cache.mouse_state.is_dragging);
+        assert_eq!(editor.mode(), Mode::Normal);
+        handle_left_drag(&mut editor, 0, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, 70);
+        handle_left_drag(&mut editor, 200, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, -20);
+        handle_left_release(&mut editor).unwrap();
+        assert!(editor.render_cache.test_panel_drag.is_none());
+        handle_left_drag(&mut editor, 60, 5).unwrap();
+        assert_eq!(editor.test_panel().width_delta, -20);
     }
 
     #[test]

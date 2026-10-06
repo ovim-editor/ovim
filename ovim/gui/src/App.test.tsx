@@ -1819,6 +1819,14 @@ describe("Ovim Solid workbench", () => {
             expect(
                 screen.getByRole("button", { name: "Full output" }),
             ).toBeTruthy();
+            const fullOutput = screen.getByRole("button", {
+                name: "Full output",
+            });
+            fullOutput.focus();
+            fireEvent.keyDown(fullOutput, { key: "Escape" });
+            expect(
+                vi.mocked(HTMLElement.prototype.focus).mock.contexts.at(-1),
+            ).toBe(screen.getByLabelText("Ovim editor input"));
         } finally {
             delete mockSnapshot.testPanel;
         }

@@ -511,9 +511,9 @@ impl Editor {
         };
         let message = match panel {
             "test" | "tests" => {
-                let p = &mut self.build.test_panel;
-                p.width_delta = parse(p.width_delta)?.clamp(-20, 80);
-                format!("Test panel width offset {}", p.width_delta)
+                let delta = parse(self.test_panel().width_delta)?;
+                self.set_test_panel_width_delta(i32::from(delta));
+                format!("Test panel width offset {}", self.test_panel().width_delta)
             }
             "debug" => {
                 let p = &mut self.dap_manager.state.panel;

@@ -1095,14 +1095,22 @@ button:focus-visible {
 }
 
 .side-dock {
-    width: clamp(330px, 34vw, 540px);
-    flex: 0 0 clamp(330px, 34vw, 540px);
+    position: relative;
+    width: var(--context-width, 480px);
+    flex: 0 0 var(--context-width, 480px);
     min-width: 0;
     min-height: 0;
     display: grid;
     grid-template-rows: minmax(0, 1fr);
     border-left: 1px solid var(--border);
     background: color-mix(in srgb, var(--surface-1) 42%, var(--canvas));
+}
+.side-dock > .resize-divider {
+    left: -3px;
+    right: auto;
+}
+.side-dock:has(.resize-divider.dragging) {
+    user-select: none;
 }
 .workbench.terminal-collapsed .side-dock {
     display: none;
@@ -3394,7 +3402,7 @@ kbd {
         position: absolute;
         z-index: var(--layer-popover);
         inset: 0 0 0 auto;
-        width: clamp(330px, 42vw, 520px);
+        width: var(--context-width, 480px);
         max-width: 100%;
         box-shadow: var(--shadow-popover);
     }
@@ -3429,7 +3437,7 @@ kbd {
         display: none;
     }
     .side-dock {
-        width: min(100%, 480px);
+        width: min(100%, var(--context-width, 480px));
     }
     .ai-panel > .side-panel-header > span {
         display: none;

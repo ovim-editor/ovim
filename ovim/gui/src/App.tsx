@@ -25,6 +25,7 @@ import { createBrowserWorkbench } from "./browserWorkbench";
 import { browserShortcutAction, type BrowserKeyEvent } from "./browserKeys";
 import FileExplorer from "./FileExplorer";
 import { EXPLORER_DEFAULT_WIDTH } from "./explorerLayout";
+import { CONTEXT_DEFAULT_WIDTH } from "./contextDockLayout";
 import ContextDock, { type ContextPanelDefinition } from "./ContextDock";
 import TerminalPanel from "./TerminalPanel";
 import FlowDiff from "./FlowDiff";
@@ -1538,6 +1539,7 @@ function App() {
         EXPLORER_DEFAULT_WIDTH,
     );
 
+    const [contextWidth, setContextWidth] = createSignal(CONTEXT_DEFAULT_WIDTH);
     const [contextDockWidth, setContextDockWidth] = createSignal(0);
 
     const layoutStorage = () => {
@@ -1554,6 +1556,7 @@ function App() {
         layoutWorkspace = workspace;
         const preference = readWorkbenchLayout(layoutStorage(), workspace);
         setExplorerWidth(preference?.explorerWidth ?? EXPLORER_DEFAULT_WIDTH);
+        setContextWidth(preference?.contextWidth ?? CONTEXT_DEFAULT_WIDTH);
         if (!preference) return;
         setActiveDock(preference.activeDock);
         setActiveContextPanel(preference.activeContextPanel);
@@ -1564,6 +1567,7 @@ function App() {
     createEffect(() => {
         const preference = {
             explorerWidth: explorerWidth(),
+            contextWidth: contextWidth(),
             activeDock: activeDock(),
             activeContextPanel: activeContextPanel(),
         };
@@ -2154,6 +2158,17 @@ function App() {
         }
         if (event.key === "Tab" && target?.closest?.("[data-gui-core-dialog]"))
             return;
+        if (
+            event.key === "Escape" &&
+            target?.closest(".side-dock") &&
+            (activeContextPanel() === "tests" || activeContextPanel() === "run")
+        ) {
+            event.preventDefault();
+            focusEditorInput();
+            const key = guiKeyInput(event);
+            if (key) void sendKey(key);
+            return;
+        }
         if (nativeControl) return;
         const clipboardModifier = macos
             ? event.metaKey
@@ -3601,6 +3616,8 @@ function App() {
 
     const SideDock = () => (
         <ContextDock
+            width={contextWidth()}
+            onWidthChange={setContextWidth}
             panels={contextPanels()}
             activePanel={activeContextPanel()}
             onActivePanel={setActiveContextPanel}

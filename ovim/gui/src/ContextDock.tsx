@@ -1,5 +1,6 @@
 import {
     Index,
+    onCleanup,
     Show,
     createEffect,
     createMemo,
@@ -7,6 +8,12 @@ import {
     type Component,
 } from "solid-js";
 import { Dynamic } from "solid-js/web";
+import ResizeDivider from "./ResizeDivider";
+import {
+    CONTEXT_DEFAULT_WIDTH,
+    CONTEXT_MIN_WIDTH,
+    CONTEXT_MAX_WIDTH,
+} from "./contextDockLayout";
 import { Icon } from "./Icon";
 import type { IconName } from "./icons.generated";
 
@@ -23,9 +30,38 @@ export interface ContextPanelDefinition {
 
 export default function ContextDock(props: {
     panels: ContextPanelDefinition[];
+    width?: number;
+    onWidthChange?: (width: number) => void;
     activePanel?: ContextPanelId;
     onActivePanel?: (id: ContextPanelId) => void;
 }) {
+    const [dock, setDock] = createSignal<HTMLElement>();
+    const [localWidth, setLocalWidth] = createSignal(CONTEXT_DEFAULT_WIDTH);
+    const [maximumWidth, setMaximumWidth] = createSignal(CONTEXT_MAX_WIDTH);
+    const width = () => Math.min(props.width ?? localWidth(), maximumWidth());
+    createEffect(() => {
+        const element = dock();
+        if (!element) return;
+        const measure = () => {
+            const available =
+                element.parentElement?.clientWidth ?? window.innerWidth;
+            const editorBudget = window.innerWidth >= 1440 ? 360 : 0;
+            setMaximumWidth(
+                Math.max(
+                    CONTEXT_MIN_WIDTH,
+                    Math.min(CONTEXT_MAX_WIDTH, available - editorBudget),
+                ),
+            );
+        };
+        const observer = new ResizeObserver(measure);
+        if (element.parentElement) observer.observe(element.parentElement);
+        window.addEventListener("resize", measure);
+        measure();
+        onCleanup(() => {
+            observer.disconnect();
+            window.removeEventListener("resize", measure);
+        });
+    });
     const [activeId, setActiveId] = createSignal<ContextPanelId>(
         props.panels[0]?.id ?? "ai",
     );
@@ -80,12 +116,26 @@ export default function ContextDock(props: {
     return (
         <Show when={activePanel()?.id}>
             <aside
+                ref={setDock}
                 class="side-dock"
+                style={{ "--context-width": `${width()}px` }}
                 classList={{
                     "has-context-tabs": props.panels.length > 1,
                 }}
                 aria-label="Context"
             >
+                <ResizeDivider
+                    label="Context panel width"
+                    value={width()}
+                    minimum={CONTEXT_MIN_WIDTH}
+                    maximum={maximumWidth()}
+                    defaultValue={CONTEXT_DEFAULT_WIDTH}
+                    reverse
+                    onChange={(value) => {
+                        setLocalWidth(value);
+                        props.onWidthChange?.(value);
+                    }}
+                />
                 <Show when={props.panels.length > 1}>
                     <div
                         class="context-tabs"

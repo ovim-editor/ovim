@@ -1,8 +1,10 @@
+import { CONTEXT_MIN_WIDTH, CONTEXT_MAX_WIDTH } from "./contextDockLayout";
 import type { GuiSnapshot } from "./types";
 import { EXPLORER_MIN_WIDTH, EXPLORER_MAX_WIDTH } from "./explorerLayout";
 
 export type WorkbenchLayoutPreference = {
     explorerWidth?: number;
+    contextWidth?: number;
     activeDock: "explorer" | "context";
     activeContextPanel: "ai" | "tests" | "debug" | "run" | "terminal";
 };
@@ -63,6 +65,12 @@ export const readWorkbenchLayout = (
             activeDock: parsed.activeDock!,
             activeContextPanel:
                 parsed.activeContextPanel as WorkbenchLayoutPreference["activeContextPanel"],
+            ...(typeof parsed.contextWidth === "number" &&
+            Number.isFinite(parsed.contextWidth) &&
+            parsed.contextWidth >= CONTEXT_MIN_WIDTH &&
+            parsed.contextWidth <= CONTEXT_MAX_WIDTH
+                ? { contextWidth: parsed.contextWidth }
+                : {}),
             ...(typeof parsed.explorerWidth === "number" &&
             Number.isFinite(parsed.explorerWidth) &&
             parsed.explorerWidth >= EXPLORER_MIN_WIDTH &&

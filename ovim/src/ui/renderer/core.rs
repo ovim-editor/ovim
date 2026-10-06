@@ -892,6 +892,7 @@ impl Renderer {
             .render_cache
             .ai_chat_interactions
             .comprehension_toggle = None;
+        editor.render_cache.test_panel_area = None;
         init_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {
@@ -902,6 +903,10 @@ impl Renderer {
                 return;
             }
         };
+
+        editor.render_cache.test_panel_area = areas
+            .test_panel_area
+            .map(crate::key_convert::convert_ratatui_rect);
 
         // The console needs to know how many rows it has to keep the
         // highlighted line in view.

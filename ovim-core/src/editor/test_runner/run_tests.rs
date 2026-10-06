@@ -230,14 +230,18 @@ async fn stopping_kills_a_running_make() {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn a_test_run_appears_in_the_run_console_and_rerun_replays_it() {
+async fn a_test_run_keeps_console_history_without_opening_a_duplicate_pane() {
     let (_dir, cwd) = scratch();
     let mut editor = Editor::with_content("");
     run_test(&mut editor, "nearest", "echo hello", cwd.clone());
     drive(&mut editor, "the run to finish", test_finished).await;
+    assert!(editor.is_test_panel_open());
+    assert!(!editor.run_console().open);
     let console = editor.run_console().viewed().unwrap();
     assert_eq!(console.command, "echo hello");
     assert!(console.lines.iter().any(|l| l.text == "hello"));
+    editor.focus_run_console();
+    assert!(editor.run_console().open);
     let first = editor.test_panel().runs.len();
     editor.launch_last();
     drive(&mut editor, "the rerun to start", |e| {
@@ -246,4 +250,31 @@ async fn a_test_run_appears_in_the_run_console_and_rerun_replays_it() {
     .await;
     drive(&mut editor, "the rerun to finish", test_finished).await;
     assert_eq!(latest_status(&editor), Some(TestRunStatus::Passed));
+    assert!(!editor.run_console().open);
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn escape_during_a_test_hides_output_without_stopping_or_reopening_it() {
+    let (_dir, cwd) = scratch();
+    let mut editor = Editor::with_content("");
+    run_test(&mut editor, "nearest", "sleep 0.1; echo finished", cwd);
+    assert!(editor.is_test_panel_open());
+    assert!(!editor.run_console().open);
+    crate::editor::InputHandler::handle_key_event(
+        &mut editor,
+        crate::KeyEvent::new(crate::KeyCode::Esc, crate::Modifiers::NONE),
+    )
+    .unwrap();
+    assert!(!editor.is_test_panel_open());
+    drive(&mut editor, "the dismissed test to finish", test_finished).await;
+    assert_eq!(latest_status(&editor), Some(TestRunStatus::Passed));
+    assert!(!editor.is_test_panel_open());
+    assert!(!editor.run_console().open);
+    assert!(editor
+        .test_panel()
+        .latest()
+        .unwrap()
+        .lines
+        .iter()
+        .any(|line| line == "finished"));
 }

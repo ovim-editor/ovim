@@ -24,10 +24,11 @@ pub fn handle_normal_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     if editor.handle_pseudocode_key(key_event) {
         return Ok(());
     }
-    // The test panel is passive rather than focused, so Escape must hide it
+    // Output panels can be passive rather than focused, so Escape must hide them
     // even when a pending operator or multi-key command consumes the key.
     if key_event.code == KeyCode::Esc {
         editor.close_test_panel();
+        editor.close_run_console();
     }
 
     // 0. Buffer-local keys of the branch diff review (Enter / q / r / s). Only

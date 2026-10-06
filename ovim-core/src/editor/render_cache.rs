@@ -57,6 +57,9 @@ pub struct ChatTextAutoscroll {
 pub struct RenderCache {
     /// Mouse interaction state (dragging, drag origin)
     pub mouse_state: super::MouseState,
+    /// Latest test panel geometry and active separator drag (column, width offset).
+    pub test_panel_area: Option<crate::Rect>,
+    pub test_panel_drag: Option<(u16, i16)>,
     /// Cached buffer area from last render (for screen-to-buffer coordinate conversion)
     pub last_buffer_area: Option<crate::Rect>,
     /// Largest valid scroll offset for the visible walkthrough answer.

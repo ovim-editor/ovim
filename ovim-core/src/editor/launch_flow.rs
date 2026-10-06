@@ -582,6 +582,15 @@ impl Editor {
         self.mark_dirty();
     }
 
+    /// Hide output without stopping its process or discarding history.
+    pub fn close_run_console(&mut self) {
+        self.launch.console.open = false;
+        if self.mode == crate::mode::Mode::RunConsole {
+            self.mode = crate::mode::Mode::Normal;
+        }
+        self.mark_dirty();
+    }
+
     /// Give the run console keyboard focus (scroll, jump, rerun, stop).
     pub fn focus_run_console(&mut self) {
         self.launch.console.open = true;
@@ -1176,6 +1185,9 @@ impl Editor {
         }
         job.plan = Some(plan.clone());
         if plan.kind == PlanKind::Test {
+            // Test output has its own surface. Retain the shared console
+            // record for explicit history/navigation, without a second pane.
+            self.close_run_console();
             self.start_test_panel_run(job, &plan);
         }
 

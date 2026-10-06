@@ -85,3 +85,24 @@ it("reads legacy layouts and discards only invalid widths", () => {
         ),
     ).toEqual({ ...base, explorerWidth: 480 });
 });
+
+it("persists context width and ignores invalid stored values", () => {
+    const base = {
+        activeDock: "context" as const,
+        activeContextPanel: "tests" as const,
+    };
+    for (const contextWidth of [-1, 0, 279, 801, "480", null]) {
+        expect(
+            readWorkbenchLayout(
+                { getItem: () => JSON.stringify({ ...base, contextWidth }) },
+                "workspace",
+            ),
+        ).toEqual(base);
+    }
+    expect(
+        readWorkbenchLayout(
+            { getItem: () => JSON.stringify({ ...base, contextWidth: 600 }) },
+            "workspace",
+        ),
+    ).toEqual({ ...base, contextWidth: 600 });
+});
