@@ -490,6 +490,15 @@ fn parse_tool_approval_mode(s: &str) -> ToolApprovalMode {
 
 /// Infer provider from model name prefix.
 pub fn infer_provider(model: &str) -> AiProviderKind {
+    infer_provider_with_openai_key(model, false)
+}
+
+/// Like [`infer_provider`], for a profile that names no provider. Codex-family
+/// model names mean the Codex device login unless the profile has an OpenAI API
+/// key (configured on the profile or present in the environment): configs
+/// written before the Codex route existed relied on that key, and silently
+/// switching them to a different login would be worse than keeping the API.
+pub fn infer_provider_with_openai_key(model: &str, openai_key_configured: bool) -> AiProviderKind {
     let m = model.to_lowercase();
     if matches!(
         m.as_str(),
@@ -497,7 +506,11 @@ pub fn infer_provider(model: &str) -> AiProviderKind {
     ) || m.starts_with("gpt-5.6-")
         || m.contains("codex")
     {
-        AiProviderKind::Codex
+        if openai_key_configured {
+            AiProviderKind::OpenAi
+        } else {
+            AiProviderKind::Codex
+        }
     } else if m.starts_with("claude") {
         AiProviderKind::Anthropic
     } else if m.starts_with("gpt-")
@@ -644,5 +657,35 @@ mod tests {
         assert_eq!(infer_provider("gpt-5.6-sol"), AiProviderKind::Codex);
         assert_eq!(infer_provider("gpt-5.6-terra"), AiProviderKind::Codex);
         assert_eq!(default_api_key_env(AiProviderKind::Codex), None);
+    }
+
+    #[test]
+    fn an_openai_key_keeps_older_configs_on_the_api_instead_of_codex_login() {
+        for model in ["gpt-6-sol", "gpt-6-luna", "gpt-6.1-sol", "gpt-5.6-terra"] {
+            assert_eq!(
+                infer_provider_with_openai_key(model, false),
+                AiProviderKind::Codex,
+                "{model}"
+            );
+            assert_eq!(
+                infer_provider_with_openai_key(model, true),
+                AiProviderKind::OpenAi,
+                "{model}"
+            );
+        }
+        // The key only matters where the answer would otherwise be Codex.
+        assert_eq!(
+            infer_provider_with_openai_key("claude-sonnet-5-5", true),
+            AiProviderKind::Anthropic
+        );
+        assert_eq!(
+            infer_provider_with_openai_key("qwen2.5-coder:7b", true),
+            AiProviderKind::Ollama
+        );
+        assert_eq!(
+            infer_provider_with_openai_key("gpt-4o", false),
+            AiProviderKind::OpenAi
+        );
+        assert_eq!(infer_provider("gpt-6-sol"), AiProviderKind::Codex);
     }
 }

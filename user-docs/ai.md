@@ -894,6 +894,12 @@ vim.ai.setup({
 })
 ```
 
+When a Lua profile omits `provider`, Ovim infers it from the model name. Codex
+model names (`gpt-6-*`, `gpt-5.6-*`) select the Codex login unless the profile
+names an API key (`api_key` or `api_key_env`) or `OPENAI_API_KEY` is set, in
+which case they use the OpenAI API as older configurations did. Set `provider`
+explicitly so the choice never depends on the environment.
+
 If an Anthropic reply stops because it reached `max_tokens`, was refused, or
 overflowed the context window, Ovim reports that in the chat instead of
 presenting the partial reply as complete, and it never runs a tool call whose

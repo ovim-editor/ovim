@@ -27,7 +27,10 @@ pub use chat_types::{
     ChatFocus, ChatMessage, ChatOpts, ChatRole, ConversationTree, StreamChunk, ToolCallInfo,
 };
 pub(crate) use codex_app_server::DurableCodexSession;
-pub use config::{default_api_key_env, infer_provider, parse_edit_format_str, parse_provider_str};
+pub use config::{
+    default_api_key_env, infer_provider, infer_provider_with_openai_key, parse_edit_format_str,
+    parse_provider_str,
+};
 pub use config::{
     AiChatModelOption, AiConfig, AiPermissionModeOption, AiPermissionModes, AiProfileConfig,
     ChatContextConfig, ProjectContextConfig,
