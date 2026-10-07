@@ -510,3 +510,40 @@ fn the_tui_draws_the_fold_column_left_of_the_sign_and_number_columns() {
     assert!(row(0).contains('1'), "{:?}", row(0));
     assert_eq!(test.editor.render_cache.last_gutter_width, 1 + 2 + 3 + 1);
 }
+// ---------------------------------------------------------------------------
+// Cost per key on a big file (fold bookkeeping must not scale with fold count)
+// ---------------------------------------------------------------------------
+
+/// About 47k lines and 9.5k functions, all folded by `zM`.
+fn big_rust_file() -> String {
+    (0..9_500)
+        .map(|n| format!("fn f{n}() {{\n    let x = {n};\n    x + 1\n}}\n\n"))
+        .collect()
+}
+
+/// A key press used to rescan every fold several times (140-160 ms per `j`
+/// on a 48k-line Rust file in release). With the fold index it is a few
+/// binary searches; the bound is orders of magnitude above that so debug
+/// builds and slow CI machines cannot trip it.
+#[test]
+fn moving_over_thousands_of_closed_folds_stays_fast() {
+    let mut test = EditorTest::new(&big_rust_file());
+    test.editor
+        .buffer_mut()
+        .set_file_path("/tmp/many_folds.rs".to_string());
+    test.editor.buffer_mut().enable_syntax_highlighting();
+    test.keys("zM");
+    assert!(test.editor.buffer().fold_manager().folds().len() > 9_000);
+
+    let started = std::time::Instant::now();
+    for _ in 0..30 {
+        test.keys("j");
+    }
+    let elapsed = started.elapsed();
+    assert!(
+        elapsed < std::time::Duration::from_millis(1500),
+        "30 `j` over 9.5k closed folds took {elapsed:?}"
+    );
+    // Each function shows three lines (header, `}`, blank): 30 `j` cover ten.
+    test.assert_cursor(50, 0);
+}

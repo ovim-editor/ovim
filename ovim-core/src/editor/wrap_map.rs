@@ -232,6 +232,19 @@ impl WrapMap {
         self.source_buffer_id = Some(id);
     }
 
+    /// Lines whose measured layout includes inline virtual text.
+    pub fn lines_with_inline_text(&self) -> impl Iterator<Item = usize> + '_ {
+        self.layouts
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| {
+                entry
+                    .as_ref()
+                    .is_some_and(|entry| entry.layout.has_inline())
+            })
+            .map(|(line, _)| line)
+    }
+
     pub fn line_layout(&self, line: usize) -> Option<&Arc<IndexedLineLayout>> {
         self.layouts
             .get(line)

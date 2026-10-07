@@ -1149,7 +1149,11 @@ mod tests {
         let rope = ropey::Rope::from_str("one\n");
         let map = crate::editor::decoration::DecorationMap::default();
         let log = crate::edit_log::EditLog::default();
-        assert_eq!(map.inline_width_before_projected(7, 3, &rope, &log), 0);
+        assert_eq!(
+            map.project_all(&rope, &log)
+                .inline_width_before(7, 3, &rope),
+            0
+        );
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

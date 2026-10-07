@@ -95,6 +95,8 @@ pub mod project_nav;
 mod pseudocode;
 pub mod search_replace;
 mod snippet_session;
+#[cfg(test)]
+mod wrap_decoration_tests;
 pub use pseudocode::MarkdownDocument;
 mod quickfix;
 mod register;
@@ -1108,6 +1110,19 @@ impl Editor {
         }
     }
 
+    /// The current buffer's decorations projected through its edit log, shared
+    /// by wrap layout, cursor math and rendering until the text or the
+    /// decorations change.
+    pub fn projected_decorations(&self) -> std::sync::Arc<decoration::ProjectedDecorations> {
+        let buffer = self.buffer();
+        self.decorations.projected(
+            buffer.id(),
+            buffer.version(),
+            buffer.rope(),
+            buffer.edit_log(),
+        )
+    }
+
     /// Text edits replay line splices onto the existing count index. Geometry
     /// changes or lost mutation history rebuild safely, preserving per-window policy.
     fn refresh_wrap_map(
@@ -1116,7 +1131,8 @@ impl Editor {
         mut existing: Option<WrapMap>,
         existing_dec_gen: u64,
     ) -> (Option<WrapMap>, u64) {
-        let dec_gen = self.decorations.generation;
+        // Only inline decorations change how lines wrap.
+        let dec_gen = self.decorations.inline_generation();
         if !self.options.wrap {
             return (None, dec_gen);
         }
@@ -1131,6 +1147,7 @@ impl Editor {
         let conceal_cursor_line = conceal_active.then_some(cursor_line);
         // Lines hidden by closed folds take no visual rows.
         let hidden_ranges = buffer.fold_manager().hidden_ranges();
+        let projected = self.projected_decorations();
         let make_layout = |line: usize| {
             let mut transform = None;
             let mut links = Vec::new();
@@ -1150,14 +1167,13 @@ impl Editor {
                 buffer.line_index(line)
             };
             let line_start = buffer.rope().line_to_char(line);
-            let mut inline: Vec<(usize, std::sync::Arc<str>)> = self
-                .decorations
-                .for_line_projected(line, buffer.rope(), buffer.edit_log())
-                .into_iter()
+            let mut inline: Vec<(usize, std::sync::Arc<str>)> = projected
+                .for_line(line)
+                .iter()
                 .filter_map(|decoration| match decoration.placement {
                     decoration::DecorationPlacement::Inline { char_offset } => Some((
                         char_offset.saturating_sub(line_start),
-                        decoration.text.into(),
+                        decoration.text.as_str().into(),
                     )),
                     decoration::DecorationPlacement::EndOfLine { .. } => None,
                 })
@@ -1192,35 +1208,42 @@ impl Editor {
             let same_policy = map.source_buffer_id() == Some(buffer.id())
                 && map.wrap_width() == width
                 && map.tab_width() == tab_width
-                && existing_dec_gen == dec_gen
                 && map.conceal_cursor_line().is_some() == conceal_cursor_line.is_some();
             if same_policy {
                 if let Some(changes) = buffer.line_changes_since(map.buffer_version()) {
-                    // The old revealed line belongs to the map's snapshot.
-                    // Carry it through structural edits before invalidating
-                    // reveal/conceal geometry in final line coordinates.
-                    let mut old_revealed = map.conceal_cursor_line();
-                    for change in &changes {
-                        old_revealed = old_revealed.and_then(|line| {
+                    // Lines of the map's snapshot carried through the edits
+                    // into final line coordinates. A replaced line is already
+                    // dirty in the journal.
+                    let carry = |line: usize| {
+                        changes.iter().try_fold(line, |line, change| {
                             let end = change.start_line + change.old_line_count;
                             if line < change.start_line {
                                 Some(line)
                             } else if line >= end {
                                 Some(line - change.old_line_count + change.new_line_count)
                             } else {
-                                // Replaced lines are already dirty in the journal.
                                 None
                             }
-                        });
-                    }
+                        })
+                    };
+                    // The old revealed line belongs to the map's snapshot.
+                    // Carry it through structural edits before invalidating
+                    // reveal/conceal geometry in final line coordinates.
+                    let old_revealed = map.conceal_cursor_line().and_then(carry);
                     let mut extra = Vec::new();
                     if old_revealed != conceal_cursor_line {
                         extra.extend(old_revealed);
                         extra.extend(conceal_cursor_line);
                     }
+                    // Changed inline decorations only affect the lines that had
+                    // one and the lines that have one now.
+                    if existing_dec_gen != dec_gen {
+                        extra.extend(map.lines_with_inline_text().filter_map(carry));
+                        extra.extend(projected.inline_lines());
+                    }
                     if map.refresh_indexed(&changes, line_count, version, &extra, make_layout) {
                         map.set_conceal_cursor_line(conceal_cursor_line);
-                        map.set_hidden_ranges(&hidden_ranges);
+                        map.set_hidden_ranges(hidden_ranges);
                         return (existing, dec_gen);
                     }
                 }
@@ -1234,7 +1257,7 @@ impl Editor {
         );
         map.set_source_buffer_id(buffer.id());
         map.set_conceal_cursor_line(conceal_cursor_line);
-        map.set_hidden_ranges(&hidden_ranges);
+        map.set_hidden_ranges(hidden_ranges);
         (Some(map), dec_gen)
     }
 
@@ -1470,11 +1493,10 @@ impl Editor {
             // this, h_offset is set from raw text only, but the renderer adds
             // decoration widths to the cursor, causing it to float right.
             raw_col
-                + self.decorations.inline_width_before_projected(
+                + self.projected_decorations().inline_width_before(
                     cursor_line,
                     cursor_char_col,
                     self.buffer().rope(),
-                    self.buffer().edit_log(),
                 )
         };
         let wrap = self.options.wrap;
@@ -1586,17 +1608,10 @@ impl Editor {
         let cursor_display_col =
             crate::display::char_col_to_display_col(&line_text, cursor_char_col.0, tab_width);
         let rope = self.buffer().rope();
-        let edit_log = self.buffer().edit_log();
-        let cursor_inline_widths =
-            self.decorations
-                .inline_decorations_for_line_projected(cursor_line, rope, edit_log);
+        let projected = self.projected_decorations();
+        let cursor_inline_widths = projected.inline_decorations_for_line(cursor_line, rope);
         let cursor_display_col = cursor_display_col
-            + self.decorations.inline_width_before_projected(
-                cursor_line,
-                cursor_char_col.0,
-                rope,
-                edit_log,
-            );
+            + projected.inline_width_before(cursor_line, cursor_char_col.0, rope);
         let cursor_subline = Self::cursor_subline_in_wrapped_line(
             &line_text,
             cursor_display_col,

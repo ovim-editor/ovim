@@ -246,12 +246,9 @@ pub fn cursor_screen_position(
 
     let tab_width = editor.indent_options().tab_width;
     let display_col = line_index.char_to_display(raw_char_col, tab_width)
-        + editor.decorations.inline_width_before_projected(
-            line,
-            raw_char_col,
-            buffer.rope(),
-            buffer.edit_log(),
-        );
+        + editor
+            .projected_decorations()
+            .inline_width_before(line, raw_char_col, buffer.rope());
     // Lines hidden by closed folds take no screen rows.
     let folds = buffer.fold_manager();
     let screen_line = folds
@@ -274,20 +271,13 @@ fn legacy_wrapped_cursor_screen_position(
     let rope = buffer.rope();
     let line_text = ovim_core::display::line_content(rope, line);
     let char_col = ovim_core::unicode::grapheme_to_char_col(&line_text, grapheme_col).0;
+    let projected = editor.projected_decorations();
     let display_col = ovim_core::display::char_col_to_display_col(
         &line_text,
         char_col,
         editor.indent_options().tab_width,
-    ) + editor.decorations.inline_width_before_projected(
-        line,
-        char_col,
-        rope,
-        buffer.edit_log(),
-    );
-    let inline_widths =
-        editor
-            .decorations
-            .inline_decorations_for_line_projected(line, rope, buffer.edit_log());
+    ) + projected.inline_width_before(line, char_col, rope);
+    let inline_widths = projected.inline_decorations_for_line(line, rope);
 
     if let Some(map) = editor.wrap_map() {
         let (absolute_row, visual_col) =

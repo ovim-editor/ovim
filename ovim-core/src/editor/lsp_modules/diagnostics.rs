@@ -964,13 +964,9 @@ mod tests {
 
         // And the raw-diagnostic view lands on the same line as the projected
         // EOL decoration (the other rendering pipeline).
-        let rope = editor.buffer().rope().clone();
-        let eol = editor
-            .decorations
-            .eol_for_line_projected(3, &rope, editor.buffer().edit_log());
+        let eol = editor.projected_decorations().eol_for_line(3).len();
         assert_eq!(
-            eol.len(),
-            1,
+            eol, 1,
             "eol decoration and diagnostics must agree on the shifted line"
         );
     }
@@ -1021,18 +1017,13 @@ mod tests {
         }
 
         // Whatever lines the two pipelines land on, they must AGREE.
-        let rope = editor.buffer().rope().clone();
         let projected = editor.project_diagnostics();
         let diag_lines: Vec<usize> = (0..editor.buffer().line_count())
             .filter(|&line| !projected.for_line(line).is_empty())
             .collect();
+        let projected_decorations = editor.projected_decorations();
         let eol_lines: Vec<usize> = (0..editor.buffer().line_count())
-            .filter(|&line| {
-                !editor
-                    .decorations
-                    .eol_for_line_projected(line, &rope, editor.buffer().edit_log())
-                    .is_empty()
-            })
+            .filter(|&line| !projected_decorations.eol_for_line(line).is_empty())
             .collect();
         assert_eq!(
             diag_lines, eol_lines,

@@ -1773,9 +1773,9 @@ pub fn render_buffer(
         }))
     };
 
-    // Project every decoration through the edit log ONCE per render. Per-line
-    // lookups in the loop below then read from a line-keyed map instead of
-    // re-scanning `iter_all()` and re-projecting each decoration.
+    // Decorations projected through the edit log, shared with cursor math and
+    // wrap layout (re-projected only after an edit or a decoration change).
+    // Per-line lookups in the loop below read from a line-keyed map.
     let projected_decorations = if editor.ai_code_explanation_is_presenting_snapshot() {
         // Walkthrough code pages render an immutable virtual snapshot, not the
         // live LSP document. Reusing the editor-global decoration map here can
@@ -1783,7 +1783,7 @@ pub fn render_buffer(
         // coincidentally matching lines in the snapshot.
         Default::default()
     } else {
-        editor.decorations.project_all(rope, buffer.edit_log())
+        editor.projected_decorations()
     };
     // Raw diagnostics projected through the same edit log, once per frame:
     // the squiggle, gutter sign, and echo must land on the same line as the

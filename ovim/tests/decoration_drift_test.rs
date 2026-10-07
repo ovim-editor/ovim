@@ -32,12 +32,8 @@ fn inlay_at(offset: usize, source_version: u64) -> Decoration {
 /// Projected inline-decoration pairs on a line, the way the renderer reads them.
 fn projected_inline(test: &EditorTest, line: usize) -> Vec<(usize, usize)> {
     test.editor
-        .decorations
-        .inline_decorations_for_line_projected(
-            line,
-            test.editor.buffer().rope(),
-            test.editor.buffer().edit_log(),
-        )
+        .projected_decorations()
+        .inline_decorations_for_line(line, test.editor.buffer().rope())
 }
 
 #[test]

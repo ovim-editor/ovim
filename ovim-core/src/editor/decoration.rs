@@ -3,6 +3,7 @@ use crate::edit::Edit;
 use crate::edit_log::EditLog;
 use ropey::Rope;
 use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, PoisonError};
 
 /// `Rope::line_to_char` panics past the last line. Decorations can outlive
 /// the text they were computed for (an LSP edit shrank the buffer, a cursor
@@ -50,6 +51,10 @@ impl DecorationPlacement {
         match self {
             Self::Inline { char_offset } | Self::EndOfLine { char_offset } => *char_offset,
         }
+    }
+
+    pub fn is_inline(&self) -> bool {
+        matches!(self, Self::Inline { .. })
     }
 
     /// Derive the line number from the rope.
@@ -188,10 +193,32 @@ pub fn project_offset(source_offset: usize, edits: &[&Edit]) -> Option<usize> {
 /// generation — they don't mutate decoration state. Render cache
 /// invalidation on buffer edits is handled by the buffer version, which the
 /// line cache already keys on.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct DecorationMap {
     lines: BTreeMap<usize, Vec<Decoration>>,
     pub generation: u64,
+    /// Like `generation`, but bumped only when an *inline* decoration is
+    /// added or removed. Inline text changes how a line wraps; end-of-line
+    /// text (diagnostics, code lenses, fold markers) cannot, so layout caches
+    /// key on this one.
+    inline_generation: u64,
+    /// The latest [`Self::projected`] result and what it was computed for.
+    projection: Mutex<Option<(ProjectionKey, Arc<ProjectedDecorations>)>>,
+}
+
+/// What a projection depends on: the buffer text and edit log it was
+/// projected through, and the decoration set.
+type ProjectionKey = (crate::buffer::BufferId, usize, u64);
+
+impl Clone for DecorationMap {
+    fn clone(&self) -> Self {
+        Self {
+            lines: self.lines.clone(),
+            generation: self.generation,
+            inline_generation: self.inline_generation,
+            projection: Mutex::new(None),
+        }
+    }
 }
 
 impl Default for DecorationMap {
@@ -205,7 +232,15 @@ impl DecorationMap {
         Self {
             lines: BTreeMap::new(),
             generation: 0,
+            inline_generation: 0,
+            projection: Mutex::new(None),
         }
+    }
+
+    /// Changes whenever inline decorations (which affect wrapping and cursor
+    /// columns) are added or removed; see the field docs.
+    pub fn inline_generation(&self) -> u64 {
+        self.inline_generation
     }
 
     /// Replace all decorations from a given source.
@@ -219,9 +254,14 @@ impl DecorationMap {
     ) -> bool {
         // Remove old decorations from this source.
         let mut any_removed = false;
+        let mut inline_changed = false;
         self.lines.retain(|_, line_decs| {
             let before = line_decs.len();
-            line_decs.retain(|d| d.source != source);
+            line_decs.retain(|d| {
+                let keep = d.source != source;
+                inline_changed |= !keep && d.placement.is_inline();
+                keep
+            });
             if line_decs.len() != before {
                 any_removed = true;
             }
@@ -229,6 +269,7 @@ impl DecorationMap {
         });
 
         let any_added = !decorations.is_empty();
+        inline_changed |= decorations.iter().any(|d| d.placement.is_inline());
 
         // Insert new decorations, keyed by line derived from char_offset.
         for dec in decorations {
@@ -241,6 +282,9 @@ impl DecorationMap {
 
         if any_removed || any_added {
             self.generation = self.generation.wrapping_add(1);
+            if inline_changed {
+                self.inline_generation = self.inline_generation.wrapping_add(1);
+            }
             true
         } else {
             false
@@ -328,15 +372,15 @@ impl DecorationMap {
     }
 
     // -----------------------------------------------------------------
-    // Projected accessors
+    // Projection
     //
-    // These are the *only* path the renderer / wrap map / cursor math use.
+    // Projection is the *only* path the renderer / wrap map / cursor math use.
     // Decorations are immutable after placement (see the module header — the
     // old `adjust_for_edits` accumulator was removed in Phase-05 Step F):
     // `char_offset` and `source_version` are frozen at creation. To find a
-    // decoration's *live* position, these methods project its stored
+    // decoration's *live* position, `project_all` projects its stored
     // `char_offset` forward through `edit_log.edits_since(source_version)`
-    // before filtering by line.
+    // and groups the results by line.
     //
     // When a decoration was just placed against the current buffer version,
     // `edits_since(source_version)` is empty and the projected offset equals
@@ -344,10 +388,13 @@ impl DecorationMap {
     // edits, projection replays them; a decoration whose anchor was engulfed
     // by a delete is dropped.
     //
-    // The `rope` argument on `..._projected` methods is always the **current**
-    // rope (post-edit); line indices are derived by calling `char_to_line` on
-    // the projected offset so a decoration whose anchor has crossed a line
-    // boundary shows up on the correct line without mutation.
+    // The `rope` argument is always the **current** rope (post-edit); line
+    // indices are derived by calling `char_to_line` on the projected offset so
+    // a decoration whose anchor has crossed a line boundary shows up on the
+    // correct line without mutation.
+    //
+    // Projecting costs one pass over every decoration, so it is done once per
+    // text/decoration change (`projected`), never once per line.
     // -----------------------------------------------------------------
 
     /// Project a single decoration's stored offset through the edit log.
@@ -365,114 +412,12 @@ impl DecorationMap {
         }
     }
 
-    /// Projected analogue of [`for_line`]. Returns owned `Decoration`s whose
-    /// `placement` has the projected char offset applied; the line lookup is
-    /// done against the **projected** offset using the current rope.
-    ///
-    /// Decorations whose anchors were engulfed by a delete since their
-    /// `source_version` are filtered out.
-    pub fn for_line_projected(&self, line: usize, rope: &Rope, log: &EditLog) -> Vec<Decoration> {
-        let mut out = Vec::new();
-        for (_, dec) in self.iter_all() {
-            let Some(projected) = Self::project_decoration(dec, log) else {
-                continue;
-            };
-            let projected_line = if projected <= rope.len_chars() {
-                rope.char_to_line(projected)
-            } else {
-                rope.char_to_line(rope.len_chars())
-            };
-            if projected_line == line {
-                let mut cloned = dec.clone();
-                match &mut cloned.placement {
-                    DecorationPlacement::Inline { char_offset }
-                    | DecorationPlacement::EndOfLine { char_offset } => {
-                        *char_offset = projected;
-                    }
-                }
-                out.push(cloned);
-            }
-        }
-        // Preserve the same sort order as the stored map.
-        out.sort_by(|a, b| {
-            let pos_a = match &a.placement {
-                DecorationPlacement::Inline { char_offset } => (0, *char_offset),
-                DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
-            };
-            let pos_b = match &b.placement {
-                DecorationPlacement::Inline { char_offset } => (0, *char_offset),
-                DecorationPlacement::EndOfLine { .. } => (1, usize::MAX),
-            };
-            pos_a.cmp(&pos_b).then(a.priority.cmp(&b.priority))
-        });
-        out
-    }
-
-    /// Projected analogue of [`inline_decorations_for_line`]. Returns
-    /// `(char_idx_in_line, display_width)` pairs for inline decorations on the
-    /// given line, computed from projected offsets.
-    pub fn inline_decorations_for_line_projected(
-        &self,
-        line: usize,
-        rope: &Rope,
-        log: &EditLog,
-    ) -> Vec<(usize, usize)> {
-        let line_start = line_start_char(rope, line);
-        self.for_line_projected(line, rope, log)
-            .into_iter()
-            .filter_map(|d| match d.placement {
-                DecorationPlacement::Inline { char_offset } => {
-                    Some((char_offset.saturating_sub(line_start), d.display_width))
-                }
-                _ => None,
-            })
-            .collect()
-    }
-
-    /// Projected analogue of [`inline_width_before`]. Sums the display width
-    /// of inline decorations whose projected char_idx is `<= char_idx`.
-    pub fn inline_width_before_projected(
-        &self,
-        line: usize,
-        char_idx: usize,
-        rope: &Rope,
-        log: &EditLog,
-    ) -> usize {
-        let line_start = line_start_char(rope, line);
-        let line_len = crate::display::line_content_len(rope, line);
-        self.for_line_projected(line, rope, log)
-            .into_iter()
-            .filter_map(|d| match d.placement {
-                DecorationPlacement::Inline { char_offset } => {
-                    let idx = char_offset.saturating_sub(line_start);
-                    if idx < char_idx || (idx == char_idx && idx < line_len) {
-                        Some(d.display_width)
-                    } else {
-                        None
-                    }
-                }
-                _ => None,
-            })
-            .sum()
-    }
-
-    /// Projected analogue of [`eol_for_line`]. Returns owned clones so the
-    /// renderer can consume them like the stored slice.
-    pub fn eol_for_line_projected(
-        &self,
-        line: usize,
-        rope: &Rope,
-        log: &EditLog,
-    ) -> Vec<Decoration> {
-        self.for_line_projected(line, rope, log)
-            .into_iter()
-            .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
-            .collect()
-    }
-
     /// Clear all decorations (e.g., on buffer switch).
     pub fn clear(&mut self) {
         if !self.lines.is_empty() {
+            if self.iter_all().any(|(_, d)| d.placement.is_inline()) {
+                self.inline_generation = self.inline_generation.wrapping_add(1);
+            }
             self.lines.clear();
             self.generation = self.generation.wrapping_add(1);
         }
@@ -489,6 +434,35 @@ impl DecorationMap {
         for line_decs in lines.values_mut() {
             sort_decorations_in_line(line_decs);
         }
+    }
+
+    /// [`Self::project_all`], shared until the text or the decorations change.
+    /// Wrap layout, cursor math and rendering all read the same projection, so
+    /// a keystroke that moves the cursor projects nothing.
+    ///
+    /// `version` is the version of the buffer that owns `rope` and `log`: the
+    /// projection is reused only while buffer, version and decoration set are
+    /// the same.
+    pub fn projected(
+        &self,
+        buffer: crate::buffer::BufferId,
+        version: usize,
+        rope: &Rope,
+        log: &EditLog,
+    ) -> Arc<ProjectedDecorations> {
+        let key = (buffer, version, self.generation);
+        let mut memo = self
+            .projection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some((cached, projection)) = memo.as_ref() {
+            if *cached == key {
+                return projection.clone();
+            }
+        }
+        let projection = Arc::new(self.project_all(rope, log));
+        *memo = Some((key, projection.clone()));
+        projection
     }
 
     /// Project every decoration through `log` once and group results by their
@@ -575,6 +549,14 @@ impl ProjectedDecorations {
             }
         }
         hasher.finish()
+    }
+
+    /// Lines (ascending) that carry at least one inline decoration.
+    pub fn inline_lines(&self) -> impl Iterator<Item = usize> + '_ {
+        self.by_line
+            .iter()
+            .filter(|(_, decorations)| decorations.iter().any(|d| d.placement.is_inline()))
+            .map(|(&line, _)| line)
     }
 
     /// EOL decorations for the given projected line.
@@ -981,10 +963,78 @@ mod tests {
 
         // Cursor at the last real char (normal-mode `$`): unaffected.
         assert_eq!(map.inline_width_before(0, 9, &rope), 0);
-        assert_eq!(map.inline_width_before_projected(0, 9, &rope, &log), 0);
+        assert_eq!(
+            map.project_all(&rope, &log)
+                .inline_width_before(0, 9, &rope),
+            0
+        );
         // Cursor one past the last char (insert-mode `A`): still unaffected.
         assert_eq!(map.inline_width_before(0, 10, &rope), 0);
-        assert_eq!(map.inline_width_before_projected(0, 10, &rope, &log), 0);
+        assert_eq!(
+            map.project_all(&rope, &log)
+                .inline_width_before(0, 10, &rope),
+            0
+        );
+    }
+
+    #[test]
+    fn inline_generation_ignores_end_of_line_sources() {
+        let rope = test_rope();
+        let mut map = DecorationMap::new();
+        map.replace_source(
+            DecorationSource::Diagnostic,
+            vec![eol_at(0, "error", DecorationSource::Diagnostic)],
+            &rope,
+        );
+        assert_eq!(
+            map.inline_generation(),
+            0,
+            "EOL text cannot change wrapping"
+        );
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+        let with_hint = map.inline_generation();
+        assert_ne!(with_hint, 0);
+        map.replace_source(DecorationSource::Fold, vec![], &rope);
+        map.replace_source(
+            DecorationSource::Diagnostic,
+            vec![eol_at(11, "other", DecorationSource::Diagnostic)],
+            &rope,
+        );
+        assert_eq!(map.inline_generation(), with_hint);
+        map.replace_source(DecorationSource::InlayHint, vec![], &rope);
+        assert_ne!(map.inline_generation(), with_hint, "removing a hint counts");
+        let removed = map.inline_generation();
+        map.clear();
+        assert_eq!(map.inline_generation(), removed, "no inline left to clear");
+    }
+
+    /// The projection is computed once per (buffer, version, decoration set)
+    /// and shared until one of them changes.
+    #[test]
+    fn projection_is_shared_until_the_text_or_the_decorations_change() {
+        let rope = test_rope();
+        let log = crate::edit_log::EditLog::new();
+        let mut map = DecorationMap::new();
+        map.replace_source(
+            DecorationSource::InlayHint,
+            vec![inline_at(5, ": i32", DecorationSource::InlayHint)],
+            &rope,
+        );
+        let first = map.projected(1, 7, &rope, &log);
+        assert!(Arc::ptr_eq(&first, &map.projected(1, 7, &rope, &log)));
+        assert_eq!(first.for_line(0).len(), 1);
+        assert!(!Arc::ptr_eq(&first, &map.projected(1, 8, &rope, &log)));
+        let again = map.projected(1, 8, &rope, &log);
+        assert!(!Arc::ptr_eq(&again, &map.projected(2, 8, &rope, &log)));
+        let before = map.projected(2, 8, &rope, &log);
+        map.replace_source(DecorationSource::InlayHint, vec![], &rope);
+        let after = map.projected(2, 8, &rope, &log);
+        assert!(!Arc::ptr_eq(&before, &after));
+        assert!(after.for_line(0).is_empty());
     }
 
     #[test]

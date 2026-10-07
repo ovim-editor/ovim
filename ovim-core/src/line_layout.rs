@@ -279,6 +279,11 @@ impl IndexedLineLayout {
         self.tab_width
     }
 
+    /// Whether inline virtual text (an inlay hint) is part of this layout.
+    pub fn has_inline(&self) -> bool {
+        !self.inline.is_empty()
+    }
+
     pub fn row_count(&self) -> usize {
         match &self.geometry {
             Geometry::PlainAscii { len } => (*len).max(1).div_ceil(self.width),
