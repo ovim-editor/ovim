@@ -160,8 +160,8 @@ pub fn status(path: &Path) -> Result<Vec<StatusEntry>> {
     options
         .include_untracked(true)
         .recurse_untracked_dirs(true)
+        // `git status` pairs up renames in the index only.
         .renames_head_to_index(true)
-        .renames_index_to_workdir(true)
         .include_ignored(false);
     let statuses = repo.statuses(Some(&mut options))?;
     let sparse = skip_worktree_paths(&repo)?;

@@ -239,7 +239,15 @@ impl Editor {
         let outcome = if entry.has_unstaged_changes() {
             ops::stage_target(&target).map(|()| format!("Staged {name}"))
         } else {
-            ops::unstage_target(&target).map(|()| format!("Unstaged {name}"))
+            // A staged rename is a deletion and an addition; unstaging only
+            // the new path would leave the deletion of the old one staged.
+            let old = entry
+                .renamed_from
+                .as_deref()
+                .map(|from| GitTarget::in_root(&target.root, from));
+            ops::unstage_target(&target)
+                .and_then(|()| old.map_or(Ok(()), |old| ops::unstage_target(&old)))
+                .map(|()| format!("Unstaged {name}"))
         };
         match outcome {
             Ok(message) => {
@@ -1063,6 +1071,49 @@ mod tests {
             " M",
             "toggled back"
         );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn status_picker_toggles_both_paths_of_a_staged_rename() {
+        let repo = repo();
+        fs::write(repo.root.join("x.txt"), "some content\nof the file\n").unwrap();
+        fs::write(repo.root.join("keep.txt"), "k\n").unwrap();
+        commit_all(&repo, "init");
+        fs::rename(repo.root.join("x.txt"), repo.root.join("y.txt")).unwrap();
+        ops::stage_all(&repo.root).unwrap();
+        let mut editor = Editor::default();
+        editor.load_file(repo.root.join("keep.txt")).unwrap();
+
+        editor.open_git_status_picker();
+        let rows = |editor: &Editor| -> Vec<String> {
+            editor
+                .picker()
+                .unwrap()
+                .collect_filtered_results(10)
+                .into_iter()
+                .map(|r| r.display.clone())
+                .collect()
+        };
+        assert_eq!(rows(&editor), vec!["R   x.txt -> y.txt"]);
+
+        // Unstaging only `y.txt` would leave the deletion of `x.txt` staged.
+        editor.git_status_toggle_selected();
+        assert_eq!(rows(&editor), vec![" D  x.txt", "??  y.txt"]);
+    }
+
+    #[test]
+    fn working_tree_renames_are_listed_as_a_deletion_and_an_untracked_file() {
+        let repo = repo();
+        fs::write(repo.root.join("x.txt"), "some content\nof the file\n").unwrap();
+        commit_all(&repo, "init");
+        fs::rename(repo.root.join("x.txt"), repo.root.join("y.txt")).unwrap();
+        // `git status` does not pair them up either.
+        let codes: Vec<String> = ops::status(&repo.root)
+            .unwrap()
+            .iter()
+            .map(|entry| format!("{} {}", entry.code(), entry.path))
+            .collect();
+        assert_eq!(codes, vec![" D x.txt", "?? y.txt"]);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
