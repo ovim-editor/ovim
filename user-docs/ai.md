@@ -489,27 +489,29 @@ chat and does not replace the saved preference.
 
 The model picker in both the GUI and terminal offers Claude Agent entries for
 `default`, `claude-sonnet-5-5`, `claude-opus-5-5`, `claude-fable-5-1`, and
-`claude-haiku-4-5-20251001`. Select a row to change the model within
+`claude-haiku-5-5`. Select a row to change the model within
 the same profile. In terminal Ovim, `/model` opens the picker; arrow keys select
 and Enter returns to the composer. With the Claude profile active, `/model opus`
 (or an explicit model ID) also changes the model. Named Ovim profiles take
 precedence, so `/model codex_sol` still switches providers.
 
 These exact IDs were checked against [Anthropic's model reference](https://platform.claude.com/docs/en/models/overview)
-on 2026-09-24. They are not a list of your account's entitlements. Other aliases,
-such as `fable`, and deployment-specific IDs can be entered with `/model`.
-Claude enforces model availability. Haiku does not expose reasoning effort;
-Ovim omits any previously selected effort when using it. `default` leaves the model unset, using your usual Claude
+on 2026-09-29. They are not a list of your account's entitlements. Other aliases,
+such as `fable`, and deployment-specific IDs can be entered with `/model`; the
+`haiku` alias selects `claude-haiku-5-5`.
+Claude enforces model availability. The older `claude-haiku-4-5-20251001` is no
+longer in the picker and does not expose reasoning effort; Ovim omits any
+previously selected effort when it is used. `default` leaves the model unset, using your usual Claude
 configuration. Ovim remembers the last selected profile/model pair. Selecting
 a profile by name uses its configured model. Stop an active turn before changing
 the selection.
-Ovim's model defaults are Medium for Fable 5.1 and Opus 5.5, and High for Sonnet 5.5,
+Ovim's model defaults are Medium for Fable 5.1, Opus 5.5, and Haiku 5.5, and High for Sonnet 5.5,
 following [Anthropic's effort guidance](https://platform.claude.com/docs/en/build-with-claude/effort)
 for Opus/Sonnet and choosing Medium for Fable's interactive use. An explicit
 `/effort` selection overrides the profile's `reasoning_effort`, which in turn
 overrides the model default. Choose Default effort to restore that precedence.
 The `default` model and unrecognized custom IDs leave effort to Claude unless
-an effort is explicitly configured. Haiku ignores effort overrides.
+an effort is explicitly configured. Haiku 4.5 ignores effort overrides.
 
 To keep a model choice after restarting, configure it explicitly:
 

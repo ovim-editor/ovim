@@ -483,7 +483,7 @@ mod model_selection_tests {
                 "claude-sonnet-5-5",
                 "claude-opus-5-5",
                 "claude-fable-5-1",
-                "claude-haiku-4-5-20251001"
+                "claude-haiku-5-5"
             ]
         );
         editor.ai_state.chat.as_mut().unwrap().input = "keep my draft".into();
@@ -546,6 +546,10 @@ mod model_selection_tests {
             ("fable[1m]", "medium"),
             ("claude-opus-5-5", "medium"),
             ("claude-sonnet-5-5", "high"),
+            ("claude-haiku-5-5", "medium"),
+            ("haiku", "medium"),
+            // Haiku 4.5 predates effort; it stays known so saved selections of
+            // its ID keep omitting an effort it would reject.
             ("claude-haiku-4-5-20251001", "default"),
             ("default", "default"),
             ("custom-deployment", "default"),
@@ -921,7 +925,7 @@ mod model_selection_tests {
             "claude-sonnet-5-5",
             "claude-opus-5-5",
             "claude-fable-5-1",
-            "claude-haiku-4-5-20251001",
+            "claude-haiku-5-5",
         ] {
             super::super::input::InputHandler::handle_key_event(
                 &mut editor,

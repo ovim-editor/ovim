@@ -109,17 +109,27 @@ pub(crate) const MODEL_PRESETS: &[ModelPreset] = &[
         default_effort: Some("medium"),
     },
     ModelPreset {
-        id: "claude-haiku-4-5-20251001",
+        id: "claude-haiku-5-5",
         alias: "haiku",
-        supports_effort: false,
-        default_effort: None,
+        supports_effort: true,
+        default_effort: Some("medium"),
     },
 ];
+
+/// Known IDs the picker no longer offers. Saved selections and `/model` can
+/// still name them, and they keep their own effort support: Haiku 4.5 has none.
+const LEGACY_MODEL_PRESETS: &[ModelPreset] = &[ModelPreset {
+    id: "claude-haiku-4-5-20251001",
+    alias: "haiku-4-5",
+    supports_effort: false,
+    default_effort: None,
+}];
 
 fn model_preset(model: &str) -> Option<&'static ModelPreset> {
     let model = model.strip_suffix("[1m]").unwrap_or(model);
     MODEL_PRESETS
         .iter()
+        .chain(LEGACY_MODEL_PRESETS)
         .find(|preset| preset.id == model || preset.alias == model)
 }
 
@@ -507,6 +517,21 @@ mod tests {
                 .unwrap(),
             Some(Event::Done)
         ));
+    }
+
+    #[test]
+    fn haiku_alias_names_the_current_model_and_keeps_effort() {
+        assert_eq!(model_preset("haiku").unwrap().id, "claude-haiku-5-5");
+        assert!(supports_effort("haiku"));
+        assert_eq!(default_effort("haiku"), Some("medium"));
+        assert_eq!(default_effort("claude-haiku-5-5"), Some("medium"));
+        // The picker no longer offers Haiku 4.5, but its ID still resolves and
+        // still omits effort.
+        assert!(MODEL_PRESETS
+            .iter()
+            .all(|preset| preset.id != "claude-haiku-4-5-20251001"));
+        assert!(!supports_effort("claude-haiku-4-5-20251001"));
+        assert_eq!(default_effort("claude-haiku-4-5-20251001"), None);
     }
 
     #[test]
