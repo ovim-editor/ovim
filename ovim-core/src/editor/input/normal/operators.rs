@@ -18,12 +18,21 @@ use crate::editor::{
     RegisterType, TextObjectPrefix,
 };
 use crate::mode::Mode;
-use crate::repeat_action::RepeatAction;
+use crate::repeat_action::{CaseTarget, CaseTransform, RepeatAction};
 use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
 use super::super::case;
+
+/// The transformation behind `gu`, `gU` and `g~`.
+fn case_transform(operator: Operator) -> CaseTransform {
+    match operator {
+        Operator::Lowercase => CaseTransform::Lower,
+        Operator::Uppercase => CaseTransform::Upper,
+        _ => CaseTransform::Toggle,
+    }
+}
 
 /// Try to handle a pending operator with motion.
 ///
@@ -353,108 +362,38 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // Case change operations
         // =====================================================================
-        (Operator::Lowercase, KeyCode::Char('u')) => {
+        (Operator::Lowercase, KeyCode::Char('u'))
+        | (Operator::Uppercase, KeyCode::Char('U'))
+        | (Operator::ToggleCase, KeyCode::Char('~')) => {
             let count = editor.linewise_count_over_folds(count);
-            case::change_case_line(editor, count, case::CaseChange::Lowercase)?;
-            editor.clear_count();
-            true
-        }
-        (Operator::Uppercase, KeyCode::Char('U')) => {
-            let count = editor.linewise_count_over_folds(count);
-            case::change_case_line(editor, count, case::CaseChange::Uppercase)?;
-            editor.clear_count();
-            true
-        }
-        (Operator::ToggleCase, KeyCode::Char('~')) => {
-            let count = editor.linewise_count_over_folds(count);
-            case::change_case_line(editor, count, case::CaseChange::Toggle)?;
-            editor.clear_count();
-            true
-        }
-        (Operator::Lowercase, KeyCode::Char('w')) => {
-            case::change_case_motion(
+            case::change_case(
                 editor,
-                count,
-                case::CaseChange::Lowercase,
-                false,
-                |buf, cnt| {
-                    Motions::word_forward(buf, cnt);
-                },
+                case_transform(operator),
+                CaseTarget::Lines { count },
             )?;
             editor.clear_count();
             true
         }
-        (Operator::Uppercase, KeyCode::Char('w')) => {
-            case::change_case_motion(
+        (Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase, KeyCode::Char('w')) => {
+            case::change_case(
                 editor,
-                count,
-                case::CaseChange::Uppercase,
-                false,
-                |buf, cnt| {
-                    Motions::word_forward(buf, cnt);
-                },
+                case_transform(operator),
+                CaseTarget::WordForward { count },
             )?;
             editor.clear_count();
             true
         }
-        (Operator::ToggleCase, KeyCode::Char('w')) => {
-            case::change_case_motion(
+        (Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase, KeyCode::Char('e')) => {
+            case::change_case(
                 editor,
-                count,
-                case::CaseChange::Toggle,
-                false,
-                |buf, cnt| {
-                    Motions::word_forward(buf, cnt);
-                },
+                case_transform(operator),
+                CaseTarget::WordEnd { count },
             )?;
             editor.clear_count();
             true
         }
-        (Operator::Lowercase, KeyCode::Char('e')) => {
-            case::change_case_motion(
-                editor,
-                count,
-                case::CaseChange::Lowercase,
-                true,
-                |buf, cnt| {
-                    Motions::word_end_forward(buf, cnt);
-                },
-            )?;
-            editor.clear_count();
-            true
-        }
-        (Operator::Uppercase, KeyCode::Char('e')) => {
-            case::change_case_motion(
-                editor,
-                count,
-                case::CaseChange::Uppercase,
-                true,
-                |buf, cnt| {
-                    Motions::word_end_forward(buf, cnt);
-                },
-            )?;
-            editor.clear_count();
-            true
-        }
-        (Operator::ToggleCase, KeyCode::Char('e')) => {
-            case::change_case_motion(editor, count, case::CaseChange::Toggle, true, |buf, cnt| {
-                Motions::word_end_forward(buf, cnt);
-            })?;
-            editor.clear_count();
-            true
-        }
-        (Operator::Lowercase, KeyCode::Char('$')) => {
-            case::change_case_to_end_of_line(editor, case::CaseChange::Lowercase)?;
-            editor.clear_count();
-            true
-        }
-        (Operator::Uppercase, KeyCode::Char('$')) => {
-            case::change_case_to_end_of_line(editor, case::CaseChange::Uppercase)?;
-            editor.clear_count();
-            true
-        }
-        (Operator::ToggleCase, KeyCode::Char('$')) => {
-            case::change_case_to_end_of_line(editor, case::CaseChange::Toggle)?;
+        (Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase, KeyCode::Char('$')) => {
+            case::change_case(editor, case_transform(operator), CaseTarget::ToEndOfLine)?;
             editor.clear_count();
             true
         }

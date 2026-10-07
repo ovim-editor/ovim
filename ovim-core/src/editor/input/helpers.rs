@@ -7,7 +7,7 @@ use crate::indentation::{
     leading_char_count, leading_str, leading_width, visual_width, IndentOptions,
 };
 use crate::mode::Mode;
-use crate::repeat_action::RepeatAction;
+use crate::repeat_action::{CaseTransform, RepeatAction, VisualShape, VisualTransform};
 use crate::unicode::{grapheme_count, grapheme_to_char_col, CharCol, GraphemeCol};
 use anyhow::Result;
 
@@ -1445,104 +1445,67 @@ pub fn save_and_clear_visual(editor: &mut Editor) {
     editor.clear_visual_start();
 }
 
-/// Transform visual selection text using the given function (shared by uppercase/lowercase/toggle case)
-fn transform_visual_selection(
-    editor: &mut Editor,
-    transform: impl Fn(&str) -> String,
-) -> Result<()> {
+/// Applies a Visual `u` / `U` / `~` / `r{char}` to the selection, leaves the
+/// cursor at its start (as vim does) and makes it the dot-repeat.
+fn transform_visual_selection(editor: &mut Editor, transform: VisualTransform) -> Result<()> {
     let mode = editor.mode();
     let cursor_before = editor.cursor_position();
 
     let Some(((start_line, start_col), (end_line, end_col))) = editor.visual_selection() else {
         return Ok(());
     };
+    let line_count = end_line - start_line + 1;
+    let shape = match mode {
+        Mode::VisualLine => VisualShape::Line { line_count },
+        Mode::VisualBlock => VisualShape::Block {
+            line_count,
+            width: end_col.saturating_sub(start_col).saturating_add(1),
+        },
+        _ if end_line == start_line => VisualShape::Char {
+            line_delta: 0,
+            offset_col: end_col + 1 - start_col,
+        },
+        _ => VisualShape::Char {
+            line_delta: end_line - start_line,
+            offset_col: end_col + 1,
+        },
+    };
 
-    let ((), edits) = editor.buffer_mut().record(|buf| {
-        match mode {
-            Mode::VisualLine => {
-                for line_idx in start_line..=end_line {
-                    if let Some(line_text) = buf.line_text(line_idx) {
-                        let transformed = transform(&line_text);
-                        let char_count = line_text.chars().count();
-                        buf.delete_range(line_idx, CharCol::ZERO, line_idx, CharCol(char_count));
-                        buf.insert_text_at(line_idx, CharCol::ZERO, &transformed);
-                    }
-                }
-            }
-            Mode::VisualBlock => {
-                for line_idx in start_line..=end_line {
-                    if let Some(line) = buf.line_text(line_idx) {
-                        let chars_len = line.chars().count();
-                        let line_start = start_col.min(chars_len);
-                        let line_end = end_col.saturating_add(1).min(chars_len);
-                        if line_start < line_end {
-                            let deleted = buf.delete_range(
-                                line_idx,
-                                CharCol(line_start),
-                                line_idx,
-                                CharCol(line_end),
-                            );
-                            let transformed = transform(&deleted);
-                            buf.insert_text_at(line_idx, CharCol(line_start), &transformed);
-                        }
-                    }
-                }
-            }
-            _ => {
-                // Character-wise visual mode
-                let deleted = buf.delete_range(
-                    start_line,
-                    CharCol(start_col),
-                    end_line,
-                    CharCol(end_col + 1),
-                );
-                let transformed = transform(&deleted);
-                buf.insert_text_at(start_line, CharCol(start_col), &transformed);
-            }
-        }
-    });
-
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start_line, GraphemeCol(start_col));
+    let ((), edits) = editor
+        .buffer_mut()
+        .record(|buf| crate::repeat_action::transform_visual_shape(buf, shape, transform));
     if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
+    editor.set_repeat_action(RepeatAction::TransformVisual { shape, transform });
 
     Ok(())
 }
 
 /// Convert visual selection to uppercase
 pub fn uppercase_visual_selection(editor: &mut Editor) -> Result<()> {
-    transform_visual_selection(editor, |s| s.to_uppercase())
+    transform_visual_selection(editor, VisualTransform::Case(CaseTransform::Upper))
 }
 
 /// Convert visual selection to lowercase
 pub fn lowercase_visual_selection(editor: &mut Editor) -> Result<()> {
-    transform_visual_selection(editor, |s| s.to_lowercase())
+    transform_visual_selection(editor, VisualTransform::Case(CaseTransform::Lower))
 }
 
 /// Replace all characters in visual selection with a given character.
 /// Preserves newlines (matches Vim behavior).
 pub fn replace_visual_selection(editor: &mut Editor, ch: char) -> Result<()> {
-    transform_visual_selection(editor, |s| {
-        s.chars()
-            .map(|c| if c == '\n' { '\n' } else { ch })
-            .collect()
-    })
+    transform_visual_selection(editor, VisualTransform::Replace(ch))
 }
 
 /// Toggle case of visual selection (~)
 pub fn toggle_case_visual_selection(editor: &mut Editor) -> Result<()> {
-    transform_visual_selection(editor, |s| {
-        s.chars()
-            .map(|ch| {
-                if ch.is_uppercase() {
-                    ch.to_lowercase().to_string()
-                } else {
-                    ch.to_uppercase().to_string()
-                }
-            })
-            .collect()
-    })
+    transform_visual_selection(editor, VisualTransform::Case(CaseTransform::Toggle))
 }
 
 /// Extracts the word under the cursor

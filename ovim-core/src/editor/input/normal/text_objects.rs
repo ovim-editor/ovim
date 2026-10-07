@@ -208,37 +208,29 @@ fn apply_case_operator(
 
     let transformed = transform.apply_to(&text);
 
-    if transformed != text {
-        editor.record_operation(
-            |buf| {
-                buf.delete_range(
-                    range.start_line,
-                    range.start_col,
-                    range.end_line,
-                    range.end_col,
-                );
-                buf.insert_text_at(range.start_line, range.start_col, &transformed);
-
-                // Keep cursor behavior consistent with prior path: land at end
-                // of the transformed text. Tracked in char-space (CharCol).
-                let mut final_line = range.start_line;
-                let mut final_col = range.start_col;
-                for ch in transformed.chars() {
-                    if ch == '\n' {
-                        final_line += 1;
-                        final_col = crate::unicode::CharCol::ZERO;
-                    } else {
-                        final_col += 1;
-                    }
-                }
-                buf.set_cursor_char_col(final_line, final_col);
-            },
-            Some(RepeatAction::ChangeCaseTextObject {
-                object_type,
-                transform,
-            }),
-        );
+    // The cursor lands on the start of the text object, changed or not, and the
+    // operator is what `.` repeats either way.
+    let cursor_before = editor.cursor_position();
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        if transformed != text {
+            buf.delete_range(
+                range.start_line,
+                range.start_col,
+                range.end_line,
+                range.end_col,
+            );
+            buf.insert_text_at(range.start_line, range.start_col, &transformed);
+        }
+        buf.set_cursor_char_col(range.start_line, range.start_col);
+    });
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
+    editor.set_repeat_action(RepeatAction::ChangeCaseTextObject {
+        object_type,
+        transform,
+    });
 
     Ok(())
 }

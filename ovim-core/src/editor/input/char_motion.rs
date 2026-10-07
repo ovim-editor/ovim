@@ -228,6 +228,17 @@ fn handle_char_find(
 // Operator application
 // ---------------------------------------------------------------------------
 
+/// Delete phase for a change that cannot be repeated (its motion is a mark,
+/// which the change itself consumes): replaying it does nothing.
+fn unrepeatable_delete() -> RepeatAction {
+    RepeatAction::DeleteCharMotion {
+        target: '\0',
+        forward: true,
+        till: false,
+        count: 1,
+    }
+}
+
 /// A character-wise text range for operator application.
 /// Stored as grapheme-space `(line, col)` pairs; `apply_charwise_operator`
 /// converts to char space against the live line text (OV-00299).
@@ -328,14 +339,8 @@ fn apply_charwise_operator(
                 None
             };
 
-            let delete_action = repeat.unwrap_or(RepeatAction::DeleteCharMotion {
-                target: '\0',
-                forward: true,
-                till: false,
-                count: 1,
-            });
             editor.set_pending_change_repeat(PendingChangeRepeat {
-                delete_action,
+                delete_action: repeat.unwrap_or_else(unrepeatable_delete),
                 linewise: false,
                 delete_token,
             });
@@ -434,6 +439,11 @@ fn apply_linewise_operator(
             if !deleted.is_empty() {
                 editor.delete_to_register_with_type(deleted, RegisterType::Line);
             }
+            editor.set_pending_change_repeat(PendingChangeRepeat {
+                delete_action: unrepeatable_delete(),
+                linewise: false,
+                delete_token: None,
+            });
             editor.start_change_building(editor.cursor_position());
             editor.set_mode(Mode::Insert);
         }

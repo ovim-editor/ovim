@@ -609,6 +609,9 @@ pub struct ChangeManager {
     pub last_repeat_action: Option<RepeatAction>,
     /// Explicit register used by the last delete/change/paste command.
     pub last_repeat_register: Option<char>,
+    /// Bumped whenever a command (re)defines the dot-repeat, so the input
+    /// dispatcher can tell "recorded the same action again" from "recorded none".
+    repeat_generation: u64,
 }
 
 impl Default for ChangeManager {
@@ -630,6 +633,32 @@ impl ChangeManager {
             change_list_index: None,
             last_repeat_action: None,
             last_repeat_register: None,
+            repeat_generation: 0,
+        }
+    }
+
+    /// Defines what `.` repeats (`None` when the last change cannot be repeated).
+    pub fn set_repeat_action(&mut self, action: Option<RepeatAction>) {
+        self.last_repeat_action = action;
+        self.repeat_generation += 1;
+    }
+
+    /// Notes that `.` just ran its action again, without redefining it.
+    pub fn note_repeat_ran(&mut self) {
+        self.repeat_generation += 1;
+    }
+
+    /// Snapshot for [`Self::forget_unrecorded_change`]: how many undo entries
+    /// were ever pushed and how often the dot-repeat was (re)defined.
+    pub fn repeat_checkpoint(&self) -> (u64, u64) {
+        (self.next_seq, self.repeat_generation)
+    }
+
+    /// A command that edited the text since `checkpoint` without defining a
+    /// dot-repeat must not leave an older command behind for `.` to replay.
+    pub fn forget_unrecorded_change(&mut self, checkpoint: (u64, u64)) {
+        if self.next_seq != checkpoint.0 && self.repeat_generation == checkpoint.1 {
+            self.last_repeat_action = None;
         }
     }
 

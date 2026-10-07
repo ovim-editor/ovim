@@ -164,6 +164,7 @@ impl InputHandler {
             (cursor.line(), cursor.col(), editor.buffer().version())
         };
         let completing_insert_normal = editor.editing.insert_normal_pending;
+        let repeat_checkpoint = Self::repeat_checkpoint(editor);
         let mapping_handled = if allow_remap {
             Self::try_handle_mode_mapping(editor, key_event, remap_depth)?
         } else {
@@ -208,6 +209,10 @@ impl InputHandler {
                 }
             }
         };
+
+        if let Some(checkpoint) = repeat_checkpoint.filter(|_| !mapping_handled) {
+            Self::forget_unrecorded_change(editor, checkpoint);
+        }
 
         // Ctrl-O insert-normal: after one normal command, return to insert mode.
         // Only return if we're still in Normal mode (the command didn't switch to
@@ -292,6 +297,42 @@ impl InputHandler {
         }
 
         result
+    }
+
+    /// Where dot-repeat bookkeeping stood before a Normal/Visual-mode key:
+    /// the buffer and its [`ChangeManager::repeat_checkpoint`]. `None` for keys
+    /// whose edits are not "a command" (Insert mode typing, `:` commands, leader
+    /// sequences, macro playback — the commands they run are checked themselves).
+    fn repeat_checkpoint(editor: &Editor) -> Option<(usize, (u64, u64))> {
+        let tracked_mode = matches!(
+            editor.mode(),
+            Mode::Normal | Mode::Visual | Mode::VisualLine | Mode::VisualBlock
+        );
+        let tracked_state = !matches!(
+            editor.input_state(),
+            InputState::Leader { .. }
+                | InputState::MacroPrefix {
+                    is_recording: false
+                }
+        );
+        (tracked_mode && tracked_state).then(|| {
+            (
+                editor.current_buffer_index(),
+                editor.buffer().change_manager().repeat_checkpoint(),
+            )
+        })
+    }
+
+    /// A key that edited the buffer without defining what `.` repeats must not
+    /// leave an older change behind to be replayed instead (`ddgUwj.` repeating
+    /// the `dd`).
+    fn forget_unrecorded_change(editor: &mut Editor, (buffer, checkpoint): (usize, (u64, u64))) {
+        if editor.current_buffer_index() == buffer {
+            editor
+                .buffer_mut()
+                .change_manager_mut()
+                .forget_unrecorded_change(checkpoint);
+        }
     }
 
     fn active_mapping_mode(editor: &Editor) -> Option<MapMode> {

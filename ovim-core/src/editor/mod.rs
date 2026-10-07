@@ -2322,6 +2322,21 @@ impl Editor {
         let inserted = crate::edit::surviving_inserted_text(typed.unwrap_or_default());
         self.registers.set_last_inserted(inserted);
         if edits.is_empty() {
+            // `i<Esc>` still redefines `.` (vim repeats the empty insert), so the
+            // command before it is not replayed instead.
+            if !matches!(
+                entry_mode,
+                InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove
+            ) {
+                self.buffer_mut()
+                    .change_manager_mut()
+                    .set_repeat_action(Some(RepeatAction::InsertSession {
+                        count: 1,
+                        entry_mode,
+                        origin_offset: 0,
+                        edits,
+                    }));
+            }
             return None;
         }
 
@@ -2344,12 +2359,12 @@ impl Editor {
         // origin; without one there is nothing to re-anchor, so `.` must not
         // keep repeating the command before this insert either.
         let cm = self.buffer_mut().change_manager_mut();
-        cm.last_repeat_action = origin.map(|origin_offset| RepeatAction::InsertSession {
+        cm.set_repeat_action(origin.map(|origin_offset| RepeatAction::InsertSession {
             count: 1,
             entry_mode,
             origin_offset,
             edits,
-        });
+        }));
         Some(token)
     }
 

@@ -142,7 +142,8 @@ fn test_ctrl_v_single_column() {
         .press('X'); // With 'X'
 
     assert_eq!(test.buffer_content(), "heXlo\nwoXld\nteXt\n");
-    test.assert_cursor(2, 2);
+    // nvim --clean: after a Visual r/u/U/~ the cursor returns to the start of the selection.
+    test.assert_cursor(0, 2);
 }
 
 #[test]
@@ -494,7 +495,8 @@ fn test_ctrl_v_tilde_case_toggle() {
         .press('~'); // Toggle case
 
     assert_eq!(test.buffer_content(), "HELlo\nWORld\nTESt\n");
-    test.assert_cursor(2, 2);
+    // nvim --clean: after a Visual r/u/U/~ the cursor returns to the start of the selection.
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -507,7 +509,8 @@ fn test_ctrl_v_uppercase_U() {
         .press('U'); // Uppercase
 
     assert_eq!(test.buffer_content(), "HELlo\nWORld\nTESt\n");
-    test.assert_cursor(2, 2);
+    // nvim --clean: after a Visual r/u/U/~ the cursor returns to the start of the selection.
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -520,7 +523,8 @@ fn test_ctrl_v_lowercase_u() {
         .press('u'); // Lowercase
 
     assert_eq!(test.buffer_content(), "helLO\nworLD\ntesT\n");
-    test.assert_cursor(2, 2);
+    // nvim --clean: after a Visual r/u/U/~ the cursor returns to the start of the selection.
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -534,7 +538,8 @@ fn test_ctrl_v_replace_r() {
         .press('X'); // Replace all selected chars with X
 
     assert_eq!(test.buffer_content(), "XXXlo\nXXXld\nXXXt\n");
-    test.assert_cursor(2, 2);
+    // nvim --clean: after a Visual r/u/U/~ the cursor returns to the start of the selection.
+    test.assert_cursor(0, 0);
 }
 
 // nvim --clean: `.` after a block insert/append repeats it at the cursor on

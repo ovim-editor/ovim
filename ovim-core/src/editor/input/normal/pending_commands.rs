@@ -640,7 +640,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 fn apply_operator_to_visual_selection(editor: &mut Editor, operator: Operator) -> Result<()> {
     match operator {
         Operator::Delete => {
+            let search_info = editor
+                .current_search()
+                .map(|s| (s.pattern().to_string(), s.is_forward()));
             helpers::delete_visual_selection(editor)?;
+            // `.` deletes the next match, not as many characters as this one had.
+            if let Some((search_pattern, search_forward)) = search_info {
+                editor.set_repeat_action(RepeatAction::DeleteSearchMatch {
+                    search_pattern,
+                    search_forward,
+                });
+            }
             helpers::exit_visual_mode_to_normal(editor);
         }
         Operator::Yank => {

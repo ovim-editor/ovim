@@ -174,6 +174,7 @@ impl Editor {
         let Some(action) = self.buffer().change_manager().last_repeat_action.clone() else {
             return;
         };
+        self.buffer_mut().change_manager_mut().note_repeat_ran();
         let action = if let Some(count) = count {
             let action = action.with_count(count);
             self.set_repeat_action(action.clone());
@@ -271,7 +272,9 @@ impl Editor {
 
     /// Sets the semantic repeat action for dot-repeat.
     pub fn set_repeat_action(&mut self, action: RepeatAction) {
-        self.buffer_mut().change_manager_mut().last_repeat_action = Some(action);
+        self.buffer_mut()
+            .change_manager_mut()
+            .set_repeat_action(Some(action));
     }
 
     /// Returns the current cursor position (grapheme-space).

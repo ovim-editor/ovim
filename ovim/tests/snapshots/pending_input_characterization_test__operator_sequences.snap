@@ -256,7 +256,7 @@ guiw          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] w[-] => Normal (1
 guaw          | g[cmd=g] u[op=Lowercase] a[op=Lowercase,cmd=a] w[-] => Normal (1,8)
 gui(          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] ([-] => Normal (1,8)
 gua"          | g[cmd=g] u[op=Lowercase] a[op=Lowercase,cmd=a] "[-] => Normal (1,8)
-guip          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] p[-] => Normal (1,8)
+guip          | g[cmd=g] u[op=Lowercase] i[op=Lowercase,cmd=i] p[-] => Normal (0,0)
 gufa          | g[cmd=g] u[op=Lowercase] f[char=Find/None] a[-] => Normal (1,11)
 guta          | g[cmd=g] u[op=Lowercase] t[char=Till/None] a[-] => Normal (1,10)
 guFa          | g[cmd=g] u[op=Lowercase] F[char=FindBack/None] a[-] => Normal (1,6)
@@ -292,11 +292,11 @@ gUk           | g[cmd=g] U[op=Uppercase] k[-] => Normal (0,8)
 gUG           | g[cmd=g] U[op=Uppercase] G[-] => Normal (1,8)
 gUgg          | g[cmd=g] U[op=Uppercase] g[cmd=g] g[-] => Normal (0,0)
 gUgn          | g[cmd=g] U[op=Uppercase] g[cmd=g] n[-] => Normal (1,8)
-gUiw          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] w[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
-gUaw          | g[cmd=g] U[op=Uppercase] a[op=Uppercase,cmd=a] w[-] => Normal (1,13) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUiw          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUaw          | g[cmd=g] U[op=Uppercase] a[op=Uppercase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 gUi(          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] ([-] => Normal (1,8)
 gUa"          | g[cmd=g] U[op=Uppercase] a[op=Uppercase,cmd=a] "[-] => Normal (1,8)
-gUip          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] p[-] => Normal (3,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+gUip          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
 gUfa          | g[cmd=g] U[op=Uppercase] f[char=Find/None] a[-] => Normal (1,11)
 gUta          | g[cmd=g] U[op=Uppercase] t[char=Till/None] a[-] => Normal (1,10)
 gUFa          | g[cmd=g] U[op=Uppercase] F[char=FindBack/None] a[-] => Normal (1,6)
@@ -332,11 +332,11 @@ g~k           | g[cmd=g] ~[op=ToggleCase] k[-] => Normal (0,8)
 g~G           | g[cmd=g] ~[op=ToggleCase] G[-] => Normal (1,8)
 g~gg          | g[cmd=g] ~[op=ToggleCase] g[cmd=g] g[-] => Normal (0,0)
 g~gn          | g[cmd=g] ~[op=ToggleCase] g[cmd=g] n[-] => Normal (1,8)
-g~iw          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] w[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
-g~aw          | g[cmd=g] ~[op=ToggleCase] a[op=ToggleCase,cmd=a] w[-] => Normal (1,13) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~iw          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+g~aw          | g[cmd=g] ~[op=ToggleCase] a[op=ToggleCase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 g~i(          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] ([-] => Normal (1,8)
 g~a"          | g[cmd=g] ~[op=ToggleCase] a[op=ToggleCase,cmd=a] "[-] => Normal (1,8)
-g~ip          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] p[-] => Normal (3,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+g~ip          | g[cmd=g] ~[op=ToggleCase] i[op=ToggleCase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
 g~fa          | g[cmd=g] ~[op=ToggleCase] f[char=Find/None] a[-] => Normal (1,11)
 g~ta          | g[cmd=g] ~[op=ToggleCase] t[char=Till/None] a[-] => Normal (1,10)
 g~Fa          | g[cmd=g] ~[op=ToggleCase] F[char=FindBack/None] a[-] => Normal (1,6)
@@ -736,7 +736,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2guaw         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] a[n=2,op=Lowercase,cmd=a] w[-] => Normal (1,8)
 2gui(         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] ([-] => Normal (1,8)
 2gua"         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] a[n=2,op=Lowercase,cmd=a] "[-] => Normal (1,8)
-2guip         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] p[-] => Normal (1,8)
+2guip         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] i[n=2,op=Lowercase,cmd=i] p[-] => Normal (0,0)
 2gufa         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] f[char=Find/None] a[-] => Normal (1,11)
 2guta         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] t[char=Till/None] a[-] => Normal (1,10)
 2guFa         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] F[char=FindBack/None] a[-] => Normal (1,6)
@@ -772,11 +772,11 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2gUG          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] G[-] => Normal (1,8)
 2gUgg         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] g[cmd=g] g[-] => Normal (0,0)
 2gUgn         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] g[cmd=g] n[-] => Normal (1,8)
-2gUiw         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] w[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
-2gUaw         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] a[n=2,op=Uppercase,cmd=a] w[-] => Normal (1,13) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+2gUiw         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+2gUaw         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] a[n=2,op=Uppercase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 2gUi(         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] ([-] => Normal (1,8)
 2gUa"         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] a[n=2,op=Uppercase,cmd=a] "[-] => Normal (1,8)
-2gUip         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] p[-] => Normal (3,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2gUip         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] i[n=2,op=Uppercase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
 2gUfa         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] f[char=Find/None] a[-] => Normal (1,11)
 2gUta         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] t[char=Till/None] a[-] => Normal (1,10)
 2gUFa         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] F[char=FindBack/None] a[-] => Normal (1,6)
@@ -812,11 +812,11 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2g~G          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] G[-] => Normal (1,8)
 2g~gg         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] g[cmd=g] g[-] => Normal (0,0)
 2g~gn         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] g[cmd=g] n[-] => Normal (1,8)
-2g~iw         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] w[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
-2g~aw         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] a[n=2,op=ToggleCase,cmd=a] w[-] => Normal (1,13) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+2g~iw         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+2g~aw         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] a[n=2,op=ToggleCase,cmd=a] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 2g~i(         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] ([-] => Normal (1,8)
 2g~a"         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] a[n=2,op=ToggleCase,cmd=a] "[-] => Normal (1,8)
-2g~ip         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] p[-] => Normal (3,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+2g~ip         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] i[n=2,op=ToggleCase,cmd=i] p[-] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
 2g~fa         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] f[char=Find/None] a[-] => Normal (1,11)
 2g~ta         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] t[char=Till/None] a[-] => Normal (1,10)
 2g~Fa         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] F[char=FindBack/None] a[-] => Normal (1,6)
@@ -1216,7 +1216,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 "aguaw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] a[op=Lowercase,cmd=a,reg=a] w[reg=a] => Normal (1,8)
 "agui(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] ([reg=a] => Normal (1,8)
 "agua"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] a[op=Lowercase,cmd=a,reg=a] "[reg=a] => Normal (1,8)
-"aguip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] p[reg=a] => Normal (1,8)
+"aguip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] i[op=Lowercase,cmd=i,reg=a] p[reg=a] => Normal (0,0)
 "agufa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] f[reg=a,char=Find/None] a[reg=a] => Normal (1,11)
 "aguta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] t[reg=a,char=Till/None] a[reg=a] => Normal (1,10)
 "aguFa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] u[op=Lowercase,reg=a] F[reg=a,char=FindBack/None] a[reg=a] => Normal (1,6)
@@ -1252,11 +1252,11 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 "agUG         | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] G[reg=a] => Normal (1,8)
 "agUgg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] g[cmd=g,reg=a] g[reg=a] => Normal (0,0)
 "agUgn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] g[cmd=g,reg=a] n[reg=a] => Normal (1,8)
-"agUiw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] w[reg=a] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
-"agUaw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] a[op=Uppercase,cmd=a,reg=a] w[reg=a] => Normal (1,13) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUiw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"agUaw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] a[op=Uppercase,cmd=a,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 "agUi(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] ([reg=a] => Normal (1,8)
 "agUa"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] a[op=Uppercase,cmd=a,reg=a] "[reg=a] => Normal (1,8)
-"agUip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] p[reg=a] => Normal (3,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+"agUip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] i[op=Uppercase,cmd=i,reg=a] p[reg=a] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
 "agUfa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] f[reg=a,char=Find/None] a[reg=a] => Normal (1,11)
 "agUta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] t[reg=a,char=Till/None] a[reg=a] => Normal (1,10)
 "agUFa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] U[op=Uppercase,reg=a] F[reg=a,char=FindBack/None] a[reg=a] => Normal (1,6)
@@ -1292,11 +1292,11 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 "ag~G         | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] G[reg=a] => Normal (1,8)
 "ag~gg        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] g[cmd=g,reg=a] g[reg=a] => Normal (0,0)
 "ag~gn        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] g[cmd=g,reg=a] n[reg=a] => Normal (1,8)
-"ag~iw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] w[reg=a] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
-"ag~aw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] a[op=ToggleCase,cmd=a,reg=a] w[reg=a] => Normal (1,13) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~iw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+"ag~aw        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] a[op=ToggleCase,cmd=a,reg=a] w[reg=a] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 "ag~i(        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] ([reg=a] => Normal (1,8)
 "ag~a"        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] a[op=ToggleCase,cmd=a,reg=a] "[reg=a] => Normal (1,8)
-"ag~ip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] p[reg=a] => Normal (3,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
+"ag~ip        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] i[op=ToggleCase,cmd=i,reg=a] p[reg=a] => Normal (0,0) text="FOO BAR(BAZ, QUX) \"STR\" END\n  ALPHA BETA GAMMA\nXDELTA\n\nlast line here\n"
 "ag~fa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] f[reg=a,char=Find/None] a[reg=a] => Normal (1,11)
 "ag~ta        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] t[reg=a,char=Till/None] a[reg=a] => Normal (1,10)
 "ag~Fa        | "[cmd="] a[reg=a] g[cmd=g,reg=a] ~[op=ToggleCase,reg=a] F[reg=a,char=FindBack/None] a[reg=a] => Normal (1,6)

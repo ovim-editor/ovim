@@ -414,7 +414,7 @@ grx           | g[cmd=g] r[cmd=R] x[-] => Normal (1,8)
 gr<Esc>       | g[cmd=g] r[cmd=R] <Esc>[-] => Normal (1,8)
 gu<Esc>w      | g[cmd=g] u[op=Lowercase] <Esc>[-] w[-] => Normal (1,13)
 guw.          | g[cmd=g] u[op=Lowercase] w[-] .[-] => Normal (1,8)
-gUiw          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] w[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
+gUiw          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 zfj           | z[cmd=z] f[op=Fold] j[-] => Normal (1,8)
 zfjzo         | z[cmd=z] f[op=Fold] j[-] z[cmd=z] o[-] => Normal (1,8)
 qaxq          | q[cmd=q] a[-] x[-] q[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"

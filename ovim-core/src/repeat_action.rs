@@ -31,6 +31,59 @@ impl CaseTransform {
     }
 }
 
+/// What a `gu` / `gU` / `g~` operator covers; resolved from the cursor each time,
+/// so `.` applies the same motion at the new position.
+#[derive(Clone, Copy, Debug)]
+pub enum CaseTarget {
+    /// `gUU` / `gUgU` / `3gUU`
+    Lines { count: usize },
+    /// `gUw`
+    WordForward { count: usize },
+    /// `gUe`
+    WordEnd { count: usize },
+    /// `gU$`
+    ToEndOfLine,
+}
+
+/// The extent of a Visual selection relative to its start, so `.` can re-apply
+/// an operator to the same amount of text at the cursor.
+#[derive(Clone, Copy, Debug)]
+pub enum VisualShape {
+    /// Characterwise: `line_delta` lines further, ending `offset_col` columns
+    /// past the start (single line) or past column 0 (several lines).
+    Char {
+        line_delta: usize,
+        offset_col: usize,
+    },
+    Line {
+        line_count: usize,
+    },
+    Block {
+        line_count: usize,
+        width: usize,
+    },
+}
+
+/// What Visual `u` / `U` / `~` / `r{char}` does to the selected text.
+#[derive(Clone, Copy, Debug)]
+pub enum VisualTransform {
+    Case(CaseTransform),
+    /// Every character but line breaks becomes this one.
+    Replace(char),
+}
+
+impl VisualTransform {
+    fn apply_to(self, text: &str) -> String {
+        match self {
+            Self::Case(transform) => transform.apply_to(text),
+            Self::Replace(ch) => text
+                .chars()
+                .map(|c| if c == '\n' { c } else { ch })
+                .collect(),
+        }
+    }
+}
+
 /// Semantic repeat actions for dot-repeat (Pattern B).
 ///
 /// Unlike `Change` (which handles both undo and repeat), `RepeatAction`
@@ -62,6 +115,16 @@ pub enum RepeatAction {
     ChangeCaseTextObject {
         object_type: TextObjectType,
         transform: CaseTransform,
+    },
+    /// guu / gUw / g~$ ... — case transform for a line or motion range
+    ChangeCase {
+        transform: CaseTransform,
+        target: CaseTarget,
+    },
+    /// Visual u / U / ~ / r{char} on the same amount of text
+    TransformVisual {
+        shape: VisualShape,
+        transform: VisualTransform,
     },
     /// Ctrl-A / Ctrl-X — increment/decrement number
     NumberOperation { delta: i64 },
@@ -355,21 +418,14 @@ impl RepeatAction {
                             range.end_col,
                         );
                         buffer.insert_text_at(range.start_line, range.start_col, &transformed);
-
-                        // Track position in char space; convert to grapheme for cursor.
-                        let mut final_line = range.start_line;
-                        let mut final_col = range.start_col;
-                        for ch in transformed.chars() {
-                            if ch == '\n' {
-                                final_line += 1;
-                                final_col = CharCol::ZERO;
-                            } else {
-                                final_col += 1;
-                            }
-                        }
-                        buffer.set_cursor_char_col(final_line, final_col);
                     }
+                    // The cursor lands on the start of the text object, changed or not.
+                    buffer.set_cursor_char_col(range.start_line, range.start_col);
                 }
+            }
+            Self::ChangeCase { transform, target } => change_case(buffer, *transform, *target),
+            Self::TransformVisual { shape, transform } => {
+                transform_visual_shape(buffer, *shape, *transform);
             }
             Self::NumberOperation { delta } => {
                 buffer.modify_number_at_cursor(*delta);
@@ -894,6 +950,137 @@ impl RepeatAction {
             }
         }
     }
+}
+
+/// Applies `gu` / `gU` / `g~` over `target`, starting at the cursor, and leaves
+/// the cursor where it started. The caller wraps this in `buffer.record()`.
+pub fn change_case(buffer: &mut Buffer, transform: CaseTransform, target: CaseTarget) {
+    let start = (buffer.cursor().line(), buffer.cursor().col());
+    match target {
+        CaseTarget::Lines { count } => {
+            let end_line = (start.0 + count).min(buffer.line_count());
+            for line_idx in start.0..end_line {
+                transform_line_range(buffer, line_idx, 0, usize::MAX, |text| {
+                    transform.apply_to(text)
+                });
+            }
+        }
+        CaseTarget::WordForward { count } | CaseTarget::WordEnd { count } => {
+            let inclusive = matches!(target, CaseTarget::WordEnd { .. });
+            if inclusive {
+                crate::editor::Motions::word_end_forward(buffer, count);
+            } else {
+                crate::editor::Motions::word_forward(buffer, count);
+            }
+            let end = (buffer.cursor().line(), buffer.cursor().col().0);
+            // Inclusive motions land ON the last affected character.
+            let end_col = if inclusive { end.1 + 1 } else { end.1 };
+            transform_char_range(buffer, start.0, start.1 .0, end.0, end_col, |text| {
+                transform.apply_to(text)
+            });
+        }
+        CaseTarget::ToEndOfLine => {
+            transform_line_range(buffer, start.0, start.1 .0, usize::MAX, |text| {
+                transform.apply_to(text)
+            });
+        }
+    }
+    buffer.cursor_mut().set_position(start.0, start.1);
+}
+
+/// Rewrites graphemes `[from, to)` of one line (clamped to the line) with
+/// `f(old text)`, skipping the edit when nothing changes.
+fn transform_line_range(
+    buffer: &mut Buffer,
+    line_idx: usize,
+    from: usize,
+    to: usize,
+    f: impl Fn(&str) -> String,
+) {
+    transform_char_range(buffer, line_idx, from, line_idx, to, f);
+}
+
+/// Rewrites the text between two grapheme positions (the end is exclusive and
+/// clamped to its line) with `f(old text)`, skipping the edit when nothing changes.
+fn transform_char_range(
+    buffer: &mut Buffer,
+    start_line: usize,
+    start_grapheme: usize,
+    end_line: usize,
+    end_grapheme: usize,
+    f: impl Fn(&str) -> String,
+) {
+    let (Some(start_text), Some(end_text)) =
+        (buffer.line_text(start_line), buffer.line_text(end_line))
+    else {
+        return;
+    };
+    let start_col = crate::unicode::grapheme_to_char_col(
+        &start_text,
+        GraphemeCol(start_grapheme.min(crate::unicode::grapheme_count(&start_text))),
+    );
+    let end_col = crate::unicode::grapheme_to_char_col(
+        &end_text,
+        GraphemeCol(end_grapheme.min(crate::unicode::grapheme_count(&end_text))),
+    );
+    drop((start_text, end_text));
+    let start = buffer.rope().line_to_char(start_line) + start_col.0;
+    let end = buffer.rope().line_to_char(end_line) + end_col.0;
+    if end <= start {
+        return;
+    }
+    let text = buffer.rope().slice(start..end).to_string();
+    let transformed = f(&text);
+    if transformed != text {
+        buffer.delete_range(start_line, start_col, end_line, end_col);
+        buffer.insert_text_at(start_line, start_col, &transformed);
+    }
+}
+
+/// Applies a Visual `u` / `U` / `~` / `r` to a selection of `shape`, whose
+/// start is at the cursor. Leaves the cursor at the start, as vim does.
+pub fn transform_visual_shape(buffer: &mut Buffer, shape: VisualShape, transform: VisualTransform) {
+    let start_line = buffer.cursor().line();
+    let start_grapheme = buffer.cursor().col().0;
+    let last_line = buffer.line_count().saturating_sub(1);
+    let f = |text: &str| transform.apply_to(text);
+    match shape {
+        VisualShape::Char {
+            line_delta,
+            offset_col,
+        } => {
+            let end_line = (start_line + line_delta).min(last_line);
+            let end_grapheme = if line_delta == 0 {
+                start_grapheme + offset_col
+            } else {
+                offset_col
+            };
+            transform_char_range(
+                buffer,
+                start_line,
+                start_grapheme,
+                end_line,
+                end_grapheme,
+                f,
+            );
+        }
+        VisualShape::Line { line_count } => {
+            let end_line = (start_line + line_count).min(buffer.line_count());
+            for line_idx in start_line..end_line {
+                transform_line_range(buffer, line_idx, 0, usize::MAX, f);
+            }
+        }
+        VisualShape::Block { line_count, width } => {
+            let end_line = (start_line + line_count).min(buffer.line_count());
+            for line_idx in start_line..end_line {
+                let end = start_grapheme.saturating_add(width);
+                transform_line_range(buffer, line_idx, start_grapheme, end, f);
+            }
+        }
+    }
+    buffer
+        .cursor_mut()
+        .set_position(start_line, GraphemeCol(start_grapheme));
 }
 
 /// Where a visual-block `I` / `A` / `c` puts its text on each block line.
