@@ -205,6 +205,9 @@ async fn initialize_configured_lsp(request: &InitRequest) {
                 .await
             {
                 Ok(server_id) => {
+                    if lsp_config.root_is_fallback(abs_path) {
+                        lsp_manager.mark_fallback_root(&server_id);
+                    }
                     lsp_manager
                         .start_notification_listener(server_id.clone())
                         .await;
@@ -539,6 +542,15 @@ async fn initialize_companions(request: &InitRequest, language_id: &str, abs_pat
             .await
         {
             Ok(_) => {
+                if crate::project_root::marker_root_with_outermost(
+                    abs_path,
+                    &companion.root_markers,
+                    &[],
+                )
+                .is_none()
+                {
+                    lsp_manager.mark_fallback_root(&server_id);
+                }
                 // Start notification listener for companion
                 lsp_manager
                     .start_notification_listener(server_id.clone())

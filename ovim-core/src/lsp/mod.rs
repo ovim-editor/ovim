@@ -290,6 +290,11 @@ pub struct LspManager {
     /// Maps server_id → root_path for root-based dedup
     server_roots: DashMap<String, std::path::PathBuf>,
 
+    /// Servers whose root is only the directory of the file that started
+    /// them, because no project marker was found. Such a root says nothing
+    /// about where the project is, so it is never watched for file changes.
+    fallback_root_servers: dashmap::DashSet<String>,
+
     /// How each live server was launched, for crash recovery.
     server_specs: DashMap<String, recovery::ServerSpec>,
 
@@ -357,6 +362,7 @@ impl LspManager {
             listener_handles: DashMap::new(),
             language_server_index: DashMap::new(),
             server_roots: DashMap::new(),
+            fallback_root_servers: dashmap::DashSet::new(),
             server_specs: DashMap::new(),
             restart_states: DashMap::new(),
             file_watch_registrations: DashMap::new(),
@@ -750,6 +756,7 @@ impl LspManager {
 
         // Clean up root tracking
         self.server_roots.remove(language);
+        self.fallback_root_servers.remove(language);
 
         // Update reverse index: remove this server_id from its language entry
         // For root-scoped servers like "typescript@abcd1234", extract base language
@@ -1179,6 +1186,12 @@ impl LspManager {
         self.servers
             .get(language)
             .map(|entry| entry.value().clone())
+    }
+
+    /// Records that `server_id` runs in a root that is only a fallback (no
+    /// project marker was found around the file that started it).
+    pub fn mark_fallback_root(&self, server_id: &str) {
+        self.fallback_root_servers.insert(server_id.to_string());
     }
 
     /// Gets the root path for a server (for debugging/introspection)

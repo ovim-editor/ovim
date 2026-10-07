@@ -164,15 +164,19 @@ impl LspManager {
 
     /// Directories the editor must watch so registered servers hear about
     /// changes: the root of every server that registered file watchers, plus
-    /// the base directory of any relative-pattern watcher.
+    /// the base directory of any relative-pattern watcher. A fallback root
+    /// (no project marker found), the home directory and the filesystem root
+    /// are never watched: they would claim a watch for every directory below.
     pub fn watched_file_roots(&self) -> Vec<PathBuf> {
         let mut roots = Vec::new();
         for entry in self.file_watch_registrations.iter() {
             if entry.value().iter().all(|reg| reg.watchers.is_empty()) {
                 continue;
             }
-            if let Some(root) = self.server_roots.get(entry.key()) {
-                roots.push(root.value().clone());
+            if !self.fallback_root_servers.contains(entry.key()) {
+                if let Some(root) = self.server_roots.get(entry.key()) {
+                    roots.push(root.value().clone());
+                }
             }
             for registration in entry.value() {
                 for watcher in &registration.watchers {
@@ -182,6 +186,7 @@ impl LspManager {
                 }
             }
         }
+        roots.retain(|root| !crate::project_root::is_too_broad_to_watch(root));
         roots.sort();
         roots.dedup();
         // A root nested in another root is already covered by the recursive watch.
@@ -285,6 +290,29 @@ impl LspManager {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn watch_everything() -> WatcherRegistration {
+        registration(serde_json::json!({"watchers": [{"globPattern": "**/*"}]}))
+    }
+
+    #[test]
+    fn fallback_and_overly_broad_roots_are_not_watched() {
+        let manager = LspManager::new();
+        let project = std::env::temp_dir().join("ovim-watch-project");
+        let loose = std::env::temp_dir().join("ovim-watch-loose-file-dir");
+        for (server, root) in [
+            ("project", project.clone()),
+            ("loose", loose),
+            ("home", dirs::home_dir().unwrap_or_else(|| "/home".into())),
+            ("top", PathBuf::from("/")),
+        ] {
+            manager.server_roots.insert(server.to_string(), root);
+            manager.register_file_watchers(server, watch_everything());
+        }
+        manager.mark_fallback_root("loose");
+
+        assert_eq!(manager.watched_file_roots(), vec![project]);
+    }
 
     fn registration(json: serde_json::Value) -> WatcherRegistration {
         parse_registration("r1", Some(&json)).expect("registration")

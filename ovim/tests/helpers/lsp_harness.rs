@@ -186,6 +186,21 @@ impl FakeLsp {
         self.wait_for_event(root, "textDocument/didOpen").await;
     }
 
+    /// A directory with a `main.fk` and no project marker anywhere above it:
+    /// a server started for it gets that directory as a fallback root. The
+    /// server logs into the directory like a project root's does.
+    pub fn loose_dir(&self) -> PathBuf {
+        let dir = self.dir.path().canonicalize().unwrap().join("loose");
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("main.fk"), "").unwrap();
+        std::fs::write(
+            dir.join("capabilities.json"),
+            default_capabilities().to_string(),
+        )
+        .unwrap();
+        dir
+    }
+
     /// Starts a companion server (`fakels:comp`) for `root`'s project. It
     /// logs into its own control directory, which is returned.
     pub async fn start_companion(&self, root: usize) -> PathBuf {

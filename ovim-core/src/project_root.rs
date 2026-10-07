@@ -85,6 +85,17 @@ pub fn find_project_root_with_outermost(
     markers: &[String],
     outermost_markers: &[String],
 ) -> PathBuf {
+    marker_root_with_outermost(file_path, markers, outermost_markers)
+        .unwrap_or_else(|| dir_of(file_path))
+}
+
+/// [`find_project_root_with_outermost`] without the directory fallback: `None`
+/// when no marker identifies a project around `file_path`.
+pub fn marker_root_with_outermost(
+    file_path: &Path,
+    markers: &[String],
+    outermost_markers: &[String],
+) -> Option<PathBuf> {
     if !outermost_markers.is_empty() {
         let plain: Vec<&String> = outermost_markers
             .iter()
@@ -96,15 +107,22 @@ pub fn find_project_root_with_outermost(
             .filter(|dir| plain.iter().any(|m| dir.join(m).exists()))
             .last();
         if let Some(dir) = outermost {
-            return dir.to_path_buf();
+            return Some(dir.to_path_buf());
         }
         if outermost_markers.iter().any(|m| m == "pom.xml") {
             if let Some(root) = maven_reactor_root(file_path) {
-                return root;
+                return Some(root);
             }
         }
     }
-    find_project_root(file_path, markers)
+    marker_root(file_path, markers)
+}
+
+/// Whether `path` is too broad to watch for changes: the filesystem root, the
+/// home directory, or a directory above it. A "project" rooted there is no
+/// project, and watching it would claim a watch for every directory below.
+pub fn is_too_broad_to_watch(path: &Path) -> bool {
+    path.parent().is_none() || dirs::home_dir().is_some_and(|home| home.starts_with(path))
 }
 
 /// The outermost Maven reactor aggregator above `file_path`: start at the
@@ -177,6 +195,31 @@ fn pom_modules(pom: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn home_and_everything_above_it_is_too_broad_to_watch() {
+        assert!(is_too_broad_to_watch(Path::new("/")));
+        if let Some(home) = dirs::home_dir() {
+            assert!(is_too_broad_to_watch(&home));
+            assert!(is_too_broad_to_watch(home.parent().unwrap_or(&home)));
+            assert!(!is_too_broad_to_watch(&home.join("projects/app")));
+        }
+        assert!(!is_too_broad_to_watch(&std::env::temp_dir().join("app")));
+    }
+
+    #[test]
+    fn marker_root_is_none_without_a_project_marker() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("a/b/c.rs");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        let markers = vec!["no-such-marker-file".to_string()];
+        assert_eq!(marker_root_with_outermost(&file, &markers, &[]), None);
+        std::fs::write(tmp.path().join("no-such-marker-file"), "").unwrap();
+        assert_eq!(
+            marker_root_with_outermost(&file, &markers, &[]),
+            Some(tmp.path().to_path_buf())
+        );
+    }
 
     #[test]
     fn outermost_root_marker_beats_nearest_submodule() {

@@ -219,6 +219,17 @@ impl LspConfig {
             &self.outermost_root_markers,
         )
     }
+
+    /// Whether `file_path` has no project around it, so [`Self::find_root`]
+    /// can only fall back to the file's own directory.
+    pub fn root_is_fallback(&self, file_path: &Path) -> bool {
+        crate::project_root::marker_root_with_outermost(
+            file_path,
+            &self.root_markers,
+            &self.outermost_root_markers,
+        )
+        .is_none()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

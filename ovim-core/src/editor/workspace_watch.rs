@@ -8,11 +8,12 @@
 //! project, and `target/` can hold hundreds of thousands of directories):
 //! - Directories are walked with a `.gitignore`-aware walker plus a hard skip
 //!   list, and watched NON-recursively; a directory created later is added as
-//!   it appears.
+//!   it appears. The number of watched directories is capped.
 //! - All walking and watch registration happens on a worker thread. The editor
 //!   tick only sends commands and drains channels; it never blocks on I/O.
 //! - Raw events are filtered by the servers' registered globs before they are
-//!   stored, and the pending set is capped.
+//!   stored. A burst larger than the pending cap is released early, never
+//!   dropped.
 
 use crate::lsp::{WatchedChange, WatchedFileEvent};
 use ignore::WalkBuilder;
@@ -28,25 +29,35 @@ use std::time::{Duration, Instant};
 const QUIET_PERIOD: Duration = Duration::from_millis(150);
 /// A batch is released after this long even if events keep arriving.
 const MAX_BATCH_AGE: Duration = Duration::from_secs(1);
-/// Most distinct paths held for one batch; beyond this the batch is dropped.
+/// Most distinct paths held before a batch is released without waiting for
+/// the burst to settle.
 const MAX_PENDING: usize = 10_000;
+/// Most directories watched at once. Each is an inotify watch, a limited
+/// per-user resource shared with every other program.
+const MAX_WATCHED_DIRS: usize = 20_000;
 
 /// Directory names that are never watched, wherever they appear.
 const SKIP_DIRS: &[&str] = &[
     ".git",
-    "target",
     "node_modules",
-    "build",
-    "out",
-    "dist",
     ".gradle",
     ".idea",
     "__pycache__",
     ".venv",
 ];
 
-fn is_skipped_name(name: &std::ffi::OsStr) -> bool {
-    SKIP_DIRS.iter().any(|skip| name == *skip)
+/// Build output directories, skipped directly under a watch root only: deeper
+/// down the same names are ordinary source directories (a `build` package),
+/// and generated ones are left out by `.gitignore`.
+const ROOT_SKIP_DIRS: &[&str] = &["target", "build", "out", "dist"];
+
+/// Whether `relative` (a path below a watch root) is in a skipped directory.
+fn is_skipped_relative(relative: &Path) -> bool {
+    relative.components().enumerate().any(|(depth, part)| {
+        let name = part.as_os_str();
+        SKIP_DIRS.iter().any(|skip| name == *skip)
+            || (depth == 0 && ROOT_SKIP_DIRS.iter().any(|skip| name == *skip))
+    })
 }
 
 #[derive(Default, Clone, Copy)]
@@ -70,6 +81,7 @@ fn worker(
     events: Sender<notify::Result<notify::Event>>,
     errors: Sender<String>,
     watched: WatchedSet,
+    max_dirs: usize,
 ) {
     let callback_events = events;
     let mut watcher: RecommendedWatcher = match notify::recommended_watcher(move |event| {
@@ -85,37 +97,56 @@ fn worker(
     };
     let mut roots: BTreeSet<PathBuf> = BTreeSet::new();
 
-    let watch_tree =
-        |watcher: &mut RecommendedWatcher, top: &Path, first_error: &mut Option<String>| {
-            let walker = WalkBuilder::new(top)
-                .hidden(false)
-                .require_git(false)
-                .follow_links(false)
-                .filter_entry(|entry| entry.depth() == 0 || !is_skipped_name(entry.file_name()))
-                .build();
-            for entry in walker.flatten() {
-                if !entry.file_type().is_some_and(|t| t.is_dir()) {
-                    continue;
-                }
-                let dir = entry.into_path();
-                if watched.lock().map(|w| w.contains(&dir)).unwrap_or(false) {
-                    continue;
-                }
-                match watcher.watch(&dir, RecursiveMode::NonRecursive) {
-                    Ok(()) => {
-                        if let Ok(mut w) = watched.lock() {
-                            w.insert(dir);
-                        }
+    // Watches `top` and the directories below it; `root` is the watch root
+    // `top` belongs to, which skip rules are relative to.
+    let watch_tree = |watcher: &mut RecommendedWatcher,
+                      root: &Path,
+                      top: &Path,
+                      first_error: &mut Option<String>| {
+        let root = root.to_path_buf();
+        let walker = WalkBuilder::new(top)
+            .hidden(false)
+            .require_git(false)
+            .follow_links(false)
+            .filter_entry(move |entry| {
+                entry
+                    .path()
+                    .strip_prefix(&root)
+                    .map_or(true, |relative| !is_skipped_relative(relative))
+            })
+            .build();
+        for entry in walker.flatten() {
+            if !entry.file_type().is_some_and(|t| t.is_dir()) {
+                continue;
+            }
+            let dir = entry.into_path();
+            let count = match watched.lock() {
+                Ok(watched) if watched.contains(&dir) => continue,
+                Ok(watched) => watched.len(),
+                Err(_) => continue,
+            };
+            if count >= max_dirs {
+                first_error.get_or_insert(format!(
+                    "watching only {max_dirs} directories for the language server; \
+                     changes elsewhere in the project will be missed"
+                ));
+                break;
+            }
+            match watcher.watch(&dir, RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    if let Ok(mut w) = watched.lock() {
+                        w.insert(dir);
                     }
-                    Err(error) => {
-                        first_error.get_or_insert(format!(
-                            "cannot watch {} for the language server: {error}",
-                            dir.display()
-                        ));
-                    }
+                }
+                Err(error) => {
+                    first_error.get_or_insert(format!(
+                        "cannot watch {} for the language server: {error}",
+                        dir.display()
+                    ));
                 }
             }
-        };
+        }
+    };
 
     while let Ok(command) = commands.recv() {
         let mut error = None;
@@ -133,11 +164,15 @@ fn worker(
                     }
                 }
                 for added in wanted.difference(&roots) {
-                    watch_tree(&mut watcher, added, &mut error);
+                    watch_tree(&mut watcher, added, added, &mut error);
                 }
                 roots = wanted;
             }
-            Command::AddDir(dir) => watch_tree(&mut watcher, &dir, &mut error),
+            Command::AddDir(dir) => {
+                if let Some(root) = roots.iter().find(|root| dir.starts_with(root)) {
+                    watch_tree(&mut watcher, root, &dir, &mut error);
+                }
+            }
         }
         if let Some(message) = error {
             let _ = errors.send(message);
@@ -145,7 +180,6 @@ fn worker(
     }
 }
 
-#[derive(Default)]
 pub struct WorkspaceWatcher {
     commands: Option<Sender<Command>>,
     events: Option<Receiver<notify::Result<notify::Event>>>,
@@ -155,11 +189,40 @@ pub struct WorkspaceWatcher {
     pending: HashMap<PathBuf, Seen>,
     first_event: Option<Instant>,
     last_event: Option<Instant>,
+    /// More paths are pending than one batch should hold: release it now.
+    release_now: bool,
+    max_dirs: usize,
+    max_pending: usize,
     /// Last watcher setup error, surfaced once to the user.
     pub last_error: Option<String>,
 }
 
+impl Default for WorkspaceWatcher {
+    fn default() -> Self {
+        Self::with_limits(MAX_WATCHED_DIRS, MAX_PENDING)
+    }
+}
+
 impl WorkspaceWatcher {
+    /// A watcher that watches at most `max_dirs` directories and releases a
+    /// batch early once `max_pending` distinct paths are waiting.
+    pub fn with_limits(max_dirs: usize, max_pending: usize) -> Self {
+        Self {
+            commands: None,
+            events: None,
+            errors: None,
+            watched: WatchedSet::default(),
+            roots: BTreeSet::new(),
+            pending: HashMap::new(),
+            first_event: None,
+            last_event: None,
+            release_now: false,
+            max_dirs,
+            max_pending,
+            last_error: None,
+        }
+    }
+
     pub fn roots(&self) -> &BTreeSet<PathBuf> {
         &self.roots
     }
@@ -172,13 +235,19 @@ impl WorkspaceWatcher {
     /// Asks the worker to make the watched roots equal `wanted`. Returns
     /// immediately; setup errors arrive later through [`Self::poll`].
     pub fn sync_roots(&mut self, wanted: &[PathBuf]) {
-        let wanted: BTreeSet<PathBuf> = wanted.iter().cloned().collect();
+        // The home directory and above are never a project; watching them
+        // would claim a watch for every directory in the user's account.
+        let wanted: BTreeSet<PathBuf> = wanted
+            .iter()
+            .filter(|root| !crate::project_root::is_too_broad_to_watch(root))
+            .cloned()
+            .collect();
         if wanted == self.roots {
             return;
         }
         if wanted.is_empty() {
             // Dropping the command channel stops the worker and its watcher.
-            *self = Self::default();
+            *self = Self::with_limits(self.max_dirs, self.max_pending);
             return;
         }
         if self.commands.is_none() {
@@ -186,9 +255,10 @@ impl WorkspaceWatcher {
             let (ev_tx, ev_rx) = channel();
             let (err_tx, err_rx) = channel();
             let watched = self.watched.clone();
+            let max_dirs = self.max_dirs;
             std::thread::Builder::new()
                 .name("ovim-workspace-watch".into())
-                .spawn(move || worker(cmd_rx, ev_tx, err_tx, watched))
+                .spawn(move || worker(cmd_rx, ev_tx, err_tx, watched, max_dirs))
                 .ok();
             self.commands = Some(cmd_tx);
             self.events = Some(ev_rx);
@@ -206,9 +276,7 @@ impl WorkspaceWatcher {
             .iter()
             .find_map(|root| path.strip_prefix(root).ok())
             .unwrap_or(path);
-        relative
-            .components()
-            .any(|part| is_skipped_name(part.as_os_str()))
+        is_skipped_relative(relative)
     }
 
     fn record(&mut self, event: notify::Event, now: Instant, wanted: &dyn Fn(&Path) -> bool) {
@@ -232,16 +300,10 @@ impl WorkspaceWatcher {
             if this.is_ignored(path) || !wanted(path) {
                 return;
             }
-            if this.pending.len() >= MAX_PENDING && !this.pending.contains_key(path) {
-                crate::lsp_warn!(
-                    "Watcher",
-                    "More than {} changed files in one burst; dropping the batch",
-                    MAX_PENDING
-                );
-                this.pending.clear();
-                this.first_event = None;
-                this.last_event = None;
-                return;
+            if this.pending.len() >= this.max_pending {
+                // A burst this large (a checkout, a generator) is released
+                // now instead of growing without bound; nothing is dropped.
+                this.release_now = true;
             }
             let seen = this.pending.entry(path.clone()).or_default();
             seen.created |= created;
@@ -296,11 +358,15 @@ impl WorkspaceWatcher {
             self.record(event, now, wanted);
         }
         let (first, last) = (self.first_event?, self.last_event?);
-        if now.duration_since(last) < QUIET_PERIOD && now.duration_since(first) < MAX_BATCH_AGE {
+        if !self.release_now
+            && now.duration_since(last) < QUIET_PERIOD
+            && now.duration_since(first) < MAX_BATCH_AGE
+        {
             return None;
         }
         self.first_event = None;
         self.last_event = None;
+        self.release_now = false;
         let mut events: Vec<WatchedFileEvent> = std::mem::take(&mut self.pending)
             .into_iter()
             .filter_map(|(path, seen)| {
@@ -406,6 +472,94 @@ mod tests {
                 .any(|e| e.path == root.join("src/newdir/b.rs")),
             "{events:?}"
         );
+    }
+
+    #[test]
+    fn build_named_source_directories_below_the_root_are_watched() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        std::fs::create_dir_all(root.join("src/build/inner")).unwrap();
+        std::fs::create_dir_all(root.join("lib/out")).unwrap();
+        std::fs::create_dir_all(root.join("build/generated")).unwrap();
+        std::fs::create_dir_all(root.join("dist")).unwrap();
+
+        let mut watcher = WorkspaceWatcher::default();
+        watcher.sync_roots(std::slice::from_ref(&root));
+        wait_until(|| {
+            watcher
+                .watched_dirs()
+                .contains(&root.join("src/build/inner"))
+        });
+        let watched = watcher.watched_dirs();
+        assert!(watched.contains(&root.join("lib/out")), "{watched:?}");
+        assert!(
+            watched
+                .iter()
+                .all(|d| !d.starts_with(root.join("build")) && !d.starts_with(root.join("dist"))),
+            "build output at the root must stay unwatched: {watched:?}"
+        );
+
+        // A source file below `src/build` is reported; one in the root-level
+        // `build` is not.
+        std::fs::write(root.join("src/build/B.java"), "class B {}").unwrap();
+        std::fs::write(root.join("build/generated/G.java"), "class G {}").unwrap();
+        let events = drain(&mut watcher, Duration::from_millis(800));
+        assert!(events.iter().any(|e| e.path.ends_with("src/build/B.java")));
+        assert!(events
+            .iter()
+            .all(|e| !e.path.starts_with(root.join("build"))));
+    }
+
+    #[test]
+    fn watching_stops_at_the_directory_cap_and_reports_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        for n in 0..40 {
+            std::fs::create_dir_all(root.join(format!("d{n}"))).unwrap();
+        }
+
+        let mut watcher = WorkspaceWatcher::with_limits(5, MAX_PENDING);
+        watcher.sync_roots(std::slice::from_ref(&root));
+        wait_until(|| {
+            watcher.poll(Instant::now(), &|_| true);
+            watcher.last_error.is_some()
+        });
+        assert_eq!(watcher.watched_dirs().len(), 5);
+        assert!(watcher
+            .take_error()
+            .is_some_and(|message| message.contains("only 5 directories")),);
+    }
+
+    #[test]
+    fn a_burst_over_the_pending_cap_is_released_in_pieces_not_dropped() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().canonicalize().unwrap();
+        let mut watcher = WorkspaceWatcher::with_limits(MAX_WATCHED_DIRS, 5);
+        watcher.sync_roots(std::slice::from_ref(&root));
+        wait_until(|| watcher.watched_dirs().contains(&root));
+
+        for n in 0..30 {
+            std::fs::write(root.join(format!("f{n}.rs")), "").unwrap();
+        }
+        let events = drain(&mut watcher, Duration::from_millis(1500));
+        let reported: HashSet<PathBuf> = events.into_iter().map(|e| e.path).collect();
+        for n in 0..30 {
+            assert!(
+                reported.contains(&root.join(format!("f{n}.rs"))),
+                "f{n}.rs was lost from a large burst"
+            );
+        }
+    }
+
+    #[test]
+    fn the_filesystem_root_and_home_are_never_watched() {
+        let mut roots = vec![PathBuf::from("/")];
+        roots.extend(dirs::home_dir());
+        let mut watcher = WorkspaceWatcher::default();
+        watcher.sync_roots(&roots);
+        std::thread::sleep(Duration::from_millis(300));
+        assert!(watcher.roots().is_empty());
+        assert!(watcher.watched_dirs().is_empty());
     }
 
     #[test]
