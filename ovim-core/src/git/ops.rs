@@ -207,26 +207,30 @@ pub fn unstage_file(path: &Path) -> Result<()> {
         Err(error) if error.code() == ErrorCode::UnbornBranch => None,
         Err(error) => return Err(error.into()),
     };
+    let source = tree.as_ref().and_then(|tree| tree.get_path(&relative).ok());
+    if source
+        .as_ref()
+        .is_some_and(|entry| entry.kind() == Some(git2::ObjectType::Tree))
+    {
+        bail!("{} is a directory, not a file", relative.display());
+    }
     let mut index = repo.index()?;
     // reset_default accepts glob pathspecs. Restore exactly this tree entry,
     // including its mode, so names like route/[id].tsx cannot reset siblings.
-    match tree.as_ref().and_then(|tree| tree.get_path(&relative).ok()) {
-        Some(source) => {
-            let mut entry = empty_index_entry(&relative);
-            entry.id = source.id();
-            entry.mode = source.filemode() as u32;
-            if source.kind() == Some(git2::ObjectType::Blob) {
-                entry.file_size = repo.find_blob(source.id())?.size() as u32;
-            }
-            index.add(&entry)?;
+    // Removing by path first also drops conflict stages, as reset does.
+    if let Err(error) = index.remove_path(&relative) {
+        if error.code() != ErrorCode::NotFound {
+            return Err(error.into());
         }
-        None => {
-            if let Err(error) = index.remove_path(&relative) {
-                if error.code() != ErrorCode::NotFound {
-                    return Err(error.into());
-                }
-            }
+    }
+    if let Some(source) = source {
+        let mut entry = empty_index_entry(&relative);
+        entry.id = source.id();
+        entry.mode = source.filemode() as u32;
+        if source.kind() == Some(git2::ObjectType::Blob) {
+            entry.file_size = repo.find_blob(source.id())?.size() as u32;
         }
+        index.add(&entry)?;
     }
     index.write()?;
     Ok(())
@@ -913,6 +917,39 @@ mod tests {
             "two\n",
             "worktree untouched"
         );
+    }
+
+    #[test]
+    fn unstage_refuses_a_directory_and_leaves_the_index_intact() {
+        let repo = Repo::new();
+        let a = repo.write("dir/a.txt", "one\n");
+        repo.commit_all("init");
+        fs::write(&a, "two\n").unwrap();
+        stage_file(&a).unwrap();
+        assert!(unstage_file(&repo.root.join("dir")).is_err());
+        assert_eq!(repo.index_text("dir/a.txt"), "two\n");
+    }
+
+    #[test]
+    fn unstage_clears_conflict_stages_like_git_restore_staged() {
+        let repo = Repo::new();
+        let a = repo.write("a.txt", "base\n");
+        repo.commit_all("init");
+        let git = &repo.repo;
+        let mut index = git.index().unwrap();
+        let mut entry = index.get_path(Path::new("a.txt"), 0).unwrap();
+        index.remove_path(Path::new("a.txt")).unwrap();
+        for (stage, text) in [(1u16, "base\n"), (2, "ours\n"), (3, "theirs\n")] {
+            entry.id = git.blob(text.as_bytes()).unwrap();
+            entry.flags = (entry.flags & !0x3000) | (stage << 12);
+            index.add(&entry).unwrap();
+        }
+        index.write().unwrap();
+        assert!(index.has_conflicts());
+        unstage_file(&a).unwrap();
+        index.read(true).unwrap();
+        assert!(!index.has_conflicts());
+        assert_eq!(repo.index_text("a.txt"), "base\n");
     }
 
     #[test]
