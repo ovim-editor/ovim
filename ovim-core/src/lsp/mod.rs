@@ -88,6 +88,24 @@ const MAX_DOCUMENT_SIZE: usize = 10 * 1024 * 1024;
 /// compute diagnostics for the latest content.
 const UNVERSIONED_DIAGNOSTICS_SETTLE_MS: u64 = 150;
 
+/// A server-initiated `workspace/applyEdit` waiting for the editor. The
+/// server's request is answered only once the editor has decided the outcome.
+pub struct PendingWorkspaceEdit {
+    edit: lsp_types::WorkspaceEdit,
+    reply: tokio::sync::oneshot::Sender<lsp_types::ApplyWorkspaceEditResponse>,
+}
+
+impl PendingWorkspaceEdit {
+    /// Applies the edit with `apply` and sends its outcome back to the server.
+    pub fn resolve(
+        self,
+        apply: impl FnOnce(lsp_types::WorkspaceEdit) -> lsp_types::ApplyWorkspaceEditResponse,
+    ) {
+        let response = apply(self.edit);
+        let _ = self.reply.send(response);
+    }
+}
+
 /// Debounce duration for textDocument/didChange notifications (milliseconds)
 /// Coalesces rapid changes to reduce LSP traffic by ~1000x
 /// Reduced to 150ms for faster diagnostics feedback (was 300ms)
@@ -251,8 +269,8 @@ pub struct LspManager {
 
     /// Channel for workspace edits that need to be applied by the Editor
     /// These come from server-initiated workspace/applyEdit requests
-    workspace_edit_tx: mpsc::Sender<lsp_types::WorkspaceEdit>,
-    workspace_edit_rx: Mutex<mpsc::Receiver<lsp_types::WorkspaceEdit>>,
+    workspace_edit_tx: mpsc::Sender<PendingWorkspaceEdit>,
+    workspace_edit_rx: Mutex<mpsc::Receiver<PendingWorkspaceEdit>>,
 
     /// BUG FIX: Counter for dropped notifications when channel is full
     /// Prevents blocking when notification receiver is slow

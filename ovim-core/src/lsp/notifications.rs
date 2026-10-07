@@ -897,6 +897,60 @@ impl LspManager {
         Ok(())
     }
 
+    /// Hands a server-initiated workspace edit to the editor and waits for
+    /// its real outcome: whether it was applied, and why not.
+    async fn queue_workspace_edit(
+        &self,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> std::result::Result<lsp_types::ApplyWorkspaceEditResponse, protocol::ResponseError> {
+        lsp_info!(
+            "LSP-WORKSPACE",
+            "Queuing workspace edit with {} document changes",
+            edit.document_changes
+                .as_ref()
+                .map(|changes| match changes {
+                    lsp_types::DocumentChanges::Edits(edits) => edits.len(),
+                    lsp_types::DocumentChanges::Operations(ops) => ops.len(),
+                })
+                .unwrap_or_else(|| edit.changes.as_ref().map(|c| c.len()).unwrap_or(0))
+        );
+
+        let internal_error = |message: String| protocol::ResponseError {
+            code: -32603,
+            message,
+            data: None,
+        };
+        let (reply, outcome) = tokio::sync::oneshot::channel();
+        self.workspace_edit_tx
+            .send(super::PendingWorkspaceEdit { edit, reply })
+            .await
+            .map_err(|e| {
+                lsp_error!(
+                    "LSP-SERVER-REQUEST",
+                    "Failed to queue workspace edit: {}",
+                    e
+                );
+                internal_error(format!("Failed to queue edit: {}", e))
+            })?;
+        outcome
+            .await
+            .map_err(|_| internal_error("The editor dropped the edit".to_string()))
+    }
+
+    async fn reply_to_server(&self, server_id: &str, message: JsonRpcMessage) {
+        let Some(server) = self.server_handle(server_id) else {
+            return;
+        };
+        if let Err(e) = server.send_response(message).await {
+            lsp_error!(
+                "LSP-SERVER-REQUEST",
+                "Failed to send response to {}: {}",
+                server_id,
+                e
+            );
+        }
+    }
+
     /// Handles incoming requests from language servers that expect a response
     async fn handle_server_request(&self, server_id: &str, request: JsonRpcMessage) {
         let method = request.method.as_deref().unwrap_or("");
@@ -911,142 +965,39 @@ impl LspManager {
 
         match method {
             "workspace/applyEdit" => {
-                // Parse the ApplyWorkspaceEditParams
-                if let Some(params) = request.params {
+                let Some(params) = request.params else {
+                    return;
+                };
+                let reply =
                     match serde_json::from_value::<lsp_types::ApplyWorkspaceEditParams>(params) {
-                        Ok(apply_params) => {
-                            // Queue the workspace edit for the Editor to apply
-                            // The Editor has access to buffers, we just queue the edits here
-                            let edit = apply_params.edit;
-
-                            lsp_info!(
-                                "LSP-WORKSPACE",
-                                "Queuing workspace edit with {} document changes",
-                                edit.document_changes
-                                    .as_ref()
-                                    .map(|changes| match changes {
-                                        lsp_types::DocumentChanges::Edits(edits) => edits.len(),
-                                        lsp_types::DocumentChanges::Operations(ops) => ops.len(),
-                                    })
-                                    .unwrap_or_else(|| edit
-                                        .changes
-                                        .as_ref()
-                                        .map(|c| c.len())
-                                        .unwrap_or(0))
-                            );
-
-                            // Send to channel for Editor to process
-                            match self.workspace_edit_tx.send(edit).await {
-                                Ok(_) => {
-                                    // Send success response to LSP server
-                                    let response = lsp_types::ApplyWorkspaceEditResponse {
-                                        applied: true,
-                                        failure_reason: None,
-                                        failed_change: None,
-                                    };
-
-                                    if let Some(id) = request_id {
-                                        if let Some(server) = self
-                                            .servers
-                                            .get(server_id)
-                                            .map(|entry| entry.value().clone())
-                                        {
-                                            match serde_json::to_value(response) {
-                                                Ok(value) => {
-                                                    let response_msg =
-                                                        JsonRpcMessage::response(id, value);
-                                                    if let Err(e) =
-                                                        server.send_response(response_msg).await
-                                                    {
-                                                        lsp_error!(
-                                                            "LSP-SERVER-REQUEST",
-                                                            "Failed to send workspace/applyEdit response: {}",
-                                                            e
-                                                        );
-                                                    }
-                                                }
-                                                Err(e) => {
-                                                    lsp_error!(
-                                                        "LSP-SERVER-REQUEST",
-                                                        "Failed to serialize workspace/applyEdit response: {}",
-                                                        e
-                                                    );
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    // Channel send failed
-                                    lsp_error!(
-                                        "LSP-SERVER-REQUEST",
-                                        "Failed to queue workspace edit: {}",
-                                        e
-                                    );
-
-                                    if let Some(id) = request_id {
-                                        if let Some(server) = self
-                                            .servers
-                                            .get(server_id)
-                                            .map(|entry| entry.value().clone())
-                                        {
-                                            let error_response = protocol::ResponseError {
-                                                code: -32603, // Internal error
-                                                message: format!("Failed to queue edit: {}", e),
-                                                data: None,
-                                            };
-
-                                            let response_msg =
-                                                JsonRpcMessage::error_response(id, error_response);
-
-                                            if let Err(e) = server.send_response(response_msg).await
-                                            {
-                                                lsp_error!(
-                                                    "LSP-SERVER-REQUEST",
-                                                    "Failed to send error response: {}",
-                                                    e
-                                                );
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        Ok(apply_params) => self.queue_workspace_edit(apply_params.edit).await,
                         Err(e) => {
                             lsp_error!(
                                 "LSP-SERVER-REQUEST",
                                 "Failed to parse workspace/applyEdit params: {}",
                                 e
                             );
-
-                            // Send error response for parse failure
-                            if let Some(id) = request_id {
-                                if let Some(server) = self
-                                    .servers
-                                    .get(server_id)
-                                    .map(|entry| entry.value().clone())
-                                {
-                                    let error_response = protocol::ResponseError {
-                                        code: -32700, // Parse error
-                                        message: format!("Failed to parse parameters: {}", e),
-                                        data: None,
-                                    };
-
-                                    let response_msg =
-                                        JsonRpcMessage::error_response(id, error_response);
-
-                                    if let Err(e) = server.send_response(response_msg).await {
-                                        lsp_error!(
-                                            "LSP-SERVER-REQUEST",
-                                            "Failed to send error response: {}",
-                                            e
-                                        );
-                                    }
-                                }
-                            }
+                            Err(protocol::ResponseError {
+                                code: -32700, // Parse error
+                                message: format!("Failed to parse parameters: {}", e),
+                                data: None,
+                            })
                         }
-                    }
-                }
+                    };
+                let Some(id) = request_id else {
+                    return;
+                };
+                let message = match reply.and_then(|response| {
+                    serde_json::to_value(response).map_err(|e| protocol::ResponseError {
+                        code: -32603, // Internal error
+                        message: format!("Failed to serialize response: {}", e),
+                        data: None,
+                    })
+                }) {
+                    Ok(value) => JsonRpcMessage::response(id, value),
+                    Err(error) => JsonRpcMessage::error_response(id, error),
+                };
+                self.reply_to_server(server_id, message).await;
             }
             "client/registerCapability" => {
                 // Server wants to dynamically register capabilities
@@ -1587,7 +1538,7 @@ impl LspManager {
     /// Polls for pending workspace edits that need to be applied by the Editor
     /// Returns a Vec of workspace edits that should be applied (in order)
     /// This is called from the main event loop which has access to the Editor
-    pub async fn poll_pending_workspace_edits(&self) -> Vec<lsp_types::WorkspaceEdit> {
+    pub async fn poll_pending_workspace_edits(&self) -> Vec<super::PendingWorkspaceEdit> {
         let mut rx = self.workspace_edit_rx.lock().await;
         let mut edits = Vec::new();
 
@@ -1727,10 +1678,14 @@ mod tests {
         let manager = Arc::new(LspManager::new());
 
         for _ in 0..100 {
+            let (reply, _outcome) = tokio::sync::oneshot::channel();
             manager
                 .workspace_edit_tx
-                .try_send(lsp_types::WorkspaceEdit::default())
-                .expect("fill workspace edit queue");
+                .try_send(crate::lsp::PendingWorkspaceEdit {
+                    edit: lsp_types::WorkspaceEdit::default(),
+                    reply,
+                })
+                .unwrap_or_else(|_| panic!("fill workspace edit queue"));
         }
 
         let request = JsonRpcMessage::request(

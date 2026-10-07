@@ -340,21 +340,20 @@ async fn process_lsp_notifications(editor: &mut Editor) {
         }
 
         let pending_edits = lsp_manager.poll_pending_workspace_edits().await;
-        for workspace_edit in pending_edits {
+        for pending in pending_edits {
             crate::log_debug!("tick", "Applying workspace edit from LSP server");
-            match editor.apply_workspace_edit(workspace_edit) {
-                Ok(applied) => {
-                    if applied {
-                        editor.set_lsp_status("Applied workspace edit".to_string());
-                    } else {
-                        editor.set_lsp_status("Partially applied workspace edit".to_string());
+            // The server hears the real outcome, not that the edit was queued.
+            pending.resolve(|workspace_edit| {
+                let response = editor.apply_workspace_edit_reporting(workspace_edit);
+                match &response.failure_reason {
+                    None => editor.set_lsp_status("Applied workspace edit".to_string()),
+                    Some(reason) => {
+                        crate::log_error!("tick", "Failed to apply workspace edit: {}", reason);
+                        editor.set_lsp_status(format!("Failed to apply edit: {reason}"));
                     }
                 }
-                Err(e) => {
-                    crate::log_error!("tick", "Failed to apply workspace edit: {}", e);
-                    editor.set_lsp_status(format!("Failed to apply edit: {}", e));
-                }
-            }
+                response
+            });
             editor.mark_dirty();
         }
     }

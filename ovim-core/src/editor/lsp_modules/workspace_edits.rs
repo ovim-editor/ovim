@@ -49,116 +49,182 @@ impl Editor {
 
     /// Apply a workspace edit (used for rename, organize imports, etc.)
     pub fn apply_workspace_edit(&mut self, edit: lsp_types::WorkspaceEdit) -> Result<bool> {
-        let mut all_applied = true;
+        Ok(self.apply_workspace_edit_reporting(edit).applied)
+    }
+
+    /// Applies a workspace edit and reports the outcome the way a server's
+    /// `workspace/applyEdit` request expects it.
+    ///
+    /// Every precondition that can be known up front (the versions of the
+    /// documents the edit was computed for) is checked before anything is
+    /// touched, so a stale edit is refused whole instead of leaving the
+    /// project half edited.
+    pub fn apply_workspace_edit_reporting(
+        &mut self,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> lsp_types::ApplyWorkspaceEditResponse {
+        if let Some((index, file)) = self.stale_workspace_edit_document(&edit) {
+            let reason = format!("edit for {file} discarded: document changed");
+            self.set_lsp_status(reason.clone());
+            return lsp_types::ApplyWorkspaceEditResponse {
+                applied: false,
+                failure_reason: Some(reason),
+                failed_change: Some(index),
+            };
+        }
+
+        let mut failure: Option<(u32, String)> = None;
         let mut modified_files = Vec::new();
-        let mut discarded_files = Vec::new();
 
         // LSP spec: when `document_changes` is present, `changes` is ignored.
         // `document_changes` is the newer, more powerful format that supports
         // versioned edits and resource operations.
         if let Some(document_changes) = edit.document_changes {
-            match document_changes {
-                lsp_types::DocumentChanges::Edits(edits) => {
-                    for text_doc_edit in edits {
-                        if !self.apply_text_document_edit(
-                            &text_doc_edit,
-                            &mut modified_files,
-                            &mut discarded_files,
-                        ) {
-                            all_applied = false;
-                        }
+            let operations = match document_changes {
+                lsp_types::DocumentChanges::Edits(edits) => edits
+                    .into_iter()
+                    .map(lsp_types::DocumentChangeOperation::Edit)
+                    .collect(),
+                lsp_types::DocumentChanges::Operations(ops) => ops,
+            };
+            for (index, op) in operations.into_iter().enumerate() {
+                let outcome = match op {
+                    lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => self
+                        .apply_text_document_edit(&text_doc_edit, &mut modified_files)
+                        .then_some(())
+                        .ok_or_else(|| {
+                            format!(
+                                "failed to edit {}",
+                                Self::uri_display_name(&text_doc_edit.text_document.uri)
+                            )
+                        }),
+                    lsp_types::DocumentChangeOperation::Op(resource_op) => {
+                        self.apply_resource_operation(resource_op)
                     }
-                }
-                lsp_types::DocumentChanges::Operations(ops) => {
-                    for op in ops {
-                        match op {
-                            lsp_types::DocumentChangeOperation::Edit(text_doc_edit) => {
-                                if !self.apply_text_document_edit(
-                                    &text_doc_edit,
-                                    &mut modified_files,
-                                    &mut discarded_files,
-                                ) {
-                                    all_applied = false;
-                                }
-                            }
-                            lsp_types::DocumentChangeOperation::Op(resource_op) => {
-                                let cursor_before = self.cursor_position();
-                                // Resolve open buffers BEFORE touching the disk:
-                                // lookup canonicalizes paths, which fails once
-                                // the file has moved or vanished.
-                                let affected = self.buffer_affected_by_resource_op(&resource_op);
-                                let (applied, undo_change) =
-                                    Self::apply_resource_op(&resource_op, cursor_before);
-                                if !applied {
-                                    all_applied = false;
-                                } else {
-                                    if let Some(change) = undo_change {
-                                        self.push_resource_undo_change(change);
-                                    }
-                                    self.retarget_buffer_after_resource_op(&resource_op, affected);
-                                }
-                            }
-                        }
-                    }
+                };
+                if let Err(reason) = outcome {
+                    failure.get_or_insert((index as u32, reason));
                 }
             }
         } else if let Some(changes) = edit.changes {
             // Fallback: deprecated `changes` field (still widely used by older servers)
-            for (uri, text_edits) in changes {
-                if !self.apply_uri_edits(
-                    &uri,
-                    None,
-                    text_edits,
-                    &mut modified_files,
-                    &mut discarded_files,
-                ) {
-                    all_applied = false;
+            for (index, (uri, text_edits)) in changes.into_iter().enumerate() {
+                if !self.apply_uri_edits(&uri, text_edits, &mut modified_files) {
+                    let reason = format!("failed to edit {}", Self::uri_display_name(&uri));
+                    failure.get_or_insert((index as u32, reason));
                 }
             }
         }
 
-        let mut status_parts = Vec::new();
         if !modified_files.is_empty() {
-            status_parts.push(if modified_files.len() == 1 {
+            self.set_lsp_status(if modified_files.len() == 1 {
                 format!("Modified {}", modified_files[0])
             } else {
                 format!("Modified {} files", modified_files.len())
             });
         }
-        for file in &discarded_files {
-            status_parts.push(format!("edit for {} discarded: document changed", file));
-        }
-        if !status_parts.is_empty() {
-            self.set_lsp_status(status_parts.join("; "));
-        }
 
-        Ok(all_applied)
+        match failure {
+            None => lsp_types::ApplyWorkspaceEditResponse {
+                applied: true,
+                failure_reason: None,
+                failed_change: None,
+            },
+            Some((index, reason)) => lsp_types::ApplyWorkspaceEditResponse {
+                applied: false,
+                failure_reason: Some(reason),
+                failed_change: Some(index),
+            },
+        }
     }
 
-    /// Apply one document's edits from `DocumentChanges`, honoring the
-    /// `OptionalVersionedTextDocumentIdentifier` version (OV-00330).
+    /// Applies one resource operation with its undo entry and buffer fixups.
+    fn apply_resource_operation(
+        &mut self,
+        resource_op: lsp_types::ResourceOp,
+    ) -> Result<(), String> {
+        let cursor_before = self.cursor_position();
+        // Resolve open buffers BEFORE touching the disk: lookup canonicalizes
+        // paths, which fails once the file has moved or vanished.
+        let affected = self.buffer_affected_by_resource_op(&resource_op);
+        let (applied, undo_change) = Self::apply_resource_op(&resource_op, cursor_before);
+        if !applied {
+            return Err(format!(
+                "failed to {}",
+                Self::describe_resource_op(&resource_op)
+            ));
+        }
+        if let Some(change) = undo_change {
+            self.push_resource_undo_change(change);
+        }
+        self.retarget_buffer_after_resource_op(&resource_op, affected);
+        Ok(())
+    }
+
+    fn describe_resource_op(resource_op: &lsp_types::ResourceOp) -> String {
+        match resource_op {
+            lsp_types::ResourceOp::Create(create) => {
+                format!("create {}", Self::uri_display_name(&create.uri))
+            }
+            lsp_types::ResourceOp::Rename(rename) => format!(
+                "rename {} to {}",
+                Self::uri_display_name(&rename.old_uri),
+                Self::uri_display_name(&rename.new_uri)
+            ),
+            lsp_types::ResourceOp::Delete(delete) => {
+                format!("delete {}", Self::uri_display_name(&delete.uri))
+            }
+        }
+    }
+
+    fn uri_display_name(uri: &lsp_types::Uri) -> String {
+        uri_to_file_path(uri)
+            .as_deref()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("document")
+            .to_string()
+    }
+
+    /// The first document edit (its index in the edit's changes, and the
+    /// file's name) addressed to a version of its document that is no longer
+    /// current (OV-00330).
+    fn stale_workspace_edit_document(
+        &self,
+        edit: &lsp_types::WorkspaceEdit,
+    ) -> Option<(u32, String)> {
+        let text_document_edits: Vec<(usize, &lsp_types::TextDocumentEdit)> =
+            match edit.document_changes.as_ref()? {
+                lsp_types::DocumentChanges::Edits(edits) => edits.iter().enumerate().collect(),
+                lsp_types::DocumentChanges::Operations(ops) => ops
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, op)| match op {
+                        lsp_types::DocumentChangeOperation::Edit(edit) => Some((index, edit)),
+                        lsp_types::DocumentChangeOperation::Op(_) => None,
+                    })
+                    .collect(),
+            };
+        text_document_edits.into_iter().find_map(|(index, edit)| {
+            let document = &edit.text_document;
+            let version = document.version?;
+            (!self.workspace_edit_version_current(&document.uri, version))
+                .then(|| (index as u32, Self::uri_display_name(&document.uri)))
+        })
+    }
+
+    /// Apply one document's edits from `DocumentChanges`. Its version was
+    /// already checked by [`Self::stale_workspace_edit_document`].
     fn apply_text_document_edit(
         &mut self,
         text_doc_edit: &lsp_types::TextDocumentEdit,
         modified_files: &mut Vec<String>,
-        discarded_files: &mut Vec<String>,
     ) -> bool {
         let text_edits = extract_text_edits(&text_doc_edit.edits);
-        self.apply_uri_edits(
-            &text_doc_edit.text_document.uri,
-            text_doc_edit.text_document.version,
-            text_edits,
-            modified_files,
-            discarded_files,
-        )
+        self.apply_uri_edits(&text_doc_edit.text_document.uri, text_edits, modified_files)
     }
 
     /// Apply a batch of text edits to the document identified by `uri`.
-    ///
-    /// `version` is the server's `OptionalVersionedTextDocumentIdentifier`
-    /// version — the LSP staleness mechanism. When it no longer matches our
-    /// view of the document, the document's edits are skipped and tracked in
-    /// `discarded_files` (OV-00330, version-guard leg).
     ///
     /// Buffers that were loaded purely to receive this edit (hidden, clean
     /// before the edit) are written straight to disk afterwards so a
@@ -166,24 +232,9 @@ impl Editor {
     fn apply_uri_edits(
         &mut self,
         uri: &lsp_types::Uri,
-        version: Option<i32>,
         text_edits: Vec<lsp_types::TextEdit>,
         modified_files: &mut Vec<String>,
-        discarded_files: &mut Vec<String>,
     ) -> bool {
-        if let Some(version) = version {
-            if !self.workspace_edit_version_current(uri, version) {
-                let file_name = uri_to_file_path(uri)
-                    .as_deref()
-                    .and_then(|p| p.file_name())
-                    .and_then(|n| n.to_str())
-                    .unwrap_or("document")
-                    .to_string();
-                discarded_files.push(file_name);
-                return false;
-            }
-        }
-
         // Some servers (Hyperion's "Move to package") edit a file that does
         // not exist yet without sending a CreateFile first. Treat that as an
         // implicit create, as other clients do, instead of dropping the edit.

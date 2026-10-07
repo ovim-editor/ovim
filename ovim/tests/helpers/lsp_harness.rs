@@ -134,6 +134,15 @@ impl FakeLsp {
             .collect()
     }
 
+    /// The client's reply to the request with `id` the server of `root` sent.
+    pub fn reply_to(&self, root: usize, id: i64) -> Option<Value> {
+        std::fs::read_to_string(self.roots[root].join("events.jsonl"))
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+            .find(|event| event["id"] == id && event.get("method").is_none())
+    }
+
     /// Protocol violations the server noticed (`didChange` before `didOpen`...).
     pub fn violations(&self, root: usize) -> String {
         std::fs::read_to_string(self.roots[root].join("sync-errors.log")).unwrap_or_default()
