@@ -798,51 +798,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Paste in visual mode (replace selection)
-        KeyCode::Char('p') | KeyCode::Char('P') => {
-            let is_visual_line = editor.mode() == Mode::VisualLine;
-
-            // 1. Save paste text + type from register
-            let (paste_text, paste_type) = editor.get_from_register_with_type();
-
-            // 2. Delete the visual selection (saves to numbered registers + unnamed)
-            helpers::delete_visual_selection(editor)?;
-
-            // 3. Save deleted text from unnamed register
-            let (deleted_text, deleted_type) = editor.get_from_register_with_type();
-
-            // 4. Write paste text to unnamed register
-            editor.registers.set_with_type(None, paste_text, paste_type);
-
-            // 5. Branch on paste type
-            if is_visual_line || paste_type == RegisterType::Line {
-                // Linewise: use paste_before to insert at current line
-                helpers::paste_before(editor, 1)?;
-            } else {
-                // Character: paste at the position the selection started. After
-                // deleting the selection the cursor sits on the surviving char at
-                // that column. paste_after inserts *after* the cursor, so step
-                // back one column first — but at column 0 there's nothing to step
-                // back over, so paste_before (which inserts AT the cursor column)
-                // is required to avoid a one-char misplacement.
-                let cursor_col = editor.buffer().cursor().col().0;
-                if cursor_col > 0 {
-                    editor
-                        .buffer_mut()
-                        .cursor_mut()
-                        .set_col(GraphemeCol(cursor_col - 1));
-                    helpers::paste_after(editor, 1)?;
-                } else {
-                    helpers::paste_before(editor, 1)?;
-                }
-            }
-
-            // 6. Set unnamed register to deleted text (so next p pastes the replaced text)
-            editor
-                .registers
-                .set_with_type(None, deleted_text, deleted_type);
-
-            helpers::exit_visual_mode_to_normal(editor);
-        }
+        KeyCode::Char(c @ ('p' | 'P')) => visual_put(editor, c == 'P')?,
         // Uppercase in visual mode
         KeyCode::Char('U') => {
             helpers::uppercase_visual_selection(editor)?;
@@ -938,6 +894,107 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         _ => {}
     }
     Ok(())
+}
+
+/// Visual `p` / `P`: replace the selection with the register contents.
+///
+/// The contents are captured *before* the selection is deleted — the delete
+/// overwrites the unnamed register and, under `clipboard=unnamedplus`, the
+/// clipboard — and that capture is what gets put. Afterwards `p` leaves the
+/// replaced text in the unnamed register/clipboard (so a second `p` swaps back);
+/// `P` deletes into the black hole and leaves them alone (nvim).
+fn visual_put(editor: &mut Editor, keep_registers: bool) -> Result<()> {
+    let register = editor.pending_register();
+    let (text, reg_type) = editor.get_from_register_with_type();
+    let selection = editor.visual_selection();
+    let mode = editor.mode();
+    let Some(((start_line, _), (end_line, _))) = selection.filter(|_| !text.is_empty()) else {
+        // Nothing to put (vim: E353) — leave the selection's text alone.
+        helpers::exit_visual_mode_to_normal(editor);
+        return Ok(());
+    };
+    let reached_buffer_end = end_line + 1 >= editor.buffer().line_count();
+
+    // Delete and put undo together.
+    let undo_mark = editor.buffer().change_manager().undo_mark();
+    if keep_registers {
+        editor.set_pending_register('_');
+    }
+    helpers::delete_visual_selection(editor)?;
+    let replaced = (!keep_registers).then(|| {
+        let (text, reg_type) = editor.registers().get_default_with_type();
+        (text.to_string(), reg_type)
+    });
+
+    if mode == Mode::VisualLine {
+        // A characterwise/blockwise register put over whole lines becomes lines.
+        let text = if text.ends_with('\n') || reg_type != RegisterType::Character {
+            text
+        } else {
+            format!("{text}\n")
+        };
+        let emptied = editor.buffer().line_count() == 1
+            && editor.buffer().line_text(0).is_none_or(|l| l.is_empty());
+        if reached_buffer_end && start_line > 0 && !emptied {
+            // The deleted lines were last: the cursor sits on the line above.
+            helpers::paste_text_after(editor, text, RegisterType::Line, register, 1)?;
+        } else {
+            helpers::paste_text_before(editor, text, RegisterType::Line, register, 1)?;
+        }
+    } else if reg_type == RegisterType::Line && mode == Mode::Visual {
+        // Linewise text goes between the two halves of the split line.
+        split_line_at_cursor(editor);
+        helpers::paste_text_after(editor, text, reg_type, register, 1)?;
+    } else {
+        // Character: paste at the position the selection started. After
+        // deleting the selection the cursor sits on the surviving char at
+        // that column. paste_after inserts *after* the cursor, so step
+        // back one column first — but at column 0 there's nothing to step
+        // back over, so paste_before (which inserts AT the cursor column)
+        // is required to avoid a one-char misplacement.
+        let cursor_col = editor.buffer().cursor().col().0;
+        if cursor_col > 0 {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_col(GraphemeCol(cursor_col - 1));
+            helpers::paste_text_after(editor, text, reg_type, register, 1)?;
+        } else {
+            helpers::paste_text_before(editor, text, reg_type, register, 1)?;
+        }
+    }
+
+    editor
+        .buffer_mut()
+        .change_manager_mut()
+        .group_since(undo_mark);
+    if let Some((text, reg_type)) = replaced {
+        if !editor.options.clipboard.is_empty() {
+            editor.registers_mut().set_clipboard(text.clone());
+        }
+        editor.registers_mut().set_with_type(None, text, reg_type);
+    }
+    helpers::exit_visual_mode_to_normal(editor);
+    Ok(())
+}
+
+/// Breaks the cursor line in two at the cursor, leaving the cursor on the first
+/// half (the second half starts with the character that was under the cursor).
+fn split_line_at_cursor(editor: &mut Editor) {
+    let cursor_before = editor.cursor_position();
+    let line = cursor_before.line;
+    let col = editor.buffer().cursor_char_col();
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        buf.insert_text_at(line, col, "\n");
+    });
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(line, cursor_before.col);
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
 }
 
 /// Enter Insert mode for a visual-block `I` / `A` at `col` on the first

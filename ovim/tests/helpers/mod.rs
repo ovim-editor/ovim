@@ -83,6 +83,16 @@ impl EditorTest {
         Self { editor }
     }
 
+    /// Like `new`, but with the default `clipboard=unnamedplus` backed by an
+    /// in-memory clipboard, so yanks, deletes and puts go through the clipboard
+    /// exactly as they do for a user without touching the shared OS clipboard.
+    pub fn with_default_clipboard(content: &str) -> Self {
+        let mut test = Self::new(content);
+        test.editor.options.clipboard = "unnamedplus".to_string();
+        test.editor.registers_mut().use_memory_clipboard();
+        test
+    }
+
     /// Press a character key
     pub fn press(&mut self, c: char) -> &mut Self {
         let event = KeyEvent::new(KeyCode::Char(c), Modifiers::NONE);

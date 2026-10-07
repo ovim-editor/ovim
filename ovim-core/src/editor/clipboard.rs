@@ -42,6 +42,24 @@ impl ClipboardBackend for SystemClipboard {
     }
 }
 
+/// Process-local clipboard for embedders and tests that need `clipboard=unnamedplus`
+/// semantics without touching (or being disturbed by) the shared OS clipboard.
+#[derive(Debug, Default)]
+pub(crate) struct MemoryClipboard {
+    text: Mutex<Option<String>>,
+}
+
+impl ClipboardBackend for MemoryClipboard {
+    fn read(&self) -> Option<String> {
+        self.text.lock().unwrap_or_else(|e| e.into_inner()).clone()
+    }
+
+    fn write(&self, text: &str) -> bool {
+        *self.text.lock().unwrap_or_else(|e| e.into_inner()) = Some(text.to_owned());
+        true
+    }
+}
+
 #[derive(Debug, Default)]
 struct ClipboardState {
     /// Latest known text, also used when the OS clipboard is unavailable.
@@ -104,6 +122,10 @@ impl Drop for ExternalClipboardScope {
 impl Clipboard {
     pub(crate) fn new() -> Self {
         Self::with_backend(Arc::new(SystemClipboard))
+    }
+
+    pub(crate) fn in_memory() -> Self {
+        Self::with_backend(Arc::new(MemoryClipboard::default()))
     }
 
     pub(crate) fn with_backend(backend: Arc<dyn ClipboardBackend>) -> Self {

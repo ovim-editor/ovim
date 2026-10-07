@@ -701,6 +701,18 @@ fn expand_paste_by_count(text: String, reg_type: RegisterType, count: usize) -> 
 pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
     let register = editor.pending_register();
     let (text, reg_type) = editor.get_from_register_with_type();
+    paste_text_after(editor, text, reg_type, register, count)
+}
+
+/// `p` of already-captured register contents. `register` is the register the
+/// text came from (what `.` re-reads), not necessarily where it is now.
+pub fn paste_text_after(
+    editor: &mut Editor,
+    text: String,
+    reg_type: RegisterType,
+    register: Option<char>,
+    count: usize,
+) -> Result<()> {
     if text.is_empty() {
         return Ok(());
     }
@@ -932,6 +944,17 @@ pub fn paste_after(editor: &mut Editor, count: usize) -> Result<()> {
 pub fn paste_before(editor: &mut Editor, count: usize) -> Result<()> {
     let register = editor.pending_register();
     let (text, reg_type) = editor.get_from_register_with_type();
+    paste_text_before(editor, text, reg_type, register, count)
+}
+
+/// `P` of already-captured register contents (see `paste_text_after`).
+pub fn paste_text_before(
+    editor: &mut Editor,
+    text: String,
+    reg_type: RegisterType,
+    register: Option<char>,
+    count: usize,
+) -> Result<()> {
     if text.is_empty() {
         return Ok(());
     }

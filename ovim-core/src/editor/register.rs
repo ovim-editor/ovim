@@ -96,6 +96,12 @@ impl RegisterManager {
         self.clipboard.external_scope()
     }
 
+    /// Replaces the OS clipboard behind `"+`/`"*` (and `clipboard=unnamed[plus]`)
+    /// with a process-local one, so tests can run with the default clipboard option.
+    pub fn use_memory_clipboard(&mut self) {
+        self.clipboard = Clipboard::in_memory();
+    }
+
     #[cfg(test)]
     pub(crate) fn with_clipboard_backend(
         backend: std::sync::Arc<dyn super::clipboard::ClipboardBackend>,
