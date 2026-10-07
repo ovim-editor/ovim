@@ -6,6 +6,7 @@
 //! purpose-built tag walker rather than a general XML parser: these files are
 //! machine-written and flat.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::time::SystemTime;
 
@@ -258,14 +259,17 @@ pub fn parse_junit_xml(xml: &str) -> Vec<TestCaseResult> {
 /// run was limited to, else from a stack frame of the failure that names one
 /// of the class's parameterized methods, else when the class has exactly one.
 /// `parameterized_methods(class)` lists the class's parameterized test
-/// methods as found in its source.
+/// methods as found in its source; it is asked once per class.
 pub fn restore_parameterized_names(
     cases: &mut [TestCaseResult],
     method_hint: Option<&str>,
-    parameterized_methods: impl Fn(&str) -> Vec<String>,
+    mut parameterized_methods: impl FnMut(&str) -> Vec<String>,
 ) {
+    let mut by_class: HashMap<String, Vec<String>> = HashMap::new();
     for case in cases.iter_mut().filter(|c| c.name.starts_with('[')) {
-        let candidates = parameterized_methods(&case.class_name);
+        let candidates = by_class
+            .entry(case.class_name.clone())
+            .or_insert_with_key(|class| parameterized_methods(class));
         let from_frame = case.details.as_deref().and_then(|details| {
             let prefix = format!("{}.", case.class_name);
             details.lines().find_map(|line| {
@@ -350,6 +354,21 @@ mod tests {
         let mut cases = vec![case("p.T", "[1] a", None)];
         restore_parameterized_names(&mut cases, Some("picked"), |_| vec![]);
         assert_eq!(cases[0].name, "picked [1] a");
+    }
+
+    #[test]
+    fn a_class_source_is_consulted_once_however_many_cases_it_has() {
+        let mut cases: Vec<TestCaseResult> = (0..50)
+            .map(|i| case("p.T", &format!("[{i}] x"), None))
+            .collect();
+        cases.push(case("p.U", "[1] x", None));
+        let mut asked = Vec::new();
+        restore_parameterized_names(&mut cases, None, |class| {
+            asked.push(class.to_string());
+            vec!["only".to_string()]
+        });
+        assert_eq!(asked, vec!["p.T", "p.U"]);
+        assert_eq!(cases[49].name, "only [49] x");
     }
 
     const SAMPLE: &str = r#"<?xml version="1.0" encoding="UTF-8"?>

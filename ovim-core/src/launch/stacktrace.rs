@@ -11,7 +11,10 @@
 //! Frames name a class and a bare file name, not a path, so they are resolved
 //! against the project by looking for `<package path>/<file>` under the
 //! project root (honouring `.gitignore`, which skips `build/` and `target/`).
+//! A [`FrameResolver`] answers any number of frames with one walk of the tree.
 
+use std::collections::HashMap;
+use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
@@ -74,50 +77,176 @@ fn package_dir(class: &str) -> PathBuf {
     parts.iter().collect()
 }
 
-/// Finds the source file for a stack frame under `roots`.
-///
-/// Tries the conventional source directories first (cheap, exact), then
-/// falls back to a bounded walk for `<package>/<file>`.
-pub fn resolve_frame_source(class: &str, file: &str, roots: &[PathBuf]) -> Option<PathBuf> {
-    let relative = package_dir(class).join(file);
-    const CONVENTIONAL: &[&str] = &[
-        "src/main/java",
-        "src/main/kotlin",
-        "src/test/java",
-        "src/test/kotlin",
-        "src",
-        "",
-    ];
-    for root in roots {
-        for dir in CONVENTIONAL {
-            let candidate = root.join(dir).join(&relative);
-            if candidate.is_file() {
-                return Some(candidate);
-            }
-        }
-    }
-    for root in roots {
-        let walker = ignore::WalkBuilder::new(root)
-            .max_depth(Some(10))
-            .hidden(true)
-            .build();
-        let mut best: Option<PathBuf> = None;
-        for entry in walker.flatten() {
-            let path = entry.path();
-            if path.file_name().is_some_and(|n| n == file) && path.ends_with(&relative) {
-                let better = best
-                    .as_ref()
-                    .is_none_or(|b| path.components().count() < b.components().count());
-                if better {
-                    best = Some(path.to_path_buf());
+/// Source directories checked before searching a tree.
+const CONVENTIONAL_SOURCE_DIRS: &[&str] = &[
+    "src/main/java",
+    "src/main/kotlin",
+    "src/test/java",
+    "src/test/kotlin",
+    "src",
+    "",
+];
+
+/// File extensions a stack frame can name.
+const SOURCE_EXTENSIONS: &[&str] = &["java", "kt", "kts", "scala", "groovy"];
+
+/// Packages of the JDK, language runtimes and test/build frameworks. Frames
+/// in them are never project files, so no search of the tree is worth it.
+const LIBRARY_PACKAGES: &[&str] = &[
+    "java.",
+    "javax.",
+    "jdk.",
+    "sun.",
+    "com.sun.",
+    "kotlin.",
+    "kotlinx.",
+    "scala.",
+    "groovy.",
+    "org.codehaus.groovy.",
+    "org.junit.",
+    "org.opentest4j.",
+    "org.testng.",
+    "org.gradle.",
+    "worker.org.gradle.",
+    "org.apache.maven.",
+];
+
+/// Whether `class` belongs to the JDK or a well-known framework.
+fn is_library_class(class: &str) -> bool {
+    LIBRARY_PACKAGES.iter().any(|p| class.starts_with(p))
+}
+
+/// Source files under some roots by file name, from one walk per root
+/// (honouring `.gitignore`, skipping hidden files).
+struct SourceIndex {
+    /// Per file name: (index of its root, path), in walk order.
+    by_name: HashMap<OsString, Vec<(usize, PathBuf)>>,
+    walks: usize,
+}
+
+impl SourceIndex {
+    fn build(roots: &[PathBuf]) -> Self {
+        let mut by_name: HashMap<OsString, Vec<(usize, PathBuf)>> = HashMap::new();
+        for (root_index, root) in roots.iter().enumerate() {
+            let walker = ignore::WalkBuilder::new(root)
+                .max_depth(Some(10))
+                .hidden(true)
+                .build();
+            for entry in walker.flatten() {
+                let path = entry.path();
+                let is_source = path
+                    .extension()
+                    .and_then(OsStr::to_str)
+                    .is_some_and(|ext| SOURCE_EXTENSIONS.contains(&ext));
+                if !is_source || entry.file_type().is_some_and(|t| t.is_dir()) {
+                    continue;
+                }
+                if let Some(name) = path.file_name() {
+                    by_name
+                        .entry(name.to_os_string())
+                        .or_default()
+                        .push((root_index, path.to_path_buf()));
                 }
             }
         }
-        if best.is_some() {
-            return best;
+        Self {
+            by_name,
+            walks: roots.len(),
         }
     }
-    None
+
+    /// The `file` whose path ends in `relative`: from the earliest root, and
+    /// within it the one nearest to the top.
+    fn find(&self, file: &str, relative: &Path) -> Option<PathBuf> {
+        self.by_name
+            .get(OsStr::new(file))?
+            .iter()
+            .filter(|(_, path)| path.ends_with(relative))
+            .min_by_key(|(root, path)| (*root, path.components().count()))
+            .map(|(_, path)| path.clone())
+    }
+}
+
+/// Finds the source files of stack frames under `roots`, for any number of
+/// frames: the conventional source directories first (cheap, exact), then an
+/// index of the tree built on the first frame that needs it. Answers are
+/// remembered, and frames from the JDK and well-known frameworks never
+/// cause a search.
+pub struct FrameResolver {
+    roots: Vec<PathBuf>,
+    index: Option<SourceIndex>,
+    /// Answers by `<package path>/<file>`.
+    found: HashMap<PathBuf, Option<PathBuf>>,
+}
+
+impl FrameResolver {
+    pub fn new(roots: Vec<PathBuf>) -> Self {
+        Self {
+            roots,
+            index: None,
+            found: HashMap::new(),
+        }
+    }
+
+    /// The source file for a stack frame of `class` in `file`.
+    pub fn resolve_frame(&mut self, class: &str, file: &str) -> Option<PathBuf> {
+        let relative = package_dir(class).join(file);
+        if let Some(known) = self.found.get(&relative) {
+            return known.clone();
+        }
+        let path = self.lookup(class, file, &relative);
+        self.found.insert(relative, path.clone());
+        path
+    }
+
+    fn lookup(&mut self, class: &str, file: &str, relative: &Path) -> Option<PathBuf> {
+        for root in &self.roots {
+            for dir in CONVENTIONAL_SOURCE_DIRS {
+                let candidate = root.join(dir).join(relative);
+                if candidate.is_file() {
+                    return Some(candidate);
+                }
+            }
+        }
+        if is_library_class(class) {
+            return None;
+        }
+        let roots = &self.roots;
+        self.index
+            .get_or_insert_with(|| SourceIndex::build(roots))
+            .find(file, relative)
+    }
+
+    /// Resolves a location to an absolute path plus 1-based line/column.
+    pub fn resolve_location(
+        &mut self,
+        location: &ConsoleLocation,
+        cwd: &Path,
+    ) -> Option<(PathBuf, usize, usize)> {
+        match location {
+            ConsoleLocation::Frame {
+                class, file, line, ..
+            } => self.resolve_frame(class, file).map(|p| (p, *line, 1)),
+            ConsoleLocation::File { path, line, column } => {
+                let abs = if path.is_absolute() {
+                    path.clone()
+                } else {
+                    cwd.join(path)
+                };
+                abs.is_file().then_some((abs, *line, (*column).max(1)))
+            }
+        }
+    }
+
+    /// Directory trees walked so far (each root at most once).
+    pub fn walks(&self) -> usize {
+        self.index.as_ref().map_or(0, |i| i.walks)
+    }
+}
+
+/// Finds the source file for a stack frame under `roots`.
+pub fn resolve_frame_source(class: &str, file: &str, roots: &[PathBuf]) -> Option<PathBuf> {
+    FrameResolver::new(roots.to_vec()).resolve_frame(class, file)
 }
 
 /// Finds the source file of `class` through the language server's
@@ -190,19 +319,7 @@ pub fn resolve_location(
     cwd: &Path,
     source_roots: &[PathBuf],
 ) -> Option<(PathBuf, usize, usize)> {
-    match location {
-        ConsoleLocation::Frame {
-            class, file, line, ..
-        } => resolve_frame_source(class, file, source_roots).map(|p| (p, *line, 1)),
-        ConsoleLocation::File { path, line, column } => {
-            let abs = if path.is_absolute() {
-                path.clone()
-            } else {
-                cwd.join(path)
-            };
-            abs.is_file().then_some((abs, *line, (*column).max(1)))
-        }
-    }
+    FrameResolver::new(source_roots.to_vec()).resolve_location(location, cwd)
 }
 
 #[cfg(test)]
@@ -336,5 +453,67 @@ mod tests {
         let baz = resolve_frame_source("com.foo.Baz", "Baz.java", &roots).unwrap();
         assert!(baz.ends_with("weird/layout/com/foo/Baz.java"));
         assert!(resolve_frame_source("java.util.Objects", "Objects.java", &roots).is_none());
+    }
+
+    #[test]
+    fn many_frames_cost_one_walk_and_library_frames_none() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().to_path_buf();
+        let odd = root.join("weird/layout/com/foo");
+        std::fs::create_dir_all(&odd).unwrap();
+        std::fs::write(odd.join("Baz.java"), "class Baz {}").unwrap();
+        for i in 0..50 {
+            let pkg = root.join(format!("modules/m{i}/p{i}"));
+            std::fs::create_dir_all(&pkg).unwrap();
+            std::fs::write(pkg.join("Other.java"), "class Other {}").unwrap();
+        }
+
+        let mut resolver = FrameResolver::new(vec![root.clone()]);
+        for class in ["java.util.Objects", "org.junit.Assert", "kotlin.Unit"] {
+            assert_eq!(resolver.resolve_frame(class, "X.java"), None);
+        }
+        assert_eq!(
+            resolver.walks(),
+            0,
+            "library frames must not search the tree"
+        );
+
+        // Frames of code that is not in the project, 500 distinct classes
+        // twice over, plus project frames among them.
+        for round in 0..2 {
+            for i in 0..500 {
+                let class = format!("com.vendor.pkg{i}.Thing");
+                assert_eq!(
+                    resolver.resolve_frame(&class, "Thing.java"),
+                    None,
+                    "{round}"
+                );
+            }
+            let baz = resolver.resolve_frame("com.foo.Baz", "Baz.java").unwrap();
+            assert!(baz.ends_with("weird/layout/com/foo/Baz.java"));
+            let other = resolver.resolve_frame("p7.Other", "Other.java").unwrap();
+            assert!(other.ends_with("modules/m7/p7/Other.java"));
+        }
+        assert_eq!(resolver.walks(), 1);
+    }
+
+    #[test]
+    fn the_nearest_match_in_the_earliest_root_wins() {
+        let dir = tempfile::tempdir().unwrap();
+        let (a, b) = (dir.path().join("a"), dir.path().join("b"));
+        for path in [
+            a.join("x/deep/er/com/foo"),
+            a.join("y/com/foo"),
+            b.join("z/com/foo"),
+        ] {
+            std::fs::create_dir_all(&path).unwrap();
+            std::fs::write(path.join("Bar.java"), "class Bar {}").unwrap();
+        }
+        let mut resolver = FrameResolver::new(vec![a.clone(), b]);
+        assert_eq!(
+            resolver.resolve_frame("com.foo.Bar", "Bar.java"),
+            Some(a.join("y/com/foo/Bar.java")),
+            "earliest root first, then the shortest path"
+        );
     }
 }

@@ -104,7 +104,7 @@ mod single_line_input;
 mod tab_manager;
 mod tabpage;
 mod test_panel;
-mod test_runner;
+pub(crate) mod test_runner;
 mod theme;
 mod theme_state;
 mod toast;

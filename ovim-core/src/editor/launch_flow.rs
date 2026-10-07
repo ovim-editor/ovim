@@ -29,6 +29,7 @@ use crate::launch::console::{LineKind, RunOutcome, RunPhase, RunStatus};
 use crate::launch::lsp::{self, ResolveOutcome, ResolveResult};
 use crate::launch::plan::{self, LaunchMode, LaunchPlan, PlanKind};
 use crate::launch::process::{CommandSpec, ExitInfo, ProcEvent, ProcessHandle, StreamKind};
+use crate::launch::test_report::TestReport;
 use crate::launch::{diagnostics, junit, stacktrace};
 
 /// How long to wait for a `--debug-jvm` JVM to start listening.
@@ -121,9 +122,23 @@ enum Stage {
     Resolving,
     Building,
     Running,
-    AwaitingDebugPort { deadline: Instant },
+    AwaitingDebugPort {
+        deadline: Instant,
+    },
     StartingDebugger,
-    Debugging { session_ended: Option<Instant> },
+    Debugging {
+        session_ended: Option<Instant>,
+    },
+    /// The process is done; the run ends once its test report is read.
+    Reporting,
+}
+
+/// A test report being read in the background.
+struct PendingReports {
+    rx: oneshot::Receiver<TestReport>,
+    /// Whether the process exited successfully.
+    exit_ok: bool,
+    exit_code: Option<i32>,
 }
 
 struct LaunchJob {
@@ -134,6 +149,7 @@ struct LaunchJob {
     resolve: Option<(oneshot::Receiver<ResolveResult>, JoinHandle<()>)>,
     proc: Option<ProcessHandle>,
     proc_exit: Option<ExitInfo>,
+    reports: Option<PendingReports>,
     /// Tail of process output in arrival order (for summaries and tails).
     log: String,
     /// The same output per pipe. stdout and stderr are read concurrently, so
@@ -540,6 +556,7 @@ impl Editor {
             resolve: Some((rx, task)),
             proc: None,
             proc_exit: None,
+            reports: None,
             log: String::new(),
             log_stdout: String::new(),
             log_stderr: String::new(),
@@ -852,6 +869,7 @@ impl Editor {
             resolve: None,
             proc: None,
             proc_exit: None,
+            reports: None,
             log: String::new(),
             log_stdout: String::new(),
             log_stderr: String::new(),
@@ -1457,6 +1475,9 @@ impl Editor {
             changed |= self.drain_process(&mut job);
         }
 
+        // -- test results read in the background --
+        changed |= self.poll_test_reports(&mut job);
+
         // -- debug session end / timeouts --
         changed |= self.poll_debug_state(&mut job);
 
@@ -1578,24 +1599,10 @@ impl Editor {
                     LineKind::System,
                     format!("Process finished with exit code {code_text}"),
                 );
-                let is_make = job.is_make();
-                self.finish_test_reports(job, ok);
-                // Shell runs report through their own output parsing (test
-                // panel, quickfix), not through build diagnostics.
-                if !ok && job.shell_run().is_none() {
-                    let summary = self.report_build_problems(job, false);
-                    if let Some(s) = summary {
-                        self.set_status_message(s);
-                    }
-                }
-                let outcome = if ok {
-                    RunOutcome::Succeeded
+                if self.finish_test_reports(job, ok, code) {
+                    job.stage = Stage::Reporting;
                 } else {
-                    RunOutcome::Failed
-                };
-                self.finish_job(job, outcome, code);
-                if is_make {
-                    self.finish_make(job, ok);
+                    self.finish_run(job, ok, code);
                 }
             }
             Stage::AwaitingDebugPort { .. } => {
@@ -1623,9 +1630,31 @@ impl Editor {
                     LineKind::System,
                     format!("Process finished with exit code {code_text}"),
                 );
-                self.finish_test_reports(job, code == Some(0));
+                self.finish_test_reports(job, code == Some(0), code);
             }
-            Stage::Resolving => {}
+            Stage::Resolving | Stage::Reporting => {}
+        }
+    }
+
+    /// The program of a run ended (and its test results, if any, are in).
+    fn finish_run(&mut self, job: &mut LaunchJob, ok: bool, code: Option<i32>) {
+        let is_make = job.is_make();
+        // Shell runs report through their own output parsing (test
+        // panel, quickfix), not through build diagnostics.
+        if !ok && job.shell_run().is_none() {
+            let summary = self.report_build_problems(job, false);
+            if let Some(s) = summary {
+                self.set_status_message(s);
+            }
+        }
+        let outcome = if ok {
+            RunOutcome::Succeeded
+        } else {
+            RunOutcome::Failed
+        };
+        self.finish_job(job, outcome, code);
+        if is_make {
+            self.finish_make(job, ok);
         }
     }
 
@@ -1766,12 +1795,21 @@ impl Editor {
 
     /// After a test task, read JUnit XML from the plan's reports directory
     /// and surface the outcome in the console, the test panel (per test:
-    /// pass/fail, message, jumpable frames) and the quickfix list.
-    fn finish_test_reports(&mut self, job: &mut LaunchJob, exit_ok: bool) {
+    /// pass/fail, message, jumpable frames) and the quickfix list. Reading
+    /// the reports and locating their stack frames can take long in a big
+    /// project, so it happens on a blocking task and the result is applied by
+    /// [`poll_test_reports`](Self::poll_test_reports). Returns whether the
+    /// outcome is still pending.
+    fn finish_test_reports(
+        &mut self,
+        job: &mut LaunchJob,
+        exit_ok: bool,
+        exit_code: Option<i32>,
+    ) -> bool {
         if job.panel_run && job.shell_run().is_some() {
             job.panel_run = false;
             self.finish_shell_test_run(exit_ok);
-            return;
+            return false;
         }
         let Some(dir) = job
             .plan
@@ -1780,9 +1818,9 @@ impl Editor {
             .and_then(|t| t.reports_dir.clone())
         else {
             self.finish_test_panel_run(job, exit_ok, Vec::new(), None, Vec::new());
-            return;
+            return false;
         };
-        let mut cases = junit::read_reports_dir(&dir, job.started_wall - Duration::from_secs(2));
+        let since = job.started_wall - Duration::from_secs(2);
         let roots = job
             .plan
             .as_ref()
@@ -1793,11 +1831,54 @@ impl Editor {
             .as_ref()
             .and_then(|p| p.task.as_ref())
             .and_then(|t| t.method_name.clone());
-        junit::restore_parameterized_names(&mut cases, method_hint.as_deref(), |class| {
-            parameterized_methods_in_source(class, &roots)
+        let read =
+            move || crate::launch::test_report::build(&dir, since, &roots, method_hint.as_deref());
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            let report = read();
+            self.apply_test_report(job, exit_ok, report);
+            return false;
+        };
+        let (tx, rx) = oneshot::channel();
+        runtime.spawn_blocking(move || {
+            let _ = tx.send(read());
         });
-        let summary = junit::summary_text(&cases);
-        let Some(summary_text) = summary.clone() else {
+        job.reports = Some(PendingReports {
+            rx,
+            exit_ok,
+            exit_code,
+        });
+        true
+    }
+
+    /// Applies the test report read in the background, once it is in, and
+    /// ends the run that was waiting for it.
+    fn poll_test_reports(&mut self, job: &mut LaunchJob) -> bool {
+        let Some(mut pending) = job.reports.take() else {
+            return false;
+        };
+        let report = match pending.rx.try_recv() {
+            Ok(report) => report,
+            Err(oneshot::error::TryRecvError::Empty) => {
+                job.reports = Some(pending);
+                return false;
+            }
+            // The reading task died: show the run without results.
+            Err(oneshot::error::TryRecvError::Closed) => TestReport::default(),
+        };
+        self.apply_test_report(job, pending.exit_ok, report);
+        if job.stage == Stage::Reporting {
+            self.finish_run(job, pending.exit_ok, pending.exit_code);
+        }
+        true
+    }
+
+    fn apply_test_report(&mut self, job: &mut LaunchJob, exit_ok: bool, report: TestReport) {
+        let TestReport {
+            cases,
+            summary,
+            failures: failed,
+        } = report;
+        let Some(summary_text) = summary else {
             self.finish_test_panel_run(job, exit_ok, cases, None, Vec::new());
             return;
         };
@@ -1808,17 +1889,12 @@ impl Editor {
         );
         let mut entries = Vec::new();
         let mut failures = Vec::new();
-        for case in cases.iter().filter(|c| {
-            matches!(
-                c.status,
-                junit::CaseStatus::Failed | junit::CaseStatus::Errored
-            )
-        }) {
-            let label = format!("{}.{}", case.class_name, case.name);
-            let message = case
-                .message
-                .clone()
-                .unwrap_or_else(|| "test failed".to_string());
+        for test in failed {
+            let crate::launch::test_report::FailedTest {
+                label,
+                message,
+                frames,
+            } = test;
             self.log_console(
                 job.run_id,
                 LineKind::System,
@@ -1826,14 +1902,6 @@ impl Editor {
             );
             // Frames in project files, in stack order: the first is where
             // to go, the rest stay reachable through :cn.
-            let frames: Vec<(PathBuf, usize, usize)> = case
-                .details
-                .as_deref()
-                .into_iter()
-                .flat_map(str::lines)
-                .filter_map(stacktrace::parse_console_location)
-                .filter_map(|loc| stacktrace::resolve_location(&loc, &dir, &roots))
-                .collect();
             for (i, (path, line, col)) in frames.iter().enumerate() {
                 let text = if i == 0 {
                     format!("{label}: {message}")
@@ -1972,7 +2040,7 @@ impl Editor {
             session_ended: Some(at),
         } = job.stage
         {
-            let child_running = job.proc.is_some();
+            let child_running = job.proc.is_some() || job.reports.is_some();
             let crashed = job
                 .session_end
                 .as_ref()
@@ -2150,6 +2218,20 @@ impl Editor {
                 }
                 self.dap_manager.request_stop();
             }
+            Stage::Reporting => {
+                // The program already ended: skip its test results.
+                if let Some(pending) = job.reports.take() {
+                    self.finish_test_panel_run(
+                        &mut job,
+                        pending.exit_ok,
+                        Vec::new(),
+                        None,
+                        Vec::new(),
+                    );
+                    self.finish_run(&mut job, pending.exit_ok, pending.exit_code);
+                }
+                done = true;
+            }
         }
         if !done {
             self.launch.job = Some(job);
@@ -2160,44 +2242,6 @@ impl Editor {
 
 /// One block per test for the test panel: `✓ Class.name (12ms)`, failures
 /// with message and the stack, skips dimmed by their `○` marker.
-/// The parameterized test methods of `class` (binary name, `$` for nested
-/// classes) as found in its source file under `roots`.
-fn parameterized_methods_in_source(class: &str, roots: &[PathBuf]) -> Vec<String> {
-    use crate::editor::test_runner::nearest::{discover_tests, TestFlavor};
-    let (package_class, chain) = match class.split_once('$') {
-        Some((outer, nested)) => (
-            outer,
-            std::iter::once(outer.rsplit('.').next().unwrap_or(outer))
-                .chain(nested.split('$'))
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
-        ),
-        None => (
-            class,
-            vec![class.rsplit('.').next().unwrap_or(class).to_string()],
-        ),
-    };
-    let simple = package_class.rsplit('.').next().unwrap_or(package_class);
-    for (ext, language) in [
-        ("java", crate::syntax::Language::Java),
-        ("kt", crate::syntax::Language::Kotlin),
-    ] {
-        let file = format!("{simple}.{ext}");
-        let Some(path) = stacktrace::resolve_frame_source(package_class, &file, roots) else {
-            continue;
-        };
-        let Ok(source) = std::fs::read_to_string(path) else {
-            continue;
-        };
-        return discover_tests(language, &source)
-            .into_iter()
-            .filter(|t| t.flavor == TestFlavor::Parameterized && t.namespaces == chain)
-            .map(|t| t.name)
-            .collect();
-    }
-    Vec::new()
-}
-
 fn junit_panel_lines(cases: &[junit::TestCaseResult]) -> Vec<String> {
     let mut lines = Vec::new();
     for case in cases {
@@ -2255,32 +2299,4 @@ fn junit_panel_lines(cases: &[junit::TestCaseResult]) -> Vec<String> {
 fn last_lines(text: &str, n: usize) -> String {
     let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
     lines[lines.len().saturating_sub(n)..].join(" | ")
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parameterized_methods_are_read_from_the_class_source_including_nested_classes() {
-        let dir = tempfile::tempdir().unwrap();
-        let root = dir.path().to_path_buf();
-        let pkg = root.join("src/test/java/p");
-        std::fs::create_dir_all(&pkg).unwrap();
-        std::fs::write(
-            pkg.join("OrdersTest.java"),
-            "package p;\nclass OrdersTest {\n  @Test void plain() {}\n  @ParameterizedTest @ValueSource(ints = {1}) void totals(int n) {}\n  @Nested class Empty {\n    @ParameterizedTest @ValueSource(ints = {1}) void zero(int n) {}\n  }\n}\n",
-        )
-        .unwrap();
-        let roots = [root];
-        assert_eq!(
-            parameterized_methods_in_source("p.OrdersTest", &roots),
-            vec!["totals"]
-        );
-        assert_eq!(
-            parameterized_methods_in_source("p.OrdersTest$Empty", &roots),
-            vec!["zero"]
-        );
-        assert!(parameterized_methods_in_source("p.Missing", &roots).is_empty());
-    }
 }
