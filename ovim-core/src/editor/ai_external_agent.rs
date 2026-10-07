@@ -145,6 +145,16 @@ fn append_images(content: &mut Vec<Value>, images: &[crate::ai::chat_types::Imag
     }
 }
 
+fn redact_text_blocks(mut content: Vec<Value>) -> Vec<Value> {
+    for block in &mut content {
+        if let Some(text) = block.get_mut("text").filter(|text| text.is_string()) {
+            let redacted = crate::ai::redact_high_risk_tokens(text.as_str().unwrap_or_default());
+            *text = Value::String(redacted);
+        }
+    }
+    content
+}
+
 fn claude_input(
     previous: &[crate::ai::ChatMessage],
     latest: &crate::ai::ChatMessage,
@@ -380,6 +390,9 @@ impl Editor {
             );
             content
         };
+        // Everything sent to Claude's provider gets the redaction other remote
+        // providers get: the user's messages, history, and the editor snapshot.
+        let content = redact_text_blocks(content);
         let request = claude_code::Request {
             cwd: cwd.clone(),
             executable,
@@ -930,6 +943,22 @@ pub(super) mod tests {
             claude_input(&previous, latest, true),
             vec![json!({"type":"text", "text":"Current question"})]
         );
+    }
+
+    #[test]
+    fn everything_sent_to_claude_is_redacted_but_images_and_structure_survive() {
+        let content = vec![
+            json!({"type":"text", "text":"## Editor state\nconst API_KEY = \"sk-live-supersecret-value\";"}),
+            json!({"type":"text", "text":"my token: abcdefgh12345678 please rotate it"}),
+            json!({"type":"image", "source":{"type":"base64", "data":"AQID"}}),
+        ];
+        let redacted = redact_text_blocks(content);
+        let sent = serde_json::to_string(&redacted).unwrap();
+        assert!(!sent.contains("sk-live-supersecret-value"), "{sent}");
+        assert!(!sent.contains("abcdefgh12345678"), "{sent}");
+        assert!(sent.contains("please rotate it"));
+        assert_eq!(redacted.len(), 3);
+        assert_eq!(redacted[2]["source"]["data"], "AQID");
     }
 
     #[test]

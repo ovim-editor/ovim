@@ -40,6 +40,31 @@ pub fn redact_high_risk_tokens(input: &str) -> String {
     out
 }
 
+/// Redact every string inside a JSON document, leaving its structure intact.
+/// Redacting the serialized text instead could consume a closing quote.
+pub fn redact_json_strings(value: &mut serde_json::Value) {
+    match value {
+        serde_json::Value::String(text) => *text = redact_high_risk_tokens(text),
+        serde_json::Value::Array(values) => values.iter_mut().for_each(redact_json_strings),
+        serde_json::Value::Object(fields) => {
+            fields.values_mut().for_each(redact_json_strings);
+        }
+        _ => {}
+    }
+}
+
+/// Redact text that may be a serialized JSON document (tool results often
+/// are) without breaking its syntax.
+pub fn redact_tool_text(text: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(text) {
+        Ok(mut value) if value.is_object() || value.is_array() => {
+            redact_json_strings(&mut value);
+            value.to_string()
+        }
+        _ => redact_high_risk_tokens(text),
+    }
+}
+
 /// Truncate by byte budget on UTF-8 char boundaries and append a notice.
 pub fn truncate_utf8_with_notice(input: &str, max_bytes: usize) -> String {
     if input.len() <= max_bytes {
@@ -84,6 +109,25 @@ mod tests {
     fn redacts_assignment_tokens() {
         let s = "API_KEY=sk-secret-value";
         assert_eq!(redact_high_risk_tokens(s), "API_KEY=[REDACTED]");
+    }
+
+    #[test]
+    fn json_redaction_keeps_the_document_parseable() {
+        // The quote closing the string is part of what the assignment pattern
+        // matches when the serialized text is redacted directly.
+        let raw =
+            r#"{"line":"API_KEY=sk-secret-value","count":3,"nested":["token: abcdefgh1234"]}"#;
+        let redacted = redact_tool_text(raw);
+        let parsed: serde_json::Value = serde_json::from_str(&redacted).unwrap();
+        assert_eq!(parsed["line"], "API_KEY=[REDACTED]");
+        assert_eq!(parsed["count"], 3);
+        assert_eq!(parsed["nested"][0], "token=[REDACTED]");
+        assert!(serde_json::from_str::<serde_json::Value>(&redact_high_risk_tokens(raw)).is_err());
+        assert_eq!(
+            redact_tool_text("plain API_KEY=sk-secret-value"),
+            "plain API_KEY=[REDACTED]"
+        );
+        assert_eq!(redact_tool_text("42"), "42");
     }
 
     #[test]

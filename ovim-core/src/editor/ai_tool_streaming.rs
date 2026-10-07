@@ -1,4 +1,5 @@
 use crate::ai::chat_types::{ChatMessage, ChatRole, StreamChunk};
+use crate::ai::path_policy::sensitive_path_reason;
 use crate::ai::skills::{ACTIVATED_SKILL_MARKER, ACTIVATE_SKILL_TOOL};
 use crate::ai::stream_ai_chat_with_codex_session;
 use crate::ai::tools::builtins::ProjectDiagnosticFile;
@@ -286,7 +287,7 @@ impl Editor {
         let stable_system_prompt = system_prompt.clone();
         // Append editor state (viewport, cursor, diagnostics) regardless of prompt source
         let editor_state_budget = if remote_provider { 2500 } else { 8000 };
-        let editor_state = self.build_editor_state_context(editor_state_budget);
+        let editor_state = self.build_provider_editor_state(editor_state_budget, remote_provider);
         let system_prompt = system_prompt.map(|sp| format!("{sp}\n\n{editor_state}"));
         let api_key_registry = self.ai_state.config.api_key_registry.clone();
         let working_file_path = self.buffers[self.current_buffer_index]
@@ -559,6 +560,18 @@ impl Editor {
         }
     }
 
+    /// The editor snapshot as a provider receives it. Chat messages are
+    /// redacted for remote providers; the snapshot carries file content and
+    /// diagnostics and needs the same treatment.
+    pub(crate) fn build_provider_editor_state(&self, budget_chars: usize, remote: bool) -> String {
+        let state = self.build_editor_state_context(budget_chars);
+        if remote {
+            redact_high_risk_tokens(&state)
+        } else {
+            state
+        }
+    }
+
     /// Build a structured editor state block for the system prompt.
     ///
     /// Assembles context in priority order within `budget_chars`:
@@ -620,6 +633,18 @@ impl Editor {
         );
         out.push_str(&cursor_line);
         remaining = remaining.saturating_sub(cursor_line.len());
+
+        // A file the sensitive-path policy blocks (.env, keys) never has its
+        // content, selection, or diagnostics put in front of a provider.
+        let withheld = buf.file_path().and_then(|path| {
+            sensitive_path_reason(&self.absolutize_path(std::path::Path::new(path)))
+        });
+        if let Some(reason) = withheld {
+            out.push_str(&format!(
+                "\nContent withheld ({reason}). Ask the user before reading this file with a tool.\n"
+            ));
+            return out;
+        }
 
         // --- Enclosing scope (from the outline, when it exists) ---
         if let Some(sym) =
@@ -819,6 +844,69 @@ mod tests {
         editor.set_file_path("/tmp/editor-state.rs".to_string());
         editor.set_viewport_height(line_count);
         editor
+    }
+
+    fn editor_on_file(name: &str, text: &str) -> (Editor, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join(name);
+        let mut editor = Editor::default();
+        editor.buffer_mut().replace_all(text);
+        editor.set_file_path(path.to_string_lossy().into_owned());
+        editor.set_viewport_height(20);
+        (editor, directory)
+    }
+
+    #[test]
+    fn editor_state_withholds_content_of_files_the_sensitive_path_policy_blocks() {
+        for name in [".env", ".env.production", "server.pem", "id_ed25519"] {
+            let (mut editor, _directory) = editor_on_file(
+                name,
+                "DATABASE_URL=postgres://u:pw@db/prod\nTOKEN=abcdefgh12345678\n",
+            );
+            editor.ai_state.active_selection = Some(crate::editor::ai_state::AiSelectionSnapshot {
+                buffer_id: editor.buffer().id(),
+                start_line: 0,
+                start_col: 0,
+                end_line: 0,
+                end_col: 12,
+                start_char: 0,
+                end_char: 12,
+                anchor_line: 0,
+                selected_text: "DATABASE_URL".into(),
+                selection_mode: crate::mode::Mode::Visual,
+            });
+            let context = editor.build_editor_state_context(2_500);
+            assert!(context.contains("File: "), "{name}: {context}");
+            assert!(context.contains("Content withheld"), "{name}: {context}");
+            assert!(!context.contains("DATABASE_URL"), "{name}: {context}");
+            assert!(!context.contains("abcdefgh12345678"), "{name}: {context}");
+            assert!(!context.contains("### Visible code"), "{name}: {context}");
+            assert!(!context.contains("### Selection"), "{name}: {context}");
+        }
+    }
+
+    #[test]
+    fn editor_state_for_ordinary_files_still_shows_code() {
+        let (editor, _directory) = editor_on_file("main.rs", "fn main() {}\n");
+        let context = editor.build_editor_state_context(2_500);
+        assert!(context.contains("### Visible code"));
+        assert!(context.contains("fn main() {}"));
+        assert!(!context.contains("Content withheld"));
+    }
+
+    #[test]
+    fn remote_providers_get_a_redacted_editor_snapshot() {
+        let (editor, _directory) = editor_on_file(
+            "settings.rs",
+            "const API_KEY = \"sk-live-supersecret-value\";\n// Authorization: Bearer abcdef0123456789\n",
+        );
+        let remote = editor.build_provider_editor_state(2_500, true);
+        assert!(!remote.contains("sk-live-supersecret-value"), "{remote}");
+        assert!(!remote.contains("abcdef0123456789"), "{remote}");
+        assert!(remote.contains("[REDACTED"), "{remote}");
+        // A local model keeps the code intact; nothing leaves the machine.
+        let local = editor.build_provider_editor_state(2_500, false);
+        assert!(local.contains("sk-live-supersecret-value"), "{local}");
     }
 
     #[test]

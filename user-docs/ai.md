@@ -235,6 +235,13 @@ conversation branch, tool calls and results, and provider-encrypted reasoning
 state. Forking or clearing a conversation therefore changes Ovim's branch
 without depending on a hidden provider thread.
 
+Before a request goes to a remote provider, Ovim redacts common high-risk
+tokens (API keys, bearer tokens, private-key blocks, cloud and GitHub tokens)
+from chat messages, tool results, and the editor snapshot it attaches every
+turn. When the active file is one the sensitive-path policy blocks (`.env`
+files, SSH and TLS key material, `.ssh` and `.aws` contents), the snapshot names
+the file but withholds its code, selection, and diagnostics for every provider.
+
 Agent turns have no tool-call ceiling by default; the lightning indicator in
 the status line is a count, not a countdown. A profile may opt into a finite
 guardrail with `max_tool_calls = 100`, in which case Ovim displays both the
@@ -547,6 +554,10 @@ integration guidance to Claude's standard prompt. Use Claude's settings for
 further customization, rather than Ovim inference-profile prompt or tool overrides.
 
 Ovim supplies the current editor snapshot and attached context as user input.
+Everything Ovim sends to Claude (your messages, earlier conversation, the
+snapshot, and editor tool results) gets the same token redaction as other remote
+providers, and a sensitive active file's content is withheld. Claude's own tools
+read files under Claude's permission rules, not Ovim's.
 The private MCP connection also exposes editor tools:
 
 - `workspace_context` refreshes the active/open files, cursor, selection,

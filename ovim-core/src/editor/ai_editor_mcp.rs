@@ -31,6 +31,9 @@ pub(super) fn tool_reply(id: Value, result: ToolResult) -> Value {
         ToolResult::Success(text) => (text, false),
         ToolResult::Error(text) => (text, true),
     };
+    // Whatever the editor tools return goes to Claude's provider, so it gets
+    // the same token redaction as other remote providers receive.
+    let text = crate::ai::redact_tool_text(&text);
     reply(
         id,
         Ok(json!({"content":[{"type":"text", "text":text}], "isError":failed})),
@@ -399,6 +402,77 @@ mod tests {
         let text = response["result"]["content"][0]["text"].as_str().unwrap();
         assert!(text.contains("outside approved scope"), "{text}");
         assert!(!text.contains("Expected 200, received 409"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn bridge_context_redacts_tokens_before_they_reach_claude() {
+        let mut editor = editor();
+        let _tx = attach(&mut editor);
+        let cwd = std::env::current_dir().unwrap();
+        editor
+            .build
+            .test_panel
+            .start_run("nearest", "test login".into(), cwd);
+        let run = editor.build.test_panel.runs.last_mut().unwrap();
+        run.status = crate::editor::TestRunStatus::Failed;
+        run.lines
+            .push("request failed, Authorization: Bearer abcdef0123456789xyz".into());
+        editor.buffer_mut().replace_all("let key = \"visible\";\n");
+        editor.set_file_path("/tmp/redaction-fixture.rs".into());
+        let response = request(
+            &mut editor,
+            "redact",
+            "tools/call",
+            json!({"name":"workspace_context", "arguments":{"include_git":false}}),
+        )
+        .await
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("request failed"), "{text}");
+        assert!(!text.contains("abcdef0123456789xyz"), "{text}");
+        assert!(text.contains("[REDACTED_TOKEN]"), "{text}");
+    }
+
+    #[tokio::test]
+    async fn bridge_context_withholds_a_sensitive_active_file() {
+        let directory = tempfile::tempdir().unwrap();
+        let mut editor = editor();
+        let _tx = attach(&mut editor);
+        editor
+            .buffer_mut()
+            .replace_all("STRIPE_SECRET=live-secret-value\n");
+        editor.set_file_path(directory.path().join(".env").to_string_lossy().into_owned());
+        let response = request(
+            &mut editor,
+            "env",
+            "tools/call",
+            json!({"name":"workspace_context", "arguments":{"include_git":false}}),
+        )
+        .await
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Content withheld"), "{text}");
+        assert!(!text.contains("live-secret-value"), "{text}");
+    }
+
+    #[test]
+    fn bridge_replies_keep_json_results_parseable_while_redacting() {
+        let reply = tool_reply(
+            json!(1),
+            ToolResult::Success(r#"{"blocks":[{"content":"API_KEY=sk-secret-value"}]}"#.into()),
+        );
+        let text = reply["result"]["content"][0]["text"].as_str().unwrap();
+        let parsed: Value = serde_json::from_str(text).unwrap();
+        assert_eq!(parsed["blocks"][0]["content"], "API_KEY=[REDACTED]");
+        let error = tool_reply(
+            json!(2),
+            ToolResult::Error("password: hunter2hunter2".into()),
+        );
+        assert_eq!(error["result"]["isError"], true);
+        assert!(!error["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .contains("hunter2hunter2"));
     }
 
     #[tokio::test]

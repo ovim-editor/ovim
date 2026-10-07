@@ -5,7 +5,9 @@ use crate::ai::skills::ACTIVATE_SKILL_TOOL;
 use crate::ai::tools::builtins::{OpenBufferState, ToolExecutionContext};
 use crate::ai::tools::schema;
 use crate::ai::tools::{RuntimeServices, SideEffect, ToolResult};
-use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
+use crate::ai::{
+    redact_high_risk_tokens, redact_json_strings, truncate_utf8_with_notice, ToolApprovalMode,
+};
 use std::path::{Path, PathBuf};
 
 use super::ai_auto_mode::AutoModeShellReview;
@@ -1712,7 +1714,7 @@ impl Editor {
         if tc.name == "read_diff" && matches!(result, ToolResult::Success(_)) {
             if self.active_chat_provider_is_remote() {
                 if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&raw_body) {
-                    redact_diff_json_strings(&mut value);
+                    redact_json_strings(&mut value);
                     return value.to_string();
                 }
             }
@@ -2052,23 +2054,6 @@ fn tool_result_success(result: &ToolResult) -> Option<&str> {
     match result {
         ToolResult::Success(s) => Some(s.as_str()),
         ToolResult::Error(_) => None,
-    }
-}
-
-fn redact_diff_json_strings(value: &mut serde_json::Value) {
-    match value {
-        serde_json::Value::String(text) => *text = redact_high_risk_tokens(text),
-        serde_json::Value::Array(values) => {
-            for value in values {
-                redact_diff_json_strings(value);
-            }
-        }
-        serde_json::Value::Object(fields) => {
-            for value in fields.values_mut() {
-                redact_diff_json_strings(value);
-            }
-        }
-        _ => {}
     }
 }
 
