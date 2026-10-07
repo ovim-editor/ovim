@@ -441,6 +441,86 @@ async fn viewing_a_commit_works_when_the_open_file_and_its_directory_are_gone() 
     assert!(test.buffer_content().contains("b changed"));
 }
 
+/// Runs `git` in `dir` with identity and signing pinned.
+fn run_git(dir: &std::path::Path, args: &[&str]) {
+    let output = std::process::Command::new("git")
+        .args([
+            "-c",
+            "protocol.file.allow=always",
+            "-c",
+            "user.name=Test",
+            "-c",
+            "user.email=t@example.com",
+            "-c",
+            "commit.gpgsign=false",
+        ])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "git {args:?}: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn submodule_rows_in_the_status_list_stage_unstage_and_open_the_diff() {
+    let dir = tempfile::tempdir().unwrap();
+    let base = fs::canonicalize(dir.path()).unwrap();
+    let inner = base.join("inner");
+    let outer = base.join("outer");
+    for repo in [&inner, &outer] {
+        fs::create_dir(repo).unwrap();
+        run_git(repo, &["init", "-q"]);
+    }
+    fs::write(inner.join("lib.txt"), "lib\n").unwrap();
+    run_git(&inner, &["add", "-A"]);
+    run_git(&inner, &["commit", "-qm", "inner"]);
+    fs::write(outer.join("main.txt"), "main\n").unwrap();
+    run_git(
+        &outer,
+        &["submodule", "add", "-q", inner.to_str().unwrap(), "sub"],
+    );
+    run_git(&outer, &["add", "-A"]);
+    run_git(&outer, &["commit", "-qm", "outer"]);
+    // A new commit inside the submodule: the superproject sees `sub` modified.
+    run_git(
+        &outer.join("sub"),
+        &["commit", "-q", "--allow-empty", "-m", "newer"],
+    );
+
+    let mut test = EditorTest::new("");
+    test.load_file(&outer.join("main.txt").to_string_lossy());
+    test.command("GitStatus");
+    test.assert_mode(Mode::Picker);
+    let rows = |test: &EditorTest| -> Vec<String> {
+        test.editor
+            .picker()
+            .unwrap()
+            .collect_filtered_results(10)
+            .into_iter()
+            .map(|r| r.display.clone())
+            .collect()
+    };
+    assert_eq!(rows(&test), [" M  sub"]);
+
+    test.keys("<C-t>");
+    assert_eq!(rows(&test), ["M   sub"], "Ctrl-T stages the new commit");
+    test.keys("<C-t>");
+    assert_eq!(rows(&test), [" M  sub"], "and unstages it again");
+
+    test.press_enter();
+    test.assert_mode(Mode::Normal);
+    assert!(
+        test.editor.is_diff_review_buffer(),
+        "{}",
+        test.editor.status_message()
+    );
+    assert!(test.buffer_content().contains("sub"));
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn line_history_lists_the_commits_and_enter_shows_the_diff_of_one() {
     let fixture = Fixture::new();
