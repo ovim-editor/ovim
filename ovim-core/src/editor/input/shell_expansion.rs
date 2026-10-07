@@ -14,6 +14,17 @@
 
 use std::path::Path;
 
+/// A `%` or `#` reference with its modifiers applied.
+struct Reference {
+    /// The file name after the modifiers.
+    text: String,
+    /// The file name was empty before the modifiers.
+    unnamed: bool,
+    /// The `:p` modifier was applied, which makes an unnamed buffer usable
+    /// (`%:p:h` is the working directory).
+    absolute: bool,
+}
+
 /// Expands %, #, and modifiers in shell commands.
 ///
 /// # Arguments
@@ -24,8 +35,46 @@ use std::path::Path;
 /// # Returns
 /// The command with all patterns expanded
 pub fn expand_shell_command(cmd: &str, current_file: &str, alternate_file: &str) -> String {
-    let mut result = String::with_capacity(cmd.len() * 2);
-    let mut chars = cmd.chars().peekable();
+    let Ok(expanded) = expand_references(cmd, current_file, alternate_file, |_, reference| {
+        Ok::<_, std::convert::Infallible>(shell_escape(&reference.text))
+    });
+    expanded
+}
+
+/// Expands `%`, `#` and their modifiers in a file argument (`:e %:h/x`,
+/// `:w %:r.bak`, `:sp #`). The names are inserted as they are: unlike a
+/// shell command, nothing downstream would unquote them. An unnamed buffer
+/// is vim's E499 (unless `:p` made the name absolute) and a missing
+/// alternate file E194.
+pub fn expand_file_argument(
+    arg: &str,
+    current_file: &str,
+    alternate_file: &str,
+) -> Result<String, String> {
+    expand_references(
+        arg,
+        current_file,
+        alternate_file,
+        |source, reference| match (source, reference.unnamed, reference.absolute) {
+            ('#', true, _) => Err("E194: No alternate file name to substitute for '#'".to_string()),
+            ('%', true, false) => {
+                Err("E499: Empty file name for '%' or '#', only works with \":p:h\"".to_string())
+            }
+            _ => Ok(reference.text),
+        },
+    )
+}
+
+/// Replaces every unescaped `%` and `#` in `text` with what `insert` makes
+/// of the file it names; `\%`, `\#` and `\\` are the literal characters.
+fn expand_references<E>(
+    text: &str,
+    current_file: &str,
+    alternate_file: &str,
+    mut insert: impl FnMut(char, Reference) -> Result<String, E>,
+) -> Result<String, E> {
+    let mut result = String::with_capacity(text.len() * 2);
+    let mut chars = text.chars().peekable();
 
     while let Some(ch) = chars.next() {
         if ch == '\\' {
@@ -37,20 +86,20 @@ pub fn expand_shell_command(cmd: &str, current_file: &str, alternate_file: &str)
                 }
             }
             result.push(ch);
-        } else if ch == '%' {
-            // Expand current file with modifiers
-            let expanded = expand_with_modifiers(current_file, &mut chars);
-            result.push_str(&shell_escape(&expanded));
-        } else if ch == '#' {
-            // Expand alternate file with modifiers
-            let expanded = expand_with_modifiers(alternate_file, &mut chars);
-            result.push_str(&shell_escape(&expanded));
+        } else if ch == '%' || ch == '#' {
+            let file = if ch == '%' {
+                current_file
+            } else {
+                alternate_file
+            };
+            let reference = expand_with_modifiers(file, &mut chars);
+            result.push_str(&insert(ch, reference)?);
         } else {
             result.push(ch);
         }
     }
 
-    result
+    Ok(result)
 }
 
 /// Expands a filename with optional modifiers (:p, :h, :t, :r, :e).
@@ -58,8 +107,9 @@ pub fn expand_shell_command(cmd: &str, current_file: &str, alternate_file: &str)
 fn expand_with_modifiers(
     filename: &str,
     chars: &mut std::iter::Peekable<std::str::Chars>,
-) -> String {
+) -> Reference {
     let mut result = filename.to_string();
+    let mut absolute = false;
 
     // Consume and apply modifiers
     while chars.peek() == Some(&':') {
@@ -70,6 +120,7 @@ fn expand_with_modifiers(
                 'p' => {
                     chars.next();
                     result = make_absolute(&result);
+                    absolute = true;
                 }
                 'h' => {
                     chars.next();
@@ -99,7 +150,11 @@ fn expand_with_modifiers(
         }
     }
 
-    result
+    Reference {
+        text: result,
+        unnamed: filename.is_empty(),
+        absolute,
+    }
 }
 
 /// Convert to absolute path.
@@ -319,6 +374,32 @@ mod tests {
         // Head of a simple filename should be "."
         let result = expand_shell_command("echo %:h", "file.rs", "");
         assert_eq!(result, "echo .");
+    }
+
+    #[test]
+    fn file_argument_inserts_names_without_shell_quoting() {
+        // vim: `:e %:h/x` and `:e #` take the names verbatim.
+        let expand = |arg: &str| expand_file_argument(arg, "my dir/main.rs", "other.rs");
+        assert_eq!(expand("%"), Ok("my dir/main.rs".to_string()));
+        assert_eq!(expand("%:h/x"), Ok("my dir/x".to_string()));
+        assert_eq!(expand("%:r.bak"), Ok("my dir/main.bak".to_string()));
+        assert_eq!(expand("#"), Ok("other.rs".to_string()));
+        assert_eq!(expand("a\\%b\\#c"), Ok("a%b#c".to_string()));
+        assert_eq!(expand("plain.txt"), Ok("plain.txt".to_string()));
+    }
+
+    #[test]
+    fn file_argument_reports_e499_and_e194() {
+        // nvim --clean: an unnamed buffer makes `:e %` E499 (even with `:h`),
+        // `:e %:p:h/x` works, and `:e #` without an alternate is E194.
+        let unnamed = |arg: &str| expand_file_argument(arg, "", "other.rs");
+        assert!(unnamed("%").unwrap_err().starts_with("E499"));
+        assert!(unnamed("%:h/a.txt").unwrap_err().starts_with("E499"));
+        assert!(unnamed("%:p:h/a.txt").is_ok());
+        let no_alternate = expand_file_argument("#", "a.txt", "");
+        assert!(no_alternate.unwrap_err().starts_with("E194"));
+        let no_alternate = expand_file_argument("#:p:h", "a.txt", "");
+        assert!(no_alternate.unwrap_err().starts_with("E194"));
     }
 
     #[test]

@@ -131,10 +131,20 @@ fn run_parsed(editor: &mut Editor, parsed: &ParsedCmd) -> CommandResult {
             end: last,
         }),
     };
+    let expanded;
+    let mut args = parsed.args;
+    // `:r !cmd` / `:w !cmd` expand `%` and `#` themselves, with shell quoting.
+    if command.args == table::ArgKind::File && !args.is_empty() && !args.starts_with('!') {
+        expanded = match expand_file_argument(editor, args) {
+            Ok(expanded) => expanded,
+            Err(message) => return err(message),
+        };
+        args = &expanded;
+    }
     let ex = Ex {
         command,
         bang: parsed.bang,
-        args: parsed.args,
+        args,
         range,
         explicit_range: parsed.range.is_some(),
     };
@@ -142,6 +152,20 @@ fn run_parsed(editor: &mut Editor, parsed: &ParsedCmd) -> CommandResult {
         return err(format!("E488: Trailing characters: {}", ex.args));
     }
     (command.handler)(editor, &ex)
+}
+
+/// Expand `~`, `%`, `#` and their modifiers in the file argument of `:e`,
+/// `:w`, `:sp`, `:r`, `:cd`, ... once, before the handler sees it.
+fn expand_file_argument(editor: &Editor, args: &str) -> Result<String, String> {
+    let home = files::expand_tilde(args)
+        .map_err(|error| format!("Failed to expand path '{args}': {error}"))?;
+    let current_file = editor.buffer().file_path().unwrap_or("");
+    let alternate_file = editor.registers().get(Some('#'));
+    crate::editor::shell_expansion::expand_file_argument(
+        &home.to_string_lossy(),
+        current_file,
+        &alternate_file,
+    )
 }
 
 /// Run a command line the user typed (`:` prompt, keymaps, Lua, `ZZ`) and

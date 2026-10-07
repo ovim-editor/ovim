@@ -1,6 +1,6 @@
 //! Quitting, windows, tab pages and the buffer list.
 
-use super::files::{expand_tilde, open_file};
+use super::files::open_file;
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
 use crate::editor::Editor;
@@ -145,12 +145,9 @@ pub(super) fn tab_new(editor: &mut Editor, ex: &Ex) -> CommandResult {
         editor.new_tab();
         return ok(format!("Created tab {}", tab_number(editor)));
     }
-    let filename = match expand_tilde(ex.args) {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(e) => return err(format!("Failed to expand path '{}': {}", ex.args, e)),
-    };
+    let filename = ex.args;
     editor.new_tab();
-    match open_or_create(editor, &filename) {
+    match open_or_create(editor, filename) {
         Ok(false) => ok(format!("Opened {} in tab {}", filename, tab_number(editor))),
         Ok(true) => ok(format!(
             "Created new file {} in tab {}",
@@ -264,24 +261,33 @@ pub(super) fn previous_buffer(editor: &mut Editor, _ex: &Ex) -> CommandResult {
     buffer_status(editor)
 }
 
-/// `:b[uffer] {N|name}`: switch by number or by a unique part of the name.
+/// `:b[uffer] {N|name|#|%}`: switch by number, by a unique part of the name,
+/// or to the alternate (`#`) or current (`%`) buffer.
 pub(super) fn buffer(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let target = ex.args;
-    if target.is_empty() {
+    if target.is_empty() || target == "%" {
         return ok_silent();
     }
-    let index = match target.parse::<usize>() {
-        Ok(number) if number >= 1 && number <= editor.buffer_count() => number - 1,
-        Ok(number) => return err(format!("E86: Buffer {number} does not exist")),
-        Err(_) => {
-            let names = editor.buffer_names();
-            let matching: Vec<usize> = (0..names.len())
-                .filter(|&index| names[index].contains(target))
-                .collect();
-            match matching.as_slice() {
-                [index] => *index,
-                [] => return err(format!("E94: No matching buffer for {target}")),
-                _ => return err(format!("E93: More than one match for {target}")),
+    let index = if target == "#" {
+        let alternate = editor.registers().get(Some('#'));
+        match editor.find_buffer_by_path(&alternate) {
+            Some(index) => index,
+            None => return err("E23: No alternate file"),
+        }
+    } else {
+        match target.parse::<usize>() {
+            Ok(number) if number >= 1 && number <= editor.buffer_count() => number - 1,
+            Ok(number) => return err(format!("E86: Buffer {number} does not exist")),
+            Err(_) => {
+                let names = editor.buffer_names();
+                let matching: Vec<usize> = (0..names.len())
+                    .filter(|&index| names[index].contains(target))
+                    .collect();
+                match matching.as_slice() {
+                    [index] => *index,
+                    [] => return err(format!("E94: No matching buffer for {target}")),
+                    _ => return err(format!("E93: More than one match for {target}")),
+                }
             }
         }
     };

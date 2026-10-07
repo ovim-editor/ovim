@@ -165,17 +165,9 @@ pub(super) fn read(editor: &mut Editor, ex: &Ex) -> CommandResult {
         } else {
             ex.args.to_string()
         };
-        let path = match super::files::expand_tilde(&target) {
-            Ok(path) => path,
-            Err(error) => return err(error),
-        };
-        match std::fs::read_to_string(&path) {
+        match std::fs::read_to_string(&target) {
             Ok(text) => {
-                let message = format!(
-                    "Read {} lines from {}",
-                    text.lines().count(),
-                    path.display()
-                );
+                let message = format!("Read {} lines from {target}", text.lines().count());
                 (text, message)
             }
             Err(_) => return err(format!("E484: Can't open file {target}")),

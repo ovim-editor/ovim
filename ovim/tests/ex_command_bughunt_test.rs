@@ -211,3 +211,104 @@ async fn failed_split_with_a_file_closes_the_new_window() {
     assert_eq!(test.editor.window_count(), 1);
     assert_eq!(test.buffer_content(), "one\n");
 }
+
+fn run(test: &mut EditorTest, command: &str) -> ovim::command_result::CommandResult {
+    ovim::commands::execute_command(&mut test.editor, command)
+}
+
+fn current_file(test: &EditorTest) -> String {
+    test.editor.buffer().file_path().unwrap_or("").to_string()
+}
+
+// nvim --clean: with b.txt current and a.txt alternate, `:e #` swaps them
+// (twice returns to b.txt); `:b#` does the same through the buffer list.
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_hash_opens_the_alternate_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = write_pair(&dir);
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+    test.load_file(second.to_str().unwrap());
+    let buffers = test.editor.buffer_count();
+
+    run(&mut test, "e #");
+    assert_eq!(current_file(&test), first.to_str().unwrap());
+    run(&mut test, "e #");
+    assert_eq!(current_file(&test), second.to_str().unwrap());
+    run(&mut test, "b#");
+    assert_eq!(current_file(&test), first.to_str().unwrap());
+    assert_eq!(
+        test.editor.buffer_count(),
+        buffers,
+        "no buffer named # was made"
+    );
+}
+
+// nvim --clean: `:e %:h/sub/x.txt` is relative to the current file's directory.
+#[tokio::test(flavor = "multi_thread")]
+async fn edit_percent_head_is_relative_to_the_current_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _) = write_pair(&dir);
+    std::fs::create_dir(dir.path().join("sub")).unwrap();
+    let nested = dir.path().join("sub").join("x.txt");
+    std::fs::write(&nested, "in sub\n").unwrap();
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+
+    let result = run(&mut test, "e %:h/sub/x.txt");
+
+    assert!(matches!(
+        result,
+        ovim::command_result::CommandResult::Success(_)
+    ));
+    assert_eq!(test.buffer_content(), "in sub\n");
+    assert_eq!(current_file(&test), nested.to_str().unwrap());
+}
+
+// nvim --clean: `:w! %:r.bak` writes a copy next to the file (b.txt -> b.bak).
+#[tokio::test(flavor = "multi_thread")]
+async fn write_expands_percent_modifiers() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _) = write_pair(&dir);
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+
+    run(&mut test, "w %:r.bak");
+
+    assert_eq!(
+        std::fs::read_to_string(dir.path().join("a.bak")).unwrap(),
+        "one\n"
+    );
+}
+
+// nvim --clean: `\%` is a literal percent sign (`:e a.txt\%x` edits "a.txt%x").
+#[tokio::test(flavor = "multi_thread")]
+async fn escaped_percent_in_a_file_argument_stays_literal() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _) = write_pair(&dir);
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+
+    run(&mut test, &format!("e {}\\%x", first.display()));
+
+    assert_eq!(current_file(&test), format!("{}%x", first.display()));
+}
+
+// nvim --clean: `:e %` in an unnamed buffer is E499 and `:e #` without an
+// alternate file is E194; neither opens a buffer named after the pattern.
+#[test]
+fn unusable_percent_and_hash_are_errors() {
+    let mut test = EditorTest::new("text\n");
+
+    let unnamed = run(&mut test, "e %");
+    assert!(
+        matches!(&unnamed, ovim::command_result::CommandResult::Error(e) if e.error.starts_with("E499")),
+        "{unnamed:?}"
+    );
+    let no_alternate = run(&mut test, "e #");
+    assert!(
+        matches!(&no_alternate, ovim::command_result::CommandResult::Error(e) if e.error.starts_with("E194")),
+        "{no_alternate:?}"
+    );
+    assert_eq!(test.editor.buffer_count(), 1);
+}

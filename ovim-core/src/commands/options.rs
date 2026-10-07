@@ -2,7 +2,6 @@
 //! `:map` family, `:noh`, `:reg`, `:marks`, `:help`, `:blame`, `:so`,
 //! `:lua`, `:luaf` and `:reload`.
 
-use super::files::expand_tilde;
 use super::set::handle_set_command;
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
@@ -213,13 +212,10 @@ pub(super) fn lua(_editor: &mut Editor, _ex: &Ex) -> CommandResult {
 
 /// `:luaf[ile] {file}`.
 pub(super) fn luafile(_editor: &mut Editor, ex: &Ex) -> CommandResult {
-    let _path = match expand_tilde(ex.args) {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(e) => return err(format!("Failed to expand path '{}': {}", ex.args, e)),
-    };
+    let _path = ex.args;
     #[cfg(feature = "lua")]
     {
-        match _editor.execute_lua_file(&_path) {
+        match _editor.execute_lua_file(_path) {
             Ok(_) => ok(format!("Executed {}", _path)),
             Err(e) => err(format!("Lua error: {}", e)),
         }
@@ -244,17 +240,14 @@ pub(super) fn reload(_editor: &mut Editor, _ex: &Ex) -> CommandResult {
 /// `:so[urce] {file}`: run a Lua file and the commands it queues,
 /// reporting failed commands instead of dropping them (OV-00197).
 pub(super) fn source(_editor: &mut Editor, ex: &Ex) -> CommandResult {
-    let _path = match expand_tilde(ex.args) {
-        Ok(path) => path,
-        Err(e) => return err(format!("Failed to expand path '{}': {}", ex.args, e)),
-    };
+    let _path = std::path::Path::new(ex.args);
     #[cfg(feature = "lua")]
     {
         let editor = _editor;
         let Some(context) = editor.lua_context_mut() else {
             return err("Lua not enabled");
         };
-        if let Err(e) = context.execute_file(&_path) {
+        if let Err(e) = context.execute_file(_path) {
             return err(format!("Failed to source {}: {}", ex.args, e));
         }
         let mut failed = Vec::new();

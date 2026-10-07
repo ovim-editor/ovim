@@ -51,10 +51,7 @@ pub(super) fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandRes
     }
 
     let resolved = match opts.path {
-        Some(raw) => match expand_tilde(raw) {
-            Ok(p) => p.to_string_lossy().to_string(),
-            Err(e) => return err(format!("Failed to expand path '{}': {}", raw, e)),
-        },
+        Some(path) => path.to_string(),
         None => match editor.buffer().file_path().map(|s| s.to_string()) {
             Some(p) => p,
             None => return err("No file name"),
@@ -116,14 +113,7 @@ pub(super) fn write(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let current = editor.buffer().file_path().map(str::to_string);
     let target = match (ex.args, &current) {
         ("", _) => None,
-        (file, Some(current)) => {
-            let path = match expand_tilde(file) {
-                Ok(path) => path,
-                Err(error) => return err(error),
-            };
-            let path = path.to_string_lossy().to_string();
-            (!same_file(current, &path)).then_some(path)
-        }
+        (file, Some(current)) => (!same_file(current, file)).then(|| file.to_string()),
         // An unnamed buffer takes the name.
         (file, None) => {
             return save_buffer(
@@ -232,11 +222,7 @@ pub(super) fn save_as(editor: &mut Editor, ex: &Ex) -> CommandResult {
     if ex.args.is_empty() {
         return err("E471: Argument required");
     }
-    let path = match expand_tilde(ex.args) {
-        Ok(path) => path,
-        Err(error) => return err(error),
-    };
-    if !ex.bang && path.exists() {
+    if !ex.bang && std::path::Path::new(ex.args).exists() {
         return err("E13: File exists (add ! to override)");
     }
     save_buffer(
@@ -280,29 +266,25 @@ fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
     }
 }
 
-fn edit_file(editor: &mut Editor, raw_filename: &str, force: bool) -> CommandResult {
+fn edit_file(editor: &mut Editor, filename: &str, force: bool) -> CommandResult {
     if !force && editor.is_modified() {
         return err("No write since last change (add ! to override)");
     }
-    open_file(editor, raw_filename)
+    open_file(editor, filename)
 }
 
 /// Open a file in the current window. The buffer it was showing stays loaded,
 /// so callers that keep it visible elsewhere (`:sp file`) skip the
 /// unsaved-changes check of [`edit_file`].
-pub(super) fn open_file(editor: &mut Editor, raw_filename: &str) -> CommandResult {
-    let filename = match expand_tilde(raw_filename) {
-        Ok(path) => path.to_string_lossy().to_string(),
-        Err(e) => return err(format!("Failed to expand path '{}': {}", raw_filename, e)),
-    };
-    let path = std::path::Path::new(&filename);
+pub(super) fn open_file(editor: &mut Editor, filename: &str) -> CommandResult {
+    let path = std::path::Path::new(filename);
     if path.is_dir() {
         return match editor.open_directory(path) {
             Ok(()) => ok(format!("Exploring: {}", path.display())),
             Err(error) => err(format!("Failed to open directory: {error}")),
         };
     }
-    match super::windows::open_or_create(editor, &filename) {
+    match super::windows::open_or_create(editor, filename) {
         Ok(false) => {
             let name = editor
                 .buffer()
@@ -379,10 +361,7 @@ pub(super) fn cd(_editor: &mut Editor, ex: &Ex) -> CommandResult {
             None => return err("Could not determine home directory"),
         }
     } else {
-        match expand_tilde(ex.args) {
-            Ok(path) => path,
-            Err(error) => return err(error),
-        }
+        std::path::PathBuf::from(ex.args)
     };
     match std::env::set_current_dir(&target) {
         Ok(()) => ok(target.display().to_string()),
