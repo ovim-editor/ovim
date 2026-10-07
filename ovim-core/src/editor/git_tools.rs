@@ -665,8 +665,12 @@ impl Editor {
     }
 
     /// Opens the history picker once its lookup ends. Returns true when
-    /// something changed.
+    /// something changed. A result that lands while the user is typing or in
+    /// another prompt waits for Normal mode instead of taking over the keys.
     pub fn poll_git_history(&mut self) -> bool {
+        if self.mode() != Mode::Normal {
+            return false;
+        }
         let Some(pending) = self.ui_panels.pending_git_history.take() else {
             return false;
         };

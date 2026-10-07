@@ -537,6 +537,30 @@ async fn submodule_rows_in_the_status_list_stage_unstage_and_open_the_diff() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn history_that_arrives_during_insert_waits_for_normal_mode() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\n");
+    fixture.commit_all("first");
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+
+    test.command("GitLog");
+    test.keys("i");
+    // Long enough for the one-commit lookup to finish in the background.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_millis(300);
+    while std::time::Instant::now() < deadline {
+        test.editor.poll_git_history();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+    }
+    test.assert_mode(Mode::Insert);
+    test.keys("x<Esc>");
+    assert_eq!(test.buffer_content(), "xone\n");
+
+    settle_history(&mut test);
+    test.assert_mode(Mode::Picker);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn history_is_looked_up_in_the_background_and_opens_when_ready() {
     let fixture = Fixture::new();
     let file = fixture.write("a.txt", "one\n");
