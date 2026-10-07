@@ -5,6 +5,7 @@
 //! structural — no sequence counters needed.  Different features use separate
 //! slots, so they can coexist without interference.
 
+use super::Editor;
 use std::time::{Duration, Instant};
 use tokio::sync::oneshot;
 use tokio::task::JoinHandle;
@@ -521,17 +522,48 @@ mod tests {
 
 // ---- Result types for each slot ----
 
+/// Where the editor was when a request was fired. Answers that change what
+/// the user is looking at (a popup, a jump) are applied only if the user is
+/// still where they asked: a late answer must not seize the mode the user has
+/// since moved on to or send typed text into another file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RequestOrigin {
+    buffer: crate::buffer::BufferId,
+    version: usize,
+    cursor: (usize, usize),
+    mode: crate::mode::Mode,
+}
+
+impl Editor {
+    pub(crate) fn request_origin(&self) -> RequestOrigin {
+        let buffer = self.buffer();
+        RequestOrigin {
+            buffer: buffer.id(),
+            version: buffer.version(),
+            cursor: (buffer.cursor().line(), buffer.cursor().col().0),
+            mode: self.mode,
+        }
+    }
+
+    /// True while buffer, text, cursor and mode are what `origin` recorded.
+    pub(crate) fn request_origin_is_current(&self, origin: &RequestOrigin) -> bool {
+        self.request_origin() == *origin
+    }
+}
+
 /// Result of a goto-definition / goto-implementation / goto-type-definition request.
 pub struct GotoLocationResult {
     pub location: Option<lsp_types::Location>,
     /// Whether to open the result in a new tab.
     pub new_tab: bool,
+    pub origin: RequestOrigin,
 }
 
 /// Result of a hover request.
 pub struct HoverResult {
     /// The rendered hover text, or `None` if the server had nothing to show.
     pub hover_text: Option<String>,
+    pub origin: RequestOrigin,
 }
 
 /// Result of a foldingRange request.
@@ -547,6 +579,7 @@ pub struct VirtualDocumentResult {
     pub uri: lsp_types::Uri,
     pub text: String,
     pub range: lsp_types::Range,
+    pub origin: RequestOrigin,
 }
 
 /// Result of a signature help request.

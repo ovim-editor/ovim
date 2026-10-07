@@ -396,6 +396,10 @@ impl Editor {
         };
 
         match result {
+            Ok(hover_result) if !self.request_origin_is_current(&hover_result.origin) => {
+                crate::lsp_debug!("LSP-HOVER", "Dropping hover response: editor moved on");
+                false
+            }
             Ok(hover_result) => {
                 if let Some(hover_text) = hover_result.hover_text {
                     crate::lsp_debug!("LSP-HOVER", "Received hover response");
@@ -502,6 +506,7 @@ impl Editor {
         let (tx, rx) = tokio::sync::oneshot::channel();
         let uri = location.uri.clone();
         let range = location.range;
+        let origin = self.request_origin();
         let task = tokio::spawn(async move {
             let result = lsp.text_document_content(&uri, &language_id).await;
             let _ = tx.send(
@@ -509,6 +514,7 @@ impl Editor {
                     uri,
                     text,
                     range,
+                    origin,
                 }),
             );
         });
@@ -528,6 +534,10 @@ impl Editor {
                 return false;
             }
         };
+        if !self.request_origin_is_current(&document.origin) {
+            self.set_lsp_status("Definition discarded: the editor moved on".to_string());
+            return false;
+        }
         let title = document
             .uri
             .as_str()
@@ -558,6 +568,11 @@ impl Editor {
         log_tag: &str,
     ) -> bool {
         match result {
+            Ok(goto) if !self.request_origin_is_current(&goto.origin) => {
+                crate::lsp_debug!(log_tag, "Dropping {} response: editor moved on", label);
+                self.set_lsp_status(format!("{label} discarded: the editor moved on"));
+                false
+            }
             Ok(goto) => {
                 // Reuse the existing handle_location_result_raw logic
                 self.handle_goto_location(goto.location, label, log_tag, goto.new_tab)
@@ -2882,6 +2897,7 @@ mod tests {
                 start: lsp_types::Position::new(1, 13),
                 end: lsp_types::Position::new(1, 22),
             },
+            origin: editor.request_origin(),
         };
         assert!(editor.open_virtual_document_result(Ok(document)));
         assert!(editor.buffer().is_read_only());

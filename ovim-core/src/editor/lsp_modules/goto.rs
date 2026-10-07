@@ -115,6 +115,7 @@ impl Editor {
         let character = p.character;
         let language_id = p.language_id;
 
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = lsp
@@ -123,6 +124,7 @@ impl Editor {
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab,
+                origin,
             }));
         });
 
@@ -154,6 +156,7 @@ impl Editor {
         let character = p.character;
         let language_id = p.language_id;
 
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = lsp
@@ -162,6 +165,7 @@ impl Editor {
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab,
+                origin,
             }));
         });
 
@@ -193,6 +197,7 @@ impl Editor {
         let character = p.character;
         let language_id = p.language_id;
 
+        let origin = self.request_origin();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
             let result = lsp
@@ -201,6 +206,7 @@ impl Editor {
             let _ = tx.send(result.map(|loc| GotoLocationResult {
                 location: loc,
                 new_tab: false,
+                origin,
             }));
         });
 
