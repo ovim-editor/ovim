@@ -855,6 +855,12 @@ pub struct AiChatState {
     /// Session-scoped roots explicitly approved for path-restricted tool access
     /// (outside-project and sensitive-path overrides).
     pub approved_external_roots: Vec<PathBuf>,
+    /// The user chose "allow for this session" on a shell prompt in
+    /// `sensitive_prompt` mode. Shell approval is a separate grant from
+    /// `approved_external_roots`: a directory says nothing about which
+    /// programs may run, and a shell grant says nothing about which paths
+    /// are open.
+    pub shell_allowed_session: bool,
     /// Exact temp files created during this live chat, shared by every turn
     /// and agent participating in the session.
     pub(super) created_temp_files: super::ai_session_temp::SessionTempFiles,
@@ -1117,6 +1123,7 @@ impl AiChatState {
             code_explanation_cache_bytes: 0,
             pending_no_repo_folder_approval: None,
             approved_external_roots: Vec::new(),
+            shell_allowed_session: false,
             created_temp_files: Default::default(),
             approved_unnamed_buffers: HashSet::new(),
             tool_event_summaries: HashMap::new(),

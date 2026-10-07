@@ -479,6 +479,20 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
             .bg(Color::Rgb(35, 70, 92))
             .add_modifier(Modifier::BOLD)
     };
+    // A session-wide shell grant (`sensitive_prompt` only) stays visible next
+    // to the policy toggles for as long as it holds.
+    let shell_label = if !external_agent && editor.ai_chat_shell_allowed_session() {
+        " SHELL ALLOWED "
+    } else {
+        ""
+    };
+    let shell_width =
+        text_display_width(shell_label).min(comprehension_x.saturating_sub(area.x) as usize) as u16;
+    let shell_x = comprehension_x.saturating_sub(shell_width);
+    let shell_style = Style::default()
+        .fg(Color::Rgb(255, 220, 120))
+        .bg(Color::Rgb(100, 48, 28))
+        .add_modifier(Modifier::BOLD);
     let profile_key = editor.ai_chat_effective_profile();
     let profile_label = editor
         .ai_state
@@ -503,7 +517,7 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
         .as_deref()
         .map(text_display_width)
         .unwrap_or_default() as u16;
-    let controls_available = comprehension_x.saturating_sub(area.x);
+    let controls_available = shell_x.saturating_sub(area.x);
     let show_model = model_width <= controls_available;
     let show_effort = show_model && model_width.saturating_add(effort_width) <= controls_available;
     let show_permission = show_effort
@@ -549,6 +563,7 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
         ));
         controls_width += permission_width;
     }
+    spans.push(Span::styled(shell_label, shell_style));
     spans.push(Span::styled(comprehension_label, comprehension_style));
     spans.push(Span::styled(yolo_label, yolo_style));
     frame.render_widget(
@@ -569,7 +584,7 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
             1,
         ))
     });
-    let controls_x = comprehension_x.saturating_sub(controls_width);
+    let controls_x = shell_x.saturating_sub(controls_width);
     if show_model {
         editor
             .render_cache
@@ -2963,6 +2978,21 @@ mod tests {
         assert!(rendered_header(&mut editor, 80).contains("BYPASS PERMISSIONS"));
         assert!(editor.set_ai_chat_permission_mode("plan"));
         assert!(!rendered_header(&mut editor, 40).contains("BYPASS"));
+    }
+
+    #[test]
+    fn header_shows_a_session_wide_shell_grant() {
+        let mut editor = Editor::default();
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts::default())
+            .unwrap();
+        assert!(!rendered_header(&mut editor, 100).contains("SHELL ALLOWED"));
+        editor.ai_state.chat.as_mut().unwrap().shell_allowed_session = true;
+        let header = rendered_header(&mut editor, 100);
+        assert!(header.contains("SHELL ALLOWED"), "{header:?}");
+        // The grant badge must not displace the policy toggles it sits beside.
+        assert!(header.contains("YOLO"), "{header:?}");
+        assert!(header.contains("COMPREHENSION"), "{header:?}");
     }
 
     #[test]

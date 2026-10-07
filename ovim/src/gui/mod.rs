@@ -652,6 +652,7 @@ pub struct GuiAiChat {
     pub permission_mode: Option<String>,
     pub permission_modes: Vec<ovim_core::ai::AiPermissionModeOption>,
     pub yolo_mode: bool,
+    pub shell_allowed: bool,
     pub comprehension_policy: String,
     pub comprehension_checkpoint: Option<String>,
     pub activity: String,
@@ -3740,6 +3741,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             permission_mode: editor.ai_chat_permission_mode().map(str::to_owned),
             permission_modes: editor.ai_chat_pickable_permission_modes(),
             yolo_mode: editor.ai_chat_yolo_mode(),
+            shell_allowed: editor.ai_chat_shell_allowed_session(),
             comprehension_policy: editor.ai_chat_comprehension_policy().as_str().to_string(),
             comprehension_checkpoint: editor
                 .ai_chat_comprehension_checkpoint_summary()

@@ -186,6 +186,7 @@ export interface GuiAiChat {
         description: string;
     }>;
     yoloMode: boolean;
+    shellAllowed?: boolean;
     comprehensionPolicy: "off" | "publish" | "commit";
     comprehensionCheckpoint?: string;
     activity: string;

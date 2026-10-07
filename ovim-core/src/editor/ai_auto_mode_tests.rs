@@ -1,7 +1,9 @@
-//! Auto mode reviews every model-proposed shell program before it runs, on the
-//! local tool-batch path used by direct Codex, OpenAI, Anthropic and Ollama as
-//! well as on the Codex app-server dynamic path. No test here reaches a real
-//! provider: Terra is replaced by a scripted classifier.
+//! Shell approval policy. Auto mode reviews every model-proposed shell program
+//! before it runs, on the local tool-batch path used by direct Codex, OpenAI,
+//! Anthropic and Ollama as well as on the Codex app-server dynamic path, and
+//! `sensitive_prompt` mode keeps its session grant for shell separate from
+//! path approvals. No test here reaches a real provider: Terra is replaced by
+//! a scripted classifier.
 
 use super::super::ai_chat_tools::ToolDispatchOutcome;
 use super::*;
@@ -473,4 +475,139 @@ fn credential_scrub_list_covers_builtin_and_configured_key_variables() {
     ] {
         assert!(names.iter().any(|name| name == expected), "{expected}");
     }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sensitive_prompt_shell_grant_is_an_explicit_visible_flag_not_a_directory() {
+    let mut fixture = fixture(Some(ClassifierDecision::Deny));
+    fixture.editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
+    let first = fixture.repo.path().join("first-marker");
+    let second = fixture.repo.path().join("second-marker");
+
+    assert!(!fixture.editor.ai_chat_shell_allowed_session());
+    assert!(fixture
+        .editor
+        .execute_tool_call_batch(vec![bash("first", "touch first-marker")], "test".into()));
+    assert!(fixture.editor.ai_chat_has_pending_tool_approval());
+    assert!(fixture
+        .editor
+        .status_message()
+        .contains("allow all shell commands for this chat session"));
+    assert!(!first.exists());
+
+    // Ctrl-A on the shell prompt.
+    assert!(fixture
+        .editor
+        .ai_chat_resolve_pending_tool_approval(true, true));
+    poll_until(&mut fixture.editor, "approved shell never finished", |e| {
+        !running_shell(e)
+    })
+    .await;
+    assert!(first.exists());
+    assert!(fixture.editor.ai_chat_shell_allowed_session());
+    // The grant is about programs: it opened no directory to path tools.
+    let chat = fixture.editor.ai_state.chat.as_ref().unwrap();
+    assert!(chat.approved_external_roots.is_empty());
+
+    // Later programs run without another prompt, because the user said so.
+    // (The first turn's continuation targets a closed port; start a new turn.)
+    fixture.editor.cancel_ai_chat_generation();
+    let turn = fixture
+        .editor
+        .begin_ai_runtime_turn("run a second check")
+        .unwrap();
+    fixture.editor.ai_state.chat.as_mut().unwrap().runtime_turn = Some(Box::new(turn));
+    assert!(fixture
+        .editor
+        .execute_tool_call_batch(vec![bash("second", "touch second-marker")], "test".into()));
+    assert!(!fixture.editor.ai_chat_has_pending_tool_approval());
+    poll_until(&mut fixture.editor, "granted shell never finished", |e| {
+        !running_shell(e)
+    })
+    .await;
+    assert!(second.exists());
+
+    // `/clear` starts a fresh conversation and takes the grant back.
+    fixture.editor.cancel_ai_chat_generation();
+    assert!(fixture
+        .editor
+        .try_execute_ai_chat_slash_command("/clear")
+        .unwrap());
+    assert!(!fixture.editor.ai_chat_shell_allowed_session());
+    fixture.editor.close_ai_chat();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_remembered_directory_does_not_approve_shell_commands() {
+    let mut fixture = fixture(Some(ClassifierDecision::Deny));
+    fixture.editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
+    let marker = fixture.repo.path().join("directory-marker");
+    // What Ctrl-A on an edit prompt in the active file's directory records.
+    fixture
+        .editor
+        .ai_state
+        .chat
+        .as_mut()
+        .unwrap()
+        .approved_external_roots
+        .push(fixture.repo.path().canonicalize().unwrap());
+
+    assert!(fixture.editor.execute_tool_call_batch(
+        vec![bash("directory", "touch directory-marker")],
+        "test".into()
+    ));
+
+    assert!(fixture.editor.ai_chat_has_pending_tool_approval());
+    assert!(!running_shell(&fixture.editor));
+    assert!(!marker.exists());
+    fixture.editor.close_ai_chat();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_shell_grant_does_not_open_paths_outside_the_project() {
+    let mut fixture = fixture(Some(ClassifierDecision::Deny));
+    fixture.editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
+    fixture
+        .editor
+        .ai_state
+        .chat
+        .as_mut()
+        .unwrap()
+        .shell_allowed_session = true;
+    let outside = tempfile::tempdir().unwrap();
+    let file = outside.path().join("notes.txt");
+    std::fs::write(&file, "outside\n").unwrap();
+
+    let read = ToolCallInfo {
+        id: "outside-read".into(),
+        name: "read_file_at_path".into(),
+        arguments: serde_json::json!({"path": file}),
+    };
+    assert!(matches!(
+        fixture.editor.dispatch_tool_call_with_approval(&read, None),
+        ToolDispatchOutcome::ApprovalRequired(_)
+    ));
+    fixture.editor.close_ai_chat();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn auto_mode_never_turns_remembering_into_a_shell_grant() {
+    let mut fixture = fixture(Some(ClassifierDecision::Ask));
+
+    assert!(fixture
+        .editor
+        .execute_tool_call_batch(vec![bash("auto", "touch auto-grant-marker")], "test".into()));
+    poll_until(&mut fixture.editor, "classification never finished", |e| {
+        !classifying(e)
+    })
+    .await;
+    assert!(fixture
+        .editor
+        .ai_chat_resolve_pending_tool_approval(true, true));
+
+    // Terra reviews each program in Auto mode; Ctrl-A allows this one only.
+    assert!(!fixture.editor.ai_chat_shell_allowed_session());
+    let chat = fixture.editor.ai_state.chat.as_ref().unwrap();
+    assert!(chat.approved_external_roots.is_empty());
+    fixture.editor.close_ai_chat();
 }

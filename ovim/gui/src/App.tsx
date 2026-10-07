@@ -1133,9 +1133,18 @@ export const ChatPanel = (props: {
                         </button>
                     </div>
                 </Show>
+                <Show when={props.chat.shellAllowed}>
+                    <span
+                        class="chat-policy-warning"
+                        role="status"
+                        title="You allowed every shell command for this chat session. Run /clear to revoke it."
+                    >
+                        SHELL ALLOWED
+                    </span>
+                </Show>
                 <Show when={props.chat.permissionMode === "bypassPermissions"}>
                     <span
-                        class="chat-bypass-warning"
+                        class="chat-policy-warning"
                         role="status"
                         title="Claude is not asking for permission in this chat. Run /permissions auto to restore prompts."
                     >

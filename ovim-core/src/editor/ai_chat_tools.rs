@@ -505,9 +505,14 @@ impl Editor {
                         return None;
                     }
                 }
-                if self.current_session_approved_root_for(path).is_some() {
+                // A remembered directory opens paths, never programs: shell
+                // calls all share the active file's directory.
+                if tc.name != "bash" && self.current_session_approved_root_for(path).is_some() {
                     return None;
                 }
+            }
+            if tc.name == "bash" && self.ai_chat_shell_allowed_session() {
+                return None;
             }
         }
 
@@ -536,12 +541,17 @@ impl Editor {
             "approval required"
         };
 
+        let remember = if tc.name == "bash" {
+            "Ctrl-A to allow all shell commands for this chat session"
+        } else {
+            "Ctrl-A to allow for this chat session"
+        };
         Some(ToolApprovalRequest {
             requested_path: requested_path.clone(),
             approval_root,
             reason: reason.to_string(),
             message: format!(
-                "Approval required: {} ({}) for {}. Press Ctrl-Y to allow once, Ctrl-A to allow for this chat session, Ctrl-N to deny.",
+                "Approval required: {} ({}) for {}. Press Ctrl-Y to allow once, {remember}, Ctrl-N to deny.",
                 tc.name,
                 reason,
                 requested_path.display()
@@ -550,6 +560,10 @@ impl Editor {
     }
 
     fn remember_tool_approval(&mut self, tool_call: &ToolCallInfo, approval_root: &Path) {
+        if tool_call.name == "bash" {
+            self.remember_shell_approval();
+            return;
+        }
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return;
         };
@@ -572,6 +586,28 @@ impl Editor {
         {
             chat.approved_external_roots.push(root);
         }
+    }
+
+    /// "Allow for this session" on a shell prompt. Only `sensitive_prompt` has
+    /// a session grant to give: Auto mode reviews every program and
+    /// `always_prompt` never remembers.
+    fn remember_shell_approval(&mut self) {
+        if self.ai_state.config.tool_approval_mode != ToolApprovalMode::SensitivePrompt {
+            return;
+        }
+        if let Some(chat) = self.ai_state.chat.as_mut() {
+            chat.shell_allowed_session = true;
+        }
+        self.set_status_message("Shell commands allowed for this chat session");
+    }
+
+    /// Whether the user allowed every shell command for this chat session.
+    /// Frontends keep this visible while it holds.
+    pub fn ai_chat_shell_allowed_session(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .is_some_and(|chat| chat.shell_allowed_session)
     }
 
     fn execute_read_buffer_tool(
@@ -1078,7 +1114,12 @@ impl Editor {
                     Some(pending.approval_root),
                     pending.runtime_tool_started,
                 );
-                self.set_status_message(format!("Approved {tool_name} for this invocation"));
+                let scope = if tool_name == "bash" && self.ai_chat_shell_allowed_session() {
+                    "for this chat session"
+                } else {
+                    "for this invocation"
+                };
+                self.set_status_message(format!("Approved {tool_name} {scope}"));
             } else {
                 let tool_name = pending.tool_call.name.clone();
                 self.finish_dynamic_tool(

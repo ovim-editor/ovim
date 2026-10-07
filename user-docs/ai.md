@@ -175,6 +175,16 @@ read-only inputs and do not trigger outside-project approval prompts. To opt
 out of auto mode, set `tool_approval_mode = "sensitive_prompt"` or
 `"always_prompt"` in legacy `ai.toml`.
 
+In `sensitive_prompt` mode, Ctrl-A on a path prompt remembers that folder for
+path tools only. Ctrl-A on a shell prompt allows every shell command for the
+rest of the chat session, not just the one shown; a `SHELL ALLOWED` badge stays
+in the chat header while the grant holds, and `/clear` (or restarting Ovim)
+revokes it.
+The two grants are independent: a remembered folder never approves a shell
+command, and the shell grant never opens a path. Auto mode ignores Ctrl-A for
+shell commands because Terra reviews each one, and `always_prompt` never
+remembers.
+
 An exact temporary file created by the active chat keeps that session's
 authority for later reads, edits, `chmod +x`, and execution. Ovim uses the
 platform temp directory and canonical paths, so aliases such as macOS `/tmp`

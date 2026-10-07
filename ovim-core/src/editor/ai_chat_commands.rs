@@ -435,6 +435,8 @@ impl Editor {
             chat.streaming_tool_calls.clear();
             chat.tool_event_summaries.clear();
             chat.tool_call_count = 0;
+            // A fresh conversation does not inherit "allow all shell commands".
+            chat.shell_allowed_session = false;
             chat.agent_edits.clear();
         }
         self.render_cache.ai_chat_last_total_rows = 0;

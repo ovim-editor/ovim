@@ -3573,7 +3573,7 @@ kbd {
     border-color: color-mix(in srgb, var(--warning) 62%, var(--border));
     background: color-mix(in srgb, var(--warning) 9%, transparent);
 }
-.chat-bypass-warning {
+.chat-policy-warning {
     flex: 0 0 auto;
     display: inline-flex;
     align-items: center;
