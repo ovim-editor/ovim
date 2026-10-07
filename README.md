@@ -215,6 +215,12 @@ For AI-agent integration, ovim also speaks [MCP](https://modelcontextprotocol.io
 
 ## CLI Reference
 
+### Native GUI
+
+```bash
+ovim gui src/main.rs:42:10       # Open Ovim's native Tauri GUI
+```
+
 ### File Operations (no session needed)
 
 ```bash
@@ -232,6 +238,9 @@ ovim exec "set number" -s dev    # Execute ex command
 ovim context -s dev              # 21-line context window
 ovim buffer -s dev               # Buffer content
 ovim search "pattern" -s dev     # Find pattern
+ovim paste 'a\nb' -s dev         # Paste literal text (\n for a newline)
+ovim resize 120x40 -s dev        # Resize the logical viewport
+ovim snapshot -s dev             # Complete editor state as JSON
 ```
 
 ### LSP Commands
@@ -250,6 +259,14 @@ ovim session list                # List active sessions
 ovim session kill -s dev         # Kill session
 ovim session health -s dev       # Health check
 ovim session cleanup --dry-run   # Preview stale session cleanup
+```
+
+### AI History
+
+```bash
+ovim history status              # Storage use and runs eligible for cleanup
+ovim history cleanup --dry-run   # Preview removal of old, unbound runs
+ovim history cleanup --max-age 7 # Remove eligible runs older than 7 days (default 30)
 ```
 
 ## Architecture
