@@ -18,7 +18,7 @@ use std::process::Stdio;
 use std::sync::atomic::{AtomicU32, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::{mpsc, oneshot, Mutex};
 
@@ -207,6 +207,42 @@ pub struct LanguageServerHealth {
 
     /// Whether the server process is still alive
     pub is_alive: bool,
+}
+
+/// Logs a server's stderr line by line until the pipe closes. It must never
+/// stop early: dropping the read end makes the server's next stderr write
+/// fail, which kills most servers. Stderr is not guaranteed to be UTF-8, so
+/// lines are decoded lossily, and one line is capped so a server printing
+/// binary without newlines cannot grow the buffer without bound.
+async fn drain_stderr<R: AsyncRead + Unpin>(stderr: R) {
+    const MAX_LINE_BYTES: u64 = 64 * 1024;
+    const MAX_CONSECUTIVE_ERRORS: u32 = 10;
+
+    let mut reader = BufReader::new(stderr);
+    let mut line = Vec::new();
+    let mut errors = 0;
+    loop {
+        line.clear();
+        match (&mut reader)
+            .take(MAX_LINE_BYTES)
+            .read_until(b'\n', &mut line)
+            .await
+        {
+            Ok(0) => break, // EOF
+            Ok(_) => {
+                errors = 0;
+                crate::lsp_debug!("stderr", "{}", String::from_utf8_lossy(&line).trim_end());
+            }
+            Err(error) => {
+                errors += 1;
+                if errors >= MAX_CONSECUTIVE_ERRORS {
+                    crate::lsp_debug!("stderr", "LSP stderr unreadable: {}", error);
+                    break;
+                }
+            }
+        }
+    }
+    crate::lsp_debug!("stderr", "LSP stderr task exiting");
 }
 
 /// A language server process
@@ -802,19 +838,7 @@ impl LanguageServer {
 
         // Spawn task to capture stderr and log it for debugging
         // Note: Not supervised because stderr is unique to the process
-        tokio::spawn(async move {
-            let mut stderr_reader = BufReader::new(stderr);
-            let mut line = String::new();
-            while let Ok(n) = stderr_reader.read_line(&mut line).await {
-                if n == 0 {
-                    break; // EOF
-                }
-                // Log stderr output from LSP server
-                crate::lsp_debug!("stderr", "{}", line.trim_end());
-                line.clear();
-            }
-            crate::lsp_debug!("stderr", "LSP stderr task exiting");
-        });
+        tokio::spawn(drain_stderr(stderr));
 
         // BUG FIX: Verify the process is actually running before returning
         // Give it a small delay to fail fast if the command doesn't exist or crashes immediately
@@ -2408,5 +2432,36 @@ mod tests {
         let formats = caps.content_format.expect("content_format set");
         assert_eq!(formats.first(), Some(&lsp_types::MarkupKind::Markdown));
         assert!(formats.contains(&lsp_types::MarkupKind::PlainText));
+    }
+
+    /// A server that prints bytes that are not UTF-8 must keep a reader on
+    /// its stderr: a closed pipe makes its next stderr write fail.
+    #[tokio::test]
+    async fn stderr_is_drained_past_bytes_that_are_not_utf8() {
+        use tokio::io::AsyncWriteExt;
+
+        let (mut server_stderr, reader) = tokio::io::duplex(64);
+        let drain = tokio::spawn(super::drain_stderr(reader));
+
+        server_stderr
+            .write_all(b"ok\n\xff\xfe bad\n")
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        server_stderr
+            .write_all(b"still being read\n")
+            .await
+            .expect("the reader must outlive non-UTF-8 output");
+
+        // A line longer than the cap does not stall the reader either.
+        server_stderr
+            .write_all(&vec![b'x'; 200 * 1024])
+            .await
+            .expect("the reader keeps consuming a line without newline");
+        drop(server_stderr);
+        tokio::time::timeout(Duration::from_secs(5), drain)
+            .await
+            .expect("the reader ends at EOF")
+            .unwrap();
     }
 }
