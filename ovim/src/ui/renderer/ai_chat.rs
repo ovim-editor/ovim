@@ -14,7 +14,6 @@ use std::hash::{Hash, Hasher};
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-pub use super::ai_chat_layout::compute_chat_split;
 use super::ai_chat_layout::ChatPanelLayout;
 use super::line_cache::{CachedChatBubble, CachedChatImage, ChatBubbleCacheKey, LineRenderCache};
 
@@ -2780,12 +2779,11 @@ fn center_text(text: &str, width: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        chat_cursor_info, compute_chat_split, highlight_chat_selection,
-        is_hidden_tool_only_assistant, render_card_header_line, render_card_styled_line,
-        render_card_text_line, render_chat_bubble, render_queued_input_row,
-        render_tool_event_details, render_tool_event_row, styled_word_wrap_line,
-        text_display_width, truncate_with_ellipsis, word_wrap, LineRenderCache, MessageRowStyle,
-        ACCENT_ASSISTANT_EDIT, BG_ASSISTANT_EDIT_ROW,
+        chat_cursor_info, highlight_chat_selection, is_hidden_tool_only_assistant,
+        render_card_header_line, render_card_styled_line, render_card_text_line,
+        render_chat_bubble, render_queued_input_row, render_tool_event_details,
+        render_tool_event_row, styled_word_wrap_line, text_display_width, truncate_with_ellipsis,
+        word_wrap, LineRenderCache, MessageRowStyle, ACCENT_ASSISTANT_EDIT, BG_ASSISTANT_EDIT_ROW,
     };
     use ovim_core::ai::chat_types::{ChatMessage, ChatRole, ImageAttachment, ToolCallInfo};
     use ovim_core::editor::ai_chat_input::{chat_input_cursor_row_col, wrap_chat_input_rows};
@@ -2909,23 +2907,6 @@ mod tests {
                 }
             }
         }
-    }
-
-    #[test]
-    fn chat_split_uses_user_width_and_preserves_minimum_buffer() {
-        let area = Rect::new(0, 0, 100, 24);
-        let (buffer, chat) = compute_chat_split(area, true, Some(55));
-        assert_eq!((buffer.width, chat.width), (45, 55));
-
-        let (buffer, chat) = compute_chat_split(area, true, Some(90));
-        assert_eq!((buffer.width, chat.width), (40, 60));
-    }
-
-    #[test]
-    fn chat_split_keeps_context_sensitive_default_without_user_resize() {
-        let area = Rect::new(0, 0, 100, 24);
-        assert_eq!(compute_chat_split(area, true, None).1.width, 40);
-        assert_eq!(compute_chat_split(area, false, None).1.width, 35);
     }
 
     fn claude_editor() -> Editor {

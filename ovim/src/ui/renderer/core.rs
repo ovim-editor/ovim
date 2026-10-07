@@ -5,7 +5,7 @@ use crossterm::cursor::SetCursorStyle;
 use crossterm::terminal::SetTitle;
 use ratatui::{
     backend::CrosstermBackend,
-    layout::{Constraint, Direction, Layout, Rect},
+    layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
@@ -28,6 +28,7 @@ use super::status_widgets::{
     render_progress_line, render_rename_input, render_search_line, render_status_line,
     render_tab_bar, render_top_right_toasts,
 };
+use crate::frontend::layout::FrameLayout;
 
 // ---------------------------------------------------------------------------
 // Frame layout types
@@ -65,149 +66,24 @@ fn init_frame(frame: &Frame, editor: &mut Editor) {
 /// Phase 2: Compute the frame layout (tab bar, file tree, buffer, status splits).
 ///
 /// Returns `None` if the editor is in dashboard mode (caller should render
-/// the dashboard and return early).
+/// the dashboard and return early). The geometry itself is decided by
+/// [`FrameLayout`], which the viewport resize path shares.
 fn compute_frame_layout(frame: &Frame, editor: &Editor) -> Option<FrameAreas> {
-    if editor.should_show_dashboard() {
-        return None;
-    }
-
-    let main_area = frame.area();
-
-    // Tab bar (if multiple tabs) + rest
-    let (tab_area, remaining_area) = if editor.tab_count() > 1 {
-        let vertical_chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1)])
-            .split(main_area);
-        (Some(vertical_chunks[0]), vertical_chunks[1])
-    } else {
-        (None, main_area)
-    };
-
-    // File tree (if visible) + rest
-    let (file_tree_area, content_area) = if editor.file_tree().is_visible() {
-        let explorer_width = editor.file_tree().preferred_width(remaining_area.width);
-        let horizontal_chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Length(explorer_width), Constraint::Min(1)])
-            .split(remaining_area);
-        (Some(horizontal_chunks[0]), horizontal_chunks[1])
-    } else {
-        (None, remaining_area)
-    };
-
-    // Test panel (right) and debug side panel: both are split from the content
-    // area, the test panel at the far right. Their widths are budgeted
-    // together so opening both does not squeeze either.
-    let debug_panels_visible = editor.debug_state().panels_visible;
-    let (test_width, debug_width) = super::layout::side_panel_widths(
-        content_area.width,
-        editor
-            .is_test_panel_open()
-            .then(|| editor.test_panel().width_delta),
-        debug_panels_visible.then(|| editor.debug_state().panel.width_delta),
-    );
-    let (content_area, test_panel_area) = if let Some(width) = test_width {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(1), Constraint::Length(width)])
-            .split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
-    };
-    let (content_area, debug_side_area) = if let Some(width) = debug_width {
-        let chunks = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Min(1), Constraint::Length(width)])
-            .split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
-    };
-
-    // Run console (bottom) — build / run / debug output, kept after exit
-    let console_height = if editor.run_console().open {
-        super::run_console::panel_height(content_area.height, editor.run_console().height_delta)
-    } else {
-        0
-    };
-    let (content_area, run_console_area) = if console_height > 0 {
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([Constraint::Min(1), Constraint::Length(console_height)])
-            .split(content_area);
-        (chunks[0], Some(chunks[1]))
-    } else {
-        (content_area, None)
-    };
-
-    // Buffer + optional progress line + status line + command/prompt area
-    let has_progress = editor.lsp_progress_message().is_some();
-    let is_ai_chat = editor.mode() == crate::mode::Mode::AiChat;
-    let command_height = 1;
-
-    // Interactive walkthroughs temporarily dedicate the shared content width
-    // to code. The chat remains alive and resumes as soon as the walkthrough
-    // completes or is dismissed.
-    let review_mode = editor.ai_chat_review_mode();
-    let walkthrough_open = editor.ai_chat_has_pending_code_explanation();
-    let (effective_content, chat_area) =
-        if should_dock_ai_chat(is_ai_chat, review_mode, walkthrough_open) {
-            let allow_edits = editor.ai_chat_allow_edits();
-            let (buffer_rect, chat_rect) = super::ai_chat::compute_chat_split(
-                content_area,
-                allow_edits,
-                editor.ai_chat_panel_width_percent(),
-            );
-            (buffer_rect, Some(chat_rect))
-        } else {
-            (content_area, None)
-        };
-
-    let chunks = if has_progress {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),              // progress line
-                Constraint::Length(1),              // status line
-                Constraint::Length(command_height), // command/message line
-            ])
-            .split(effective_content)
-    } else {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),              // status line
-                Constraint::Length(command_height), // command/message line
-            ])
-            .split(effective_content)
-    };
-
-    let (status_chunk, command_chunk, progress_chunk) = if has_progress {
-        (chunks[2], chunks[3], Some(chunks[1]))
-    } else {
-        (chunks[1], chunks[2], None)
-    };
-
+    let area = crate::key_convert::convert_ratatui_rect(frame.area());
+    let layout = FrameLayout::compute(editor, area)?;
+    let rect = crate::key_convert::convert_core_rect;
     Some(FrameAreas {
-        tab_area,
-        file_tree_area,
-        buffer_chunk: chunks[0],
-        status_chunk,
-        command_chunk,
-        progress_chunk,
-        chat_area,
-        test_panel_area,
-        debug_side_area,
-        run_console_area,
+        tab_area: layout.tab_bar.map(rect),
+        file_tree_area: layout.file_tree.map(rect),
+        buffer_chunk: rect(layout.buffer),
+        status_chunk: rect(layout.status),
+        command_chunk: rect(layout.command),
+        progress_chunk: layout.progress.map(rect),
+        chat_area: layout.chat.map(rect),
+        test_panel_area: layout.test_panel.map(rect),
+        debug_side_area: layout.debug_panel.map(rect),
+        run_console_area: layout.run_console.map(rect),
     })
-}
-
-fn should_dock_ai_chat(is_ai_chat: bool, review_mode: bool, walkthrough_open: bool) -> bool {
-    is_ai_chat && !review_mode && !walkthrough_open
 }
 
 /// Phase 3: Render the buffer area (split or single window), returning
@@ -653,10 +529,11 @@ fn set_cursor_position(
         let cursor_y = cursor_y.min(buffer_area.height.saturating_sub(1) as usize);
         let cursor_x = cursor_x.min(text_width.saturating_sub(1));
 
-        frame.set_cursor_position((
-            buffer_area.x + gutter_width as u16 + cursor_x as u16,
-            buffer_area.y + cursor_y as u16,
-        ));
+        // Never outside the editor's own column, even when a tiny grid leaves
+        // it narrower than its gutter.
+        let screen_x = (buffer_area.x + gutter_width as u16 + cursor_x as u16)
+            .min(buffer_area.right().saturating_sub(1));
+        frame.set_cursor_position((screen_x, buffer_area.y + cursor_y as u16));
     }
 }
 
@@ -1110,8 +987,9 @@ mod cursor_screen_position_tests {
     //! `scroll_subrow` rows below its real input point (regression of OV-00019,
     //! visible when many wrapped rows precede the cursor).
 
-    use super::{should_dock_ai_chat, take_terminal_image_refresh, Renderer};
+    use super::{take_terminal_image_refresh, Renderer};
     use crate::editor::{Editor, Picker};
+    use crate::frontend::layout::should_dock_ai_chat;
     use crate::ui::renderer::line_cache::LineRenderCache;
     use ratatui::backend::TestBackend;
     use ratatui::Terminal;

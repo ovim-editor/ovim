@@ -28,6 +28,7 @@
 //! 5. On shutdown, call `editor.close_current_file_lsp().await` so the
 //!    language server sees a clean `didClose` instead of a dropped socket.
 
+pub mod layout;
 mod refresh;
 mod viewport;
 

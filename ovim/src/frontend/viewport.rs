@@ -1,38 +1,33 @@
-use crate::editor::{DiffLayout, Editor};
+use super::layout::{FrameLayout, GutterWidths};
+use crate::editor::Editor;
+use ovim_core::Rect;
 
 /// Recomputes viewport geometry from raw grid cells: `width`/`height` are the
-/// full window in character cells (not the content area — this function
-/// subtracts chrome itself: tab bar, file tree, LSP progress line, and the
-/// status+command lines). Keeps viewport height, window manager dimensions,
-/// the wrap map, and the scroll offset in sync with the new size.
+/// full window in character cells (not the content area — [`FrameLayout`]
+/// subtracts the chrome: tab bar, file tree and other side panels, the run
+/// console, LSP progress line, and the status+command lines). Keeps viewport
+/// height, window manager dimensions, the wrap map, and the scroll offset in
+/// sync with the new size.
 ///
 /// Call this whenever the grid geometry changes (terminal resize, window
 /// resize, split/pane changes) — see the frontend contract in
 /// [`crate::frontend`].
 pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
-    // Recompute the buffer chunk dimensions using the same high-level rules as the renderer.
-    // This is intentionally approximate (position doesn't matter here) — it just needs to
-    // keep viewport height and wrap width correct for scroll calculations.
-    let mut content_width = width;
-    let mut content_height = height;
-
-    // Tab bar consumes one row when multiple tabs are present.
-    if editor.tab_count() > 1 {
-        content_height = content_height.saturating_sub(1);
-    }
-
-    // File tree consumes fixed width when visible.
-    if editor.file_tree().is_visible() {
-        content_width = content_width.saturating_sub(50);
-    }
-
-    // Progress line consumes one row when present.
-    if editor.lsp_progress_message().is_some() {
-        content_height = content_height.saturating_sub(1);
-    }
-
-    // Status line + command/message line.
-    content_height = content_height.saturating_sub(2);
+    // Ask the layout the renderer will use where the editor's windows end up,
+    // so the wrap map is built for the width the next frame draws at.
+    let (mut content_width, content_height) = match FrameLayout::compute(
+        editor,
+        Rect {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        },
+    ) {
+        Some(layout) => (layout.buffer.width, layout.buffer.height),
+        // The dashboard has no windows; keep the status and command lines.
+        None => (width, height.saturating_sub(2)),
+    };
 
     // Apply textwidth centering: narrowing changes wrap width, but not viewport height.
     if let Some(textwidth) = editor.options.textwidth {
@@ -81,46 +76,10 @@ pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
 }
 
 /// Computes the wrap width (content width minus gutter) for a given content
-/// area width. Kept in sync by hand with
-/// `ovim::ui::renderer::layout::BufferLayout::compute`, which is the
-/// authority for gutter/layout sizing; this function must not drift from it.
+/// area width. The gutter comes from [`GutterWidths`], the same source
+/// `BufferLayout::compute` uses, so the two cannot drift apart.
 pub fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
-    const SIGN_WIDTH: usize = 2;
-    const GUTTER_SPACING: usize = 1;
-
-    let split_review = editor.is_diff_review_buffer()
-        && editor
-            .diff_review()
-            .is_some_and(|review| review.layout == DiffLayout::Split);
-    let show_numbers = !split_review && (editor.options.number || editor.options.relative_number);
-    let line_count = editor.buffer().line_count();
-    let line_num_width = if show_numbers {
-        line_count.to_string().len().max(3)
-    } else {
-        0
-    };
-
-    let blame_width = if editor.options.blame && !split_review {
-        if let Some(blame) = editor.buffer().git_blame() {
-            let author_len = blame.max_author_len().min(15);
-            1 + 1 + 5 + 1 + author_len.max(3) + 1
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
-    let fold_width = if split_review {
-        0
-    } else {
-        editor.fold_column_width()
-    };
-    let gutter_width = if split_review {
-        0
-    } else {
-        blame_width + fold_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING
-    };
+    let gutter_width = GutterWidths::of(editor).total;
 
     // Apply textwidth narrowing (OV-00019: must match renderer's BufferLayout
     // which narrows buffer_area to textwidth before computing text_width).

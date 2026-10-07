@@ -9,40 +9,6 @@ const COMPOSER_CHROME_WIDTH: usize = 7; // "│ " + prompt + " │"
 const COMPOSER_CURSOR_PREFIX_WIDTH: u16 = 5; // "│ " + prompt
 const IMAGE_GALLERY_HEIGHT: u16 = 6;
 
-/// Split content area into buffer (left) and chat panel (right).
-pub fn compute_chat_split(
-    content_area: Rect,
-    allow_edits: bool,
-    preferred_percent: Option<u16>,
-) -> (Rect, Rect) {
-    let total = content_area.width;
-    let chat_pct = preferred_percent
-        .unwrap_or(if allow_edits { 40 } else { 35 })
-        .clamp(1, 99);
-    let min_chat = 30u16;
-    let min_buffer = 40u16;
-
-    let chat_width = ((u32::from(total) * u32::from(chat_pct) / 100) as u16)
-        .max(min_chat)
-        .min(total.saturating_sub(min_buffer));
-    let buffer_width = total.saturating_sub(chat_width);
-
-    (
-        Rect::new(
-            content_area.x,
-            content_area.y,
-            buffer_width,
-            content_area.height,
-        ),
-        Rect::new(
-            content_area.x + buffer_width,
-            content_area.y,
-            chat_width,
-            content_area.height,
-        ),
-    )
-}
-
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ChatPanelLayout {
     pub tree_area: Option<Rect>,
@@ -179,14 +145,6 @@ fn tree_panel_width(chat_width: u16) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn split_honors_preference_without_starving_buffer() {
-        let area = Rect::new(0, 0, 100, 24);
-        assert_eq!(compute_chat_split(area, true, Some(55)).0.width, 45);
-        assert_eq!(compute_chat_split(area, true, Some(90)).0.width, 40);
-        assert_eq!(compute_chat_split(area, false, None).1.width, 35);
-    }
 
     #[test]
     fn composer_and_cursor_share_the_height_capped_projection() {
