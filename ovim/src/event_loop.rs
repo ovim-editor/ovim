@@ -359,6 +359,7 @@ pub async fn run_event_loop(
     editor: &mut Editor,
     mut api_rx: Option<mpsc::Receiver<ApiRequest>>,
     start_time: SystemTime,
+    mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let mut last_input_time: Option<Instant> = None;
     let mut tick_state = TickState::new();
@@ -381,6 +382,12 @@ pub async fn run_event_loop(
         // Wait for input, API request, or tick — input has priority via `biased`
         tokio::select! {
             biased;
+
+            // The terminal went away or the process was told to terminate:
+            // leave through the normal exit.
+            Some(()) = shutdown_rx.recv() => {
+                break;
+            }
 
             // Terminal input (highest priority)
             maybe_event = event_stream.next() => {

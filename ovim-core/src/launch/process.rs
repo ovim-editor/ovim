@@ -21,6 +21,8 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
 
+use super::process_groups::{register_group, terminate_group};
+
 /// Output lines buffered between the readers and the tick. When the queue is
 /// full the readers wait, which stops the child once its pipe fills up.
 const OUTPUT_QUEUE_LINES: usize = 8192;
@@ -132,6 +134,8 @@ impl ProcessHandle {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(target_os = "linux")]
+        die_with_parent(&mut command);
         let mut child = command.spawn().map_err(|e| {
             format!(
                 "failed to run '{}' in {}: {}",
@@ -141,6 +145,9 @@ impl ProcessHandle {
             )
         })?;
         let pid = child.id();
+        // Registered until the group is done, so that the editor can stop it
+        // on its way out (see `process_groups`).
+        let group = pid.map(register_group);
         let stdout = child.stdout.take();
         let stderr = child.stderr.take();
         let stdin_tx = child.stdin.take().map(|mut stdin| {
@@ -195,7 +202,10 @@ impl ProcessHandle {
                 // exit leftovers are not touched: build tools leave daemons
                 // behind on purpose.
                 terminate_group(pid, true);
-            } else {
+            }
+            // The leader is gone; the editor no longer answers for the group.
+            drop(group);
+            if !killed {
                 finish_readers(readers, &tx).await;
             }
             let code = status.ok().and_then(|s| s.code());
@@ -258,6 +268,26 @@ impl ProcessHandle {
         if let Some(tx) = self.kill_tx.take() {
             let _ = tx.send(());
         }
+    }
+}
+
+/// Has the kernel kill the child when the editor dies without a chance to
+/// clean up (SIGKILL, the OOM killer). Only the child itself: the rest of its
+/// group is beyond the kernel's reach.
+#[cfg(target_os = "linux")]
+fn die_with_parent(command: &mut Command) {
+    let parent = std::process::id() as libc::pid_t;
+    // SAFETY: only async-signal-safe calls (prctl, getppid) run between fork
+    // and exec.
+    unsafe {
+        command.pre_exec(move || {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL);
+            // The editor may have died before the flag was set.
+            if libc::getppid() != parent {
+                return Err(std::io::Error::from_raw_os_error(libc::ESRCH));
+            }
+            Ok(())
+        });
     }
 }
 
@@ -414,19 +444,6 @@ pub fn port_is_listening(port: u16) -> bool {
         .is_ok()
     }
 }
-
-#[cfg(unix)]
-fn terminate_group(pid: Option<u32>, force: bool) {
-    let Some(pid) = pid else { return };
-    let signal = if force { libc::SIGKILL } else { libc::SIGTERM };
-    // SAFETY: plain signal delivery to a process group we created.
-    unsafe {
-        libc::kill(-(pid as i32), signal);
-    }
-}
-
-#[cfg(not(unix))]
-fn terminate_group(_pid: Option<u32>, _force: bool) {}
 
 #[cfg(test)]
 mod tests {

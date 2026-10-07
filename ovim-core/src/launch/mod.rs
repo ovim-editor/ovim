@@ -8,6 +8,7 @@
 //!   `hyperion.runConfigurations`).
 //! - [`lsp`]: asking the language server that owns a document.
 //! - [`process`]: non-blocking child processes with streamed output.
+//! - [`process_groups`]: keeping started programs from outliving the editor.
 //! - [`diagnostics`]: javac / kotlinc / Gradle / Maven output -> quickfix.
 //! - [`stacktrace`]: jumpable `at com.foo.Bar.baz(Bar.java:42)` lines.
 //! - [`console`]: the persistent run console model.
@@ -20,6 +21,7 @@ pub mod junit;
 pub mod lsp;
 pub mod plan;
 pub mod process;
+pub mod process_groups;
 pub mod stacktrace;
 pub mod test_report;
 
@@ -27,3 +29,4 @@ pub use console::{
     ConsoleLine, LineKind, RunConsoleState, RunOutcome, RunPhase, RunRecord, RunStatus,
 };
 pub use plan::{LaunchMode, LaunchPlan, PlanKind};
+pub use process_groups::kill_all_launch_groups;
