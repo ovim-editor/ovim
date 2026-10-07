@@ -973,18 +973,6 @@ impl Buffer {
         self.fold_manager.delete_all();
     }
 
-    /// Refreshes git status for this buffer
-    /// Returns the duration in microseconds if git status was refreshed
-    pub fn refresh_git_status(&mut self) -> Option<u64> {
-        if let Some(ref path) = self.file_path {
-            let start = std::time::Instant::now();
-            self.git_status = GitStatus::from_file(path).unwrap_or_else(|_| GitStatus::new());
-            Some(start.elapsed().as_micros() as u64)
-        } else {
-            None
-        }
-    }
-
     /// Gets the git status for this buffer
     pub fn git_status(&self) -> &GitStatus {
         &self.git_status

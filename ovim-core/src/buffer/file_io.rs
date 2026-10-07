@@ -105,7 +105,7 @@ impl Buffer {
         // once normalized into the rope.
         let content = normalize_decoded_content(content);
 
-        let mut buffer = Self {
+        let buffer = Self {
             id: super::next_buffer_id(),
             rope: Rope::from_str(&content),
             cursor: Cursor::new(0, GraphemeCol::ZERO),
@@ -146,12 +146,8 @@ impl Buffer {
 
         // Don't enable syntax highlighting immediately - defer for lazy loading
         // This makes file loading instant even for large files
-        // Syntax highlighting will be triggered later when the buffer is displayed
-
-        // Load git status eagerly so gutter signs appear on file open.
-        // This is fast (<1ms for typical files via git2) and runs inside
-        // block_in_place, so it won't block the async runtime.
-        buffer.refresh_git_status();
+        // Syntax highlighting will be triggered later when the buffer is displayed.
+        // Git signs arrive from a background refresh once the editor adopts it.
 
         Ok(buffer)
     }

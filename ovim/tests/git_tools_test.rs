@@ -608,3 +608,19 @@ fn unstage_file_in_an_unborn_repository_removes_only_the_selected_path() {
         .is_none());
     assert_eq!(fs::read_to_string(file).unwrap(), "new\n");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn opening_a_file_computes_signs_in_the_background() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\n");
+    fixture.commit_all("base");
+    fixture.write("a.txt", "ONE\n");
+    let mut test = EditorTest::new("");
+    test.editor.load_file(&file).unwrap();
+    assert!(test.editor.git_refresh_pending());
+    test.settle_git();
+    assert_eq!(
+        test.editor.buffer().git_status().get_line_status(0),
+        Some(ovim_core::git::LineStatus::Modified)
+    );
+}

@@ -203,38 +203,36 @@ impl Editor {
     /// Recompute signs when pullbase changes, invalidating older background results.
     pub fn refresh_pullbase_gutters(&mut self) {
         self.git_refresh_generation = self.git_refresh_generation.wrapping_add(1);
-        for index in 0..self.buffers.len() {
-            if let Some(path) = self.buffers[index].file_path() {
-                let status = self.git_status_for_path(path);
-                self.buffers[index].set_git_status(status);
-            }
+        let paths: Vec<String> = self
+            .buffers
+            .iter()
+            .filter_map(|buffer| buffer.file_path().map(str::to_string))
+            .collect();
+        for path in paths {
+            self.spawn_git_refresh(&path, false);
         }
-        self.mark_dirty();
     }
 
-    fn git_status_for_path(&self, path: &str) -> crate::git::GitStatus {
-        crate::native_diff::pullbase_for_path(
-            std::path::Path::new(path),
-            self.options.pullbase.as_deref(),
-            &self.options.pullbase_paths,
-        )
-        .and_then(|branch| crate::git::GitStatus::from_file_with_pullbase(path, branch))
-        .unwrap_or_default()
-    }
-
-    pub(crate) fn initialize_buffer_git_status(&self, buffer: &mut crate::buffer::Buffer) {
-        if self.options.pullbase.is_some() || !self.options.pullbase_paths.is_empty() {
-            if let Some(path) = buffer.file_path() {
-                let status = self.git_status_for_path(path);
-                buffer.set_git_status(status);
+    /// Requests gutter signs for a buffer the editor is adopting. Diffing runs
+    /// in the background so large or untracked files never delay opening.
+    pub(crate) fn request_buffer_git_status(&mut self, buffer: &crate::buffer::Buffer) {
+        if let Some(path) = buffer.file_path() {
+            if !super::buffer_manager::is_scratch_path(path) {
+                self.spawn_git_refresh(path, false);
             }
         }
+    }
+
+    /// True while a background git refresh has not been drained yet.
+    pub fn git_refresh_pending(&self) -> bool {
+        self.git_refresh_in_flight > 0
     }
 
     /// Drains completed background git refresh results. Returns true if any applied.
     pub fn poll_git_refresh(&mut self) -> bool {
         let mut changed = false;
         while let Ok(result) = self.git_refresh_rx.try_recv() {
+            self.git_refresh_in_flight = self.git_refresh_in_flight.saturating_sub(1);
             if result.generation != self.git_refresh_generation {
                 continue;
             }
@@ -244,9 +242,7 @@ impl Editor {
                 .iter()
                 .position(|b| b.file_path() == Some(&result.path));
             if let Some(idx) = matching {
-                if let Some(status) = result.status {
-                    self.buffers[idx].set_git_status(status);
-                }
+                self.buffers[idx].set_git_status(result.status);
                 if let Some(blame) = result.blame {
                     self.buffers[idx].set_git_blame(blame);
                 }
@@ -257,20 +253,25 @@ impl Editor {
     }
 
     /// Spawns a background git status (and optionally blame) refresh for `path`.
-    pub fn spawn_git_refresh(&self, path: &str, blame_enabled: bool) {
+    pub fn spawn_git_refresh(&mut self, path: &str, blame_enabled: bool) {
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
         let path = path.to_string();
         let tx = self.git_refresh_tx.clone();
         let generation = self.git_refresh_generation;
         let global = self.options.pullbase.clone();
         let overrides = self.options.pullbase_paths.clone();
-        tokio::task::spawn_blocking(move || {
+        self.git_refresh_in_flight += 1;
+        runtime.spawn_blocking(move || {
+            // A failed refresh clears the signs instead of leaving stale ones.
             let status = crate::native_diff::pullbase_for_path(
                 std::path::Path::new(&path),
                 global.as_deref(),
                 &overrides,
             )
             .and_then(|branch| crate::git::GitStatus::from_file_with_pullbase(&path, branch))
-            .ok();
+            .unwrap_or_default();
             let blame = if blame_enabled {
                 crate::git::GitBlame::from_file(&path)
                     .ok()

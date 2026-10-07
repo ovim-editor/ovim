@@ -45,6 +45,21 @@ macro_rules! editor_flow_test {
     }};
 }
 
+/// Drains background git refreshes until none are pending. Requires a
+/// multi-threaded runtime so the blocking refresh can run meanwhile.
+#[allow(dead_code, reason = "Only targets that inspect git signs call this.")]
+pub fn settle_git_refresh(editor: &mut Editor) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while editor.git_refresh_pending() {
+        editor.poll_git_refresh();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "background git refresh did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 /// Test helper that provides a fluent API for driving editor operations
 /// and capturing snapshots of editor state
 pub struct EditorTest {
@@ -364,6 +379,12 @@ impl EditorTest {
     /// Load a file into the editor
     pub fn load_file(&mut self, path: &str) -> &mut Self {
         let _ = self.editor.load_file(path);
+        self.settle_git()
+    }
+
+    /// Waits for background git refreshes (gutter signs) to land.
+    pub fn settle_git(&mut self) -> &mut Self {
+        settle_git_refresh(&mut self.editor);
         self
     }
 

@@ -69,6 +69,7 @@ fn open_editor_on(fixture: &Fixture, name: &str) -> EditorTest {
     test.editor
         .open_file(Path::new(&fixture.path(name)))
         .unwrap();
+    test.settle_git();
     test
 }
 
@@ -1277,6 +1278,7 @@ async fn pullbase_controls_gutter_signs_but_keeps_head_as_the_unset_default() {
     assert_eq!(test.editor.diff_review().unwrap().base().name, "main");
     test.editor.close_diff_review();
     execute_command(&mut test.editor, "set pullbase=main");
+    test.settle_git();
     let changes = test.editor.buffer().git_status().change_counts();
     assert_ne!(changes, (0, 0, 0));
     let path = fixture.root.display();
@@ -1284,14 +1286,17 @@ async fn pullbase_controls_gutter_signs_but_keeps_head_as_the_unset_default() {
         &mut test.editor,
         &format!("set pullbase=feature path={path}"),
     );
+    test.settle_git();
     assert_eq!(test.editor.buffer().git_status().change_counts(), (0, 0, 0));
     execute_command(&mut test.editor, &format!("unset pullbase path={path}"));
+    test.settle_git();
     assert_eq!(test.editor.buffer().git_status().change_counts(), changes);
 
-    // An editor configured before opening a file gets the same signs immediately.
+    // An editor configured before opening a file computes signs against the pull base.
     let mut other = ovim_core::editor::Editor::new();
     execute_command(&mut other, "set pullbase=main");
     other.open_file(Path::new(&fixture.path("a.txt"))).unwrap();
+    helpers::settle_git_refresh(&mut other);
     assert_eq!(other.buffer().git_status().change_counts(), changes);
 
     // Background save refresh uses the override, and a later unset invalidates it.
@@ -1308,8 +1313,7 @@ async fn pullbase_controls_gutter_signs_but_keeps_head_as_the_unset_default() {
     assert_eq!(test.editor.buffer().git_status().change_counts(), changes);
     test.editor.spawn_git_refresh(&fixture.path("a.txt"), false);
     execute_command(&mut test.editor, "unset pullbase");
-    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    test.editor.poll_git_refresh();
+    test.settle_git();
     assert_eq!(test.editor.buffer().git_status().change_counts(), (0, 0, 0));
 
     fs::write(fixture.root.join("a.txt"), "uncommitted\n").unwrap();

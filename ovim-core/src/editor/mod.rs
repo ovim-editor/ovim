@@ -475,16 +475,18 @@ pub struct Editor {
     pub decorations: decoration::DecorationMap,
     /// Channel for receiving background git refresh results (status + blame)
     git_refresh_generation: u64,
+    /// Background refreshes spawned but not yet drained by `poll_git_refresh`
+    git_refresh_in_flight: usize,
     git_refresh_rx: tokio::sync::mpsc::Receiver<GitRefreshResult>,
-    /// Sender half — cloned into spawn_blocking tasks after save
+    /// Sender half — cloned into spawn_blocking tasks
     pub(crate) git_refresh_tx: tokio::sync::mpsc::Sender<GitRefreshResult>,
 }
 
-/// Result of a background git status/blame refresh after save.
+/// Result of a background git status/blame refresh.
 pub struct GitRefreshResult {
     pub generation: u64,
     pub path: String,
-    pub status: Option<crate::git::GitStatus>,
+    pub status: crate::git::GitStatus,
     pub blame: Option<crate::git::GitBlame>,
 }
 
@@ -642,6 +644,7 @@ impl Editor {
             launch: Box::default(),
             decorations: decoration::DecorationMap::new(),
             git_refresh_generation: 0,
+            git_refresh_in_flight: 0,
             git_refresh_rx: git_rx,
             git_refresh_tx: git_tx,
         }
@@ -696,6 +699,7 @@ impl Editor {
             launch: Box::default(),
             decorations: decoration::DecorationMap::new(),
             git_refresh_generation: 0,
+            git_refresh_in_flight: 0,
             git_refresh_rx: git_rx,
             git_refresh_tx: git_tx,
         }

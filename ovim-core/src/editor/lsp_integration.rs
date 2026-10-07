@@ -607,7 +607,7 @@ impl Editor {
                             let modeline =
                                 crate::modeline::Modeline::parse(&buffer.rope().to_string());
                             self.initialize_buffer_indent_options(&mut buffer);
-                            self.initialize_buffer_git_status(&mut buffer);
+                            self.request_buffer_git_status(&buffer);
                             super::buffer_manager::mark_library_source_read_only(&mut buffer);
                             self.buffers[self.current_buffer_index] = buffer;
                             if let Some(modeline) = modeline.as_ref() {
