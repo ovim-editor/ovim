@@ -111,6 +111,33 @@ impl CompletionMenu {
         self.apply_filter();
     }
 
+    /// Replaces the items with a fresh answer for the word being completed
+    /// (the re-request of an `isIncomplete` list). An item the user picked
+    /// stays selected if the new list still has it, so Enter does not insert
+    /// a different one than the highlighted item they last saw.
+    pub fn refresh(
+        &mut self,
+        items: Vec<CompletionItem>,
+        trigger_col: usize,
+        trigger_prefix: String,
+    ) {
+        let picked = if self.navigated {
+            self.selected_item().map(item_key)
+        } else {
+            None
+        };
+        self.show(items, trigger_col, trigger_prefix);
+        let position = picked.and_then(|key| {
+            self.visible_entries
+                .iter()
+                .position(|entry| item_key(&self.all_items[entry.index]) == key)
+        });
+        if let Some(position) = position {
+            self.selected_index = position;
+            self.navigated = true;
+        }
+    }
+
     /// Shows the choices of a snippet stop (see [`Self::is_snippet_choices`]).
     pub fn show_snippet_choices(
         &mut self,
@@ -554,25 +581,29 @@ fn order_and_dedupe(mut items: Vec<CompletionItem>) -> Vec<CompletionItem> {
         key_a.cmp(key_b)
     });
     let mut seen: HashSet<DedupeKey> = HashSet::new();
-    items.retain(|item| {
-        let details = item.label_details.as_ref();
-        let key = (
-            item.label.clone(),
-            item.insert_text.clone().or_else(|| match &item.text_edit {
-                Some(lsp_types::CompletionTextEdit::Edit(edit)) => Some(edit.new_text.clone()),
-                Some(lsp_types::CompletionTextEdit::InsertAndReplace(edit)) => {
-                    Some(edit.new_text.clone())
-                }
-                None => None,
-            }),
-            details
-                .and_then(|d| d.detail.clone())
-                .or_else(|| item.detail.clone()),
-            details.and_then(|d| d.description.clone()),
-        );
-        seen.insert(key)
-    });
+    items.retain(|item| seen.insert(item_key(item)));
     items
+}
+
+/// What makes an item "the same" across answers: its label, what it inserts
+/// and its details. Duplicates are dropped by it, and a selection is carried
+/// over a refreshed list by it.
+fn item_key(item: &CompletionItem) -> DedupeKey {
+    let details = item.label_details.as_ref();
+    (
+        item.label.clone(),
+        item.insert_text.clone().or_else(|| match &item.text_edit {
+            Some(lsp_types::CompletionTextEdit::Edit(edit)) => Some(edit.new_text.clone()),
+            Some(lsp_types::CompletionTextEdit::InsertAndReplace(edit)) => {
+                Some(edit.new_text.clone())
+            }
+            None => None,
+        }),
+        details
+            .and_then(|d| d.detail.clone())
+            .or_else(|| item.detail.clone()),
+        details.and_then(|d| d.description.clone()),
+    )
 }
 
 impl Default for CompletionMenu {

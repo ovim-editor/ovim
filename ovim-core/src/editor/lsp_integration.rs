@@ -956,7 +956,16 @@ impl Editor {
                 let incomplete = result.is_incomplete;
                 let anchor = result.anchor;
                 let menu = self.completion_menu_mut();
-                menu.show(result.items.clone(), trigger_col, trigger_prefix);
+                // An answer for the word the open menu is already completing
+                // refreshes it, keeping the user's pick.
+                if menu.has_session()
+                    && menu.trigger_col() == trigger_col
+                    && menu.anchor().is_some_and(|open| open.line == anchor.line)
+                {
+                    menu.refresh(result.items.clone(), trigger_col, trigger_prefix);
+                } else {
+                    menu.show(result.items.clone(), trigger_col, trigger_prefix);
+                }
                 menu.set_incomplete(incomplete);
                 menu.set_anchor(anchor);
                 // The items' textEdit ranges target this buffer version; if

@@ -306,6 +306,52 @@ async fn a_burst_of_typing_sends_one_request_after_the_pause() {
     session.stop().await;
 }
 
+/// rust-analyzer marks every list incomplete, so the list is re-requested on
+/// each keystroke: the item the user moved to must still be the one Enter
+/// inserts after the new answer arrives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_refreshed_incomplete_list_keeps_the_item_the_user_picked() {
+    let mut session = Session::new("").await;
+    session.script(
+        "completion.json",
+        json!({"isIncomplete": true,
+               "items": [{"label": "abcdef"}, {"label": "abcxyz"}, {"label": "abcz"}]}),
+    );
+    session.script(
+        "completion-incomplete.json",
+        json!({"isIncomplete": true,
+               "items": [{"label": "abcdef"}, {"label": "abcxyz"}, {"label": "abczz"}]}),
+    );
+    session.test.keys("iab");
+    session.pump_menu().await;
+    assert_eq!(session.labels(), vec!["abcdef", "abcxyz", "abcz"]);
+
+    // Typing `c` re-asks the server; the user moves to abcxyz while the
+    // answer is still on its way.
+    std::fs::write(session.root().join("completion-delay.txt"), "0.3").unwrap();
+    session.test.keys("c");
+    session.wait_for_event("textDocument/completion").await;
+    session.test.keys("<C-n>");
+    session
+        .pump_until("the re-requested list", |s| {
+            s.labels().contains(&"abczz".to_string())
+        })
+        .await;
+    assert_eq!(
+        session
+            .test
+            .editor
+            .completion_menu()
+            .selected_item()
+            .map(|item| item.label.clone()),
+        Some("abcxyz".to_string())
+    );
+
+    session.test.press_enter();
+    assert_eq!(session.line(0), "abcxyz");
+    session.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn single_identifier_characters_do_not_open_the_menu() {
     let mut session = Session::new("").await;
