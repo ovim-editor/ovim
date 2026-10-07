@@ -122,7 +122,11 @@ async fn main() -> Result<()> {
     let mut editor = Editor::new();
     editor.load_ai_chat_preference();
     editor.enable_diff_review_persistence();
-    editor.enable_recent_files();
+    // Headless sessions are driven by scripts and agents; recording their
+    // files would push the user's real projects out of the recent list.
+    if !headless || std::env::var_os("OVIM_RECENT_FILES").is_some() {
+        editor.enable_recent_files();
+    }
     if let Err(e) = editor.enable_lua() {
         ovim_core::log_error!("main", "Failed to enable Lua support: {}", e);
     }

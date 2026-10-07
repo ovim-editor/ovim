@@ -69,7 +69,9 @@ file. A bar after a complete `:s/pat/rep/flags` separates the next command, and
 
 Recent files are stored in `<data dir>/ovim/recent-files.json`
 (`$OVIM_RECENT_FILES` overrides the path), keyed by the project's git root, and
-remember the cursor where you left each file. In the Problems list `Ctrl-T`
+remember the cursor where you left each file. Headless sessions (unless
+`$OVIM_RECENT_FILES` is set) and projects under the system temp directory are
+not recorded. In the Problems list `Ctrl-T`
 cycles the severity filter and `Enter` jumps to the location. A server only
 publishes diagnostics for documents it has open; Ovim keeps every loaded buffer
 open on the server, so files you switched away from stay in the list until the

@@ -4,13 +4,16 @@
 //! project's list. Several ovim processes may run at once, so each update
 //! re-reads the file under an advisory lock, merges, and replaces it
 //! atomically. Bare `Editor`s (tests, embedders) never touch the disk: a
-//! frontend opts in with `Editor::enable_recent_files`.
+//! frontend opts in with `Editor::enable_recent_files`. That store writes on a
+//! background thread and ignores projects under the system temp directory.
 
 use fs2::FileExt;
 use serde::{Deserialize, Serialize};
 use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::mpsc;
+use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 const VERSION: u32 = 1;
@@ -38,24 +41,82 @@ struct Document {
     projects: std::collections::BTreeMap<String, Vec<RecentEntry>>,
 }
 
+type Job = Box<dyn FnOnce() + Send>;
+
 /// Handle to the on-disk store.
 #[derive(Debug, Clone)]
 pub struct RecentFiles {
     path: PathBuf,
+    /// Present for the user's store: updates run off the editor loop, in order.
+    writer: Option<Arc<Writer>>,
+    /// Scratch checkouts and test fixtures would crowd out real projects.
+    skip_temporary: bool,
+}
+
+#[derive(Debug)]
+struct Writer(std::sync::Mutex<mpsc::Sender<Job>>);
+
+impl Writer {
+    fn spawn() -> Option<Self> {
+        let (sender, receiver) = mpsc::channel::<Job>();
+        std::thread::Builder::new()
+            .name("ovim-recent-files".into())
+            .spawn(move || receiver.into_iter().for_each(|job| job()))
+            .ok()?;
+        Some(Self(std::sync::Mutex::new(sender)))
+    }
+
+    fn send(&self, job: Job) {
+        if let Ok(sender) = self.0.lock() {
+            let _ = sender.send(job);
+        }
+    }
+
+    /// Waits until every update queued so far has been written.
+    fn flush(&self) {
+        let (done, wait) = mpsc::channel();
+        self.send(Box::new(move || {
+            let _ = done.send(());
+        }));
+        let _ = wait.recv();
+    }
 }
 
 impl RecentFiles {
     pub fn new(path: PathBuf) -> Self {
-        Self { path }
+        Self {
+            path,
+            writer: None,
+            skip_temporary: false,
+        }
     }
 
-    /// `$OVIM_RECENT_FILES`, else `<data dir>/ovim/recent-files.json`.
+    /// The user's store: `$OVIM_RECENT_FILES`, else
+    /// `<data dir>/ovim/recent-files.json`.
     pub fn discover() -> Option<Self> {
-        std::env::var_os("OVIM_RECENT_FILES")
+        let path = std::env::var_os("OVIM_RECENT_FILES")
             .filter(|value| !value.is_empty())
             .map(PathBuf::from)
-            .or_else(|| dirs::data_local_dir().map(|root| root.join("ovim/recent-files.json")))
-            .map(Self::new)
+            .or_else(|| dirs::data_local_dir().map(|root| root.join("ovim/recent-files.json")))?;
+        Some(Self {
+            writer: Writer::spawn().map(Arc::new),
+            skip_temporary: true,
+            ..Self::new(path)
+        })
+    }
+
+    fn ignores(&self, project: &Path) -> bool {
+        self.skip_temporary && is_temporary(project)
+    }
+
+    fn update(&self, job: impl FnOnce(&Self) + Send + 'static) {
+        match &self.writer {
+            Some(writer) => {
+                let store = Self::new(self.path.clone());
+                writer.send(Box::new(move || job(&store)));
+            }
+            None => job(self),
+        }
     }
 
     fn load(&self) -> Document {
@@ -107,9 +168,11 @@ impl RecentFiles {
         let Ok(bytes) = serde_json::to_vec_pretty(&document) else {
             return;
         };
+        // Rename keeps readers from seeing a partial file; a lost update after
+        // a power cut is acceptable for this list, so skip the fsync.
         let temp = self.path.with_extension("tmp");
         let written = File::create(&temp)
-            .and_then(|mut file| file.write_all(&bytes).and_then(|_| file.sync_all()))
+            .and_then(|mut file| file.write_all(&bytes))
             .is_ok();
         if written {
             let _ = fs::rename(&temp, &self.path);
@@ -119,6 +182,14 @@ impl RecentFiles {
     /// Notes a visit to `path` (moving it to the front). `cursor` overrides the
     /// remembered position when given.
     pub fn record(&self, project: &Path, path: &Path, cursor: Option<(usize, usize)>) {
+        if self.ignores(project) {
+            return;
+        }
+        let (project, path) = (project.to_path_buf(), path.to_path_buf());
+        self.update(move |store| store.write_record(&project, &path, cursor));
+    }
+
+    fn write_record(&self, project: &Path, path: &Path, cursor: Option<(usize, usize)>) {
         let Some(_lock) = self.lock() else { return };
         let mut document = self.load();
         let entries = document
@@ -148,6 +219,14 @@ impl RecentFiles {
 
     /// Updates the remembered cursor of a file without changing its rank.
     pub fn update_cursor(&self, project: &Path, path: &Path, cursor: (usize, usize)) {
+        if self.ignores(project) {
+            return;
+        }
+        let (project, path) = (project.to_path_buf(), path.to_path_buf());
+        self.update(move |store| store.write_cursor(&project, &path, cursor));
+    }
+
+    fn write_cursor(&self, project: &Path, path: &Path, cursor: (usize, usize)) {
         let Some(_lock) = self.lock() else { return };
         let mut document = self.load();
         let path = path.to_string_lossy();
@@ -164,6 +243,9 @@ impl RecentFiles {
 
     /// The project's files, most recent first, without files that no longer exist.
     pub fn list(&self, project: &Path) -> Vec<RecentEntry> {
+        if let Some(writer) = &self.writer {
+            writer.flush();
+        }
         let document = self.load();
         document
             .projects
@@ -177,6 +259,15 @@ impl RecentFiles {
             })
             .unwrap_or_default()
     }
+}
+
+/// Under the system temp directory (compared after resolving symlinks).
+fn is_temporary(path: &Path) -> bool {
+    let temp = std::env::temp_dir();
+    let temp = temp.canonicalize().unwrap_or(temp);
+    path.canonicalize()
+        .unwrap_or_else(|_| path.to_path_buf())
+        .starts_with(temp)
 }
 
 fn now() -> u64 {
@@ -259,6 +350,41 @@ mod tests {
         let list = store.list(&project);
         assert_eq!(list[0].path, b.to_string_lossy());
         assert_eq!((list[1].line, list[1].col), (7, 1));
+    }
+
+    #[test]
+    fn background_updates_land_in_order_before_listing() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RecentFiles {
+            writer: Writer::spawn().map(Arc::new),
+            ..RecentFiles::new(directory.path().join("recent.json"))
+        };
+        let project = directory.path().join("proj");
+        fs::create_dir(&project).unwrap();
+        let a = directory.path().join("a.txt");
+        let b = directory.path().join("b.txt");
+        fs::write(&a, "x").unwrap();
+        fs::write(&b, "x").unwrap();
+        store.record(&project, &a, None);
+        store.record(&project, &b, None);
+        store.update_cursor(&project, &a, (7, 1));
+        let list = store.list(&project);
+        assert_eq!(list[0].path, b.to_string_lossy());
+        assert_eq!((list[1].line, list[1].col), (7, 1));
+    }
+
+    #[test]
+    fn the_users_store_ignores_projects_in_the_temp_directory() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = RecentFiles {
+            skip_temporary: true,
+            ..RecentFiles::new(directory.path().join("recent.json"))
+        };
+        let file = directory.path().join("a.txt");
+        fs::write(&file, "x").unwrap();
+        store.record(directory.path(), &file, None);
+        assert!(store.list(directory.path()).is_empty());
+        assert!(!directory.path().join("recent.json").exists());
     }
 
     #[test]
