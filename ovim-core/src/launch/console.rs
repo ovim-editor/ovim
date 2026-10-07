@@ -10,6 +10,7 @@
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
+use super::diagnostics::strip_ansi;
 use super::plan::LaunchMode;
 use super::process::{MAX_LINE_BYTES, TRUNCATED_MARKER};
 use super::stacktrace::{parse_console_location, ConsoleLocation};
@@ -141,7 +142,12 @@ impl RunRecord {
 
     /// Appends one complete line.
     pub fn push_line(&mut self, kind: LineKind, text: impl Into<String>) {
-        let text = clip_line(text.into());
+        let mut text = text.into();
+        // The console shows plain text: colour codes would appear as garbage.
+        if text.contains('\x1b') {
+            text = strip_ansi(&text).into_owned();
+        }
+        let text = clip_line(text);
         let location = if text.contains(".java")
             || text.contains(".kt")
             || text.contains(".scala")
@@ -493,6 +499,22 @@ mod tests {
             .starts_with(&(lines - 1).to_string()));
         assert_eq!(r.truncated + r.lines.len(), lines);
         assert_eq!(r.bytes, r.lines.iter().map(|l| l.text.len()).sum::<usize>());
+    }
+
+    #[test]
+    fn colour_codes_are_stripped_but_locations_still_found() {
+        let mut r = record();
+        r.push_line(LineKind::Stdout, "\x1b[31mred text\x1b[0m plain");
+        r.push_chunk(
+            LineKind::Stderr,
+            "\x1b[1;31m\tat com.x.Foo.bar(Foo.java:7)\x1b[m\n",
+        );
+        assert_eq!(r.lines[0].text, "red text plain");
+        assert_eq!(r.lines[1].text, "\tat com.x.Foo.bar(Foo.java:7)");
+        assert!(matches!(
+            r.lines[1].location,
+            Some(ConsoleLocation::Frame { line: 7, .. })
+        ));
     }
 
     #[test]

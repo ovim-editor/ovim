@@ -460,6 +460,27 @@ async fn stop_kills_the_program_and_everything_it_started() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn coloured_program_output_shows_as_plain_text() {
+    let mut s = Session::new(&resolve_commands()).await;
+    let script = s.write_script("colours.sh", "printf '\\033[31mred text\\033[0m plain\\n'");
+    s.test.command(&format!("set makeprg={}", script.display()));
+    s.test.command("make");
+    s.until("the run to finish", |s| s.run_finished()).await;
+    let lines: Vec<String> = s
+        .test
+        .editor
+        .run_console()
+        .viewed()
+        .unwrap()
+        .lines
+        .iter()
+        .map(|l| l.text.clone())
+        .collect();
+    assert!(lines.contains(&"red text plain".to_string()), "{lines:?}");
+    s.stop_lsp().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn rerun_replaces_the_running_program() {
     let _jdk = JDK_LOCK.lock().await;
     let mut s = Session::new(&resolve_commands()).await;
