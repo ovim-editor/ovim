@@ -1,9 +1,10 @@
 pub mod auto_install;
 mod background;
 use background::InitRequest;
-pub use background::LspStartup;
+pub use background::{InstallApproval, LspStartup};
 
 use crate::editor::Editor;
+use crate::language_catalog::LanguageDefinition;
 use crate::language_config::{
     find_lsp_command, AutoInstallConfig, AutoInstallPolicy, CompanionLspConfig, InstallMethod,
     LanguageRegistry,
@@ -90,6 +91,7 @@ async fn initialize_configured_lsp(request: &InitRequest) {
                             server_command: lsp_config.command.clone(),
                             method_description: method_desc,
                             file_path: request.file_path.clone(),
+                            companion_id: None,
                         })
                         .await;
                     crate::lsp_info!(
@@ -174,11 +176,7 @@ async fn initialize_configured_lsp(request: &InitRequest) {
     let root_path = lsp_config.find_root(abs_path);
 
     // Determine language ID (for TypeScript vs JavaScript, use extension-based logic)
-    let language_id = if language.lsp_language_id == language.config.id {
-        determine_language_id(&lang_config.id, abs_path)
-    } else {
-        language.lsp_language_id.clone()
-    };
+    let language_id = document_language_id(language, abs_path);
 
     crate::lsp_info!(
         "LSP",
@@ -222,14 +220,39 @@ async fn initialize_configured_lsp(request: &InitRequest) {
                     // (e.g. a server's initialize error) is otherwise hidden
                     // behind the outermost "Failed to send initialize request".
                     let error = format!("{:#}", e);
-                    if !attempted_known_failure_repair
-                        && should_attempt_known_failure_repair(
+                    let repair = if attempted_known_failure_repair {
+                        KnownFailureRepair::No
+                    } else {
+                        known_failure_repair(
                             &lang_config.id,
                             &lsp_config.command,
                             lsp_config.auto_install.as_ref(),
                             &error,
+                            request.install_mode,
                         )
-                    {
+                    };
+                    if repair == KnownFailureRepair::Ask {
+                        // The user decides whether a reinstall may touch
+                        // their machine; approval re-runs startup.
+                        let auto_install_config = lsp_config
+                            .auto_install
+                            .as_ref()
+                            .expect("repair precondition checked");
+                        request
+                            .prompt(crate::editor::PendingLspInstall {
+                                language_name: lang_config.name.clone(),
+                                server_command: lsp_config.command.clone(),
+                                method_description: format!(
+                                    "reinstall to repair a failing start: {}",
+                                    describe_install_method(&auto_install_config.method)
+                                ),
+                                file_path: request.file_path.clone(),
+                                companion_id: None,
+                            })
+                            .await;
+                        return;
+                    }
+                    if repair == KnownFailureRepair::Install {
                         attempted_known_failure_repair = true;
                         let auto_install_config = lsp_config
                             .auto_install
@@ -325,32 +348,53 @@ fn is_headless_mode() -> bool {
     HEADLESS_MODE.load(Ordering::Relaxed)
 }
 
-fn should_attempt_known_failure_repair(
+/// What to do about a server that failed to start in a way a reinstall
+/// usually fixes.
+#[derive(Debug, PartialEq, Eq)]
+enum KnownFailureRepair {
+    /// Nothing: not eligible, switched off, or tried recently.
+    No,
+    /// Reinstall right away (`autoinstall=auto`).
+    Install,
+    /// Ask the user first (`autoinstall=prompt`).
+    Ask,
+}
+
+fn known_failure_repair(
     language_id: &str,
     command: &str,
     auto_install_config: Option<&AutoInstallConfig>,
     error: &str,
-) -> bool {
+    install_mode: crate::editor::AutoInstallMode,
+) -> KnownFailureRepair {
+    use crate::editor::AutoInstallMode;
+
     let Some(config) = auto_install_config else {
-        return false;
+        return KnownFailureRepair::No;
     };
 
     if !matches!(
         config.policy,
         AutoInstallPolicy::AutoOnMissingOrKnownFailure
     ) {
-        return false;
+        return KnownFailureRepair::No;
     }
 
     if !is_auto_install_allowed_for_current_mode(config) {
-        return false;
+        return KnownFailureRepair::No;
     }
 
-    if !is_known_startup_failure(error) {
-        return false;
+    if !is_known_startup_failure(error) || install_mode == AutoInstallMode::Off {
+        return KnownFailureRepair::No;
     }
 
-    record_known_failure_repair_attempt(language_id, command)
+    if !record_known_failure_repair_attempt(language_id, command) {
+        return KnownFailureRepair::No;
+    }
+    match install_mode {
+        AutoInstallMode::Auto => KnownFailureRepair::Install,
+        _ => KnownFailureRepair::Ask,
+    }
 }
 
 fn is_known_startup_failure(error: &str) -> bool {
@@ -432,8 +476,6 @@ async fn initialize_companions(request: &InitRequest, language_id: &str, abs_pat
         return;
     }
 
-    let lsp_manager = &request.manager;
-
     for companion in companions {
         // Check activation markers - skip if none found in project tree
         if !companion.activation_markers.is_empty()
@@ -447,125 +489,183 @@ async fn initialize_companions(request: &InitRequest, language_id: &str, abs_pat
             continue;
         }
 
-        // Find companion server command, auto-installing if configured
-        let server_command = match find_companion_command(companion) {
-            Some(cmd) => cmd,
-            None => {
-                // Try auto-install if configured
-                if let Some(auto_install_config) = &companion.auto_install {
-                    if request.install_mode != crate::editor::AutoInstallMode::Off
-                        && auto_install_on_missing_enabled(auto_install_config)
-                        && is_auto_install_allowed_for_current_mode(auto_install_config)
-                    {
-                        crate::lsp_info!("LSP", "Auto-installing companion {}...", companion.name);
-                        request
-                            .status(format!("Installing {}...", companion.name))
-                            .await;
-                        match attempt_auto_install(
-                            &companion.command,
-                            &companion.name,
-                            auto_install_config,
-                        )
-                        .await
-                        {
-                            InstallResult::Success(installed_path) => {
-                                crate::lsp_info!(
-                                    "LSP",
-                                    "Installed companion {}: {}",
-                                    companion.name,
-                                    installed_path.display()
-                                );
-                                installed_path.to_string_lossy().to_string()
-                            }
-                            InstallResult::Failed(e) | InstallResult::PrerequisitesMissing(e) => {
-                                crate::lsp_warn!(
-                                    "LSP",
-                                    "Failed to install companion {}: {}",
-                                    companion.name,
-                                    e
-                                );
-                                continue;
-                            }
-                        }
-                    } else {
-                        if let Some(hint) = &companion.install_hint {
-                            crate::lsp_info!(
-                                "LSP",
-                                "Companion {} not found. {}",
-                                companion.name,
-                                hint
-                            );
-                        }
-                        continue;
-                    }
-                } else {
-                    if let Some(hint) = &companion.install_hint {
-                        crate::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint);
-                    } else {
-                        crate::lsp_info!(
-                            "LSP",
-                            "Companion {} not found (command: {})",
-                            companion.name,
-                            companion.command
-                        );
-                    }
-                    continue;
-                }
+        // Find companion server command; a missing one is installed only as
+        // far as the user's autoinstall setting allows.
+        let Some(server_command) = find_companion_command(companion) else {
+            offer_companion_install(request, companion).await;
+            continue;
+        };
+        start_companion(request, language_id, abs_path, companion, server_command).await;
+    }
+}
+
+/// A companion server that is not installed: installs it under
+/// `autoinstall=auto`, asks the user under `prompt`, and only reports the
+/// install hint otherwise.
+async fn offer_companion_install(request: &InitRequest, companion: &CompanionLspConfig) {
+    use crate::editor::AutoInstallMode;
+
+    let installable = companion.auto_install.as_ref().filter(|config| {
+        request.install_mode != AutoInstallMode::Off
+            && auto_install_on_missing_enabled(config)
+            && is_auto_install_allowed_for_current_mode(config)
+    });
+    let Some(auto_install_config) = installable else {
+        match &companion.install_hint {
+            Some(hint) => {
+                crate::lsp_info!("LSP", "Companion {} not found. {}", companion.name, hint)
             }
-        };
+            None => crate::lsp_info!(
+                "LSP",
+                "Companion {} not found (command: {})",
+                companion.name,
+                companion.command
+            ),
+        }
+        return;
+    };
 
-        // Find project root using companion's root markers
-        let root_path = if companion.root_markers.is_empty() {
-            find_project_root(abs_path, &[]) // Falls back to file's directory
-        } else {
-            find_project_root(abs_path, &companion.root_markers)
-        };
-
-        let server_id = companion_server_id(language_id, &companion.id);
-
+    if request.install_mode == AutoInstallMode::Prompt {
+        request
+            .prompt(crate::editor::PendingLspInstall {
+                language_name: companion.name.clone(),
+                server_command: companion.command.clone(),
+                method_description: describe_install_method(&auto_install_config.method),
+                file_path: request.file_path.clone(),
+                companion_id: Some(companion.id.clone()),
+            })
+            .await;
         crate::lsp_info!(
             "LSP",
-            "Starting companion {} (server_id={}, command={}, root={})",
-            companion.name,
-            server_id,
-            server_command,
-            root_path.display()
+            "Prompting user for auto-install consent for companion {}",
+            companion.name
         );
+        return;
+    }
 
-        match lsp_manager
-            .start_companion_server(
-                &server_id,
-                &server_command,
-                companion.args.clone(),
-                &root_path,
+    crate::lsp_info!("LSP", "Auto-installing companion {}...", companion.name);
+    request
+        .status(format!("Installing {}...", companion.name))
+        .await;
+    install_and_start_companion(request, companion, auto_install_config).await;
+}
+
+/// Installs a companion server and, once it is there, starts it.
+async fn install_and_start_companion(
+    request: &InitRequest,
+    companion: &CompanionLspConfig,
+    auto_install_config: &AutoInstallConfig,
+) {
+    match attempt_auto_install(&companion.name, &companion.command, auto_install_config).await {
+        InstallResult::Success(installed_path) => {
+            crate::lsp_info!(
+                "LSP",
+                "Installed companion {}: {}",
+                companion.name,
+                installed_path.display()
+            );
+            let server_command = find_companion_command(companion)
+                .unwrap_or_else(|| installed_path.to_string_lossy().to_string());
+            let language_id = document_language_id(&request.language, &request.abs_path);
+            start_companion(
+                request,
+                &language_id,
+                &request.abs_path,
+                companion,
+                server_command,
             )
-            .await
-        {
-            Ok(_) => {
-                if crate::project_root::marker_root_with_outermost(
-                    abs_path,
-                    &companion.root_markers,
-                    &[],
-                )
-                .is_none()
-                {
-                    lsp_manager.mark_fallback_root(&server_id);
-                }
-                // Start notification listener for companion
-                lsp_manager
-                    .start_notification_listener(server_id.clone())
-                    .await;
+            .await;
+        }
+        InstallResult::Failed(e) | InstallResult::PrerequisitesMissing(e) => {
+            crate::lsp_warn!(
+                "LSP",
+                "Failed to install companion {}: {}",
+                companion.name,
+                e
+            );
+        }
+    }
+}
 
-                request
-                    .ready(language_id, server_id, server_command, false)
-                    .await;
+/// The user agreed to install the companion `companion_id`.
+async fn install_approved_companion(request: &InitRequest, companion_id: &str) {
+    let language_id = document_language_id(&request.language, &request.abs_path);
+    let companion = LanguageRegistry::get()
+        .companions_for_language(&language_id)
+        .into_iter()
+        .find(|companion| companion.id == companion_id);
+    let Some((companion, auto_install_config)) =
+        companion.and_then(|c| c.auto_install.as_ref().map(|config| (c, config)))
+    else {
+        return;
+    };
+    request
+        .status(format!("Installing {}...", companion.name))
+        .await;
+    install_and_start_companion(request, companion, auto_install_config).await;
+}
 
-                crate::lsp_info!("LSP", "Companion {} ready", companion.name);
+/// Starts the companion server `companion` for the project of `abs_path`.
+async fn start_companion(
+    request: &InitRequest,
+    language_id: &str,
+    abs_path: &Path,
+    companion: &CompanionLspConfig,
+    server_command: String,
+) {
+    let lsp_manager = &request.manager;
+
+    // Find project root using companion's root markers
+    let root_path = if companion.root_markers.is_empty() {
+        find_project_root(abs_path, &[]) // Falls back to file's directory
+    } else {
+        find_project_root(abs_path, &companion.root_markers)
+    };
+
+    let server_id = companion_server_id(language_id, &companion.id);
+
+    crate::lsp_info!(
+        "LSP",
+        "Starting companion {} (server_id={}, command={}, root={})",
+        companion.name,
+        server_id,
+        server_command,
+        root_path.display()
+    );
+
+    match lsp_manager
+        .start_companion_server(
+            &server_id,
+            &server_command,
+            companion.args.clone(),
+            &root_path,
+        )
+        .await
+    {
+        Ok(_) => {
+            if crate::project_root::marker_root_with_outermost(
+                abs_path,
+                &companion.root_markers,
+                &[],
+            )
+            .is_none()
+            {
+                lsp_manager.mark_fallback_root(&server_id);
             }
-            Err(e) => {
-                // Log but don't fail - companions are optional
-                crate::lsp_warn!("LSP", "Failed to start companion {}: {}", companion.name, e);
-            }
+            // Start notification listener for companion
+            lsp_manager
+                .start_notification_listener(server_id.clone())
+                .await;
+
+            request
+                .ready(language_id, server_id, server_command, false)
+                .await;
+
+            crate::lsp_info!("LSP", "Companion {} ready", companion.name);
+        }
+        Err(e) => {
+            // Log but don't fail - companions are optional
+            crate::lsp_warn!("LSP", "Failed to start companion {}: {}", companion.name, e);
         }
     }
 }
@@ -604,6 +704,15 @@ fn find_companion_command(companion: &CompanionLspConfig) -> Option<String> {
     }
 
     None
+}
+
+/// The language id servers of `language` are started and addressed under.
+fn document_language_id(language: &LanguageDefinition, abs_path: &Path) -> String {
+    if language.lsp_language_id == language.config.id {
+        determine_language_id(&language.config.id, abs_path)
+    } else {
+        language.lsp_language_id.clone()
+    }
 }
 
 /// Determine language ID for LSP initialization
@@ -783,5 +892,132 @@ pub(crate) fn spawn_pending_installs(editor: &mut Editor) {
                 status,
             });
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::background::Update;
+    use super::*;
+    use crate::editor::AutoInstallMode;
+
+    fn shell_install(command: &str) -> AutoInstallConfig {
+        serde_json::from_value(serde_json::json!({
+            "method": {"type": "shell", "command": command},
+            "policy": "auto_on_missing_or_known_failure",
+            "allow_headless": true,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_failing_start_is_repaired_only_as_far_as_autoinstall_allows() {
+        let config = shell_install("true");
+        let error = "Failed to send initialize request";
+        let decide = |language: &str, mode| {
+            known_failure_repair(language, "server", Some(&config), error, mode)
+        };
+
+        assert_eq!(
+            decide("repair-off", AutoInstallMode::Off),
+            KnownFailureRepair::No
+        );
+        assert_eq!(
+            decide("repair-prompt", AutoInstallMode::Prompt),
+            KnownFailureRepair::Ask
+        );
+        assert_eq!(
+            decide("repair-auto", AutoInstallMode::Auto),
+            KnownFailureRepair::Install
+        );
+        // Once per cooldown, whatever the answer was.
+        assert_eq!(
+            decide("repair-auto", AutoInstallMode::Auto),
+            KnownFailureRepair::No
+        );
+        // Not a failure a reinstall fixes.
+        assert_eq!(
+            known_failure_repair(
+                "repair-other",
+                "server",
+                Some(&config),
+                "permission denied",
+                AutoInstallMode::Auto
+            ),
+            KnownFailureRepair::No
+        );
+    }
+
+    /// A language server that answers `initialize` and nothing else.
+    const MINIMAL_SERVER: &str = r#"
+import json, sys
+def read():
+    length = None
+    while True:
+        line = sys.stdin.buffer.readline()
+        if not line:
+            return None
+        if line == b"\r\n":
+            break
+        key, value = line.decode().split(":", 1)
+        if key.lower() == "content-length":
+            length = int(value)
+    return json.loads(sys.stdin.buffer.read(length))
+while (message := read()) is not None:
+    if message.get("method") == "initialize":
+        body = json.dumps({"jsonrpc": "2.0", "id": message["id"],
+                           "result": {"capabilities": {}}}).encode()
+        sys.stdout.buffer.write(b"Content-Length: %d\r\n\r\n" % len(body) + body)
+        sys.stdout.buffer.flush()
+"#;
+
+    fn companion(marker: &std::path::Path) -> CompanionLspConfig {
+        CompanionLspConfig {
+            id: "comp".into(),
+            name: "Companion".into(),
+            command: "python3".into(),
+            args: vec!["-c".into(), MINIMAL_SERVER.into()],
+            applies_to: vec!["rust".into()],
+            root_markers: Vec::new(),
+            activation_markers: Vec::new(),
+            install_hint: None,
+            auto_install: Some(shell_install(&format!("touch {}", marker.display()))),
+            fallback_commands: Vec::new(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_missing_companion_is_installed_only_under_autoinstall_auto() {
+        for (mode, installs, asks) in [
+            (AutoInstallMode::Off, false, false),
+            (AutoInstallMode::Prompt, false, true),
+            (AutoInstallMode::Auto, true, false),
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let marker = dir.path().join("installed");
+            let (request, mut updates) = InitRequest::for_test("/project/main.rs", mode);
+
+            offer_companion_install(&request, &companion(&marker)).await;
+
+            assert_eq!(marker.exists(), installs, "{mode:?}");
+            let updates: Vec<Update> = std::iter::from_fn(|| updates.try_recv().ok())
+                .map(|(_, update)| update)
+                .collect();
+            let prompted = updates.iter().find_map(|update| match update {
+                Update::Prompt(prompt) => Some(prompt),
+                _ => None,
+            });
+            assert_eq!(prompted.is_some(), asks, "{mode:?}");
+            if let Some(prompt) = prompted {
+                assert_eq!(prompt.companion_id.as_deref(), Some("comp"));
+                assert_eq!(prompt.server_command, "python3");
+            }
+            // An install that went through is verified against the companion's
+            // command, and the companion is started.
+            let started = updates
+                .iter()
+                .any(|update| matches!(update, Update::Ready { primary: false, .. }));
+            assert_eq!(started, installs, "{mode:?}");
+        }
     }
 }

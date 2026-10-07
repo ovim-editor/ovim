@@ -507,6 +507,9 @@ pub struct PendingLspInstall {
     pub method_description: String,
     /// File path that triggered the install
     pub file_path: String,
+    /// Set when the install is of a companion server (e.g. Tailwind CSS)
+    /// rather than the file's language server.
+    pub companion_id: Option<String>,
 }
 
 /// User's response to the LSP install consent dialog

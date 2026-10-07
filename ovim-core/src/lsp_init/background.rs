@@ -1,4 +1,6 @@
-use super::{initialize_configured_lsp, install_approved, normalize_path};
+use super::{
+    initialize_configured_lsp, install_approved, install_approved_companion, normalize_path,
+};
 use crate::editor::{AutoInstallMode, Editor, PendingLspInstall};
 use crate::language_catalog::LanguageDefinition;
 use std::collections::HashMap;
@@ -7,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
 
-enum Update {
+pub(super) enum Update {
     Status(String),
     Prompt(PendingLspInstall),
     Ready {
@@ -31,6 +33,27 @@ pub(super) struct InitRequest {
 }
 
 impl InitRequest {
+    /// A request for tests, with the receiving end of its updates.
+    #[cfg(test)]
+    pub(super) fn for_test(
+        file_path: &str,
+        install_mode: AutoInstallMode,
+    ) -> (Self, mpsc::Receiver<(String, Update)>) {
+        let (updates, receiver) = mpsc::channel(16);
+        let language = crate::language_catalog::LanguageCatalog::shared_built_in()
+            .detect(file_path)
+            .expect("a built-in language");
+        let request = Self {
+            file_path: file_path.to_string(),
+            abs_path: PathBuf::from(file_path),
+            language,
+            manager: Arc::new(crate::lsp::LspManager::new()),
+            install_mode,
+            updates,
+        };
+        (request, receiver)
+    }
+
     pub async fn status(&self, message: String) {
         let _ = self
             .updates
@@ -94,8 +117,18 @@ impl Drop for LspStartup {
     }
 }
 
+/// What the user has already agreed to install for the file being started.
+pub enum InstallApproval {
+    /// Nothing: install only as far as the autoinstall setting allows.
+    None,
+    /// The file's language server.
+    Server,
+    /// The companion server with this id.
+    Companion(String),
+}
+
 impl LspStartup {
-    pub fn start(&mut self, editor: &mut Editor, file_path: &str, approved: bool) {
+    pub fn start(&mut self, editor: &mut Editor, file_path: &str, approval: InstallApproval) {
         if self.jobs.contains_key(file_path) {
             return;
         }
@@ -124,10 +157,12 @@ impl LspStartup {
         self.jobs.insert(
             file_path.to_string(),
             tokio::spawn(async move {
-                if approved {
-                    install_approved(&request).await;
-                } else {
-                    initialize_configured_lsp(&request).await;
+                match approval {
+                    InstallApproval::None => initialize_configured_lsp(&request).await,
+                    InstallApproval::Server => install_approved(&request).await,
+                    InstallApproval::Companion(id) => {
+                        install_approved_companion(&request, &id).await
+                    }
                 }
             }),
         );

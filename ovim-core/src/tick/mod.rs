@@ -362,11 +362,19 @@ async fn process_lsp_notifications(editor: &mut Editor) {
 /// Initialize LSP for a newly opened file if needed.
 fn process_lsp_init(editor: &mut Editor, state: &mut TickState) {
     if let Some(approved) = editor.take_approved_lsp_install() {
-        state.lsp_startup.start(editor, &approved.file_path, true);
+        let approval = match approved.companion_id {
+            Some(id) => crate::lsp_init::InstallApproval::Companion(id),
+            None => crate::lsp_init::InstallApproval::Server,
+        };
+        state
+            .lsp_startup
+            .start(editor, &approved.file_path, approval);
     }
     if let Some(file_path) = editor.needs_lsp_init() {
         crate::log_debug!("tick", "Initializing LSP for {}", file_path);
-        state.lsp_startup.start(editor, &file_path, false);
+        state
+            .lsp_startup
+            .start(editor, &file_path, crate::lsp_init::InstallApproval::None);
         editor.clear_lsp_init_flag();
     }
 }
