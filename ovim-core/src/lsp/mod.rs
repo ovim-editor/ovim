@@ -111,6 +111,17 @@ impl PendingWorkspaceEdit {
 /// Reduced to 150ms for faster diagnostics feedback (was 300ms)
 const CHANGE_DEBOUNCE_MS: u64 = 150;
 
+/// Diagnostics of one document as the editor should show them.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayDiagnostics {
+    pub doc_version: i32,
+    pub last_sent: i32,
+    pub diagnostics: Vec<Diagnostic>,
+    /// Published for the document's current version. When false they are the
+    /// servers' latest publications for an older one.
+    pub current: bool,
+}
+
 /// (server_id, method, subject): which notifications supersede one another.
 type OverflowKey = (String, String, String);
 
@@ -651,6 +662,23 @@ impl LspManager {
         Vec::new()
     }
 
+    /// Forgets the document versions the stored diagnostics of `uri` were
+    /// published for. They belong to a document session that is over: the
+    /// next session counts versions from 1 again, and a publication for its
+    /// version 1 would otherwise be discarded as older than the stored one.
+    /// The diagnostics themselves stay (the Problems view lists closed files).
+    pub(super) async fn forget_diagnostic_versions(&self, uri: &Uri) {
+        let mut diagnostics = self.diagnostics.lock().await;
+        for stored in diagnostics
+            .get_mut(uri)
+            .into_iter()
+            .flat_map(|s| s.values_mut())
+        {
+            stored.version = None;
+            stored.observed_version = 0;
+        }
+    }
+
     /// Whether some server of the document's group has not been sent
     /// `didOpen` for it: a companion that started after the primary opened
     /// the document, or a server that restarted.
@@ -848,24 +876,47 @@ impl LspManager {
     /// Previously accepted publications may remain cached after didChange;
     /// they must never be anchored against the newer buffer's text.
     pub async fn current_diagnostic_snapshot(&self, uri: &Uri) -> (i32, i32, Vec<Diagnostic>) {
+        let snapshot = self.display_diagnostic_snapshot(uri).await;
+        let diagnostics = if snapshot.current {
+            snapshot.diagnostics
+        } else {
+            Vec::new()
+        };
+        (snapshot.doc_version, snapshot.last_sent, diagnostics)
+    }
+
+    /// The diagnostics to show for `uri`. After an edit no server has
+    /// republished yet (a server that publishes on save does so only then),
+    /// the newest publications are all there is: they are returned as they
+    /// are, flagged `current: false`, so the editor can keep what it already
+    /// shows (projected through the edits) instead of blanking the file.
+    pub async fn display_diagnostic_snapshot(&self, uri: &Uri) -> DisplayDiagnostics {
         let versions = self.document_versions.lock().await;
         let current = versions.get(uri).copied().unwrap_or(0);
         let sent = self.last_sent_versions.lock().await;
         let last_sent = sent.get(uri).copied().unwrap_or(0);
         let diagnostics = self.diagnostics.lock().await;
-        let merged = if last_sent < current {
-            Vec::new()
-        } else {
-            diagnostics
-                .get(uri)
-                .map(|sets| {
-                    Self::merge_diagnostic_sets(sets.values().filter(|stored| {
-                        stored.version.unwrap_or(stored.observed_version) == current
-                    }))
-                })
-                .unwrap_or_default()
+        let stored = diagnostics.get(uri);
+        let is_current = |stored: &&StoredDiagnostics| {
+            stored.version.unwrap_or(stored.observed_version) == current
         };
-        (current, last_sent, merged)
+        let has_current = stored.is_none_or(|sets| {
+            sets.is_empty() || sets.values().filter(is_current).next().is_some()
+        });
+        let merged = match stored {
+            None => Vec::new(),
+            Some(_) if last_sent < current => Vec::new(),
+            Some(sets) if has_current => {
+                Self::merge_diagnostic_sets(sets.values().filter(is_current))
+            }
+            Some(sets) => Self::merge_diagnostic_sets(sets.values()),
+        };
+        DisplayDiagnostics {
+            doc_version: current,
+            last_sent,
+            diagnostics: merged,
+            current: has_current && last_sent >= current,
+        }
     }
 
     /// Gets diagnostics for a specific line in a file (merged from all servers, cached)
@@ -1340,6 +1391,56 @@ mod tests {
                 .await;
             assert!(manager.current_diagnostic_snapshot(&uri).await.2.is_empty());
         }
+    }
+
+    /// A server that publishes on save has nothing newer to say after an edit:
+    /// its last publication is still what the editor should show, flagged as
+    /// belonging to an older version.
+    #[tokio::test]
+    async fn display_snapshot_keeps_the_last_publication_after_an_edit() {
+        let manager = LspManager::new();
+        let uri: Uri = "file:///Example.java".parse().unwrap();
+        manager
+            .document_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 1);
+        manager
+            .last_sent_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 1);
+        let warning = Diagnostic {
+            message: "published on save".into(),
+            ..Diagnostic::default()
+        };
+        manager
+            .set_diagnostics(uri.clone(), "java", vec![warning.clone()], Some(1))
+            .await;
+        let snapshot = manager.display_diagnostic_snapshot(&uri).await;
+        assert!(snapshot.current);
+        assert_eq!(snapshot.diagnostics, vec![warning.clone()]);
+
+        manager.increment_document_version(&uri).await;
+        manager
+            .last_sent_versions
+            .lock()
+            .await
+            .insert(uri.clone(), 2);
+        let snapshot = manager.display_diagnostic_snapshot(&uri).await;
+        assert!(!snapshot.current);
+        assert_eq!(snapshot.diagnostics, vec![warning.clone()]);
+        // ... while the strict view still refuses to hand it out as current.
+        assert!(manager.current_diagnostic_snapshot(&uri).await.2.is_empty());
+
+        // A server that did republish for the new version wins, and the
+        // stale server's set is not mixed in.
+        manager
+            .set_diagnostics(uri.clone(), "other", vec![], Some(2))
+            .await;
+        let snapshot = manager.display_diagnostic_snapshot(&uri).await;
+        assert!(snapshot.current);
+        assert!(snapshot.diagnostics.is_empty());
     }
 
     #[tokio::test]

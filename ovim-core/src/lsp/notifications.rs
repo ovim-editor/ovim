@@ -148,6 +148,7 @@ impl LspManager {
         // sending a didOpen — a protocol violation. (OV-00210)
         let claimed = self.claim_document(&uri, version).await;
         let version = if claimed {
+            self.forget_diagnostic_versions(&uri).await;
             version
         } else {
             self.get_last_sent_version(&uri).await.max(version)
@@ -541,6 +542,7 @@ impl LspManager {
         versions.remove(&uri);
         drop(versions);
         self.last_sent_versions.lock().await.remove(&uri);
+        self.forget_diagnostic_versions(&uri).await;
 
         // Remove debouncer for this document
         self.change_debouncers.remove(&uri);
@@ -583,6 +585,7 @@ impl LspManager {
         // regardless of transient server-registry state. (OV-00210)
         let claimed = self.claim_document(&uri, version).await;
         let version = if claimed {
+            self.forget_diagnostic_versions(&uri).await;
             version
         } else {
             self.get_last_sent_version(&uri).await.max(version)
@@ -885,6 +888,7 @@ impl LspManager {
         versions.remove(&uri);
         drop(versions);
         self.last_sent_versions.lock().await.remove(&uri);
+        self.forget_diagnostic_versions(&uri).await;
         self.change_debouncers.remove(&uri);
         self.flush_gates.remove(&uri);
         self.server_documents.retain(|(_, u), _| u != &uri);

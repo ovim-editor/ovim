@@ -642,6 +642,9 @@ pub struct DiagnosticResult {
     pub diagnostics: Vec<lsp_types::Diagnostic>,
     pub count: (usize, usize, usize, usize),
     pub deferred: bool,
+    /// The diagnostics were published for the document's current version. If
+    /// not, they are an older publication and replace nothing already shown.
+    pub current: bool,
 }
 
 /// Result of a format-document request.

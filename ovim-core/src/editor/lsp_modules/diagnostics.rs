@@ -195,15 +195,16 @@ impl Editor {
         let file_path_for_task = file_path.clone();
         let (tx, rx) = tokio::sync::oneshot::channel();
         let task = tokio::spawn(async move {
-            let (doc_version, last_sent, diagnostics) = lsp.current_diagnostic_snapshot(&uri).await;
+            let snapshot = lsp.display_diagnostic_snapshot(&uri).await;
             let task_result = crate::editor::lsp_slot::DiagnosticResult {
                 file_path: file_path_for_task,
                 buffer_version,
-                lsp_version: doc_version,
-                lsp_sent_version: last_sent,
-                count: diagnostic_counts(&diagnostics),
-                diagnostics,
-                deferred: last_sent < doc_version,
+                lsp_version: snapshot.doc_version,
+                lsp_sent_version: snapshot.last_sent,
+                count: diagnostic_counts(&snapshot.diagnostics),
+                deferred: snapshot.last_sent < snapshot.doc_version,
+                current: snapshot.current,
+                diagnostics: snapshot.diagnostics,
             };
 
             let _ = tx.send(Ok(task_result));
@@ -240,6 +241,17 @@ impl Editor {
                 }
                 self.lsp.state.current_file_lsp_version = result.lsp_version;
                 self.lsp.state.current_file_lsp_sent_version = result.lsp_sent_version;
+
+                // The servers have not published since the last edits. What is
+                // on screen is projected through them already; an older
+                // publication would only put the diagnostics back where they
+                // were before the edit, and an empty one would blank the file.
+                if !result.current
+                    && self.lsp.state.diagnostics_file_path.as_deref()
+                        == Some(result.file_path.as_str())
+                {
+                    return false;
+                }
 
                 self.lsp.state.diagnostic_count = result.count;
                 self.on_diagnostic_counts_changed(result.count.0, result.count.1);
@@ -618,9 +630,41 @@ mod tests {
             count: diagnostic_counts(&diagnostics),
             diagnostics,
             deferred: false,
+            current: true,
         };
         fire_diagnostic_result(editor, result);
         assert!(editor.poll_pending_diagnostic_refresh_response());
+    }
+
+    /// After an edit the servers have not published for, the refresh finds only
+    /// an older publication: what is on screen (already projected through the
+    /// edit) stays, instead of being replaced by it or by nothing.
+    #[tokio::test(flavor = "current_thread")]
+    async fn an_older_publication_does_not_replace_what_is_shown() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        editor.set_file_path("/tmp/Test.java".to_string());
+        let warning = ranged_diag(0, 5, "published on save");
+        apply_diagnostics(&mut editor, vec![warning]);
+        assert_eq!(editor.diagnostics_for_line(0).len(), 1);
+
+        let file_path = editor.buffer().file_path().unwrap().to_owned();
+        let buffer_version = editor.buffer().version();
+        fire_diagnostic_result(
+            &mut editor,
+            DiagnosticResult {
+                file_path,
+                buffer_version,
+                lsp_version: 2,
+                lsp_sent_version: 2,
+                diagnostics: Vec::new(),
+                count: (0, 0, 0, 0),
+                deferred: false,
+                current: false,
+            },
+        );
+        assert!(!editor.poll_pending_diagnostic_refresh_response());
+        assert_eq!(editor.diagnostics_for_line(0).len(), 1);
+        assert_eq!(editor.lsp.state.current_file_lsp_version, 2);
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -647,6 +691,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (0, 1, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
@@ -707,6 +752,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
@@ -764,6 +810,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
@@ -796,6 +843,7 @@ mod tests {
                 diagnostics: Vec::new(),
                 count: (0, 0, 0, 0),
                 deferred: true,
+                current: true,
             },
         );
 
@@ -828,6 +876,7 @@ mod tests {
                 diagnostics: Vec::new(),
                 count: (0, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
 
@@ -929,6 +978,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
         assert!(editor.poll_pending_diagnostic_refresh_response());
@@ -1000,6 +1050,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
         assert!(editor.poll_pending_diagnostic_refresh_response());
@@ -1057,6 +1108,7 @@ mod tests {
                 diagnostics: vec![diagnostic],
                 count: (1, 0, 0, 0),
                 deferred: false,
+                current: true,
             },
         );
         assert!(editor.poll_pending_diagnostic_refresh_response());
