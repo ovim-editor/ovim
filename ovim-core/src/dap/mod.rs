@@ -69,6 +69,10 @@ pub enum PendingDebugAction {
         command: String,
         args: Vec<String>,
         attach: serde_json::Value,
+        /// Whether ending the session should also kill the debuggee. Only
+        /// for programs ovim started itself: one the user attached to
+        /// belongs to them and is left running.
+        terminate_debuggee: bool,
     },
     /// Continue execution.
     Continue,
@@ -117,6 +121,8 @@ pub struct DapManager {
     breakpoint_sync_requested: bool,
     /// The DAP `attach` arguments for the session being started.
     pub attach_request: Option<serde_json::Value>,
+    /// Whether `disconnect` asks the adapter to terminate the debuggee.
+    terminate_debuggee: bool,
     /// Debuggee/adapter output not yet copied into the run console.
     console_output: Vec<(String, String)>,
     /// Set when the session ended (adapter `terminated`/`exited`/EOF) and the
@@ -154,11 +160,18 @@ impl DapManager {
             stop_requested: false,
             breakpoint_sync_requested: false,
             attach_request: None,
+            terminate_debuggee: true,
             console_output: Vec::new(),
             session_end: None,
             exit_code: None,
             capabilities: None,
         }
+    }
+
+    /// Sets whether ending the session terminates the debuggee (see
+    /// [`PendingDebugAction::Start`]).
+    pub fn set_terminate_debuggee(&mut self, terminate: bool) {
+        self.terminate_debuggee = terminate;
     }
 
     /// Start a debug adapter process.
@@ -472,7 +485,7 @@ impl DapManager {
         let had_session = self.client.is_some() || self.state.session_active;
         let result = match self.client.take() {
             Some(client) => {
-                let result = client.disconnect(true).await;
+                let result = client.disconnect(self.terminate_debuggee).await;
                 client.kill();
                 result
             }
@@ -629,6 +642,7 @@ mod tests {
             command: "x".into(),
             args: vec![],
             attach: serde_json::json!({}),
+            terminate_debuggee: true,
         });
         dap.request_stop();
         assert!(dap.pending_action.is_none());

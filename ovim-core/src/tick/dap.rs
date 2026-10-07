@@ -44,7 +44,11 @@ pub(super) async fn process_pending_debug_action(editor: &mut Editor) {
             command,
             args,
             attach,
+            terminate_debuggee,
         } => {
+            editor
+                .dap_manager_mut()
+                .set_terminate_debuggee(terminate_debuggee);
             if let Err(e) = editor.start_debug_session(&command, &args, attach).await {
                 editor.launch_debug_failed(e.to_string());
             }

@@ -1346,10 +1346,17 @@ impl Editor {
         );
         job.stage = Stage::StartingDebugger;
         self.set_phase(job, RunPhase::Debugging);
+        // A JVM the user attached to is theirs to keep; the ones ovim started
+        // are killed with the session.
+        let attached = job
+            .plan
+            .as_ref()
+            .is_some_and(|p| p.kind == PlanKind::Attach);
         self.dap_manager.pending_action = Some(PendingDebugAction::Start {
             command,
             args,
             attach,
+            terminate_debuggee: !attached,
         });
     }
 

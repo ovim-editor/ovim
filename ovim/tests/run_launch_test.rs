@@ -1010,6 +1010,46 @@ async fn stop_ends_a_live_debug_session_and_kills_an_adapter_that_ignores_discon
         !process_alive(pid),
         "adapter must be killed on Stop even if it lingers"
     );
+    assert_eq!(
+        d.requests("disconnect")[0]["arguments"]["terminateDebuggee"],
+        true,
+        "ovim started the JVM, so ending the session ends it"
+    );
+    d.inner.stop_lsp().await;
+}
+
+/// Attaching to a JVM that is already running does not make it ours: Stop
+/// detaches and leaves the process alone.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_an_attach_session_leaves_the_debuggee_running() {
+    let mut d = DebugSession::new(&["something.else"]).await;
+    std::fs::create_dir_all(d.inner.root.join(".ovim")).unwrap();
+    std::fs::write(
+        d.inner.root.join(".ovim/debug.toml"),
+        "[[config]]\nname = \"Remote\"\ntype = \"attach\"\nport = 5005\n",
+    )
+    .unwrap();
+    let adapter = d.adapter(json!({}));
+    d.inner
+        .test
+        .editor
+        .launch_at_cursor_with(ovim_core::launch::LaunchMode::Debug, Some(adapter));
+    let dap_dir = d.dap_dir.clone();
+    d.inner
+        .until("configurationDone", |_| {
+            !dap_requests(&dap_dir, "configurationDone").is_empty()
+        })
+        .await;
+    assert_eq!(d.requests("attach")[0]["arguments"]["port"], 5005);
+
+    d.inner.test.keys(" ds");
+    d.inner.until("stopped", |s| s.run_finished()).await;
+
+    assert_eq!(
+        d.requests("disconnect")[0]["arguments"]["terminateDebuggee"],
+        false,
+        "a stopped attach session must not kill the user's process"
+    );
     d.inner.stop_lsp().await;
 }
 
