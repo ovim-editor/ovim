@@ -11,6 +11,7 @@
 
 use crate::change::ChangeToken;
 use crate::editor::{BlockInsert, Change, CompletionAcceptMode, Editor, InsertEntryMode};
+use crate::indentation::leading_str;
 use crate::mode::Mode;
 use crate::repeat_action::RepeatAction;
 use crate::unicode::{CharCol, GraphemeCol};
@@ -79,7 +80,19 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
         cleanup_whitespace_only_line(editor);
     }
 
-    let session = editor.finalize_change_building();
+    // `[count]i`, `[count]o`, ...: the text typed is inserted `count` times in all. A
+    // temporary Normal-mode command (Ctrl-O) ends the insert without repeating it.
+    let count = editor
+        .editing
+        .insert_count
+        .take()
+        .filter(|_| !temporary)
+        .unwrap_or(1);
+
+    let mut session = editor.finalize_change_building();
+    if count > 1 {
+        session = repeat_typed_text(editor, session, count);
+    }
 
     // Check for pending change repeat (cc, C, s, S, cj, ck, cw, cgn, etc.)
     if let Some(pending) = editor.take_pending_change_repeat() {
@@ -129,6 +142,7 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
         Some(RepeatAction::InsertSession {
             entry_mode: mode @ (InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove),
             edits,
+            count,
             ..
         }) => {
             // Skip the first edit — that's the synthetic newline created by
@@ -139,6 +153,7 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
                 above: matches!(mode, InsertEntryMode::OpenAbove),
                 inserted_text,
                 options: editor.indent_options(),
+                count: *count,
             })
         }
         _ => None,
@@ -191,6 +206,75 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
             }
         }
     }
+}
+
+/// Inserts the text typed in the insert session just finalized `count - 1` more times
+/// (after the cursor, for `o`/`O` on new lines below), as part of the same undo step,
+/// and makes `.` repeat the whole thing `count` times. Returns the (replaced) undo token.
+fn repeat_typed_text(
+    editor: &mut Editor,
+    session: Option<ChangeToken>,
+    count: usize,
+) -> Option<ChangeToken> {
+    let token = session?;
+    let entry_mode = match editor.buffer().change_manager().last_repeat_action.as_ref() {
+        Some(RepeatAction::InsertSession { entry_mode, .. }) => entry_mode.clone(),
+        _ => return Some(token),
+    };
+    let change = editor.pop_by_token(token)?;
+    let cursor_before = change.cursor_before();
+    let mut edits = change.into_edits()?;
+
+    // The first edit of `o`/`O` is the opened line itself, not typed text.
+    let opens_line = matches!(
+        entry_mode,
+        InsertEntryMode::OpenBelow | InsertEntryMode::OpenAbove
+    );
+    let typed = crate::edit::surviving_inserted_text(edits.get(usize::from(opens_line)..)?);
+    if typed.is_empty() {
+        let cursor_after = editor.cursor_position();
+        return Some(
+            editor
+                .buffer_mut()
+                .change_manager_mut()
+                .push_change(Change::recorded(edits, cursor_before, cursor_after)),
+        );
+    }
+
+    let ((), extra) = editor.buffer_mut().record(|buf| {
+        for _ in 1..count {
+            let line = buf.cursor().line();
+            if opens_line {
+                // The next copy goes on a new line below this one, indented like it.
+                let indent = buf
+                    .line_text(line)
+                    .map(|text| leading_str(&text).to_string())
+                    .unwrap_or_default();
+                let text = format!("\n{indent}{typed}");
+                let end = CharCol(buf.line_len(line));
+                buf.insert_text_at_positioning_cursor(line, end, &text);
+            } else {
+                let col = buf.cursor_char_col();
+                buf.insert_text_at_positioning_cursor(line, col, &typed);
+            }
+        }
+    });
+    edits.extend(extra);
+    let cursor_after = editor.cursor_position();
+    let token = editor
+        .buffer_mut()
+        .change_manager_mut()
+        .push_change(Change::recorded(edits, cursor_before, cursor_after));
+
+    if let Some(RepeatAction::InsertSession { count: repeats, .. }) = editor
+        .buffer_mut()
+        .change_manager_mut()
+        .last_repeat_action
+        .as_mut()
+    {
+        *repeats = count;
+    }
+    Some(token)
 }
 
 /// Visual-block I / A / c: replay the text typed on the first block line on

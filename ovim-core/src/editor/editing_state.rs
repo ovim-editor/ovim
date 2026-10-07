@@ -54,6 +54,9 @@ pub struct EditingState {
     pub pending_register_insert: bool,
     /// Awaiting the literal for Ctrl-V in insert mode
     pub pending_literal: Option<PendingLiteral>,
+    /// `[count]` typed before `i`/`a`/`I`/`A`/`o`/`O`: the text typed in this
+    /// insert is inserted that many times when it ends.
+    pub insert_count: Option<usize>,
     /// Awaiting one normal-mode command for Ctrl-O in insert mode
     pub insert_normal_pending: bool,
     /// The line Ctrl-O was pressed on when the insert cursor was past the end of it.

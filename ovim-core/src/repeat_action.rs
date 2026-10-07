@@ -129,7 +129,10 @@ pub enum RepeatAction {
     /// Ctrl-A / Ctrl-X — increment/decrement number
     NumberOperation { delta: i64 },
     /// di" / di( / diw — delete text object
-    DeleteTextObject { object_type: TextObjectType },
+    DeleteTextObject {
+        object_type: TextObjectType,
+        count: usize,
+    },
     /// df / dt / dF / dT — delete to character motion
     DeleteCharMotion {
         target: char,
@@ -205,6 +208,8 @@ pub enum RepeatAction {
         above: bool,
         inserted_text: String,
         options: IndentOptions,
+        /// `[count]o`: further copies go on new lines below the first.
+        count: usize,
     },
     /// Visual-mode character-wise delete (v...d/x)
     DeleteVisualChar {
@@ -279,6 +284,7 @@ impl RepeatAction {
             | Self::InsertSession { count: n, .. }
             | Self::IndentLines { line_count: n, .. }
             | Self::DedentLines { line_count: n, .. } => *n = count,
+            Self::DeleteTextObject { count: n, .. } | Self::OpenLine { count: n, .. } => *n = count,
             Self::NumberOperation { delta } => *delta = delta.signum() * count as i64,
             Self::Change { delete, .. } => **delete = delete.as_ref().clone().with_count(count),
             Self::DeleteToLastLine { target_line } | Self::DeleteToFirstLine { target_line } => {
@@ -312,6 +318,7 @@ impl RepeatAction {
             | Self::DeleteToFirstLine { .. }
             | Self::DeleteTextObject {
                 object_type: TextObjectType::Paragraph { .. },
+                ..
             } => RegisterType::Line,
             Self::Change { delete, .. } => return delete.deleted_register(edits, before),
             Self::DeleteVisualBlock { .. } | Self::VisualBlockInsert { .. } => RegisterType::Block,
@@ -430,8 +437,8 @@ impl RepeatAction {
             Self::NumberOperation { delta } => {
                 buffer.modify_number_at_cursor(*delta);
             }
-            Self::DeleteTextObject { object_type } => {
-                buffer.delete_text_object(object_type);
+            Self::DeleteTextObject { object_type, count } => {
+                buffer.delete_text_object(object_type, *count);
             }
             Self::DeleteCharMotion {
                 target,
@@ -595,92 +602,12 @@ impl RepeatAction {
                 above,
                 inserted_text,
                 options,
+                count,
             } => {
-                let options = options.normalized();
-                let line_idx = buffer.cursor().line();
-                let line_text = buffer.line_text(line_idx).unwrap_or_default();
-
-                let existing_indent = leading_str(&line_text);
-                let mut indent_width = leading_width(&line_text, options.tab_width);
-
-                if !*above {
-                    // Match `o` behavior: add one extra indent level after opening delimiters.
-                    let trimmed =
-                        line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
-                    if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
-                        indent_width += options.shift_width;
-                    }
+                for copy in 0..*count {
+                    // Copies after the first continue below the line just typed.
+                    replay_open_line(buffer, *above && copy == 0, inserted_text, options);
                 }
-                let indent = if options.copy_indent
-                    && (*above || indent_width == leading_width(&line_text, options.tab_width))
-                {
-                    existing_indent.to_string()
-                } else {
-                    options.encode_indent(indent_width)
-                };
-
-                if *above {
-                    let text = format!("{}\n", indent);
-                    buffer.insert_text_at(line_idx, CharCol::ZERO, &text);
-                    buffer
-                        .cursor_mut()
-                        .set_position(line_idx, GraphemeCol(indent.chars().count()));
-                } else {
-                    // `line_text` strips terminators by design — use the raw
-                    // vs content length asymmetry to detect one. Mirrors
-                    // `insert_line_below` after the line_text migration.
-                    let has_terminator =
-                        buffer.line_raw_len(line_idx) > buffer.line_content_len(line_idx);
-                    let (insert_pos, text) = if has_terminator {
-                        ((line_idx + 1, CharCol::ZERO), format!("{}\n", indent))
-                    } else {
-                        let line_len = line_text.chars().count();
-                        ((line_idx, CharCol(line_len)), format!("\n{}\n", indent))
-                    };
-                    buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
-                    buffer
-                        .cursor_mut()
-                        .set_position(line_idx + 1, GraphemeCol(indent.chars().count()));
-                }
-
-                if inserted_text.is_empty() {
-                    // Match insert-mode exit cleanup for `o/O<Esc>` on whitespace-only lines.
-                    let current_line = buffer.cursor().line();
-                    if let Some(line) = buffer.line_text(current_line) {
-                        let line_wo_nl = line;
-                        if !line_wo_nl.is_empty() && line_wo_nl.chars().all(|c| c.is_whitespace()) {
-                            let whitespace_len = line_wo_nl.chars().count();
-                            buffer.delete_range(
-                                current_line,
-                                CharCol::ZERO,
-                                current_line,
-                                CharCol(whitespace_len),
-                            );
-                            buffer
-                                .cursor_mut()
-                                .set_position(current_line, GraphemeCol(0));
-                        }
-                    }
-                    return;
-                }
-
-                let line = buffer.cursor().line();
-                let col = buffer.cursor_char_col();
-                buffer.insert_text_at(line, col, inserted_text);
-
-                // Position cursor at end of inserted text - 1 (Vim Esc behavior)
-                let mut final_line = line;
-                let mut final_col = col;
-                for ch in inserted_text.chars() {
-                    if ch == '\n' {
-                        final_line += 1;
-                        final_col = CharCol::ZERO;
-                    } else {
-                        final_col += 1;
-                    }
-                }
-                final_col = final_col.saturating_sub(1);
-                buffer.set_cursor_char_col(final_line, final_col);
             }
             Self::DeleteVisualChar {
                 line_delta,
@@ -761,8 +688,10 @@ impl RepeatAction {
                 linewise,
             } => {
                 match delete.as_ref() {
-                    Self::DeleteTextObject { object_type }
-                        if object_type.resolve_for_change(buffer).is_none() =>
+                    Self::DeleteTextObject { object_type, count }
+                        if object_type
+                            .resolve_for_change_counted(buffer, *count)
+                            .is_none() =>
                     {
                         return
                     }
@@ -793,13 +722,18 @@ impl RepeatAction {
                         | Self::DeleteToFirstLine { target_line } => {
                             (line.min(*target_line), line.max(*target_line) + 1)
                         }
+                        Self::DeleteTextObject { object_type, count } => object_type
+                            .resolve_counted(buffer, *count)
+                            .map(|range| range.covered_lines(buffer))
+                            .map_or((line, line + 1), |(first, last)| (first, last + 1)),
                         _ => (line, line + 1),
                     };
                     buffer.change_lines(start, end.min(buffer.line_count()));
                 } else {
                     let version = buffer.version();
-                    if let Self::DeleteTextObject { object_type } = delete.as_ref() {
-                        if let Some(range) = object_type.resolve_for_change(buffer) {
+                    if let Self::DeleteTextObject { object_type, count } = delete.as_ref() {
+                        if let Some(range) = object_type.resolve_for_change_counted(buffer, *count)
+                        {
                             buffer.delete_range(
                                 range.start_line,
                                 range.start_col,
@@ -1089,6 +1023,99 @@ pub fn transform_visual_shape(buffer: &mut Buffer, shape: VisualShape, transform
     buffer
         .cursor_mut()
         .set_position(start_line, GraphemeCol(start_grapheme));
+}
+
+/// One `o`/`O` replay: opens a line next to the cursor line (`above` or below it)
+/// and types `inserted_text` on it.
+fn replay_open_line(
+    buffer: &mut Buffer,
+    above: bool,
+    inserted_text: &str,
+    options: &IndentOptions,
+) {
+    let options = options.normalized();
+    let line_idx = buffer.cursor().line();
+    let line_text = buffer.line_text(line_idx).unwrap_or_default();
+
+    let existing_indent = leading_str(&line_text);
+    let mut indent_width = leading_width(&line_text, options.tab_width);
+
+    if !above {
+        // Match `o` behavior: add one extra indent level after opening delimiters.
+        let trimmed = line_text.trim_end_matches(|c: char| c == '\n' || c.is_whitespace());
+        if trimmed.ends_with('{') || trimmed.ends_with('(') || trimmed.ends_with('[') {
+            indent_width += options.shift_width;
+        }
+    }
+    let indent = if options.copy_indent
+        && (above || indent_width == leading_width(&line_text, options.tab_width))
+    {
+        existing_indent.to_string()
+    } else {
+        options.encode_indent(indent_width)
+    };
+
+    if above {
+        let text = format!("{}\n", indent);
+        buffer.insert_text_at(line_idx, CharCol::ZERO, &text);
+        buffer
+            .cursor_mut()
+            .set_position(line_idx, GraphemeCol(indent.chars().count()));
+    } else {
+        // `line_text` strips terminators by design — use the raw
+        // vs content length asymmetry to detect one. Mirrors
+        // `insert_line_below` after the line_text migration.
+        let has_terminator = buffer.line_raw_len(line_idx) > buffer.line_content_len(line_idx);
+        let (insert_pos, text) = if has_terminator {
+            ((line_idx + 1, CharCol::ZERO), format!("{}\n", indent))
+        } else {
+            let line_len = line_text.chars().count();
+            ((line_idx, CharCol(line_len)), format!("\n{}\n", indent))
+        };
+        buffer.insert_text_at(insert_pos.0, insert_pos.1, &text);
+        buffer
+            .cursor_mut()
+            .set_position(line_idx + 1, GraphemeCol(indent.chars().count()));
+    }
+
+    if inserted_text.is_empty() {
+        // Match insert-mode exit cleanup for `o/O<Esc>` on whitespace-only lines.
+        let current_line = buffer.cursor().line();
+        if let Some(line) = buffer.line_text(current_line) {
+            let line_wo_nl = line;
+            if !line_wo_nl.is_empty() && line_wo_nl.chars().all(|c| c.is_whitespace()) {
+                let whitespace_len = line_wo_nl.chars().count();
+                buffer.delete_range(
+                    current_line,
+                    CharCol::ZERO,
+                    current_line,
+                    CharCol(whitespace_len),
+                );
+                buffer
+                    .cursor_mut()
+                    .set_position(current_line, GraphemeCol(0));
+            }
+        }
+        return;
+    }
+
+    let line = buffer.cursor().line();
+    let col = buffer.cursor_char_col();
+    buffer.insert_text_at(line, col, inserted_text);
+
+    // Position cursor at end of inserted text - 1 (Vim Esc behavior)
+    let mut final_line = line;
+    let mut final_col = col;
+    for ch in inserted_text.chars() {
+        if ch == '\n' {
+            final_line += 1;
+            final_col = CharCol::ZERO;
+        } else {
+            final_col += 1;
+        }
+    }
+    final_col = final_col.saturating_sub(1);
+    buffer.set_cursor_char_col(final_line, final_col);
 }
 
 /// Where a visual-block `I` / `A` / `c` puts its text on each block line.

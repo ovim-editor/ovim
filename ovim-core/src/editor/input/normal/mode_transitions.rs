@@ -37,18 +37,19 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // i - insert before cursor
         KeyCode::Char('i') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.clear_count();
+            let count = editor.take_count();
             let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
             );
             editor.start_change_building(cursor_before);
             editor.set_mode(Mode::Insert);
+            editor.editing.insert_count = count;
             Ok(true)
         }
         // a - insert after cursor
         KeyCode::Char('a') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.clear_count();
+            let count = editor.take_count();
             let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -56,6 +57,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::Append);
             editor.set_mode(Mode::Insert);
+            editor.editing.insert_count = count;
             // Move cursor right (insert after)
             let cursor = editor.buffer_mut().cursor_mut();
             cursor.move_right(1);
@@ -63,7 +65,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // I - insert at first non-blank
         KeyCode::Char('I') => {
-            editor.clear_count();
+            let count = editor.take_count();
             let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -71,13 +73,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::FirstNonBlank);
             editor.set_mode(Mode::Insert);
+            editor.editing.insert_count = count;
             // Move to first non-blank character
             Motions::first_non_blank(editor.buffer_mut());
             Ok(true)
         }
         // A - insert at end of line
         KeyCode::Char('A') => {
-            editor.clear_count();
+            let count = editor.take_count();
             let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -85,6 +88,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.start_change_building(cursor_before);
             editor.set_change_entry_mode(InsertEntryMode::EndOfLine);
             editor.set_mode(Mode::Insert);
+            editor.editing.insert_count = count;
             // Move to end of line
             let line_idx = editor.buffer().cursor().line();
             if let Some(line) = editor.buffer().line_text(line_idx) {
@@ -97,7 +101,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // o - open line below
         KeyCode::Char('o') if !key_event.modifiers.contains(Modifiers::CONTROL) => {
-            editor.clear_count();
+            let count = editor.take_count();
             let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -107,6 +111,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_change_entry_mode(InsertEntryMode::OpenBelow);
             if helpers::insert_line_below(editor)? {
                 editor.set_mode(Mode::Insert);
+                editor.editing.insert_count = count;
             } else {
                 // Abort empty builder when insertion was blocked/no-op.
                 editor.finalize_change_building();
@@ -115,7 +120,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // O - open line above
         KeyCode::Char('O') => {
-            editor.clear_count();
+            let count = editor.take_count();
             let cursor_before = CursorPos::new(
                 editor.buffer().cursor().line(),
                 editor.buffer().cursor().col(),
@@ -124,6 +129,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.set_change_entry_mode(InsertEntryMode::OpenAbove);
             if helpers::insert_line_above(editor)? {
                 editor.set_mode(Mode::Insert);
+                editor.editing.insert_count = count;
             } else {
                 // Abort empty builder when insertion was blocked/no-op.
                 editor.finalize_change_building();

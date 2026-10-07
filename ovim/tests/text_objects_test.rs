@@ -503,7 +503,8 @@ fn test_cip_change_paragraph() {
 
     test.keys("cip").type_text("new content").press_esc();
 
-    assert_eq!(test.buffer_content(), "new content\nnext\n");
+    // nvim --clean: the paragraph's lines are replaced by one line; the blank line stays.
+    assert_eq!(test.buffer_content(), "new content\n\nnext\n");
     test.assert_cursor(0, 10);
 }
 
@@ -586,9 +587,8 @@ fn test_d2iw_delete_two_words() {
 
     test.keys("d2iw"); // Delete 2 words - in Vim this is "one" + whitespace-as-word
 
-    // With proper iw behavior, 2iw from "one" selects the word and then whitespace
-    // Actually deletes just "one" since count support may be limited
-    assert_eq!(test.buffer_content(), " two three four\n");
+    // nvim --clean: 2iw from "one" selects the word and then the whitespace after it.
+    assert_eq!(test.buffer_content(), "two three four\n");
     test.assert_cursor(0, 0);
 }
 
@@ -596,13 +596,16 @@ fn test_d2iw_delete_two_words() {
 fn test_y3aw_yank_three_words() {
     let mut test = EditorTest::new("one two three four five");
 
-    test.keys("y3aw") // Yank "one " (first word + trailing space) - count may not apply
+    test.keys("y3aw") // Yank "one two three " (three words with their trailing space)
         .keys("$") // Move to end of line
         .press('p'); // Paste after cursor
 
-    // With current implementation, y3aw yanks just "one "
-    assert_eq!(test.buffer_content(), "one two three four fiveone \n");
-    test.assert_cursor(0, 26); // Cursor after pasted text
+    // nvim --clean: `y3aw$p` pastes "one two three " after the last character.
+    assert_eq!(
+        test.buffer_content(),
+        "one two three four fiveone two three \n"
+    );
+    test.assert_cursor(0, 36); // Cursor on the last pasted character
 }
 
 // ============================================================================

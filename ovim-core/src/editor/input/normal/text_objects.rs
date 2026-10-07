@@ -24,6 +24,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     else {
         return Ok(false);
     };
+    let count = editor.effective_count();
     editor.reset_input_state();
     editor.clear_count();
 
@@ -35,20 +36,20 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         return Ok(true);
     };
     let result = if operator == Operator::Change {
-        object_type.resolve_for_change(editor.buffer())
+        object_type.resolve_for_change_counted(editor.buffer_mut(), count)
     } else {
-        object_type.resolve(editor.buffer())
+        object_type.resolve_counted(editor.buffer_mut(), count)
     };
     if let Some(range) = result {
         match operator {
             Operator::Delete => {
-                apply_delete_operator(editor, range, object_type)?;
+                apply_delete_operator(editor, range, object_type, count)?;
             }
             Operator::Yank => {
                 apply_yank_operator(editor, range, key_event.code)?;
             }
             Operator::Change => {
-                apply_change_operator(editor, range, object_type)?;
+                apply_change_operator(editor, range, object_type, count)?;
             }
             Operator::Lowercase => {
                 apply_case_operator(editor, range, object_type, CaseTransform::Lower)?;
@@ -69,7 +70,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             }
             Operator::Indent | Operator::Dedent | Operator::AutoIndent => {
                 // Shift the lines the object covers (`>ip`, `>i{`, `=ip`).
-                let (first, last) = lines_covered(editor, range);
+                let (first, last) = range.covered_lines(editor.buffer());
                 let cursor_before = editor.cursor_position();
                 super::operator_motion::apply_lines(editor, operator, first, last, cursor_before)?;
             }
@@ -79,26 +80,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     Ok(true)
 }
 
-/// The lines a text object's range touches: a start at the end of its line (the
-/// text after `{`) belongs to the next line, and an exclusive end at column 0
-/// does not reach into its line.
-fn lines_covered(editor: &Editor, range: TextObjectRange) -> (usize, usize) {
-    let buffer = editor.buffer();
-    let mut first = range.start_line;
-    if first < range.end_line && range.start_col.0 >= buffer.line_len(first) {
-        first += 1;
-    }
-    let mut last = range.end_line;
-    if last > first && range.end_col.0 == 0 {
-        last -= 1;
-    }
-    (first, last)
-}
-
 fn apply_delete_operator(
     editor: &mut Editor,
     range: TextObjectRange,
     object_type: TextObjectType,
+    count: usize,
 ) -> Result<()> {
     let cursor_before = editor.cursor_position();
 
@@ -127,7 +113,7 @@ fn apply_delete_operator(
         };
         editor.delete_to_register_with_type(deleted, reg_type);
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
-        editor.set_repeat_action(RepeatAction::DeleteTextObject { object_type });
+        editor.set_repeat_action(RepeatAction::DeleteTextObject { object_type, count });
     }
     helpers::clamp_cursor_to_buffer(editor);
 
@@ -177,7 +163,19 @@ fn apply_change_operator(
     editor: &mut Editor,
     range: TextObjectRange,
     object_type: TextObjectType,
+    count: usize,
 ) -> Result<()> {
+    // A paragraph is changed as lines: they become one empty line to type on.
+    if matches!(object_type, TextObjectType::Paragraph { .. }) {
+        let (first, last) = range.covered_lines(editor.buffer());
+        return super::operators::change_lines(
+            editor,
+            first,
+            last + 1,
+            RepeatAction::DeleteTextObject { object_type, count },
+        );
+    }
+
     let cursor = editor.buffer().cursor();
     let cursor_before = CursorPos::new(cursor.line(), cursor.col());
 
@@ -204,7 +202,7 @@ fn apply_change_operator(
         Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
     };
     editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteTextObject { object_type },
+        delete_action: RepeatAction::DeleteTextObject { object_type, count },
         linewise: false,
         delete_token,
     });

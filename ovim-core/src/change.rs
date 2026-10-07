@@ -130,6 +130,106 @@ impl TextObjectType {
         }
     }
 
+    /// Like [`Self::resolve`] with a `[count]` (`d2aw`, `c3ip`, `d2i(`): words and
+    /// paragraphs extend over the next `count - 1` objects, bracket pairs select
+    /// the `count`-th enclosing pair. Other objects ignore the count. The cursor
+    /// is left where it was.
+    pub fn resolve_counted(&self, buffer: &mut Buffer, count: usize) -> Option<TextObjectRange> {
+        let first = self.resolve(buffer)?;
+        if count <= 1 {
+            return Some(first);
+        }
+        let saved = *buffer.cursor();
+        let range = match self {
+            Self::Word { .. } | Self::Paragraph { .. } | Self::Sentence { .. } => {
+                // Each further object starts where the previous one ended; running out
+                // of objects fails the whole command, as in vim.
+                let mut range = first;
+                let mut complete = true;
+                for _ in 1..count {
+                    let moved = Self::move_past(buffer, range);
+                    match moved.then(|| self.resolve(buffer)).flatten() {
+                        Some(next) => {
+                            range.end_line = next.end_line;
+                            range.end_col = next.end_col;
+                        }
+                        None => {
+                            complete = false;
+                            break;
+                        }
+                    }
+                }
+                complete.then_some(range)
+            }
+            Self::Paired { open, close, inner } => {
+                Self::nth_enclosing_pair(buffer, *open, *close, *inner, count)
+            }
+            _ => Some(first),
+        };
+        buffer.cursor_mut().set_position(saved.line(), saved.col());
+        range
+    }
+
+    /// `resolve_for_change` for a counted object.
+    pub fn resolve_for_change_counted(
+        &self,
+        buffer: &mut Buffer,
+        count: usize,
+    ) -> Option<TextObjectRange> {
+        if count <= 1 {
+            self.resolve_for_change(buffer)
+        } else {
+            self.resolve_counted(buffer, count)
+        }
+    }
+
+    /// Puts the cursor on the first character after `range` (the start of the next
+    /// line when the range ends at the end of its line, or is linewise). `false` at the
+    /// buffer end.
+    fn move_past(buffer: &mut Buffer, range: TextObjectRange) -> bool {
+        let line_len = buffer.line_len(range.end_line);
+        if range.end_col.0 == 0 && range.end_line > range.start_line {
+            // Exclusive end at the start of a line: that line is the next object's.
+            buffer.set_cursor_char_col(range.end_line, crate::unicode::CharCol::ZERO);
+            true
+        } else if range.end_col.0 < line_len {
+            buffer.set_cursor_char_col(range.end_line, range.end_col);
+            true
+        } else if range.end_line + 1 < buffer.line_count() {
+            buffer.set_cursor_char_col(range.end_line + 1, crate::unicode::CharCol::ZERO);
+            true
+        } else {
+            false
+        }
+    }
+
+    /// The `count`-th pair of `open`/`close` around the cursor, counting outward.
+    fn nth_enclosing_pair(
+        buffer: &mut Buffer,
+        open: char,
+        close: char,
+        inner: bool,
+        count: usize,
+    ) -> Option<TextObjectRange> {
+        let mut around = TextObjects::paired_delimiters(buffer, open, close, true)?;
+        for _ in 1..count {
+            // Look for the next pair from just before this one's opening delimiter.
+            let rope = buffer.rope();
+            let open_offset = rope.line_to_char(around.start_line) + around.start_col.0;
+            let before = open_offset.checked_sub(1)?;
+            let line = rope.char_to_line(before);
+            let col = before - rope.line_to_char(line);
+            buffer.set_cursor_char_col(line, crate::unicode::CharCol(col));
+            around = TextObjects::paired_delimiters(buffer, open, close, true)?;
+        }
+        if !inner {
+            return Some(around);
+        }
+        // The inner text of that pair: resolve from its opening delimiter.
+        buffer.set_cursor_char_col(around.start_line, around.start_col);
+        TextObjects::paired_delimiters(buffer, open, close, false)
+    }
+
     /// Resolve this text object to a range at the current cursor position.
     pub fn resolve(&self, buffer: &Buffer) -> Option<TextObjectRange> {
         match self {

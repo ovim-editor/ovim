@@ -18,6 +18,26 @@ pub struct TextObjectRange {
     pub end_col: CharCol, // EXCLUSIVE - one past the last character
 }
 
+impl TextObjectRange {
+    /// The first and last line the range touches: a start at the end of its line
+    /// (the text after `{`) belongs to the next line, and an exclusive end at
+    /// column 0 does not reach into its line.
+    pub fn covered_lines(&self, buffer: &Buffer) -> (usize, usize) {
+        let mut first = self.start_line;
+        if first < self.end_line
+            && self.start_col.0 > 0
+            && self.start_col.0 >= buffer.line_len(first)
+        {
+            first += 1;
+        }
+        let mut last = self.end_line;
+        if last > first && self.end_col.0 == 0 {
+            last -= 1;
+        }
+        (first, last)
+    }
+}
+
 /// Handles text object operations
 pub struct TextObjects;
 
@@ -736,20 +756,19 @@ impl TextObjects {
                 .is_empty()
         };
 
-        // If we're on a blank line, return None for inner paragraph
-        if is_blank(current_line) {
-            return None;
-        }
+        // On a blank line the object is the run of blank lines, as the text
+        // between paragraphs is itself one (vim: `dip` on a blank line).
+        let blank = is_blank(current_line);
 
-        // Find start of paragraph (first non-blank line in sequence)
+        // Find start of paragraph (first line of the same kind in sequence)
         let mut start_line = current_line;
-        while start_line > 0 && !is_blank(start_line - 1) {
+        while start_line > 0 && is_blank(start_line - 1) == blank {
             start_line -= 1;
         }
 
-        // Find end of paragraph (last non-blank line in sequence)
+        // Find end of paragraph (last line of the same kind in sequence)
         let mut end_line = current_line;
-        while end_line + 1 < line_count && !is_blank(end_line + 1) {
+        while end_line + 1 < line_count && is_blank(end_line + 1) == blank {
             end_line += 1;
         }
 
@@ -806,6 +825,10 @@ impl TextObjects {
             }
             // Find end of blank sequence
             while end_line + 1 < line_count && is_blank(end_line + 1) {
+                end_line += 1;
+            }
+            // ... and the paragraph after it (vim: `ap` on blank lines takes both).
+            while end_line + 1 < line_count && !is_blank(end_line + 1) {
                 end_line += 1;
             }
         } else {

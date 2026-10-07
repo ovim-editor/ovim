@@ -812,6 +812,7 @@ impl Editor {
         self.mode = mode;
         if mode != Mode::Insert {
             self.editing.pending_literal = None;
+            self.editing.insert_count = None;
         }
         // A mode change ends any half-typed command (count, operator,
         // prefix, character argument, register, mapping keys).
@@ -1825,6 +1826,11 @@ impl Editor {
     pub fn enter_operator_pending(&mut self, operator: Operator) {
         let count = self.input.count.take();
         self.set_input_state(InputState::OperatorPending { operator, count });
+    }
+
+    /// Takes the count typed so far, leaving none.
+    pub fn take_count(&mut self) -> Option<usize> {
+        self.input.count.take()
     }
 
     /// Clears the count
