@@ -398,3 +398,24 @@ fn make_arguments_end_at_a_bar() {
     }
     assert!(test.editor.options.number, "the command after | ran");
 }
+
+// nvim --clean: after another process deleted the file, `:w` writes it again
+// (no E211 refusal); the deleted file has nothing of the user's to overwrite.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_recreates_a_file_deleted_externally() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, _) = write_pair(&dir);
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+    test.keys("x");
+    std::fs::remove_file(&first).unwrap();
+
+    let result = run(&mut test, "w");
+
+    assert!(
+        matches!(result, ovim::command_result::CommandResult::Success(_)),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read_to_string(&first).unwrap(), "ne\n");
+    assert!(!test.editor.is_modified());
+}

@@ -63,10 +63,16 @@ pub(super) fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandRes
     // Do not silently overwrite changes made by another process. Save-as to a
     // different file remains valid, and the bang variants are the explicit
     // escape hatch when the user intentionally wants the in-memory copy to win.
+    // A file that was deleted meanwhile has nothing to overwrite: vim writes
+    // it again as new.
     let targets_current_file = old_path
         .as_deref()
         .is_some_and(|current| same_file(current, &resolved));
-    if !opts.force && targets_current_file && editor.buffer().file_mtime().is_some() {
+    if !opts.force
+        && targets_current_file
+        && editor.buffer().file_mtime().is_some()
+        && std::path::Path::new(&resolved).exists()
+    {
         match editor.buffer().check_external_modification() {
             Ok(true) => return err("E211: File changed since editing started (add ! to override)"),
             Ok(false) => {}
