@@ -1502,6 +1502,7 @@ impl Editor {
         let wrap = self.options.wrap;
         let sidescroll = self.options.sidescroll;
         let sidescrolloff = self.options.sidescrolloff;
+        let text_width = self.render_cache.last_text_width;
 
         if let Some(wm) = &mut self.window_manager {
             if let Some(window) = wm.focused_window_mut() {
@@ -1510,6 +1511,7 @@ impl Editor {
                 // Update horizontal scroll offset to keep cursor visible horizontally
                 if window.ensure_cursor_visible_horizontal(
                     cursor_display_col,
+                    text_width,
                     wrap,
                     sidescroll,
                     sidescrolloff,

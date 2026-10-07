@@ -64,14 +64,17 @@ fn display_col_to_char_idx(text: &str, target_display_col: usize) -> usize {
 struct HorizontalViewport {
     text: String,
     source_chars: Range<usize>,
-    precedes: bool,
+    /// Cells (all single-char) before the first displayed source character:
+    /// the `<` indicator drawn over the first cell of a scrolled line, plus
+    /// blanks standing in for the rest of a wide grapheme it cut in half.
+    left: usize,
 }
 
 impl HorizontalViewport {
     fn project_range(&self, range: Range<usize>) -> Option<Range<usize>> {
         let start = range.start.max(self.source_chars.start);
         let end = range.end.min(self.source_chars.end);
-        let left = usize::from(self.precedes);
+        let left = self.left;
         (start < end)
             .then(|| start - self.source_chars.start + left..end - self.source_chars.start + left)
     }
@@ -79,13 +82,18 @@ impl HorizontalViewport {
 
 /// Slice by display columns while preserving complete graphemes. Indicators
 /// and padding are outside `source_chars` and cannot acquire text highlights.
+///
+/// A scrolled line draws the `<` indicator over its first visible cell, as Vim
+/// does for `precedes`, so every other character stays exactly `h_offset`
+/// columns left of its display column — what the cursor and mouse mapping
+/// assume.
 fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> HorizontalViewport {
     // Safety check: if width is 0 or too small, return empty or minimal content
     if width == 0 {
         return HorizontalViewport {
             text: String::new(),
             source_chars: 0..0,
-            precedes: false,
+            left: 0,
         };
     }
 
@@ -97,37 +105,35 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> Horiz
         return HorizontalViewport {
             text: line.to_string(),
             source_chars: 0..line.chars().count(),
-            precedes: false,
+            left: 0,
         };
     }
 
-    // Walk graphemes to find the start position (skip h_offset display columns)
+    // The first visible cell is the `<` indicator, so text shows from the
+    // next cell. Skip every grapheme that starts before it; one that was cut
+    // in half by the edge leaves blanks so the rest keeps its column.
+    let precedes = h_offset > 0;
+    let content_start = h_offset + usize::from(precedes);
     let mut display_col = 0;
     let mut graphemes = line.graphemes(true).peekable();
-
     let mut source_start = 0;
-    // Skip graphemes until we reach h_offset
     while let Some(&grapheme) = graphemes.peek() {
-        let g_width = grapheme_display_width(grapheme);
-        if display_col + g_width > h_offset {
+        if display_col >= content_start {
             break;
         }
-        display_col += g_width;
+        display_col += grapheme_display_width(grapheme);
         source_start += grapheme.chars().count();
         graphemes.next();
     }
 
-    let precedes = h_offset > 0;
-    let left_width = usize::from(precedes);
-    // Use the snapped start and account for the left indicator: both can
-    // leave more text offscreen than `h_offset + width` would suggest.
-    let extends =
-        total_display_width - display_col > width - left_width && (!precedes || width > 1);
-    let content_width = width - left_width - usize::from(extends);
+    let left = (usize::from(precedes) + display_col.saturating_sub(content_start)).min(width);
+    let extends = total_display_width - display_col > width - left && (!precedes || width > 1);
+    let content_width = (width - left).saturating_sub(usize::from(extends));
     let mut result = String::new();
     if precedes {
         result.push('<');
     }
+    result.extend(std::iter::repeat_n(' ', left.saturating_sub(1)));
 
     // Collect graphemes that fit within content_width display columns
     let mut content_display_width = 0;
@@ -157,7 +163,7 @@ fn slice_horizontal_viewport(line: &str, h_offset: usize, width: usize) -> Horiz
     HorizontalViewport {
         text: result,
         source_chars: source_start..source_end,
-        precedes,
+        left,
     }
 }
 
@@ -179,6 +185,7 @@ impl HighlightShiftBuffers {
 
 /// Shifts syntax highlight ranges for horizontal viewport.
 /// Highlights are in expanded byte ranges; h_offset and width are in display columns.
+/// `left` is the number of leading cells of the slice that are not source text.
 /// Returns byte ranges into the sliced text.
 ///
 /// `buffers` provides reusable scratch space — the caller keeps one instance
@@ -189,11 +196,9 @@ fn shift_highlights_for_viewport<T: Copy>(
     sliced_text: &str,
     h_offset: usize,
     width: usize,
-    precedes: bool,
+    left: usize,
     buffers: &mut HighlightShiftBuffers,
 ) -> Vec<(Range<usize>, T)> {
-    let offset_adjustment = if precedes { 1 } else { 0 }; // Account for '<' indicator
-
     // Build a byte-offset-to-display-column mapping for the expanded text
     let byte_to_display = &mut buffers.byte_to_display;
     byte_to_display.clear();
@@ -239,8 +244,9 @@ fn shift_highlights_for_viewport<T: Copy>(
                 *byte_to_display.last().unwrap_or(&0)
             };
 
-            // Highlight is completely before viewport
-            if end_display <= h_offset {
+            // Highlight is completely before the text (the `<` indicator and
+            // blanks in front of it carry no highlights)
+            if end_display <= h_offset + left {
                 return None;
             }
             // Highlight is completely after viewport
@@ -249,8 +255,8 @@ fn shift_highlights_for_viewport<T: Copy>(
             }
 
             // Clip to viewport display columns
-            let clipped_start = start_display.saturating_sub(h_offset) + offset_adjustment;
-            let clipped_end = end_display.saturating_sub(h_offset).min(width) + offset_adjustment;
+            let clipped_start = start_display.saturating_sub(h_offset).max(left);
+            let clipped_end = end_display.saturating_sub(h_offset).min(width);
 
             // Convert viewport display columns to byte offsets in sliced text
             let byte_start = if clipped_start < sliced_display_to_byte.len() {
@@ -1919,6 +1925,9 @@ pub fn render_buffer(
                 let mut precedes = false;
                 let mut extends = false;
                 let mut content_budget = text_width;
+                // Blanks after the `<` standing in for the rest of a wide
+                // glyph the indicator cut in half.
+                let mut cut_cells = 0;
                 let rows = if has_wrap {
                     let first = if line_idx == start_line { top_skip } else { 0 };
                     indexed_layout
@@ -1928,16 +1937,30 @@ pub fn render_buffer(
                         .display_range_for_row(indexed_layout.row_count().saturating_sub(1))
                         .map(|range| range.end)
                         .unwrap_or(0);
-                    let requested_start = if total <= text_width { 0 } else { h_offset };
+                    // The `<` indicator covers the first cell, so text shows
+                    // from the next one and keeps its column.
+                    let requested_start = if total <= text_width {
+                        0
+                    } else {
+                        h_offset + usize::from(h_offset > 0)
+                    };
                     let first = indexed_layout.fragments_for_display_range(
                         requested_start..requested_start.saturating_add(1),
                     );
-                    let actual_start = first
+                    let mut actual_start = first
                         .first()
                         .map(|fragment| fragment.display_start)
                         .unwrap_or(requested_start);
                     precedes = total > text_width && h_offset > 0;
-                    let available = text_width.saturating_sub(usize::from(precedes));
+                    if precedes && actual_start < requested_start {
+                        let fragment_end =
+                            actual_start + first.first().map_or(0, |fragment| fragment.cells);
+                        cut_cells = fragment_end.saturating_sub(requested_start);
+                        actual_start = fragment_end;
+                    }
+                    let available = text_width
+                        .saturating_sub(usize::from(precedes))
+                        .saturating_sub(cut_cells);
                     extends = total.saturating_sub(actual_start) > available
                         && (!precedes || text_width > 1);
                     content_budget = available.saturating_sub(usize::from(extends));
@@ -2133,7 +2156,9 @@ pub fn render_buffer(
                         truncate_line_to_width(&mut rendered, content_budget);
                         pad_line_to(&mut rendered, content_budget);
                         if precedes {
-                            rendered.spans.insert(0, Span::raw("<"));
+                            rendered
+                                .spans
+                                .insert(0, Span::raw(format!("<{}", " ".repeat(cut_cells))));
                         }
                         if extends {
                             rendered.spans.push(Span::raw(">"));
@@ -2277,7 +2302,7 @@ pub fn render_buffer(
 
             let viewport =
                 (!wrap).then(|| slice_horizontal_viewport(&expanded_text, h_offset, text_width));
-            let precedes = viewport.as_ref().is_some_and(|view| view.precedes);
+            let left = viewport.as_ref().map_or(0, |view| view.left);
             let line_text = viewport
                 .as_ref()
                 .map(|view| view.text.as_str())
@@ -2295,7 +2320,7 @@ pub fn render_buffer(
                     line_text,
                     h_offset,
                     text_width,
-                    precedes,
+                    left,
                     &mut hl_shift_buffers,
                 );
             }
@@ -2335,7 +2360,7 @@ pub fn render_buffer(
                         line_text,
                         h_offset,
                         text_width,
-                        precedes,
+                        left,
                         &mut hl_shift_buffers,
                     );
                 }
@@ -2406,14 +2431,11 @@ pub fn render_buffer(
                     let display_col =
                         expanded_char_to_display_col(&expanded_text, expanded_char_col);
                     // Check if bracket is in visible horizontal range
-                    if display_col >= h_offset && display_col < h_offset + text_width {
+                    if display_col >= h_offset + left && display_col < h_offset + text_width {
                         // Convert to char index in the sliced text
                         let viewport_display_col = display_col - h_offset;
-                        let offset_adjustment = if precedes { 1 } else { 0 };
-                        let sliced_char_idx = display_col_to_char_idx(
-                            line_text,
-                            viewport_display_col + offset_adjustment,
-                        );
+                        let sliced_char_idx =
+                            display_col_to_char_idx(line_text, viewport_display_col);
                         Some(sliced_char_idx)
                     } else {
                         None // Bracket is outside viewport
@@ -2507,17 +2529,18 @@ pub fn render_buffer(
                             let start_display = expanded_char_to_display_col(&expanded_text, start);
                             let end_display =
                                 expanded_char_to_display_col(&expanded_text, end_exclusive);
-                            if end_display <= h_offset || start_display >= h_offset + text_width {
+                            if end_display <= h_offset + left
+                                || start_display >= h_offset + text_width
+                            {
                                 Vec::new()
                             } else {
-                                let offset_adj = if precedes { 1 } else { 0 };
                                 start = display_col_to_char_idx(
                                     line_text,
-                                    start_display.saturating_sub(h_offset) + offset_adj,
+                                    start_display.saturating_sub(h_offset).max(left),
                                 );
                                 end_exclusive = display_col_to_char_idx(
                                     line_text,
-                                    end_display.saturating_sub(h_offset) + offset_adj,
+                                    end_display.saturating_sub(h_offset),
                                 );
                                 if end_exclusive > start {
                                     vec![(start, end_exclusive - 1)]
@@ -3279,8 +3302,12 @@ mod tests {
         assert_eq!(row(2), "     ");
     }
 
+    /// A long line scrolled to a wide glyph: the `<` covers the first visible
+    /// cell, so a glyph cut by the edge is hidden (blank for its other half)
+    /// and every later character sits exactly `h_offset` columns left of its
+    /// display column.
     #[test]
-    fn long_nowrap_viewport_snaps_left_wide_glyph_and_keeps_indicators() {
+    fn long_nowrap_viewport_covers_the_wide_glyph_cut_by_the_left_edge() {
         use ratatui::{backend::TestBackend, Terminal};
         let mut editor = Editor::with_content(&format!("{}界word", "x".repeat(5000)));
         editor.options.wrap = false;
@@ -3296,30 +3323,36 @@ mod tests {
             fold_width: 0,
             scrollbar_area: None,
         };
-        let context = WindowRenderContext {
-            scroll_offset: Some(0),
-            horizontal_offset: Some(5001),
-            ..Default::default()
-        };
-        let mut terminal = Terminal::new(TestBackend::new(5, 1)).unwrap();
-        let mut cache = super::super::line_cache::LineRenderCache::new();
-        terminal
-            .draw(|frame| {
-                render_buffer(
-                    frame,
-                    &editor,
-                    &Theme::default(),
-                    &layout,
-                    &mut cache,
-                    Some(&context),
-                );
-            })
-            .unwrap();
-        let cells = terminal.backend().buffer();
-        assert_eq!(cells[(0, 0)].symbol(), "<");
-        assert_eq!(cells[(1, 0)].symbol(), "界");
-        assert_eq!(cells[(3, 0)].symbol(), "w");
-        assert_eq!(cells[(4, 0)].symbol(), ">");
+        // 界 fills columns 5000-5001 and `w` is column 5002.
+        for (h_offset, expected) in [
+            (5001, "<word"),
+            (5000, "< wo>"),
+            (4999, "<界 w>"),
+            (4998, "<x界 >"),
+        ] {
+            let context = WindowRenderContext {
+                scroll_offset: Some(0),
+                horizontal_offset: Some(h_offset),
+                ..Default::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(5, 1)).unwrap();
+            let mut cache = super::super::line_cache::LineRenderCache::new();
+            terminal
+                .draw(|frame| {
+                    render_buffer(
+                        frame,
+                        &editor,
+                        &Theme::default(),
+                        &layout,
+                        &mut cache,
+                        Some(&context),
+                    );
+                })
+                .unwrap();
+            let cells = terminal.backend().buffer();
+            let row: String = (0..5).map(|x| cells[(x, 0)].symbol()).collect();
+            assert_eq!(row, expected, "h_offset {h_offset}");
+        }
     }
 
     #[test]
@@ -3416,13 +3449,17 @@ mod tests {
         for (line, offset, width, expected, highlighted) in [
             ("hello", 0, 10, "hello", Some(0..5)),
             ("hello world!", 0, 6, "hello>", Some(0..5)),
-            ("hello world!", 3, 6, "<lo w>", Some(1..5)),
+            // The `<` covers the first visible cell: `l` (column 3) is hidden
+            // and `o` (column 4) sits one cell in, 3 columns from the left.
+            ("hello world!", 3, 6, "<o wo>", Some(1..5)),
             ("a世b", 0, 5, "a世b", Some(0..3)),
             ("a世b世c", 0, 5, "a世b>", Some(0..3)),
-            ("a世b世c", 3, 5, "<b世c", Some(1..4)),
+            ("a世b世c", 3, 5, "<世c ", Some(1..3)),
             ("a界b界c", 0, 3, "a >", Some(0..1)),
-            ("a界b界c", 1, 4, "<界>", Some(1..2)),
-            ("界word", 1, 5, "<界w>", Some(1..3)),
+            // A wide glyph cut by the left edge is hidden; a blank keeps the
+            // next character in its column.
+            ("a界b界c", 1, 4, "< b>", Some(2..3)),
+            ("界word", 1, 5, "<word", Some(1..5)),
             ("hello", 0, 0, "", None),
             ("hello", 0, 1, ">", None),
             ("hello", 3, 1, "<", None),
@@ -3443,11 +3480,11 @@ mod tests {
     #[test]
     fn horizontal_viewport_clips_ranges_to_the_displayed_source_characters() {
         let viewport = slice_horizontal_viewport("é word tail", 2, 6);
-        assert_eq!(viewport.text, "<word>");
+        assert_eq!(viewport.text, "<ord >");
         assert_eq!(viewport.project_range(0..2), None);
-        assert_eq!(viewport.project_range(3..5), Some(1..3));
-        assert_eq!(viewport.project_range(5..20), Some(3..5));
-        assert_eq!(viewport.project_range(7..20), None);
+        assert_eq!(viewport.project_range(3..5), Some(1..2));
+        assert_eq!(viewport.project_range(5..20), Some(2..5));
+        assert_eq!(viewport.project_range(8..20), None);
     }
 
     // --- Helper function tests ---

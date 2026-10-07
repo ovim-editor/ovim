@@ -205,11 +205,13 @@ impl Window {
 
     /// Ensures the cursor column is visible horizontally, adjusting horizontal offset if needed.
     ///
-    /// `cursor_col` is a **display column** (accounts for wide chars and tabs).
+    /// `cursor_col` is a **display column** (accounts for wide chars and tabs);
+    /// `visible_width` the number of text columns on screen (0 = unknown).
     /// Returns true if horizontal offset changed.
     pub fn ensure_cursor_visible_horizontal(
         &mut self,
         cursor_col: usize,
+        visible_width: usize,
         wrap: bool,
         sidescroll: usize,
         sidescrolloff: usize,
@@ -223,15 +225,23 @@ impl Window {
             return false;
         }
 
-        let visible_width = self.width as usize;
         let h_off = self.horizontal_offset.as_usize();
         let old_offset = h_off;
+
+        // Text columns on screen: the pane without its gutter. Callers that
+        // do not know the gutter pass 0 and get the whole pane.
+        let visible_width = if visible_width == 0 {
+            self.width as usize
+        } else {
+            visible_width.min(self.width as usize)
+        };
 
         // Clamp sidescrolloff so left and right margins don't overlap
         let sidescrolloff = sidescrolloff.min(visible_width.saturating_sub(1) / 2);
 
-        // Calculate bounds with sidescrolloff
-        let left_bound = h_off + sidescrolloff;
+        // Calculate bounds with sidescrolloff. A scrolled line draws its `<`
+        // indicator over the first cell, so the cursor may not sit there.
+        let left_bound = h_off + sidescrolloff.max(usize::from(h_off > 0));
         let right_bound = h_off + visible_width.saturating_sub(sidescrolloff + 1);
 
         let new_offset;
@@ -1066,5 +1076,38 @@ impl WindowManager {
         self.focused_window = 0; // Reset focus to index 0
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod horizontal_scroll_tests {
+    use super::*;
+
+    /// A 60 column pane whose gutter leaves 54 text columns.
+    fn pane() -> Window {
+        Window::new(0, 60, 10)
+    }
+
+    #[test]
+    fn the_cursor_is_kept_inside_the_text_columns_not_the_whole_pane() {
+        let mut window = pane();
+        // Column 55 is inside the 60 column pane but past the 54 text columns.
+        assert!(window.ensure_cursor_visible_horizontal(55, 54, false, 1, 0));
+        assert_eq!(window.horizontal_offset(), 2);
+        // Unknown text width (0) falls back to the pane width.
+        let mut window = pane();
+        assert!(!window.ensure_cursor_visible_horizontal(55, 0, false, 1, 0));
+    }
+
+    #[test]
+    fn the_cursor_never_sits_on_the_indicator_cell_of_a_scrolled_line() {
+        let mut window = pane();
+        window.horizontal_offset = DisplayCol(20);
+        // Without sidescrolloff the first cell is still reserved for `<`.
+        assert!(window.ensure_cursor_visible_horizontal(20, 54, false, 1, 0));
+        assert_eq!(window.horizontal_offset(), 19);
+        // At offset 0 nothing is reserved.
+        let mut window = pane();
+        assert!(!window.ensure_cursor_visible_horizontal(0, 54, false, 1, 0));
     }
 }

@@ -71,6 +71,16 @@ pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
         }
     }
 
+    // The focused pane's text width, as a frame would record it, so scrolling
+    // the cursor into view counts the columns the text really has.
+    let focused_width = editor
+        .window_manager()
+        .and_then(|manager| manager.focused_window())
+        .map(|window| window.width());
+    if let Some(window_width) = focused_width {
+        editor.render_cache.last_text_width = compute_text_width(editor, window_width);
+    }
+
     // Re-run scroll update so the cursor remains visible in the resized viewport.
     editor.update_scroll_offset();
 }
