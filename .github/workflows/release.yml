@@ -115,7 +115,7 @@ jobs:
           import pathlib
           import sys
           binary = pathlib.Path(sys.argv[1])
-          marker = b"Only one file or directory can be opened at startup"
+          marker = b"the native GUI editor"
           if marker not in binary.read_bytes():
               sys.exit(f"::error::{binary} does not contain the Ovim GUI entry point")
           print(f"Verified native GUI entry point: {binary}")
