@@ -130,17 +130,21 @@ pub fn clamp_cursor_with_goal_column(editor: &mut Editor) {
     let cursor = editor.buffer_mut().cursor_mut();
     let desired = cursor.desired_col();
 
+    // usize::MAX is a sentinel value meaning "always end of line".
+    let to_eol = desired == usize::MAX;
     // In VisualBlock mode, preserve desired column even if beyond line end.
-    let target_col = if mode == Mode::VisualBlock {
-        desired
-    } else if desired == usize::MAX {
-        // usize::MAX is a sentinel value meaning "always end of line".
+    let target_col = if to_eol {
         max_col
+    } else if mode == Mode::VisualBlock {
+        desired
     } else {
         desired.min(max_col)
     };
 
     cursor.set_col_preserve_desired(GraphemeCol(target_col));
+    if to_eol && mode == Mode::VisualBlock {
+        editor.set_visual_block_dollar(true);
+    }
 }
 
 pub fn insert_char(editor: &mut Editor, c: char) -> Result<()> {
@@ -1127,7 +1131,7 @@ pub fn delete_visual_selection_with_token(
                             );
                             let end_char = crate::unicode::grapheme_to_char_col(
                                 &line_text,
-                                GraphemeCol((end_col + 1).min(line_graphemes)),
+                                GraphemeCol(end_col.saturating_add(1).min(line_graphemes)),
                             );
                             let deleted =
                                 buf.delete_range(line_idx, start_char, line_idx, end_char);
@@ -1267,7 +1271,7 @@ pub fn yank_visual_selection(editor: &mut Editor) -> Result<()> {
                             );
                             let end_char_col = crate::unicode::grapheme_to_char_col(
                                 &line_text,
-                                GraphemeCol((end_col + 1).min(line_graphemes)),
+                                GraphemeCol(end_col.saturating_add(1).min(line_graphemes)),
                             );
                             let line_start = editor.buffer().rope().line_to_char(line_idx);
                             let yanked = editor
@@ -1447,7 +1451,7 @@ fn transform_visual_selection(
                     if let Some(line) = buf.line_text(line_idx) {
                         let chars_len = line.chars().count();
                         let line_start = start_col.min(chars_len);
-                        let line_end = (end_col + 1).min(chars_len);
+                        let line_end = end_col.saturating_add(1).min(chars_len);
                         if line_start < line_end {
                             let deleted = buf.delete_range(
                                 line_idx,

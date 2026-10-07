@@ -62,3 +62,94 @@ fn test_visual_paste_over_selection_at_col0() {
         "paste over a col-0 selection must not be shifted by one char"
     );
 }
+
+// Sticky `$` (curswant = MAXCOL) entering a block must behave as a to-EOL block
+// instead of leaving the cursor column at usize::MAX.
+// nvim --clean: "abc\ndef\nghi", `$<C-v>jy` yanks "c\nf" blockwise (width 1); `d`/`x`
+// delete the last column of both lines; `U` uppercases it; `rX` replaces it; `cX<Esc>`
+// changes it on both lines (-> "abX\ndeX").
+
+#[test]
+fn test_dollar_then_block_yank_does_not_panic() {
+    let mut test = EditorTest::new("abc\ndef\nghi\n");
+    test.keys("$");
+    cblock(&mut test);
+    test.keys("jy");
+    assert_eq!(test.get_register_content('"').as_deref(), Some("c\nf"));
+    assert_eq!(test.buffer_content(), "abc\ndef\nghi\n");
+}
+
+#[test]
+fn test_dollar_then_block_delete_and_x() {
+    for key in ["d", "x"] {
+        let mut test = EditorTest::new("abc\ndef\nghi\n");
+        test.keys("$");
+        cblock(&mut test);
+        test.keys(&format!("j{key}"));
+        assert_eq!(test.buffer_content(), "ab\nde\nghi\n", "key {key}");
+    }
+}
+
+#[test]
+fn test_dollar_then_block_upper_and_replace() {
+    let mut test = EditorTest::new("abc\ndef\nghi\n");
+    test.keys("$");
+    cblock(&mut test);
+    test.keys("jU");
+    assert_eq!(test.buffer_content(), "abC\ndeF\nghi\n");
+
+    let mut test = EditorTest::new("abc\ndef\nghi\n");
+    test.keys("$");
+    cblock(&mut test);
+    test.keys("jrX");
+    assert_eq!(test.buffer_content(), "abX\ndeX\nghi\n");
+}
+
+#[test]
+fn test_dollar_then_block_change_hits_both_lines() {
+    let mut test = EditorTest::new("abc\ndef\nghi\n");
+    test.keys("$");
+    cblock(&mut test);
+    test.keys("jcX<Esc>");
+    assert_eq!(test.buffer_content(), "abX\ndeX\nghi\n");
+}
+
+#[test]
+fn test_dollar_then_block_over_short_line_deletes_only_existing_columns() {
+    // nvim --clean: "abc\nde\nghij", `$<C-v>jjd` -> "ab\nde\ngh" (to-EOL block starting at
+    // the last column of line 1; the short middle line has no such column).
+    let mut test = EditorTest::new("abc\nde\nghij\n");
+    test.keys("$");
+    cblock(&mut test);
+    test.keys("jjd");
+    assert_eq!(test.buffer_content(), "ab\nde\ngh\n");
+}
+
+#[test]
+fn test_block_dollar_typed_inside_block_matches_sticky_dollar() {
+    // `<C-v>$jd` (explicit `$` inside the block) from column 1.
+    // nvim --clean: "abc\ndef\nghi", `l<C-v>$jd` -> "a\nd\nghi".
+    let mut test = EditorTest::new("abc\ndef\nghi\n");
+    test.keys("l");
+    cblock(&mut test);
+    test.keys("$jd");
+    assert_eq!(test.buffer_content(), "a\nd\nghi\n");
+}
+
+#[test]
+fn test_dollar_block_left_edge_is_the_anchor_column() {
+    // nvim --clean: "hello\nworld\ntest", `$<C-v>jjd` -> "hell\nworl\ntest": the short
+    // last line (no column 4) must not pull the left edge to its own last column.
+    let mut test = EditorTest::new("hello\nworld\ntest\n");
+    test.keys("$");
+    cblock(&mut test);
+    test.keys("jjd");
+    assert_eq!(test.buffer_content(), "hell\nworl\ntest\n");
+
+    // nvim --clean: `lll<C-v>jj$d` -> "hel\nwor\ntes".
+    let mut test = EditorTest::new("hello\nworld\ntest\n");
+    test.keys("lll");
+    cblock(&mut test);
+    test.keys("jj$d");
+    assert_eq!(test.buffer_content(), "hel\nwor\ntes\n");
+}

@@ -804,6 +804,11 @@ impl Editor {
         } else {
             mode
         };
+        // A sticky `$` (curswant at end of line) makes a new block extend to
+        // the end of every line, exactly as `$` typed inside the block does.
+        if mode == Mode::VisualBlock && self.mode != Mode::VisualBlock {
+            self.visual.visual_block_dollar = self.buffer().cursor().desired_col() == usize::MAX;
+        }
         self.mode = mode;
         // A mode change ends any half-typed command (count, operator,
         // prefix, character argument, register, mapping keys).

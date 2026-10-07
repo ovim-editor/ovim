@@ -2,6 +2,11 @@ use super::Editor;
 use crate::mode::Mode;
 use crate::unicode::{grapheme_count, GraphemeCol};
 
+/// End column reported by `visual_selection` for a block that extends to the
+/// end of every line (`$`). One short of `usize::MAX` so `end_col + 1` cannot
+/// wrap in callers.
+pub const BLOCK_TO_EOL_COL: usize = usize::MAX - 1;
+
 impl Editor {
     /// Rope range for an inclusive characterwise selection. Include the line
     /// terminator when its EOL cell is selected, then normalize the exclusive
@@ -12,7 +17,8 @@ impl Editor {
         let start_text = buffer.line_text(start_line)?;
         let end_text = buffer.line_slice(end_line)?.to_string();
         let start_col = crate::unicode::grapheme_to_char_col(&start_text, GraphemeCol(start_col));
-        let end_col = crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col + 1));
+        let end_col =
+            crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col.saturating_add(1)));
         let end_offset = buffer.rope().line_to_char(end_line) + end_col.0;
         let end_line = buffer.rope().char_to_line(end_offset);
         let end_col = crate::unicode::CharCol(end_offset - buffer.rope().line_to_char(end_line));
@@ -199,8 +205,11 @@ impl Editor {
 
                     let (min_col, max_col) = if self.visual.visual_block_dollar {
                         // `$` was pressed: extend each line to its own EOL.
-                        // Use usize::MAX - 1 as sentinel (avoids +1 overflow in callers).
-                        (start.1.min(end.1), usize::MAX - 1)
+                        // The flag is the source of truth; consumers see it as a
+                        // column no line reaches (`BLOCK_TO_EOL_COL`). The cursor
+                        // column no longer bounds the block (it is "infinite" and
+                        // short lines would clamp it), so the anchor is the left edge.
+                        (start.1, BLOCK_TO_EOL_COL)
                     } else if start.1 <= end.1 {
                         (start.1, end.1)
                     } else {

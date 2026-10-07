@@ -566,6 +566,12 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     change: Some((width, delete_token)),
                 });
                 let cursor_before = CursorPos::new(start_line, GraphemeCol(start_col));
+                // The delete clamps the cursor onto the last character; when the
+                // block reached the end of the line, insertion continues after it.
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(start_line, GraphemeCol(start_col));
                 editor.start_change_building(cursor_before);
             } else if delete_token.is_some() {
                 // Regular visual (v) with a non-empty selection: route the
@@ -753,9 +759,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                     // mode, or a `$` before entering it (sticky MAXCOL) —
                     // appends at each line's own end; a fixed-column block at
                     // the block column (padding short lines).
-                    let to_eol = editor.visual_block_dollar()
-                        || editor.buffer().cursor().desired_col() == usize::MAX;
-                    let column = if to_eol {
+                    let column = if editor.visual_block_dollar() {
                         BlockColumn::EndOfLine
                     } else {
                         BlockColumn::Append(append_col.saturating_sub(start_col))
