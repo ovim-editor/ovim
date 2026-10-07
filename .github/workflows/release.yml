@@ -21,21 +21,24 @@ env:
 
 jobs:
   # Fails fast, before four release builds burn runner minutes, if the crate
-  # versions don't match the tag being built. Guards against tagging a release
-  # whose binaries report the previous version.
+  # or app versions don't match the tag being built. Guards against tagging a
+  # release whose binaries report the previous version.
   verify-version:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
         with:
           ref: ${{ inputs.tag || github.ref }}
-      - name: Check crate versions match tag
+      - name: Check crate and app versions match tag
         run: |
           tag="${{ inputs.tag || github.ref_name }}"
           expected="${tag#v}"
           status=0
-          for manifest in ovim/Cargo.toml ovim-core/Cargo.toml; do
-            actual="$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)"
+          for manifest in ovim/Cargo.toml ovim-core/Cargo.toml ovim/tauri.conf.json ovim/gui/package.json; do
+            case "$manifest" in
+              *.json) actual="$(sed -n 's/^  "version": "\([^"]*\)".*/\1/p' "$manifest" | head -1)" ;;
+              *) actual="$(sed -n 's/^version = "\(.*\)"/\1/p' "$manifest" | head -1)" ;;
+            esac
             if [ "$actual" != "$expected" ]; then
               echo "::error file=$manifest::version is $actual, expected $expected (from tag $tag)"
               status=1
