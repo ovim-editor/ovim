@@ -2,8 +2,9 @@
 //!
 //! Caches the expensive per-line rendering output (tab expansion, horizontal
 //! viewport slicing, highlight computation) to avoid recomputation when only
-//! the cursor moves. The cache is invalidated when the buffer content changes,
-//! the viewport shifts, or the window resizes.
+//! the cursor moves. Entries are grouped by the frame they were rendered under
+//! (buffer, version, width, scroll...), so a change to any of those makes the
+//! old entries unreachable, while the panes of a split each keep their own.
 
 use ratatui::text::Line;
 use std::collections::HashMap;
@@ -117,28 +118,46 @@ struct CachedLine {
     is_stable: bool,
 }
 
+/// The lines one frame (typically one pane) rendered.
+struct FrameLines {
+    frame: LineCacheFrame,
+    lines: HashMap<usize, (LineCacheKey, CachedLine)>,
+    /// `LineRenderCache::tick` when the frame was last begun, for eviction.
+    last_used: u64,
+}
+
+/// Frames kept at once: enough for every pane of a busy split layout, plus
+/// the frames of the last few edits. Older ones are dropped, least recently
+/// used first.
+const MAX_FRAMES: usize = 8;
+
 /// Per-line rendering cache that avoids recomputing expensive rendering
 /// for unchanged lines.
 ///
 /// # Invalidation strategy
 ///
-/// - **Buffer edit / highlight arrival / scroll / resize**: The entire
-///   cache is cleared when any `LineCacheFrame` field changes. Fine-grained
-///   per-line invalidation would require tracking which lines shifted,
-///   which isn't worth the complexity.
+/// - **Buffer edit / highlight arrival / scroll / resize**: Entries belong to
+///   the `LineCacheFrame` they were rendered under; when any field changes the
+///   old entries can no longer be reached. Fine-grained per-line invalidation
+///   would require tracking which lines shifted, which isn't worth the
+///   complexity.
+/// - **Split panes**: each pane renders under its own frame (buffer, width,
+///   scroll), and the cache keeps a few frames at once, so a pane's lines
+///   survive the other panes being rendered in between.
 /// - **Cursor move**: Only the cursor line and previous cursor line are
 ///   excluded from caching (they have transient cursorline highlighting).
 /// - **Visual selection / search / yank flash**: Lines with these overlays
 ///   are rendered fresh each frame (marked `is_stable: false`).
 pub struct LineRenderCache {
-    entries: HashMap<usize, (LineCacheKey, CachedLine)>,
+    /// Lines per frame, at most [`MAX_FRAMES`].
+    frames: Vec<FrameLines>,
+    /// Index into `frames` of the frame begun last.
+    current: usize,
+    /// Counts `begin_frame` calls.
+    tick: u64,
     indexed: HashMap<(u64, usize), IndexedCacheEntry>,
     chat_bubbles: HashMap<ChatBubbleCacheKey, CachedChatBubble>,
-    /// Frame the current entries were rendered under. Any change to it
-    /// (edit, highlight arrival, buffer swap, scroll, resize) makes every
-    /// entry unreachable, so `begin_frame` clears them.
-    frame: Option<LineCacheFrame>,
-    /// Capacity limit to prevent unbounded growth
+    /// Capacity limit per frame to prevent unbounded growth
     max_entries: usize,
     /// Stats: cache hits this frame
     pub hits: usize,
@@ -157,10 +176,11 @@ impl Default for LineRenderCache {
 impl LineRenderCache {
     pub fn new() -> Self {
         Self {
-            entries: HashMap::with_capacity(256),
+            frames: Vec::new(),
+            current: 0,
+            tick: 0,
             indexed: HashMap::new(),
             chat_bubbles: HashMap::with_capacity(128),
-            frame: None,
             max_entries: 1024,
             hits: 0,
             misses: 0,
@@ -171,7 +191,15 @@ impl LineRenderCache {
 
     /// Clear the entire cache (e.g., on buffer edit or resize).
     pub fn clear(&mut self) {
-        self.entries.clear();
+        self.frames.clear();
+        self.current = 0;
+    }
+
+    /// The lines of the frame begun last.
+    fn current_lines(&mut self) -> Option<&mut HashMap<usize, (LineCacheKey, CachedLine)>> {
+        self.frames
+            .get_mut(self.current)
+            .map(|frame| &mut frame.lines)
     }
 
     /// Retain core geometry for nowrap viewports, where no window WrapMap
@@ -294,14 +322,35 @@ impl LineRenderCache {
         self.chat_bubbles.insert(key, bubble);
     }
 
-    /// Start a render pass. Clears every entry when the frame differs from
-    /// the one the entries were rendered under, and resets the hit/miss
-    /// stats. Call once per frame before any line lookup.
+    /// Start a render pass under `frame`: lookups and stores address the
+    /// lines rendered under exactly this frame, which stay available across
+    /// passes of other frames (the other panes of a split). Resets the
+    /// hit/miss stats. Call once per frame before any line lookup.
     pub fn begin_frame(&mut self, frame: LineCacheFrame) {
-        if self.frame != Some(frame) {
-            self.frame = Some(frame);
-            self.entries.clear();
-        }
+        self.tick += 1;
+        let index = match self.frames.iter().position(|known| known.frame == frame) {
+            Some(index) => index,
+            None => {
+                if self.frames.len() >= MAX_FRAMES {
+                    let oldest = self
+                        .frames
+                        .iter()
+                        .enumerate()
+                        .min_by_key(|(_, known)| known.last_used)
+                        .map(|(index, _)| index)
+                        .unwrap_or(0);
+                    self.frames.swap_remove(oldest);
+                }
+                self.frames.push(FrameLines {
+                    frame,
+                    lines: HashMap::with_capacity(256),
+                    last_used: 0,
+                });
+                self.frames.len() - 1
+            }
+        };
+        self.frames[index].last_used = self.tick;
+        self.current = index;
         self.reset_stats();
     }
 
@@ -311,14 +360,27 @@ impl LineRenderCache {
     /// matches (frame or decorations changed), or the cached entry had
     /// transient highlighting.
     pub fn get(&mut self, key: &LineCacheKey) -> Option<&Line<'static>> {
-        if let Some((cached_key, cached)) = self.entries.get(&key.line_idx) {
-            if cached_key == key && cached.is_stable {
-                self.hits += 1;
-                return Some(&cached.line);
+        let Self {
+            frames,
+            current,
+            hits,
+            misses,
+            ..
+        } = self;
+        let cached = frames
+            .get(*current)
+            .and_then(|frame| frame.lines.get(&key.line_idx))
+            .filter(|(cached_key, cached)| cached_key == key && cached.is_stable);
+        match cached {
+            Some((_, cached)) => {
+                *hits += 1;
+                Some(&cached.line)
+            }
+            None => {
+                *misses += 1;
+                None
             }
         }
-        self.misses += 1;
-        None
     }
 
     /// Store a rendered line in the cache.
@@ -329,16 +391,19 @@ impl LineRenderCache {
         // Evict if over capacity — keep entries near the current viewport
         // instead of clearing everything (which causes a full cache-miss storm
         // on the next frame).
-        if self.entries.len() >= self.max_entries {
+        let max_entries = self.max_entries;
+        let Some(entries) = self.current_lines() else {
+            return;
+        };
+        if entries.len() >= max_entries {
             let center = key.line_idx;
-            let keep_radius = self.max_entries / 2;
+            let keep_radius = max_entries / 2;
             let lo = center.saturating_sub(keep_radius);
             let hi = center.saturating_add(keep_radius);
-            self.entries.retain(|&idx, _| idx >= lo && idx <= hi);
+            entries.retain(|&idx, _| idx >= lo && idx <= hi);
         }
 
-        self.entries
-            .insert(key.line_idx, (key, CachedLine { line, is_stable }));
+        entries.insert(key.line_idx, (key, CachedLine { line, is_stable }));
     }
 }
 
@@ -461,17 +526,18 @@ mod tests {
         for i in 0..10 {
             cache.put(frame.key(i, 0), make_line("x"), true);
         }
-        assert_eq!(cache.entries.len(), 10);
+        assert_eq!(cache.current_lines().unwrap().len(), 10);
 
         // Insert line 8 — should evict lines far from 8 (keep 3..13)
         cache.put(frame.key(8, 0), make_line("new"), true);
 
         // Lines near 8 should survive, line 0 should be evicted
-        assert!(cache.entries.contains_key(&8));
-        assert!(cache.entries.contains_key(&5));
-        assert!(!cache.entries.contains_key(&0));
-        assert!(!cache.entries.contains_key(&1));
-        assert!(!cache.entries.contains_key(&2));
+        let entries = cache.current_lines().unwrap();
+        assert!(entries.contains_key(&8));
+        assert!(entries.contains_key(&5));
+        assert!(!entries.contains_key(&0));
+        assert!(!entries.contains_key(&1));
+        assert!(!entries.contains_key(&2));
     }
 
     #[test]
@@ -499,6 +565,65 @@ mod tests {
         assert!(cache.get(&frame.key(0, 43)).is_none());
         // Same line, same hash — should hit.
         assert!(cache.get(&frame.key(0, 42)).is_some());
+    }
+
+    /// The panes of a split render one after the other every frame; each
+    /// pane's lines used to be thrown away by the next pane's `begin_frame`.
+    #[test]
+    fn split_panes_keep_their_lines_across_frames() {
+        let mut cache = LineRenderCache::new();
+        let left = test_frame(1, 5);
+        let right = LineCacheFrame {
+            text_width: 40,
+            ..test_frame(2, 9)
+        };
+        for _ in 0..3 {
+            for pane in [left, right] {
+                cache.begin_frame(pane);
+                for line in 0..20 {
+                    if cache.get(&pane.key(line, 0)).is_none() {
+                        cache.put(pane.key(line, 0), make_line("x"), true);
+                    }
+                }
+            }
+        }
+        // Only the first frame of each pane missed; the next two were all hits.
+        cache.begin_frame(left);
+        for line in 0..20 {
+            assert!(cache.get(&left.key(line, 0)).is_some());
+        }
+        assert_eq!((cache.hits, cache.misses), (20, 0));
+        cache.begin_frame(right);
+        assert!(cache.get(&right.key(0, 0)).is_some());
+        // A pane's lines are not visible to the other pane's frame.
+        assert!(cache.get(&left.key(0, 0)).is_none());
+    }
+
+    #[test]
+    fn old_frames_are_dropped_least_recently_used_first() {
+        let mut cache = LineRenderCache::new();
+        let pinned = test_frame(1, 0);
+        cache.begin_frame(pinned);
+        cache.put(pinned.key(0, 0), make_line("kept"), true);
+        // Typing: a new version every frame, with the pane still rendered.
+        for version in 1..=(MAX_FRAMES * 2) {
+            cache.begin_frame(pinned);
+            let edited = test_frame(2, version);
+            cache.begin_frame(edited);
+            cache.put(edited.key(0, 0), make_line("x"), true);
+        }
+        assert!(cache.frames.len() <= MAX_FRAMES);
+        cache.begin_frame(pinned);
+        assert!(
+            cache.get(&pinned.key(0, 0)).is_some(),
+            "a frame in use survives the churn"
+        );
+        let first_edit = test_frame(2, 1);
+        cache.begin_frame(first_edit);
+        assert!(
+            cache.get(&first_edit.key(0, 0)).is_none(),
+            "stale frames go"
+        );
     }
 
     #[test]
