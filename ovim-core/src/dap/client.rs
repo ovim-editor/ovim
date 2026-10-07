@@ -88,13 +88,28 @@ impl DebugAdapterClient {
 
         let pending: Arc<DashMap<u64, oneshot::Sender<Result<Value>>>> = Arc::new(DashMap::new());
 
-        // Writer task: send requests to stdin.
+        // Writer task: send requests to stdin. An adapter that stops reading
+        // is as good as gone (stdin is closed with it): end the session
+        // instead of letting every later request hang.
         let (writer_tx, mut writer_rx) = mpsc::channel::<DapRequest>(256);
+        let writer_events = event_tx.clone();
+        let writer_process = process.clone();
+        let writer_killed = killed.clone();
+        let writer_tail = stderr_tail.clone();
         let writer_handle = tokio::spawn(async move {
             let mut stdin = child_stdin;
             while let Some(request) = writer_rx.recv().await {
                 if let Err(e) = write_request(&mut stdin, &request).await {
-                    eprintln!("DAP write error: {e}");
+                    crate::log_warn!("DAP", "writing to the debug adapter failed: {e}");
+                    if !writer_killed.load(Ordering::SeqCst) {
+                        let detail = adapter_exit_detail(
+                            &writer_process,
+                            &writer_tail,
+                            "stopped reading its input",
+                        )
+                        .await;
+                        let _ = writer_events.send(DapEvent::AdapterExited { detail }).await;
+                    }
                     break;
                 }
             }
@@ -137,7 +152,12 @@ impl DebugAdapterClient {
                         // EOF: the adapter is gone. Unless we ended it, that
                         // is a crash (a normal end sends `terminated` first).
                         if !reader_killed.load(Ordering::SeqCst) {
-                            let detail = adapter_exit_detail(&reader_process, &reader_tail).await;
+                            let detail = adapter_exit_detail(
+                                &reader_process,
+                                &reader_tail,
+                                "closed its output",
+                            )
+                            .await;
                             let _ = event_tx.send(DapEvent::AdapterExited { detail }).await;
                         }
                         break;
@@ -379,6 +399,7 @@ impl Drop for DebugAdapterClient {
 async fn adapter_exit_detail(
     process: &std::sync::Mutex<Child>,
     stderr_tail: &std::sync::Mutex<String>,
+    still_running: &str,
 ) -> String {
     let mut status = None;
     for _ in 0..10 {
@@ -396,7 +417,7 @@ async fn adapter_exit_detail(
             Some(code) => format!("exit code {code}"),
             None => format!("{status}"),
         },
-        None => "closed its output".to_string(),
+        None => still_running.to_string(),
     };
     // Let the stderr reader catch up with what the adapter printed last.
     tokio::time::sleep(std::time::Duration::from_millis(50)).await;
@@ -488,5 +509,45 @@ fn parse_dap_event(msg: &DapIncoming) -> Option<DapEvent> {
         "terminated" => Some(DapEvent::Terminated),
         "initialized" => Some(DapEvent::Initialized),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// An adapter that closes its stdin but keeps running: the writer fails,
+    /// and that has to reach the editor as an event (printing to stderr would
+    /// paint over the TUI).
+    #[tokio::test]
+    async fn an_adapter_that_stops_reading_ends_the_session_through_an_event() {
+        let (tx, mut rx) = mpsc::channel(8);
+        let client = DebugAdapterClient::spawn(
+            "sh",
+            &["-c".to_string(), "exec 0<&-; sleep 30".to_string()],
+            tx,
+        )
+        .await
+        .unwrap();
+
+        // The child closes stdin a moment after it starts; writes before that
+        // land in the pipe buffer. Keep asking until one fails.
+        let event = tokio::time::timeout(Duration::from_secs(10), async {
+            loop {
+                let _ = tokio::time::timeout(Duration::from_millis(50), client.threads()).await;
+                if let Ok(event) = rx.try_recv() {
+                    return event;
+                }
+            }
+        })
+        .await
+        .expect("a failed write must be reported");
+
+        assert!(
+            matches!(&event, DapEvent::AdapterExited { detail } if detail.contains("stopped reading")),
+            "{event:?}"
+        );
+        client.kill();
     }
 }
