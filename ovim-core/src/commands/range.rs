@@ -115,8 +115,12 @@ fn search_line(
     } else {
         pattern.to_string()
     };
-    let regex =
-        regex::Regex::new(&pattern).map_err(|_| format!("E486: Pattern not found: {pattern}"))?;
+    let regex = crate::search_pattern::compile(
+        &pattern,
+        crate::search_pattern::CaseOptions::of(&editor.options),
+        None,
+    )
+    .map_err(|_| format!("E486: Pattern not found: {pattern}"))?;
     let count = last_line(editor);
     if count == 0 {
         return Err(format!("E486: Pattern not found: {pattern}"));

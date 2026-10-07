@@ -7,6 +7,7 @@ use super::parse::parse;
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
 use crate::editor::{CursorPos, Editor, RegisterType};
+use crate::search_pattern::{self, CaseOptions};
 use crate::unicode::CharCol;
 
 /// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax.
@@ -142,9 +143,13 @@ fn parse_substitution(
     } else {
         raw_pattern
     };
-    let regex = regex::RegexBuilder::new(&pattern)
-        .case_insensitive(flags.contains('i') && !flags.contains('I'))
-        .build()
+    // `i` / `I` override 'ignorecase' and 'smartcase' for this command.
+    let forced = if flags.contains('I') {
+        Some(false)
+    } else {
+        flags.contains('i').then_some(true)
+    };
+    let regex = search_pattern::compile(&pattern, CaseOptions::of(&editor.options), forced)
         .map_err(|_| err(format!("Invalid regex pattern: {pattern}")))?;
     editor.set_last_search_pattern(&pattern);
     Ok((
@@ -351,7 +356,7 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
     } else {
         pattern
     };
-    let regex = match regex::Regex::new(&pattern) {
+    let regex = match search_pattern::compile(&pattern, CaseOptions::of(&editor.options), None) {
         Ok(regex) => regex,
         Err(_) => return err(format!("Invalid regex pattern: {pattern}")),
     };

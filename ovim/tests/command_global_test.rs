@@ -143,3 +143,29 @@ fn test_command_global_no_matches_is_non_destructive() {
     // vim's message for a :g without matches.
     assert_eq!(test.editor.status_message(), "Pattern not found: foo");
 }
+
+// nvim --clean: `:set ic` then `:g/foo/d` deletes "Foo" too.
+#[test]
+fn global_honours_ignorecase() {
+    let mut test = EditorTest::new("a\nFoo\nb\n");
+    test.command("set ic");
+    test.command("g/foo/d");
+    assert_eq!(test.buffer_content(), "a\nb\n");
+}
+
+// nvim --clean: `:set ic` then `:/foo/d` (a search address) finds "Foo".
+#[test]
+fn search_address_honours_ignorecase() {
+    let mut test = EditorTest::new("a\nFoo\nb\n");
+    test.command("set ic");
+    test.command("/foo/d");
+    assert_eq!(test.buffer_content(), "a\nb\n");
+}
+
+// nvim --clean: `/foo\c` finds "FOO" without 'ignorecase'.
+#[test]
+fn search_honours_case_escape() {
+    let mut test = EditorTest::new("a FOO b\n");
+    test.keys("/foo\\c<CR>");
+    test.assert_cursor(0, 2);
+}

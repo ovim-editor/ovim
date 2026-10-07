@@ -46,6 +46,7 @@ pub mod rect;
 pub mod repeat_action;
 pub mod run_log;
 pub mod search;
+pub mod search_pattern;
 pub mod session;
 pub mod snippet;
 pub mod syntax;

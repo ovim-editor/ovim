@@ -207,3 +207,52 @@ fn global_substitute_reports_the_lines_it_changed() {
     assert_eq!(test.buffer_content(), "Xb\nb\nb\n");
     assert_eq!(test.editor.status_message(), "Substituted on 1 line(s)");
 }
+
+// nvim --clean: with 'ignorecase', `:%s/foo/bar/g` on "Foo foo" and "FOO"
+// replaces all three; with 'smartcase' too, `:%s/Foo/bar/g` is exact and only
+// the first word changes.
+#[test]
+fn substitute_honours_ignorecase_and_smartcase() {
+    let mut test = EditorTest::new("Foo foo\nFOO\n");
+    test.command("set ic");
+    test.command("%s/foo/bar/g");
+    assert_eq!(test.buffer_content(), "bar bar\nbar\n");
+
+    let mut test = EditorTest::new("Foo foo\nFOO\n");
+    test.command("set ic scs");
+    test.command("%s/Foo/bar/g");
+    assert_eq!(test.buffer_content(), "bar foo\nFOO\n");
+}
+
+// nvim --clean: the `i` flag matches case-insensitively without 'ignorecase',
+// and `I` matches exactly with it.
+#[test]
+fn substitute_flags_override_ignorecase() {
+    let mut test = EditorTest::new("Foo foo\n");
+    test.command("s/foo/bar/i");
+    assert_eq!(test.buffer_content(), "bar foo\n");
+
+    let mut test = EditorTest::new("Foo foo\n");
+    test.command("set ic");
+    test.command("s/foo/bar/I");
+    assert_eq!(test.buffer_content(), "Foo bar\n");
+}
+
+// nvim --clean: `\c` makes the pattern ignore case and `\C` match it exactly,
+// whatever 'ignorecase' says: `:s/foo\c/bar/` turns "FOO" into "bar", and
+// with 'ignorecase' `:s/foo\C/bar/` leaves "Foo" alone (E486).
+#[test]
+fn case_escapes_in_the_substitute_pattern() {
+    let mut test = EditorTest::new("FOO\n");
+    test.command("s/foo\\c/bar/");
+    assert_eq!(test.buffer_content(), "bar\n");
+
+    let mut test = EditorTest::new("Foo\n");
+    test.command("set ic");
+    test.command("s/foo\\C/bar/");
+    assert_eq!(test.buffer_content(), "Foo\n");
+    assert_eq!(
+        test.editor.status_message(),
+        "E486: Pattern not found: foo\\C"
+    );
+}

@@ -1,6 +1,6 @@
 use crate::buffer::Buffer;
 use crate::unicode::{char_to_grapheme_col, grapheme_to_char_col, CharCol, GraphemeCol};
-use regex::{Regex, RegexBuilder};
+use regex::Regex;
 use std::collections::VecDeque;
 use std::sync::{Arc, Mutex, Weak};
 
@@ -24,14 +24,7 @@ pub struct Search {
 impl Search {
     /// Creates a new search with a pattern
     pub fn new(pattern: String, forward: bool) -> Self {
-        let regex = Regex::new(&pattern).ok();
-        Self {
-            pattern,
-            regex,
-            forward,
-            last_match: None,
-            line_matches: Arc::new(Mutex::new(VecDeque::new())),
-        }
+        Self::new_with_options(pattern, forward, false, false)
     }
 
     /// Creates a new search with case sensitivity options
@@ -41,18 +34,12 @@ impl Search {
         ignorecase: bool,
         smartcase: bool,
     ) -> Self {
-        // Determine if we should be case-insensitive
-        let case_insensitive = if ignorecase {
-            // If smartcase is on and pattern has uppercase, be case-sensitive
-            !(smartcase && pattern.chars().any(|c| c.is_uppercase()))
-        } else {
-            false
-        };
-
-        let regex = RegexBuilder::new(&pattern)
-            .case_insensitive(case_insensitive)
-            .build()
-            .ok();
+        let regex = crate::search_pattern::compile(
+            &pattern,
+            crate::search_pattern::CaseOptions::new(ignorecase, smartcase),
+            None,
+        )
+        .ok();
 
         Self {
             pattern,
