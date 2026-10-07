@@ -18,6 +18,7 @@ use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
 use super::helpers;
+use crate::editor::editing_state::{LiteralKind, PendingLiteral};
 
 /// Cleans up whitespace-only lines before exiting insert mode.
 ///
@@ -275,6 +276,10 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         return Ok(());
     }
 
+    if let Some(pending) = editor.editing.pending_literal.take() {
+        return handle_literal_key(editor, pending, key_event);
+    }
+
     // Any key that is not typing into the word or driving the menu moves the
     // cursor or rewrites the line (Ctrl-O, Ctrl-W, Ctrl-T...): the menu was
     // built for the text before the cursor as it was, so it must go.
@@ -387,6 +392,34 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.snippet_jump(false);
             }
         }
+        // Ctrl-A - insert the text of the previous insert (the `.` register)
+        KeyCode::Char('a') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.dismiss_completion();
+            let text = editor.registers().get_last_inserted().to_string();
+            for ch in text.chars() {
+                if ch == '\n' {
+                    helpers::insert_newline(editor)?;
+                } else {
+                    helpers::insert_char(editor, ch)?;
+                }
+            }
+        }
+        // Ctrl-V / Ctrl-Q - insert the next key (or a number) literally
+        KeyCode::Char('v' | 'q') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.dismiss_completion();
+            editor.editing.pending_literal = Some(PendingLiteral::Start);
+        }
+        // Ctrl-M / Ctrl-J - same as Enter
+        KeyCode::Char('m' | 'j') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            editor.dismiss_completion();
+            helpers::insert_newline(editor)?;
+        }
+        // Ctrl-I - same as Tab
+        KeyCode::Char('i') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            helpers::insert_tab(editor)?;
+        }
+        // Any other Ctrl chord is not text: it does nothing instead of inserting its letter.
+        KeyCode::Char(_) if key_event.modifiers.contains(Modifiers::CONTROL) => {}
         KeyCode::Char(c) => {
             // A commit character accepts the highlighted item before it is
             // typed itself (`foo.` accepts `foo` when the server says so).
@@ -427,6 +460,20 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             editor.dismiss_completion();
             helpers::move_right(editor);
         }
+        KeyCode::Delete => {
+            editor.dismiss_completion();
+            helpers::delete_char_at_cursor_insert(editor)?;
+        }
+        KeyCode::Home => {
+            editor.dismiss_completion();
+            editor.buffer_mut().cursor_mut().set_col(GraphemeCol::ZERO);
+        }
+        KeyCode::End => {
+            editor.dismiss_completion();
+            let line = editor.buffer().cursor().line();
+            let len = editor.buffer().line_index(line).grapheme_count();
+            editor.buffer_mut().cursor_mut().set_col(GraphemeCol(len));
+        }
         KeyCode::Up => {
             if editor.completion_menu().is_visible() {
                 editor.completion_previous();
@@ -445,6 +492,105 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
     }
     editor.snippet_after_key();
     request_signature_help_after_key(editor, &key_event, signature_help_was_active);
+    Ok(())
+}
+
+impl LiteralKind {
+    fn max_digits(self) -> usize {
+        match self {
+            Self::Decimal | Self::Octal => 3,
+            Self::Hex(digits) => digits,
+        }
+    }
+
+    fn radix(self) -> u32 {
+        match self {
+            Self::Decimal => 10,
+            Self::Octal => 8,
+            Self::Hex(_) => 16,
+        }
+    }
+
+    /// Whether `digit` continues the number spelled so far.
+    fn extends(self, digits: &str, digit: char) -> bool {
+        digit.is_digit(self.radix()) && digits.len() < self.max_digits()
+    }
+
+    /// The largest character code the kind can spell (`<C-v>256` is 255).
+    fn max_value(self) -> u32 {
+        match self {
+            Self::Decimal => 255,
+            Self::Octal => 0o377,
+            Self::Hex(_) => u32::MAX,
+        }
+    }
+}
+
+/// What a `<C-v>` sequence has typed so far becomes (`None` when it spells no
+/// insertable character: no digit at all, NUL, and line breaks are not inserted).
+fn literal_char(kind: LiteralKind, digits: &str) -> Option<char> {
+    let value = u32::from_str_radix(digits, kind.radix()).ok()?;
+    char::from_u32(value.min(kind.max_value())).filter(|c| !matches!(c, '\0' | '\n' | '\r'))
+}
+
+/// Insert-mode `<C-v>`: the next key is inserted as is (`<C-v><Tab>` is a real tab,
+/// `<C-v><C-a>` a control character), or starts a number (`<C-v>065`, `<C-v>x41`,
+/// `<C-v>u20ac`) that ends at its last digit or at the first key that is not one.
+fn handle_literal_key(
+    editor: &mut Editor,
+    pending: PendingLiteral,
+    key_event: KeyEvent,
+) -> Result<()> {
+    let ctrl = key_event.modifiers.contains(Modifiers::CONTROL);
+    match pending {
+        PendingLiteral::Start => match key_event.code {
+            KeyCode::Char(c) if ctrl => {
+                if c.is_ascii_alphabetic() {
+                    helpers::insert_char(editor, char::from(c.to_ascii_lowercase() as u8 & 0x1f))?;
+                }
+            }
+            KeyCode::Char(c) => {
+                let kind = match c {
+                    '0'..='9' => Some((LiteralKind::Decimal, String::from(c))),
+                    'o' | 'O' => Some((LiteralKind::Octal, String::new())),
+                    'x' | 'X' => Some((LiteralKind::Hex(2), String::new())),
+                    'u' => Some((LiteralKind::Hex(4), String::new())),
+                    'U' => Some((LiteralKind::Hex(8), String::new())),
+                    _ => None,
+                };
+                match kind {
+                    Some((kind, digits)) => {
+                        editor.editing.pending_literal =
+                            Some(PendingLiteral::Digits { kind, digits });
+                    }
+                    None => helpers::insert_char(editor, c)?,
+                }
+            }
+            KeyCode::Tab => helpers::insert_char(editor, '\t')?,
+            KeyCode::Esc => helpers::insert_char(editor, '\x1b')?,
+            _ => {}
+        },
+        PendingLiteral::Digits { kind, mut digits } => {
+            let next_digit = match key_event.code {
+                KeyCode::Char(c) if !ctrl && kind.extends(&digits, c) => Some(c),
+                _ => None,
+            };
+            if let Some(digit) = next_digit {
+                digits.push(digit);
+                if digits.len() < kind.max_digits() {
+                    editor.editing.pending_literal = Some(PendingLiteral::Digits { kind, digits });
+                } else if let Some(c) = literal_char(kind, &digits) {
+                    helpers::insert_char(editor, c)?;
+                }
+            } else {
+                // The number ends here; the key that ended it is typed as usual.
+                if let Some(c) = literal_char(kind, &digits) {
+                    helpers::insert_char(editor, c)?;
+                }
+                return handle_insert_mode(editor, key_event);
+            }
+        }
+    }
     Ok(())
 }
 

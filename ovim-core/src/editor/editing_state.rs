@@ -15,6 +15,26 @@ pub struct PendingChangeRepeat {
     pub delete_token: Option<ChangeToken>,
 }
 
+/// Which number a literal-insert sequence (`<C-v>`) spells.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LiteralKind {
+    /// `<C-v>065`: up to three decimal digits, at most 255.
+    Decimal,
+    /// `<C-v>o101`: up to three octal digits, at most 0o377.
+    Octal,
+    /// `<C-v>x41`, `<C-v>u20ac`, `<C-v>U0001f600`: that many hex digits at most.
+    Hex(usize),
+}
+
+/// Waiting for what `<C-v>` in Insert mode should insert.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum PendingLiteral {
+    /// Just `<C-v>`: the next key is inserted as is, or starts a number.
+    Start,
+    /// Collecting the digits of a number (none yet after `x`, `u`, `U` or `o`).
+    Digits { kind: LiteralKind, digits: String },
+}
+
 /// State for active editing operations (insert, replace, substitute, rename).
 #[derive(Default)]
 pub struct EditingState {
@@ -32,6 +52,8 @@ pub struct EditingState {
     pub substitute_pattern: Option<regex::Regex>,
     /// Awaiting register char for Ctrl-R in insert mode
     pub pending_register_insert: bool,
+    /// Awaiting the literal for Ctrl-V in insert mode
+    pub pending_literal: Option<PendingLiteral>,
     /// Awaiting one normal-mode command for Ctrl-O in insert mode
     pub insert_normal_pending: bool,
     /// The line Ctrl-O was pressed on when the insert cursor was past the end of it.

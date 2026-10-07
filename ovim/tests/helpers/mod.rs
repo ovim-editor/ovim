@@ -169,6 +169,13 @@ impl EditorTest {
                         "Tab" => self.press_key(KeyCode::Tab),
                         "BS" | "Backspace" => self.press_backspace(),
                         "Space" => self.press(' '),
+                        "Del" | "Delete" => self.press_key(KeyCode::Delete),
+                        "Home" => self.press_key(KeyCode::Home),
+                        "End" => self.press_key(KeyCode::End),
+                        "Left" => self.press_key(KeyCode::Left),
+                        "Right" => self.press_key(KeyCode::Right),
+                        "Up" => self.press_key(KeyCode::Up),
+                        "Down" => self.press_key(KeyCode::Down),
                         // Generic Ctrl+key support
                         key if key.starts_with("C-") => {
                             let char_part = &key[2..];

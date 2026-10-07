@@ -69,7 +69,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             }
             Ok(true)
         }
-        KeyCode::Char('$') => {
+        KeyCode::Home => {
+            editor.buffer_mut().cursor_mut().set_col(GraphemeCol::ZERO);
+            editor.clear_count();
+            Ok(true)
+        }
+        KeyCode::Char('$') | KeyCode::End => {
             let count = editor.effective_count();
             let line_idx = editor.buffer().cursor().line();
             let max_line = editor.buffer().line_count().saturating_sub(1);

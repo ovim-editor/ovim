@@ -616,12 +616,11 @@ fn test_ctrl_a_insert_last_text() {
         .press_with(ovim_core::KeyCode::Char('a'), ovim_core::Modifiers::CONTROL) // Insert last inserted text
         .press_esc();
 
-    // After first insert: "firsttest", cursor at 4
-    // After Esc: cursor at 4
-    // i enters insert, Ctrl-A inserts "first" again, Esc
-    // Actual: Ctrl-A may insert 'a' literally if not implemented
-    assert_eq!(test.buffer_content(), "firsattest\n");
-    test.assert_cursor(0, 4); // Cursor after inserted char
+    // After first insert: "firsttest", cursor on the second `t` (col 4).
+    // `i` inserts before it; Ctrl-A inserts the previous insert's text "first" there.
+    // nvim --clean (typed keys): `ifirst<Esc>i<C-a><Esc>` on "test" -> "firsfirstttest".
+    assert_eq!(test.buffer_content(), "firsfirstttest\n");
+    test.assert_cursor(0, 8); // On the last inserted character
 }
 
 #[test]
@@ -676,6 +675,8 @@ fn test_ctrl_x_ctrl_l_line_completion() {
         .press_with(ovim_core::KeyCode::Char('l'), ovim_core::Modifiers::CONTROL) // Line completion
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello world\nxl\n");
-    test.assert_cursor(1, 1);
+    // Line completion is not implemented: vim would complete the line "hello world"
+    // here, but the chords must not type their letters ("xl") into the text.
+    assert_eq!(test.buffer_content(), "hello world\n\n");
+    test.assert_cursor(1, 0);
 }

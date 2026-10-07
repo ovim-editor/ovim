@@ -274,6 +274,32 @@ pub fn insert_newline(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
+/// Insert-mode `<Del>`: the character under the cursor, or the line break at the
+/// end of a line (joining the next line).
+pub fn delete_char_at_cursor_insert(editor: &mut Editor) -> Result<()> {
+    let cursor = editor.buffer().cursor();
+    let (line, col) = (cursor.line(), cursor.col());
+    let index = editor.buffer().line_index(line);
+    let (start, end) = if col.0 < index.grapheme_count() {
+        (
+            ApplyPos::new(line, index.grapheme_to_char(col)),
+            ApplyPos::new(line, index.grapheme_to_char(GraphemeCol(col.0 + 1))),
+        )
+    } else if line + 1 < editor.buffer().line_count() {
+        (
+            ApplyPos::new(line, CharCol(index.len_chars())),
+            ApplyPos::new(line + 1, CharCol::ZERO),
+        )
+    } else {
+        return Ok(());
+    };
+    editor.record_session_edit(|buf| {
+        buf.delete_range_positioning_cursor(start.line, start.col, end.line, end.col)
+            .0
+    });
+    Ok(())
+}
+
 pub fn delete_char_before_cursor(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();

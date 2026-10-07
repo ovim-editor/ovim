@@ -309,17 +309,17 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             Motions::word_end_forward(editor.buffer_mut(), count);
             editor.clear_count();
         }
-        KeyCode::Char('0') => {
+        KeyCode::Char('0') | KeyCode::Home => {
             editor.set_visual_block_dollar(false);
-            // If there's already a count, treat this as a digit (e.g., "50j")
-            // Otherwise, treat it as a motion to column 0
-            if editor.count().is_some() {
+            // If there's already a count, treat `0` as a digit (e.g., "50j")
+            // Otherwise (and for <Home>), treat it as a motion to column 0
+            if key_event.code == KeyCode::Char('0') && editor.count().is_some() {
                 editor.append_count(0);
             } else {
                 editor.buffer_mut().cursor_mut().set_col(GraphemeCol(0));
             }
         }
-        KeyCode::Char('$') => {
+        KeyCode::Char('$') | KeyCode::End => {
             if editor.mode() == Mode::VisualBlock {
                 // Set "extend to end-of-line" flag so each line in the block
                 // is deleted/yanked to its own end, not to a fixed column.
@@ -467,7 +467,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             helpers::exit_visual_mode_to_normal(editor);
         }
         // Delete selection
-        KeyCode::Char('d') | KeyCode::Char('x') => {
+        KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
             helpers::delete_visual_selection(editor)?;
             helpers::exit_visual_mode_to_normal(editor);
         }

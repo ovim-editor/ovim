@@ -810,6 +810,9 @@ impl Editor {
             self.visual.visual_block_dollar = self.buffer().cursor().desired_col() == usize::MAX;
         }
         self.mode = mode;
+        if mode != Mode::Insert {
+            self.editing.pending_literal = None;
+        }
         // A mode change ends any half-typed command (count, operator,
         // prefix, character argument, register, mapping keys).
         self.input.count = None;

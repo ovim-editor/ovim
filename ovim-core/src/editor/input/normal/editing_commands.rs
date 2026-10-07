@@ -21,6 +21,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             delete_char_forward(editor)?;
             Ok(true)
         }
+        // <Del> is x -- but while a count is being typed it removes the last digit
+        KeyCode::Delete => {
+            match editor.count() {
+                Some(count) if count >= 10 => editor.set_count(count / 10),
+                Some(_) => editor.clear_count(),
+                None => delete_char_forward(editor)?,
+            }
+            Ok(true)
+        }
         // X - delete character before cursor
         KeyCode::Char('X') => {
             delete_char_backward(editor)?;
