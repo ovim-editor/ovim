@@ -677,6 +677,10 @@ Typing `/` or a partial command name opens an autocomplete popup. Use Up/Down
 to choose, then Tab or Enter to insert the command; click selection is also
 supported. Enter again executes a completed command.
 
+A message is a command only when its first word is `/` followed by a lowercase
+letter and then letters, digits, `_`, or `-`. Anything else is ordinary text, so
+a message such as `/usr/lib/x fails to load` is sent to the model as written.
+
 - `/model` opens the profile and model picker.
 - `/model codex_sol` switches directly to a named profile.
 - `/effort` opens the combined picker on reasoning effort.

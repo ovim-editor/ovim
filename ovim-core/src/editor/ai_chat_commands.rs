@@ -90,11 +90,35 @@ enum AiChatSlashCommand {
     Yolo { enabled: Option<bool> },
 }
 
+/// A command name: a lowercase letter, then word characters or hyphens
+/// (`^[a-z][\w-]*$`). Anything else after a leading `/`, such as the path in
+/// "/usr/lib/x fails", is ordinary prose.
+fn is_command_name(name: &str) -> bool {
+    let mut characters = name.chars();
+    characters
+        .next()
+        .is_some_and(|first| first.is_ascii_lowercase())
+        && characters.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-')
+}
+
+/// Whether a message is addressed to Claude Code's own command set: its first
+/// word is `/` followed by a command name.
+pub(super) fn is_native_command(message: &str) -> bool {
+    message
+        .split_whitespace()
+        .next()
+        .and_then(|word| word.strip_prefix('/'))
+        .is_some_and(is_command_name)
+}
+
 impl AiChatSlashCommand {
     fn parse(input: &str) -> Option<std::result::Result<Self, String>> {
         let command = input.strip_prefix('/')?;
         let mut parts = command.split_whitespace();
         let name = parts.next().unwrap_or_default();
+        if !name.is_empty() && !is_command_name(name) {
+            return None;
+        }
         let arguments = parts.collect::<Vec<_>>();
 
         let Some(spec) = AI_CHAT_SLASH_COMMANDS
@@ -537,6 +561,52 @@ mod tests {
             AiChatSlashCommand::parse("/unknown"),
             Some(Err(_))
         ));
+    }
+
+    #[test]
+    fn only_command_shaped_first_words_are_commands() {
+        for prose in [
+            "/usr/lib/x fails",
+            "/etc/hosts is wrong",
+            "/Users/me/project builds slowly",
+            "/tmp/x",
+            "/1st-thing",
+            "/-flag",
+            "/.hidden",
+        ] {
+            assert!(
+                AiChatSlashCommand::parse(prose).is_none(),
+                "{prose} is not a command"
+            );
+            assert!(!is_native_command(prose), "{prose} is not a native command");
+        }
+        for command in ["/compact", "/review-pr 12", "/my_cmd2 now", "/init"] {
+            assert!(is_native_command(command), "{command}");
+        }
+        // Command-shaped but unregistered stays an explicit error in Ovim's
+        // own parser; a lone slash still asks for a command.
+        assert!(matches!(
+            AiChatSlashCommand::parse("/nonexistent thing"),
+            Some(Err(message)) if message.contains("Unknown AI chat command")
+        ));
+        assert!(matches!(
+            AiChatSlashCommand::parse("/"),
+            Some(Err(message)) if message.contains("Enter a slash command")
+        ));
+        assert!(!is_native_command("/"));
+        assert!(!is_native_command("hello /compact"));
+    }
+
+    #[test]
+    fn a_path_led_message_is_submitted_instead_of_rejected_as_a_command() {
+        let mut editor = Editor::default();
+        open_test_chat(&mut editor);
+        assert!(!editor
+            .try_execute_ai_chat_slash_command("/usr/lib/x fails to load")
+            .unwrap());
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/nonexistent thing")
+            .unwrap());
     }
 
     #[test]

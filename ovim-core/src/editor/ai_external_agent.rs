@@ -373,7 +373,7 @@ impl Editor {
             .transpose()?
             .flatten()
             .map(|session| session.provider_thread_id);
-        let content = if latest.content.starts_with('/') {
+        let content = if super::ai_chat_commands::is_native_command(&latest.content) {
             // Native commands must be the whole prompt; prefixing editor state
             // or reconstructed history would turn them into ordinary prose.
             if resume.is_none() {
