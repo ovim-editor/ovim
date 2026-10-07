@@ -274,9 +274,12 @@ Key modules:
 - [Configuration](user-docs/configuration.md)
 - [AI Setup](user-docs/ai.md)
 - [Headless & Automation](user-docs/headless.md)
+- [Project Tools](user-docs/project-tools.md)
+- [Running and Debugging](user-docs/running-and-debugging.md)
 - [Terminal Sessions](user-docs/terminal.md)
 - [Language Support](user-docs/LANGUAGE_SUPPORT.md)
 - [Options Reference](user-docs/options.md)
+- [Pseudocode Reading View](user-docs/pseudocode.md)
 - [MCP](user-docs/MCP.md)
 - [Troubleshooting](user-docs/troubleshooting.md)
 

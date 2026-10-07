@@ -19,5 +19,7 @@ ovim file.rs --headless --session dev       # Headless mode with named session
 - [Running and Debugging](running-and-debugging.md) - Run/debug JVM code, run console, `.ovim/debug.toml`, code lenses
 - [Language Support](LANGUAGE_SUPPORT.md) - LSP + syntax support and adding languages
 - [Options](options.md) - `:set` options reference (scrolling, wrap, clipboard, etc.)
+- [Pseudocode](pseudocode.md) - `:set pseudo` reading view for Java and Markdown buffers
+- [MCP](MCP.md) - MCP server tools, resources, and client setup
 - [Terminal Sessions](terminal.md) - `:terminal`, `:term`, `:shell`, and `:!command`
 - [Troubleshooting](troubleshooting.md) - Common issues (sessions, LSP, dependencies)
