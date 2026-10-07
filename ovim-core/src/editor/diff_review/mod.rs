@@ -527,6 +527,27 @@ impl Editor {
 
     /// `:GitDiff [spec]`. Reuses the open review buffer when there is one.
     pub fn open_diff_review(&mut self, spec: Option<&str>) -> anyhow::Result<()> {
+        self.open_diff_review_in(None, spec)
+    }
+
+    /// [`Self::open_diff_review`] for the repository at `root`. A review shows
+    /// one repository, so an open review of another one is closed first.
+    pub fn open_diff_review_in(
+        &mut self,
+        root: Option<&Path>,
+        spec: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let root = root.map(|root| std::fs::canonicalize(root).unwrap_or(root.to_path_buf()));
+        if let Some(root) = &root {
+            let other_repository = self
+                .ui_panels
+                .diff_review
+                .as_ref()
+                .is_some_and(|state| &state.patch.root != root);
+            if other_repository {
+                self.close_diff_review();
+            }
+        }
         let custom_root = self
             .ui_panels
             .diff_review
@@ -548,7 +569,9 @@ impl Editor {
             return Ok(());
         }
 
-        let root_hint = custom_root.unwrap_or_else(|| self.diff_review_workspace_hint());
+        let root_hint = root
+            .or(custom_root)
+            .unwrap_or_else(|| self.diff_review_workspace_hint());
         let base = match explicit_spec {
             Some(spec) => ReviewBase::explicit(spec),
             None => self.resolve_review_base_for_path(&root_hint)?,

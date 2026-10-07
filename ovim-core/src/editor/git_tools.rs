@@ -318,7 +318,7 @@ impl Editor {
     /// Opens the diff review of uncommitted changes, positioned on `target`.
     pub fn git_show_file_diff(&mut self, target: &GitTarget) -> anyhow::Result<()> {
         let relative = target.relative.to_string_lossy().to_string();
-        self.open_diff_review(Some("HEAD"))?;
+        self.open_diff_review_in(Some(&target.root), Some("HEAD"))?;
         if !self.diff_review_jump_to_path(&relative) {
             self.set_status_message(format!("{relative} has no changes against HEAD"));
         }
@@ -700,7 +700,7 @@ impl Editor {
             return Ok(());
         }
         let short = &oid[..oid.len().min(10)];
-        self.open_diff_review(Some(&format!("{short}^..{short}")))?;
+        self.open_diff_review_in(Some(root), Some(&format!("{short}^..{short}")))?;
         if let Some(path) = path.filter(|path| !path.is_empty()) {
             self.diff_review_jump_to_path(path);
         }

@@ -386,6 +386,62 @@ async fn status_list_enter_works_before_the_first_commit() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn opening_a_diff_from_another_repository_replaces_the_open_review() {
+    let first = Fixture::new();
+    let first_file = first.write("first.txt", "one\n");
+    first.commit_all("init");
+    first.write("first.txt", "one changed\n");
+    let second = Fixture::new();
+    let second_file = second.write("second.txt", "two\n");
+    second.commit_all("init");
+    second.write("second.txt", "two changed\n");
+
+    let mut test = EditorTest::new("");
+    test.load_file(&first_file);
+    test.keys(" gg");
+    test.press_enter();
+    assert!(test.editor.is_diff_review_buffer());
+    assert!(test.buffer_content().contains("first.txt"));
+
+    // Leaving keeps the review around; the next file belongs to another
+    // repository.
+    test.keys(" gd");
+    assert!(!test.editor.is_diff_review_buffer());
+    test.load_file(&second_file);
+    test.keys(" gg");
+    test.assert_mode(Mode::Picker);
+    test.press_enter();
+    assert!(test.editor.is_diff_review_buffer());
+    let review = test.buffer_content();
+    assert!(review.contains("second.txt"), "{review}");
+    assert!(!review.contains("first.txt"), "{review}");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn viewing_a_commit_works_when_the_open_file_and_its_directory_are_gone() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.root.join("nested")).unwrap();
+    let file = fixture.write("nested/a.txt", "one\n");
+    fixture.write("b.txt", "b\n");
+    fixture.commit_all("first");
+    fixture.write("b.txt", "b changed\n");
+    fixture.commit_all("second");
+
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    fs::remove_dir_all(fixture.root.join("nested")).unwrap();
+    test.command("GitLogAll");
+    test.assert_mode(Mode::Picker);
+    test.press_enter();
+    assert!(
+        test.editor.is_diff_review_buffer(),
+        "{}",
+        test.editor.status_message()
+    );
+    assert!(test.buffer_content().contains("b changed"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn line_history_lists_the_commits_and_enter_shows_the_diff_of_one() {
     let fixture = Fixture::new();
     let file = fixture.write("a.txt", "alpha\nbeta\ngamma\n");
