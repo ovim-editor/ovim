@@ -1,7 +1,7 @@
 //! Running and debugging JVM programs.
 //!
 //! This module holds the pure, testable pieces; the editor-side state machine
-//! that strings them together lives in `editor/launch_flow.rs`.
+//! that strings them together lives in `editor/launch_flow/`.
 //!
 //! - [`plan`]: one normalised [`plan::LaunchPlan`] for every source of
 //!   launch information (Hyperion's `hyperion.resolveLaunch`, `.ovim/debug.toml`,

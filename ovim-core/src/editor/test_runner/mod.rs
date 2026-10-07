@@ -8,7 +8,7 @@
 //! - `<Space>tt` / `:TestPanel`   — toggle the right-side test panel
 //! - `<Space>to` / `:TestOutput`  — raw output in a scratch buffer
 //!
-//! Commands run through the launch pipeline (`launch_flow.rs`: process group,
+//! Commands run through the launch pipeline (`launch_flow/`: process group,
 //! stop with `:RunStop`, a new run replaces the current one) in the file's own project root (nearest
 //! `Cargo.toml` / `package.json` / `go.mod` / pytest marker — resolved per
 //! file, so monorepos work without configuring anything). Output streams
