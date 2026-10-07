@@ -78,6 +78,42 @@ fn parse_substitution(args: &str) -> Option<(String, String, String, String)> {
     Some((find, replace, flags, rest.trim().to_string()))
 }
 
+/// Splits `/pattern/[g][j] files` on the first unescaped closing `/`
+/// (`:vimgrep`). Returns `(pattern, flags, files)`; `\/` yields a literal
+/// slash. `None` when there is no closing slash, or text follows it directly
+/// (`/usr/bin`), so such a pattern stays literal. Other delimiters stay
+/// literal too: `:grep "text"` searches for the quotes.
+fn parse_delimited_pattern(args: &str) -> Option<(String, &str, &str)> {
+    const DELIMITER: char = '/';
+    let body = args.strip_prefix(DELIMITER)?;
+    let mut pattern = String::new();
+    let mut escaped = false;
+    for (index, c) in body.char_indices() {
+        if escaped {
+            if c != DELIMITER {
+                pattern.push('\\');
+            }
+            pattern.push(c);
+            escaped = false;
+        } else if c == '\\' {
+            escaped = true;
+        } else if c == DELIMITER {
+            let after = &body[index + c.len_utf8()..];
+            let flags_len = after
+                .find(|c| !matches!(c, 'g' | 'j'))
+                .unwrap_or(after.len());
+            let (flags, files) = after.split_at(flags_len);
+            if !files.is_empty() && !files.starts_with(char::is_whitespace) {
+                return None;
+            }
+            return Some((pattern, flags, files.trim()));
+        } else {
+            pattern.push(c);
+        }
+    }
+    None
+}
+
 /// `:SearchReplace [/find/replace/flags [globs]]`
 ///
 /// Flags: `c` case sensitive, `w` whole word, `r` regular expression. Without
@@ -159,17 +195,18 @@ pub(super) fn grep(editor: &mut Editor, ex: &Ex) -> CommandResult {
         Some((pattern, globs)) => (pattern.trim(), globs.trim()),
         None => (args, ""),
     };
-    // Accept `:vimgrep /pat/ glob` style as well.
-    let (pattern, globs) = match parse_substitution(pattern) {
-        Some((find, _, _, rest)) if pattern.starts_with('/') && pattern.ends_with('/') => (
+    // Accept `:vimgrep /pat/[gj] glob` style as well.
+    let (pattern, globs, jump) = match parse_delimited_pattern(pattern) {
+        Some((find, flags, rest)) => (
             find,
             if globs.is_empty() {
-                rest
+                rest.to_string()
             } else {
                 globs.to_string()
             },
+            !flags.contains('j'),
         ),
-        _ => (pattern.to_string(), globs.to_string()),
+        None => (pattern.to_string(), globs.to_string(), true),
     };
     let mut options = SearchOptions {
         pattern: pattern.clone(),
@@ -209,8 +246,10 @@ pub(super) fn grep(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let count = entries.len();
     editor.set_quickfix_list(entries, format!(":grep {pattern}"));
     editor.open_quickfix_window();
-    if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
-        let _ = super::jump_to_quickfix_entry(editor, &entry);
+    if jump {
+        if let Some(entry) = editor.quickfix_list().current_entry().cloned() {
+            let _ = super::jump_to_quickfix_entry(editor, &entry);
+        }
     }
     ok(format!(
         "{count} match{} for {pattern}{}",
@@ -225,7 +264,27 @@ pub(super) fn grep(editor: &mut Editor, ex: &Ex) -> CommandResult {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_substitution;
+    use super::{parse_delimited_pattern, parse_substitution};
+
+    #[test]
+    fn delimited_pattern_ends_at_the_first_unescaped_slash() {
+        assert_eq!(
+            parse_delimited_pattern("/foo/ *.rs *.toml"),
+            Some(("foo".to_string(), "", "*.rs *.toml"))
+        );
+        assert_eq!(
+            parse_delimited_pattern(r"/a\/b/gj  src"),
+            Some(("a/b".to_string(), "gj", "src"))
+        );
+        assert_eq!(
+            parse_delimited_pattern(r"/\d+\//"),
+            Some((r"\d+/".to_string(), "", ""))
+        );
+        // No closing slash, or text glued to it: a literal pattern.
+        assert_eq!(parse_delimited_pattern("/foo"), None);
+        assert_eq!(parse_delimited_pattern("/usr/bin"), None);
+        assert_eq!(parse_delimited_pattern("foo/ bar"), None);
+    }
 
     #[test]
     fn parses_find_replace_flags_and_globs() {

@@ -289,3 +289,66 @@ async fn crlf_files_keep_their_line_endings() {
     apply(&mut test);
     assert_eq!(project.read("win.txt"), "x\r\nbar x\r\n");
 }
+
+// nvim --clean, a.rs "foo one / bar / foo two", c.rs "foo rs2", b.txt "foo
+// three": `:vimgrep /foo/ *.rs` lists the three matches in the .rs files and
+// `:vimgrep /foo/ *.rs *.txt` all four.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn vimgrep_takes_the_files_after_the_closing_delimiter() {
+    let project = Project::new(&[
+        ("a.rs", "foo one\nbar\nfoo two\n"),
+        ("b.txt", "foo three\n"),
+        ("c.rs", "foo rs2\n"),
+    ]);
+    let mut test = editor_in(&project, "a.rs");
+
+    test.command("vimgrep /foo/ *.rs");
+    assert_eq!(test.editor.quickfix_list().len(), 3, "{}", status(&test));
+
+    test.command("vimgrep /foo/ *.rs *.txt");
+    assert_eq!(test.editor.quickfix_list().len(), 4, "{}", status(&test));
+
+    // The files are matched, not the text after the pattern.
+    test.command("vimgrep /nomatch/ *.rs");
+    assert!(
+        status(&test).starts_with("E486: Pattern not found: nomatch"),
+        "{}",
+        status(&test)
+    );
+}
+
+// nvim --clean: flags after the closing delimiter (`g`, `j`) are not files,
+// and `j` leaves the cursor where it is.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn vimgrep_flags_follow_the_closing_delimiter() {
+    let project = Project::new(&[
+        ("a.rs", "foo one\nbar\nfoo two\n"),
+        ("b.txt", "foo three\n"),
+    ]);
+    let mut test = editor_in(&project, "a.rs");
+    test.keys("G");
+
+    test.command("vimgrep /foo/gj *.rs");
+    assert_eq!(test.editor.quickfix_list().len(), 2, "{}", status(&test));
+    assert_eq!(test.cursor().0, 2, "j does not jump to the first match");
+
+    test.command("vimgrep /foo/g");
+    assert_eq!(test.editor.quickfix_list().len(), 3, "{}", status(&test));
+}
+
+// A pattern that merely starts with a slash, and one without a delimiter,
+// stay literal text.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn grep_without_a_closing_delimiter_searches_the_text_as_typed() {
+    let project = Project::new(&[("a.txt", "see /usr/bin now\nfoo bar\n")]);
+    let mut test = editor_in(&project, "a.txt");
+
+    test.command("grep /usr/bin");
+    assert_eq!(test.editor.quickfix_list().len(), 1, "{}", status(&test));
+
+    test.command("grep foo bar");
+    assert_eq!(test.editor.quickfix_list().len(), 1, "{}", status(&test));
+
+    test.command("grep /foo/ -- *.txt");
+    assert_eq!(test.editor.quickfix_list().len(), 1, "{}", status(&test));
+}
