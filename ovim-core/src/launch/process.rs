@@ -19,7 +19,7 @@ use std::time::Duration;
 
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc, oneshot, watch};
 
 use super::process_groups::{register_group, terminate_group};
 
@@ -29,9 +29,13 @@ const OUTPUT_QUEUE_LINES: usize = 8192;
 /// Longest output line kept; the rest of a longer line is dropped.
 pub const MAX_LINE_BYTES: usize = 64 * 1024;
 pub(super) const TRUNCATED_MARKER: &str = " ... [line truncated]";
-/// How long an output reader may be idle after the child exited before it is
-/// given up on (a grandchild can hold the pipe open indefinitely).
+/// How long a pipe may stay quiet after the child exited before its reader
+/// gives up (a grandchild can hold the pipe open indefinitely).
 const READER_GRACE: Duration = Duration::from_millis(500);
+/// How much more a reader takes from a pipe once the child has exited: what
+/// the pipe still held (kernel pipes are at most 1 MiB). A grandchild that
+/// keeps writing does not hold the run open.
+const MAX_BYTES_AFTER_EXIT: usize = 4 << 20;
 
 /// Which pipe a line came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -167,10 +171,11 @@ impl ProcessHandle {
         let (tx, lines) = mpsc::channel(OUTPUT_QUEUE_LINES);
         let (exit_tx, exit_rx) = oneshot::channel();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
+        let (exited_tx, exited_rx) = watch::channel(false);
 
         let readers: Vec<tokio::task::JoinHandle<()>> = [
-            stdout.map(|s| spawn_reader(s, StreamKind::Stdout, tx.clone())),
-            stderr.map(|s| spawn_reader(s, StreamKind::Stderr, tx.clone())),
+            stdout.map(|s| spawn_reader(s, StreamKind::Stdout, tx.clone(), exited_rx.clone())),
+            stderr.map(|s| spawn_reader(s, StreamKind::Stderr, tx.clone(), exited_rx.clone())),
         ]
         .into_iter()
         .flatten()
@@ -205,8 +210,14 @@ impl ProcessHandle {
             }
             // The leader is gone; the editor no longer answers for the group.
             drop(group);
+            let _ = exited_tx.send(true);
             if !killed {
-                finish_readers(readers, &tx).await;
+                // Readers end at the end of the output, or when it dries up
+                // (see `spawn_reader`); one blocked on a full queue is waited
+                // for, so that no output is lost.
+                for reader in readers {
+                    let _ = reader.await;
+                }
             }
             let code = status.ok().and_then(|s| s.code());
             let _ = exit_tx.send(ExitInfo { code, killed });
@@ -291,26 +302,6 @@ fn die_with_parent(command: &mut Command) {
     }
 }
 
-/// Waits for the output readers once the child is gone. Grandchildren that
-/// inherited the pipes can keep them open long after the direct child, so a
-/// reader with nothing to deliver is given up on after a short grace. One
-/// blocked on a full queue is not idle (the editor is behind), and is waited
-/// for so no output is lost.
-async fn finish_readers(readers: Vec<tokio::task::JoinHandle<()>>, tx: &mpsc::Sender<OutputLine>) {
-    for mut reader in readers {
-        loop {
-            match tokio::time::timeout(READER_GRACE, &mut reader).await {
-                Ok(_) => break,
-                Err(_) if tx.capacity() == 0 && !tx.is_closed() => {}
-                Err(_) => {
-                    reader.abort();
-                    break;
-                }
-            }
-        }
-    }
-}
-
 type OutputLine = (StreamKind, String);
 
 /// Assembles one output line from pipe chunks: bounded in length, with
@@ -371,10 +362,14 @@ impl LineBuilder {
     }
 }
 
+/// Reads one pipe line by line into the queue. Once the child has exited it
+/// stops at the end of the pipe, when the pipe goes quiet, or after taking
+/// [`MAX_BYTES_AFTER_EXIT`] more, whichever comes first.
 fn spawn_reader<R>(
     stream: R,
     kind: StreamKind,
     tx: mpsc::Sender<OutputLine>,
+    mut exited: watch::Receiver<bool>,
 ) -> tokio::task::JoinHandle<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
@@ -382,10 +377,18 @@ where
     tokio::spawn(async move {
         let mut reader = BufReader::new(stream);
         let mut line = LineBuilder::default();
+        let mut bytes_after_exit = 0;
         loop {
-            let chunk = match reader.fill_buf().await {
-                Ok(chunk) if !chunk.is_empty() => chunk,
-                _ => break,
+            let quiet_after_exit = async {
+                let _ = exited.clone().wait_for(|&gone| gone).await;
+                tokio::time::sleep(READER_GRACE).await;
+            };
+            let chunk = tokio::select! {
+                chunk = reader.fill_buf() => match chunk {
+                    Ok(chunk) if !chunk.is_empty() => chunk,
+                    _ => break,
+                },
+                _ = quiet_after_exit => break,
             };
             let (used, complete) = match chunk.iter().position(|&b| b == b'\n') {
                 Some(end) => {
@@ -401,6 +404,12 @@ where
             // A full queue parks the reader here until the tick catches up.
             if complete && tx.send((kind, line.take())).await.is_err() {
                 return;
+            }
+            if *exited.borrow_and_update() {
+                bytes_after_exit += used;
+                if bytes_after_exit > MAX_BYTES_AFTER_EXIT {
+                    break;
+                }
             }
         }
         if line.started {
@@ -596,6 +605,40 @@ mod tests {
             .unwrap();
         assert_eq!(lines.len(), total);
         assert_eq!(exit.code, Some(0));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_grandchild_holding_the_pipe_open_does_not_hold_the_run_open() {
+        let mut handle = ProcessHandle::spawn(&spec("sleep 300 & echo $!; echo hi")).unwrap();
+        let (lines, exit) = tokio::time::timeout(Duration::from_secs(10), drain(&mut handle))
+            .await
+            .expect("the run waited for a process that merely inherited its pipes");
+        assert_eq!(exit.code, Some(0));
+        assert_eq!(lines.len(), 2);
+        let sleeper: i32 = lines[0].1.trim().parse().unwrap();
+        // SAFETY: tidying up the sleeper the child left behind on purpose.
+        unsafe { libc::kill(sleeper, libc::SIGKILL) };
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_grandchild_that_keeps_writing_is_cut_off_after_the_exit() {
+        let mut handle = ProcessHandle::spawn(&spec(
+            "yes \"$(head -c 1000 /dev/zero | tr '\\0' x)\" & echo $!",
+        ))
+        .unwrap();
+        let (lines, _) = tokio::time::timeout(Duration::from_secs(20), drain(&mut handle))
+            .await
+            .expect("an endless writer held the run open");
+        let flooder: i32 = lines[0].1.trim().parse().unwrap();
+        // SAFETY: tidying up the writer the child left behind on purpose.
+        unsafe { libc::kill(flooder, libc::SIGKILL) };
+        assert!(
+            lines.len() < 2 * MAX_BYTES_AFTER_EXIT / 1000,
+            "{} lines",
+            lines.len()
+        );
     }
 
     #[tokio::test]
