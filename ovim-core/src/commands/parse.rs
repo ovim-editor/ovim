@@ -158,7 +158,7 @@ fn name_length(text: &str) -> usize {
 fn split_args(kind: ArgKind, args: &str) -> (&str, Option<&str>) {
     match kind {
         ArgKind::Rest => (args, None),
-        ArgKind::Substitute => split_after_pattern(args, 2),
+        ArgKind::Substitute => split_after_replacement(args),
         // `:r !cmd` and `:w !cmd` hand the whole rest to the shell.
         ArgKind::File if args.starts_with('!') => (args, None),
         ArgKind::None | ArgKind::Text | ArgKind::File => split_at_bar(args),
@@ -180,9 +180,11 @@ fn split_at_bar(args: &str) -> (&str, Option<&str>) {
     (args, None)
 }
 
-/// `:s/pat/rep/flags | next`: a bar inside the pattern is literal (regex
-/// alternation); once `delimiters` delimiters are past it separates commands.
-fn split_after_pattern(args: &str, delimiters: usize) -> (&str, Option<&str>) {
+/// `:s/pat/rep/flags | next`: a bar inside the pattern or the replacement is
+/// literal (regex alternation, replacement text); only after the closing
+/// delimiter of the replacement does it separate commands. An unterminated
+/// replacement owns the rest of the line (vim: `:s/a/b|c` inserts `b|c`).
+fn split_after_replacement(args: &str) -> (&str, Option<&str>) {
     let Some(delimiter) = args.chars().next() else {
         return (args, None);
     };
@@ -190,6 +192,8 @@ fn split_after_pattern(args: &str, delimiters: usize) -> (&str, Option<&str>) {
         // `:s` with flags only (`:s g`, `:&&`) — an ordinary argument.
         return split_at_bar(args);
     }
+    // The opening delimiter counts: pattern and replacement end at the 2nd
+    // and 3rd.
     let mut seen = 0;
     let mut escaped = false;
     for (index, c) in args.char_indices() {
@@ -199,7 +203,7 @@ fn split_after_pattern(args: &str, delimiters: usize) -> (&str, Option<&str>) {
             escaped = true;
         } else if c == delimiter {
             seen += 1;
-        } else if c == '|' && seen >= delimiters {
+        } else if c == '|' && seen >= 3 {
             return (args[..index].trim_end(), Some(&args[index + 1..]));
         }
     }
@@ -455,6 +459,11 @@ mod tests {
         assert_eq!(head("d x | y").4, Some(" y"));
         assert_eq!(head("s/a|b/c/ | update").3, "/a|b/c/");
         assert_eq!(head("s/a|b/c/ | update").4, Some(" update"));
+        // A bar in the replacement is text; only the closing delimiter ends it.
+        assert_eq!(head("s/,/ | /g").3, "/,/ | /g");
+        assert_eq!(head("s/,/ | /g").4, None);
+        assert_eq!(head("s/a/b|c").3, "/a/b|c");
+        assert_eq!(head("s/a/b/g | update").4, Some(" update"));
         assert_eq!(head("g/a|b/d|3d").3, "/a|b/d|3d");
         assert_eq!(head("!echo a | wc").3, "echo a | wc");
         assert_eq!(head("r !echo a | wc").4, None);

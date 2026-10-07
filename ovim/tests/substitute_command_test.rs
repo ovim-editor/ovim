@@ -136,3 +136,33 @@ fn n_flag_reports_e486_unless_e_and_ignores_confirm_and_modifiable() {
     assert_eq!(test.editor.status_message(), "1 match on 1 line");
     test.assert_mode(ovim::mode::Mode::Normal);
 }
+
+// nvim --clean: `:%s/,/ | /g` on "a,b,c" gives "a | b | c": a bar inside the
+// replacement is text, not a command separator.
+#[test]
+fn bar_in_the_replacement_is_literal() {
+    let mut test = EditorTest::new("a,b,c\n");
+    test.command("%s/,/ | /g");
+    assert_eq!(test.buffer_content(), "a | b | c\n");
+}
+
+// nvim --clean: an unterminated replacement owns the rest of the line:
+// `:s/a/X|Y` turns "ab" into "X|Yb".
+#[test]
+fn unterminated_replacement_owns_the_rest_of_the_line() {
+    let mut test = EditorTest::new("ab\n");
+    test.command("s/a/X|Y");
+    assert_eq!(test.buffer_content(), "X|Yb\n");
+}
+
+// nvim --clean: a bar after the closing delimiter still chains commands:
+// `:s/a/X/ | s/b/Z/` gives "XZ".
+#[test]
+fn bar_after_the_closing_delimiter_chains_commands() {
+    let mut test = EditorTest::new("ab\n");
+    test.command("s/a/X/ | s/b/Z/");
+    assert_eq!(test.buffer_content(), "XZ\n");
+    let mut test = EditorTest::new("a b\n");
+    test.command("s/a/X/g|s/b/Y/");
+    assert_eq!(test.buffer_content(), "X Y\n");
+}
