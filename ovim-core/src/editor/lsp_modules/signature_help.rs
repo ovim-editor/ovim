@@ -224,6 +224,18 @@ impl Editor {
         self.lsp.state.signature_help.as_deref()
     }
 
+    /// Shows `help` as the popup, anchored at the cursor — what an answer
+    /// from the server turns into. Returns false when it offered no signature.
+    pub fn show_signature_help(&mut self, help: &lsp_types::SignatureHelp) -> bool {
+        let cursor = self.buffer().cursor();
+        let anchor = (cursor.line(), cursor.col().0);
+        let state = SignatureHelpState::from_lsp(help, anchor).map(Box::new);
+        let shown = state.is_some();
+        self.lsp.state.signature_help = state;
+        self.mark_dirty();
+        shown
+    }
+
     /// Dismiss the popup and abandon any in-flight request.
     pub fn clear_signature_help(&mut self) {
         if self.lsp.state.signature_help.take().is_some() {

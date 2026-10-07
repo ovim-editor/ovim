@@ -23,6 +23,7 @@ mod markdown;
 mod markdown_conceal;
 mod overlays;
 mod picker_widget;
+mod popup_placement;
 mod run_console;
 pub mod search_replace;
 mod status_widgets;

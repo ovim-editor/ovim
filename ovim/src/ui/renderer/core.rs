@@ -301,14 +301,16 @@ fn render_overlays(
         }
     }
 
-    // Completion menu (LSP)
-    if editor.completion_menu().is_visible() {
-        render_completion_menu(frame, editor, ctx, theme);
-    }
+    // Completion menu (LSP), placed first: the parameter hints work around it.
+    let completion_areas = if editor.completion_menu().is_visible() {
+        render_completion_menu(frame, editor, ctx, theme)
+    } else {
+        Vec::new()
+    };
 
     // Parameter hints while typing a call
     if editor.mode() == crate::mode::Mode::Insert && editor.signature_help().is_some() {
-        render_signature_help(frame, editor, ctx);
+        render_signature_help(frame, editor, ctx, &completion_areas);
     }
 
     // Path completion popup (command mode)

@@ -13,6 +13,7 @@ use unicode_width::UnicodeWidthStr;
 use super::ai_chat::TEXT_DIM;
 use super::helpers::{cursor_screen_position, truncate_to_width};
 use super::layout::OverlayContext;
+use super::popup_placement::{place_beside_cursor, place_completion_menu};
 
 fn hover_content_width(rendered_lines: &[Line<'_>], hover_text: &str, is_preview: bool) -> usize {
     if is_preview {
@@ -370,13 +371,14 @@ fn completion_row_line(
 }
 
 /// Renders the completion menu popup and, beside it, the documentation of the
-/// selected item.
+/// selected item. Returns the areas it covers so popups drawn afterwards (the
+/// parameter hints) can keep clear of them.
 pub fn render_completion_menu(
     frame: &mut Frame,
     editor: &Editor,
     ctx: &OverlayContext,
     theme: &Theme,
-) {
+) -> Vec<Rect> {
     use ovim_core::editor::completion_row_text;
 
     let layout = ctx.layout;
@@ -384,7 +386,7 @@ pub fn render_completion_menu(
     let buffer_area = layout.buffer_area;
     let completion_menu = editor.completion_menu();
     if !completion_menu.is_visible() {
-        return;
+        return Vec::new();
     }
 
     // Get cursor position on screen
@@ -403,17 +405,21 @@ pub fn render_completion_menu(
 
     let gutter_width = layout.gutter_width;
 
-    // Position menu below cursor
     let menu_x = buffer_area.x + gutter_width as u16 + visual_col as u16;
-    let menu_y = buffer_area.y + screen_line as u16 + 1; // Below current line
+    let cursor_row = buffer_area.y + screen_line as u16;
 
-    // Rows that fit: up to 10, fewer when the buffer area is short.
+    // Rows that fit: up to 10, fewer when the buffer area is short, then fewer
+    // still when neither side of the cursor line has room for all of them.
     let max_rows = 10usize
         .min(buffer_area.height.saturating_sub(3) as usize)
         .max(1);
-    let window = completion_menu.window(max_rows);
+    let wanted_height = completion_menu.window(max_rows).len() as u16 + 2; // +2 for borders
+    let Some((menu_y, menu_height)) = place_completion_menu(buffer_area, cursor_row, wanted_height)
+    else {
+        return Vec::new();
+    };
+    let window = completion_menu.window(menu_height as usize - 2);
     let num_items = window.len();
-    let menu_height = num_items as u16 + 2; // +2 for borders
 
     // Width: widest visible row (icon, label, detail, right-aligned description).
     // Use UnicodeWidthStr::width() instead of len() because CJK characters
@@ -440,21 +446,8 @@ pub fn render_completion_menu(
     let menu_x = menu_x
         .min(buffer_area.right().saturating_sub(menu_width))
         .max(buffer_area.x);
-    let menu_y = if menu_y + menu_height > buffer_area.y + buffer_area.height {
-        // Show above cursor if not enough space below
-        (buffer_area.y + screen_line as u16)
-            .saturating_sub(menu_height)
-            .max(buffer_area.y)
-    } else {
-        menu_y
-    };
 
-    let menu_area = Rect::new(
-        menu_x,
-        menu_y,
-        menu_width,
-        menu_height.min(buffer_area.height),
-    );
+    let menu_area = Rect::new(menu_x, menu_y, menu_width, menu_height);
 
     // Build menu lines
     let selected_index = completion_menu.selected_index();
@@ -496,27 +489,35 @@ pub fn render_completion_menu(
     frame.render_widget(ratatui::widgets::Clear, menu_area);
     frame.render_widget(paragraph, menu_area);
 
-    render_completion_documentation(frame, editor, buffer_area, menu_area, theme);
+    let mut covered = vec![menu_area];
+    covered.extend(render_completion_documentation(
+        frame,
+        editor,
+        buffer_area,
+        menu_area,
+        cursor_row,
+        theme,
+    ));
+    covered
 }
 
 /// Documentation of the selected completion item, in a popup right of the menu
-/// (left when there is no room on the right).
+/// (left when there is no room on the right), on the same side of the cursor
+/// line as the menu so it never covers the line being typed. Returns the area
+/// it covers.
 fn render_completion_documentation(
     frame: &mut Frame,
     editor: &Editor,
     buffer_area: Rect,
     menu_area: Rect,
+    cursor_row: u16,
     theme: &Theme,
-) {
+) -> Option<Rect> {
     use super::markdown::colors;
     use ovim_core::editor::completion_documentation_markdown;
 
-    let Some(item) = editor.completion_menu().selected_item() else {
-        return;
-    };
-    let Some(markdown) = completion_documentation_markdown(item) else {
-        return;
-    };
+    let item = editor.completion_menu().selected_item()?;
+    let markdown = completion_documentation_markdown(item)?;
 
     const MIN_WIDTH: u16 = 24;
     const MAX_WIDTH: u16 = 56;
@@ -528,24 +529,34 @@ fn render_completion_documentation(
         (false, room_left)
     };
     if room < MIN_WIDTH {
-        return;
+        return None;
     }
     let width = room.min(MAX_WIDTH);
     let lines = render_hover_preview_lines(&markdown, width as usize, theme);
     if lines.is_empty() {
-        return;
+        return None;
     }
-    let max_height = buffer_area
-        .height
-        .saturating_sub(menu_area.y.saturating_sub(buffer_area.y))
-        .min(14);
+    // A menu above the cursor line keeps its documentation above it too,
+    // bottom-aligned with the menu; below, the documentation starts at the menu.
+    let menu_above = menu_area.y < cursor_row;
+    let max_height = if menu_above {
+        menu_area.bottom().saturating_sub(buffer_area.y)
+    } else {
+        buffer_area.bottom().saturating_sub(menu_area.y)
+    }
+    .min(14);
     let height = (lines.len() as u16 + 2).min(max_height).max(3);
     let x = if side_right {
         menu_area.right()
     } else {
         menu_area.x - width
     };
-    let area = Rect::new(x, menu_area.y, width, height);
+    let y = if menu_above {
+        menu_area.bottom().saturating_sub(height).max(buffer_area.y)
+    } else {
+        menu_area.y
+    };
+    let area = Rect::new(x, y, width, height);
     let visible: Vec<Line<'static>> = lines.into_iter().take(height as usize - 2).collect();
     let paragraph = Paragraph::new(visible)
         .style(Style::default().bg(colors::BG))
@@ -557,13 +568,21 @@ fn render_completion_documentation(
         );
     frame.render_widget(Clear, area);
     frame.render_widget(paragraph, area);
+    Some(area)
 }
 
 /// Parameter-hints popup for the call being typed: the signature on one line
 /// with the active parameter highlighted, an `(n/m)` overload marker and the
-/// active parameter's documentation underneath. Sits above the cursor line so
-/// it never covers the completion menu (which opens below).
-pub fn render_signature_help(frame: &mut Frame, editor: &Editor, ctx: &OverlayContext) {
+/// active parameter's documentation underneath. Sits above the cursor line
+/// where it can, and stays clear of the `occupied` areas of the completion
+/// menu (drawn first); when it fits nowhere without covering one, it is not
+/// drawn.
+pub fn render_signature_help(
+    frame: &mut Frame,
+    editor: &Editor,
+    ctx: &OverlayContext,
+    occupied: &[Rect],
+) {
     let Some(signature) = editor.signature_help() else {
         return;
     };
@@ -663,14 +682,9 @@ pub fn render_signature_help(frame: &mut Frame, editor: &Editor, ctx: &OverlayCo
     let x = cursor_x
         .min(buffer_area.right().saturating_sub(width))
         .max(buffer_area.x);
-    let y = if cursor_y >= buffer_area.y + height {
-        cursor_y - height
-    } else {
-        // No room above: drop below the line instead.
-        (cursor_y + 1).min(buffer_area.bottom().saturating_sub(height))
+    let Some(area) = place_beside_cursor(buffer_area, x, width, height, cursor_y, occupied) else {
+        return;
     };
-
-    let area = Rect::new(x, y, width, height);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::DarkGray))
