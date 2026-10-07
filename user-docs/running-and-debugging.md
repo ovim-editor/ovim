@@ -5,6 +5,8 @@ language server ([Hyperion](LANGUAGE_SUPPORT.md)) tells ovim what is runnable at
 the cursor and how to build and launch it; ovim builds, starts the program,
 and shows everything in the **run console**.
 
+Java/Kotlin/Scala/Groovy language and debug support use hyperion-lsp, which is not yet publicly available.
+
 ## Keys and commands
 
 | Keys | Command | Does |

@@ -133,6 +133,8 @@ re-runs `init.lua`, and the servers pick the result up on their next restart).
 Settings come only from your own config, never from files in the project you
 open.
 
+Java/Kotlin/Scala/Groovy language and debug support use hyperion-lsp, which is not yet publicly available; the Hyperion settings below apply only to that server.
+
 Example: **Hyperion runs Gradle/Maven for the classpath.** By default Hyperion
 only reads what a previous build left in `~/.gradle` / `~/.m2`, so a fresh clone
 has no libraries. With `hyperion.buildToolClasspath = true` it runs `./gradlew`

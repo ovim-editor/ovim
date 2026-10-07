@@ -11,7 +11,8 @@ These languages have full LSP support and will auto-install the language server 
 | Language | Extensions | LSP Server | Install Method |
 |----------|------------|------------|----------------|
 | Rust | `.rs` | rust-analyzer | GitHub release |
-| TypeScript | `.ts`, `.tsx`, `.mts`, `.cts` | typescript-language-server | npm |
+| TypeScript | `.ts`, `.mts`, `.cts` | typescript-language-server | npm |
+| TSX | `.tsx` | typescript-language-server | npm |
 | JavaScript | `.js`, `.jsx`, `.mjs`, `.cjs`, `.es`, `.es6`, `.es7` | typescript-language-server | npm |
 | Python | `.py`, `.pyw`, `.pyi` | pyright-langserver | npm |
 | Go | `.go` | gopls | go install |
@@ -32,8 +33,10 @@ These languages have full LSP support and will auto-install the language server 
 
 ### Languages with LSP (Manual Install Required)
 
+Java, Kotlin, Scala and Groovy language and debug support use `hyperion-lsp`, which is not yet publicly available.
+
 ovim never downloads `hyperion-lsp`: it only looks for it on `PATH` (`which hyperion-lsp`).
-If it is missing, opening a Java/Kotlin/Scala/Groovy file shows the build hint in the status line.
+If it is missing, opening a Java/Kotlin/Scala/Groovy file shows an install hint in the status line.
 
 
 | Language | Extensions | LSP Server | Install Command |
@@ -41,10 +44,11 @@ If it is missing, opening a Java/Kotlin/Scala/Groovy file shows the build hint i
 | C | `.c`, `.h` | clangd | `brew install llvm` / `pacman -S clang` |
 | C++ | `.cpp`, `.hpp` | clangd | `brew install llvm` / `pacman -S clang` |
 | XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.plist` | Eclipse LemMinX | Install `lemminx` on `PATH` |
-| Java | `.java` | hyperion-lsp | Build from the hyperion-ls repo (`cargo build --release -p hyperion-lsp`) and put `hyperion-lsp` on `PATH` |
+| Java | `.java` | hyperion-lsp | Not yet publicly available; put a `hyperion-lsp` binary on `PATH` |
 | Kotlin | `.kt`, `.kts` | hyperion-lsp | same as Java |
 | Scala | `.scala`, `.sc` | hyperion-lsp | same as Java |
 | Groovy | `.groovy`, `.gradle` | hyperion-lsp | same as Java |
+| Ghostty | `ghostty/config` | ghostty-lsp | `cargo install --git https://github.com/matthewmturner/ghostty-lsp` |
 
 Syntax highlighting uses a dedicated tree-sitter grammar for each of these: Kotlin (`.kt`, `.kts`, `build.gradle.kts`) uses the
 `tree-sitter-kotlin-sg` grammar (data/sealed classes, coroutines, string templates, lambdas, `when`), not the Java grammar.
