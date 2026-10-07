@@ -609,6 +609,8 @@ pub struct CompletionResult {
     /// If we successfully flushed content to LSP, record the new synced content.
     pub synced_content: Option<String>,
     pub synced_lsp_version: Option<i32>,
+    /// The server each of `items` came from (empty when unknown).
+    pub sources: Vec<String>,
 }
 
 /// Result of a `completionItem/resolve` request.

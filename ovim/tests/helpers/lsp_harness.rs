@@ -204,6 +204,12 @@ impl FakeLsp {
     /// Starts a companion server (`fakels:comp`) for `root`'s project. It
     /// logs into its own control directory, which is returned.
     pub async fn start_companion(&self, root: usize) -> PathBuf {
+        self.start_companion_with(root, default_capabilities())
+            .await
+    }
+
+    /// [`Self::start_companion`] announcing `capabilities`.
+    pub async fn start_companion_with(&self, root: usize, capabilities: Value) -> PathBuf {
         let control = self
             .dir
             .path()
@@ -211,11 +217,7 @@ impl FakeLsp {
             .unwrap()
             .join("companion-ctl");
         std::fs::create_dir_all(&control).unwrap();
-        std::fs::write(
-            control.join("capabilities.json"),
-            default_capabilities().to_string(),
-        )
-        .unwrap();
+        std::fs::write(control.join("capabilities.json"), capabilities.to_string()).unwrap();
         let manager = self.manager();
         let server_id = ovim_core::lsp::companion_server_id("fakels", "comp");
         manager

@@ -972,6 +972,15 @@ impl Editor {
                 // the user typed on since, accepting rebases them through
                 // the anchor (OV-00327).
                 menu.set_items_buffer_version(items_version);
+                self.lsp.state.completion_sources = result
+                    .items
+                    .iter()
+                    .zip(&result.sources)
+                    .rev()
+                    .map(|(item, source)| {
+                        (crate::editor::completion::item_key(item), source.clone())
+                    })
+                    .collect();
                 self.lsp.state.available_completions = result.items;
                 self.mark_dirty();
                 true
@@ -3083,6 +3092,7 @@ mod tests {
                 buffer_version: bv,
                 synced_content: None,
                 synced_lsp_version: None,
+                sources: Vec::new(),
             },
         );
 
@@ -3112,6 +3122,7 @@ mod tests {
                 buffer_version: bv,
                 synced_content: None,
                 synced_lsp_version: None,
+                sources: Vec::new(),
             },
         );
         editor.poll_pending_completion_response();
@@ -3141,6 +3152,7 @@ mod tests {
                 buffer_version: bv,
                 synced_content: None,
                 synced_lsp_version: None,
+                sources: Vec::new(),
             },
         );
 
@@ -3176,6 +3188,7 @@ mod tests {
                 buffer_version: stale_version,
                 synced_content: None,
                 synced_lsp_version: None,
+                sources: Vec::new(),
             },
         );
 

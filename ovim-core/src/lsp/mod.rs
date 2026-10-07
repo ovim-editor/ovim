@@ -717,13 +717,20 @@ impl LspManager {
         uri: &Uri,
         language_id: &str,
     ) -> Result<LanguageServer> {
+        let server_id = self.server_id_for_document(uri, language_id)?;
+        self.server_handle(&server_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))
+    }
+
+    /// The id of the server [`Self::server_for_document`] picks.
+    pub(crate) fn server_id_for_document(&self, uri: &Uri, language_id: &str) -> Result<String> {
         let is_primary = |server_id: &String| !server_id.contains(':');
         let owner = self
             .servers_for_document_uri(language_id, uri)
             .into_iter()
             .find(is_primary);
-        let server = match owner {
-            Some(server_id) => self.server_handle(&server_id),
+        let server_id = match owner {
+            Some(server_id) => Some(server_id),
             None => {
                 let primaries: Vec<String> = self
                     .servers_for_language(language_id)
@@ -731,13 +738,15 @@ impl LspManager {
                     .filter(is_primary)
                     .collect();
                 match primaries.as_slice() {
-                    [] => self.server_handle(language_id),
-                    [only] => self.server_handle(only),
+                    [] => Some(language_id.to_string()),
+                    [only] => Some(only.clone()),
                     _ => None,
                 }
             }
         };
-        server.ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))
+        server_id
+            .filter(|server_id| self.servers.contains_key(server_id.as_str()))
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))
     }
 
     /// Whether any of `server_ids` can answer `completionItem/resolve`.

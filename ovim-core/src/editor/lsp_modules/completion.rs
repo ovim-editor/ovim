@@ -347,6 +347,7 @@ impl Editor {
                 buffer_version: buffer_version_usize,
                 synced_content: None,
                 synced_lsp_version: None,
+                sources: outcome.sources,
             });
 
             let _ = tx.send(task_result);
@@ -378,7 +379,17 @@ impl Editor {
         let Some(language_id) = self.language_id_for_path(&file_path) else {
             return;
         };
-        let server_ids = lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
+        let mut server_ids =
+            lsp.servers_for_document(&language_id, std::path::Path::new(&file_path));
+        // The server that produced the item is the one that can resolve it.
+        if let Some(origin) = self
+            .lsp
+            .state
+            .completion_sources
+            .get(&crate::editor::completion::item_key(item))
+        {
+            server_ids = vec![origin.clone()];
+        }
         if !lsp.any_supports_completion_resolve(&server_ids).await {
             return;
         }

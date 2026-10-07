@@ -105,3 +105,62 @@ async fn restarted_primary_reopens_documents_while_a_companion_still_holds_them(
     assert_eq!(lsp.violations(0), "");
     lsp.stop().await;
 }
+
+fn completing_server() -> serde_json::Value {
+    serde_json::json!({
+        "textDocumentSync": {"openClose": true, "change": 2},
+        "completionProvider": {"triggerCharacters": ["."], "resolveProvider": true},
+    })
+}
+
+/// A completion item is resolved by the server that produced it, not by
+/// whichever capable server comes first.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn completion_items_are_resolved_by_the_server_they_came_from() {
+    let mut lsp = FakeLsp::start_with("obj", 1, completing_server()).await;
+    let companion = lsp.start_companion_with(0, completing_server()).await;
+    lsp.pump_until("the companion's didOpen", |_| {
+        !events_in(&companion, "textDocument/didOpen").is_empty()
+    })
+    .await;
+    // The companion's item sorts first, so it is the selected one.
+    lsp.script(
+        0,
+        "response-textDocument_completion.json",
+        serde_json::json!({"result": [{"label": "zPrimary"}]}),
+    );
+    std::fs::write(
+        companion.join("response-textDocument_completion.json"),
+        serde_json::json!({"result": [{"label": "aCompanion"}]}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        companion.join("response-completionItem_resolve.json"),
+        serde_json::json!({"result": {"label": "aCompanion", "detail": "resolved by the companion"}})
+            .to_string(),
+    )
+    .unwrap();
+
+    lsp.test.keys("A.");
+    lsp.pump_until("the resolved detail", |lsp| {
+        lsp.test
+            .editor
+            .completion_menu()
+            .selected_item()
+            .is_some_and(|item| item.detail.as_deref() == Some("resolved by the companion"))
+    })
+    .await;
+    assert_eq!(
+        lsp.test
+            .editor
+            .completion_menu()
+            .selected_item()
+            .map(|item| item.label.clone()),
+        Some("aCompanion".to_string())
+    );
+    assert!(
+        lsp.events(0, "completionItem/resolve").is_empty(),
+        "the primary server was asked to resolve the companion's item"
+    );
+    lsp.stop().await;
+}

@@ -39,6 +39,9 @@ pub struct CompletionOutcome {
     pub items: Vec<lsp_types::CompletionItem>,
     /// `CompletionList.isIncomplete`: typing further must ask again.
     pub is_incomplete: bool,
+    /// The server each of `items` came from (same length once filled in by a
+    /// request), so a later `completionItem/resolve` asks the right one.
+    pub sources: Vec<String>,
 }
 
 /// Applies `CompletionList.itemDefaults` (LSP 3.17) to the raw response:
@@ -111,10 +114,12 @@ pub fn completion_outcome(response: lsp_types::CompletionResponse) -> Completion
         lsp_types::CompletionResponse::Array(items) => CompletionOutcome {
             items,
             is_incomplete: false,
+            sources: Vec::new(),
         },
         lsp_types::CompletionResponse::List(list) => CompletionOutcome {
             items: list.items,
             is_incomplete: list.is_incomplete,
+            sources: Vec::new(),
         },
     }
 }
@@ -327,7 +332,10 @@ impl LspManager {
         language_id: &str,
         trigger: CompletionTrigger,
     ) -> Result<CompletionOutcome> {
-        let server = self.server_for_document(uri, language_id)?;
+        let server_id = self.server_id_for_document(uri, language_id)?;
+        let server = self
+            .server_handle(&server_id)
+            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
 
         // Cancel any pending completion requests before sending new one
         // Completion is high-frequency and only latest matters (user is still typing)
@@ -345,7 +353,10 @@ impl LspManager {
             }
         }
 
-        Self::completion_on_server(&server, uri, line, character, trigger).await
+        let mut outcome =
+            Self::completion_on_server(&server, uri, line, character, trigger).await?;
+        outcome.sources = vec![server_id; outcome.items.len()];
+        Ok(outcome)
     }
 
     /// Resolves the lazily-computed fields (documentation, detail, ...) of a
@@ -368,9 +379,18 @@ impl LspManager {
             if !server.supports_completion_resolve().await {
                 continue;
             }
-            let result = server
+            // One server failing to resolve (or not knowing the item) must
+            // not stop the next one from trying.
+            let result = match server
                 .request("completionItem/resolve", serde_json::to_value(&item)?)
-                .await?;
+                .await
+            {
+                Ok(result) => result,
+                Err(error) => {
+                    lsp_debug!("LSP-COMPLETION", "{server_id} could not resolve: {error}");
+                    continue;
+                }
+            };
             let resolved: Option<lsp_types::CompletionItem> =
                 parse_lsp_response(result, "completionItem/resolve");
             if let Some(resolved) = resolved {
@@ -1614,6 +1634,24 @@ impl LspManager {
         Fut: Future<Output = Result<T>> + Send + 'static,
         F: Fn(super::LanguageServer) -> Fut,
     {
+        self.fan_out_with_ids(server_ids, per_server)
+            .await
+            .into_iter()
+            .map(|(_, result)| result)
+            .collect()
+    }
+
+    /// [`Self::fan_out`] keeping the id of the server each result came from.
+    async fn fan_out_with_ids<T, Fut, F>(
+        &self,
+        server_ids: &[String],
+        per_server: F,
+    ) -> Vec<(String, T)>
+    where
+        T: Send + 'static,
+        Fut: Future<Output = Result<T>> + Send + 'static,
+        F: Fn(super::LanguageServer) -> Fut,
+    {
         use std::time::Duration;
 
         let mut futures = Vec::new();
@@ -1624,7 +1662,7 @@ impl LspManager {
                 let fut = per_server(server);
                 futures.push(tokio::spawn(async move {
                     match tokio::time::timeout(Duration::from_secs(3), fut).await {
-                        Ok(Ok(val)) => Some(val),
+                        Ok(Ok(val)) => Some((sid, val)),
                         Ok(Err(e)) => {
                             lsp_debug!("LSP-MULTI", "Server {} failed: {}", sid, e);
                             None
@@ -1728,8 +1766,8 @@ impl LspManager {
         server_ids: &[String],
         trigger: CompletionTrigger,
     ) -> Result<CompletionOutcome> {
-        let results: Vec<CompletionOutcome> = self
-            .fan_out(server_ids, |server| {
+        let results: Vec<(String, CompletionOutcome)> = self
+            .fan_out_with_ids(server_ids, |server| {
                 let uri = uri.clone();
                 async move {
                     Self::completion_on_server(&server, &uri, line, character, trigger).await
@@ -1738,8 +1776,11 @@ impl LspManager {
             .await;
 
         let mut merged = CompletionOutcome::default();
-        for outcome in results {
+        for (server_id, outcome) in results {
             merged.is_incomplete |= outcome.is_incomplete;
+            merged
+                .sources
+                .extend(std::iter::repeat_n(server_id, outcome.items.len()));
             merged.items.extend(outcome.items);
         }
         Ok(merged)

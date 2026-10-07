@@ -485,6 +485,9 @@ pub struct LspState {
     pub available_code_actions: Vec<AvailableCodeAction>,
     /// Available completion items at current cursor position
     pub available_completions: Vec<lsp_types::CompletionItem>,
+    /// The server each completion item came from, by item identity, for
+    /// `completionItem/resolve`.
+    pub completion_sources: HashMap<crate::editor::completion::ItemKey, String>,
     /// `CompletionItem.command`s of accepted items, run on the next tick.
     pub pending_completion_commands: Vec<lsp_types::Command>,
     /// Available LSP references at current cursor position
@@ -560,6 +563,7 @@ impl LspState {
             workspace_watcher: Default::default(),
             available_code_actions: Vec::new(),
             available_completions: Vec::new(),
+            completion_sources: HashMap::new(),
             pending_completion_commands: Vec::new(),
             available_references: Vec::new(),
             available_workspace_symbols: Vec::new(),

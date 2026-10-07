@@ -568,7 +568,9 @@ pub fn completion_documentation_markdown(item: &CompletionItem) -> Option<String
 
 /// What makes two menu rows the same suggestion: label, inserted text, and the
 /// label details (so overloads stay apart).
-type DedupeKey = (String, Option<String>, Option<String>, Option<String>);
+/// What makes a completion item "the same" across answers.
+pub(crate) type ItemKey = (String, Option<String>, Option<String>, Option<String>);
+type DedupeKey = ItemKey;
 
 /// Orders by the server's `sortText` (label when absent) and drops obvious
 /// duplicates, keeping the first (best ranked) occurrence.
@@ -588,7 +590,7 @@ fn order_and_dedupe(mut items: Vec<CompletionItem>) -> Vec<CompletionItem> {
 /// What makes an item "the same" across answers: its label, what it inserts
 /// and its details. Duplicates are dropped by it, and a selection is carried
 /// over a refreshed list by it.
-fn item_key(item: &CompletionItem) -> DedupeKey {
+pub(crate) fn item_key(item: &CompletionItem) -> ItemKey {
     let details = item.label_details.as_ref();
     (
         item.label.clone(),
