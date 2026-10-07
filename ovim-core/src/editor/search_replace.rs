@@ -179,6 +179,12 @@ impl SearchReplacePanel {
         self.dirty_at.is_some() || self.job.is_some()
     }
 
+    /// Whether the inputs changed and have been quiet long enough to search.
+    fn search_due(&self) -> bool {
+        self.dirty_at
+            .is_some_and(|started| started.elapsed() >= SEARCH_DEBOUNCE)
+    }
+
     pub fn active_input_mut(&mut self) -> Option<&mut SingleLineInput> {
         match self.focus {
             SearchReplaceField::Find => Some(&mut self.find),
@@ -434,19 +440,27 @@ impl Editor {
         overlays
     }
 
-    /// Drives the debounce and collects finished searches. Returns true when
-    /// the panel content changed.
-    pub fn poll_search_replace(&mut self) -> bool {
-        let overlays_needed = self
+    /// Whether the debounce elapsed and a search starts now, with the open
+    /// buffers' text for it. Copying every buffer is only worth it for a
+    /// search that starts now, not on each tick while the user is typing.
+    fn overlays_for_due_search(&self) -> (bool, HashMap<PathBuf, String>) {
+        let due = self
             .ui_panels
             .search_replace
             .as_ref()
-            .is_some_and(|panel| panel.dirty_at.is_some());
-        let overlays = if overlays_needed {
+            .is_some_and(|panel| panel.search_due());
+        let overlays = if due {
             self.open_buffer_overlays()
         } else {
             HashMap::new()
         };
+        (due, overlays)
+    }
+
+    /// Drives the debounce and collects finished searches. Returns true when
+    /// the panel content changed.
+    pub fn poll_search_replace(&mut self) -> bool {
+        let (search_due, overlays) = self.overlays_for_due_search();
         let Some(panel) = self.ui_panels.search_replace.as_mut() else {
             return false;
         };
@@ -481,51 +495,49 @@ impl Editor {
             }
         }
 
-        if let Some(started) = panel.dirty_at {
-            if started.elapsed() >= SEARCH_DEBOUNCE {
-                panel.dirty_at = None;
-                if let Some(job) = panel.job.take() {
-                    job.cancel.store(true, Ordering::Relaxed);
-                }
-                panel.options = panel.current_options();
-                if panel.options.pattern.is_empty() {
-                    panel.results.clear();
-                    panel.selected = 0;
-                    panel.error = None;
-                    panel.searching = false;
-                    panel.searched = false;
-                    panel.truncated = false;
-                } else {
-                    // Compile errors show immediately, without a thread.
-                    match panel.options.build_regex() {
-                        Err(message) => {
-                            panel.error = Some(message);
-                            panel.results.clear();
-                            panel.selected = 0;
-                            panel.searched = true;
-                        }
-                        Ok(_) => {
-                            let cancel = Arc::new(AtomicBool::new(false));
-                            let (tx, rx) = mpsc::channel();
-                            let options = panel.options.clone();
-                            let root = panel.root.clone();
-                            let thread_cancel = cancel.clone();
-                            std::thread::spawn(move || {
-                                let _ = tx.send(project_search::search_project(
-                                    &root,
-                                    &options,
-                                    &overlays,
-                                    &thread_cancel,
-                                ));
-                            });
-                            panel.job = Some(SearchJob { rx, cancel });
-                            panel.searching = true;
-                            panel.error = None;
-                        }
+        if search_due {
+            panel.dirty_at = None;
+            if let Some(job) = panel.job.take() {
+                job.cancel.store(true, Ordering::Relaxed);
+            }
+            panel.options = panel.current_options();
+            if panel.options.pattern.is_empty() {
+                panel.results.clear();
+                panel.selected = 0;
+                panel.error = None;
+                panel.searching = false;
+                panel.searched = false;
+                panel.truncated = false;
+            } else {
+                // Compile errors show immediately, without a thread.
+                match panel.options.build_regex() {
+                    Err(message) => {
+                        panel.error = Some(message);
+                        panel.results.clear();
+                        panel.selected = 0;
+                        panel.searched = true;
+                    }
+                    Ok(_) => {
+                        let cancel = Arc::new(AtomicBool::new(false));
+                        let (tx, rx) = mpsc::channel();
+                        let options = panel.options.clone();
+                        let root = panel.root.clone();
+                        let thread_cancel = cancel.clone();
+                        std::thread::spawn(move || {
+                            let _ = tx.send(project_search::search_project(
+                                &root,
+                                &options,
+                                &overlays,
+                                &thread_cancel,
+                            ));
+                        });
+                        panel.job = Some(SearchJob { rx, cancel });
+                        panel.searching = true;
+                        panel.error = None;
                     }
                 }
-                changed = true;
             }
+            changed = true;
         }
         if changed {
             self.mark_dirty();
@@ -739,5 +751,69 @@ impl Editor {
         self.request_diagnostics_refresh();
         self.mark_dirty();
         Ok((undone, skipped))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An editor with a real file open (overlays skip buffers that do not
+    /// exist on disk) and an empty replace-in-files panel.
+    fn editor_with_panel() -> (Editor, tempfile::TempDir) {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("big.txt");
+        std::fs::write(&path, "needle\n").unwrap();
+        let mut editor = Editor::with_content(&"needle in a haystack\n".repeat(1000));
+        editor.set_file_path(path.to_string_lossy().to_string());
+        editor.open_search_replace(None);
+        (editor, directory)
+    }
+
+    /// The panel polled every tick during its 180 ms debounce and copied each
+    /// open buffer into a string on every one of them.
+    #[test]
+    fn open_buffers_are_copied_only_for_a_search_that_starts() {
+        let (mut editor, _directory) = editor_with_panel();
+        assert_eq!(editor.overlays_for_due_search(), (false, HashMap::new()));
+
+        let panel = editor.search_replace_panel_mut().unwrap();
+        panel.find = SingleLineInput::new("needle".to_string());
+        panel.mark_dirty();
+        let (due, overlays) = editor.overlays_for_due_search();
+        assert!(!due, "still inside the debounce");
+        assert!(overlays.is_empty(), "no buffer copied while typing");
+
+        editor.search_replace_panel_mut().unwrap().mark_dirty_now();
+        let (due, overlays) = editor.overlays_for_due_search();
+        assert!(due);
+        assert_eq!(overlays.len(), 1, "the open file is passed to the search");
+        assert!(overlays
+            .values()
+            .next()
+            .unwrap()
+            .starts_with("needle in a haystack"));
+    }
+
+    /// A due search starts once and sees text that is only in the open buffer.
+    #[test]
+    fn a_due_search_sees_unsaved_buffer_text() {
+        let (mut editor, _directory) = editor_with_panel();
+        let panel = editor.search_replace_panel_mut().unwrap();
+        // The file on disk only says "needle"; "haystack" is unsaved.
+        panel.find = SingleLineInput::new("haystack".to_string());
+        panel.mark_dirty_now();
+        assert!(editor.poll_search_replace());
+        assert!(editor.search_replace_panel().unwrap().dirty_at.is_none());
+        let started = Instant::now();
+        while !editor.search_replace_panel().unwrap().searched {
+            assert!(
+                started.elapsed() < Duration::from_secs(10),
+                "search never finished"
+            );
+            editor.poll_search_replace();
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(editor.search_replace_panel().unwrap().total_matches() > 0);
     }
 }
