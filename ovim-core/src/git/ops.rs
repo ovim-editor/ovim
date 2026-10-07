@@ -1114,7 +1114,8 @@ pub fn line_history(path: &Path, line: usize, limit: usize) -> Result<Vec<LogEnt
                 .context_lines(0);
             let diff =
                 repo.diff_tree_to_workdir_with_index(Some(&head.tree()?), Some(&mut diff_options))?;
-            match map_line_to_old_side(&diff, current_line)? {
+            match map_line_to_old_side(&diff, (diff.deltas().len() > 0).then_some(0), current_line)?
+            {
                 Some(old_line) => {
                     current_line = old_line;
                     newest = Some(head.id());
@@ -1137,23 +1138,12 @@ pub fn line_history(path: &Path, line: usize, limit: usize) -> Result<Vec<LogEnt
             break;
         }
         let parent = commit.parent(0)?;
-        let mut diff_options = DiffOptions::new();
-        diff_options
-            .pathspec(&commit_path)
-            .disable_pathspec_match(true)
-            .context_lines(0);
-        let mut diff = repo.diff_tree_to_tree(
-            Some(&parent.tree()?),
-            Some(&commit.tree()?),
-            Some(&mut diff_options),
-        )?;
-        diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
-        let old_path = diff
-            .deltas()
-            .next()
+        let (diff, delta) = diff_of_path(&repo, &parent.tree()?, &commit.tree()?, &commit_path)?;
+        let old_path = delta
+            .and_then(|delta| diff.get_delta(delta))
             .and_then(|delta| delta.old_file().path().map(Path::to_path_buf))
             .unwrap_or_else(|| commit_path.clone());
-        match map_line_to_old_side(&diff, commit_line)? {
+        match map_line_to_old_side(&diff, delta, commit_line)? {
             Some(old_line) => {
                 current_line = old_line;
                 current_path = old_path;
@@ -1165,38 +1155,70 @@ pub fn line_history(path: &Path, line: usize, limit: usize) -> Result<Vec<LogEnt
     Ok(entries)
 }
 
+/// The diff between two trees with the index of `path`'s delta in it. A file
+/// that is new at `path` may have been renamed there, and rename detection
+/// needs the old path in the diff too, so those are diffed without a pathspec.
+fn diff_of_path<'repo>(
+    repo: &'repo Repository,
+    old_tree: &git2::Tree<'_>,
+    new_tree: &git2::Tree<'_>,
+    path: &Path,
+) -> Result<(git2::Diff<'repo>, Option<usize>)> {
+    let mut options = DiffOptions::new();
+    options
+        .pathspec(path)
+        .disable_pathspec_match(true)
+        .context_lines(0);
+    let diff = repo.diff_tree_to_tree(Some(old_tree), Some(new_tree), Some(&mut options))?;
+    if diff
+        .deltas()
+        .next()
+        .is_some_and(|delta| delta.status() != git2::Delta::Added)
+    {
+        return Ok((diff, Some(0)));
+    }
+    let mut options = DiffOptions::new();
+    options.context_lines(0);
+    let mut diff = repo.diff_tree_to_tree(Some(old_tree), Some(new_tree), Some(&mut options))?;
+    diff.find_similar(Some(git2::DiffFindOptions::new().renames(true)))?;
+    let delta = diff
+        .deltas()
+        .position(|delta| delta.new_file().path() == Some(path));
+    Ok((diff, delta))
+}
+
 /// Line of the old side that the 1-based new-side `line` replaced (or `None`
-/// when the line was added rather than modified). Lines outside every hunk
-/// shift by the cumulative size change above them.
-fn map_line_to_old_side(diff: &git2::Diff<'_>, line: usize) -> Result<Option<usize>> {
+/// when the line was added rather than modified), going through the hunks of
+/// the diff's `delta` (no delta: the file did not change). Lines outside every
+/// hunk shift by the cumulative size change above them.
+fn map_line_to_old_side(
+    diff: &git2::Diff<'_>,
+    delta: Option<usize>,
+    line: usize,
+) -> Result<Option<usize>> {
+    let Some(delta) = delta else {
+        return Ok(Some(line));
+    };
+    let Some(patch) = git2::Patch::from_diff(diff, delta)? else {
+        return Ok(None);
+    };
     let target = line as i64;
-    let mut delta = 0i64;
-    let mut result: Option<Option<usize>> = None;
-    diff.foreach(
-        &mut |_, _| true,
-        None,
-        Some(&mut |_, hunk| {
-            let new_start = hunk.new_start() as i64;
-            let new_lines = hunk.new_lines() as i64;
-            let old_start = hunk.old_start() as i64;
-            let old_lines = hunk.old_lines() as i64;
-            if result.is_some() {
-                return true;
-            }
-            if new_lines > 0 && target >= new_start && target < new_start + new_lines {
-                let offset = target - new_start;
-                result = Some((offset < old_lines).then(|| (old_start + offset) as usize));
-            } else if new_start + new_lines <= target {
-                delta += old_lines - new_lines;
-            }
-            true
-        }),
-        None,
-    )?;
-    Ok(match result {
-        Some(mapped) => mapped,
-        None => Some((target + delta).max(1) as usize),
-    })
+    let mut shift = 0i64;
+    for index in 0..patch.num_hunks() {
+        let (hunk, _) = patch.hunk(index)?;
+        let new_start = hunk.new_start() as i64;
+        let new_lines = hunk.new_lines() as i64;
+        let old_start = hunk.old_start() as i64;
+        let old_lines = hunk.old_lines() as i64;
+        if new_lines > 0 && target >= new_start && target < new_start + new_lines {
+            let offset = target - new_start;
+            return Ok((offset < old_lines).then(|| (old_start + offset) as usize));
+        }
+        if new_start + new_lines <= target {
+            shift += old_lines - new_lines;
+        }
+    }
+    Ok(Some((target + shift).max(1) as usize))
 }
 
 #[cfg(test)]
@@ -1824,6 +1846,31 @@ mod tests {
         let history = line_history(&file, 4, 10).unwrap();
         assert_eq!(history.len(), 1);
         assert_eq!(history[0].subject, "add delta");
+    }
+
+    #[test]
+    fn line_history_follows_a_line_through_a_commit_that_renames_and_edits_it() {
+        let repo = Repo::new();
+        let body = "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\niota\nkappa\n";
+        repo.write("old.txt", body);
+        repo.commit_all("create");
+        fs::remove_file(repo.root.join("old.txt")).unwrap();
+        let file = repo.write("new.txt", &body.replace("gamma", "gamma v2"));
+        repo.commit_all("rename and edit gamma");
+        let file_after = repo.write("new.txt", &body.replace("gamma", "gamma v3"));
+        assert_eq!(file, file_after);
+        repo.commit_all("edit gamma again");
+
+        // `git log -L3,3:new.txt` lists the same three commits.
+        let history = line_history(&file, 2, 10).unwrap();
+        assert_eq!(
+            history
+                .iter()
+                .map(|e| e.subject.as_str())
+                .collect::<Vec<_>>(),
+            vec!["edit gamma again", "rename and edit gamma", "create"]
+        );
+        assert_eq!(history[2].path.as_deref(), Some("old.txt"));
     }
 
     #[test]
