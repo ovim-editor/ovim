@@ -34,6 +34,11 @@ impl Editor {
     /// A path inside the repository the git commands act on: the current file,
     /// else the project directory.
     fn git_anchor(&self) -> PathBuf {
+        if let Some(session) = self.ui_panels.commit.as_ref() {
+            if session.buffer_id == self.buffer().id() {
+                return session.anchor.clone();
+            }
+        }
         match self.buffer().file_path() {
             Some(path) if !super::buffer_manager::is_scratch_path(path) => {
                 let path = Path::new(path);
@@ -51,7 +56,11 @@ impl Editor {
     /// Writes the buffer when it has unsaved changes, so git sees what the
     /// user sees (and hunk line numbers line up).
     fn write_buffer_for_git(&mut self) -> Result<(), String> {
-        if self.buffer().file_path().is_none() || !self.current_buffer_needs_write() {
+        // `:w` in the commit message buffer commits what is half written.
+        if self.is_commit_message_buffer()
+            || self.buffer().file_path().is_none()
+            || !self.current_buffer_needs_write()
+        {
             return Ok(());
         }
         match crate::commands::execute_command(self, "w") {
@@ -60,6 +69,16 @@ impl Editor {
                 Err(format!("Cannot write the buffer first: {}", error.error))
             }
         }
+    }
+
+    /// File and cursor based commands have nothing to act on in the message
+    /// buffer; refuse instead of acting on the file being committed.
+    fn refuse_in_commit_buffer(&mut self) -> bool {
+        let refuse = self.is_commit_message_buffer();
+        if refuse {
+            self.set_status_message("Not available in the commit message buffer");
+        }
+        refuse
     }
 
     fn git_report<T>(&mut self, result: anyhow::Result<T>, success: impl FnOnce(T) -> String) {
@@ -80,6 +99,9 @@ impl Editor {
 
     /// `<Space>gs` — stage the change under the cursor.
     pub fn git_stage_hunk(&mut self) {
+        if self.refuse_in_commit_buffer() {
+            return;
+        }
         if let Err(message) = self.write_buffer_for_git() {
             self.set_status_message(message);
             return;
@@ -95,6 +117,9 @@ impl Editor {
 
     /// `<Space>gu` — unstage the staged change under the cursor.
     pub fn git_unstage_hunk(&mut self) {
+        if self.refuse_in_commit_buffer() {
+            return;
+        }
         if let Err(message) = self.write_buffer_for_git() {
             self.set_status_message(message);
             return;
@@ -110,6 +135,9 @@ impl Editor {
 
     /// `<Space>gS` — stage the whole file.
     pub fn git_stage_file(&mut self) {
+        if self.refuse_in_commit_buffer() {
+            return;
+        }
         if let Err(message) = self.write_buffer_for_git() {
             self.set_status_message(message);
             return;
@@ -122,6 +150,9 @@ impl Editor {
 
     /// `<Space>gU` — unstage the whole file.
     pub fn git_unstage_file(&mut self) {
+        if self.refuse_in_commit_buffer() {
+            return;
+        }
         let anchor = self.git_anchor();
         let name = self.current_file_name();
         let result = ops::unstage_file(&anchor);
@@ -609,6 +640,9 @@ impl Editor {
 
     /// `<Space>gl` / `:GitLog` — commits that changed the current file.
     pub fn open_file_history_picker(&mut self) {
+        if self.refuse_in_commit_buffer() {
+            return;
+        }
         let anchor = self.git_anchor();
         let name = self.current_file_name();
         let result = ops::file_history(&anchor, 300);
@@ -626,6 +660,9 @@ impl Editor {
     /// `<Space>gL` / `:GitLineLog` — commits that changed the cursor line,
     /// following the line back through edits. Enter shows the commit's diff.
     pub fn open_line_history_picker(&mut self) {
+        if self.refuse_in_commit_buffer() {
+            return;
+        }
         if let Err(message) = self.write_buffer_for_git() {
             self.set_status_message(message);
             return;

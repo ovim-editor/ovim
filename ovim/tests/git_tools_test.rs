@@ -208,6 +208,44 @@ async fn a_failing_hook_keeps_the_message_buffer_open_and_shows_its_output() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn git_commands_run_from_the_message_buffer_do_not_commit_the_message() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\n");
+    fixture.write("b.txt", "b\n");
+    fixture.commit_all("init");
+    fixture.write("a.txt", "two\n");
+    fixture.write("b.txt", "b changed\n");
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    test.command("GitStage");
+    test.command("GitCommit");
+    test.type_text("half written");
+    test.press_esc();
+
+    test.command("GitStageAll");
+    settle_commit(&mut test);
+    assert_eq!(fixture.head_message(), "init", "nothing was committed");
+    assert!(test.editor.is_commit_message_buffer(), "message kept");
+    assert!(test.buffer_content().starts_with("half written"));
+    assert_eq!(
+        fixture.staged("b.txt"),
+        "b changed\n",
+        "the staging itself still happened"
+    );
+
+    // Commands about the current file have no file to act on here.
+    test.command("GitStage");
+    assert!(
+        test.editor
+            .status_message()
+            .contains("commit message buffer"),
+        "{}",
+        test.editor.status_message()
+    );
+    assert_eq!(fixture.head_message(), "init");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_merge_commit_starts_from_the_prepared_message_and_cannot_be_amended() {
     let fixture = Fixture::new();
     let file = fixture.write("a.txt", "one\n");
