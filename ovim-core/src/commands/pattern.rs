@@ -5,62 +5,13 @@
 use super::edit::cursor_to_first_non_blank;
 use super::marked_lines::MarkedLines;
 use super::parse::parse;
+use super::replacement::Replacement;
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
 use crate::edit::Edit;
 use crate::editor::{CursorPos, Editor, RegisterType};
 use crate::search_pattern::{self, CaseOptions};
 use crate::unicode::{CharCol, GraphemeCol};
-
-/// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax.
-///
-/// Backrefs are emitted in the braced `${N}` form so a following word character
-/// doesn't get absorbed into the group name — Rust regex reads `$1foo` as a
-/// reference to a group literally named "1foo" (which doesn't exist, so it
-/// expands to empty). A literal `$` in the Vim replacement is escaped to `$$`
-/// so Rust regex emits it verbatim instead of treating it as a capture ref.
-/// `\r` becomes a line break and `\t` a tab, as in Vim.
-fn convert_vim_backrefs(replacement: &str) -> String {
-    let mut result = String::with_capacity(replacement.len() * 2);
-    let mut chars = replacement.chars().peekable();
-
-    while let Some(ch) = chars.next() {
-        if ch == '\\' {
-            match chars.peek() {
-                Some(&digit @ '0'..='9') => {
-                    chars.next();
-                    result.push_str("${");
-                    result.push(digit);
-                    result.push('}');
-                }
-                Some('\\') => {
-                    chars.next();
-                    result.push('\\');
-                }
-                Some('r') => {
-                    // Vim: \r in the replacement is a line break. (\n would
-                    // be a NUL byte in Vim; we leave it alone rather than
-                    // emulate that trap.)
-                    chars.next();
-                    result.push('\n');
-                }
-                Some('t') => {
-                    chars.next();
-                    result.push('\t');
-                }
-                _ => result.push(ch),
-            }
-        } else if ch == '&' {
-            result.push_str("${0}");
-        } else if ch == '$' {
-            result.push_str("$$");
-        } else {
-            result.push(ch);
-        }
-    }
-
-    result
-}
 
 /// Splits `{delim}pattern{delim}replacement{delim}flags` into its fields.
 /// `\{delim}` is a literal delimiter; other escapes are kept for the regex
@@ -105,7 +56,7 @@ fn split_substitute_parts(body: &str) -> Option<(String, String, String)> {
 /// A parsed `:s` body ready to run on lines.
 struct Substitution {
     regex: regex::Regex,
-    replacement: String,
+    replacement: Replacement,
     /// The replacement as typed, for the confirm prompt.
     typed_replacement: String,
     global: bool,
@@ -114,10 +65,11 @@ struct Substitution {
 
 impl Substitution {
     fn apply(&self, line: &str) -> String {
+        let expand = |captures: &regex::Captures| self.replacement.expand(captures);
         if self.global {
-            self.regex.replace_all(line, self.replacement.as_str())
+            self.regex.replace_all(line, expand)
         } else {
-            self.regex.replace(line, self.replacement.as_str())
+            self.regex.replace(line, expand)
         }
         .into_owned()
     }
@@ -157,7 +109,7 @@ fn parse_substitution(
     Ok((
         Substitution {
             regex,
-            replacement: convert_vim_backrefs(&raw_replacement),
+            replacement: Replacement::parse(&raw_replacement),
             typed_replacement: raw_replacement,
             global: flags.contains('g'),
             pattern,
@@ -278,17 +230,15 @@ pub(super) fn substitute(editor: &mut Editor, ex: &Ex) -> CommandResult {
                 continue;
             };
             let found: Vec<_> = if substitution.global {
-                substitution.regex.find_iter(&text).collect()
+                substitution.regex.captures_iter(&text).collect()
             } else {
-                substitution.regex.find(&text).into_iter().collect()
+                substitution.regex.captures(&text).into_iter().collect()
             };
-            for found in found {
-                let replacement = substitution
-                    .regex
-                    .replace(found.as_str(), substitution.replacement.as_str())
-                    .into_owned();
-                let start_char = text[..found.start()].chars().count();
-                let end_char = text[..found.end()].chars().count();
+            for captures in found {
+                let whole = captures.get(0).expect("group 0 is the whole match");
+                let replacement = substitution.replacement.expand(&captures);
+                let start_char = text[..whole.start()].chars().count();
+                let end_char = text[..whole.end()].chars().count();
                 matches.push((line, start_char, end_char, replacement));
             }
         }
@@ -517,14 +467,6 @@ fn global_each_line(editor: &mut Editor, lines: &[usize], command: &str) -> Comm
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn converts_vim_replacement_tokens_without_ambiguous_capture_names() {
-        assert_eq!(
-            convert_vim_backrefs(r"\1-\0-&-$-\r-\t-\\"),
-            "${1}-${0}-${0}-$$-\n-\t-\\"
-        );
-    }
 
     #[test]
     fn substitute_parser_takes_any_delimiter_and_optional_fields() {

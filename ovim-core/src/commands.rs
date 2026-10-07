@@ -16,6 +16,7 @@ mod pattern;
 mod project;
 mod quickfix;
 mod range;
+mod replacement;
 mod session;
 mod set;
 mod shell;

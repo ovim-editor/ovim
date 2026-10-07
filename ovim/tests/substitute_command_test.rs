@@ -256,3 +256,58 @@ fn case_escapes_in_the_substitute_pattern() {
         "E486: Pattern not found: foo\\C"
     );
 }
+
+// nvim --clean: `\&` is a literal ampersand (`:s/a/\&x/` turns "abc" into
+// "&xbc"), `\\` one backslash, and a backslash before any other character is
+// dropped (`\z` gives "z", `\|` a bar).
+#[test]
+fn escaped_replacement_characters_are_literal() {
+    for (command, expected) in [
+        ("s/a/\\&x/", "&xbc\n"),
+        ("s/a/[&]/", "[a]bc\n"),
+        ("s/b/\\\\/", "a\\c\n"),
+        ("s/b/\\z/", "azc\n"),
+        ("s/b/\\|/", "a|c\n"),
+    ] {
+        let mut test = EditorTest::new("abc");
+        test.command(command);
+        assert_eq!(test.buffer_content(), expected, "{command}");
+    }
+}
+
+// nvim --clean: `\u` capitalizes the next character, `\U` ... `\E` shouts,
+// `\L` and `\l` lower; `\L\u&` capitalizes a lower-cased match. (The
+// patterns are Rust regexes: `\w+` where vim writes `\w\+`.)
+#[test]
+fn case_changing_replacement_tokens() {
+    for (text, command, expected) in [
+        ("hello world", "s/\\w+/\\u&/g", "Hello World\n"),
+        ("hello world", "s/\\w+/\\U&/g", "HELLO WORLD\n"),
+        ("HELLO WORLD", "s/\\w+/\\L&/", "hello WORLD\n"),
+        ("HELLO WORLD", "s/\\w+/\\l&/g", "hELLO wORLD\n"),
+        ("HELLO WORLD", "s/\\w+/\\L\\u&/g", "Hello World\n"),
+        ("hello", "s/hello/\\Ufoo\\ebar/", "FOObar\n"),
+        ("abc ab", "s/ab/\\U&x\\Ey/g", "ABXyc ABXy\n"),
+    ] {
+        let mut test = EditorTest::new(text);
+        test.command(command);
+        assert_eq!(test.buffer_content(), expected, "{command}");
+    }
+}
+
+// nvim --clean: `\U\1\E \2` upper-cases group one only.
+#[test]
+fn case_changing_tokens_apply_to_groups() {
+    let mut test = EditorTest::new("hello world");
+    test.command("s/(\\w+) (\\w+)/\\U\\1\\E \\2/");
+    assert_eq!(test.buffer_content(), "HELLO world\n");
+}
+
+// The tokens also apply to each confirmed match of `:s///c`.
+#[test]
+fn case_changing_tokens_apply_when_confirming() {
+    let mut test = EditorTest::new("ab ab");
+    test.command("s/a/\\U&x/gc");
+    test.keys("a");
+    assert_eq!(test.buffer_content(), "AXb AXb\n");
+}
