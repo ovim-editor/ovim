@@ -1130,6 +1130,10 @@ async fn stream_openai_chat(
     Ok(())
 }
 
+/// Output budget for a chat turn when the profile sets none. Thinking models
+/// spend max_tokens on reasoning before the reply or a tool call.
+const ANTHROPIC_CHAT_MAX_TOKENS: u32 = 16384;
+
 async fn stream_anthropic_chat(
     client: &reqwest::Client,
     profile: &AiProfileConfig,
@@ -1142,7 +1146,7 @@ async fn stream_anthropic_chat(
 ) -> Result<()> {
     let mut body = json!({
         "model": profile.model,
-        "max_tokens": profile.max_tokens.unwrap_or(2048),
+        "max_tokens": profile.max_tokens.unwrap_or(ANTHROPIC_CHAT_MAX_TOKENS),
         "messages": chat_messages_to_anthropic_json(messages),
         "stream": true,
     });

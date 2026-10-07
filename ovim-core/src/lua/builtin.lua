@@ -263,7 +263,9 @@ No explanation. No placeholders. Complete code only.]],
             provider = "anthropic",
             model = "claude-sonnet-5-5",
             api_key = "anthropic",
-            max_tokens = 4096,
+            -- Thinking tokens count against max_tokens; 4096 cut replies and
+            -- tool calls short.
+            max_tokens = 16384,
             edit_format = "codeblock",
             chat_edit_format = "str_replace",
             context = vim.ai.context_policies.hybrid,
@@ -276,7 +278,9 @@ No explanation. No placeholders. Complete code only.]],
             provider = "anthropic",
             model = "claude-opus-5-5",
             api_key = "anthropic",
-            max_tokens = 4096,
+            -- Thinking tokens count against max_tokens; 4096 cut replies and
+            -- tool calls short.
+            max_tokens = 16384,
             edit_format = "codeblock",
             chat_edit_format = "str_replace",
             context = vim.ai.context_policies.hybrid,

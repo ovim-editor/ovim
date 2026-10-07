@@ -262,6 +262,23 @@ pub(crate) async fn parse_anthropic_stream_strict<E: Display>(
     parse_anthropic_stream_inner(stream, tx, true).await;
 }
 
+/// What to tell the user when Anthropic ended a reply without finishing it.
+/// The reply is shown but not completed, and its tool calls are not run.
+fn anthropic_incomplete_reply(stop_reason: Option<&str>) -> Option<&'static str> {
+    match stop_reason? {
+        "max_tokens" => Some(
+            "Anthropic stopped because the reply reached the max_tokens limit, so it is incomplete and none of its tool calls were run. Raise max_tokens for this profile; thinking models spend it on reasoning too.",
+        ),
+        "model_context_window_exceeded" => Some(
+            "Anthropic stopped because the conversation exceeded the model's context window, so the reply is incomplete and none of its tool calls were run. Compact or clear the chat.",
+        ),
+        "refusal" => Some(
+            "Anthropic declined to continue this request (stop_reason: refusal). Rephrase the request or start a new chat.",
+        ),
+        _ => None,
+    }
+}
+
 async fn parse_anthropic_stream_inner<E: Display>(
     mut stream: Pin<Box<dyn Stream<Item = Result<Bytes, E>> + Send>>,
     tx: UnboundedSender<StreamChunk>,
@@ -277,6 +294,9 @@ async fn parse_anthropic_stream_inner<E: Display>(
     let mut tool_id = String::new();
     let mut tool_name = String::new();
     let mut tool_input_json = String::new();
+    // Reported by `message_delta`, after the last content block. A reply that
+    // stopped for any reason other than finishing must not look complete.
+    let mut stop_reason: Option<String> = None;
 
     loop {
         let item = poll_fn(|cx| Pin::new(&mut stream).poll_next(cx)).await;
@@ -293,6 +313,14 @@ async fn parse_anthropic_stream_inner<E: Display>(
                     if let Some(json_str) = line.strip_prefix("data: ") {
                         if let Ok(value) = serde_json::from_str::<serde_json::Value>(json_str) {
                             match current_event_type.as_str() {
+                                "message_delta" => {
+                                    if let Some(reason) = value
+                                        .pointer("/delta/stop_reason")
+                                        .and_then(|reason| reason.as_str())
+                                    {
+                                        stop_reason = Some(reason.to_string());
+                                    }
+                                }
                                 "content_block_start" => {
                                     if let Some(block) = value.get("content_block") {
                                         if let Some(block_type) =
@@ -385,18 +413,25 @@ async fn parse_anthropic_stream_inner<E: Display>(
                                 }
                                 "content_block_stop" => {
                                     if current_block_type == "tool_use" {
-                                        // Parse accumulated JSON and emit ToolCallComplete
+                                        // Parse accumulated JSON and emit ToolCallComplete.
+                                        // Arguments that do not parse were cut off or
+                                        // corrupted: running the call with `{}` would run
+                                        // a different call than the model asked for. Only
+                                        // a call that sent no arguments at all (a tool
+                                        // without parameters) means `{}`.
+                                        let no_arguments =
+                                            !strict && tool_input_json.trim().is_empty();
                                         let arguments = match serde_json::from_str(&tool_input_json)
                                         {
                                             Ok(arguments) => arguments,
-                                            Err(error) if strict => {
+                                            Err(_) if no_arguments => {
+                                                serde_json::Value::Object(serde_json::Map::new())
+                                            }
+                                            Err(error) => {
                                                 let _ = tx.send(StreamChunk::Error(format!(
-                                                    "Anthropic sent malformed arguments for tool {tool_name:?}: {error}"
+                                                    "Anthropic sent malformed arguments for tool {tool_name:?} (the reply may have been cut off by max_tokens), so the call was not run: {error}"
                                                 )));
                                                 return;
-                                            }
-                                            Err(_) => {
-                                                serde_json::Value::Object(serde_json::Map::new())
                                             }
                                         };
                                         let _ = tx.send(StreamChunk::ToolCallComplete {
@@ -409,7 +444,14 @@ async fn parse_anthropic_stream_inner<E: Display>(
                                     current_block_type.clear();
                                 }
                                 "message_stop" => {
-                                    let _ = tx.send(StreamChunk::Done);
+                                    match anthropic_incomplete_reply(stop_reason.as_deref()) {
+                                        Some(notice) => {
+                                            let _ = tx.send(StreamChunk::Error(notice.into()));
+                                        }
+                                        None => {
+                                            let _ = tx.send(StreamChunk::Done);
+                                        }
+                                    }
                                     return;
                                 }
                                 "error" => {
@@ -434,7 +476,9 @@ async fn parse_anthropic_stream_inner<E: Display>(
                 return;
             }
             None => {
-                if strict {
+                if let Some(notice) = anthropic_incomplete_reply(stop_reason.as_deref()) {
+                    let _ = tx.send(StreamChunk::Error(notice.into()));
+                } else if strict {
                     let _ = tx.send(StreamChunk::Error(
                         "Anthropic stream ended before message_stop".into(),
                     ));
@@ -927,6 +971,139 @@ mod tests {
         let chunks = collect_chunks(&mut rx);
         assert_eq!(chunks.len(), 1);
         assert!(matches!(&chunks[0], StreamChunk::Error(s) if s == "rate limited"));
+    }
+
+    fn message_delta(stop_reason: &str) -> String {
+        format!(
+            "event: message_delta\ndata: {{\"delta\":{{\"stop_reason\":\"{stop_reason}\",\"stop_sequence\":null}},\"usage\":{{\"output_tokens\":4096}}}}\n\n"
+        )
+    }
+
+    #[tokio::test]
+    async fn anthropic_max_tokens_is_reported_instead_of_a_complete_reply() {
+        for strict in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let delta = message_delta("max_tokens");
+            let stream = make_stream(vec![
+                "event: content_block_start\ndata: {\"content_block\":{\"type\":\"text\"}}\n\n",
+                "event: content_block_delta\ndata: {\"delta\":{\"type\":\"text_delta\",\"text\":\"Here is the first half\"}}\n\n",
+                "event: content_block_stop\ndata: {}\n\n",
+                &delta,
+                "event: message_stop\ndata: {}\n\n",
+            ]);
+            if strict {
+                parse_anthropic_stream_strict(stream, tx).await;
+            } else {
+                parse_anthropic_stream(stream, tx).await;
+            }
+            let chunks = collect_chunks(&mut rx);
+            assert_eq!(chunks.len(), 2, "strict={strict}: {chunks:?}");
+            assert!(matches!(&chunks[0], StreamChunk::Content(s) if s == "Here is the first half"));
+            assert!(
+                matches!(&chunks[1], StreamChunk::Error(error) if error.contains("max_tokens") && error.contains("incomplete")),
+                "strict={strict}: {chunks:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_refusal_and_context_overflow_are_reported() {
+        for (reason, expected) in [
+            ("refusal", "declined"),
+            ("model_context_window_exceeded", "context window"),
+        ] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let delta = message_delta(reason);
+            parse_anthropic_stream(
+                make_stream(vec![&delta, "event: message_stop\ndata: {}\n\n"]),
+                tx,
+            )
+            .await;
+            let chunks = collect_chunks(&mut rx);
+            assert!(
+                matches!(chunks.as_slice(), [StreamChunk::Error(error)] if error.contains(expected)),
+                "{reason}: {chunks:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_stop_reason_is_reported_even_if_the_stream_ends_without_message_stop() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        let delta = message_delta("max_tokens");
+        parse_anthropic_stream(make_stream(vec![&delta]), tx).await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(
+            matches!(chunks.as_slice(), [StreamChunk::Error(error)] if error.contains("max_tokens"))
+        );
+    }
+
+    #[tokio::test]
+    async fn anthropic_normal_stop_reasons_complete_the_reply() {
+        for reason in ["end_turn", "tool_use", "stop_sequence"] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let delta = message_delta(reason);
+            parse_anthropic_stream(
+                make_stream(vec![&delta, "event: message_stop\ndata: {}\n\n"]),
+                tx,
+            )
+            .await;
+            let chunks = collect_chunks(&mut rx);
+            assert!(
+                matches!(chunks.as_slice(), [StreamChunk::Done]),
+                "{reason}: {chunks:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn truncated_anthropic_tool_arguments_never_become_an_empty_call() {
+        for strict in [false, true] {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            let delta = message_delta("max_tokens");
+            let stream = make_stream(vec![
+                "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_cut\",\"name\":\"bash\"}}\n\n",
+                "event: content_block_delta\ndata: {\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{\\\"command\\\": \\\"rm -rf build && ec\"}}\n\n",
+                "event: content_block_stop\ndata: {}\n\n",
+                &delta,
+                "event: message_stop\ndata: {}\n\n",
+            ]);
+            if strict {
+                parse_anthropic_stream_strict(stream, tx).await;
+            } else {
+                parse_anthropic_stream(stream, tx).await;
+            }
+            let chunks = collect_chunks(&mut rx);
+            assert!(
+                !chunks
+                    .iter()
+                    .any(|chunk| matches!(chunk, StreamChunk::ToolCallComplete { .. })),
+                "strict={strict}: {chunks:?}"
+            );
+            assert!(
+                matches!(chunks.as_slice(), [StreamChunk::Error(error)] if error.contains("bash") && error.contains("not run")),
+                "strict={strict}: {chunks:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn anthropic_tool_without_parameters_still_runs_with_empty_arguments() {
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        parse_anthropic_stream(
+            make_stream(vec![
+                "event: content_block_start\ndata: {\"content_block\":{\"type\":\"tool_use\",\"id\":\"toolu_0\",\"name\":\"read_diagnostics\"}}\n\n",
+                "event: content_block_stop\ndata: {}\n\n",
+                "event: message_stop\ndata: {}\n\n",
+            ]),
+            tx,
+        )
+        .await;
+        let chunks = collect_chunks(&mut rx);
+        assert!(matches!(
+            chunks.as_slice(),
+            [StreamChunk::ToolCallComplete { arguments, .. }, StreamChunk::Done] if arguments == &serde_json::json!({})
+        ));
     }
 
     // ---- Ollama tests ----

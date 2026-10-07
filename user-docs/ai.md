@@ -888,6 +888,13 @@ vim.ai.setup({
 })
 ```
 
+If an Anthropic reply stops because it reached `max_tokens`, was refused, or
+overflowed the context window, Ovim reports that in the chat instead of
+presenting the partial reply as complete, and it never runs a tool call whose
+arguments were cut off. Thinking models spend `max_tokens` on reasoning before
+they answer, so the built-in `anthropic` and `anthropic_frontier` profiles use
+16384; give a custom Anthropic profile a similar budget.
+
 Built-in AI keybindings:
 
 - Normal mode `Space Space`: chat

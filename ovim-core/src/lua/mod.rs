@@ -334,6 +334,22 @@ mod tests {
     }
 
     #[test]
+    fn builtin_anthropic_profiles_leave_room_for_thinking_and_tool_calls() {
+        let context = LuaContext::new().unwrap();
+        let bridge = EditorBridge::new();
+        setup_vim_api(context.lua(), bridge.clone()).unwrap();
+        context.load_builtin().unwrap();
+        let snapshot = bridge.take_ai_config_if_dirty().unwrap();
+        for name in ["anthropic", "anthropic_frontier"] {
+            let profile = snapshot.2[name].clone().into_profile_config(name.into());
+            assert_eq!(profile.provider, crate::ai::AiProviderKind::Anthropic);
+            // Thinking tokens count against max_tokens; 4096 truncated replies
+            // and tool calls.
+            assert!(profile.max_tokens.unwrap() >= 16384, "{name}");
+        }
+    }
+
+    #[test]
     fn builtin_chat_profile_enables_embedded_browser_scope() {
         let context = LuaContext::new().unwrap();
         let bridge = EditorBridge::new();
