@@ -102,9 +102,8 @@ impl Motions {
         let Some(found_char) = find_forward_char(buffer, line_idx, cursor_char, ch, count) else {
             return false;
         };
-        if found_char <= cursor_char + 1 {
-            return false;
-        }
+        // A target right next to the cursor still succeeds (staying put), so
+        // `ct"` on the character before a quote works.
         let grapheme = buffer
             .line_index(line_idx)
             .char_to_grapheme(CharCol(found_char - 1));
@@ -125,9 +124,8 @@ impl Motions {
         let Some(found_char) = find_backward_char(buffer, line_idx, cursor_char, ch, count) else {
             return false;
         };
-        if found_char + 1 >= cursor_char {
-            return false;
-        }
+        // A target right next to the cursor still succeeds (staying put), so
+        // `ct"` on the character before a quote works.
         let grapheme = buffer
             .line_index(line_idx)
             .char_to_grapheme(CharCol(found_char + 1));

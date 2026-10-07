@@ -193,3 +193,73 @@ fn test_find_at_current_position() {
         "Should stay put as no more 'h' found"
     );
 }
+
+// A `t`/`T` whose target is the very next character succeeds without moving.
+// All expectations below were checked with `nvim --clean --headless` (`normal!`).
+
+#[test]
+fn test_till_with_adjacent_target_stays_put_and_operators_apply() {
+    // nvim: say 'abc' now, `fcct'X<Esc>` -> say 'abX' now (ct' with the quote right after c).
+    let mut test = EditorTest::new("say 'abc' now");
+    test.keys("fcct'X<Esc>");
+    assert_eq!(test.buffer_content(), "say 'abX' now\n");
+    test.assert_cursor(0, 7);
+
+    // nvim: `dtx` on "ax" deletes the cursor character; `ytx` yanks it.
+    let mut test = EditorTest::new("ax");
+    test.keys("dtx");
+    assert_eq!(test.buffer_content(), "x\n");
+    assert_eq!(test.get_register_content('"').as_deref(), Some("a"));
+    let mut test = EditorTest::new("ax");
+    test.keys("ytx");
+    assert_eq!(test.get_register_content('"').as_deref(), Some("a"));
+    test.assert_cursor(0, 0);
+
+    // nvim: `ctxQ<Esc>` on "ax" -> "Qx".
+    let mut test = EditorTest::new("ax");
+    test.keys("ctxQ<Esc>");
+    assert_eq!(test.buffer_content(), "Qx\n");
+
+    // nvim: `$cTxQ<Esc>` on "xxxa" inserts Q before the a without deleting anything.
+    let mut test = EditorTest::new("xxxa");
+    test.keys("$cTxQ<Esc>");
+    assert_eq!(test.buffer_content(), "xxxQa\n");
+    let mut test = EditorTest::new("xxxa");
+    test.keys("$dTx");
+    assert_eq!(test.buffer_content(), "xxxa\n");
+}
+
+#[test]
+fn test_till_repeat_skips_an_adjacent_target() {
+    // nvim (cpo without ';'): `;` after t/T jumps in front of the *next* occurrence.
+    let mut test = EditorTest::new("axxx");
+    test.keys("tx");
+    test.assert_cursor(0, 0);
+    test.keys(";");
+    test.assert_cursor(0, 1);
+    test.keys(";");
+    test.assert_cursor(0, 2);
+
+    let mut test = EditorTest::new("xxxa");
+    test.keys("$Tx");
+    test.assert_cursor(0, 3);
+    test.keys(";");
+    test.assert_cursor(0, 2);
+    test.keys(";");
+    test.assert_cursor(0, 1);
+
+    // nvim: `,` reverses the direction and skips the same way: abxcxdx, `tx;;,` -> col 3.
+    let mut test = EditorTest::new("abxcxdx");
+    test.keys("tx;;,");
+    test.assert_cursor(0, 3);
+
+    // nvim: only a single repeat skips; `2;` counts the adjacent target ("axxxxx", `tx2;` -> col 1).
+    let mut test = EditorTest::new("axxxxx");
+    test.keys("tx2;");
+    test.assert_cursor(0, 1);
+
+    // nvim: `;` after `tx` with nothing further stays (axb).
+    let mut test = EditorTest::new("axb");
+    test.keys("tx;");
+    test.assert_cursor(0, 0);
+}

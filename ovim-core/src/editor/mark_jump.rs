@@ -257,6 +257,30 @@ impl Editor {
         self.nav.last_find
     }
 
+    /// `;`/`,` repeating a `t`/`T`. Like Vim without `cpo-;`, a single repeat skips
+    /// a target that is right next to the cursor instead of staying in front of it.
+    fn repeat_till(&mut self, ch: char, count: usize, direction: FindDirection) -> bool {
+        let till = match direction {
+            FindDirection::Forward => Motions::till_char_forward,
+            FindDirection::Backward => Motions::till_char_backward,
+        };
+        if count != 1 {
+            return till(self.buffer_mut(), ch, count);
+        }
+        let col = self.buffer().cursor().col();
+        let stepped = match direction {
+            FindDirection::Forward => col.0 + 1,
+            FindDirection::Backward if col > GraphemeCol::ZERO => col.0 - 1,
+            FindDirection::Backward => return false,
+        };
+        self.buffer_mut().cursor_mut().set_col(GraphemeCol(stepped));
+        if till(self.buffer_mut(), ch, count) {
+            return true;
+        }
+        self.buffer_mut().cursor_mut().set_col(col);
+        false
+    }
+
     /// Repeats the last character-find motion (`;`/`,` in Vim).
     ///
     /// Returns `true` if a motion executed and moved the cursor.
@@ -283,42 +307,10 @@ impl Editor {
                     Motions::find_char_backward(self.buffer_mut(), ch, count)
                 }
                 (FindType::Till, FindDirection::Forward) => {
-                    if !reverse {
-                        // For ';' after `t`, skip past current target before repeating.
-                        let col = self.buffer().cursor().col();
-                        self.buffer_mut()
-                            .cursor_mut()
-                            .set_col(GraphemeCol(col.0 + 1));
-                        if !Motions::till_char_forward(self.buffer_mut(), ch, count) {
-                            self.buffer_mut().cursor_mut().set_col(col);
-                            false
-                        } else {
-                            true
-                        }
-                    } else {
-                        Motions::till_char_forward(self.buffer_mut(), ch, count)
-                    }
+                    self.repeat_till(ch, count, FindDirection::Forward)
                 }
                 (FindType::Till, FindDirection::Backward) => {
-                    if !reverse {
-                        // For ';' after `T`, skip past current target before repeating.
-                        let col = self.buffer().cursor().col();
-                        if col > GraphemeCol::ZERO {
-                            self.buffer_mut()
-                                .cursor_mut()
-                                .set_col(GraphemeCol(col.0 - 1));
-                            if !Motions::till_char_backward(self.buffer_mut(), ch, count) {
-                                self.buffer_mut().cursor_mut().set_col(col);
-                                false
-                            } else {
-                                true
-                            }
-                        } else {
-                            false
-                        }
-                    } else {
-                        Motions::till_char_backward(self.buffer_mut(), ch, count)
-                    }
+                    self.repeat_till(ch, count, FindDirection::Backward)
                 }
             };
         }
