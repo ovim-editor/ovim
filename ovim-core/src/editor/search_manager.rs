@@ -124,8 +124,32 @@ impl Editor {
         ));
     }
 
-    /// Executes the current search and moves cursor to first match
+    /// Enters Search mode for `/` (forward) or `?`: remembers the cursor to search
+    /// from and to restore on Esc, and the count typed before the key.
+    pub fn begin_search(&mut self, forward: bool) {
+        let count = self.input.count;
+        self.clear_search_buffer();
+        self.set_search_forward(forward);
+        self.save_search_start_position();
+        self.set_mode(crate::mode::Mode::Search);
+        self.search.search_count = count;
+    }
+
+    /// Shows where the pattern typed so far would take the cursor, searching
+    /// from where the search began and without recording the pattern.
+    pub fn preview_search(&mut self) {
+        self.run_search(false);
+    }
+
+    /// Executes the typed pattern (`<CR>`), moves to the match and records the
+    /// pattern as the last search.
     pub fn execute_search(&mut self) {
+        self.run_search(true);
+        self.search.search_start_pos = None;
+        self.search.search_count = None;
+    }
+
+    fn run_search(&mut self, commit: bool) {
         // An empty pattern (`/<CR>` or `?<CR>`) repeats the last search in the
         // requested direction (Vim behavior), rather than wiping the active
         // search. Only fall back to clearing when there is no last search.
@@ -138,9 +162,11 @@ impl Editor {
             }
             last
         } else {
-            // Update the / register with the search pattern
             let query = self.search.search_input.text().to_owned();
-            self.registers.set_last_search(query.clone());
+            if commit {
+                // Update the / register with the search pattern
+                self.registers.set_last_search(query.clone());
+            }
             query
         };
 
@@ -150,13 +176,26 @@ impl Editor {
             self.options.ignorecase,
             self.options.smartcase,
         );
+        // The search always starts where it began, not where the preview of
+        // the previous keystroke left the cursor.
         let cursor = self.buffer().cursor();
+        let origin = self
+            .search
+            .search_start_pos
+            .filter(|_| self.mode() == crate::mode::Mode::Search)
+            .unwrap_or((cursor.line(), cursor.col().0));
+        let count = self.search.search_count.unwrap_or(1);
 
-        // Start search from current cursor position (inclusive)
-        if let Some((line, col, _)) = search.find_next(self.buffer(), cursor.line(), cursor.col()) {
-            self.buffer_mut()
+        match self.step_search(&mut search, origin, count) {
+            Some((line, col)) => self
+                .buffer_mut()
                 .cursor_mut()
-                .set_position(line, GraphemeCol(col));
+                .set_position(line, GraphemeCol(col)),
+            None => {
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(origin.0, GraphemeCol(origin.1));
+            }
         }
         // Always update current_search so highlighting reflects the actual pattern.
         // If no match exists, find_all_in_line will return empty for each line,
@@ -164,95 +203,63 @@ impl Editor {
         self.search.current_search = Some(search);
     }
 
+    /// Where `count` steps of `search` (in its own direction) lead from `origin`:
+    /// each step is the first match strictly after (forward) or before (backward)
+    /// the previous position, wrapping around the buffer.
+    pub(crate) fn step_search(
+        &self,
+        search: &mut Search,
+        origin: (usize, usize),
+        count: usize,
+    ) -> Option<(usize, usize)> {
+        let mut position = origin;
+        for _ in 0..count.max(1) {
+            let from_col = if search.is_forward() {
+                position.1 + 1
+            } else {
+                position.1
+            };
+            let (line, col, _) =
+                search.find_next(self.buffer(), position.0, GraphemeCol(from_col))?;
+            position = (line, col);
+        }
+        Some(position)
+    }
+
     /// Finds the next search match (n command)
     pub fn search_next(&mut self) {
-        // Get cursor position before borrowing
-        let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col().0;
-
-        // Clone search to avoid borrow conflicts
-        if let Some(ref search) = self.search.current_search {
-            let is_forward = search.is_forward();
-            let mut search_clone = search.clone();
-
-            // For forward search, start from col+1; for backward, start from col-1 or col
-            // cursor_col is a grapheme index — use grapheme_count for line length comparison
-            let (search_line, search_col) = if is_forward {
-                if let Some(line) = self.buffer().line_text(cursor_line) {
-                    let line_len = grapheme_count(&line);
-                    if cursor_col + 1 >= line_len {
-                        // OV-00040: Advance to next line instead of col 0 of same line
-                        let next_line = (cursor_line + 1) % self.buffer().line_count().max(1);
-                        (next_line, 0)
-                    } else {
-                        (cursor_line, cursor_col + 1)
-                    }
-                } else {
-                    (cursor_line, cursor_col + 1)
-                }
-            } else if cursor_col > 0 {
-                (cursor_line, cursor_col - 1)
-            } else {
-                (cursor_line, 0)
-            };
-
-            if let Some((line, col, _)) =
-                search_clone.find_next(self.buffer(), search_line, GraphemeCol(search_col))
-            {
-                self.buffer_mut()
-                    .cursor_mut()
-                    .set_position(line, GraphemeCol(col));
-            }
-        }
+        self.repeat_search(false);
     }
 
     /// Finds the previous search match (N command)
     pub fn search_prev(&mut self) {
-        if let Some(ref search) = self.search.current_search {
-            // Create a reversed search
-            let is_forward = search.is_forward();
-            let mut rev_search = Search::new_with_options(
+        self.repeat_search(true);
+    }
+
+    /// `n` / `N`: `[count]` matches on in the direction of the last search (or
+    /// against it when `reverse`).
+    fn repeat_search(&mut self, reverse: bool) {
+        let count = self.effective_count();
+        self.clear_count();
+        let Some(search) = &self.search.current_search else {
+            return;
+        };
+        let mut search = if reverse {
+            Search::new_with_options(
                 search.pattern().to_string(),
-                !is_forward,
+                !search.is_forward(),
                 self.options.ignorecase,
                 self.options.smartcase,
-            );
-            let cursor_line = self.buffer().cursor().line();
-            let cursor_col = self.buffer().cursor().col().0;
-
-            // For reverse direction: if original was forward, now going backward (use col-1)
-            // if original was backward, now going forward (use col+1)
-            let (search_line, search_col) = if is_forward {
-                // Original was forward, now backward
-                if cursor_col > 0 {
-                    (cursor_line, cursor_col - 1)
-                } else {
-                    (cursor_line, 0)
-                }
-            } else {
-                // Original was backward, now forward - clamp to avoid exceeding line length
-                // cursor_col is grapheme index — use grapheme_count for comparison
-                if let Some(line) = self.buffer().line_text(cursor_line) {
-                    let line_len = grapheme_count(&line);
-                    if cursor_col + 1 >= line_len {
-                        // OV-00040: Advance to next line instead of col 0 of same line
-                        let next_line = (cursor_line + 1) % self.buffer().line_count().max(1);
-                        (next_line, 0)
-                    } else {
-                        (cursor_line, cursor_col + 1)
-                    }
-                } else {
-                    (cursor_line, cursor_col + 1)
-                }
-            };
-
-            if let Some((line, col, _)) =
-                rev_search.find_next(self.buffer(), search_line, GraphemeCol(search_col))
-            {
-                self.buffer_mut()
-                    .cursor_mut()
-                    .set_position(line, GraphemeCol(col));
-            }
+            )
+        } else {
+            search.clone()
+        };
+        let cursor = self.buffer().cursor();
+        let origin = (cursor.line(), cursor.col().0);
+        if let Some((line, col)) = self.step_search(&mut search, origin, count) {
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
         }
     }
 

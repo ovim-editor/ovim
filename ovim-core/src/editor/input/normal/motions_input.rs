@@ -266,11 +266,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
         // Search word under cursor
         KeyCode::Char('*') => {
-            search_word_forward(editor);
+            search_word(editor, true);
             Ok(true)
         }
         KeyCode::Char('#') => {
-            search_word_backward(editor);
+            search_word(editor, false);
             Ok(true)
         }
 
@@ -401,57 +401,58 @@ fn try_handle_ctrl_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bo
     }
 }
 
-/// Search for word under cursor (forward)
-fn search_word_forward(editor: &mut Editor) {
-    if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
-        let pattern = format!(r"\b{}\b", regex::escape(&word));
-        let mut search = Search::new_with_options(
-            pattern,
-            true,
-            editor.options.ignorecase,
-            editor.options.smartcase,
-        );
-        let cursor = editor.buffer().cursor();
-
-        if let Some((line, col, _)) = search.find_next(
-            editor.buffer(),
-            cursor.line(),
-            GraphemeCol(cursor.col().0 + 1),
-        ) {
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
-        }
-        editor.set_current_search(search);
+/// `*` / `#`: search `[count]` times for the word under or after the cursor,
+/// starting from the beginning of that word.
+fn search_word(editor: &mut Editor, forward: bool) {
+    let count = editor.effective_count();
+    editor.clear_count();
+    let Some((word, start)) = word_at_or_after_cursor(editor) else {
+        return;
+    };
+    let pattern = format!(r"\b{}\b", regex::escape(&word));
+    let mut search = Search::new_with_options(
+        pattern,
+        forward,
+        editor.options.ignorecase,
+        editor.options.smartcase,
+    );
+    let line = editor.buffer().cursor().line();
+    if let Some((line, col)) = editor.step_search(&mut search, (line, start), count) {
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(col));
     }
+    editor.set_current_search(search);
 }
 
-/// Search for word under cursor (backward)
-fn search_word_backward(editor: &mut Editor) {
-    if let Some((word, _, _)) = editor.buffer().word_under_cursor() {
-        let pattern = format!(r"\b{}\b", regex::escape(&word));
-        let mut search = Search::new_with_options(
-            pattern,
-            false,
-            editor.options.ignorecase,
-            editor.options.smartcase,
-        );
-        let cursor = editor.buffer().cursor();
-
-        let search_col = if cursor.col().0 > 0 {
-            cursor.col().0 - 1
-        } else {
-            0
-        };
-        if let Some((line, col, _)) =
-            search.find_next(editor.buffer(), cursor.line(), GraphemeCol(search_col))
-        {
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
-        }
-        editor.set_current_search(search);
+/// The keyword under the cursor, or the first one after it on the line, with
+/// the grapheme column it starts at.
+fn word_at_or_after_cursor(editor: &Editor) -> Option<(String, usize)> {
+    let cursor = editor.buffer().cursor();
+    let index = editor.buffer().line_index(cursor.line());
+    let is_word = |grapheme: usize| {
+        index
+            .grapheme_first_char(GraphemeCol(grapheme))
+            .is_some_and(|ch| ch.is_alphanumeric() || ch == '_')
+    };
+    let len = index.grapheme_count();
+    let mut start = cursor.col().0;
+    if start >= len {
+        return None;
     }
+    if is_word(start) {
+        while start > 0 && is_word(start - 1) {
+            start -= 1;
+        }
+    } else {
+        start = (start..len).find(|&grapheme| is_word(grapheme))?;
+    }
+    let mut end = start;
+    while end < len && is_word(end) {
+        end += 1;
+    }
+    let chars =
+        index.grapheme_to_char(GraphemeCol(start)).0..index.grapheme_to_char(GraphemeCol(end)).0;
+    Some((index.slice_chars(chars), start))
 }

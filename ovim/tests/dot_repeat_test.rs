@@ -1128,7 +1128,8 @@ fn test_cfo_esc_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "hello world hello test!\n");
         }
-        step "0/hello<Enter>cfo<Esc>" => |test| {
+        // `$/pat` wraps around to the first match (a bare /pat would skip the match under the cursor)
+        step "$/hello<Enter>cfo<Esc>" => |test| {
             assert_eq!(test.buffer_content(), " world hello test!\n");
         }
         step "u" => |test| {
@@ -1153,7 +1154,8 @@ fn test_dot_repeat_search_and_change_find_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "hello world hello test!\n");
         }
-        step "0/hello<Enter>cfohi<Esc>" => |test| {
+        // `$/pat` wraps around to the first match (a bare /pat would skip the match under the cursor)
+        step "$/hello<Enter>cfohi<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "hi world hello test!\n");
         }
         step "n." => |test| {
@@ -1184,7 +1186,8 @@ fn test_ctX_esc_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
         }
-        step "0/abcdX<Enter>ctX<Esc>" => |test| {
+        // `$/pat` wraps around to the first match (a bare /pat would skip the match under the cursor)
+        step "$/abcdX<Enter>ctX<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "X abcdX tail!\n");
         }
         step "u" => |test| {
@@ -1209,7 +1212,8 @@ fn test_dot_repeat_search_and_change_till_undo_redo_isolation_macro_flow() {
         step "A!<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "abcdX abcdX tail!\n");
         }
-        step "0/abcdX<Enter>ctXhi<Esc>" => |test| {
+        // `$/pat` wraps around to the first match (a bare /pat would skip the match under the cursor)
+        step "$/abcdX<Enter>ctXhi<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "hiX abcdX tail!\n");
         }
         step "n." => |test| {
@@ -1295,7 +1299,8 @@ fn test_dot_repeat_search_and_change_backward_find_undo_redo_isolation_macro_flo
             assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
         }
         // Backward F is exclusive: the 'Y' under the cursor survives (OV-00288).
-        step "0/aXbXcY<Enter>fYcFXhi<Esc>" => |test| {
+        // `$/pat` wraps around to the first match (a bare /pat would skip the match under the cursor)
+        step "$/aXbXcY<Enter>fYcFXhi<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "aXbhiY aXbXcY tail!\n");
         }
         step "ne." => |test| {
@@ -1327,7 +1332,8 @@ fn test_dot_repeat_search_and_change_backward_till_undo_redo_isolation_macro_flo
             assert_eq!(test.buffer_content(), "aXbXcY aXbXcY tail!\n");
         }
         // Backward T is exclusive: the 'Y' under the cursor survives (OV-00288).
-        step "0/aXbXcY<Enter>fYcTXhi<Esc>" => |test| {
+        // `$/pat` wraps around to the first match (a bare /pat would skip the match under the cursor)
+        step "$/aXbXcY<Enter>fYcTXhi<Esc>" => |test| {
             assert_eq!(test.buffer_content(), "aXbXhiY aXbXcY tail!\n");
         }
         step "ne." => |test| {

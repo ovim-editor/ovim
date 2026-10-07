@@ -433,10 +433,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let mode = editor.mode();
                 editor.set_visual_search_state((anchor_line, anchor_col), mode);
             }
-            editor.clear_search_buffer();
-            editor.set_search_forward(true);
-            editor.save_search_start_position();
-            editor.set_mode(Mode::Search);
+            editor.begin_search(true);
         }
         // Search backward in visual mode
         KeyCode::Char('?') => {
@@ -445,10 +442,7 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 let mode = editor.mode();
                 editor.set_visual_search_state((anchor_line, anchor_col), mode);
             }
-            editor.clear_search_buffer();
-            editor.set_search_forward(false);
-            editor.save_search_start_position();
-            editor.set_mode(Mode::Search);
+            editor.begin_search(false);
         }
         // Search next in visual mode
         KeyCode::Char('n') => {

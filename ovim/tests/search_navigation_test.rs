@@ -73,8 +73,9 @@ fn test_forward_search_regex() {
     test.press('/').type_text("test[0-9]+").press_enter();
 
     assert_eq!(test.buffer_content(), "test123 hello test456\n");
-    // First match "test123" is at column 0, cursor starts there so it matches immediately
-    test.assert_cursor(0, 0);
+    // nvim --clean: a forward search starts after the cursor, so the match under it
+    // (test123 at column 0) is skipped and "test456" is found.
+    test.assert_cursor(0, 14);
 }
 
 #[test]
@@ -152,11 +153,11 @@ fn test_n_after_forward_search() {
 
     test.press('/')
         .type_text("hello")
-        .press_enter() // First match at col 0
-        .press('n'); // Next match at col 12
+        .press_enter() // First match after the cursor: col 12
+        .press('n'); // Next match at col 23
 
     assert_eq!(test.buffer_content(), "hello world hello test hello\n");
-    test.assert_cursor(0, 12);
+    test.assert_cursor(0, 23);
 }
 
 #[test]
@@ -167,10 +168,11 @@ fn test_n_multiple_times() {
         .type_text("a")
         .press_enter()
         .press('n')
-        .press('n'); // Third 'a'
+        .press('n'); // col 4, then wraps to col 0
 
     assert_eq!(test.buffer_content(), "a b a c a d\n");
-    test.assert_cursor(0, 8);
+    // nvim --clean: /a from col 0 -> 2, n -> 4, n -> wraps to 0.
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -179,16 +181,17 @@ fn test_n_wrap_around() {
 
     test.press('/')
         .type_text("hello")
-        .press_enter() // First at 0:0
-        .press('n') // Second at 1:0
-        .press('n') // Third at 2:0
-        .press('n'); // Wrap to first at 0:0
+        .press_enter() // 1:0
+        .press('n') // 2:0
+        .press('n') // wraps to 0:0
+        .press('n'); // 1:0
 
     assert_eq!(
         test.buffer_content(),
         "hello world\nhello test\nhello end\n"
     );
-    test.assert_cursor(0, 0);
+    // nvim --clean: /hello, nnn on three "hello" lines ends on 1:0.
+    test.assert_cursor(1, 0);
 }
 
 #[test]
@@ -215,12 +218,13 @@ fn test_N_after_forward_search() {
 
     test.press('/')
         .type_text("hello")
-        .press_enter() // First at col 0
-        .press('n') // Second at col 12
-        .press('N'); // Back to first at col 0
+        .press_enter() // Starts after the cursor: col 12
+        .press('n') // col 23
+        .press('N'); // Back to col 12
 
     assert_eq!(test.buffer_content(), "hello world hello test hello\n");
-    test.assert_cursor(0, 0);
+    // nvim --clean: /hello then n then N from col 0 ends on the first *following* match.
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -234,7 +238,8 @@ fn test_N_after_backward_search() {
         .press('N'); // Reverse direction (forward)
 
     assert_eq!(test.buffer_content(), "hello world hello test\n");
-    test.assert_cursor(0, 12);
+    // nvim --clean: $?hello lands on col 12, N (forward) wraps to col 0.
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -247,8 +252,9 @@ fn test_N_wrap_around() {
         test.buffer_content(),
         "hello world\nhello test\nhello end\n"
     );
-    // From first match (0:0), N goes backward which wraps to last match (2:0)
-    test.assert_cursor(2, 0);
+    // nvim --clean: /hello from 0:0 lands on 1:0 (the match under the cursor is skipped);
+    // N goes back to 0:0.
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================
@@ -299,9 +305,9 @@ fn test_search_shows_all_matches() {
     test.press('/').type_text("hello").press_enter();
 
     // All "hello" instances should be highlighted
-    // First match is at col 0 (cursor starts there, finds it immediately)
+    // nvim --clean: the search starts after the cursor, so the cursor lands on col 12.
     assert_eq!(test.buffer_content(), "hello world hello test hello\n");
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -315,9 +321,9 @@ fn test_noh_clears_highlight() {
         .type_text("noh")
         .press_enter();
 
-    // Search finds first match at col 0, :noh clears highlight but doesn't move cursor
+    // nvim --clean: the search lands on col 12; :noh clears the highlight but doesn't move the cursor
     assert_eq!(test.buffer_content(), "hello world hello\n");
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 12);
 }
 
 // ============================================================================
@@ -408,10 +414,11 @@ fn test_hash_search_word_backward() {
     let mut test = EditorTest::new("hello world hello test");
 
     test.keys("$") // Go to end
-        .press('#'); // Search backward for "test"
+        .press('#'); // Search backward for "test" (its only occurrence: wraps back to its own start)
 
     assert_eq!(test.buffer_content(), "hello world hello test\n");
-    test.assert_cursor(0, 21);
+    // nvim --clean: $# on the only occurrence of the word goes to the start of that word.
+    test.assert_cursor(0, 18);
 }
 
 // ============================================================================

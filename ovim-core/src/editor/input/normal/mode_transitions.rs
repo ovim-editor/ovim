@@ -174,18 +174,12 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         // / - search forward
         KeyCode::Char('/') => {
-            editor.clear_search_buffer();
-            editor.set_search_forward(true);
-            editor.save_search_start_position();
-            editor.set_mode(Mode::Search);
+            editor.begin_search(true);
             Ok(true)
         }
         // ? - search backward
         KeyCode::Char('?') => {
-            editor.clear_search_buffer();
-            editor.set_search_forward(false);
-            editor.save_search_start_position();
-            editor.set_mode(Mode::Search);
+            editor.begin_search(false);
             Ok(true)
         }
         // - - toggle file tree

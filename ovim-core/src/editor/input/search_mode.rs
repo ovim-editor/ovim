@@ -26,12 +26,12 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
             PromptControl::DeleteToStart => {
                 if editor.delete_search_to_start() {
-                    editor.execute_search();
+                    editor.preview_search();
                 }
             }
             PromptControl::DeleteWord => {
                 if editor.delete_search_word() {
-                    editor.execute_search();
+                    editor.preview_search();
                 }
             }
             PromptControl::Home => editor.move_search_cursor_home(),
@@ -44,7 +44,7 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char(ch) => {
             if editor.insert_search_char(ch) {
                 // Incremental search: update highlighting immediately
-                editor.execute_search();
+                editor.preview_search();
             }
         }
         KeyCode::Backspace => {
@@ -63,13 +63,13 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 }
             } else {
                 if editor.backspace_search_buffer() {
-                    editor.execute_search();
+                    editor.preview_search();
                 }
             }
         }
         KeyCode::Delete => {
             if editor.delete_from_search_buffer() {
-                editor.execute_search();
+                editor.preview_search();
             }
         }
         KeyCode::Left => {

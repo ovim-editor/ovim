@@ -246,7 +246,8 @@ fn test_macro_with_search() {
         .press('a'); // Play - should find next and delete
 
     assert_eq!(test.buffer_content(), "ello world ello test\n");
-    test.assert_cursor(0, 11);
+    // nvim --clean (typed keys): recording /hello<CR>x lands on col 12; @a wraps to col 0.
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

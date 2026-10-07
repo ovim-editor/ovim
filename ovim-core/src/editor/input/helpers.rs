@@ -1566,16 +1566,16 @@ fn setup_and_execute_search(editor: &mut Editor, text: &str, forward: bool) -> b
         editor.options.smartcase,
     );
 
-    // For visual * and #, we want to find the NEXT occurrence, not the current one
-    // So start searching from the next column position (forward) or current position (backward)
+    // For visual * and #, we want to find the NEXT occurrence, not the current one:
+    // after the cursor (forward) or before the start of the selection, which is
+    // itself a match (backward).
     let cursor = editor.buffer().cursor();
-    let search_col = if forward {
-        GraphemeCol(cursor.col().0 + 1)
-    } else {
-        cursor.col()
+    let origin = match editor.visual_selection() {
+        Some((start, _)) if !forward => start,
+        _ => (cursor.line(), cursor.col().0),
     };
 
-    if let Some((line, col, _)) = search.find_next(editor.buffer(), cursor.line(), search_col) {
+    if let Some((line, col)) = editor.step_search(&mut search, origin, 1) {
         editor
             .buffer_mut()
             .cursor_mut()

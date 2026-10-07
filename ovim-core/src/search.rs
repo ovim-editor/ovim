@@ -134,8 +134,9 @@ impl Search {
             }
         }
 
-        // Wrap around to beginning
-        for line_idx in 0..from_line {
+        // Wrap around to beginning, including the part of the starting line before
+        // `from_col` (any match there lies before the cursor: `find_at` found none after).
+        for line_idx in 0..=from_line.min(line_count.saturating_sub(1)) {
             if let Some(line_text) = buffer.line_text(line_idx) {
                 if let Some(mat) = regex.find(&line_text) {
                     let col = line_text[..mat.start()].chars().count();
@@ -157,12 +158,19 @@ impl Search {
         from_col: CharCol,
     ) -> Option<(usize, CharCol, String)> {
         // Search backward from current position
-        // First, search the current line up to from_col
+        // First, search the current line for the last match that starts before
+        // `from_col` (it may extend past it: the cursor can be inside a match).
         if let Some(line_text) = buffer.line_text(from_line) {
-            // Use character-based slicing to avoid UTF-8 boundary panics
-            let search_text: String = line_text.chars().take(from_col.0).collect();
-            if let Some(mat) = regex.find_iter(&search_text).last() {
-                let col = search_text[..mat.start()].chars().count();
+            let from_byte = line_text
+                .char_indices()
+                .nth(from_col.0)
+                .map_or(line_text.len(), |(byte_idx, _)| byte_idx);
+            if let Some(mat) = regex
+                .find_iter(&line_text)
+                .take_while(|mat| mat.start() < from_byte)
+                .last()
+            {
+                let col = line_text[..mat.start()].chars().count();
                 let match_text = mat.as_str().to_string();
                 return Some((from_line, CharCol(col), match_text));
             }
@@ -181,9 +189,10 @@ impl Search {
             }
         }
 
-        // Wrap around to end
+        // Wrap around to end, including the part of the starting line from
+        // `from_col` on (the part before it had no match).
         let line_count = buffer.line_count();
-        for line_idx in (from_line + 1..line_count).rev() {
+        for line_idx in (from_line..line_count).rev() {
             if let Some(line_text) = buffer.line_text(line_idx) {
                 if let Some(mat) = regex.find_iter(&line_text).last() {
                     let col = line_text[..mat.start()].chars().count();
