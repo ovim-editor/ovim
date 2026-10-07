@@ -2031,7 +2031,6 @@ impl Editor {
                 continue;
             }
 
-            let content: Arc<str> = Arc::from(self.buffers[index].rope().to_string());
             if !opened {
                 if state.is_some_and(|state| {
                     state
@@ -2040,6 +2039,7 @@ impl Editor {
                 }) {
                     continue;
                 }
+                let content: Arc<str> = Arc::from(self.buffers[index].rope().to_string());
                 match lsp
                     .did_open_broadcast(uri.clone(), &language_id, 1, content.to_string())
                     .await
@@ -2062,10 +2062,14 @@ impl Editor {
                 continue;
             }
 
+            // This runs every tick for every open buffer: an unchanged one
+            // must cost nothing, so its text is copied only once it is known
+            // to have been modified.
             let Some(state) = state.filter(|state| state.is_modified()) else {
                 continue;
             };
             let old_content = state.last_flushed_content.clone();
+            let content: Arc<str> = Arc::from(self.buffers[index].rope().to_string());
             if old_content.as_deref() == Some(&*content) {
                 if let Some(state) = self.lsp.state.document_sync.get_mut(&file_path) {
                     state.buffer_modified = false;
