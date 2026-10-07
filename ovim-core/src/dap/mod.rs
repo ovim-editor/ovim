@@ -201,6 +201,13 @@ impl DapManager {
         self.stop_requested = true;
         if matches!(self.pending_action, Some(PendingDebugAction::Start { .. })) {
             self.pending_action = None;
+            self.attach_request = None;
+            // No adapter will ever start and say how the session went, but
+            // the launch that queued it waits for exactly that.
+            self.session_end.get_or_insert(SessionEnd {
+                exit_code: None,
+                adapter_crash: None,
+            });
         }
     }
 
@@ -636,7 +643,7 @@ mod tests {
     }
 
     #[test]
-    fn stopping_cancels_a_start_that_has_not_run_yet() {
+    fn stopping_cancels_a_start_that_has_not_run_yet_and_reports_the_session_over() {
         let mut dap = DapManager::new();
         dap.pending_action = Some(PendingDebugAction::Start {
             command: "x".into(),
@@ -646,5 +653,13 @@ mod tests {
         });
         dap.request_stop();
         assert!(dap.pending_action.is_none());
+        assert_eq!(
+            dap.take_session_end(),
+            Some(SessionEnd {
+                exit_code: None,
+                adapter_crash: None
+            }),
+            "the launch waiting for the debugger has to hear that it will not come"
+        );
     }
 }

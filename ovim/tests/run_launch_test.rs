@@ -1053,6 +1053,58 @@ async fn stopping_an_attach_session_leaves_the_debuggee_running() {
     d.inner.stop_lsp().await;
 }
 
+/// Stop between "the debugger is queued to start" and "it started" used to
+/// drop the queued start without anybody noticing: the job stayed on
+/// "starting debugger" forever and every later run only said "Stopping the
+/// current run...".
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stopping_before_the_debugger_has_started_ends_the_run_and_frees_the_launcher() {
+    let mut d = DebugSession::new(&["something.else"]).await;
+    std::fs::create_dir_all(d.inner.root.join(".ovim")).unwrap();
+    std::fs::write(
+        d.inner.root.join(".ovim/debug.toml"),
+        "[[config]]\nname = \"Remote\"\ntype = \"attach\"\nport = 5005\n",
+    )
+    .unwrap();
+    let adapter = d.adapter(json!({}));
+    d.inner
+        .test
+        .editor
+        .launch_at_cursor_with(ovim_core::launch::LaunchMode::Debug, Some(adapter.clone()));
+    d.inner
+        .until("the debugger to be queued", |s| {
+            matches!(
+                s.test.editor.dap_manager().pending_action,
+                Some(ovim_core::dap::PendingDebugAction::Start { .. })
+            )
+        })
+        .await;
+
+    d.inner.test.keys(" ds");
+    d.inner.until("stopped", |s| s.run_finished()).await;
+    assert_eq!(d.inner.outcome(), RunOutcome::Stopped);
+    assert!(!d.inner.test.editor.is_launch_active());
+    assert!(
+        d.requests("initialize").is_empty(),
+        "the cancelled debugger never started"
+    );
+
+    // The launcher is free again.
+    d.inner
+        .test
+        .editor
+        .launch_at_cursor_with(ovim_core::launch::LaunchMode::Debug, Some(adapter));
+    let dap_dir = d.dap_dir.clone();
+    d.inner
+        .until("a new debug session", |_| {
+            !dap_requests(&dap_dir, "configurationDone").is_empty()
+        })
+        .await;
+    d.inner.test.keys(" ds");
+    d.inner.until("stopped again", |s| s.run_finished()).await;
+    d.inner.stop_lsp().await;
+}
+
 // ---------------------------------------------------------------------------
 // Test debugging through the build tool
 // ---------------------------------------------------------------------------
