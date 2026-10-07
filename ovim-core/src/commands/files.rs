@@ -280,10 +280,17 @@ fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
     }
 }
 
-pub(super) fn edit_file(editor: &mut Editor, raw_filename: &str, force: bool) -> CommandResult {
+fn edit_file(editor: &mut Editor, raw_filename: &str, force: bool) -> CommandResult {
     if !force && editor.is_modified() {
         return err("No write since last change (add ! to override)");
     }
+    open_file(editor, raw_filename)
+}
+
+/// Open a file in the current window. The buffer it was showing stays loaded,
+/// so callers that keep it visible elsewhere (`:sp file`) skip the
+/// unsaved-changes check of [`edit_file`].
+pub(super) fn open_file(editor: &mut Editor, raw_filename: &str) -> CommandResult {
     let filename = match expand_tilde(raw_filename) {
         Ok(path) => path.to_string_lossy().to_string(),
         Err(e) => return err(format!("Failed to expand path '{}': {}", raw_filename, e)),

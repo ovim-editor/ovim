@@ -1,6 +1,6 @@
 //! Quitting, windows, tab pages and the buffer list.
 
-use super::files::{edit_file, expand_tilde};
+use super::files::{expand_tilde, open_file};
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
 use crate::editor::Editor;
@@ -87,7 +87,13 @@ fn split(editor: &mut Editor, ex: &Ex, vertical: bool) -> CommandResult {
         editor.split_window_horizontal();
     }
     if !ex.args.is_empty() {
-        return edit_file(editor, ex.args, ex.bang);
+        // The other window keeps showing the current buffer, so unsaved
+        // changes there are no obstacle (vim: `:sp file` always works).
+        let opened = open_file(editor, ex.args);
+        if let CommandResult::Error(_) = opened {
+            editor.close_current_window();
+        }
+        return opened;
     }
     ok(format!(
         "Split {} ({} windows)",

@@ -152,3 +152,62 @@ fn nested_normal_still_works_a_few_levels_deep() {
     test.command("normal Q");
     assert_eq!(test.buffer_content(), "bc\n");
 }
+
+fn write_pair(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
+    let first = dir.path().join("a.txt");
+    let second = dir.path().join("b.txt");
+    std::fs::write(&first, "one\n").unwrap();
+    std::fs::write(&second, "two\n").unwrap();
+    (first, second)
+}
+
+// nvim --clean: after `x` in a.txt, `:sp b.txt` and `:vs b.txt` open b.txt in
+// a new window (2, then 3 windows); a.txt stays loaded and modified.
+#[tokio::test(flavor = "multi_thread")]
+async fn split_with_a_file_works_while_the_current_buffer_is_modified() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = write_pair(&dir);
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+    test.keys("x");
+    assert!(test.editor.is_modified());
+
+    test.command(&format!("sp {}", second.display()));
+    assert_eq!(test.editor.window_count(), 2);
+    assert_eq!(test.buffer_content(), "two\n");
+    assert_eq!(
+        test.editor.buffer().file_path(),
+        Some(second.to_str().unwrap())
+    );
+    assert!(test.editor.any_buffer_modified(), "a.txt keeps its edit");
+
+    test.command(&format!("vs {}", second.display()));
+    assert_eq!(test.editor.window_count(), 3);
+    assert_eq!(test.buffer_content(), "two\n");
+}
+
+// nvim --clean: `:sp unreadable` reports "[Permission Denied]". Here the
+// failed split must not leave an empty extra window behind.
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread")]
+async fn failed_split_with_a_file_closes_the_new_window() {
+    use std::os::unix::fs::PermissionsExt;
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = write_pair(&dir);
+    std::fs::set_permissions(&second, std::fs::Permissions::from_mode(0o000)).unwrap();
+    if std::fs::File::open(&second).is_ok() {
+        return; // running as root: nothing is unreadable
+    }
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+
+    let result =
+        ovim::commands::execute_command(&mut test.editor, &format!("sp {}", second.display()));
+
+    assert!(matches!(
+        result,
+        ovim::command_result::CommandResult::Error(_)
+    ));
+    assert_eq!(test.editor.window_count(), 1);
+    assert_eq!(test.buffer_content(), "one\n");
+}
