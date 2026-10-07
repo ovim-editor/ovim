@@ -300,16 +300,11 @@ impl Editor {
                 }
             }
             ParkedTurn::Classifying(pending) => {
-                if let Err(error) = self.ai_state.agent_runtime.fail_tool(
-                    &pending.runtime_turn,
-                    &pending.runtime_tool,
-                    "cancelled by user",
-                ) {
-                    crate::log_warn!("agent_runtime", "failed to cancel classified tool: {error}");
-                }
-                let _ = pending
-                    .dynamic_response
-                    .send(Err("cancelled by user".into()));
+                self.cancel_tool_continuation(
+                    pending.tool_call,
+                    pending.continuation,
+                    "classified shell program",
+                );
             }
             ParkedTurn::Shell(pending) => {
                 // Aborting a started `spawn_blocking` task does not stop it; the
@@ -887,6 +882,7 @@ mod tests {
             super::super::ai_tool_execution::run_bash_program(
                 "(sleep 120; touch cancelled-marker) & echo started",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 None,
             )
@@ -961,6 +957,7 @@ mod tests {
                 // 2 s deadline; the descendant then outlives every wait.
                 "sleep 3; (sleep 120; touch cancelled-marker) & echo started",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 None,
             )
@@ -1009,6 +1006,7 @@ mod tests {
             super::super::ai_tool_execution::run_bash_program(
                 "trap 'exit 130' INT; echo ready; while :; do sleep 1; done",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 Some(progress_tx),
             )
@@ -1098,6 +1096,7 @@ mod tests {
             super::super::ai_tool_execution::run_bash_program(
                 "perl -e 'use POSIX (); POSIX::setsid(); sleep 120' & echo started",
                 &workdir,
+                &[],
                 Some(&task_kill),
                 None,
             )
@@ -1441,6 +1440,8 @@ mod tests {
         editor.open_file(&file).unwrap();
         open_test_chat(&mut editor);
         editor.ai_state.config.tool_approval_mode = crate::ai::ToolApprovalMode::Auto;
+        editor.ai_state.shell_classifier =
+            std::sync::Arc::new(super::super::ai_auto_mode::HeldClassifier);
         let turn = editor.begin_ai_runtime_turn("inspect the project").unwrap();
         let run_id = turn.run_id.clone();
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -1491,9 +1492,9 @@ mod tests {
             .iter()
             .any(|event| matches!(event.kind, EventKind::ToolStarted(_))));
 
-        // The classifier task may still be connecting to app-server. Dropping
-        // its receiver is sufficient here; this test covers routing, while
-        // verdict handling is exercised by the focused classifier tests.
+        // The held classifier never answers. Dropping the receiver is
+        // sufficient here; this test covers routing, while verdict handling is
+        // exercised by the focused classifier tests.
         editor
             .ai_state
             .chat
@@ -1864,9 +1865,11 @@ mod tests {
             .unwrap()
             .park(super::super::ai_chat_state::PendingAutoModeClassification {
                 tool_call: call,
-                runtime_tool: tool,
-                runtime_turn: turn,
-                dynamic_response: response_tx,
+                continuation: ToolExecutionContinuation::Dynamic {
+                    runtime_tool: tool,
+                    runtime_turn: turn,
+                    response: response_tx,
+                },
                 receiver: classification_rx,
             })
             .is_ok());

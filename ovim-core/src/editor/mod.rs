@@ -1,3 +1,4 @@
+mod ai_auto_mode;
 mod ai_background_tools;
 mod ai_base_manifest;
 mod ai_browser;

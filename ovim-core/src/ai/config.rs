@@ -401,7 +401,43 @@ impl AiConfig {
     pub fn resolve_profile(&self, name: &str) -> Option<&AiProfileConfig> {
         self.profiles.get(name)
     }
+
+    /// Names of the environment variables a model-run shell must not inherit:
+    /// the provider credentials ovim and the provider CLIs it drives read, plus
+    /// every profile's configured `api_key_env`.
+    pub fn shell_scrubbed_env_names(&self) -> Vec<String> {
+        let mut names: Vec<String> = PROVIDER_CREDENTIAL_ENV_VARS
+            .iter()
+            .map(|name| (*name).to_string())
+            .collect();
+        for profile in self.profiles.values() {
+            if let Some(name) = profile
+                .api_key_env
+                .as_deref()
+                .filter(|name| !name.is_empty())
+            {
+                if !names.iter().any(|known| known == name) {
+                    names.push(name.to_string());
+                }
+            }
+        }
+        names
+    }
 }
+
+/// Provider credential environment variables. A prompt-injected shell program
+/// (`env`, `curl -d "$OPENAI_API_KEY" ...`) could otherwise exfiltrate them, so
+/// the agent's shell never inherits them.
+pub const PROVIDER_CREDENTIAL_ENV_VARS: &[&str] = &[
+    "OPENAI_API_KEY",
+    "ANTHROPIC_API_KEY",
+    "OVIM_OPENAI_API_KEY",
+    "OVIM_ANTHROPIC_API_KEY",
+    "EXA_API_KEY",
+    "ANTHROPIC_AUTH_TOKEN",
+    "CLAUDE_CODE_OAUTH_TOKEN",
+    "CODEX_API_KEY",
+];
 
 fn reject_obsolete_subagent_config(parsed: &AiTomlConfig) -> Result<()> {
     if parsed.obsolete_subagents.is_some() {

@@ -1636,8 +1636,12 @@ fn bash_tool_executes_shell_composition_after_policy() {
                 ..Default::default()
             })
             .expect("open chat");
-        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+        // Auto mode refuses synchronous shell dispatch (it reviews programs
+        // through Terra first), so exercise the shell body after an explicit
+        // one-shot approval instead.
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
         editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+        let approved_root = dir.path().to_path_buf();
 
         let tool_call = ToolCallInfo {
             id: "call_bash".to_string(),
@@ -1647,7 +1651,7 @@ fn bash_tool_executes_shell_composition_after_policy() {
             }),
         };
 
-        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+        match editor.dispatch_tool_call_with_approval(&tool_call, Some(&approved_root)) {
             ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
                 assert!(ok.contains("beta"), "{ok}");
             }
@@ -1678,8 +1682,9 @@ fn bash_tool_executes_simple_program_in_project_root() {
                 ..Default::default()
             })
             .expect("open chat");
-        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+        editor.ai_state.config.tool_approval_mode = ToolApprovalMode::SensitivePrompt;
         editor.ai_state.no_repo_session_allowed_root = Some(dir.path().to_path_buf());
+        let approved_root = dir.path().to_path_buf();
 
         let tool_call = ToolCallInfo {
             id: "call_bash_pwd".to_string(),
@@ -1689,7 +1694,7 @@ fn bash_tool_executes_simple_program_in_project_root() {
             }),
         };
 
-        match editor.dispatch_tool_call_with_approval(&tool_call, None) {
+        match editor.dispatch_tool_call_with_approval(&tool_call, Some(&approved_root)) {
             ToolDispatchOutcome::Completed(ToolResult::Success(ok)) => {
                 assert!(ok.contains("succeeded"), "{ok}");
             }

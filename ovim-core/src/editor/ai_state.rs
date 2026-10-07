@@ -113,6 +113,9 @@ pub struct AiState {
     /// Dedicated read-only delegated-agent control plane. It snapshots the
     /// startup config and never replaces root chat orchestration.
     pub(crate) subagents: Box<super::ai_subagents::AiSubagentService>,
+    /// Reviews shell programs auto mode cannot clear locally. Tests replace it
+    /// so no unit test reaches a real provider.
+    pub(crate) shell_classifier: Arc<dyn crate::ai::auto_classifier::AutoModeClassifier>,
     pub active_selection: Option<AiSelectionSnapshot>,
     /// Global because opening chat can require sign-in.
     pub(crate) codex_auth_dialog: Option<CodexAuthDialog>,
@@ -190,6 +193,9 @@ impl AiState {
             chat_preference: crate::ai::chat_preference::ChatPreference::default(),
             chat_config_override: false,
             subagents,
+            shell_classifier: Arc::new(
+                crate::ai::auto_classifier::CodexAutoModeClassifier::default(),
+            ),
             active_selection: None,
             codex_auth_dialog: None,
             pending_codex_auth: None,

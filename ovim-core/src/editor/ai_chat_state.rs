@@ -85,12 +85,12 @@ pub struct PendingAgentComposerAction {
     pub previous_cursor: usize,
 }
 
-/// A Terra auto-mode verdict in flight for a Codex dynamic bash request.
+/// A Terra auto-mode verdict in flight for a model `bash` request, whether it
+/// arrived as a provider-owned dynamic call or in a local tool batch.
 pub struct PendingAutoModeClassification {
     pub tool_call: ToolCallInfo,
-    pub runtime_tool: crate::agent_runtime::PendingToolRef,
-    pub runtime_turn: crate::agent_runtime::PendingTurnRef,
-    pub dynamic_response: tokio::sync::oneshot::Sender<Result<String, String>>,
+    /// How the turn resumes once the verdict is known.
+    pub continuation: ToolExecutionContinuation,
     pub receiver:
         tokio::sync::oneshot::Receiver<Result<crate::ai::auto_mode::ClassifierVerdict, String>>,
 }

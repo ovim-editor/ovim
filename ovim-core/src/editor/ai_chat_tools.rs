@@ -8,6 +8,7 @@ use crate::ai::tools::{RuntimeServices, SideEffect, ToolResult};
 use crate::ai::{redact_high_risk_tokens, truncate_utf8_with_notice, ToolApprovalMode};
 use std::path::{Path, PathBuf};
 
+use super::ai_auto_mode::AutoModeShellReview;
 use super::ai_chat_state::{PendingToolApproval, ToolEventSummary};
 use super::ai_tool_path::{compact_tool_label, compact_tool_path, normalize_path};
 use super::Editor;
@@ -696,6 +697,21 @@ impl Editor {
                 tc.name
             )));
         }
+        if tc.name == "bash" && self.auto_mode_reviews_shell() {
+            // Synchronous dispatch has no Terra review to wait on, and Auto
+            // mode never runs an unreviewed program. Shell programs reach the
+            // editor through the reviewed, parked paths instead.
+            let session_temp_program = tc
+                .arguments
+                .get("command")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|command| self.current_session_authorizes_temp_shell_command(command));
+            if !session_temp_program {
+                return ToolDispatchOutcome::Completed(ToolResult::Error(
+                    "auto mode must review shell programs before they run".to_string(),
+                ));
+            }
+        }
         if self.is_ai_subagent_control_tool(&tc.name) {
             return ToolDispatchOutcome::Completed(self.execute_ai_subagent_control_tool(tc));
         }
@@ -1176,17 +1192,33 @@ impl Editor {
     /// `execute_tool_call_batch`. The user already approved, so no policy
     /// re-check happens here.
     fn resume_approved_batch_shell(&mut self, pending: PendingToolApproval) -> bool {
+        self.run_batch_shell_after_policy(
+            pending.tool_call,
+            pending.runtime_tool,
+            pending.remaining_tool_calls,
+            pending.model_name,
+        )
+    }
+
+    /// Run a batch `bash` call that the user or Terra has cleared. Execution
+    /// parks off the editor loop like any other batch shell program.
+    pub(super) fn run_batch_shell_after_policy(
+        &mut self,
+        tool_call: ToolCallInfo,
+        runtime_tool: Option<crate::agent_runtime::PendingToolRef>,
+        remaining_tool_calls: Vec<ToolCallInfo>,
+        model_name: String,
+    ) -> bool {
         let authorized = self
             .ai_state
             .tool_registry
-            .get(&pending.tool_call.name)
+            .get(&tool_call.name)
             .is_some_and(|definition| {
                 let capabilities = self.build_chat_capabilities();
                 capabilities.allows_side_effect(definition.side_effect)
                     && capabilities.contains(&definition.required_scope)
             });
-        let command = pending
-            .tool_call
+        let command = tool_call
             .arguments
             .get("command")
             .and_then(serde_json::Value::as_str)
@@ -1227,32 +1259,31 @@ impl Editor {
         };
         if let Some(error) = error {
             let result = ToolResult::Error(error);
-            if let (Some(turn), Some(runtime_tool)) =
-                (runtime_turn.as_ref(), pending.runtime_tool.as_ref())
+            if let (Some(turn), Some(runtime_tool)) = (runtime_turn.as_ref(), runtime_tool.as_ref())
             {
                 if let Err(error) = self.ai_runtime_finish_tool(turn, runtime_tool, &result) {
                     crate::log_warn!("agent_runtime", "failed to record approved tool: {error}");
                 }
             }
-            self.record_tool_event_summary(&pending.tool_call, &result);
-            let result_content = self.format_tool_result_with_target(&pending.tool_call, &result);
+            self.record_tool_event_summary(&tool_call, &result);
+            let result_content = self.format_tool_result_with_target(&tool_call, &result);
             if let Some(conv) = self.conversation_mut() {
-                conv.append_tool_result(pending.tool_call.id.clone(), result_content);
+                conv.append_tool_result(tool_call.id.clone(), result_content);
             }
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.tool_call_count = chat.tool_call_count.saturating_add(1);
                 chat.waiting = true;
             }
-            return self.execute_tool_call_batch(pending.remaining_tool_calls, pending.model_name);
+            return self.execute_tool_call_batch(remaining_tool_calls, model_name);
         }
 
         self.start_pending_shell_execution(
-            pending.tool_call,
+            tool_call,
             super::ai_chat_state::ToolExecutionContinuation::Batch {
-                runtime_tool: pending.runtime_tool,
+                runtime_tool,
                 runtime_turn,
-                remaining_tool_calls: pending.remaining_tool_calls,
-                model_name: pending.model_name,
+                remaining_tool_calls,
+                model_name,
             },
             command,
             workdir.expect("checked above"),
@@ -1473,27 +1504,55 @@ impl Editor {
                                     .into(),
                             ))),
                             (Some(workdir), Some(artifact_store)) => {
-                                if let Some(chat) = self.ai_state.chat.as_mut() {
-                                    chat.tool_call_count =
-                                        chat.tool_call_count.saturating_add(executed_in_batch);
+                                // Auto mode never runs an unreviewed program:
+                                // the batch path shares the dynamic path's
+                                // Terra review before anything executes.
+                                let review = if self.auto_mode_reviews_shell() {
+                                    self.auto_mode_shell_review(&command)
+                                } else {
+                                    Ok(AutoModeShellReview::Proceed)
+                                };
+                                match review {
+                                    Err(error) => Some(ToolDispatchOutcome::Completed(
+                                        ToolResult::Error(error),
+                                    )),
+                                    Ok(review) => {
+                                        if let Some(chat) = self.ai_state.chat.as_mut() {
+                                            chat.tool_call_count = chat
+                                                .tool_call_count
+                                                .saturating_add(executed_in_batch);
+                                        }
+                                        let continuation =
+                                            super::ai_chat_state::ToolExecutionContinuation::Batch {
+                                                runtime_tool: runtime_tool
+                                                    .as_ref()
+                                                    .map(|(_, tool)| tool.clone()),
+                                                runtime_turn: runtime_tool
+                                                    .as_ref()
+                                                    .map(|(turn, _)| turn.clone()),
+                                                remaining_tool_calls: tool_calls[idx + 1..]
+                                                    .to_vec(),
+                                                model_name,
+                                            };
+                                        match review {
+                                            AutoModeShellReview::Proceed => self
+                                                .start_pending_shell_execution(
+                                                    tc.clone(),
+                                                    continuation,
+                                                    command,
+                                                    workdir,
+                                                    artifact_store,
+                                                ),
+                                            AutoModeShellReview::Classify(request) => self
+                                                .begin_auto_mode_classification(
+                                                    tc.clone(),
+                                                    continuation,
+                                                    *request,
+                                                ),
+                                        }
+                                        return true;
+                                    }
                                 }
-                                self.start_pending_shell_execution(
-                                    tc.clone(),
-                                    super::ai_chat_state::ToolExecutionContinuation::Batch {
-                                        runtime_tool: runtime_tool
-                                            .as_ref()
-                                            .map(|(_, tool)| tool.clone()),
-                                        runtime_turn: runtime_tool
-                                            .as_ref()
-                                            .map(|(turn, _)| turn.clone()),
-                                        remaining_tool_calls: tool_calls[idx + 1..].to_vec(),
-                                        model_name,
-                                    },
-                                    command,
-                                    workdir,
-                                    artifact_store,
-                                );
-                                return true;
                             }
                         }
                     }
@@ -1577,7 +1636,7 @@ impl Editor {
         true
     }
 
-    fn pause_for_tool_approval(&mut self, pending: PendingToolApproval) {
+    pub(super) fn pause_for_tool_approval(&mut self, pending: PendingToolApproval) {
         if !self.park_ai_turn(pending) {
             return;
         }

@@ -105,9 +105,18 @@ fn reap_shell_leader(
     }
 }
 
+/// Keep provider credentials out of the model's shell: it could otherwise
+/// print or exfiltrate them.
+fn scrub_credential_env(builder: &mut Command, scrubbed_env: &[String]) {
+    for name in scrubbed_env {
+        builder.env_remove(name);
+    }
+}
+
 pub(super) fn run_bash_program(
     command: &str,
     workdir: &Path,
+    scrubbed_env: &[String],
     kill: Option<&super::ai_chat_state::ShellKillHandle>,
     progress: Option<tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>>,
 ) -> ToolResult {
@@ -125,6 +134,7 @@ pub(super) fn run_bash_program(
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    scrub_credential_env(&mut builder, scrubbed_env);
     #[cfg(unix)]
     {
         // Make the child a process-group leader so cancellation can kill the
@@ -729,14 +739,18 @@ impl Editor {
             .filter(|value| !value.is_empty())
             .unwrap_or_else(|| std::ffi::OsString::from("/bin/sh"));
 
-        let mut child = match Command::new(&shell)
+        let mut builder = Command::new(&shell);
+        builder
             .arg("-lc")
             .arg(command)
             .current_dir(&workdir)
             .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .spawn()
-        {
+            .stderr(Stdio::piped());
+        scrub_credential_env(
+            &mut builder,
+            &self.ai_state.config.shell_scrubbed_env_names(),
+        );
+        let mut child = match builder.spawn() {
             Ok(child) => child,
             Err(err) => {
                 return ToolResult::Error(format!(

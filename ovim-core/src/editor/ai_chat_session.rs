@@ -303,14 +303,7 @@ impl Editor {
                 chat.take_parked_as::<super::ai_chat_state::PendingAutoModeClassification>()
             });
             if let Some(pending) = pending_classifier {
-                self.execute_dynamic_tool_after_policy(
-                    pending.runtime_turn,
-                    pending.runtime_tool,
-                    pending.tool_call,
-                    pending.dynamic_response,
-                    None,
-                    false,
-                );
+                self.run_classified_shell(pending.tool_call, pending.continuation);
             }
         }
 

@@ -156,12 +156,20 @@ GUI host and the profile's network scope are both present.
 
 Auto mode is the default. Read-only local inspection and tests run immediately;
 context-dependent commands are reviewed by subscription-backed Terra at low
-effort. Terra treats routine project-local formatting, building, linting, and
+effort. The same review gates every provider that can run shell commands
+(direct Codex, OpenAI, Anthropic, Ollama, and Codex app-server): no shell
+program outside the read-only allowlist runs until Terra allows it. Terra treats
+routine project-local formatting, building, linting, and
 testing as authorized when they are reasonable steps toward your requested
 implementation objective. Elevated privileges, credential access,
 outside-project effects, remote-code pipelines, ambiguous authorization, and
-classifier failures pause for you. Press Enter or Ctrl-Y to allow once, Ctrl-A
-to allow the requested folder for the chat, or Esc/Ctrl-N to deny. Installed
+classifier failures pause for you. Terra runs through Codex's app-server, so it
+needs Codex CLI signed in; when it is unavailable, every command it would review
+pauses for your approval instead. Ovim removes provider credential variables
+such as `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, `EXA_API_KEY`, and each profile's
+`api_key_env` from the environment it gives shell commands. Press Enter or
+Ctrl-Y to allow once, Ctrl-A to allow the requested folder for the chat, or
+Esc/Ctrl-N to deny. Installed
 skill packages and source files in Cargo's local registry cache are trusted
 read-only inputs and do not trigger outside-project approval prompts. To opt
 out of auto mode, set `tool_approval_mode = "sensitive_prompt"` or

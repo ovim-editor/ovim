@@ -256,9 +256,11 @@ fn classification(editor: &mut Editor) -> (ParkedTurn, DynamicResponse) {
     (
         ParkedTurn::Classifying(PendingAutoModeClassification {
             tool_call,
-            runtime_tool,
-            runtime_turn,
-            dynamic_response,
+            continuation: ToolExecutionContinuation::Dynamic {
+                runtime_tool,
+                runtime_turn,
+                response: dynamic_response,
+            },
             receiver: verdict,
         }),
         receiver,
@@ -454,6 +456,24 @@ async fn cancelling_classification_answers_the_provider() {
     park(&mut editor, parked);
     assert_cancelled_to_idle(&mut editor);
     assert_dynamic_cancelled(receiver);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_batch_classification_closes_the_committed_batch() {
+    let mut editor = chat_editor();
+    let (first, follow_up) = committed_batch(&mut editor, "bash");
+    let (_tx, verdict) = oneshot::channel();
+    park(
+        &mut editor,
+        ParkedTurn::Classifying(PendingAutoModeClassification {
+            tool_call: first,
+            continuation: batch(vec![follow_up]),
+            receiver: verdict,
+        }),
+    );
+    assert_eq!(editor.ai_chat_activity(), AiChatActivity::ClassifyingTool);
+    assert_cancelled_to_idle(&mut editor);
+    assert_batch_closed(&editor);
 }
 
 #[tokio::test(flavor = "current_thread")]

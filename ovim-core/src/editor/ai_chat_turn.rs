@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::ai::chat_types::{ChatRole, ConversationTree, StreamChunk, ToolCallInfo};
+use crate::ai::chat_types::{ConversationTree, StreamChunk, ToolCallInfo};
 
 use super::Editor;
 
@@ -690,209 +690,6 @@ impl Editor {
         }
     }
 
-    pub(super) fn shell_authorization_context(
-        &self,
-        project_root: &std::path::Path,
-    ) -> crate::ai::auto_mode::ConversationAuthorizationContext {
-        use crate::ai::auto_mode::{AuthorizedObjective, ExplicitAuthorization};
-
-        let key = self.ai_chat_conversation_key();
-        let runtime_nodes = self.ai_state.conversation_runtime_nodes.get(&key);
-        let mut recent = self
-            .conversation()
-            .map(|conversation| {
-                conversation
-                    .messages()
-                    .iter()
-                    .zip(conversation.node_ids_for_active_branch())
-                    .filter(|(message, _)| message.role == ChatRole::User)
-                    .map(|(message, node_id)| {
-                        let source_id = runtime_nodes
-                            .and_then(|nodes| nodes.get(node_id))
-                            .map(|reference| reference.event_id.as_str().to_string())
-                            .unwrap_or_else(|| format!("ui-node:{node_id}"));
-                        (message.content.clone(), source_id)
-                    })
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        if recent.len() > 8 {
-            recent.drain(..recent.len() - 8);
-        }
-        let explicit_user_instructions = recent
-            .iter()
-            .map(|(instruction, source_id)| ExplicitAuthorization {
-                instruction: instruction.clone(),
-                project_root: project_root.to_path_buf(),
-                source_id: source_id.clone(),
-            })
-            .collect();
-        let authorized_objectives = recent
-            .last()
-            .map(|(objective, source_id)| {
-                vec![AuthorizedObjective {
-                    objective: objective.clone(),
-                    project_root: project_root.to_path_buf(),
-                    source_id: source_id.clone(),
-                }]
-            })
-            .unwrap_or_default();
-        crate::ai::auto_mode::ConversationAuthorizationContext {
-            explicit_user_instructions,
-            authorized_objectives,
-        }
-    }
-
-    fn begin_dynamic_bash_auto_mode(
-        &mut self,
-        call: ToolCallInfo,
-        response: tokio::sync::oneshot::Sender<Result<String, String>>,
-        turn: crate::agent_runtime::PendingTurnRef,
-        tool: crate::agent_runtime::PendingToolRef,
-    ) {
-        use crate::ai::auto_classifier::{AutoModeClassifier, CodexAutoModeClassifier};
-        use crate::ai::auto_mode::{ClassifierRequest, ShellProposal, StaticDisposition};
-        use std::collections::BTreeSet;
-
-        let command = call
-            .arguments
-            .get("command")
-            .and_then(|value| value.as_str())
-            .unwrap_or_default()
-            .trim()
-            .to_string();
-        let Some(project_root) = self.ai_effective_project_root() else {
-            self.finish_dynamic_tool(
-                &turn,
-                &tool,
-                &call,
-                response,
-                crate::ai::tools::ToolResult::Error(self.no_project_root_error()),
-            );
-            return;
-        };
-        if self.current_session_authorizes_temp_shell_command(&command) {
-            self.execute_dynamic_tool_after_policy(turn, tool, call, response, None, false);
-            return;
-        }
-        let request = ClassifierRequest::new(
-            ShellProposal {
-                command,
-                cwd: project_root.clone(),
-                project_root: project_root.clone(),
-                requested_capabilities: BTreeSet::new(),
-            },
-            self.shell_authorization_context(&project_root),
-        );
-
-        if request
-            .dynamic
-            .static_analysis
-            .disposition
-            .requires_model_review()
-        {
-            let operation_id = tool.operation_id.clone();
-            let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-            tokio::spawn(async move {
-                let result = CodexAutoModeClassifier::default()
-                    .classify(&request, &operation_id)
-                    .await
-                    .map_err(|error| format!("{error:#}"));
-                let _ = result_tx.send(result);
-            });
-            self.park_ai_turn(super::ai_chat_state::PendingAutoModeClassification {
-                tool_call: call,
-                runtime_tool: tool,
-                runtime_turn: turn,
-                dynamic_response: response,
-                receiver: result_rx,
-            });
-            self.set_status_message("Terra is reviewing the proposed shell program");
-        } else {
-            debug_assert_eq!(
-                request.dynamic.static_analysis.disposition,
-                StaticDisposition::LocallySafe
-            );
-            self.execute_dynamic_tool_after_policy(turn, tool, call, response, None, false);
-        }
-    }
-
-    pub(super) fn poll_pending_auto_mode_classification(&mut self) -> bool {
-        use crate::ai::auto_mode::ClassifierDecision;
-        let received = {
-            let Some(pending) = self.ai_state.chat.as_mut().and_then(|chat| {
-                chat.parked_as_mut::<super::ai_chat_state::PendingAutoModeClassification>()
-            }) else {
-                return false;
-            };
-            match pending.receiver.try_recv() {
-                Ok(result) => Some(result),
-                Err(tokio::sync::oneshot::error::TryRecvError::Empty) => return false,
-                Err(tokio::sync::oneshot::error::TryRecvError::Closed) => {
-                    Some(Err("auto-mode classifier stopped without a verdict".into()))
-                }
-            }
-        };
-        let pending = self
-            .ai_state
-            .chat
-            .as_mut()
-            .and_then(|chat| {
-                chat.take_parked_as::<super::ai_chat_state::PendingAutoModeClassification>()
-            })
-            .expect("pending classifier exists");
-        let project_root = self.ai_effective_project_root();
-        match received.expect("classifier result") {
-            Ok(verdict)
-                if verdict.decision == ClassifierDecision::Allow
-                    && project_root.as_ref() == Some(&verdict.scope.project_root) =>
-            {
-                self.execute_dynamic_tool_after_policy(
-                    pending.runtime_turn,
-                    pending.runtime_tool,
-                    pending.tool_call,
-                    pending.dynamic_response,
-                    None,
-                    false,
-                );
-            }
-            Ok(verdict) if verdict.decision == ClassifierDecision::Deny => {
-                self.finish_dynamic_tool(
-                    &pending.runtime_turn,
-                    &pending.runtime_tool,
-                    &pending.tool_call,
-                    pending.dynamic_response,
-                    crate::ai::tools::ToolResult::Error(format!(
-                        "auto mode denied shell program: {}",
-                        verdict.reason
-                    )),
-                );
-            }
-            Ok(verdict) => self.pause_dynamic_tool_for_approval(
-                pending.runtime_turn,
-                pending.runtime_tool,
-                pending.tool_call,
-                pending.dynamic_response,
-                if verdict.decision == ClassifierDecision::Allow {
-                    "classifier returned an Allow outside the active repository scope".into()
-                } else {
-                    verdict.reason
-                },
-            ),
-            Err(error) => {
-                crate::log_warn!("ai_auto_mode", "classifier unavailable: {error}");
-                self.pause_dynamic_tool_for_approval(
-                    pending.runtime_turn,
-                    pending.runtime_tool,
-                    pending.tool_call,
-                    pending.dynamic_response,
-                    format!("classifier unavailable; explicit confirmation required: {error}"),
-                )
-            }
-        }
-        true
-    }
-
     pub(super) fn execute_dynamic_tool_after_policy(
         &mut self,
         turn: crate::agent_runtime::PendingTurnRef,
@@ -1031,6 +828,7 @@ impl Editor {
         let kill_for_task = kill.clone();
         let task_command = command.clone();
         let task_workdir = workdir.clone();
+        let scrubbed_env = self.ai_state.config.shell_scrubbed_env_names();
         let task = tokio::task::spawn_blocking(move || {
             let temp_probe =
                 super::ai_session_temp::TempPathProbe::for_shell_command(&task_command);
@@ -1044,6 +842,7 @@ impl Editor {
                     let result = super::ai_tool_execution::run_bash_program(
                         &task_command,
                         &task_workdir,
+                        &scrubbed_env,
                         Some(&kill_for_task),
                         Some(progress_tx.clone()),
                     );
@@ -1554,7 +1353,7 @@ impl Editor {
         let _ = response.send(wire);
     }
 
-    fn pause_dynamic_tool_for_approval(
+    pub(super) fn pause_dynamic_tool_for_approval(
         &mut self,
         turn: crate::agent_runtime::PendingTurnRef,
         tool: crate::agent_runtime::PendingToolRef,
