@@ -547,3 +547,115 @@ fn moving_over_thousands_of_closed_folds_stays_fast() {
     // Each function shows three lines (header, `}`, blank): 30 `j` cover ten.
     test.assert_cursor(50, 0);
 }
+
+// ---------------------------------------------------------------------------
+// Syntax folds on indentation-structured grammars
+// ---------------------------------------------------------------------------
+
+/// The fold ranges the syntax tree produced for `text` as the file `path`.
+fn syntax_folds(path: &str, text: &str) -> Vec<(usize, usize)> {
+    let mut test = EditorTest::new(text);
+    test.editor.buffer_mut().set_file_path(path.to_string());
+    test.editor.buffer_mut().enable_syntax_highlighting();
+    assert!(test.editor.buffer().syntax_tree().is_some(), "{path}");
+    test.keys("zR");
+    let manager = test.editor.buffer().fold_manager();
+    assert_eq!(
+        manager.source(),
+        ovim_core::fold::FoldSource::Syntax,
+        "{path}"
+    );
+    manager
+        .folds()
+        .iter()
+        .map(|fold| (fold.start_line(), fold.end_line()))
+        .collect()
+}
+
+const PYTHON: &str = "import os\n\n\ndef first(x):\n    if x:\n        return 1\n    return 2\n\n\nclass A:\n    def m(self):\n        pass\n\n    def n(self):\n        return 3\n";
+
+/// One fold per function, class and compound statement; the module itself
+/// (which spans the file) and the `block` bodies (whose "header" would be
+/// their first line) do not fold.
+#[test]
+fn python_folds_each_definition_but_not_the_module_or_its_bodies() {
+    assert_eq!(
+        syntax_folds("/tmp/sample.py", PYTHON),
+        vec![(3, 6), (4, 5), (9, 14), (10, 11), (13, 14)]
+    );
+}
+
+#[test]
+fn zm_on_python_leaves_the_top_level_definitions_visible() {
+    let mut test = EditorTest::new(PYTHON);
+    test.editor
+        .buffer_mut()
+        .set_file_path("/tmp/sample.py".to_string());
+    test.editor.buffer_mut().enable_syntax_highlighting();
+    test.keys("zM");
+    // `import os`, both blank runs, `def first`, `class A` stay visible.
+    assert_eq!(hidden(&test), vec![4, 5, 6, 10, 11, 12, 13, 14]);
+}
+
+#[test]
+fn a_python_file_with_one_function_still_folds_it() {
+    assert_eq!(
+        syntax_folds("/tmp/one.py", "def only():\n    x = 1\n    return x\n"),
+        vec![(0, 2)]
+    );
+}
+
+const COMPOSE: &str = "services:\n  web:\n    image: nginx\n    ports:\n      - \"80:80\"\n  db:\n    image: postgres\nvolumes:\n  data: {}\n";
+
+/// One fold per mapping entry that spans lines, as in nvim's YAML folds; the
+/// block wrappers around the whole document must not fold everything under
+/// `services:`.
+#[test]
+fn yaml_folds_each_multi_line_entry_but_not_the_document() {
+    assert_eq!(
+        syntax_folds("/tmp/compose.yaml", COMPOSE),
+        vec![(0, 6), (1, 4), (3, 4), (5, 6), (7, 8)]
+    );
+}
+
+#[test]
+fn zm_on_yaml_keeps_every_top_level_key_visible() {
+    let mut test = EditorTest::new(COMPOSE);
+    test.editor
+        .buffer_mut()
+        .set_file_path("/tmp/compose.yaml".to_string());
+    test.editor.buffer_mut().enable_syntax_highlighting();
+    test.keys("zM");
+    assert_eq!(hidden(&test), vec![1, 2, 3, 4, 5, 6, 8]);
+}
+
+#[test]
+fn a_single_key_yaml_document_folds_that_key() {
+    assert_eq!(
+        syntax_folds("/tmp/one.yaml", "services:\n  web:\n    image: nginx\n"),
+        vec![(0, 2), (1, 2)]
+    );
+}
+
+/// A fenced code block inside a section is a fold of its own, even though its
+/// kind ends in `_block` like a construct's body.
+#[test]
+fn markdown_code_fences_fold_inside_their_section() {
+    let folds = syntax_folds(
+        "/tmp/notes.md",
+        "# T\n\ntext\n\n## S\n\nmore\n\n```rust\nfn x() {}\n```\n",
+    );
+    assert!(folds.contains(&(4, 10)), "section: {folds:?}");
+    assert!(folds.contains(&(8, 10)), "code fence: {folds:?}");
+}
+
+/// Blocks that start on the construct's header line fold exactly like the
+/// construct, so brace languages keep one fold per construct.
+#[test]
+fn rust_nested_blocks_keep_one_fold_per_construct() {
+    let folds = syntax_folds(
+        "/tmp/nested.rs",
+        "fn main() {\n    let x = 1;\n    if x > 0 {\n        println!(\"a\");\n    } else {\n        println!(\"b\");\n    }\n}\n",
+    );
+    assert_eq!(folds, vec![(0, 6), (2, 5), (2, 3), (4, 5)]);
+}

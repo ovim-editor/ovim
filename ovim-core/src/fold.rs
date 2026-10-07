@@ -995,14 +995,37 @@ fn syntax_kind_is_foldable(kind: &str) -> bool {
         "section",
     ];
     // Single-token-ish or purely structural nodes that repeat their parent.
-    const SKIP: &[&str] = &["program", "source_file", "compilation_unit", "document"];
+    // YAML's block wrappers sit between a document or a key and its entries,
+    // so folding them would hide every entry under the first key.
+    const SKIP: &[&str] = &[
+        "program",
+        "source_file",
+        "compilation_unit",
+        "document",
+        "block_node",
+        "block_mapping",
+        "block_sequence",
+    ];
     !SKIP.contains(&kind) && PARTS.iter().any(|part| kind.contains(part))
+}
+
+/// A construct's body (`block`, `class_body`, `statement_block`, ...): the
+/// construct's own fold already hides it, so a body that starts below the
+/// construct's header would only add a fold whose header is its first line.
+fn syntax_kind_is_body(kind: &str) -> bool {
+    (matches!(kind, "block" | "body" | "compound_statement")
+        || kind.ends_with("_block")
+        || kind.ends_with("_body"))
+        // A fenced code block is content of its own, not the body of a section.
+        && !kind.ends_with("code_block")
 }
 
 /// Folds derived from a tree-sitter syntax tree: every multi-line foldable
 /// node heads a fold from its first line. A last line that only closes the
 /// construct (`}`, `)`, `]`, `end`, `</tag>`) stays visible, as in every
-/// editor; `line_text` supplies the buffer's lines.
+/// editor; `line_text` supplies the buffer's lines. The root node (the whole
+/// file) never folds, and neither does a body that begins below the header of
+/// the construct that already folds it.
 pub fn syntax_fold_ranges(
     tree: &tree_sitter::Tree,
     line_text: &dyn Fn(usize) -> String,
@@ -1016,6 +1039,8 @@ pub fn syntax_fold_ranges(
     };
     let mut ranges = Vec::new();
     let mut cursor = tree.walk();
+    // Per open ancestor: the first row of the fold it produced, if any.
+    let mut ancestor_folds: Vec<Option<usize>> = Vec::new();
     loop {
         let node = cursor.node();
         let start_row = node.start_position().row;
@@ -1024,18 +1049,29 @@ pub fn syntax_fold_ranges(
         if node.end_position().column == 0 && end_row > start_row {
             end_row -= 1;
         }
-        if node.is_named() && end_row > start_row && syntax_kind_is_foldable(node.kind()) {
-            let end = if closes_only(end_row) && end_row - 1 > start_row {
-                end_row - 1
-            } else {
-                end_row
-            };
-            if end > start_row {
-                ranges.push((start_row, end));
+        let mut fold_start = None;
+        if node.is_named()
+            && end_row > start_row
+            && node.parent().is_some()
+            && syntax_kind_is_foldable(node.kind())
+        {
+            let header_row = ancestor_folds.iter().rev().find_map(|row| *row);
+            let below_header = header_row.is_some_and(|row| row < start_row);
+            if !(below_header && syntax_kind_is_body(node.kind())) {
+                let end = if closes_only(end_row) && end_row - 1 > start_row {
+                    end_row - 1
+                } else {
+                    end_row
+                };
+                if end > start_row {
+                    ranges.push((start_row, end));
+                    fold_start = Some(start_row);
+                }
             }
         }
         // Depth-first walk.
         if end_row > start_row && cursor.goto_first_child() {
+            ancestor_folds.push(fold_start);
             continue;
         }
         loop {
@@ -1047,6 +1083,7 @@ pub fn syntax_fold_ranges(
                 ranges.dedup();
                 return ranges;
             }
+            ancestor_folds.pop();
         }
     }
 }
