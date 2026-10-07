@@ -70,8 +70,6 @@ pub enum LaunchSource {
         config: Box<DebugRunConfig>,
         project_root: PathBuf,
     },
-    /// Not a launch at all: gather configurations for the picker.
-    ConfigLookup { project_root: PathBuf },
 }
 
 /// Something that can be started and re-started.
@@ -103,8 +101,7 @@ impl LaunchRequest {
         match &self.source {
             LaunchSource::Cursor { project_root, .. }
             | LaunchSource::Config { project_root, .. }
-            | LaunchSource::Plan { project_root, .. }
-            | LaunchSource::ConfigLookup { project_root } => project_root,
+            | LaunchSource::Plan { project_root, .. } => project_root,
         }
     }
 }
@@ -115,6 +112,23 @@ pub(crate) struct PendingPick {
     configs: Vec<DebugRunConfig>,
     project_root: PathBuf,
     adapter: Option<(String, Vec<String>)>,
+}
+
+/// Run configurations being fetched from the language server for the picker.
+/// It is not a launch: it never takes the place of a program that is running.
+struct ConfigLookup {
+    mode: LaunchMode,
+    project_root: PathBuf,
+    /// The configurations from `.ovim/debug.toml`.
+    configs: Vec<DebugRunConfig>,
+    rx: oneshot::Receiver<Vec<serde_json::Value>>,
+    task: JoinHandle<()>,
+}
+
+impl Drop for ConfigLookup {
+    fn drop(&mut self) {
+        self.task.abort();
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -238,6 +252,7 @@ pub(crate) struct LaunchState {
     /// A request waiting for the current job to stop (rerun replaces).
     queued: Option<LaunchRequest>,
     pending_pick: Option<PendingPick>,
+    config_lookup: Option<ConfigLookup>,
     debug_port_timeout: Duration,
     pub(crate) code_lens: super::code_lens::CodeLensState,
     /// A stack frame whose source is not under the workspace, being looked up
@@ -257,6 +272,7 @@ impl Default for LaunchState {
             last_request: None,
             queued: None,
             pending_pick: None,
+            config_lookup: None,
             debug_port_timeout: DEBUG_PORT_TIMEOUT,
             code_lens: Default::default(),
             frame_lookup: None,
@@ -495,6 +511,8 @@ impl Editor {
     /// Open the picker of available configurations
     /// (`.ovim/debug.toml` + `hyperion.runConfigurations`).
     pub fn launch_pick_config(&mut self, mode: LaunchMode) {
+        // A lookup still in flight is replaced.
+        self.launch.config_lookup = None;
         let project_root = self.launch_project_root(None);
         let mut loaded = crate::debug_config::load_debug_configs_reporting(&project_root);
         for problem in std::mem::take(&mut loaded.problems) {
@@ -521,59 +539,26 @@ impl Editor {
             return;
         };
         // The LSP half is fetched off-tick, then merged with the TOML half.
-        let run_id = self.launch.console.start_run(
-            "Run configurations".to_string(),
-            mode,
-            project_root.clone(),
-        );
         let (tx, rx) = oneshot::channel();
         let task = tokio::spawn(async move {
-            let result = ResolveResult {
-                outcome: ResolveOutcome::Nothing,
-                configurations: lsp::run_configurations(&manager, &language_id, &file).await,
-            };
-            let _ = tx.send(result);
+            let _ = tx.send(lsp::run_configurations(&manager, &language_id, &file).await);
         });
-        let request = LaunchRequest {
+        self.launch.config_lookup = Some(ConfigLookup {
             mode,
-            source: LaunchSource::ConfigLookup {
-                project_root: project_root.clone(),
-            },
-            adapter: None,
-        };
-        // Stash the TOML configs in the pick state so the merge below has them.
-        self.launch.pending_pick = Some(PendingPick {
-            mode,
-            configs: loaded.configs,
             project_root,
-            adapter: None,
+            configs: loaded.configs,
+            rx,
+            task,
         });
-        self.launch.job = Some(LaunchJob {
-            run_id,
-            request,
-            plan: None,
-            stage: Stage::Resolving,
-            resolve: Some((rx, task)),
-            proc: None,
-            proc_exit: None,
-            reports: None,
-            log: String::new(),
-            log_stdout: String::new(),
-            log_stderr: String::new(),
-            started_wall: SystemTime::now(),
-            stopping: false,
-            session_end: None,
-            panel_run: false,
-            debug_port: None,
-        });
-        self.log_console(run_id, LineKind::System, "Looking up run configurations...");
+        self.set_status_message("Looking up run configurations...");
     }
 
     /// Stop everything: resolve task, build, running program, debug session.
     /// Returns false when there was nothing to stop.
     pub fn launch_stop(&mut self) -> bool {
         self.launch.queued = None;
-        let mut stopped = self.stop_current_job();
+        let lookup_cancelled = self.launch.config_lookup.take().is_some();
+        let mut stopped = self.stop_current_job() || lookup_cancelled;
         if self.dap_manager.is_active() && self.launch.job.is_none() {
             // A debug session started by hand (not through a launch job).
             self.dap_manager.request_stop();
@@ -830,6 +815,7 @@ impl Editor {
             self.set_status_message("Cannot start a run: no async runtime available");
             return;
         }
+        self.launch.config_lookup = None;
         if self.launch.job.is_some() || self.dap_manager.is_active() {
             // Rerun / new run replaces the current one: stop it, start when
             // it is gone.
@@ -852,7 +838,6 @@ impl Editor {
                 .unwrap_or_else(|| "file".to_string()),
             LaunchSource::Config { config, .. } => config.name.clone(),
             LaunchSource::Plan { plan, .. } => plan.name.clone(),
-            LaunchSource::ConfigLookup { .. } => "Run configurations".to_string(),
         };
         let run_id = self
             .launch
@@ -881,7 +866,6 @@ impl Editor {
         };
 
         match request.source.clone() {
-            LaunchSource::ConfigLookup { .. } => {}
             LaunchSource::Plan { plan, .. } => self.begin_plan(&mut job, *plan),
             LaunchSource::Config {
                 config,
@@ -985,11 +969,6 @@ impl Editor {
 
     fn on_resolved(&mut self, job: &mut LaunchJob, result: ResolveResult) {
         let mode = job.request.mode;
-        // The config picker (`launch_pick_config`) has its own tail.
-        if matches!(&job.request.source, LaunchSource::ConfigLookup { .. }) {
-            self.finish_config_lookup(job, result);
-            return;
-        }
         // Tests fall back to a plan composed locally (never to run configs).
         let test_fallback = match &job.request.source {
             LaunchSource::Cursor {
@@ -1071,20 +1050,25 @@ impl Editor {
         self.offer_configs_for_job(job, mode, configs, reason);
     }
 
-    fn finish_config_lookup(&mut self, job: &mut LaunchJob, result: ResolveResult) {
-        let mode = job.request.mode;
-        let mut configs = self
-            .launch
-            .pending_pick
-            .take()
-            .map(|p| p.configs)
-            .unwrap_or_default();
-        configs.extend(crate::debug_config::parse_lsp_run_configs(
-            &result.configurations,
-        ));
-        let root = job.request.project_root().to_path_buf();
-        self.discard_run(job);
+    /// Opens the picker once the language server's run configurations are in.
+    fn poll_config_lookup(&mut self) -> bool {
+        let Some(lookup) = self.launch.config_lookup.as_mut() else {
+            return false;
+        };
+        let from_server = match lookup.rx.try_recv() {
+            Ok(values) => values,
+            Err(oneshot::error::TryRecvError::Empty) => return false,
+            // The lookup died: offer what the project file has.
+            Err(oneshot::error::TryRecvError::Closed) => Vec::new(),
+        };
+        let Some(mut lookup) = self.launch.config_lookup.take() else {
+            return false;
+        };
+        let mut configs = std::mem::take(&mut lookup.configs);
+        configs.extend(crate::debug_config::parse_lsp_run_configs(&from_server));
+        let (mode, root) = (lookup.mode, std::mem::take(&mut lookup.project_root));
         self.offer_configs(mode, configs, root, None, "");
+        true
     }
 
     /// Chooses among configurations when a job could not resolve a plan.
@@ -1444,6 +1428,7 @@ impl Editor {
         let mut changed = self.ingest_debug_output();
         changed |= self.poll_server_command();
         changed |= self.poll_frame_lookup();
+        changed |= self.poll_config_lookup();
         let Some(mut job) = self.launch.job.take() else {
             changed |= self.acknowledge_orphan_session_end();
             self.start_queued_launch();

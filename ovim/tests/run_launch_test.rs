@@ -595,6 +595,89 @@ async fn several_configs_open_a_picker_and_choosing_one_runs_it() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_config_picker_opens_next_to_a_running_program_and_leaves_it_alone() {
+    let mut s = Session::new(&["x"]).await;
+    std::fs::create_dir_all(s.root.join(".ovim")).unwrap();
+    std::fs::write(
+        s.root.join(".ovim/debug.toml"),
+        "[[config]]\nname = \"First\"\ntype = \"launch\"\nmain_class = \"a.First\"\n\n\
+         [[config]]\nname = \"Second\"\ntype = \"launch\"\nmain_class = \"a.Second\"\n",
+    )
+    .unwrap();
+    let script = s.write_script(
+        "long.sh",
+        "echo $$ > \"$(dirname \"$0\")/long.pid\"\necho started\nexec sleep 300",
+    );
+    s.test.command(&format!("set makeprg={}", script.display()));
+    s.test.command("make");
+    s.until("the program to start", |s| {
+        s.console_text().contains("started")
+    })
+    .await;
+    let pid: i64 = std::fs::read_to_string(s.root.join("long.pid"))
+        .unwrap()
+        .trim()
+        .parse()
+        .unwrap();
+
+    for keys in [" rc", " rC", " dC"] {
+        s.test.press_esc();
+        s.test.keys(keys);
+        s.until("the picker", |s| s.test.editor.mode() == Mode::Picker)
+            .await;
+        assert!(process_alive(pid), "{keys} killed the running program");
+        assert!(s.test.editor.is_launch_active(), "{keys}");
+        assert_eq!(
+            s.test.editor.run_console().runs.len(),
+            1,
+            "{keys}: looking up configurations is not a run of its own"
+        );
+        assert!(s.test.editor.run_console().runs[0].status.is_active());
+        s.test.press_esc();
+        s.tick().await;
+    }
+
+    // Stop still ends the program that was running.
+    s.test.keys(" rs");
+    s.until("the run to stop", |s| s.run_finished()).await;
+    assert_eq!(s.outcome(), RunOutcome::Stopped);
+    for _ in 0..100 {
+        if !process_alive(pid) {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+    assert!(!process_alive(pid));
+    s.stop_lsp().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_cancels_a_configuration_lookup_that_is_still_waiting_for_the_server() {
+    let mut s = Session::new(&resolve_commands()).await;
+    std::fs::create_dir_all(s.root.join(".ovim")).unwrap();
+    std::fs::write(
+        s.root.join(".ovim/debug.toml"),
+        "[[config]]\nname = \"First\"\ntype = \"launch\"\nmain_class = \"a.First\"\n\n\
+         [[config]]\nname = \"Second\"\ntype = \"launch\"\nmain_class = \"a.Second\"\n",
+    )
+    .unwrap();
+    // The lookup is in flight: only a tick hands its result to the editor.
+    s.test.keys(" rc");
+    assert!(s.test.editor.mode() != Mode::Picker);
+    assert!(!s.test.editor.is_launch_active());
+    s.test.keys(" rs");
+    for _ in 0..30 {
+        s.tick().await;
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(
+        s.test.editor.mode() != Mode::Picker,
+        "a cancelled lookup must not open the picker later"
+    );
+    s.stop_lsp().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_broken_debug_toml_is_reported_not_silently_ignored() {
     let mut s = Session::new(&["x"]).await;
     std::fs::create_dir_all(s.root.join(".ovim")).unwrap();
