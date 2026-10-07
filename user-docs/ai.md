@@ -434,8 +434,20 @@ claude auth login
 
 Ovim includes a pinned, unmodified SDK module. It does not install npm packages
 on startup, read Claude credential files, or implement its own Claude login.
-Your usual Claude environment and user/project settings apply. Account or
+Your usual Claude environment and user settings apply. Account or
 organization restrictions reported by Claude also apply in Ovim.
+
+A repository's own Claude configuration is trust-gated. The SDK skips Claude
+Code's folder-trust dialog, so a cloned repository's `.claude/settings.json`
+hooks and permission rules, `CLAUDE.md`, and `.mcp.json` would otherwise run or
+pre-approve commands unprompted. Ovim loads these project and local settings
+only in editable chats, and only when Claude Code has already trusted the folder
+or one of its ancestors (`hasTrustDialogAccepted` in `~/.claude.json`, or in
+`$CLAUDE_CONFIG_DIR/.claude.json`). Read-only queries use user settings alone.
+Ovim never records trust itself. When an editable chat starts in an untrusted
+folder that has project Claude configuration, the chat shows a one-time note;
+run `claude` in that folder once and accept its trust prompt to enable the
+project settings.
 
 Codex remains the shipped default. Choosing a profile or Claude model in the
 GUI or terminal picker (including `/model`) remembers it for new chats across

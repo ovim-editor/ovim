@@ -141,9 +141,64 @@ pub(crate) struct Request {
     pub model: String,
     pub effort: Option<String>,
     pub allow_edits: bool,
+    /// Whether Claude may load the workspace's own `.claude` settings. The SDK
+    /// skips Claude Code's folder-trust dialog, so a cloned repository's hooks
+    /// and permission rules would otherwise run unprompted.
+    pub project_settings: bool,
     pub permission_mode: String,
     pub resume: Option<String>,
     pub content: Vec<Value>,
+}
+
+/// Where Claude Code keeps its global state, including which folders the user
+/// has trusted through its own dialog.
+fn global_config_path(
+    config_dir: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+) -> Option<PathBuf> {
+    match config_dir.filter(|dir| !dir.is_empty()) {
+        Some(dir) => Some(PathBuf::from(dir).join(".claude.json")),
+        None => home.map(|home| home.join(".claude.json")),
+    }
+}
+
+/// Whether Claude Code has already trusted `workspace` or one of its
+/// ancestors. This only reads Claude's record; Ovim never grants trust.
+pub(crate) fn workspace_trusted(workspace: &std::path::Path) -> bool {
+    workspace_trusted_by(
+        global_config_path(std::env::var_os("CLAUDE_CONFIG_DIR"), dirs::home_dir()),
+        workspace,
+    )
+}
+
+fn workspace_trusted_by(config_path: Option<PathBuf>, workspace: &std::path::Path) -> bool {
+    config_path
+        .and_then(|path| std::fs::read(path).ok())
+        .is_some_and(|bytes| trusted_in_global_config(&bytes, workspace))
+}
+
+fn trusted_in_global_config(config: &[u8], workspace: &std::path::Path) -> bool {
+    let Ok(config) = serde_json::from_slice::<Value>(config) else {
+        return false;
+    };
+    let Some(projects) = config.get("projects").and_then(Value::as_object) else {
+        return false;
+    };
+    workspace.ancestors().any(|folder| {
+        projects
+            .get(folder.to_string_lossy().as_ref())
+            .and_then(|project| project.get("hasTrustDialogAccepted"))
+            .and_then(Value::as_bool)
+            == Some(true)
+    })
+}
+
+/// Whether the workspace carries project-level Claude configuration that an
+/// untrusted folder keeps Claude from loading.
+pub(crate) fn has_project_configuration(workspace: &std::path::Path) -> bool {
+    [".claude", "CLAUDE.md", ".mcp.json"]
+        .iter()
+        .any(|name| workspace.join(name).exists())
 }
 
 #[derive(Debug, Deserialize)]
@@ -452,6 +507,86 @@ mod tests {
                 .unwrap(),
             Some(Event::Done)
         ));
+    }
+
+    #[test]
+    fn trust_comes_only_from_claudes_own_record_for_the_folder_or_an_ancestor() {
+        let config = br#"{
+            "projects": {
+                "/work": {"hasTrustDialogAccepted": true},
+                "/work/untrusted": {"hasTrustDialogAccepted": false},
+                "/other": {"hasTrustDialogAccepted": "yes"},
+                "/exact/repo": {"hasTrustDialogAccepted": true},
+                "/typo": {}
+            }
+        }"#;
+        let trusted = |path: &str| trusted_in_global_config(config, std::path::Path::new(path));
+        assert!(trusted("/work"));
+        assert!(trusted("/work/sub/dir"));
+        assert!(trusted("/exact/repo"));
+        // Any trusted ancestor is enough; an unrecorded sibling, an explicit
+        // refusal with no trusted ancestor, or a non-boolean is untrusted.
+        assert!(trusted("/work/untrusted"));
+        assert!(!trusted("/other"));
+        assert!(!trusted("/other/project"));
+        assert!(!trusted("/typo"));
+        assert!(!trusted("/exact"));
+        assert!(!trusted("/"));
+    }
+
+    #[test]
+    fn trust_is_read_from_the_config_directory_claude_uses() {
+        use std::ffi::OsString;
+        assert_eq!(
+            global_config_path(
+                Some(OsString::from("/cfg")),
+                Some(PathBuf::from("/home/me"))
+            ),
+            Some(PathBuf::from("/cfg/.claude.json"))
+        );
+        assert_eq!(
+            global_config_path(Some(OsString::new()), Some(PathBuf::from("/home/me"))),
+            Some(PathBuf::from("/home/me/.claude.json"))
+        );
+        assert_eq!(global_config_path(None, None), None);
+
+        let dir = tempfile::tempdir().unwrap();
+        let config = dir.path().join(".claude.json");
+        let workspace = std::path::Path::new("/work/repo");
+        assert!(!workspace_trusted_by(Some(config.clone()), workspace));
+        std::fs::write(
+            &config,
+            r#"{"projects":{"/work":{"hasTrustDialogAccepted":true}}}"#,
+        )
+        .unwrap();
+        assert!(workspace_trusted_by(Some(config), workspace));
+        assert!(!workspace_trusted_by(None, workspace));
+    }
+
+    #[test]
+    fn missing_or_malformed_global_config_is_untrusted() {
+        let workspace = std::path::Path::new("/work");
+        for config in [
+            b"".as_slice(),
+            b"not json",
+            b"null",
+            b"{}",
+            br#"{"projects": []}"#,
+            br#"{"projects": {"/work": true}}"#,
+        ] {
+            assert!(!trusted_in_global_config(config, workspace));
+        }
+    }
+
+    #[test]
+    fn project_configuration_is_detected_from_claude_files() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!has_project_configuration(dir.path()));
+        std::fs::write(dir.path().join("CLAUDE.md"), "notes").unwrap();
+        assert!(has_project_configuration(dir.path()));
+        let other = tempfile::tempdir().unwrap();
+        std::fs::create_dir(other.path().join(".claude")).unwrap();
+        assert!(has_project_configuration(other.path()));
     }
 
     #[test]

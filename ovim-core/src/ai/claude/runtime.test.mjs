@@ -135,7 +135,8 @@ test("uses Claude defaults, own executable and settings without Ovim tools or cr
     assert.equal(options.systemPrompt.preset, "claude_code");
     assert.match(options.systemPrompt.append, /mcp__ovim__workspace_context/);
     assert.match(options.systemPrompt.append, /mcp__ovim__explain_with_codebase/);
-    assert.deepEqual(options.settingSources, ["user", "project", "local"]);
+    // Repository settings load only when core vouches for the workspace.
+    assert.deepEqual(options.settingSources, ["user"]);
     assert.equal(options.pathToClaudeCodeExecutable, "/bin/claude");
     assert.equal(options.permissionMode, "auto");
     for (const name of [
@@ -146,6 +147,24 @@ test("uses Claude defaults, own executable and settings without Ovim tools or cr
         "allowDangerouslySkipPermissions",
     ])
         assert.equal(options[name], undefined);
+});
+
+test("loads repository settings only for a trusted, editable workspace", async () => {
+    const sources = async (request) =>
+        (await run([result], { request })).options.settingSources;
+    assert.deepEqual(await sources({ projectSettings: true }), [
+        "user",
+        "project",
+        "local",
+    ]);
+    // Untrusted editable chats and missing or non-boolean flags fail closed.
+    for (const projectSettings of [false, undefined, null, "true", 1])
+        assert.deepEqual(await sources({ projectSettings }), ["user"]);
+    // Queries never load repository settings, even for a trusted workspace.
+    assert.deepEqual(
+        await sources({ allowEdits: false, projectSettings: true }),
+        ["user"],
+    );
 });
 
 test("passes each permission mode and only enables the dangerous bypass flag for bypass", async () => {

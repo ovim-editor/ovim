@@ -117,6 +117,8 @@ pub struct AiState {
     /// so no unit test reaches a real provider.
     pub(crate) shell_classifier: Arc<dyn crate::ai::auto_classifier::AutoModeClassifier>,
     pub active_selection: Option<AiSelectionSnapshot>,
+    /// Folders already told that Claude Code has not trusted them.
+    pub(crate) claude_untrusted_noted: std::collections::HashSet<PathBuf>,
     /// Global because opening chat can require sign-in.
     pub(crate) codex_auth_dialog: Option<CodexAuthDialog>,
     pub(crate) pending_codex_auth: Option<PendingCodexAuth>,
@@ -197,6 +199,7 @@ impl AiState {
                 crate::ai::auto_classifier::CodexAutoModeClassifier::default(),
             ),
             active_selection: None,
+            claude_untrusted_noted: std::collections::HashSet::new(),
             codex_auth_dialog: None,
             pending_codex_auth: None,
             pending_external_url: None,

@@ -21,7 +21,14 @@ export async function runTurn(request, query, emit, ask, signal) {
             "You are assisting the user in Ovim. Editor snapshots are context at the time supplied, and unsaved buffer content can differ from disk. Use mcp__ovim__workspace_context to refresh the current file, cursor, selection, diagnostics and latest test results when needed. After the user runs tests, retrieve their status, failure messages, source locations and output through this tool before diagnosing the failure. Use mcp__ovim__open_file to show relevant existing project code to the user. Use mcp__ovim__explain_with_codebase for a finished, focused interactive walkthrough; follow its page guidance and wait for completion or dismissal. These editor tools do not grant filesystem writes or access outside the current workspace. Continue to use Claude Code's normal tools and permission rules for implementation."
         },
         ...(request.editorMcp ? { mcpServers: { ovim: request.editorMcp } } : {}),
-        settingSources: ["user", "project", "local"],
+        // The SDK skips Claude Code's folder-trust dialog, so repository
+        // settings (hooks, permission rules) load only when core reports that
+        // Claude already trusts this editable workspace. Anything else, and
+        // every query, gets user settings alone.
+        settingSources:
+            request.allowEdits && request.projectSettings === true
+                ? ["user", "project", "local"]
+                : ["user"],
         permissionMode,
         ...(permissionMode === "bypassPermissions"
             ? { allowDangerouslySkipPermissions: true }

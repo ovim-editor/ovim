@@ -94,6 +94,15 @@ impl ExternalPermission {
     }
 }
 
+/// Shown once per folder when Claude cannot load the repository's own
+/// configuration because Claude Code has not trusted the folder.
+fn untrusted_folder_note(folder: &std::path::Path) -> String {
+    format!(
+        "Claude Code has not trusted {}, so its project settings (.claude/, CLAUDE.md, .mcp.json) were not loaded. Run `claude` in that folder once and accept the trust prompt to enable them.",
+        folder.display()
+    )
+}
+
 fn history_digest(
     configuration: &str,
     messages: &[crate::ai::ChatMessage],
@@ -311,6 +320,12 @@ impl Editor {
         } else {
             cwd
         };
+        // Only an editable chat in a folder Claude Code already trusts loads the
+        // repository's own settings; queries never do.
+        let project_settings = chat.allow_edits && claude_code::workspace_trusted(&cwd);
+        let untrusted_folder =
+            (chat.allow_edits && !project_settings && claude_code::has_project_configuration(&cwd))
+                .then(|| cwd.clone());
         let configuration = serde_json::to_string(&json!([
             claude_code::SDK_VERSION,
             "ovim-editor-mcp-v1",
@@ -320,6 +335,7 @@ impl Editor {
             cwd,
             executable,
             chat.allow_edits,
+            project_settings,
             self.ai_chat_permission_mode(),
             chat.context_generation,
             std::env::var_os("CLAUDE_CONFIG_DIR").map(|path| path.to_string_lossy().into_owned())
@@ -370,6 +386,7 @@ impl Editor {
             model: profile.model.clone(),
             effort,
             allow_edits: chat.allow_edits,
+            project_settings,
             permission_mode: self
                 .ai_chat_permission_mode()
                 .context("Claude Code permission mode is unavailable")?
@@ -417,7 +434,21 @@ impl Editor {
         chat.runtime_recorded_thinking_bytes = 0;
         chat.runtime_last_content_event = None;
         chat.runtime_last_reasoning_event = None;
+        if let Some(folder) = untrusted_folder {
+            self.note_untrusted_claude_folder(folder);
+        }
         Ok(())
+    }
+
+    /// Tell the user once per folder why Claude did not load its project
+    /// configuration, and how to trust the folder.
+    fn note_untrusted_claude_folder(&mut self, folder: std::path::PathBuf) {
+        if !self.ai_state.claude_untrusted_noted.insert(folder.clone()) {
+            return;
+        }
+        if let Some(conversation) = self.conversation_mut() {
+            conversation.append_error(untrusted_folder_note(&folder));
+        }
     }
 
     pub(crate) fn observe_external_tool(
@@ -899,6 +930,30 @@ pub(super) mod tests {
             claude_input(&previous, latest, true),
             vec![json!({"type":"text", "text":"Current question"})]
         );
+    }
+
+    #[test]
+    fn untrusted_folder_is_explained_once_in_the_chat() {
+        let mut editor = editor();
+        let folder = std::path::PathBuf::from("/work/untrusted-repo");
+        let notes = |editor: &Editor| {
+            editor
+                .ai_chat_messages()
+                .iter()
+                .filter(|message| message.role == ChatRole::Error)
+                .map(|message| message.content.clone())
+                .collect::<Vec<_>>()
+        };
+        editor.note_untrusted_claude_folder(folder.clone());
+        editor.note_untrusted_claude_folder(folder.clone());
+        let notes_after_repeat = notes(&editor);
+        assert_eq!(notes_after_repeat.len(), 1);
+        assert!(notes_after_repeat[0].contains("/work/untrusted-repo"));
+        assert!(notes_after_repeat[0].contains("project settings"));
+        assert!(notes_after_repeat[0].contains("Run `claude` in that folder"));
+        // Another folder gets its own note.
+        editor.note_untrusted_claude_folder("/work/other".into());
+        assert_eq!(notes(&editor).len(), 2);
     }
 
     #[tokio::test]
