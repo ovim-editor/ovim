@@ -399,10 +399,10 @@ pub fn unstage_hunk(path: &Path, line: usize) -> Result<bool> {
     else {
         return Ok(false);
     };
-    let head_text = match head_tree
+    let head_entry = head_tree
         .as_ref()
-        .and_then(|tree| tree.get_path(&relative).ok())
-    {
+        .and_then(|tree| tree.get_path(&relative).ok());
+    let head_text = match head_entry.as_ref() {
         Some(entry) => repo.find_blob(entry.id())?.content().to_vec(),
         None => Vec::new(),
     };
@@ -413,7 +413,14 @@ pub fn unstage_hunk(path: &Path, line: usize) -> Result<bool> {
         &head_text,
         side_range(old_start, old_lines),
     );
-    write_index_text(&repo, &relative, &reverted)?;
+    if reverted.is_empty() && head_entry.is_none() {
+        // Reverting an addition restores absence, not a staged empty file.
+        let mut index = repo.index()?;
+        index.remove_path(&relative)?;
+        index.write()?;
+    } else {
+        write_index_text(&repo, &relative, &reverted)?;
+    }
     Ok(true)
 }
 

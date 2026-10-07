@@ -473,3 +473,33 @@ fn signs_include_files_before_the_first_commit_and_ignore_ignored_files() {
         (0, 0, 0)
     );
 }
+
+#[test]
+fn unstage_new_file_hunk_removes_the_index_entry() {
+    let fixture = Fixture::new();
+    fixture.write("base.txt", "base\n");
+    fixture.commit_all("base");
+    let file = fixture.write("new.txt", "new\n");
+    let file = std::path::Path::new(&file);
+    ovim_core::git::ops::stage_file(file).unwrap();
+    assert!(ovim_core::git::ops::unstage_hunk(file, 0).unwrap());
+    let statuses = ovim_core::git::ops::status(&fixture.root).unwrap();
+    assert_eq!(statuses[0].code(), "??");
+    assert_eq!(fs::read_to_string(file).unwrap(), "new\n");
+}
+
+#[test]
+fn unstage_hunk_preserves_a_tracked_empty_file() {
+    let fixture = Fixture::new();
+    let file = fixture.write("empty.txt", "");
+    fixture.commit_all("base");
+    fixture.write("empty.txt", "added\n");
+    let file = std::path::Path::new(&file);
+    ovim_core::git::ops::stage_file(file).unwrap();
+    assert!(ovim_core::git::ops::unstage_hunk(file, 0).unwrap());
+    assert_eq!(fixture.staged("empty.txt"), "");
+    assert_eq!(
+        ovim_core::git::ops::status(&fixture.root).unwrap()[0].code(),
+        " M"
+    );
+}
