@@ -169,3 +169,83 @@ fn search_honours_case_escape() {
     test.keys("/foo\\c<CR>");
     test.assert_cursor(0, 2);
 }
+
+// nvim --clean: "a1 b a2 c" with `:g/a/norm yyGp` gives "a1 b a2 c a1 a2": the
+// second visit is still the line that held "a2", although the first visit
+// appended a line at the end.
+#[test]
+fn global_normal_follows_the_marked_lines() {
+    let mut test = EditorTest::new("a1\nb\na2\nc\n");
+    test.command("g/a/norm yyGp");
+    assert_eq!(test.buffer_content(), "a1\nb\na2\nc\na1\na2\n");
+    // One undo step for the whole :g.
+    test.keys("u");
+    assert_eq!(test.buffer_content(), "a1\nb\na2\nc\n");
+}
+
+// nvim --clean: `:g/a/norm Ox` puts a line above each match; the marks move
+// down with their lines, so every "a" gets exactly one line above it.
+#[test]
+fn global_normal_follows_lines_pushed_down_by_inserts_above() {
+    let mut test = EditorTest::new("a\nb\na\n");
+    test.command("g/a/norm Ox");
+    assert_eq!(test.buffer_content(), "x\na\nb\nx\na\n");
+}
+
+// nvim --clean: `:g/a/j` on "a a b" joins the first pair only; the second
+// "a" was joined away, so its mark is gone: "a a" and "b".
+#[test]
+fn global_skips_lines_joined_away() {
+    let mut test = EditorTest::new("a\na\nb\n");
+    test.command("g/a/j");
+    assert_eq!(test.buffer_content(), "a a\nb\n");
+}
+
+// nvim --clean: `:g/b/norm dd` on "a b b c" deletes both b lines; a mark on a
+// line deleted by an earlier visit is dropped ("a c").
+#[test]
+fn global_skips_lines_deleted_by_earlier_visits() {
+    let mut test = EditorTest::new("a\nb\nb\nc\n");
+    test.command("g/b/norm dd");
+    assert_eq!(test.buffer_content(), "a\nc\n");
+}
+
+// nvim --clean: `:g/b/norm jdd` on "b b c": the first visit deletes the line
+// holding the second match, so that mark is dropped and "b c" is left.
+#[test]
+fn global_drops_marks_on_lines_deleted_below_the_cursor() {
+    let mut test = EditorTest::new("b\nb\nc\n");
+    test.command("g/b/norm jdd");
+    assert_eq!(test.buffer_content(), "b\nc\n");
+}
+
+// nvim --clean: `:g/a/m0` reverses the matching lines onto the top.
+#[test]
+fn global_runs_other_commands_per_line() {
+    let mut test = EditorTest::new("c1\nb2\na3\nd4a\n");
+    test.command("g/a/m0");
+    assert_eq!(test.buffer_content(), "d4a\na3\nc1\nb2\n");
+}
+
+// nvim --clean: more than the edit log keeps (64 edits) in one visit does not
+// confuse the marks: three lines each get 78 typed characters.
+#[test]
+fn global_normal_survives_visits_with_many_edits() {
+    let typed = "abcdefghijklmnopqrstuvwxyz".repeat(3);
+    let mut test = EditorTest::new("x\nx\nx\n");
+    test.command(&format!("g/x/normal A{typed}"));
+    let expected = format!("x{typed}\n").repeat(3);
+    assert_eq!(test.buffer_content(), expected);
+}
+
+// nvim --clean: `:g/a/g/b/d` nested without a range is allowed in vim; ovim
+// refuses (E147) rather than guess the inner range.
+#[test]
+fn nested_global_is_refused() {
+    let mut test = EditorTest::new("a\nb\n");
+    test.command("g/a/g/b/d");
+    assert_eq!(
+        test.editor.status_message(),
+        "E147: Cannot do :global recursive"
+    );
+}

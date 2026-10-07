@@ -9,6 +9,7 @@ mod files;
 mod git;
 mod launch;
 mod lsp;
+mod marked_lines;
 mod options;
 mod parse;
 mod pattern;

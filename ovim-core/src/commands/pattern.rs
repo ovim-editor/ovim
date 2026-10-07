@@ -3,12 +3,14 @@
 //! Patterns are Rust regexes (as they always were here), not vim regexes.
 
 use super::edit::cursor_to_first_non_blank;
+use super::marked_lines::MarkedLines;
 use super::parse::parse;
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
+use crate::edit::Edit;
 use crate::editor::{CursorPos, Editor, RegisterType};
 use crate::search_pattern::{self, CaseOptions};
-use crate::unicode::CharCol;
+use crate::unicode::{CharCol, GraphemeCol};
 
 /// Converts Vim-style backreferences (\1, \2, \0, &) to Rust regex syntax.
 ///
@@ -339,9 +341,10 @@ fn split_global(args: &str) -> Option<(String, &str)> {
 }
 
 /// `:[range]g[lobal][!]/{pattern}/[cmd]` and `:[range]v[global]/{pattern}/[cmd]`
-/// (default range: the whole buffer, default command: `:p`). Supported
-/// commands: `:d`, `:y`, `:s` and `:p`, run on all lines as one undo step,
-/// and `:normal`, run line by line.
+/// (default range: the whole buffer, default command: `:p`). `:d`, `:y`, `:s`
+/// and `:p` run on all the lines at once; anything else, and any of those
+/// followed by `|`, runs line by line with the cursor on each line, as one
+/// undo step. The marked lines move with their text: see [`MarkedLines`].
 pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let invert = ex.bang || ex.command.names[0].starts_with('v');
     let Some((pattern, command)) = split_global(ex.args) else {
@@ -381,13 +384,16 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
     }
     let command = if command.is_empty() { "p" } else { command };
     let sub = match parse(command) {
-        Ok(sub) if sub.range.is_none() => sub,
-        _ => return err(format!("Unsupported global command: {command}")),
+        Ok(sub) => sub,
+        Err(error) => return err(error.message(command)),
     };
-    let name = sub.command.names[0];
-    match name {
-        "d[elete]" => global_delete(editor, &lines),
-        "y[ank]" => {
+    if matches!(sub.command.names[0], "g[lobal]" | "v[global]") {
+        return err("E147: Cannot do :global recursive");
+    }
+    let whole = sub.range.is_none();
+    match sub.command.names[0] {
+        "d[elete]" if whole => global_delete(editor, &lines),
+        "y[ank]" if whole => {
             let text = lines
                 .iter()
                 .filter_map(|&line| editor.buffer().line_text(line))
@@ -396,7 +402,7 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
             editor.yank_to_register_with_type(text, RegisterType::Line);
             ok(format!("Yanked {} line(s)", lines.len()))
         }
-        "p[rint]" => {
+        "p[rint]" if whole => {
             let mut output: Vec<String> = lines
                 .iter()
                 .take(10)
@@ -413,7 +419,7 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
             cursor_to_first_non_blank(editor, *lines.last().expect("non-empty"));
             ok(output.join("\n"))
         }
-        "s[ubstitute]" => {
+        "s[ubstitute]" if whole => {
             let (substitution, _) = match parse_substitution(editor, sub.args) {
                 Ok(parsed) => parsed,
                 Err(error) => return error,
@@ -421,10 +427,7 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
             let substituted = substitute_lines(editor, &substitution, &lines);
             ok(format!("Substituted on {} line(s)", substituted.lines))
         }
-        "norm[al]" => {
-            super::edit::one_undo_step(editor, |editor| global_normal(editor, &lines, command))
-        }
-        _ => err(format!("Unsupported global command: {command}")),
+        _ => super::edit::one_undo_step(editor, |editor| global_each_line(editor, &lines, command)),
     }
 }
 
@@ -458,27 +461,56 @@ fn global_delete(editor: &mut Editor, lines: &[usize]) -> CommandResult {
     ok(format!("Deleted {} line(s)", lines.len()))
 }
 
-/// `:g/pat/normal {keys}` runs the keys on each matching line top-down.
-/// Later matches move with the line count, which is exact when the keys
-/// only change the current line and the ones around it (vim tracks the
-/// marked lines themselves).
-fn global_normal(editor: &mut Editor, lines: &[usize], command: &str) -> CommandResult {
-    let mut shift: isize = 0;
-    for &line in lines {
-        let target = line as isize + shift;
-        let count = editor.buffer().line_count() as isize;
-        if target < 0 || target >= count {
-            continue;
+/// How many chars `edits` added to the text.
+fn net_change(edits: &[&Edit]) -> isize {
+    edits
+        .iter()
+        .map(|edit| match edit {
+            Edit::Insert { text, .. } => text.chars().count() as isize,
+            Edit::Delete { text, .. } => -(text.chars().count() as isize),
+        })
+        .sum()
+}
+
+/// Run `command` with the cursor on each of the 0-based `lines`, top-down.
+/// Vim marks the lines and visits them wherever the commands before moved
+/// them, skipping the ones they deleted or joined away. An error stops the
+/// rest, as in vim.
+fn global_each_line(editor: &mut Editor, lines: &[usize], command: &str) -> CommandResult {
+    let buffer = editor.buffer().id();
+    let mut marked = MarkedLines::new(editor.buffer().rope(), lines);
+    let mut result = ok_silent();
+    while let Some(line) = marked.next(editor.buffer().rope()) {
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol::ZERO);
+        let version = editor.buffer().version();
+        let chars_before = editor.buffer().rope().len_chars();
+        let outcome = super::run_line(editor, command);
+        if let CommandResult::Error(_) = outcome {
+            return outcome;
         }
-        let before = count;
-        let line = target as usize + 1;
-        let result = super::run_line(editor, &format!("{line}{command}"));
-        if let CommandResult::Error(_) = result {
-            return result;
+        if editor.buffer().id() != buffer {
+            break;
         }
-        shift += editor.buffer().line_count() as isize - before;
+        let chars_after = editor.buffer().rope().len_chars();
+        match editor.buffer().edit_log().edits_since(version as u64) {
+            Some(edits) if net_change(&edits) == chars_after as isize - chars_before as isize => {
+                marked.follow(&edits)
+            }
+            // The log lost some of the edits (it keeps a limited number, and
+            // is cleared by bulk changes): assume they all came before the
+            // lines still to visit.
+            _ => marked.follow_unknown(chars_after as isize - chars_before as isize),
+        }
+        if let CommandResult::Success(success) = &outcome {
+            if success.message.is_some() {
+                result = outcome;
+            }
+        }
     }
-    ok_silent()
+    result
 }
 
 #[cfg(test)]

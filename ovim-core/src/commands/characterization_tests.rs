@@ -642,10 +642,15 @@ fn cases() -> Vec<Case> {
         case("g/(/d").fails("Invalid regex pattern: ("),
         case("g/a/normal Ax").after("c1\nb2\n  a3x\n  d4ax\n"),
         case("g/b/normal dd").text("a\nb\nb\nc").after("a\nc\n"),
-        // vim: :g accepts any ex command; ovim runs :d, :y, :s, :p, :normal.
-        case("g/a/m0").fails("Unsupported global command: m0"),
+        // vim: :g runs any ex command on each matching line; the marked
+        // lines move with their text (nvim: both give the buffer below).
+        case("g/a/m0")
+            .is("1 line moved")
+            .after("  d4a\n  a3\nc1\nb2\n"),
         case("global/a/d").is("Deleted 2 line(s)"),
         case("g/b/d|3d").is("Deleted 1 line(s)"),
+        case("g/a/g/b/d").fails("E147: Cannot do :global recursive"),
+        case("g/a/bogus").fails("E492: Not an editor command: bogus"),
         // ---- shell ----
         // On purpose the only difference between the entry points: `:!cmd`
         // and `:terminal` are queued for the frontend's terminal; the API,
