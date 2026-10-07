@@ -322,12 +322,11 @@ fn unstage_in(repo: &Repository, relative: &Path) -> Result<()> {
         }
     }
     if let Some(source) = source {
+        // No cached size: with eol conversion the blob's size differs from
+        // the file's, and git would call an unchanged file modified.
         let mut entry = empty_index_entry(relative);
         entry.id = source.id();
         entry.mode = source.filemode() as u32;
-        if source.kind() == Some(git2::ObjectType::Blob) {
-            entry.file_size = repo.find_blob(source.id())?.size() as u32;
-        }
         index.add(&entry)?;
     }
     index.write()?;
@@ -1427,6 +1426,21 @@ mod tests {
             .collect();
         assert_eq!(messages, ["second", "first"]);
         assert_eq!(file_history(&repo.root.join("dir"), 10).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn unstaging_an_eol_converted_file_leaves_it_clean_for_git() {
+        let repo = Repo::new();
+        repo.write(".gitattributes", "*.txt text eol=crlf\n");
+        let a = repo.write("a.txt", "one\r\ntwo\r\n");
+        repo.commit_all("init");
+        unstage_file(&a).unwrap();
+        let output = std::process::Command::new("git")
+            .args(["status", "--porcelain"])
+            .current_dir(&repo.root)
+            .output()
+            .unwrap();
+        assert_eq!(String::from_utf8_lossy(&output.stdout), "");
     }
 
     #[test]
