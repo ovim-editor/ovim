@@ -209,6 +209,115 @@ pub struct LanguageServerHealth {
     pub is_alive: bool,
 }
 
+/// Whether a server capability is on. A provider may be a bare boolean, and
+/// `false` means unsupported even though the field is present.
+fn provider_enabled<T: serde::Serialize>(provider: &Option<T>) -> bool {
+    provider.as_ref().is_some_and(|provider| {
+        serde_json::to_value(provider)
+            .map_or(true, |value| !value.is_null() && value != json!(false))
+    })
+}
+
+/// The cached capability flags for what the server announced.
+fn capability_flags(caps: &ServerCapabilities) -> LspCapFlags {
+    use LspCapFlags as F;
+
+    let mut flags = F::empty();
+
+    if provider_enabled(&caps.definition_provider) {
+        flags |= F::GOTO_DEFINITION;
+    }
+    if provider_enabled(&caps.declaration_provider) {
+        flags |= F::GOTO_DECLARATION;
+    }
+    if provider_enabled(&caps.implementation_provider) {
+        flags |= F::GOTO_IMPLEMENTATION;
+    }
+    if provider_enabled(&caps.type_definition_provider) {
+        flags |= F::GOTO_TYPE_DEFINITION;
+    }
+    if provider_enabled(&caps.hover_provider) {
+        flags |= F::HOVER;
+    }
+    if provider_enabled(&caps.completion_provider) {
+        flags |= F::COMPLETION;
+    }
+    if provider_enabled(&caps.document_formatting_provider) {
+        flags |= F::FORMATTING;
+    }
+    if provider_enabled(&caps.document_range_formatting_provider) {
+        flags |= F::RANGE_FORMATTING;
+    }
+    if provider_enabled(&caps.code_action_provider) {
+        flags |= F::CODE_ACTIONS;
+    }
+    if provider_enabled(&caps.references_provider) {
+        flags |= F::REFERENCES;
+    }
+    if provider_enabled(&caps.rename_provider) {
+        flags |= F::RENAME;
+    }
+    if provider_enabled(&caps.signature_help_provider) {
+        flags |= F::SIGNATURE_HELP;
+    }
+    if provider_enabled(&caps.document_symbol_provider) {
+        flags |= F::DOCUMENT_SYMBOL;
+    }
+    if provider_enabled(&caps.selection_range_provider) {
+        flags |= F::SELECTION_RANGE;
+    }
+    if provider_enabled(&caps.workspace_symbol_provider) {
+        flags |= F::WORKSPACE_SYMBOL;
+    }
+    if provider_enabled(&caps.document_highlight_provider) {
+        flags |= F::DOCUMENT_HIGHLIGHT;
+    }
+    if provider_enabled(&caps.folding_range_provider) {
+        flags |= F::FOLDING_RANGE;
+    }
+    if provider_enabled(&caps.call_hierarchy_provider) {
+        flags |= F::CALL_HIERARCHY;
+    }
+    if provider_enabled(&caps.execute_command_provider) {
+        flags |= F::EXECUTE_COMMAND;
+    }
+    if provider_enabled(&caps.inlay_hint_provider) {
+        flags |= F::INLAY_HINT;
+    }
+    if provider_enabled(&caps.semantic_tokens_provider) {
+        flags |= F::SEMANTIC_TOKENS;
+    }
+    if provider_enabled(&caps.code_lens_provider) {
+        flags |= F::CODE_LENS;
+    }
+
+    // Prepare rename: needs deeper inspection
+    if let Some(lsp_types::OneOf::Right(options)) = &caps.rename_provider {
+        if options.prepare_provider.unwrap_or(false) {
+            flags |= F::PREPARE_RENAME;
+        }
+    }
+
+    // Incremental sync: needs enum matching
+    let incremental = match &caps.text_document_sync {
+        Some(lsp_types::TextDocumentSyncCapability::Kind(kind)) => {
+            *kind == lsp_types::TextDocumentSyncKind::INCREMENTAL
+        }
+        Some(lsp_types::TextDocumentSyncCapability::Options(opts)) => {
+            opts.change == Some(lsp_types::TextDocumentSyncKind::INCREMENTAL)
+        }
+        None => false,
+    };
+    if incremental {
+        flags |= F::INCREMENTAL_SYNC;
+    }
+
+    // Type hierarchy: read from the raw initialize response (see
+    // `do_initialize`) or enabled by dynamic registration.
+
+    flags
+}
+
 /// Logs a server's stderr line by line until the pipe closes. It must never
 /// stop early: dropping the read end makes the server's next stderr write
 /// fail, which kills most servers. Stderr is not guaranteed to be UTF-8, so
@@ -1766,103 +1875,9 @@ impl LanguageServer {
     /// Caches capability flags from ServerCapabilities for lock-free access.
     /// Called once during initialization.
     fn cache_capabilities(&self, caps: &ServerCapabilities) {
-        use LspCapFlags as F;
-
-        let mut flags = F::empty();
-
-        // Simple is_some() checks
-        if caps.definition_provider.is_some() {
-            flags |= F::GOTO_DEFINITION;
-        }
-        if caps.declaration_provider.is_some() {
-            flags |= F::GOTO_DECLARATION;
-        }
-        if caps.implementation_provider.is_some() {
-            flags |= F::GOTO_IMPLEMENTATION;
-        }
-        if caps.type_definition_provider.is_some() {
-            flags |= F::GOTO_TYPE_DEFINITION;
-        }
-        if caps.hover_provider.is_some() {
-            flags |= F::HOVER;
-        }
-        if caps.completion_provider.is_some() {
-            flags |= F::COMPLETION;
-        }
-        if caps.document_formatting_provider.is_some() {
-            flags |= F::FORMATTING;
-        }
-        if caps.document_range_formatting_provider.is_some() {
-            flags |= F::RANGE_FORMATTING;
-        }
-        if caps.code_action_provider.is_some() {
-            flags |= F::CODE_ACTIONS;
-        }
-        if caps.references_provider.is_some() {
-            flags |= F::REFERENCES;
-        }
-        if caps.rename_provider.is_some() {
-            flags |= F::RENAME;
-        }
-        if caps.signature_help_provider.is_some() {
-            flags |= F::SIGNATURE_HELP;
-        }
-        if caps.document_symbol_provider.is_some() {
-            flags |= F::DOCUMENT_SYMBOL;
-        }
-        if caps.selection_range_provider.is_some() {
-            flags |= F::SELECTION_RANGE;
-        }
-        if caps.workspace_symbol_provider.is_some() {
-            flags |= F::WORKSPACE_SYMBOL;
-        }
-        if caps.document_highlight_provider.is_some() {
-            flags |= F::DOCUMENT_HIGHLIGHT;
-        }
-        if caps.folding_range_provider.is_some() {
-            flags |= F::FOLDING_RANGE;
-        }
-        if caps.call_hierarchy_provider.is_some() {
-            flags |= F::CALL_HIERARCHY;
-        }
-        if caps.execute_command_provider.is_some() {
-            flags |= F::EXECUTE_COMMAND;
-        }
-        if caps.inlay_hint_provider.is_some() {
-            flags |= F::INLAY_HINT;
-        }
-        if caps.semantic_tokens_provider.is_some() {
-            flags |= F::SEMANTIC_TOKENS;
-        }
-        if caps.code_lens_provider.is_some() {
-            flags |= F::CODE_LENS;
-        }
-
-        // Prepare rename: needs deeper inspection
-        if let Some(lsp_types::OneOf::Right(options)) = &caps.rename_provider {
-            if options.prepare_provider.unwrap_or(false) {
-                flags |= F::PREPARE_RENAME;
-            }
-        }
-
-        // Incremental sync: needs enum matching
-        let incremental = match &caps.text_document_sync {
-            Some(lsp_types::TextDocumentSyncCapability::Kind(kind)) => {
-                *kind == lsp_types::TextDocumentSyncKind::INCREMENTAL
-            }
-            Some(lsp_types::TextDocumentSyncCapability::Options(opts)) => {
-                opts.change == Some(lsp_types::TextDocumentSyncKind::INCREMENTAL)
-            }
-            None => false,
-        };
-        if incremental {
-            flags |= F::INCREMENTAL_SYNC;
-        }
-
-        // Type hierarchy: read from the raw initialize response (see
-        // `do_initialize`) or enabled by dynamic registration.
-
-        self.inner.cap_flags.store(flags.bits(), Ordering::Relaxed);
+        self.inner
+            .cap_flags
+            .store(capability_flags(caps).bits(), Ordering::Relaxed);
     }
 
     /// Sets a cached capability flag based on an LSP method name from dynamic registration.
@@ -2432,6 +2447,52 @@ mod tests {
         let formats = caps.content_format.expect("content_format set");
         assert_eq!(formats.first(), Some(&lsp_types::MarkupKind::Markdown));
         assert!(formats.contains(&lsp_types::MarkupKind::PlainText));
+    }
+
+    fn flags_of(capabilities: serde_json::Value) -> LspCapFlags {
+        let caps: ServerCapabilities = serde_json::from_value(capabilities).unwrap();
+        capability_flags(&caps)
+    }
+
+    /// A provider announced as `false` is not supported, even though the
+    /// field is present; every shape of "on" still counts.
+    #[test]
+    fn providers_announced_as_false_are_not_supported() {
+        let flags = flags_of(json!({
+            "hoverProvider": false,
+            "definitionProvider": false,
+            "referencesProvider": false,
+            "renameProvider": false,
+            "documentSymbolProvider": false,
+            "codeActionProvider": false,
+            "foldingRangeProvider": false,
+            "callHierarchyProvider": false,
+            "implementationProvider": false,
+            "inlayHintProvider": false,
+        }));
+        assert_eq!(flags, LspCapFlags::empty(), "{flags:?}");
+
+        let flags = flags_of(json!({
+            "hoverProvider": true,
+            "definitionProvider": {"workDoneProgress": true},
+            "renameProvider": {"prepareProvider": true},
+            "completionProvider": {"triggerCharacters": ["."]},
+            "codeActionProvider": {"codeActionKinds": ["quickfix"]},
+            "foldingRangeProvider": true,
+            "referencesProvider": false,
+        }));
+        for expected in [
+            LspCapFlags::HOVER,
+            LspCapFlags::GOTO_DEFINITION,
+            LspCapFlags::RENAME,
+            LspCapFlags::PREPARE_RENAME,
+            LspCapFlags::COMPLETION,
+            LspCapFlags::CODE_ACTIONS,
+            LspCapFlags::FOLDING_RANGE,
+        ] {
+            assert!(flags.contains(expected), "{expected:?} in {flags:?}");
+        }
+        assert!(!flags.contains(LspCapFlags::REFERENCES));
     }
 
     /// A server that prints bytes that are not UTF-8 must keep a reader on
