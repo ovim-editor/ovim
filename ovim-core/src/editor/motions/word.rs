@@ -271,7 +271,9 @@ impl Motions {
                     buffer
                         .cursor_mut()
                         .set_position(next_line, grapheme.grapheme_col);
-                    Self::word_end_forward_once(buffer, big_word, prefer_current);
+                    // The first character reached on the new line is a candidate end of word
+                    // (a one-character word such as `}` ends where it starts).
+                    Self::word_end_forward_once(buffer, big_word, true);
                     return;
                 }
             }
@@ -286,7 +288,7 @@ impl Motions {
                 buffer
                     .cursor_mut()
                     .set_position(line_idx + 1, GraphemeCol::ZERO);
-                Self::word_end_forward_once(buffer, big_word, prefer_current);
+                Self::word_end_forward_once(buffer, big_word, true);
             }
             return;
         }
@@ -299,7 +301,7 @@ impl Motions {
                     buffer
                         .cursor_mut()
                         .set_position(line_idx + 1, GraphemeCol::ZERO);
-                    Self::word_end_forward_once(buffer, big_word, prefer_current);
+                    Self::word_end_forward_once(buffer, big_word, true);
                 }
                 return;
             }
@@ -316,7 +318,7 @@ impl Motions {
                     buffer
                         .cursor_mut()
                         .set_position(line_idx + 1, GraphemeCol::ZERO);
-                    Self::word_end_forward_once(buffer, big_word, prefer_current);
+                    Self::word_end_forward_once(buffer, big_word, true);
                 }
                 return;
             }
