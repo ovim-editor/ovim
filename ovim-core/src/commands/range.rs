@@ -90,11 +90,23 @@ fn mark_line(editor: &Editor, mark: char) -> Result<usize, String> {
             return Ok(1 + if mark == '<' { start } else { end });
         }
     }
-    editor
-        .nav
-        .marks
-        .get_mark(mark)
-        .map(|position| position.line + 1)
+    // vim (nvim --clean): a file mark counts in the buffer it was set in; from
+    // another buffer it is "E20: Mark not set".
+    let line = if mark.is_ascii_uppercase() {
+        editor
+            .nav
+            .marks
+            .get_global_mark(mark)
+            .filter(|global| global.file_path.as_deref() == editor.buffer().file_path())
+            .map(|global| global.line)
+    } else {
+        editor
+            .nav
+            .marks
+            .get_mark(mark)
+            .map(|position| position.line)
+    };
+    line.map(|line| line + 1)
         .ok_or_else(|| "E20: Mark not set".to_string())
 }
 

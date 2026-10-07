@@ -58,6 +58,8 @@ pub(crate) struct Ex<'a> {
     pub range: Option<LineRange>,
     /// Whether a range was typed (`:r` vs `:0r`, `:!cmd` vs `:.!filter`).
     pub explicit_range: bool,
+    /// How many addresses were typed (`:2j` one, `:2,2j` and `:%j` two).
+    pub addresses: usize,
 }
 
 /// Execute an ex command line (`:w`, `:2,4d`, `:%s/a/b/ | update`, ...).
@@ -149,6 +151,10 @@ fn run_parsed(editor: &mut Editor, parsed: &ParsedCmd) -> CommandResult {
         args,
         range,
         explicit_range: parsed.range.is_some(),
+        addresses: parsed
+            .range
+            .as_ref()
+            .map_or(0, |range| range.addresses.len()),
     };
     if command.args == table::ArgKind::None && !ex.args.is_empty() {
         return err(format!("E488: Trailing characters: {}", ex.args));

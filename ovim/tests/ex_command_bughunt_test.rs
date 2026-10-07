@@ -597,3 +597,81 @@ fn read_bang_puts_the_cursor_on_the_last_line_and_passes_bars_to_the_shell() {
     assert_success(run(&mut test, "r!echo a | echo b"));
     assert_eq!(test.buffer_content(), "l1\nb\nl2\nl3\n");
 }
+
+// nvim --clean, buffer a b c d: `:2,2j` does nothing (two equal addresses),
+// as do `:1,1j`, `:2;2j`, `:.,.j`, `:4j` and `:$j` (no next line) and
+// `:4,4j 2`; `:2j`, `:2,3j` and `:3,2j` join b and c; `:2,3j 2` joins two
+// lines from the end of the range (c d); `:j 5` joins everything left.
+#[test]
+fn join_with_equal_addresses_does_nothing() {
+    for (command, expected) in [
+        ("2,2j", "a\nb\nc\nd\n"),
+        ("2,2j!", "a\nb\nc\nd\n"),
+        ("1,1j", "a\nb\nc\nd\n"),
+        ("2;2j", "a\nb\nc\nd\n"),
+        (".,.j", "a\nb\nc\nd\n"),
+        ("4j", "a\nb\nc\nd\n"),
+        ("$j", "a\nb\nc\nd\n"),
+        ("4,4j 2", "a\nb\nc\nd\n"),
+        ("2j", "a\nb c\nd\n"),
+        ("2,3j", "a\nb c\nd\n"),
+        ("3,2j", "a\nb c\nd\n"),
+        ("2j 2", "a\nb c\nd\n"),
+        ("2,2j 2", "a\nb c\nd\n"),
+        ("2,3j 2", "a\nb\nc d\n"),
+        ("j 5", "a b c d\n"),
+        ("%j", "a b c d\n"),
+    ] {
+        let mut test = EditorTest::new("a\nb\nc\nd\n");
+        assert_success(run(&mut test, command));
+        assert_eq!(test.buffer_content(), expected, "{command}");
+    }
+}
+
+// nvim --clean: `:3,3j` leaves the buffer alone but moves the cursor to line 3.
+#[test]
+fn join_without_anything_to_join_still_moves_to_the_line() {
+    let mut test = EditorTest::new("a\nb\nc\nd\n");
+    assert_success(run(&mut test, "3,3j"));
+    assert_eq!(test.cursor().0, 2);
+}
+
+// nvim --clean: with global marks A on line 2 and B on line 4 of the buffer
+// they were set in, `:'A,'Ad` deletes line 2 and `:'A,'Bd` lines 2 to 4; an
+// unset `'Z` is "E20: Mark not set".
+#[test]
+fn ranges_accept_global_marks_set_in_the_current_buffer() {
+    let mut test = EditorTest::new("a\nb\nc\nd\n");
+    test.keys("jmAjjmB");
+    assert_success(run(&mut test, "'A,'Ad"));
+    assert_eq!(test.buffer_content(), "a\nc\nd\n");
+
+    let mut test = EditorTest::new("a\nb\nc\nd\n");
+    test.keys("jmAjjmB");
+    assert_success(run(&mut test, "'A,'Bd"));
+    assert_eq!(test.buffer_content(), "a\n");
+
+    let mut test = EditorTest::new("a\nb\nc\nd\n");
+    let message = error_message(run(&mut test, "'Z,'Zd"));
+    assert!(message.starts_with("E20:"), "{message}");
+    assert_eq!(test.buffer_content(), "a\nb\nc\nd\n");
+}
+
+// nvim --clean: mark A set in a.txt, then editing b.txt: `:'Ad` is
+// "E20: Mark not set" and deletes nothing.
+#[tokio::test(flavor = "multi_thread")]
+async fn ranges_reject_global_marks_set_in_another_buffer() {
+    let dir = tempfile::tempdir().unwrap();
+    let (first, second) = write_pair(&dir);
+    let mut test = EditorTest::new("");
+    test.load_file(first.to_str().unwrap());
+    test.keys("mA");
+    assert!(test.editor.nav.marks.get_global_mark('A').is_some());
+    assert_success(run(&mut test, &format!("edit {}", second.display())));
+
+    let message = error_message(run(&mut test, "'Ad"));
+
+    assert!(message.starts_with("E20:"), "{message}");
+    assert_eq!(std::fs::read_to_string(&second).unwrap(), "two\n");
+    assert_eq!(test.buffer_content(), "two\n");
+}

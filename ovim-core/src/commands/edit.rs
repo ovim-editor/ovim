@@ -147,25 +147,38 @@ pub(super) fn yank(editor: &mut Editor, ex: &Ex) -> CommandResult {
 }
 
 /// `:[range]j[oin][!] [count]`: a one-line range joins that line with the
-/// next; `!` joins without adjusting white space (like `gJ`).
+/// next; `!` joins without adjusting white space (like `gJ`). A count joins
+/// that many lines from the last line of the range. As in vim, two equal
+/// addresses (`:2,2j`) and the last line have nothing to join.
 pub(super) fn join(editor: &mut Editor, ex: &Ex) -> CommandResult {
     if !editor.buffer().is_modifiable() {
         return unmodifiable();
     }
     let range = ex.range.expect("line-range command");
-    let (mut start, end) = range.indexes();
-    let mut lines = if start == end { 2 } else { end - start + 1 };
+    let (mut start, mut end) = range.indexes();
+    let mut addresses = ex.addresses;
     let count = ex.args.trim();
     if !count.is_empty() {
         match count.parse::<usize>() {
             Ok(0) => return err("E939: Positive count required"),
             Ok(count) => {
                 start = end;
-                lines = count;
+                end = end
+                    .saturating_add(count - 1)
+                    .min(range::last_line(editor).saturating_sub(1));
+                addresses += 1;
             }
             Err(_) => return err(format!("E488: Trailing characters: {count}")),
         }
     }
+    if start == end {
+        if addresses >= 2 || end + 1 >= range::last_line(editor) {
+            cursor_to_first_non_blank(editor, start);
+            return ok_silent();
+        }
+        end += 1;
+    }
+    let lines = end - start + 1;
     let keep_spaces = ex.bang;
     let result = editor.record_operation(
         |buffer| {
