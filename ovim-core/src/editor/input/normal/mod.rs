@@ -9,9 +9,12 @@
 mod editing_commands;
 mod mode_transitions;
 mod motions_input;
+mod operator_motion;
 mod operators;
 mod pending_commands;
 mod text_objects;
+
+pub(super) use operator_motion::{apply_between, finish_operator_search, Reach};
 
 use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};

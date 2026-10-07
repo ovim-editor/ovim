@@ -1002,7 +1002,7 @@ fn transform_line_range(
 
 /// Rewrites the text between two grapheme positions (the end is exclusive and
 /// clamped to its line) with `f(old text)`, skipping the edit when nothing changes.
-fn transform_char_range(
+pub(crate) fn transform_char_range(
     buffer: &mut Buffer,
     start_line: usize,
     start_grapheme: usize,

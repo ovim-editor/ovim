@@ -24,6 +24,7 @@ use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
 use super::super::case;
+use super::operator_motion::{apply_lines, apply_motion_operator, Motion};
 
 /// The transformation behind `gu`, `gU` and `g~`.
 fn case_transform(operator: Operator) -> CaseTransform {
@@ -69,12 +70,22 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             KeyCode::Char('g') => handle_gg_motion(editor, operator, count),
             // gn / gN select a search match: pending_commands applies the operator.
             KeyCode::Char('n' | 'N') => Ok(false),
-            _ => {
+            code => {
                 editor.reset_input_state();
-                editor.clear_count();
+                match Motion::from_key(code, true) {
+                    Some(motion) => apply_motion_operator(editor, operator, motion, count)?,
+                    None => editor.clear_count(),
+                }
                 Ok(true)
             }
         };
+    }
+
+    // `d/pat<CR>`: the search runs first, then the operator is applied to the
+    // range it covered (see `finish_operator_search`).
+    if let KeyCode::Char(c @ ('/' | '?')) = key_event.code {
+        editor.begin_search_with_operator(c == '/', operator);
+        return Ok(true);
     }
 
     // K is not a motion, so operator+K should just cancel the operator
@@ -102,6 +113,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 | Operator::Change
                 | Operator::Delete
                 | Operator::Yank
+                | Operator::Lowercase
+                | Operator::Uppercase
+                | Operator::ToggleCase
         )
     {
         editor.set_input_state(InputState::GPrefix {
@@ -421,28 +435,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             true
         }
-        (Operator::Fold, KeyCode::Char('}')) => {
-            let start_line = editor.buffer().cursor().line();
-            Motions::paragraph_forward(editor.buffer_mut(), count);
-            let end_line = editor.buffer().cursor().line();
-            editor
-                .buffer_mut()
-                .fold_manager_mut()
-                .create_fold(start_line, end_line);
-            editor.clear_count();
-            true
-        }
-        (Operator::Fold, KeyCode::Char('{')) => {
-            let end_line = editor.buffer().cursor().line();
-            Motions::paragraph_backward(editor.buffer_mut(), count);
-            let start_line = editor.buffer().cursor().line();
-            editor
-                .buffer_mut()
-                .fold_manager_mut()
-                .create_fold(start_line, end_line);
-            editor.clear_count();
-            true
-        }
         (Operator::Fold, KeyCode::Char('%')) => {
             handle_zf_percent(editor)?;
             true
@@ -561,10 +553,24 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             true
         }
 
-        _ => {
-            editor.clear_count();
-            false
-        }
+        // Any other motion: resolve it to a range and apply the operator to that.
+        (_, code) => match Motion::from_key(code, false) {
+            Some(motion) => {
+                apply_motion_operator(editor, operator, motion, count)?;
+                true
+            }
+            None => {
+                editor.clear_count();
+                // Esc, function keys, `:` and the `z` / `[` / `]` prefixes keep their
+                // own meaning; every other key is not a motion, so it cancels the
+                // operator and is swallowed (vim beeps) instead of running as a
+                // command of its own (`dx`).
+                !matches!(
+                    code,
+                    KeyCode::Esc | KeyCode::F(_) | KeyCode::Char(':' | 'z' | '[' | ']')
+                )
+            }
+        },
     };
 
     Ok(handled)
@@ -577,54 +583,12 @@ fn try_handle_char_motion_with_operator(
     key_event: KeyEvent,
 ) -> Result<Option<bool>> {
     let motion = match key_event.code {
-        KeyCode::Char('f')
-            if matches!(
-                operator,
-                Operator::Delete | Operator::Change | Operator::Yank
-            ) =>
-        {
-            CharMotion::Find
-        }
-        KeyCode::Char('t')
-            if matches!(
-                operator,
-                Operator::Delete | Operator::Change | Operator::Yank
-            ) =>
-        {
-            CharMotion::Till
-        }
-        KeyCode::Char('F')
-            if matches!(
-                operator,
-                Operator::Delete | Operator::Change | Operator::Yank
-            ) =>
-        {
-            CharMotion::FindBack
-        }
-        KeyCode::Char('T')
-            if matches!(
-                operator,
-                Operator::Delete | Operator::Change | Operator::Yank
-            ) =>
-        {
-            CharMotion::TillBack
-        }
-        KeyCode::Char('`')
-            if matches!(
-                operator,
-                Operator::Delete | Operator::Change | Operator::Yank
-            ) =>
-        {
-            CharMotion::JumpMarkExact
-        }
-        KeyCode::Char('\'')
-            if matches!(
-                operator,
-                Operator::Delete | Operator::Change | Operator::Yank
-            ) =>
-        {
-            CharMotion::JumpMarkLine
-        }
+        KeyCode::Char('f') => CharMotion::Find,
+        KeyCode::Char('t') => CharMotion::Till,
+        KeyCode::Char('F') => CharMotion::FindBack,
+        KeyCode::Char('T') => CharMotion::TillBack,
+        KeyCode::Char('`') => CharMotion::JumpMarkExact,
+        KeyCode::Char('\'') => CharMotion::JumpMarkLine,
         _ => return Ok(None),
     };
 
@@ -702,7 +666,9 @@ fn handle_g_motion(editor: &mut Editor, operator: Operator, count: usize) -> Res
                 RepeatAction::DeleteToLastLine { target_line },
             )?;
         }
-        _ => {}
+        Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
+            apply_lines(editor, operator, start_line, end_line, cursor_before)?;
+        }
     }
 
     editor.clear_count();
@@ -776,7 +742,9 @@ fn handle_gg_motion(editor: &mut Editor, operator: Operator, count: usize) -> Re
                 RepeatAction::DeleteToFirstLine { target_line },
             )?;
         }
-        _ => {}
+        Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase => {
+            apply_lines(editor, operator, start_line, end_line, cursor_before)?;
+        }
     }
 
     editor.clear_count();

@@ -1,4 +1,4 @@
-use super::Editor;
+use super::{Editor, Operator};
 use crate::editor::Search;
 use crate::unicode::{char_to_grapheme_col, grapheme_count, grapheme_to_char_col, GraphemeCol};
 
@@ -135,21 +135,40 @@ impl Editor {
         self.search.search_count = count;
     }
 
+    /// `d/` and friends: like [`Self::begin_search`], with `operator` applied to the
+    /// text between where the search began and the match.
+    pub fn begin_search_with_operator(&mut self, forward: bool, operator: Operator) {
+        self.begin_search(forward);
+        self.search.search_operator = Some(operator);
+    }
+
+    /// The operator waiting on the running search, if any.
+    pub fn take_search_operator(&mut self) -> Option<Operator> {
+        self.search.search_operator.take()
+    }
+
+    /// Where the running search began.
+    pub fn search_origin(&self) -> Option<(usize, usize)> {
+        self.search.search_start_pos
+    }
+
     /// Shows where the pattern typed so far would take the cursor, searching
     /// from where the search began and without recording the pattern.
     pub fn preview_search(&mut self) {
-        self.run_search(false);
+        let _ = self.run_search(false);
     }
 
     /// Executes the typed pattern (`<CR>`), moves to the match and records the
     /// pattern as the last search.
-    pub fn execute_search(&mut self) {
-        self.run_search(true);
+    pub fn execute_search(&mut self) -> bool {
+        let found = self.run_search(true);
         self.search.search_start_pos = None;
         self.search.search_count = None;
+        found
     }
 
-    fn run_search(&mut self, commit: bool) {
+    /// Returns whether the pattern matched.
+    fn run_search(&mut self, commit: bool) -> bool {
         // An empty pattern (`/<CR>` or `?<CR>`) repeats the last search in the
         // requested direction (Vim behavior), rather than wiping the active
         // search. Only fall back to clearing when there is no last search.
@@ -158,7 +177,7 @@ impl Editor {
             if last.is_empty() {
                 self.clear_search_highlight();
                 self.restore_search_start_position();
-                return;
+                return false;
             }
             last
         } else {
@@ -186,21 +205,25 @@ impl Editor {
             .unwrap_or((cursor.line(), cursor.col().0));
         let count = self.search.search_count.unwrap_or(1);
 
-        match self.step_search(&mut search, origin, count) {
-            Some((line, col)) => self
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col)),
+        let found = match self.step_search(&mut search, origin, count) {
+            Some((line, col)) => {
+                self.buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, GraphemeCol(col));
+                true
+            }
             None => {
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(origin.0, GraphemeCol(origin.1));
+                false
             }
-        }
+        };
         // Always update current_search so highlighting reflects the actual pattern.
         // If no match exists, find_all_in_line will return empty for each line,
         // so stale highlights from a previous partial match won't linger.
         self.search.current_search = Some(search);
+        found
     }
 
     /// Where `count` steps of `search` (in its own direction) lead from `origin`:
@@ -241,9 +264,17 @@ impl Editor {
     fn repeat_search(&mut self, reverse: bool) {
         let count = self.effective_count();
         self.clear_count();
-        let Some(search) = &self.search.current_search else {
-            return;
-        };
+        if let Some((line, col)) = self.search_target(reverse, count) {
+            self.buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
+        }
+    }
+
+    /// Where `[count]` `n` (or `N` when `reverse`) would take the cursor, or
+    /// `None` without a previous search or a match.
+    pub(crate) fn search_target(&self, reverse: bool, count: usize) -> Option<(usize, usize)> {
+        let search = self.search.current_search.as_ref()?;
         let mut search = if reverse {
             Search::new_with_options(
                 search.pattern().to_string(),
@@ -255,12 +286,7 @@ impl Editor {
             search.clone()
         };
         let cursor = self.buffer().cursor();
-        let origin = (cursor.line(), cursor.col().0);
-        if let Some((line, col)) = self.step_search(&mut search, origin, count) {
-            self.buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
-        }
+        self.step_search(&mut search, (cursor.line(), cursor.col().0), count)
     }
 
     /// Saves the visual search state when entering search from visual mode

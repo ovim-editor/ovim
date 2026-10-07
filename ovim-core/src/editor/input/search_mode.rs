@@ -50,6 +50,7 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Backspace => {
             if editor.search_buffer().is_empty() {
                 // Backspace on empty search buffer exits search mode (like Neovim)
+                editor.take_search_operator();
                 editor.restore_search_start_position();
                 editor.clear_search_buffer();
 
@@ -86,7 +87,9 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         KeyCode::Enter => {
             // Execute the search and accept it
-            editor.execute_search();
+            let operator = editor.take_search_operator();
+            let origin = editor.search_origin();
+            let found = editor.execute_search();
 
             // Check if we're extending a visual selection
             if let Some(visual_search_state) = editor.take_visual_search_state() {
@@ -105,10 +108,16 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             } else {
                 editor.set_mode(Mode::Normal);
             }
+
+            // `d/pat<CR>`: the operator covers the text from where the search began.
+            if let (Some(operator), Some(origin), true) = (operator, origin, found) {
+                super::normal::finish_operator_search(editor, operator, origin)?;
+            }
         }
         KeyCode::Esc => {
             // Cancel search mode
             // BUG FIX: Restore cursor to position before search started
+            editor.take_search_operator();
             editor.restore_search_start_position();
             editor.clear_search_buffer();
 

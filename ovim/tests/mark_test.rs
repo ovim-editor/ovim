@@ -301,7 +301,7 @@ line 4
 fn test_yank_to_mark() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.keys("j").press('m').press('a').keys("gg").keys("y`a"); // Yank to mark (characterwise exclusive: "line 1\n")
+    test.keys("j").press('m').press('a').keys("gg").keys("y`a"); // Yank to mark (exclusive, ends in column 0: linewise "line 1\n")
 
     // Cursor stays at original position after yank
     test.assert_cursor(0, 0);
@@ -311,7 +311,7 @@ fn test_yank_to_mark() {
         .press_esc()
         .press('P'); // Paste before cursor
 
-    // Characterwise paste of "line 1\n" inserts inline
+    // The yank was linewise, so it pastes as a whole line
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\nline 1\n\n");
 }
 
@@ -323,12 +323,12 @@ fn test_change_to_mark() {
         .press('m')
         .press('a')
         .keys("gg")
-        .keys("c`a") // Change to mark (characterwise exclusive: deletes "line 1\n")
+        .keys("c`a") // Change to mark (exclusive, ends in column 0: becomes linewise)
         .type_text("CHANGED")
         .press_esc();
 
-    // "line 1\n" deleted, "CHANGED" inserted, "line 2\nline 3\n" remains
-    assert_eq!(test.buffer_content(), "CHANGEDline 2\nline 3\n");
+    // nvim --clean: `jmaggc`aCHANGED<Esc>` replaces the line like `cc` would.
+    assert_eq!(test.buffer_content(), "CHANGED\nline 2\nline 3\n");
     test.assert_cursor(0, 6);
 }
 

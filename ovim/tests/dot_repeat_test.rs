@@ -1367,10 +1367,11 @@ fn test_dot_with_search_motion() {
 
     test.keys("d/world") // Delete to "world"
         .press_enter()
-        .press('.'); // Repeat (delete to next match?)
+        .press('.'); // Repeat: the next "world" is the one under the cursor, nothing to delete
 
-    assert_eq!(test.buffer_content(), "hello world hello test\n");
-    test.assert_cursor(0, 6);
+    // nvim --clean: d/world<CR> then `.` leaves "world hello test".
+    assert_eq!(test.buffer_content(), "world hello test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]

@@ -39,3 +39,28 @@ pub fn change_case(
     editor.set_repeat_action(RepeatAction::ChangeCase { transform, target });
     Ok(())
 }
+
+/// Applies `gu` / `gU` / `g~` to the text between two grapheme positions (the
+/// end is exclusive) and leaves the cursor at `start`. For motions that cannot
+/// be replayed by `.` (the repeat is not set).
+pub fn change_case_range(
+    editor: &mut Editor,
+    transform: CaseTransform,
+    start: (usize, usize),
+    end: (usize, usize),
+) {
+    let cursor_before = editor.cursor_position();
+    let ((), edits) = editor.buffer_mut().record(|buf| {
+        crate::repeat_action::transform_char_range(buf, start.0, start.1, end.0, end.1, |text| {
+            transform.apply_to(text)
+        });
+    });
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(start.0, crate::unicode::GraphemeCol(start.1));
+    if !edits.is_empty() {
+        let cursor_after = editor.cursor_position();
+        editor.push_recorded_undo(edits, cursor_before, cursor_after);
+    }
+}

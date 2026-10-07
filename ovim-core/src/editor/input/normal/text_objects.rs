@@ -68,12 +68,31 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                     .create_fold(start_line, end_line);
             }
             Operator::Indent | Operator::Dedent | Operator::AutoIndent => {
-                // Don't make sense with text objects
+                // Shift the lines the object covers (`>ip`, `>i{`, `=ip`).
+                let (first, last) = lines_covered(editor, range);
+                let cursor_before = editor.cursor_position();
+                super::operator_motion::apply_lines(editor, operator, first, last, cursor_before)?;
             }
         }
     }
 
     Ok(true)
+}
+
+/// The lines a text object's range touches: a start at the end of its line (the
+/// text after `{`) belongs to the next line, and an exclusive end at column 0
+/// does not reach into its line.
+fn lines_covered(editor: &Editor, range: TextObjectRange) -> (usize, usize) {
+    let buffer = editor.buffer();
+    let mut first = range.start_line;
+    if first < range.end_line && range.start_col.0 >= buffer.line_len(first) {
+        first += 1;
+    }
+    let mut last = range.end_line;
+    if last > first && range.end_col.0 == 0 {
+        last -= 1;
+    }
+    (first, last)
 }
 
 fn apply_delete_operator(

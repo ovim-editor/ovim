@@ -331,11 +331,12 @@ fn test_indent_paragraph() {
 
     test.keys(">ip"); // Indent inner paragraph
 
+    // nvim --clean: both lines of the paragraph are shifted, the blank line is not.
     assert_eq!(
         test.buffer_content(),
-        "para line 1\npara line 2\n\nnext para\n"
+        "    para line 1\n    para line 2\n\nnext para\n"
     );
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 4);
 }
 
 #[test]
@@ -344,8 +345,12 @@ fn test_indent_around_paragraph() {
 
     test.keys(">ap"); // Indent around paragraph
 
-    assert_eq!(test.buffer_content(), "para 1\npara 1 cont\n\npara 2\n");
-    test.assert_cursor(0, 0);
+    // nvim --clean: the blank line that `ap` includes stays empty.
+    assert_eq!(
+        test.buffer_content(),
+        "    para 1\n    para 1 cont\n\npara 2\n"
+    );
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================

@@ -267,21 +267,21 @@ fn test_delete_to_search() {
 
     test.keys("d/test").press_enter();
 
-    assert_eq!(test.buffer_content(), "hello world test\n");
-    test.assert_cursor(0, 12);
+    // nvim --clean: d/test deletes up to (not including) the match.
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
 fn test_change_to_search() {
-    // Note: Operator+search (c/) is not fully implemented - search works but operator is not applied
-    // This test documents current behavior: search executes but change operator doesn't apply
     let mut test = EditorTest::new("hello world test");
 
     test.keys("c/test").press_enter();
 
-    // Search moves cursor to "test" but change operator is not applied (stays in Normal mode)
-    assert_eq!(test.buffer_content(), "hello world test\n");
-    test.assert_cursor(0, 12);
+    // nvim --clean: c/test deletes up to the match and starts inserting there.
+    assert_eq!(test.buffer_content(), "test\n");
+    test.assert_cursor(0, 0);
+    test.assert_mode(ovim::mode::Mode::Insert);
 }
 
 #[test]
@@ -290,8 +290,9 @@ fn test_yank_to_search() {
 
     test.keys("y/test").press_enter().keys("$").press('p');
 
-    assert_eq!(test.buffer_content(), "hello world test\n");
-    test.assert_cursor(0, 15);
+    // nvim --clean: y/test yanks "hello world "; `$p` puts it after the last character.
+    assert_eq!(test.buffer_content(), "hello world testhello world \n");
+    test.assert_cursor(0, 27);
 }
 
 // ============================================================================

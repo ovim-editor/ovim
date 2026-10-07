@@ -425,14 +425,14 @@ qaxq@a        | q[cmd=q] a[-] x[-] q[-] @[cmd=@] a[-] => Normal (1,8) text="foo 
 "<Esc>x       | "[cmd="] <Esc>[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
 "_dd          | "[cmd="] _[reg=_] d[op=Delete,reg=_] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nxdelta\n\nlast line here\n"
 "Ayw          | "[cmd="] A[reg=A] y[op=Yank,reg=A] w[-] => Normal (1,8) @"="beta " @a="beta "
-d"ayw         | d[op=Delete] "[cmd="] a[reg=a] y[op=Yank,reg=a] w[-] => Normal (1,8) @"="beta " @a="beta "
+d"ayw         | d[op=Delete] "[-] a[-] y[-] w[-] => Insert (1,11) text="foo bar(baz, qux) \"str\" end\n  alpha byweta gamma\nxdelta\n\nlast line here\n"
 m<Esc>x       | m[char=Mark/None] <Esc>[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
 ma'a          | m[char=Mark/None] a[-] '[char=JumpMarkLine/None] a[-] => Normal (1,2)
 fa;           | f[char=Find/None] a[-] ;[-] => Normal (1,14)
 ra            | r[char=Replace/None] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha aeta gamma\nxdelta\n\nlast line here\n"
 r<Esc>        | r[char=Replace/None] <Esc>[-] => Normal (1,8)
 <Space><Esc>x | <Space>[leader=[]] <Esc>[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
-d<Space>      | d[op=Delete] <Space>[leader=[]] => Normal (1,8)
+d<Space>      | d[op=Delete] <Space>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
 c<Esc>x       | c[op=Change] <Esc>[-] x[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
 diw.          | d[op=Delete] i[op=Delete,cmd=i] w[-] .[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alphagamma\nxdelta\n\nlast line here\n" @"="  "
 dw.u          | d[op=Delete] w[-] .[-] u[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha gamma\nxdelta\n\nlast line here\n" @"="gamma"
