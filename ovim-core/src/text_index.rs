@@ -163,6 +163,79 @@ impl<'a> Iterator for IndexedGraphemes<'a> {
     }
 }
 
+/// Grapheme streaming backward across rope chunks: the reverse of
+/// [`IndexedGraphemes`], yielding each grapheme's column and leading scalar.
+/// One backward pass costs O(graphemes read), unlike a random-access lookup per
+/// column, which re-walks up to a checkpoint stride each time.
+pub struct ReverseGraphemes<'a> {
+    text: RopeSlice<'a>,
+    cursor: GraphemeCursor,
+    chunk: &'a str,
+    chunk_start: usize,
+    /// Byte offset the next grapheme read ends at.
+    byte: usize,
+    /// Number of graphemes before `byte`.
+    grapheme: usize,
+    ascii: bool,
+}
+
+impl<'a> ReverseGraphemes<'a> {
+    fn new(text: RopeSlice<'a>, position: Checkpoint, ascii: bool) -> Self {
+        let (chunk, chunk_start, _, _) = text.chunk_at_byte(position.byte);
+        Self {
+            text,
+            cursor: GraphemeCursor::new(position.byte, text.len_bytes(), true),
+            chunk,
+            chunk_start,
+            byte: position.byte,
+            grapheme: position.grapheme,
+            ascii,
+        }
+    }
+
+    fn prev_boundary(&mut self) -> Option<usize> {
+        loop {
+            match self.cursor.prev_boundary(self.chunk, self.chunk_start) {
+                Ok(boundary) => return boundary,
+                Err(GraphemeIncomplete::PrevChunk) => {
+                    let (chunk, start, _, _) = self.text.chunk_at_byte(self.chunk_start - 1);
+                    self.chunk = chunk;
+                    self.chunk_start = start;
+                }
+                Err(GraphemeIncomplete::PreContext(end)) => {
+                    let (chunk, start, _, _) = self.text.chunk_at_byte(end - 1);
+                    self.cursor.provide_context(&chunk[..end - start], start);
+                }
+                Err(error) => panic!("invalid backward rope grapheme cursor: {error:?}"),
+            }
+        }
+    }
+}
+
+impl Iterator for ReverseGraphemes<'_> {
+    type Item = (GraphemeCol, char);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.byte == 0 {
+            return None;
+        }
+        let start = if self.ascii {
+            self.byte - 1
+        } else {
+            self.prev_boundary()?
+        };
+        if start < self.chunk_start || start >= self.chunk_start + self.chunk.len() {
+            let (chunk, chunk_start, _, _) = self.text.chunk_at_byte(start);
+            self.chunk = chunk;
+            self.chunk_start = chunk_start;
+        }
+        let first_char = self.chunk[start - self.chunk_start..].chars().next()?;
+        self.byte = start;
+        self.grapheme -= 1;
+        Some((GraphemeCol(self.grapheme), first_char))
+    }
+}
+
 impl LineIndex {
     pub fn from_text(text: impl AsRef<str>) -> Arc<Self> {
         Arc::new(Self::new(RopeSlice::from(text.as_ref())))
@@ -384,6 +457,15 @@ impl LineIndex {
 
     pub fn graphemes_from(&self, col: GraphemeCol) -> IndexedGraphemes<'_> {
         IndexedGraphemes::new(
+            self.text.slice(..),
+            self.position_for_grapheme(col),
+            self.ascii,
+        )
+    }
+
+    /// The graphemes before `col`, nearest first (`col - 1`, `col - 2`, ...).
+    pub fn graphemes_before(&self, col: GraphemeCol) -> ReverseGraphemes<'_> {
+        ReverseGraphemes::new(
             self.text.slice(..),
             self.position_for_grapheme(col),
             self.ascii,

@@ -17,6 +17,20 @@ fn is_whitespace_at(index: &LineIndex, col: usize) -> bool {
     grapheme_char(index, col).is_some_and(char::is_whitespace)
 }
 
+/// Where the run of graphemes ending just before `col` that satisfy `pred` (on their
+/// leading scalar) starts. One backward pass; per-column lookups would re-walk the
+/// line's checkpoint stride at every step.
+fn run_start_backward(index: &LineIndex, col: usize, pred: impl Fn(char) -> bool) -> usize {
+    let mut start = col;
+    for (grapheme_col, ch) in index.graphemes_before(GraphemeCol(col)) {
+        if !pred(ch) {
+            break;
+        }
+        start = grapheme_col.0;
+    }
+    start
+}
+
 fn skip_whitespace_forward(index: &LineIndex, start: usize) -> usize {
     index
         .graphemes_from(GraphemeCol(start))
@@ -173,9 +187,7 @@ impl Motions {
         loop {
             let index = buffer.line_index(line_idx);
             let mut new_col = col.min(index.grapheme_count());
-            while new_col > 0 && is_whitespace_at(&index, new_col - 1) {
-                new_col -= 1;
-            }
+            new_col = run_start_backward(&index, new_col, char::is_whitespace);
 
             if new_col == 0 {
                 if line_idx == 0 {
@@ -197,24 +209,12 @@ impl Motions {
             }
 
             if big_word {
-                while new_col > 0 && !is_whitespace_at(&index, new_col - 1) {
-                    new_col -= 1;
-                }
+                new_col = run_start_backward(&index, new_col, |c| !c.is_whitespace());
             } else {
                 match class_at(&index, new_col - 1).expect("cursor is within the indexed line") {
                     CharClass::Cjk => new_col -= 1,
-                    CharClass::Word => {
-                        while new_col > 0 && class_at(&index, new_col - 1) == Some(CharClass::Word)
-                        {
-                            new_col -= 1;
-                        }
-                    }
-                    CharClass::Punctuation => {
-                        while new_col > 0
-                            && class_at(&index, new_col - 1) == Some(CharClass::Punctuation)
-                        {
-                            new_col -= 1;
-                        }
+                    class @ (CharClass::Word | CharClass::Punctuation) => {
+                        new_col = run_start_backward(&index, new_col, |c| char_class(c) == class);
                     }
                     CharClass::Whitespace => {}
                 }
@@ -434,15 +434,11 @@ impl Motions {
             return;
         }
 
-        if big_word {
-            while col > 0 && !is_whitespace_at(&index, col - 1) {
-                col -= 1;
-            }
+        col = if big_word {
+            run_start_backward(&index, col, |c| !c.is_whitespace())
         } else {
-            while col > 0 && class_at(&index, col - 1) == Some(current_class) {
-                col -= 1;
-            }
-        }
+            run_start_backward(&index, col, |c| char_class(c) == current_class)
+        };
 
         if col == 0 {
             if line_idx == 0 {
@@ -481,9 +477,13 @@ impl Motions {
             }
 
             col = col.min(line_len - 1);
-            while col > 0 && is_whitespace_at(&index, col) {
-                col -= 1;
-            }
+            // Back over the blanks ending at `col` (inclusive).
+            let blanks_start = run_start_backward(&index, col + 1, char::is_whitespace);
+            col = if blanks_start == col + 1 {
+                col
+            } else {
+                blanks_start.saturating_sub(1)
+            };
             if !is_whitespace_at(&index, col) {
                 return (line_idx, col);
             }
