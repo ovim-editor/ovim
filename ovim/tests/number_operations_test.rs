@@ -357,9 +357,10 @@ fn test_g_ctrl_a_sequential_increment() {
         .press('g')
         .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
-    // Should increment sequentially: 1, 2, 3
-    assert_eq!(test.buffer_content(), "item 1\nitem 2\nitem 3\n");
-    test.assert_cursor(0, 5);
+    // nvim --clean: `wVjjg<C-a>` on three "item 1" lines gives 2, 3, 4 (the first line
+    // gets +1 as well) and leaves the cursor at the start of the selection.
+    assert_eq!(test.buffer_content(), "item 2\nitem 3\nitem 4\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -372,8 +373,9 @@ fn test_g_ctrl_a_with_start_value() {
         .press('g')
         .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
-    assert_eq!(test.buffer_content(), "step 0\nstep 1\nstep 2\n");
-    test.assert_cursor(0, 5);
+    // nvim --clean: `wVjjg<C-a>` on three "step 0" lines gives 1, 2, 3.
+    assert_eq!(test.buffer_content(), "step 1\nstep 2\nstep 3\n");
+    test.assert_cursor(0, 0);
 }
 
 #[test]
@@ -385,8 +387,8 @@ fn test_g_ctrl_a_visual_block() {
         .press('g')
         .press_with(KeyCode::Char('a'), Modifiers::CONTROL);
 
-    // Should increment the column of numbers sequentially
-    assert_eq!(test.buffer_content(), "1. item\n2. item\n3. item\n");
+    // nvim --clean: `<C-v>jjg<C-a>` on three "1. item" lines gives 2, 3, 4.
+    assert_eq!(test.buffer_content(), "2. item\n3. item\n4. item\n");
     test.assert_cursor(0, 0);
 }
 
@@ -404,9 +406,9 @@ fn test_g_ctrl_x_sequential_decrement() {
         .press('g')
         .press_with(KeyCode::Char('x'), Modifiers::CONTROL);
 
-    // Should decrement sequentially: 5, 4, 3
-    assert_eq!(test.buffer_content(), "item 5\nitem 4\nitem 3\n");
-    test.assert_cursor(0, 5);
+    // nvim --clean: `wVjjg<C-x>` on three "item 5" lines gives 4, 3, 2.
+    assert_eq!(test.buffer_content(), "item 4\nitem 3\nitem 2\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

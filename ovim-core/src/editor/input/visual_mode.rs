@@ -213,15 +213,14 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
                 editor.clear_count();
                 return Ok(());
             }
-            ('g', KeyCode::Char('a')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
-                // g Ctrl-A: Sequential increment in visual selection
-                numbers::sequential_modify_numbers(editor, 1)?;
-                helpers::exit_visual_mode_to_normal(editor);
-                return Ok(());
-            }
-            ('g', KeyCode::Char('x')) if key_event.modifiers.contains(Modifiers::CONTROL) => {
-                // g Ctrl-X: Sequential decrement in visual selection
-                numbers::sequential_modify_numbers(editor, -1)?;
+            ('g', KeyCode::Char(c @ ('a' | 'x')))
+                if key_event.modifiers.contains(Modifiers::CONTROL) =>
+            {
+                // g Ctrl-A / g Ctrl-X: sequential increment/decrement in the selection
+                let delta = if c == 'a' { 1 } else { -1 };
+                let count = editor.effective_count() as i64;
+                numbers::modify_numbers_in_selection(editor, delta * count, true)?;
+                editor.clear_count();
                 helpers::exit_visual_mode_to_normal(editor);
                 return Ok(());
             }
@@ -265,27 +264,9 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char(' ') => {
             editor.set_input_state(InputState::Leader { keys: Vec::new() });
         }
-        // Half-page scroll down (Ctrl-D) — must come before 'd' delete handler
-        KeyCode::Char('d') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            let half_page = editor.half_page_scroll();
-            let count = editor.count().unwrap_or(half_page);
-            let max_line = editor.buffer().line_count().saturating_sub(1);
-
-            let cursor = editor.buffer_mut().cursor_mut();
-            let new_line = (cursor.line() + count).min(max_line);
-            cursor.set_line(new_line);
-            helpers::clamp_cursor_to_line(editor);
-            editor.clear_count();
-        }
-        // Half-page scroll up (Ctrl-U) — must come before 'u' lowercase handler
-        KeyCode::Char('u') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            let half_page = editor.half_page_scroll();
-            let count = editor.count().unwrap_or(half_page);
-            let cursor = editor.buffer_mut().cursor_mut();
-            let new_line = cursor.line().saturating_sub(count);
-            cursor.set_line(new_line);
-            helpers::clamp_cursor_to_line(editor);
-            editor.clear_count();
+        // Ctrl chords are never the plain-letter command (Ctrl-C is not `c`, Ctrl-X not `x`).
+        KeyCode::Char(c) if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            handle_visual_ctrl(editor, c)?;
         }
         // Text object prefixes in visual mode
         KeyCode::Char(c @ ('i' | 'a')) => {
@@ -685,13 +666,6 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         // Switch to other visual modes
-        KeyCode::Char('v') if key_event.modifiers.contains(Modifiers::CONTROL) => {
-            if editor.mode() == Mode::VisualBlock {
-                helpers::exit_visual_mode_to_normal(editor);
-            } else {
-                editor.set_mode(Mode::VisualBlock);
-            }
-        }
         KeyCode::Char('v') => {
             if editor.mode() == Mode::Visual {
                 helpers::exit_visual_mode_to_normal(editor);
@@ -893,6 +867,70 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         _ => {}
     }
+    Ok(())
+}
+
+/// Visual-mode Ctrl chords. Vim's that this editor supports run here; every other
+/// chord is a no-op that leaves the selection alone (it must never fall through to
+/// the plain-letter command, e.g. Ctrl-C deleting the selection as `c`).
+fn handle_visual_ctrl(editor: &mut Editor, c: char) -> Result<()> {
+    match c {
+        // Ctrl-C / Ctrl-[ leave Visual mode like Esc.
+        'c' | '[' => {
+            helpers::exit_visual_mode_to_normal(editor);
+            return Ok(());
+        }
+        // Ctrl-V / Ctrl-Q: switch to (or leave) blockwise Visual mode.
+        'v' | 'q' => {
+            if editor.mode() == Mode::VisualBlock {
+                helpers::exit_visual_mode_to_normal(editor);
+            } else {
+                editor.set_mode(Mode::VisualBlock);
+            }
+            return Ok(());
+        }
+        'a' | 'x' => {
+            let count = editor.effective_count() as i64;
+            let delta = if c == 'a' { count } else { -count };
+            numbers::modify_numbers_in_selection(editor, delta, false)?;
+            editor.clear_count();
+            helpers::exit_visual_mode_to_normal(editor);
+            return Ok(());
+        }
+        // Half-page scroll.
+        'd' => {
+            let half_page = editor.half_page_scroll();
+            let count = editor.count().unwrap_or(half_page);
+            let max_line = editor.buffer().line_count().saturating_sub(1);
+
+            let cursor = editor.buffer_mut().cursor_mut();
+            let new_line = (cursor.line() + count).min(max_line);
+            cursor.set_line(new_line);
+            helpers::clamp_cursor_to_line(editor);
+        }
+        'u' => {
+            let half_page = editor.half_page_scroll();
+            let count = editor.count().unwrap_or(half_page);
+            let cursor = editor.buffer_mut().cursor_mut();
+            let new_line = cursor.line().saturating_sub(count);
+            cursor.set_line(new_line);
+            helpers::clamp_cursor_to_line(editor);
+        }
+        // Line scroll and page scroll move the view (the cursor follows).
+        'e' => editor.scroll_viewport_down(editor.effective_count()),
+        'y' => editor.scroll_viewport_up(editor.effective_count()),
+        'f' => (0..editor.effective_count()).for_each(|_| editor.scroll_page_down()),
+        'b' => (0..editor.effective_count()).for_each(|_| editor.scroll_page_up()),
+        // Ctrl-N / Ctrl-J are `j`, Ctrl-P is `k`, Ctrl-H is `h`.
+        'n' | 'j' => helpers::move_down(editor),
+        'p' => helpers::move_up(editor),
+        'h' => {
+            editor.set_visual_block_dollar(false);
+            helpers::move_left(editor);
+        }
+        _ => {}
+    }
+    editor.clear_count();
     Ok(())
 }
 
