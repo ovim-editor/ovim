@@ -46,6 +46,11 @@ ovim session cleanup --max-age 7
 ```
 ovim-core/               # Shared library crate
 ├── src/
+│   ├── editor/          # Core logic, operators, motions, LSP actions
+│   │   ├── input/       # Key event handling
+│   │   ├── operators.rs # d, c, y operators
+│   │   ├── motions/     # Cursor movement
+│   │   └── mod.rs       # Main editor state + LSP integration
 │   ├── syntax/          # Tree-sitter grammars & highlighting
 │   │   ├── languages.rs # Language enum & detection
 │   │   └── queries/     # Custom .scm highlight queries
@@ -57,11 +62,6 @@ ovim-core/               # Shared library crate
 ovim/                    # Binary crate
 ├── src/
 │   ├── api/             # REST API (Axum) - /health, /lsp/status, /snapshot, etc.
-│   ├── editor/          # Core logic, operators, motions, LSP actions
-│   │   ├── input.rs     # Key event handling
-│   │   ├── operators.rs # d, c, y operators
-│   │   ├── motions.rs   # Cursor movement
-│   │   └── mod.rs       # Main editor state + LSP integration
 │   ├── frontend/        # Frontend-agnostic runtime plumbing (shared by TUI/headless/future GUI)
 │   ├── ui/              # Terminal UI (ratatui + crossterm)
 │   ├── cli.rs           # CLI argument parsing
@@ -91,7 +91,7 @@ ovim/                    # Binary crate
 2. Add variant to `ApiResponse` in `api/state.rs`
 3. Add handler in `api/handlers.rs`
 4. Add route in `api/routes.rs`
-5. Handle in `handle_api_request()` in `main.rs`
+5. Handle in `handle_api_request()` in `api_dispatch.rs`
 
 **Add new MCP tool:**
 1. Add tool definition in `api/mcp.rs::get_tools()`
@@ -106,7 +106,7 @@ ovim/                    # Binary crate
 
 **Add new operator:**
 1. Add function in `editor/operators.rs`
-2. Call from operator dispatch in `editor/input.rs`
+2. Call from operator dispatch in `editor/input/`
 3. Add tests in `tests/`
 
 **Add new language support:**
@@ -147,9 +147,9 @@ ovim lsp languages                   # List all languages
 
 Run `ovim lsp languages` to see all supported languages.
 
-**Languages with LSP**: Rust, TypeScript, JavaScript, Astro, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, CSS, TOML, Zig, Lua, Elixir
+**Languages with LSP**: Rust, TypeScript, JavaScript, Astro, Python, Java, Kotlin, Scala, Groovy, SQL, C#, Terraform, Go, C, C++, Ruby, Bash, JSON, YAML, HTML, XML, CSS, TOML, Zig, Lua, Elixir, Ghostty
 
-**Syntax highlighting only**: Markdown, HCL, Diff
+**Syntax highlighting only**: Markdown, HCL, Diff, WGSL, Dockerfile, Tree-sitter queries, Properties, INI
 
 See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for installation instructions.
 

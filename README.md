@@ -255,8 +255,8 @@ ovim session cleanup --dry-run   # Preview stale session cleanup
 ## Architecture
 
 ```
-ovim-core/    Shared library — buffer, syntax, LSP, session logic
-ovim/         Binary — TUI, editor, CLI, REST API
+ovim-core/    Shared library — buffer, syntax, LSP, editor, session logic
+ovim/         Binary — TUI, CLI, REST API
 ```
 
 Key modules:
