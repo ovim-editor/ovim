@@ -288,19 +288,28 @@ fn render_results(frame: &mut Frame, panel: &SearchReplacePanel, area: Rect) {
                 } else {
                     Style::default().fg(colors::GREEN)
                 };
+                // A tab cell draws as nothing: expand tabs across the pieces
+                // as if they were one row.
+                let show_replacement = !panel.replace.is_empty() || !matched.is_empty();
+                let [before, matched, replacement, after] = expand_preview_pieces([
+                    before.trim_start(),
+                    matched,
+                    if show_replacement { &replacement } else { "" },
+                    after.trim_end(),
+                ]);
                 let mut spans = vec![
                     Span::styled(format!("   {mark} "), Style::default().fg(colors::KEY)),
                     Span::styled(
                         format!("{:>5}  ", entry.found.line + 1),
                         Style::default().fg(colors::MUTED),
                     ),
-                    Span::styled(before.trim_start().to_string(), plain),
-                    Span::styled(matched.to_string(), removed),
+                    Span::styled(before, plain),
+                    Span::styled(matched, removed),
                 ];
-                if !panel.replace.is_empty() || !matched.is_empty() {
+                if show_replacement {
                     spans.push(Span::styled(replacement, added));
                 }
-                spans.push(Span::styled(after.trim_end().to_string(), plain));
+                spans.push(Span::styled(after, plain));
                 Line::from(spans)
             }
         };
@@ -314,6 +323,23 @@ fn render_results(frame: &mut Frame, panel: &SearchReplacePanel, area: Rect) {
             Rect::new(area.x, area.y + offset as u16, area.width, 1),
         );
     }
+}
+
+/// Tab stops of the match preview rows.
+const PREVIEW_TAB_WIDTH: usize = 4;
+
+/// Expands tabs (and makes control characters visible) in the consecutive
+/// pieces of one preview row, so a tab inside a later piece reaches the stop
+/// the earlier pieces leave it at.
+fn expand_preview_pieces(pieces: [&str; 4]) -> [String; 4] {
+    // Everything before the current piece, already expanded.
+    let mut row = String::new();
+    pieces.map(|piece| {
+        let expanded = super::helpers::expand_tabs(&format!("{row}{piece}"), PREVIEW_TAB_WIDTH);
+        let shown = expanded[row.len()..].to_string();
+        row = expanded;
+        shown
+    })
 }
 
 fn render_hints(frame: &mut Frame, panel: &SearchReplacePanel, area: Rect) {
@@ -398,6 +424,38 @@ mod tests {
         assert!(text.contains("[x]"), "{text}");
         assert!(text.contains("[ ]"), "{text}");
         assert!(text.contains("M-Enter replace"), "{text}");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn a_match_preview_keeps_the_gap_where_the_source_has_a_tab() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::create_dir(root.join(".git")).unwrap();
+        std::fs::write(root.join("Tabs.go"), "x\tCircle\ty\n").unwrap();
+        let mut editor = crate::editor::Editor::default();
+        editor.open_file(root.join("Tabs.go")).unwrap();
+        editor.open_search_replace(Some("Circle".to_string()));
+        editor.run_search_replace_now();
+        let panel = editor.search_replace_panel_mut().unwrap();
+        panel.replace = crate::editor::SingleLineInput::new("Disc");
+
+        let text = screen(editor.search_replace_panel().unwrap(), 100, 24);
+        assert!(text.contains("x   CircleDisc  y"), "{text}");
+    }
+
+    #[test]
+    fn preview_tabs_reach_their_tab_stops_across_the_pieces() {
+        let [before, matched, replacement, after] =
+            expand_preview_pieces(["a\tb", "\tOld", "New", "\tend"]);
+        // `a`, tab to column 4, `b`, tab to 8, then the pieces continue.
+        assert_eq!(before, "a   b");
+        assert_eq!(matched, "   Old");
+        assert_eq!(replacement, "New");
+        assert_eq!(after, "  end");
+        assert_eq!(
+            format!("{before}{matched}{replacement}{after}"),
+            "a   b   OldNew  end"
+        );
     }
 
     #[test]

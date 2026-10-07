@@ -209,8 +209,12 @@ fn run_lines<'a>(runs: &'a [TestRun], latest: &'a TestRun, height: usize) -> Vec
     lines
 }
 
-/// Colorizes a single output line by rough pass/fail signal words.
-fn output_line(text: &str) -> Line<'_> {
+/// Tab stops of the output tail (`go test` indents with tabs).
+const OUTPUT_TAB_WIDTH: usize = 4;
+
+/// Colorizes a single output line by rough pass/fail signal words. Tabs are
+/// expanded (a tab cell draws as nothing) and control characters made visible.
+fn output_line(text: &str) -> Line<'static> {
     let trimmed = text.trim_start();
     let style = if trimmed.contains("FAILED")
         || trimmed.contains("--- FAIL")
@@ -234,5 +238,31 @@ fn output_line(text: &str) -> Line<'_> {
     } else {
         Style::default().fg(colors::TEXT)
     };
-    Line::from(Span::styled(text, style))
+    Line::from(Span::styled(
+        super::helpers::expand_tabs(text, OUTPUT_TAB_WIDTH),
+        style,
+    ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect()
+    }
+
+    /// A tab cell draws as nothing, gluing indented test output together.
+    #[test]
+    fn output_tabs_are_expanded_to_tab_stops() {
+        assert_eq!(
+            text(&output_line("\t--- FAIL: TestX (0.00s)")),
+            "    --- FAIL: TestX (0.00s)"
+        );
+        assert_eq!(text(&output_line("ab\tc")), "ab  c");
+        assert_eq!(text(&output_line("plain")), "plain");
+    }
 }
