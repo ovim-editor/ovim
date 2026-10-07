@@ -364,6 +364,36 @@ fn hunk_ranges(diff: &git2::Diff<'_>) -> Result<Vec<HunkRange>> {
     Ok(hunks)
 }
 
+/// Every zero-context hunk with the text of its new side. The text comes from
+/// the diff, which compares the *filtered* working tree (line-ending
+/// conversion, ident, ...), so it is what `git add` would store.
+fn hunks_with_new_text(diff: &git2::Diff<'_>) -> Result<Vec<(HunkRange, Vec<u8>)>> {
+    let mut hunks = Vec::new();
+    for delta in 0..diff.deltas().len() {
+        let Some(patch) = git2::Patch::from_diff(diff, delta)? else {
+            continue;
+        };
+        for hunk_index in 0..patch.num_hunks() {
+            let (hunk, line_count) = patch.hunk(hunk_index)?;
+            let mut text = Vec::new();
+            for line_index in 0..line_count {
+                let line = patch.line_in_hunk(hunk_index, line_index)?;
+                if line.origin() == '+' {
+                    text.extend_from_slice(line.content());
+                }
+            }
+            let range = (
+                hunk.old_start(),
+                hunk.old_lines(),
+                hunk.new_start(),
+                hunk.new_lines(),
+            );
+            hunks.push((range, text));
+        }
+    }
+    Ok(hunks)
+}
+
 /// The 0-based `[start, end)` range a hunk side occupies in its text. An empty
 /// side (`lines == 0`) is positioned *after* line `start`.
 fn side_range(start: u32, lines: u32) -> (usize, usize) {
@@ -432,14 +462,48 @@ fn empty_index_entry(relative: &Path) -> git2::IndexEntry {
     }
 }
 
-/// Replaces the index entry of `relative` with `content`.
-fn write_index_text(repo: &Repository, relative: &Path, content: &[u8]) -> Result<()> {
+/// The index mode a working tree file gets: executable bit and symlinks.
+fn worktree_mode(path: &Path) -> u32 {
+    let Ok(metadata) = std::fs::symlink_metadata(path) else {
+        return 0o100644;
+    };
+    if metadata.file_type().is_symlink() {
+        return 0o120000;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o100 != 0 {
+            return 0o100755;
+        }
+    }
+    0o100644
+}
+
+/// Replaces the index entry of `relative` with `content`; a path the index
+/// lacks is added with `new_mode`.
+fn write_index_text(
+    repo: &Repository,
+    relative: &Path,
+    content: &[u8],
+    new_mode: u32,
+) -> Result<()> {
     let mut index = repo.index()?;
-    let mut entry = index
-        .get_path(relative, 0)
-        .unwrap_or_else(|| empty_index_entry(relative));
-    entry.file_size = content.len() as u32;
+    let mut entry = index.get_path(relative, 0).unwrap_or_else(|| {
+        let mut entry = empty_index_entry(relative);
+        entry.mode = new_mode;
+        entry
+    });
+    // Unknown stat data: git and libgit2 then compare the contents when asked
+    // whether the working tree file differs. A size taken from the blob would
+    // mismatch a file whose line endings are converted on checkout, and the
+    // file would show as modified although it matches what was staged.
     index.add_frombuffer(&entry, content)?;
+    if let Some(mut written) = index.get_path(relative, 0) {
+        written.file_size = 0;
+        written.mtime = git2::IndexTime::new(0, 0);
+        index.add(&written)?;
+    }
     index.write()?;
     Ok(())
 }
@@ -461,24 +525,24 @@ pub fn stage_hunk(path: &Path, line: usize) -> Result<bool> {
         .show_untracked_content(true);
     let diff = repo.diff_index_to_workdir(None, Some(&mut diff_options))?;
     let target = line as u32 + 1;
-    let Some((old_start, old_lines, new_start, new_lines)) = hunk_ranges(&diff)?
+    let Some(((old_start, old_lines, _, new_lines), new_text)) = hunks_with_new_text(&diff)?
         .into_iter()
-        .find(|(_, _, start, lines)| hunk_covers(*start, *lines, target))
+        .find(|((_, _, start, lines), _)| hunk_covers(*start, *lines, target))
     else {
         return Ok(false);
     };
     let workdir = repo
         .workdir()
         .ok_or_else(|| anyhow!("bare repositories have no working tree"))?;
-    let worktree = std::fs::read(workdir.join(&relative))?;
     let staged = index_text(&repo, &relative)?;
     let merged = splice_hunk(
         &staged,
         side_range(old_start, old_lines),
-        &worktree,
-        side_range(new_start, new_lines),
+        &new_text,
+        (0, new_lines as usize),
     );
-    write_index_text(&repo, &relative, &merged)?;
+    let mode = worktree_mode(&workdir.join(&relative));
+    write_index_text(&repo, &relative, &merged, mode)?;
     Ok(true)
 }
 
@@ -562,7 +626,10 @@ pub fn unstage_hunk(path: &Path, line: usize) -> Result<bool> {
         index.remove_path(&relative)?;
         index.write()?;
     } else {
-        write_index_text(&repo, &relative, &reverted)?;
+        let mode = head_entry
+            .as_ref()
+            .map_or(0o100644, |entry| entry.filemode() as u32);
+        write_index_text(&repo, &relative, &reverted, mode)?;
     }
     Ok(true)
 }
@@ -1380,6 +1447,46 @@ mod tests {
         fs::write(&tail, "one\ntwo\nthree").unwrap();
         assert!(stage_hunk(&tail, 2).unwrap());
         assert_eq!(repo.index_text("tail.txt"), "one\ntwo\nthree");
+    }
+
+    #[test]
+    fn stage_hunk_stores_the_clean_filtered_text_not_the_raw_worktree_bytes() {
+        let repo = Repo::new();
+        repo.write(".gitattributes", "*.txt text eol=crlf\n");
+        let file = repo.write("a.txt", "one\r\ntwo\r\nthree\r\n");
+        repo.commit_all("init");
+        assert_eq!(repo.index_text("a.txt"), "one\ntwo\nthree\n");
+        repo.write("a.txt", "one\r\nTWO\r\nthree\r\n");
+
+        assert!(stage_hunk(&file, 1).unwrap());
+        assert_eq!(
+            repo.index_text("a.txt"),
+            "one\nTWO\nthree\n",
+            "line endings are normalised like `git add`"
+        );
+        assert_eq!(
+            status(&repo.root).unwrap()[0].code(),
+            "M ",
+            "nothing is left unstaged"
+        );
+    }
+
+    #[test]
+    fn stage_hunk_of_a_new_executable_file_keeps_its_mode() {
+        use std::os::unix::fs::PermissionsExt;
+        let repo = Repo::new();
+        repo.write("keep.txt", "x\n");
+        repo.commit_all("init");
+        let script = repo.write("run.sh", "echo hi\n");
+        fs::set_permissions(&script, fs::Permissions::from_mode(0o755)).unwrap();
+
+        assert!(stage_hunk(&script, 0).unwrap());
+        let mut index = repo.repo.index().unwrap();
+        index.read(true).unwrap();
+        assert_eq!(
+            index.get_path(Path::new("run.sh"), 0).unwrap().mode,
+            0o100755
+        );
     }
 
     #[test]
