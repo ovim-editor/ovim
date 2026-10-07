@@ -165,6 +165,7 @@ impl InputHandler {
         };
         let completing_insert_normal = editor.editing.insert_normal_pending;
         let repeat_checkpoint = Self::repeat_checkpoint(editor);
+        let register_before = Self::register_before_command(editor);
         let mapping_handled = if allow_remap {
             Self::try_handle_mode_mapping(editor, key_event, remap_depth)?
         } else {
@@ -212,6 +213,9 @@ impl InputHandler {
 
         if let Some(checkpoint) = repeat_checkpoint.filter(|_| !mapping_handled) {
             Self::forget_unrecorded_change(editor, checkpoint);
+        }
+        if let Some(register) = register_before.filter(|_| !mapping_handled) {
+            Self::drop_unused_register(editor, register);
         }
 
         // Ctrl-O insert-normal: after one normal command, return to insert mode.
@@ -321,6 +325,28 @@ impl InputHandler {
                 editor.buffer().change_manager().repeat_checkpoint(),
             )
         })
+    }
+
+    /// The register typed with `"x` that a Normal-mode command is about to run with,
+    /// if the key about to be handled is a command of its own (not the register name
+    /// itself, not a pending prefix's argument).
+    fn register_before_command(editor: &Editor) -> Option<char> {
+        (editor.mode() == Mode::Normal && editor.input_state().is_normal())
+            .then(|| editor.pending_register())
+            .flatten()
+    }
+
+    /// `"x` belongs to the command that follows it. When that command completed
+    /// without taking the register (Esc, a plain motion, a cancelled operator), it
+    /// must not linger and apply to the next, unrelated command.
+    fn drop_unused_register(editor: &mut Editor, register: char) {
+        let finished = editor.mode() == Mode::Normal
+            && editor.input_state().is_normal()
+            && editor.count().is_none()
+            && !editor.has_pending_mapping();
+        if finished && editor.pending_register() == Some(register) {
+            editor.clear_pending_register();
+        }
     }
 
     /// A key that edited the buffer without defining what `.` repeats must not

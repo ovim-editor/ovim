@@ -167,6 +167,13 @@ fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool>
     let KeyCode::Char(key) = key_event.code else {
         return Ok(false);
     };
+    // Ctrl/Alt chords are never the plain-letter command (`<C-c>` is not `c`).
+    if key_event
+        .modifiers
+        .intersects(Modifiers::CONTROL | Modifiers::ALT)
+    {
+        return Ok(false);
+    }
     let awaiting = |motion| InputState::AwaitingChar {
         motion,
         operator: None,
