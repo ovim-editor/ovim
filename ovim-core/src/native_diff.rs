@@ -3,7 +3,7 @@
 use anyhow::{bail, Context, Result};
 use git2::{Delta, Diff, DiffFindOptions, DiffOptions, Oid, Patch, Repository, Tree};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -422,7 +422,10 @@ pub fn review_patch(path: &Path, base: &ReviewBase) -> Result<ReviewPatch> {
     };
 
     let (diff, comparison_base_oid) = build_diff(&repo, &base.spec)?;
-    let files = summarize(&diff)?;
+    // A sparse checkout leaves files out of the working tree that the diff
+    // then reports as deleted.
+    let sparse = crate::git::ops::skip_worktree_paths(&repo)?;
+    let files = summarize(&diff, &sparse)?;
     let file_index: HashMap<&str, usize> = files
         .iter()
         .enumerate()
@@ -449,6 +452,9 @@ pub fn review_patch(path: &Path, base: &ReviewBase) -> Result<ReviewPatch> {
             .path()
             .or_else(|| delta.old_file().path())
             .and_then(Path::to_str);
+        if path.is_some_and(|path| sparse.contains(Path::new(path))) {
+            return true;
+        }
         current_file = path.and_then(|path| file_index.get(path).copied());
 
         match line.origin() {
@@ -639,7 +645,7 @@ fn merge_base_tree<'repo>(repo: &'repo Repository, base: &str) -> Result<(Tree<'
     Ok((repo.find_commit(oid)?.tree()?, oid))
 }
 
-fn summarize(diff: &Diff<'_>) -> Result<Vec<DiffFile>> {
+fn summarize(diff: &Diff<'_>, sparse: &HashSet<PathBuf>) -> Result<Vec<DiffFile>> {
     let mut files = Vec::with_capacity(diff.deltas().len());
     for (index, delta) in diff.deltas().enumerate() {
         let path = delta
@@ -649,6 +655,9 @@ fn summarize(diff: &Diff<'_>) -> Result<Vec<DiffFile>> {
             .and_then(Path::to_str)
             .context("A changed path is not valid UTF-8")?
             .to_string();
+        if sparse.contains(Path::new(&path)) {
+            continue;
+        }
         let old_path = delta
             .old_file()
             .path()
@@ -819,6 +828,33 @@ mod tests {
         assert_eq!(ReviewBase::explicit("HEAD~3").base_ref(), Some("HEAD~3"));
         assert_eq!(ReviewBase::explicit("main..feature").spec, "main..feature");
         assert_eq!(ReviewBase::explicit("main..feature").base_ref(), None);
+    }
+
+    #[test]
+    fn review_patch_ignores_files_a_sparse_checkout_left_out() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = repo_on_main(temp.path());
+        fs::write(temp.path().join("sparse.txt"), "sparse\n").unwrap();
+        commit_all(&repo, "add sparse");
+        let mut index = repo.index().unwrap();
+        let mut entry = index.get_path(Path::new("sparse.txt"), 0).unwrap();
+        entry.flags_extended |= 1 << 14;
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+        fs::remove_file(temp.path().join("sparse.txt")).unwrap();
+        fs::write(temp.path().join("a.txt"), "one\nchanged\nthree\n").unwrap();
+
+        let base = resolve_base(temp.path()).unwrap();
+        let patch = review_patch(temp.path(), &base).unwrap();
+        assert_eq!(
+            patch
+                .files
+                .iter()
+                .map(|f| f.path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["a.txt"]
+        );
+        assert!(!patch.text.contains("sparse.txt"), "{}", patch.text);
     }
 
     #[test]

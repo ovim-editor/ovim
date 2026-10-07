@@ -9,7 +9,11 @@ use chrono::{TimeZone, Utc};
 use git2::{
     BlameOptions, DiffOptions, ErrorCode, IndexAddOption, Oid, Repository, Status, StatusOptions,
 };
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
+
+/// Index flag of files a sparse checkout left out of the working tree.
+const SKIP_WORKTREE: u16 = 1 << 14;
 
 /// Opens the repository containing `path` and returns it with the path made
 /// relative to the working tree.
@@ -98,6 +102,18 @@ impl GitTarget {
     }
 }
 
+/// Paths a sparse checkout left out of the working tree. Git treats them as
+/// unchanged whatever the working tree holds; libgit2 reports them deleted.
+pub(crate) fn skip_worktree_paths(repo: &Repository) -> Result<HashSet<PathBuf>> {
+    let index = repo.index()?;
+    Ok(index
+        .iter()
+        .filter(|entry| entry.flags & 0x3000 == 0 && entry.flags_extended & SKIP_WORKTREE != 0)
+        .filter_map(|entry| String::from_utf8(entry.path).ok())
+        .map(PathBuf::from)
+        .collect())
+}
+
 // ---------------------------------------------------------------------------
 // Status
 // ---------------------------------------------------------------------------
@@ -145,9 +161,20 @@ pub fn status(path: &Path) -> Result<Vec<StatusEntry>> {
         .renames_index_to_workdir(true)
         .include_ignored(false);
     let statuses = repo.statuses(Some(&mut options))?;
+    let sparse = skip_worktree_paths(&repo)?;
     let mut entries = Vec::new();
     for entry in statuses.iter() {
-        let flags = entry.status();
+        let mut flags = entry.status();
+        if entry
+            .path()
+            .is_some_and(|path| sparse.contains(Path::new(path)))
+        {
+            flags -= Status::WT_NEW
+                | Status::WT_MODIFIED
+                | Status::WT_DELETED
+                | Status::WT_TYPECHANGE
+                | Status::WT_RENAMED;
+        }
         if flags.is_empty() || flags.contains(Status::IGNORED) {
             continue;
         }
@@ -242,9 +269,16 @@ fn stage_in(repo: &Repository, relative: &Path) -> Result<()> {
 /// Stages every change in the working tree (`git add -A`).
 pub fn stage_all(path: &Path) -> Result<()> {
     let (repo, _) = open(path)?;
+    let sparse = skip_worktree_paths(&repo)?;
+    // Positive return values skip a path, so sparse files keep their entries.
+    let mut skip_sparse = |path: &Path, _: &[u8]| i32::from(sparse.contains(path));
     let mut index = repo.index()?;
-    index.add_all(["*"].iter(), IndexAddOption::DEFAULT, None)?;
-    index.update_all(["*"].iter(), None)?;
+    index.add_all(
+        ["*"].iter(),
+        IndexAddOption::DEFAULT,
+        Some(&mut skip_sparse),
+    )?;
+    index.update_all(["*"].iter(), Some(&mut skip_sparse))?;
     index.write()?;
     Ok(())
 }
@@ -963,6 +997,36 @@ mod tests {
         assert!(by_path("a.txt").is_staged() && by_path("a.txt").has_unstaged_changes());
         assert_eq!(by_path("c.txt").code(), "??");
         assert!(entries.iter().all(|e| e.path != "b.txt"));
+    }
+
+    /// Marks `name` as left out of the working tree by a sparse checkout.
+    fn mark_skip_worktree(repo: &Repo, name: &str) {
+        let mut index = repo.repo.index().unwrap();
+        let mut entry = index.get_path(Path::new(name), 0).unwrap();
+        entry.flags_extended |= SKIP_WORKTREE;
+        index.add(&entry).unwrap();
+        index.write().unwrap();
+    }
+
+    #[test]
+    fn sparse_checkout_files_are_neither_reported_deleted_nor_staged_as_deleted() {
+        let repo = Repo::new();
+        repo.write("kept.txt", "kept\n");
+        let sparse = repo.write("sparse.txt", "sparse\n");
+        repo.commit_all("init");
+        mark_skip_worktree(&repo, "sparse.txt");
+        fs::remove_file(&sparse).unwrap();
+        repo.write("kept.txt", "kept, edited\n");
+
+        let entries = status(&repo.root).unwrap();
+        assert_eq!(
+            entries.iter().map(|e| e.path.as_str()).collect::<Vec<_>>(),
+            ["kept.txt"],
+            "git status does not list skip-worktree files as deleted"
+        );
+        stage_all(&repo.root).unwrap();
+        assert_eq!(repo.index_text("sparse.txt"), "sparse\n");
+        assert_eq!(repo.index_text("kept.txt"), "kept, edited\n");
     }
 
     #[test]
