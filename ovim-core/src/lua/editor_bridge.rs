@@ -4,6 +4,7 @@ use crate::ai::{
     DiagnosticScope, EditFormat, FileScope, ProfileScope, ProjectContextConfig, RetryPolicy,
 };
 use anyhow::Result;
+use ropey::Rope;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -19,8 +20,10 @@ struct EditorBridgeInner {
     pending_commands: Vec<String>,
     /// Current cursor position (line, column)
     cursor_pos: Option<(usize, usize)>,
-    /// Current buffer content (cached)
-    buffer_content: Option<String>,
+    /// Current buffer content. A rope clone is a cheap shared handle, so the
+    /// editor can refresh it every tick; text is only copied out when Lua
+    /// asks for it.
+    buffer_content: Option<Rope>,
     /// Current mode
     mode: Option<String>,
     /// Global variables (vim.g namespace)
@@ -299,7 +302,7 @@ impl EditorBridge {
     }
 
     /// Update the cached buffer content
-    pub fn update_buffer(&self, content: String) {
+    pub fn update_buffer(&self, content: Rope) {
         let mut inner = match self.inner.lock() {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
@@ -313,7 +316,7 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        inner.buffer_content.clone()
+        inner.buffer_content.as_ref().map(|rope| rope.to_string())
     }
 
     /// Update the cached mode
@@ -349,11 +352,14 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(ref content) = inner.buffer_content {
-            content.lines().nth(line).map(|s| s.to_string())
-        } else {
-            None
-        }
+        let slice = inner.buffer_content.as_ref()?.get_line(line)?;
+        let text = String::from(slice);
+        let text = text
+            .strip_suffix("\r\n")
+            .or_else(|| text.strip_suffix('\n'))
+            .or_else(|| text.strip_suffix('\r'))
+            .unwrap_or(&text);
+        Some(text.to_string())
     }
 
     // -----------------------------------------------------------------
@@ -531,10 +537,17 @@ impl EditorBridge {
             Ok(guard) => guard,
             Err(poisoned) => poisoned.into_inner(),
         };
-        if let Some(ref content) = inner.buffer_content {
-            content.lines().count()
-        } else {
+        let Some(ref content) = inner.buffer_content else {
+            return 0;
+        };
+        // Ropey counts an empty line after a trailing newline; `lines()` does not.
+        let lines = content.len_lines();
+        if content.len_chars() == 0 {
             0
+        } else if content.char(content.len_chars() - 1) == '\n' {
+            lines - 1
+        } else {
+            lines
         }
     }
 }

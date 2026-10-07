@@ -169,7 +169,7 @@ impl Editor {
         let cursor = self.buffer().cursor();
         bridge.update_cursor(cursor.line(), cursor.col().0);
         // Update buffer content
-        bridge.update_buffer(self.buffer().rope().to_string());
+        bridge.update_buffer(self.buffer().rope().clone());
         // Update mode
         bridge.update_mode(format!("{:?}", self.mode));
     }

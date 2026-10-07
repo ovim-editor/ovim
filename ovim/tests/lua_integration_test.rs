@@ -272,3 +272,52 @@ fn pullbase_lua_path_overrides_support_spaces_and_clear_individually() {
         assert_eq!(editor.options.pullbase.as_deref(), Some("main"));
     }
 }
+
+#[test]
+fn idle_lua_ticks_do_not_copy_the_buffer() {
+    // 20 MB of text: copying it into a String every tick (what the bridge
+    // used to do) costs several milliseconds per tick, so 200 idle ticks
+    // would take seconds. Handing the bridge a rope handle is O(1).
+    let line = format!("{}\n", "x".repeat(79));
+    let mut editor = Editor::with_content(&line.repeat(250_000));
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    let started = std::time::Instant::now();
+    for _ in 0..200 {
+        editor.process_lua_commands().unwrap();
+    }
+    let elapsed = started.elapsed();
+
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "200 idle Lua ticks took {elapsed:?} on a 20 MB buffer"
+    );
+}
+
+#[test]
+fn lua_reads_the_current_line_and_line_count_after_edits() {
+    let mut editor = Editor::with_content("one\ntwo\nthree\n");
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    assert_eq!(editor.execute_lua("return vim.fn.line('$')").unwrap(), "3");
+
+    // Edit the second line, tick, and read it back through Lua.
+    for ch in "jccchanged".chars() {
+        InputHandler::handle_key_event(
+            &mut editor,
+            KeyEvent::new(KeyCode::Char(ch), Modifiers::NONE),
+        )
+        .unwrap();
+    }
+    InputHandler::handle_key_event(&mut editor, KeyEvent::new(KeyCode::Esc, Modifiers::NONE))
+        .unwrap();
+    editor.process_lua_commands().unwrap();
+
+    assert_eq!(
+        editor
+            .execute_lua("return vim.api.nvim_get_current_line()")
+            .unwrap(),
+        "changed"
+    );
+    assert_eq!(editor.execute_lua("return vim.fn.line('$')").unwrap(), "3");
+}
