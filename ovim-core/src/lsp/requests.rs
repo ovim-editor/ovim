@@ -143,10 +143,7 @@ impl LspManager {
             GotoDefinitionResponse, Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports goto declaration
         if !server.supports_goto_declaration().await {
@@ -239,10 +236,7 @@ impl LspManager {
             language_id
         );
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         lsp_info!("LSP-HOVER", "Server found for language: {}", language_id);
 
@@ -333,10 +327,7 @@ impl LspManager {
         language_id: &str,
         trigger: CompletionTrigger,
     ) -> Result<CompletionOutcome> {
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Cancel any pending completion requests before sending new one
         // Completion is high-frequency and only latest matters (user is still typing)
@@ -399,10 +390,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::TextEdit>> {
         use lsp_types::{DocumentFormattingParams, FormattingOptions, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports formatting
         if !server.supports_formatting().await {
@@ -447,10 +435,7 @@ impl LspManager {
             TextDocumentIdentifier,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports range formatting
         if !server.supports_range_formatting().await {
@@ -504,10 +489,7 @@ impl LspManager {
             TextDocumentIdentifier,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports code actions
         if !server.supports_code_actions().await {
@@ -549,8 +531,7 @@ impl LspManager {
         action: lsp_types::CodeAction,
     ) -> Result<lsp_types::CodeAction> {
         let server = self
-            .servers
-            .get(language_id)
+            .server_handle(language_id)
             .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
         Self::resolve_code_action_on_server(&server, action).await
     }
@@ -562,8 +543,7 @@ impl LspManager {
         action: lsp_types::CodeAction,
     ) -> Result<lsp_types::CodeAction> {
         let server = self
-            .servers
-            .get(server_id)
+            .server_handle(server_id)
             .ok_or_else(|| anyhow::anyhow!("No server with id: {}", server_id))?;
         Self::resolve_code_action_on_server(&server, action).await
     }
@@ -595,10 +575,7 @@ impl LspManager {
             TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports references
         if !server.supports_references().await {
@@ -638,10 +615,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::PrepareRenameResponse>> {
         use lsp_types::{Position, TextDocumentIdentifier, TextDocumentPositionParams};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports prepare rename
         if !server.supports_prepare_rename().await {
@@ -676,10 +650,7 @@ impl LspManager {
             Position, RenameParams, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports rename
         if !server.supports_rename().await {
@@ -717,10 +688,7 @@ impl LspManager {
             Position, SignatureHelpParams, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports signature help
         if !server.supports_signature_help().await {
@@ -770,10 +738,7 @@ impl LspManager {
     ) -> Result<Option<lsp_types::SelectionRange>> {
         use lsp_types::{Position, SelectionRangeParams, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports selection range
         if !server.supports_selection_range().await {
@@ -806,10 +771,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::DocumentSymbol>> {
         use lsp_types::{DocumentSymbolParams, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports document symbols
         if !server.supports_document_symbol().await {
@@ -878,10 +840,7 @@ impl LspManager {
             DocumentHighlightParams, Position, TextDocumentIdentifier, TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports document highlight
         if !server.supports_document_highlight().await {
@@ -910,18 +869,46 @@ impl LspManager {
         Ok(response.unwrap_or_default())
     }
 
-    /// Requests workspace-wide symbol search
+    /// Requests workspace-wide symbol search from the primary server of every
+    /// project root of the language. Fails only when no server answered.
     pub async fn workspace_symbols(
         &self,
         language_id: &str,
         query: String,
     ) -> Result<Vec<lsp_types::SymbolInformation>> {
-        use lsp_types::WorkspaceSymbolParams;
+        let servers: Vec<_> = self
+            .servers_for_language(language_id)
+            .into_iter()
+            .filter(|server_id| !server_id.contains(':'))
+            .filter_map(|server_id| self.server_handle(&server_id))
+            .collect();
+        if servers.is_empty() {
+            return Err(anyhow::anyhow!("No server for language: {}", language_id));
+        }
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let mut symbols = Vec::new();
+        let mut last_error = None;
+        let mut answered = false;
+        for server in &servers {
+            match Self::workspace_symbols_on_server(server, query.clone()).await {
+                Ok(found) => {
+                    answered = true;
+                    symbols.extend(found);
+                }
+                Err(error) => last_error = Some(error),
+            }
+        }
+        match last_error {
+            Some(error) if !answered => Err(error),
+            _ => Ok(symbols),
+        }
+    }
+
+    async fn workspace_symbols_on_server(
+        server: &super::LanguageServer,
+        query: String,
+    ) -> Result<Vec<lsp_types::SymbolInformation>> {
+        use lsp_types::WorkspaceSymbolParams;
 
         // Check if server supports workspace symbols
         if !server.supports_workspace_symbol().await {
@@ -995,10 +982,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::FoldingRange>> {
         use lsp_types::{FoldingRangeParams, TextDocumentIdentifier};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports folding range
         if !server.supports_folding_range().await {
@@ -1025,10 +1009,7 @@ impl LspManager {
     /// `workspace/textDocumentContent`), e.g. a class file or a library source
     /// a server addresses by its own URI scheme.
     pub async fn text_document_content(&self, uri: &Uri, language_id: &str) -> Result<String> {
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
         let result = server
             .request(
                 "workspace/textDocumentContent",
@@ -1056,10 +1037,7 @@ impl LspManager {
             TextDocumentPositionParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&uri, language_id)?;
 
         // Check if server supports call hierarchy
         if !server.supports_call_hierarchy().await {
@@ -1096,10 +1074,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyIncomingCall>>> {
         use lsp_types::CallHierarchyIncomingCallsParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports call hierarchy
         if !server.supports_call_hierarchy().await {
@@ -1131,10 +1106,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::CallHierarchyOutgoingCall>>> {
         use lsp_types::CallHierarchyOutgoingCallsParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports call hierarchy
         if !server.supports_call_hierarchy().await {
@@ -1171,10 +1143,7 @@ impl LspManager {
             TypeHierarchyPrepareParams,
         };
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&uri, language_id)?;
 
         // Check if server supports type hierarchy
         if !server.supports_type_hierarchy().await {
@@ -1211,10 +1180,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySupertypesParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports type hierarchy
         if !server.supports_type_hierarchy().await {
@@ -1246,10 +1212,7 @@ impl LspManager {
     ) -> Result<Option<Vec<lsp_types::TypeHierarchyItem>>> {
         use lsp_types::TypeHierarchySubtypesParams;
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(&item.uri, language_id)?;
 
         // Check if server supports type hierarchy
         if !server.supports_type_hierarchy().await {
@@ -1272,17 +1235,21 @@ impl LspManager {
         Ok(response)
     }
 
-    /// Executes a command on the LSP server (e.g., "Organize Imports")
-    /// Returns the command result if successful
+    /// Executes a command on the servers of the project root that owns `uri`
+    /// (e.g., "Organize Imports"). Returns the command result if successful
     pub async fn execute_command(
         &self,
         command: String,
         arguments: Option<Vec<serde_json::Value>>,
+        uri: &Uri,
         language_id: &str,
     ) -> Result<Option<serde_json::Value>> {
         use lsp_types::ExecuteCommandParams;
 
-        let server_ids = self.servers_for_language(language_id);
+        let mut server_ids = self.servers_for_document_uri(language_id, uri);
+        if server_ids.is_empty() {
+            server_ids = self.servers_for_language(language_id);
+        }
         if server_ids.is_empty() {
             return Err(anyhow::anyhow!("No server for language: {}", language_id));
         }
@@ -1445,10 +1412,7 @@ impl LspManager {
     ) -> Result<Vec<lsp_types::InlayHint>> {
         use lsp_types::{InlayHintParams, TextDocumentIdentifier, WorkDoneProgressParams};
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports inlay hints
         if !server.supports_inlay_hints().await {
@@ -1526,10 +1490,7 @@ impl LspManager {
             language_id
         );
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports semantic tokens
         if !server.supports_semantic_tokens().await {
@@ -1580,10 +1541,7 @@ impl LspManager {
             language_id
         );
 
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         // Check if server supports semantic tokens
         if !server.supports_semantic_tokens().await {
@@ -1622,12 +1580,10 @@ impl LspManager {
     /// The legend maps token type and modifier indices to their names
     pub async fn get_semantic_tokens_legend(
         &self,
+        uri: &Uri,
         language_id: &str,
     ) -> Result<Option<lsp_types::SemanticTokensLegend>> {
-        let server = self
-            .servers
-            .get(language_id)
-            .ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))?;
+        let server = self.server_for_document(uri, language_id)?;
 
         let caps = server.capabilities().await;
         if let Some(caps) = caps {
@@ -2073,11 +2029,16 @@ impl LspManager {
 mod tests {
     use super::LspManager;
 
+    fn uri() -> lsp_types::Uri {
+        "file:///project/main.rs".parse().unwrap()
+    }
+
     #[tokio::test]
     async fn execute_command_errors_when_no_server_for_language() {
+        let uri = uri();
         let manager = LspManager::new();
         let err = manager
-            .execute_command("dummy.command".to_string(), None, "rust")
+            .execute_command("dummy.command".to_string(), None, &uri, "rust")
             .await
             .expect_err("expected missing-server error");
 
@@ -2086,13 +2047,14 @@ mod tests {
 
     #[tokio::test]
     async fn execute_command_errors_when_indexed_servers_are_not_available() {
+        let uri = uri();
         let manager = LspManager::new();
         manager
             .language_server_index
             .insert("rust".to_string(), vec!["rust".to_string()]);
 
         let err = manager
-            .execute_command("dummy.command".to_string(), None, "rust")
+            .execute_command("dummy.command".to_string(), None, &uri, "rust")
             .await
             .expect_err("expected execute-command capability error");
 

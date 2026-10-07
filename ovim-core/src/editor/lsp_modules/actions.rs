@@ -464,7 +464,7 @@ impl Editor {
                 Ok(tokens) => {
                     let legend = ctx
                         .lsp
-                        .get_semantic_tokens_legend(&ctx.language_id)
+                        .get_semantic_tokens_legend(&ctx.uri, &ctx.language_id)
                         .await
                         .ok()
                         .flatten();

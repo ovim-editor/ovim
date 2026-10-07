@@ -2,6 +2,8 @@ use ovim::editor::{Editor, InputHandler};
 use ovim::mode::Mode;
 use ovim_core::{KeyCode, KeyEvent, Modifiers};
 
+pub mod lsp_harness;
+
 /// Declarative flow tests for stateful edge cases where fixture-only assertions
 /// are not enough (AI locks, async apply state, undo-depth checks).
 #[macro_export]

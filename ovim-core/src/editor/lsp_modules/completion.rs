@@ -446,10 +446,13 @@ impl Editor {
                     let Some(language_id) = self.language_id_for_path(&file_path) else {
                         continue;
                     };
+                    let Some(uri) = crate::lsp::uri_from_file_path(&file_path) else {
+                        continue;
+                    };
                     self.ensure_lsp_document_synced().await;
                     tokio::spawn(async move {
                         let _ = lsp
-                            .execute_command(command.command, command.arguments, &language_id)
+                            .execute_command(command.command, command.arguments, &uri, &language_id)
                             .await;
                     });
                 }

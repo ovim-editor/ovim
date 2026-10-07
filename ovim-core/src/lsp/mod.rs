@@ -621,6 +621,47 @@ impl LspManager {
             .unwrap_or_default()
     }
 
+    /// A handle to the server registered as `server_id`. The handle is a
+    /// clone, so no `DashMap` guard is held while a request is awaited.
+    fn server_handle(&self, server_id: &str) -> Option<LanguageServer> {
+        self.servers
+            .get(server_id)
+            .map(|entry| entry.value().clone())
+    }
+
+    /// The primary server (never a companion) that owns `uri`: the one
+    /// started for the deepest project root containing the document. A
+    /// document outside every root goes to the language's server only when
+    /// there is exactly one; with several roots it has no owner, and guessing
+    /// would put the request on a server that never opened the document.
+    pub(crate) fn server_for_document(
+        &self,
+        uri: &Uri,
+        language_id: &str,
+    ) -> Result<LanguageServer> {
+        let is_primary = |server_id: &String| !server_id.contains(':');
+        let owner = self
+            .servers_for_document_uri(language_id, uri)
+            .into_iter()
+            .find(is_primary);
+        let server = match owner {
+            Some(server_id) => self.server_handle(&server_id),
+            None => {
+                let primaries: Vec<String> = self
+                    .servers_for_language(language_id)
+                    .into_iter()
+                    .filter(is_primary)
+                    .collect();
+                match primaries.as_slice() {
+                    [] => self.server_handle(language_id),
+                    [only] => self.server_handle(only),
+                    _ => None,
+                }
+            }
+        };
+        server.ok_or_else(|| anyhow::anyhow!("No server for language: {}", language_id))
+    }
+
     /// Whether any of `server_ids` can answer `completionItem/resolve`.
     pub async fn any_supports_completion_resolve(&self, server_ids: &[String]) -> bool {
         for sid in server_ids {
