@@ -102,28 +102,10 @@ fn status_parts(run: &TestRun) -> (String, Color, &'static str) {
     }
 }
 
-fn run_lines<'a>(runs: &'a [TestRun], latest: &'a TestRun, height: usize) -> Vec<Line<'a>> {
+/// Header, command, directory and (when there is one) the first failure of
+/// the latest run.
+fn latest_run_lines(latest: &TestRun) -> Vec<Line<'_>> {
     let mut lines: Vec<Line> = Vec::new();
-
-    // Previous runs, one summary line each (oldest first), dimmed.
-    for run in &runs[..runs.len().saturating_sub(1)] {
-        let (icon, color, verb) = status_parts(run);
-        let detail = run
-            .summary
-            .clone()
-            .unwrap_or_else(|| ovim_core::editor::format_duration(run.elapsed()));
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(icon, Style::default().fg(color)),
-            Span::styled(
-                format!(" {} {} · {}", run.scope_label, verb, detail),
-                Style::default().fg(colors::DIM),
-            ),
-        ]));
-    }
-    if !lines.is_empty() {
-        lines.push(Line::from(""));
-    }
 
     // Latest run header: status, command, directory.
     let (icon, color, verb) = status_parts(latest);
@@ -183,6 +165,61 @@ fn run_lines<'a>(runs: &'a [TestRun], latest: &'a TestRun, height: usize) -> Vec
         )));
         lines.push(Line::from(""));
     }
+
+    lines
+}
+
+/// Output lines the panel keeps in view for the latest run, however long the
+/// history above it is.
+const MIN_OUTPUT_ROWS: usize = 3;
+
+fn history_line<'a>(run: &'a TestRun) -> Line<'a> {
+    let (icon, color, verb) = status_parts(run);
+    let detail = run
+        .summary
+        .clone()
+        .unwrap_or_else(|| ovim_core::editor::format_duration(run.elapsed()));
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(icon, Style::default().fg(color)),
+        Span::styled(
+            format!(" {} {} · {}", run.scope_label, verb, detail),
+            Style::default().fg(colors::DIM),
+        ),
+    ])
+}
+
+fn run_lines<'a>(runs: &'a [TestRun], latest: &'a TestRun, height: usize) -> Vec<Line<'a>> {
+    let latest_block = latest_run_lines(latest);
+
+    // Previous runs, one summary line each (oldest first), dimmed. The latest
+    // run and the start of its output matter more than old history, so the
+    // history only gets the rows they leave and shows its newest runs.
+    let previous = &runs[..runs.len().saturating_sub(1)];
+    let history_room = height
+        .saturating_sub(latest_block.len() + MIN_OUTPUT_ROWS)
+        .saturating_sub(usize::from(!previous.is_empty()));
+    let (hidden, shown) = if previous.len() <= history_room {
+        (0, previous)
+    } else {
+        // One row of the room goes to the "earlier runs" marker.
+        let keep = history_room.saturating_sub(1);
+        (previous.len() - keep, &previous[previous.len() - keep..])
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    if hidden > 0 {
+        lines.push(Line::from(Span::styled(
+            format!(" … {hidden} earlier runs"),
+            Style::default()
+                .fg(colors::DIM)
+                .add_modifier(Modifier::ITALIC),
+        )));
+    }
+    lines.extend(shown.iter().map(history_line));
+    if !lines.is_empty() {
+        lines.push(Line::from(""));
+    }
+    lines.extend(latest_block);
 
     // Output tail fills the rest.
     let used = lines.len();
@@ -247,12 +284,77 @@ fn output_line(text: &str) -> Line<'static> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Instant;
+
+    fn run(label: &'static str, status: TestRunStatus, lines: &[&str]) -> TestRun {
+        TestRun {
+            scope_label: label,
+            command: "cargo test".to_string(),
+            dir_name: "ovim".to_string(),
+            cwd: "/tmp".into(),
+            status,
+            lines: lines.iter().map(|line| line.to_string()).collect(),
+            truncated: 0,
+            started: Instant::now(),
+            duration: Some(std::time::Duration::from_secs(1)),
+            summary: Some("3 passed".to_string()),
+            failures: Vec::new(),
+        }
+    }
 
     fn text(line: &Line) -> String {
         line.spans
             .iter()
             .map(|span| span.content.as_ref())
             .collect()
+    }
+
+    /// Ten earlier runs used to fill a short panel, pushing the latest run and
+    /// its output off the bottom.
+    #[test]
+    fn a_long_history_never_pushes_the_latest_run_off_the_panel() {
+        let output: Vec<String> = (0..40).map(|n| format!("line {n}")).collect();
+        let output: Vec<&str> = output.iter().map(String::as_str).collect();
+        let mut runs: Vec<TestRun> = (0..10)
+            .map(|n| {
+                let mut earlier = run("suite", TestRunStatus::Passed, &[]);
+                earlier.summary = Some(format!("{n} passed"));
+                earlier
+            })
+            .collect();
+        runs.push(run("file", TestRunStatus::Failed, &output));
+        let latest = runs.last().unwrap().clone();
+
+        for height in [8usize, 12, 16, 24, 40] {
+            let lines = run_lines(&runs, &latest, height);
+            let rows: Vec<String> = lines.iter().take(height).map(text).collect();
+            assert!(
+                rows.iter().any(|row| row.contains("file failed")),
+                "{height} rows lost the latest run:\n{}",
+                rows.join("\n")
+            );
+            assert!(
+                rows.iter().any(|row| row.contains("line 39")),
+                "{height} rows lost the end of the output:\n{}",
+                rows.join("\n")
+            );
+            assert!(lines.len() <= height, "{height} rows got {}", lines.len());
+        }
+        // With room to spare every earlier run is listed, newest last.
+        let rows: Vec<String> = run_lines(&runs, &latest, 60).iter().map(text).collect();
+        assert!(rows.iter().any(|row| row.contains("0 passed")));
+        assert!(!rows.iter().any(|row| row.contains("earlier runs")));
+        // In a short panel the newest earlier runs are the ones kept.
+        let rows: Vec<String> = run_lines(&runs, &latest, 14).iter().map(text).collect();
+        assert!(rows.iter().any(|row| row.contains("9 passed")), "{rows:#?}");
+        assert!(
+            rows.iter().any(|row| row.contains("earlier runs")),
+            "{rows:#?}"
+        );
+        assert!(
+            !rows.iter().any(|row| row.contains(" 0 passed")),
+            "{rows:#?}"
+        );
     }
 
     /// A tab cell draws as nothing, gluing indented test output together.
