@@ -354,6 +354,42 @@ async fn drain_stderr<R: AsyncRead + Unpin>(stderr: R) {
     crate::lsp_debug!("stderr", "LSP stderr task exiting");
 }
 
+/// Cancels a request whose caller stops waiting for the answer: dropping the
+/// request future (an aborted task) or timing out sends `$/cancelRequest` and
+/// forgets the pending entry, so the server does not keep computing a result
+/// nobody will read.
+struct CancelOnDrop {
+    server: LanguageServer,
+    id: RequestId,
+    armed: bool,
+}
+
+impl Drop for CancelOnDrop {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let inner = &self.server.inner;
+        match inner.pending_requests.try_lock() {
+            Ok(mut pending) => {
+                pending.remove(&self.id);
+            }
+            Err(_) => {
+                if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+                    let inner = inner.clone();
+                    let id = self.id.clone();
+                    runtime.spawn(async move {
+                        inner.pending_requests.lock().await.remove(&id);
+                    });
+                }
+            }
+        }
+        let cancel =
+            JsonRpcMessage::notification("$/cancelRequest".to_string(), json!({ "id": self.id }));
+        let _ = self.server.enqueue(cancel);
+    }
+}
+
 /// A language server process
 #[derive(Clone)]
 pub struct LanguageServer {
@@ -1506,6 +1542,15 @@ impl LanguageServer {
             ));
         }
 
+        // From here on, giving up on the answer (the caller's task was
+        // aborted because a newer request superseded it, or it timed out)
+        // tells the server to stop working on it.
+        let mut cancel_on_drop = CancelOnDrop {
+            server: self.clone(),
+            id: request_id.clone(),
+            armed: true,
+        };
+
         // Wait for response with timeout
         // Use longer timeout for initialize request (jdtls can be very slow)
         let timeout_duration = if method == "initialize" {
@@ -1520,6 +1565,7 @@ impl LanguageServer {
 
         match tokio::time::timeout(timeout_duration, rx).await {
             Ok(Ok(result)) => {
+                cancel_on_drop.armed = false;
                 let elapsed = start_time.elapsed();
                 let result_preview = match &result {
                     Ok(value) if value.is_null() => "null".to_string(),
@@ -1555,6 +1601,7 @@ impl LanguageServer {
                 })
             }
             Ok(Err(_)) => {
+                cancel_on_drop.armed = false;
                 let _elapsed = start_time.elapsed();
                 crate::metrics::LSP_ERRORS_TOTAL.inc();
                 // eprintln!("[LSP-ERROR] Channel closed: {} | After: {:?}", method, elapsed);

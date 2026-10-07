@@ -120,3 +120,24 @@ async fn explorer_rename_does_not_stall_ticks_while_will_rename_is_pending() {
     .await;
     lsp.stop().await;
 }
+
+/// A request nobody waits for any more is cancelled on the server: aborting
+/// the task that made it (a newer request replaced it) sends `$/cancelRequest`.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn abandoned_requests_are_cancelled_on_the_server() {
+    let mut lsp = FakeLsp::start_with("one\n", 1, capabilities()).await;
+    lsp.script(0, "response-textDocument_documentSymbol.json", symbols());
+    lsp.script_text(0, "delay-textDocument_documentSymbol.txt", "1");
+
+    let pending = lsp.test.editor.begin_outline().await;
+    let request = lsp.wait_for_event(0, "textDocument/documentSymbol").await;
+    pending.abort();
+
+    lsp.pump_until("$/cancelRequest", |lsp| {
+        !lsp.events(0, "$/cancelRequest").is_empty()
+    })
+    .await;
+    let cancel = &lsp.events(0, "$/cancelRequest")[0];
+    assert_eq!(cancel["params"]["id"], request["id"]);
+    lsp.stop().await;
+}
