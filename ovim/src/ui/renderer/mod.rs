@@ -6,7 +6,15 @@ pub use dashboard::MENU_ITEMS;
 // Internal modules
 pub mod agent_tree;
 pub mod ai_chat;
+mod ai_chat_bubble;
+mod ai_chat_event_rows;
+mod ai_chat_header;
+mod ai_chat_history;
+mod ai_chat_input;
 mod ai_chat_layout;
+mod ai_chat_pickers;
+mod ai_chat_style;
+mod ai_chat_text;
 mod buffer;
 pub mod cat_animation;
 pub mod conversation_tree;
