@@ -323,6 +323,7 @@ impl Editor {
             selection,
             diagnostics,
             project_diagnostics,
+            latest_test_run: self.test_panel().latest().cloned(),
             scope_context: ScopeContext {
                 current_file,
                 project_root,

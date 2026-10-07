@@ -180,6 +180,9 @@ impl Editor {
                     .as_ref()
                     .and_then(|chat| chat.external_agent.as_ref())
                     .map(|state| state.root.clone());
+                // The external provider's read boundary is its turn workspace,
+                // as for editor_mcp_path, rather than the native chat profile.
+                context.capabilities.file_scope = crate::ai::FileScope::Project;
                 match crate::ai::tools::builtins::execute_builtin(name, &args, &context) {
                     ToolResult::Success(orientation) => ToolResult::Success(format!(
                         "{orientation}\n\n{}",
@@ -358,6 +361,44 @@ mod tests {
             tx,
         );
         rx
+    }
+
+    #[tokio::test]
+    async fn bridge_context_includes_test_panel_failures() {
+        let mut editor = editor();
+        let _tx = attach(&mut editor);
+        let cwd = std::env::current_dir().unwrap();
+        editor
+            .build
+            .test_panel
+            .start_run("nearest", "test payment".into(), cwd);
+        let run = editor.build.test_panel.runs.last_mut().unwrap();
+        run.status = crate::editor::TestRunStatus::Failed;
+        run.lines.push("Expected 200, received 409".into());
+        let response = request(
+            &mut editor,
+            "tests",
+            "tools/call",
+            json!({"name":"workspace_context", "arguments":{"include_git":false}}),
+        )
+        .await
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("Status: failed"), "{text}");
+        assert!(text.contains("Expected 200, received 409"), "{text}");
+        let other = tempfile::tempdir().unwrap();
+        editor.build.test_panel.runs.last_mut().unwrap().cwd = other.path().to_path_buf();
+        let response = request(
+            &mut editor,
+            "outside",
+            "tools/call",
+            json!({"name":"workspace_context", "arguments":{"include_git":false}}),
+        )
+        .await
+        .unwrap();
+        let text = response["result"]["content"][0]["text"].as_str().unwrap();
+        assert!(text.contains("outside approved scope"), "{text}");
+        assert!(!text.contains("Expected 200, received 409"), "{text}");
     }
 
     #[tokio::test]

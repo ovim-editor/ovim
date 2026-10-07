@@ -278,3 +278,84 @@ async fn escape_during_a_test_hides_output_without_stopping_or_reopening_it() {
         .iter()
         .any(|line| line == "finished"));
 }
+
+fn workspace_test_context(editor: &Editor, cwd: &Path, include_tests: bool) -> String {
+    use crate::ai::tools::builtins::execute_builtin;
+    use crate::ai::tools::ToolResult;
+    let mut context = editor.build_tool_execution_context();
+    context.scope_context.project_root = Some(cwd.to_path_buf());
+    context.capabilities.file_scope = crate::ai::FileScope::Project;
+    match execute_builtin(
+        "workspace_context",
+        &serde_json::json!({"include_git": false, "include_projects": false, "include_tests": include_tests}),
+        &context,
+    ) {
+        ToolResult::Success(text) => text,
+        ToolResult::Error(error) => panic!("{error}"),
+    }
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn workspace_context_exposes_actual_test_results_and_refreshes_on_rerun() {
+    let (_dir, cwd) = scratch();
+    let mut editor = Editor::with_content("");
+    assert!(workspace_test_context(&editor, &cwd, true).contains("No test runs"));
+    // Exercise the real launch/output-adapter path with Jest-style output.
+    run_test(&mut editor, "nearest", "printf '  ● checkout › accepts payment\\n\\n    Expected: 200\\n    Received: 409\\n\\n      at Object.<anonymous> (src/payment.spec.ts:78:31)\\n\\nTests: 1 failed, 1 total\\n'; exit 1", cwd.clone());
+    drive(&mut editor, "failed test", test_finished).await;
+    editor.close_test_panel();
+    let text = workspace_test_context(&editor, &cwd, true);
+    for expected in [
+        "Status: failed",
+        "checkout",
+        "Received: 409",
+        "src/payment.spec.ts:78:31",
+        "1 failed",
+        "Scope: nearest",
+        "Failure: unnamed\nReceived: 409",
+        "Location:",
+    ] {
+        assert!(text.contains(expected), "missing {expected}: {text}");
+    }
+    assert!(!workspace_test_context(&editor, &cwd, false).contains("Received: 409"));
+    let (_other, other) = scratch();
+    let outside = workspace_test_context(&editor, &other, true);
+    assert!(outside.contains("outside approved scope"));
+    assert!(!outside.contains("Received: 409"));
+
+    run_test(
+        &mut editor,
+        "suite",
+        "echo 'Tests: 1 passed, 1 total'",
+        cwd.clone(),
+    );
+    drive(&mut editor, "successful rerun", test_finished).await;
+    let text = workspace_test_context(&editor, &cwd, true);
+    assert!(text.contains("Status: passed"), "{text}");
+    assert!(!text.contains("Received: 409"), "{text}");
+}
+
+#[test]
+fn workspace_test_output_is_bounded_unicode_safe_and_marks_partial_results() {
+    let (_dir, cwd) = scratch();
+    let mut editor = Editor::with_content("");
+    editor
+        .build
+        .test_panel
+        .start_run("suite", "test".into(), cwd.clone());
+    let run = editor.build.test_panel.runs.last_mut().unwrap();
+    for _ in 0..100 {
+        run.push_line("界".repeat(2000));
+    }
+    let text = workspace_test_context(&editor, &cwd, true);
+    assert!(text.contains("running (partial results)"), "{text}");
+    assert!(text.contains("60 earlier lines omitted"));
+    assert!(text.contains("truncated"));
+    assert!(text.len() < 14 * 1024);
+    editor
+        .build
+        .test_panel
+        .start_run("file", "next".into(), cwd.clone());
+    editor.build.test_panel.runs.last_mut().unwrap().status = TestRunStatus::Cancelled;
+    assert!(workspace_test_context(&editor, &cwd, true).contains("cancelled/superseded"));
+}

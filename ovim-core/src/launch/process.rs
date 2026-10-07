@@ -362,13 +362,26 @@ mod tests {
         assert_eq!(exit.code, Some(0));
     }
 
-    #[test]
-    fn a_listening_port_is_seen_without_connecting_to_it() {
-        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
-        let port = listener.local_addr().unwrap().port();
-        assert!(port_is_listening(port));
-        drop(listener);
+    #[tokio::test]
+    async fn a_listening_port_is_seen_without_connecting_to_it() {
+        // Keep ownership of the port throughout: after dropping a listener,
+        // a concurrent process can reuse its port before the negative probe.
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+        let port = socket.local_addr().unwrap().port();
         assert!(!port_is_listening(port));
+        let listener = socket.listen(1).unwrap();
+        assert!(port_is_listening(port));
+        #[cfg(target_os = "linux")]
+        {
+            let listener = listener.into_std().unwrap();
+            assert_eq!(
+                listener.accept().unwrap_err().kind(),
+                std::io::ErrorKind::WouldBlock
+            );
+        }
+        #[cfg(not(target_os = "linux"))]
+        drop(listener);
     }
 
     #[tokio::test]

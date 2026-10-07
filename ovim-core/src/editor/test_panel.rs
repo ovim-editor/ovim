@@ -44,6 +44,7 @@ pub struct TestFailure {
 }
 
 /// One test invocation, streamed live and kept in panel history.
+#[derive(Debug, Clone)]
 pub struct TestRun {
     /// Short human label: "nearest", "file", "suite", "re-run".
     pub scope_label: &'static str,
