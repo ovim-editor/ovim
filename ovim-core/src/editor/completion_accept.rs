@@ -55,11 +55,26 @@ impl Editor {
         if self.completion_menu.is_snippet_choices() {
             self.accept_snippet_choice();
         } else if let Some(item) = self.completion_menu.selected_item().cloned() {
-            self.accept_completion_item(&item, mode);
+            if self.completion_context_is_current() {
+                self.accept_completion_item(&item, mode);
+            }
         }
         self.dismiss_completion();
         // The snippet just expanded may start on a choice stop.
         self.snippet_show_choices();
+    }
+
+    /// Whether the cursor is still where the menu was built: on the same line,
+    /// right after the prefix it filters by. After a motion or an edit the menu
+    /// did not see (a mouse click, a command run from insert mode) accepting
+    /// would rewrite text the user never meant to complete.
+    fn completion_context_is_current(&self) -> bool {
+        let on_anchor_line = self
+            .completion_menu
+            .anchor()
+            .is_none_or(|anchor| anchor.line == self.buffer().cursor().line());
+        on_anchor_line
+            && self.completion_prefix_from_trigger_col() == self.completion_menu.trigger_prefix()
     }
 
     /// Accepts a completion by index from available_completions (used by picker)

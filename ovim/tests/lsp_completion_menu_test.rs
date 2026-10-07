@@ -425,6 +425,53 @@ async fn insert_and_replace_edits_starting_at_the_cursor_keep_the_text_after_it_
     }
 }
 
+/// Keys that move the cursor or rewrite the line end the completion session:
+/// Enter after `<C-o>j` used to accept the item into a different line.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keys_that_leave_the_word_close_the_menu_instead_of_leaving_it_armed() {
+    for keys in ["<C-o>j", "<C-w>", "<C-t>", "<C-u>", "<C-d>"] {
+        let mut session = Session::new("foo\nbar\n").await;
+        session.set_completion(items(&["alpha"]));
+        session.test.keys("A.al");
+        session.pump_menu().await;
+        assert_eq!(session.labels(), vec!["alpha"]);
+
+        session.test.keys(keys);
+        assert!(
+            !session.test.editor.completion_menu().is_visible(),
+            "{keys} must close the menu"
+        );
+        session.test.press_enter();
+        let text = session.test.buffer_content();
+        assert!(
+            !text.contains("alpha"),
+            "Enter after {keys} accepted a stale completion: {text:?}"
+        );
+        session.stop().await;
+    }
+}
+
+/// A cursor that moved without any key reaching insert mode (a mouse click)
+/// must not let Enter rewrite the line it landed on.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepting_is_refused_when_the_cursor_left_the_completion_line() {
+    let mut session = Session::new("foo\nbar\n").await;
+    session.set_completion(items(&["alpha"]));
+    session.test.keys("A.al");
+    session.pump_menu().await;
+
+    session
+        .test
+        .editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(1, ovim_core::unicode::GraphemeCol(2));
+    session.test.press_enter();
+    assert!(!session.test.buffer_content().contains("alpha"));
+    assert!(!session.test.editor.completion_menu().is_visible());
+    session.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_answer_for_a_line_the_user_left_is_dropped() {
     let mut session = Session::new("first\nsecond\n").await;

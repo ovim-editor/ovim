@@ -237,6 +237,24 @@ fn replicate_block_insert(editor: &mut Editor, block: &BlockInsert, session: Opt
     });
 }
 
+/// Whether `key` leaves a completion session alone: typing into the word (the
+/// menu filters), Backspace, the keys that move through or accept the menu,
+/// and Ctrl-Space.
+fn keeps_completion_menu(key: &KeyEvent) -> bool {
+    match key.code {
+        KeyCode::Char(c) if key.modifiers.contains(Modifiers::CONTROL) => {
+            matches!(c, 'n' | 'p' | 'y' | ' ')
+        }
+        KeyCode::Char(_)
+        | KeyCode::Backspace
+        | KeyCode::Tab
+        | KeyCode::Enter
+        | KeyCode::Up
+        | KeyCode::Down => true,
+        _ => false,
+    }
+}
+
 /// Handles input in Insert mode
 pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // Handle pending register insert (Ctrl-R {reg})
@@ -255,6 +273,13 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
         }
         return Ok(());
+    }
+
+    // Any key that is not typing into the word or driving the menu moves the
+    // cursor or rewrites the line (Ctrl-O, Ctrl-W, Ctrl-T...): the menu was
+    // built for the text before the cursor as it was, so it must go.
+    if !keeps_completion_menu(&key_event) {
+        editor.dismiss_completion();
     }
 
     let signature_help_was_active = editor.signature_help_active();

@@ -3282,6 +3282,8 @@ mod tests {
             .buffer_mut()
             .set_cursor_char_col(0, crate::unicode::CharCol(8));
         assert!(editor.buffer().version() > response_version);
+        // Typing refilters the menu, as the insert-mode key handler does.
+        editor.completion_menu_mut().filter("foo");
 
         editor.accept_completion();
 
