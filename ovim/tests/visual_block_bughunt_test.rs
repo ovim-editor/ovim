@@ -137,9 +137,9 @@ fn test_block_dollar_typed_inside_block_matches_sticky_dollar() {
 }
 
 #[test]
-fn test_dollar_block_left_edge_is_the_anchor_column() {
-    // nvim --clean: "hello\nworld\ntest", `$<C-v>jjd` -> "hell\nworl\ntest": the short
-    // last line (no column 4) must not pull the left edge to its own last column.
+fn test_dollar_block_left_edge_is_bounded_by_the_cursor_line_length() {
+    // nvim --clean: "hello\nworld\ntest", `$<C-v>jjd` -> "hell\nworl\ntest": the cursor
+    // line "test" ends at column 4, which is also the anchor column.
     let mut test = EditorTest::new("hello\nworld\ntest\n");
     test.keys("$");
     cblock(&mut test);
@@ -152,4 +152,12 @@ fn test_dollar_block_left_edge_is_the_anchor_column() {
     cblock(&mut test);
     test.keys("jj$d");
     assert_eq!(test.buffer_content(), "hel\nwor\ntes\n");
+
+    // nvim --clean: anchor at column 8, cursor line "xdelta" (length 6): the block starts
+    // at column 6, so `<C-v>j$d` leaves "  alph" on the anchor line.
+    let mut test = EditorTest::new("  alpha beta gamma\nxdelta\n");
+    test.keys("8l");
+    cblock(&mut test);
+    test.keys("j$d");
+    assert_eq!(test.buffer_content(), "  alph\nxdelta\n");
 }

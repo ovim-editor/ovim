@@ -207,9 +207,14 @@ impl Editor {
                         // `$` was pressed: extend each line to its own EOL.
                         // The flag is the source of truth; consumers see it as a
                         // column no line reaches (`BLOCK_TO_EOL_COL`). The cursor
-                        // column no longer bounds the block (it is "infinite" and
-                        // short lines would clamp it), so the anchor is the left edge.
-                        (start.1, BLOCK_TO_EOL_COL)
+                        // sits at the end of its line (past the last character,
+                        // as in Vim), which bounds the left edge together with
+                        // the anchor.
+                        let cursor_line_len = self
+                            .buffer()
+                            .line_text(end.0)
+                            .map_or(0, |line| grapheme_count(&line));
+                        (start.1.min(cursor_line_len), BLOCK_TO_EOL_COL)
                     } else if start.1 <= end.1 {
                         (start.1, end.1)
                     } else {
