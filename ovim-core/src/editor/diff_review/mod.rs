@@ -1518,7 +1518,9 @@ impl Editor {
         let target = format!("{remote}/{branch}");
         let (sender, receiver) = channel();
         std::thread::spawn(move || {
-            let result = std::process::Command::new("git")
+            // A credential prompt would hang the fetch and draw over the
+            // editor; it fails instead.
+            let result = crate::git::ops::background_git("git")
                 .args(["fetch", "--no-tags", &remote, &branch])
                 .current_dir(&root)
                 .output();

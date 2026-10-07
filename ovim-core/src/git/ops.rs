@@ -852,6 +852,32 @@ fn is_executable(path: &Path) -> bool {
     }
 }
 
+/// A `git` invocation that cannot ask the user anything: no stdin, no
+/// credential prompts on the terminal and no controlling terminal to open, so
+/// ssh passphrases, curses pinentries and hooks reading /dev/tty fail instead
+/// of hanging the command and drawing over the editor.
+pub(crate) fn background_git(program: impl AsRef<std::ffi::OsStr>) -> std::process::Command {
+    let mut command = std::process::Command::new(program);
+    command
+        .stdin(std::process::Stdio::null())
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env_remove("GPG_TTY");
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // SAFETY: setsid is async-signal-safe and touches no shared state.
+        unsafe {
+            command.pre_exec(|| {
+                if libc::setsid() == -1 {
+                    return Err(std::io::Error::last_os_error());
+                }
+                Ok(())
+            });
+        }
+    }
+    command
+}
+
 impl PreparedCommit {
     /// Makes the commit and returns its short id and subject. Blocks for as
     /// long as the repository's hooks take.
@@ -866,7 +892,6 @@ impl PreparedCommit {
     /// bookkeeping all happen as they do on the command line.
     fn run_git(&self, git: &Path) -> Result<(String, String)> {
         use std::io::{Read, Seek, Write};
-        use std::process::{Command, Stdio};
 
         let repo = Repository::open(&self.root)?;
         let mut message = tempfile::Builder::new()
@@ -877,33 +902,15 @@ impl PreparedCommit {
         // A file rather than pipes: a hook that leaves a daemon behind would
         // hold a pipe open and keep the read waiting after git has finished.
         let mut output = tempfile::tempfile()?;
-        let mut command = Command::new(git);
+        let mut command = background_git(git);
         command
             .args(["commit", "--cleanup=strip", "-F"])
             .arg(message.path())
             .current_dir(&self.root)
-            .stdin(Stdio::null())
             .stdout(output.try_clone()?)
-            .stderr(output.try_clone()?)
-            // A curses pinentry would draw over the editor.
-            .env_remove("GPG_TTY");
+            .stderr(output.try_clone()?);
         if self.amend {
             command.arg("--amend");
-        }
-        #[cfg(unix)]
-        {
-            use std::os::unix::process::CommandExt;
-            // No controlling terminal: hooks and signing programs that open
-            // /dev/tty to prompt fail instead of taking over the editor's.
-            // SAFETY: setsid is async-signal-safe and touches no shared state.
-            unsafe {
-                command.pre_exec(|| {
-                    if libc::setsid() == -1 {
-                        return Err(std::io::Error::last_os_error());
-                    }
-                    Ok(())
-                });
-            }
         }
         let status = command
             .status()
@@ -1648,6 +1655,25 @@ mod tests {
         let hook = hooks.join(name);
         fs::write(&hook, format!("#!/bin/sh\n{script}\n")).unwrap();
         fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn background_git_cannot_prompt() {
+        let output = background_git("sh")
+            .args([
+                "-c",
+                // stdin is closed, so `cat` ends at once; with no controlling
+                // terminal there is no /dev/tty to prompt on.
+                "printf 'prompt=%s;' \"$GIT_TERMINAL_PROMPT\"; cat; \
+                 if (: < /dev/tty) 2>/dev/null; then echo tty; else echo no-tty; fi",
+            ])
+            .output()
+            .unwrap();
+        assert_eq!(
+            String::from_utf8_lossy(&output.stdout).trim(),
+            "prompt=0;no-tty"
+        );
     }
 
     #[test]
