@@ -84,14 +84,17 @@ fn test_ctrl_u_delete_to_start_insert() {
 fn test_ctrl_u_insert_undo_redo_macro_flow() {
     editor_flow_test! {
         content "abc\n";
+        // nvim --clean: <C-u> deletes only the "123" typed in this insert -> "abcZ".
         step "A123<C-u>Z<Esc>" => |test| {
-            assert_eq!(test.buffer_content(), "Z\n");
+            assert_eq!(test.buffer_content(), "abcZ\n");
         }
+        // Divergence: nvim ends the undo block at <C-u>, so its `u` stops at "abc123";
+        // ovim keeps the whole insert as one undo step.
         step "u" => |test| {
             assert_eq!(test.buffer_content(), "abc\n");
         }
         step "<C-r>" => |test| {
-            assert_eq!(test.buffer_content(), "Z\n");
+            assert_eq!(test.buffer_content(), "abcZ\n");
         }
     }
 }

@@ -440,24 +440,35 @@ pub fn delete_word_backward_insert(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
+/// Insert-mode `<C-u>` (vim, with the default `backspace=indent,eol,start`): delete
+/// the text typed in this insert on the cursor line; with none, everything before
+/// the cursor on the line but its indent (a further `<C-u>` takes the indent, and
+/// at column 0 the line break).
 pub fn delete_to_line_start_insert(editor: &mut Editor) -> Result<()> {
     let cursor = editor.buffer().cursor();
     let line_idx = cursor.line();
-    let grapheme_col = cursor.col();
-    // If already at start of line, do nothing
-    if grapheme_col.0 == 0 {
-        return Ok(());
+    if cursor.col().0 == 0 {
+        return delete_char_before_cursor(editor);
     }
+    let char_col = editor.buffer().cursor_char_col();
 
-    let char_col = editor
+    // Where this insert began, when that is on the cursor line before the cursor.
+    let typed_from = editor.buffer().recording_origin().and_then(|origin| {
+        let rope = editor.buffer().rope();
+        let origin = origin.min(rope.len_chars());
+        let origin_line = rope.char_to_line(origin);
+        let origin_col = origin - rope.line_to_char(origin_line);
+        (origin_line == line_idx && origin_col < char_col.0).then_some(origin_col)
+    });
+    let indent = editor
         .buffer()
-        .line_index(line_idx)
-        .grapheme_to_char(grapheme_col);
+        .line_text(line_idx)
+        .map_or(0, |line| leading_char_count(&line));
+    let from = typed_from.unwrap_or(if char_col.0 > indent { indent } else { 0 });
 
-    // Delete from start of line to cursor. `delete_range_positioning_cursor`
-    // lands the cursor at char col 0 (== grapheme col 0) on the current line.
+    // `delete_range_positioning_cursor` lands the cursor at the start of the range.
     editor.record_session_edit(|buf| {
-        buf.delete_range_positioning_cursor(line_idx, CharCol::ZERO, line_idx, char_col)
+        buf.delete_range_positioning_cursor(line_idx, CharCol(from), line_idx, char_col)
             .0
     });
 
