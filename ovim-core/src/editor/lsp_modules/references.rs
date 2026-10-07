@@ -161,12 +161,13 @@ impl Editor {
         &self,
         locations: &[Location],
     ) -> Vec<PickerResult> {
+        let mut columns = super::super::lsp_columns::ColumnResolver::new(self);
         locations
             .iter()
             .filter_map(|loc| {
                 let path = uri_to_file_path(&loc.uri)?;
                 let line = loc.range.start.line as usize;
-                let col = self.utf16_to_grapheme_col(line, loc.range.start.character);
+                let col = columns.grapheme_col(&path, line, loc.range.start.character);
                 Some(PickerResult {
                     display: format!(
                         "{}:{}:{}",

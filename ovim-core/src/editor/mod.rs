@@ -70,6 +70,7 @@ mod input_context;
 mod input_state;
 mod keymap;
 mod launch_flow;
+mod lsp_columns;
 mod lsp_integration;
 pub mod lsp_manager_panel;
 pub(crate) mod lsp_slot;

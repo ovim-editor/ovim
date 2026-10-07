@@ -288,12 +288,13 @@ impl Editor {
         &self,
         symbols: &[lsp_types::SymbolInformation],
     ) -> Vec<PickerResult> {
+        let mut columns = super::lsp_columns::ColumnResolver::new(self);
         symbols
             .iter()
             .filter_map(|symbol| {
                 let path = crate::lsp::uri_to_file_path(&symbol.location.uri)?;
                 let line = symbol.location.range.start.line as usize;
-                let col = symbol.location.range.start.character as usize;
+                let col = columns.grapheme_col(&path, line, symbol.location.range.start.character);
                 let kind =
                     super::lsp_integration::lsp_modules::navigation::symbol_kind_str(symbol.kind);
                 let container = symbol

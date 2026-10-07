@@ -73,12 +73,11 @@ impl Editor {
         let path = uri_to_file_path(&entry.location.uri)?;
         let (name, detail, kind) = item_parts(&entry.item);
         let line = entry.location.range.start.line as usize;
-        let is_current_file = self.buffer().file_path().map(std::path::Path::new) == Some(&path);
-        let col = if is_current_file {
-            self.utf16_to_grapheme_col(line, entry.location.range.start.character)
-        } else {
-            entry.location.range.start.character as usize
-        };
+        let col = super::super::lsp_columns::ColumnResolver::new(self).grapheme_col(
+            &path,
+            line,
+            entry.location.range.start.character,
+        );
         let file = path.file_name().unwrap_or_default().to_string_lossy();
         let detail = detail.filter(|d| !d.is_empty());
         let display = match detail {

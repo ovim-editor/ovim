@@ -208,7 +208,12 @@ impl Editor {
         let all = tokio::task::block_in_place(|| {
             handle.block_on(async { manager.list_all_diagnostics().await })
         });
-        problems_from(all)
+        let mut items = problems_from(all);
+        let mut columns = super::lsp_columns::ColumnResolver::new(self);
+        for item in &mut items {
+            item.col = columns.grapheme_col(&item.path, item.line, item.col as u32);
+        }
+        items
     }
 
     /// `<Space>sd` / `:Problems [all|warnings|errors]`.
