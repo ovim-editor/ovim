@@ -330,3 +330,112 @@ async fn status_list_keys_stage_unstage_and_edit_and_wq_commits() {
     test.command("wq");
     assert_eq!(fixture.head_message(), "Via wq");
 }
+
+fn assert_signs(before: &str, after: &str, expected: &[(usize, ovim_core::git::LineStatus)]) {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", before);
+    fixture.commit_all("base");
+    fixture.write("a.txt", after);
+    let status = ovim_core::git::GitStatus::from_file(&file).unwrap();
+    let actual: Vec<_> = (0..before.lines().count().max(after.lines().count()) + 2)
+        .filter_map(|line| status.get_line_status(line).map(|kind| (line, kind)))
+        .collect();
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn signs_classify_a_replaced_line_as_modified() {
+    use ovim_core::git::LineStatus::Modified;
+    assert_signs("one\ntwo\nthree\n", "one\nTWO\nthree\n", &[(1, Modified)]);
+}
+
+#[test]
+fn signs_anchor_end_deletions_to_a_surviving_line() {
+    use ovim_core::git::LineStatus::Removed;
+    assert_signs("one\ntwo\nthree\n", "one\n", &[(0, Removed)]);
+}
+
+#[test]
+fn signs_use_worktree_coordinates_after_an_earlier_insertion() {
+    use ovim_core::git::LineStatus::{Added, Removed};
+    assert_signs(
+        "one\ntwo\nthree\nfour\nfive\n",
+        "new\none\ntwo\nthree\nfive\n",
+        &[(0, Added), (3, Removed)],
+    );
+}
+
+#[test]
+fn signs_cover_start_middle_empty_and_unequal_replacements() {
+    use ovim_core::git::LineStatus::{Added, Modified, Removed};
+    assert_signs("a\nb\nc\n", "b\nc\n", &[(0, Removed)]);
+    assert_signs("a\nb\nc\n", "a\nc\n", &[(0, Removed)]);
+    assert_signs("a\nb\n", "", &[(0, Removed)]);
+    assert_signs(
+        "a\nb\nc\n",
+        "a\nB\nextra\nc\n",
+        &[(1, Modified), (2, Added)],
+    );
+    assert_signs("a\nb\nc\nd\n", "a\nB\nd\n", &[(1, Modified)]);
+    assert_signs(
+        "a\nb\nc\nd\ne\nf\n",
+        "x\ny\nz\na\nb\nc\ne\nf\n",
+        &[(0, Added), (1, Added), (2, Added), (5, Removed)],
+    );
+}
+
+#[test]
+fn signs_compare_head_with_combined_staged_and_unstaged_changes() {
+    use ovim_core::git::{
+        GitStatus,
+        LineStatus::{Added, Modified},
+    };
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\ntwo\nthree\n");
+    fixture.commit_all("base");
+    fixture.write("a.txt", "ONE\ntwo\nthree\n");
+    ovim_core::git::ops::stage_file(std::path::Path::new(&file)).unwrap();
+    fixture.write("a.txt", "ONE\ntwo\nthree\nfour\n");
+    let status = GitStatus::from_file(&file).unwrap();
+    assert_eq!(status.get_line_status(0), Some(Modified));
+    assert_eq!(status.get_line_status(3), Some(Added));
+    assert_eq!(status.hunk_starts(), vec![0, 3]);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn deletion_sign_navigation_lands_on_a_visible_surviving_line() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\ntwo\nthree\nfour\n");
+    fixture.commit_all("base");
+    fixture.write("a.txt", "one\ntwo\n");
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    test.keys("]c");
+    test.assert_cursor(1, 0);
+    let rendered = ovim::ui::render_editor_to_ansi(&mut test.editor, 80, 16).unwrap();
+    let plain = ovim::ui::strip_ansi(&rendered);
+    let row = plain.lines().find(|row| row.contains("two")).unwrap();
+    assert!(
+        row.contains('-'),
+        "deletion sign must render on the surviving row: {row}"
+    );
+    assert_eq!(
+        test.editor.buffer().git_status().get_line_status(1),
+        Some(ovim_core::git::LineStatus::Removed)
+    );
+}
+
+#[test]
+fn deleted_line_counts_are_not_lost_when_signs_share_an_anchor() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\ntwo\nthree\nfour\n");
+    fixture.commit_all("base");
+    fixture.write("a.txt", "ONE\n");
+    let status = ovim_core::git::GitStatus::from_file(&file).unwrap();
+    assert_eq!(status.change_counts(), (0, 1, 3));
+    assert_eq!(
+        status.get_line_status(0),
+        Some(ovim_core::git::LineStatus::Modified)
+    );
+    assert_eq!(status.get_line_status(1), None);
+}

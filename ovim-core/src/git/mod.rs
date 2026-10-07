@@ -23,6 +23,9 @@ pub enum LineStatus {
 pub struct GitStatus {
     /// Map of line number (0-indexed) to status
     line_status: HashMap<usize, LineStatus>,
+    // Deleted lines can share one visible anchor; count changes before they
+    // are projected onto gutter rows.
+    counts: (usize, usize, usize),
 }
 
 impl GitStatus {
@@ -30,6 +33,7 @@ impl GitStatus {
     pub fn new() -> Self {
         Self {
             line_status: HashMap::new(),
+            counts: (0, 0, 0),
         }
     }
 
@@ -56,17 +60,7 @@ impl GitStatus {
 
     /// Returns (added, modified, removed) line counts.
     pub fn change_counts(&self) -> (usize, usize, usize) {
-        let mut added = 0;
-        let mut modified = 0;
-        let mut removed = 0;
-        for status in self.line_status.values() {
-            match status {
-                LineStatus::Added => added += 1,
-                LineStatus::Modified => modified += 1,
-                LineStatus::Removed => removed += 1,
-            }
-        }
-        (added, modified, removed)
+        self.counts
     }
 
     /// Computes git status for a file
@@ -136,68 +130,44 @@ impl GitStatus {
                 Err(_) => return Ok(Self::new()),
             };
 
-        // Parse the diff
+        // Zero-context hunks supply coordinates in the working file. Old line
+        // numbers cannot locate deletions after earlier insertions/removals.
+        // Pair replacements within their own hunk, never by proximity to a
+        // different change (which also misclassifies isolated additions).
         let mut line_status = HashMap::new();
-
+        let mut counts = (0, 0, 0);
         diff.foreach(
             &mut |_, _| true,
             None,
-            None,
-            Some(&mut |_delta, _hunk, line| {
-                // Get the new line number (in the working copy)
-                let line_num = line.new_lineno();
-
-                match line.origin() {
-                    '+' => {
-                        // Added line
-                        if let Some(num) = line_num {
-                            line_status.insert(num as usize - 1, LineStatus::Added);
-                        }
+            Some(&mut |_, hunk| {
+                let modified = hunk.old_lines().min(hunk.new_lines());
+                counts.0 += (hunk.new_lines() - modified) as usize;
+                counts.1 += modified as usize;
+                counts.2 += (hunk.old_lines() - modified) as usize;
+                let start = hunk.new_start().saturating_sub(1) as usize;
+                if hunk.new_lines() == 0 {
+                    // A deletion sits after new_start; at BOF/empty files the
+                    // first editor row is the only available anchor.
+                    line_status.entry(start).or_insert(LineStatus::Removed);
+                } else {
+                    for offset in 0..hunk.new_lines() {
+                        let status = if offset < hunk.old_lines() {
+                            LineStatus::Modified
+                        } else {
+                            LineStatus::Added
+                        };
+                        line_status.insert(start + offset as usize, status);
                     }
-                    '-' => {
-                        // Deleted line - mark the line before it
-                        if let Some(num) = line.old_lineno() {
-                            // Show deletion marker on the previous line in the new file
-                            let old_line = num as usize - 1;
-                            line_status.insert(old_line, LineStatus::Removed);
-                        }
-                    }
-                    ' ' => {
-                        // Context line - check if surrounded by changes
-                        // This is a heuristic for "modified" lines
-                    }
-                    _ => {}
                 }
                 true
             }),
-        )
-        .ok();
+            None,
+        )?;
 
-        // Detect modified lines (lines that have both additions and deletions nearby)
-        // This is a simple heuristic - in a real implementation you'd want more sophisticated detection
-        let keys: Vec<usize> = line_status.keys().copied().collect();
-        for &line in &keys {
-            if let Some(status) = line_status.get(&line) {
-                if *status == LineStatus::Added {
-                    // Check if there's a removal nearby
-                    for offset in 1..=3 {
-                        if line >= offset
-                            && line_status.get(&(line - offset)) == Some(&LineStatus::Removed)
-                        {
-                            // Likely a modification
-                            line_status.insert(line, LineStatus::Modified);
-                            break;
-                        }
-                        if line_status.get(&(line + offset)) == Some(&LineStatus::Removed) {
-                            line_status.insert(line, LineStatus::Modified);
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-
-        Ok(Self { line_status })
+        Ok(Self {
+            line_status,
+            counts,
+        })
     }
 }
 
