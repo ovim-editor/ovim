@@ -184,6 +184,37 @@ async fn status_list_enter_opens_the_diff_review_on_that_file() {
     );
 }
 
+/// A file name is data, not ex syntax: `|` must not chain a second command
+/// when Enter is pressed on a status or history row.
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn picker_rows_with_ex_syntax_in_the_file_name_open_that_file_only() {
+    let fixture = Fixture::new();
+    let name = "n.txt|r !touch PWNED";
+    let file = fixture.write(name, "one\n");
+    fixture.commit_all("init");
+    fixture.write(name, "changed\n");
+    let pwned = std::env::current_dir().unwrap().join("PWNED");
+    let _ = fs::remove_file(&pwned);
+
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    test.keys(" gg");
+    test.assert_mode(Mode::Picker);
+    test.press_enter();
+    test.assert_mode(Mode::Normal);
+    assert!(test.editor.is_diff_review_buffer(), "the review is showing");
+    let line = test.editor.buffer().cursor().line();
+    let header = test.editor.buffer().line_text(line).unwrap().to_string();
+    assert!(header.contains(name), "cursor is on the file: {header:?}");
+
+    test.command("GitLog");
+    test.assert_mode(Mode::Picker);
+    test.press_enter();
+    assert!(test.editor.is_diff_review_buffer());
+    assert!(!pwned.exists(), "a shell command ran from a file name");
+    assert!(!fixture.root.join("PWNED").exists());
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn line_history_lists_the_commits_and_enter_shows_the_diff_of_one() {
     let fixture = Fixture::new();

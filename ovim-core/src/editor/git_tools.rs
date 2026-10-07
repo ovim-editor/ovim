@@ -5,10 +5,10 @@
 //! The heavy lifting is in [`crate::git::ops`] (libgit2); this module wires it
 //! to buffers, pickers and the existing diff review.
 
-use super::picker::{Picker, PickerResult, PickerRole};
+use super::picker::{GitPick, Picker, PickerRole};
 use super::Editor;
 use crate::git::conflict::{self, Resolution};
-use crate::git::ops::{self, LogEntry};
+use crate::git::ops::{self, GitTarget, LogEntry};
 use crate::mode::Mode;
 use crate::unicode::{CharCol, GraphemeCol};
 use std::path::{Path, PathBuf};
@@ -35,6 +35,11 @@ impl Editor {
             }
             _ => self.picker_base_dir(),
         }
+    }
+
+    /// The root of the repository the git commands act on.
+    pub fn git_root(&self) -> anyhow::Result<PathBuf> {
+        ops::workdir_of(&self.git_anchor())
     }
 
     /// Writes the buffer when it has unsaved changes, so git sees what the
@@ -132,43 +137,36 @@ impl Editor {
     // Status
     // -----------------------------------------------------------------
 
-    fn git_status_results(&self, anchor: &Path) -> anyhow::Result<(PathBuf, Vec<PickerResult>)> {
+    fn git_status_rows(&self, anchor: &Path) -> anyhow::Result<(PathBuf, Vec<(String, GitPick)>)> {
         let workdir = ops::workdir_of(anchor)?;
-        let results = ops::status(anchor)?
+        let rows = ops::status(anchor)?
             .into_iter()
             .map(|entry| {
-                let absolute = workdir.join(&entry.path).to_string_lossy().to_string();
                 let label = match &entry.renamed_from {
                     Some(from) => format!("{from} -> {}", entry.path),
                     None => entry.path.clone(),
                 };
-                let command = if entry.conflicted {
-                    format!("GitEdit {absolute}")
+                let target = GitTarget::in_root(&workdir, &entry.path);
+                let pick = if entry.conflicted {
+                    GitPick::Edit(target)
                 } else {
-                    format!("GitDiffFile {absolute}")
+                    GitPick::DiffFile(target)
                 };
-                PickerResult {
-                    display: format!("{}  {label}", entry.code()),
-                    location: command,
-                    line: 0,
-                    col: 0,
-                    match_positions: Vec::new(),
-                    content: Some(absolute),
-                }
+                (format!("{}  {label}", entry.code()), pick)
             })
             .collect();
-        Ok((workdir, results))
+        Ok((workdir, rows))
     }
 
     /// `<Space>gg` / `:GitStatus` — changed files; Enter opens the diff,
     /// `Ctrl-T` stages or unstages, `Ctrl-E` edits the file.
     pub fn open_git_status_picker(&mut self) {
         let anchor = self.git_anchor();
-        match self.git_status_results(&anchor) {
-            Ok((_, results)) if results.is_empty() => self.set_status_message("Working tree clean"),
-            Ok((workdir, results)) => {
-                let picker = Picker::new_commands(workdir, results, "Git status")
-                    .with_role(PickerRole::GitStatus);
+        match self.git_status_rows(&anchor) {
+            Ok((_, rows)) if rows.is_empty() => self.set_status_message("Working tree clean"),
+            Ok((workdir, rows)) => {
+                let picker =
+                    Picker::new_git(workdir, rows, "Git status").with_role(PickerRole::GitStatus);
                 self.set_picker(picker);
                 self.set_mode(Mode::Picker);
                 self.mark_picker_selection_changed();
@@ -177,38 +175,34 @@ impl Editor {
         }
     }
 
-    fn selected_git_status_path(&self) -> Option<PathBuf> {
+    fn selected_git_status_target(&self) -> Option<GitTarget> {
         let picker = self.picker()?;
         (picker.role() == Some(PickerRole::GitStatus))
-            .then(|| picker.selected_result())
+            .then(|| picker.selected_git_pick())
             .flatten()
-            .and_then(|result| result.content.clone())
-            .map(PathBuf::from)
+            .and_then(GitPick::target)
+            .cloned()
     }
 
     /// `Ctrl-T` in the status list: stage the selected file, or unstage it
     /// when everything in it is already staged.
     pub fn git_status_toggle_selected(&mut self) {
-        let Some(path) = self.selected_git_status_path() else {
+        let Some(target) = self.selected_git_status_target() else {
             return;
         };
-        let entry = ops::status(&path).ok().and_then(|entries| {
-            let workdir = ops::workdir_of(&path).ok()?;
-            let relative = path
-                .strip_prefix(&workdir)
-                .ok()?
-                .to_string_lossy()
-                .to_string();
-            entries.into_iter().find(|entry| entry.path == relative)
+        let entry = ops::status(&target.root).ok().and_then(|entries| {
+            entries
+                .into_iter()
+                .find(|entry| Path::new(&entry.path) == target.relative)
         });
         let Some(entry) = entry else {
             return;
         };
         let name = entry.path.clone();
         let outcome = if entry.has_unstaged_changes() {
-            ops::stage_file(&path).map(|()| format!("Staged {name}"))
+            ops::stage_target(&target).map(|()| format!("Staged {name}"))
         } else {
-            ops::unstage_file(&path).map(|()| format!("Unstaged {name}"))
+            ops::unstage_target(&target).map(|()| format!("Unstaged {name}"))
         };
         match outcome {
             Ok(message) => {
@@ -228,15 +222,15 @@ impl Editor {
         else {
             return;
         };
-        match self.git_status_results(&anchor) {
-            Ok((_, results)) if results.is_empty() => {
+        match self.git_status_rows(&anchor) {
+            Ok((_, rows)) if rows.is_empty() => {
                 self.close_picker();
                 self.set_mode(Mode::Normal);
                 self.set_status_message("Working tree clean");
             }
-            Ok((_, results)) => {
+            Ok((_, rows)) => {
                 if let Some(picker) = self.picker_mut() {
-                    picker.replace_results_keeping_selection(results);
+                    picker.replace_git_rows(rows);
                 }
             }
             Err(error) => self.set_status_message(format!("Git: {error:#}")),
@@ -245,24 +239,40 @@ impl Editor {
 
     /// `Ctrl-E` in the status list: open the file itself.
     pub fn git_status_edit_selected(&mut self) {
-        let Some(path) = self.selected_git_status_path() else {
+        let Some(target) = self.selected_git_status_target() else {
             return;
         };
         self.close_picker();
         self.set_mode(Mode::Normal);
+        self.git_edit(&target);
+    }
+
+    fn git_edit(&mut self, target: &GitTarget) {
+        let path = target.absolute();
         if let Err(error) = self.load_file(&path) {
             self.set_status_message(format!("Failed to open {}: {error}", path.display()));
         }
     }
 
-    /// Opens the diff review of uncommitted changes, positioned on `path`.
-    pub fn git_show_file_diff(&mut self, path: &Path) -> anyhow::Result<()> {
-        let workdir = ops::workdir_of(path)?;
-        let relative = path
-            .strip_prefix(&workdir)
-            .unwrap_or(path)
-            .to_string_lossy()
-            .to_string();
+    /// Performs what Enter on a status / history row stands for.
+    pub fn run_git_pick(&mut self, pick: GitPick) {
+        let result = match pick {
+            GitPick::DiffFile(target) => self.git_show_file_diff(&target),
+            GitPick::Edit(target) => {
+                self.git_edit(&target);
+                Ok(())
+            }
+            GitPick::Show { root, oid, path } => self.git_show_commit(&root, &oid, path.as_deref()),
+            GitPick::DiffHead => self.open_diff_review(Some("HEAD")),
+        };
+        if let Err(error) = result {
+            self.set_status_message(format!("Git: {error:#}"));
+        }
+    }
+
+    /// Opens the diff review of uncommitted changes, positioned on `target`.
+    pub fn git_show_file_diff(&mut self, target: &GitTarget) -> anyhow::Result<()> {
+        let relative = target.relative.to_string_lossy().to_string();
         self.open_diff_review(Some("HEAD"))?;
         if !self.diff_review_jump_to_path(&relative) {
             self.set_status_message(format!("{relative} has no changes against HEAD"));
@@ -451,36 +461,28 @@ impl Editor {
     // History
     // -----------------------------------------------------------------
 
-    fn history_results(&self, entries: Vec<LogEntry>, anchor: &Path) -> Vec<PickerResult> {
-        let workdir = ops::workdir_of(anchor).unwrap_or_else(|_| anchor.to_path_buf());
+    fn history_rows(entries: Vec<LogEntry>, root: &Path) -> Vec<(String, GitPick)> {
         entries
             .into_iter()
             .map(|entry| {
-                let command = if entry.oid.is_empty() {
+                let pick = if entry.oid.is_empty() {
                     // Uncommitted changes: the working tree diff of the file.
-                    entry
-                        .path
-                        .as_ref()
-                        .map(|path| format!("GitDiffFile {}", workdir.join(path).display()))
-                        .unwrap_or_else(|| "GitDiff HEAD".to_string())
+                    match entry.path {
+                        Some(path) => GitPick::DiffFile(GitTarget::in_root(root, path)),
+                        None => GitPick::DiffHead,
+                    }
                 } else {
-                    format!(
-                        "GitShow {} {}",
-                        entry.oid,
-                        entry.path.as_deref().unwrap_or("")
-                    )
+                    GitPick::Show {
+                        root: root.to_path_buf(),
+                        oid: entry.oid,
+                        path: entry.path,
+                    }
                 };
-                PickerResult {
-                    display: format!(
-                        "{}  {}  {}  {}",
-                        entry.short, entry.date, entry.author, entry.subject
-                    ),
-                    location: command,
-                    line: 0,
-                    col: 0,
-                    match_positions: Vec::new(),
-                    content: None,
-                }
+                let display = format!(
+                    "{}  {}  {}  {}",
+                    entry.short, entry.date, entry.author, entry.subject
+                );
+                (display, pick)
             })
             .collect()
     }
@@ -492,9 +494,9 @@ impl Editor {
                 self.set_status_message("No history found (is the file committed?)")
             }
             Ok(entries) => {
-                let base = ops::workdir_of(&anchor).unwrap_or_else(|_| self.picker_base_dir());
-                let results = self.history_results(entries, &anchor);
-                let picker = Picker::new_commands(base, results, title);
+                let root = ops::workdir_of(&anchor).unwrap_or_else(|_| self.picker_base_dir());
+                let rows = Self::history_rows(entries, &root);
+                let picker = Picker::new_git(root, rows, title);
                 self.set_picker(picker);
                 self.set_mode(Mode::Picker);
                 self.mark_picker_selection_changed();
@@ -534,13 +536,17 @@ impl Editor {
 
     /// Enter on a history entry: the commit's diff in the review UI, on the
     /// file when known.
-    pub fn git_show_commit(&mut self, oid: &str, path: Option<&str>) -> anyhow::Result<()> {
-        let anchor = self.git_anchor();
-        let repo = git2::Repository::discover(&anchor)?;
+    pub fn git_show_commit(
+        &mut self,
+        root: &Path,
+        oid: &str,
+        path: Option<&str>,
+    ) -> anyhow::Result<()> {
+        let repo = git2::Repository::open(root)?;
         let commit = repo.find_commit(git2::Oid::from_str(oid)?)?;
         if commit.parent_count() == 0 {
             // The review compares against a parent; a root commit has none.
-            let diff = crate::git::commit_diff(&anchor, oid)?;
+            let diff = crate::git::commit_diff(root, oid)?;
             self.open_diff_buffer_in_new_tab(&format!("Commit {}", &oid[..7]), &diff);
             self.buffer_mut()
                 .enable_syntax_highlighting_for_path("commit.diff");

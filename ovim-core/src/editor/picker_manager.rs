@@ -517,9 +517,7 @@ impl Editor {
             PickerAction::MessageRequestAction { index } => {
                 self.answer_active_message_request(Some(index));
             }
-            PickerAction::RunCommand { command } => {
-                crate::commands::execute_and_show(self, &command);
-            }
+            PickerAction::Git(pick) => self.run_git_pick(pick),
         }
         Ok(())
     }

@@ -50,11 +50,52 @@ fn open(path: &Path) -> Result<(Repository, PathBuf)> {
 /// The repository's working tree root for a path inside it.
 pub fn workdir_of(path: &Path) -> Result<PathBuf> {
     let (repo, _) = open(path)?;
+    canonical_workdir(&repo)
+}
+
+fn canonical_workdir(repo: &Repository) -> Result<PathBuf> {
     let workdir = repo
         .workdir()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("bare repositories have no working tree"))?;
     Ok(workdir.canonicalize().unwrap_or(workdir))
+}
+
+/// A path resolved against its repository once: the working tree root and the
+/// path relative to it. Picker rows keep one, so acting on a row reopens the
+/// repository the row was listed from instead of discovering it again from an
+/// absolute path (which finds a submodule's own repository for a submodule
+/// row, and nothing at all for a deleted file's directory).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitTarget {
+    pub root: PathBuf,
+    pub relative: PathBuf,
+}
+
+impl GitTarget {
+    pub fn resolve(path: &Path) -> Result<Self> {
+        let (repo, relative) = open(path)?;
+        Ok(Self {
+            root: canonical_workdir(&repo)?,
+            relative,
+        })
+    }
+
+    pub fn in_root(root: &Path, relative: impl Into<PathBuf>) -> Self {
+        Self {
+            root: root.to_path_buf(),
+            relative: relative.into(),
+        }
+    }
+
+    pub fn absolute(&self) -> PathBuf {
+        self.root.join(&self.relative)
+    }
+
+    fn open(&self) -> Result<Repository> {
+        Repository::open(&self.root)
+            .with_context(|| format!("{} is not a Git working tree", self.root.display()))
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -175,15 +216,24 @@ pub fn status(path: &Path) -> Result<Vec<StatusEntry>> {
 /// Stages the whole file (or its deletion).
 pub fn stage_file(path: &Path) -> Result<()> {
     let (repo, relative) = open(path)?;
+    stage_in(&repo, &relative)
+}
+
+/// [`stage_file`] for a path that is already resolved.
+pub fn stage_target(target: &GitTarget) -> Result<()> {
+    stage_in(&target.open()?, &target.relative)
+}
+
+fn stage_in(repo: &Repository, relative: &Path) -> Result<()> {
     let mut index = repo.index()?;
     let exists = repo
         .workdir()
-        .map(|workdir| workdir.join(&relative).exists())
+        .map(|workdir| workdir.join(relative).exists())
         .unwrap_or(false);
     if exists {
-        index.add_path(&relative)?;
+        index.add_path(relative)?;
     } else {
-        index.remove_path(&relative)?;
+        index.remove_path(relative)?;
     }
     index.write()?;
     Ok(())
@@ -202,12 +252,21 @@ pub fn stage_all(path: &Path) -> Result<()> {
 /// Removes the file from the index, restoring the HEAD version there.
 pub fn unstage_file(path: &Path) -> Result<()> {
     let (repo, relative) = open(path)?;
+    unstage_in(&repo, &relative)
+}
+
+/// [`unstage_file`] for a path that is already resolved.
+pub fn unstage_target(target: &GitTarget) -> Result<()> {
+    unstage_in(&target.open()?, &target.relative)
+}
+
+fn unstage_in(repo: &Repository, relative: &Path) -> Result<()> {
     let tree = match repo.head().and_then(|head| head.peel_to_tree()) {
         Ok(tree) => Some(tree),
         Err(error) if error.code() == ErrorCode::UnbornBranch => None,
         Err(error) => return Err(error.into()),
     };
-    let source = tree.as_ref().and_then(|tree| tree.get_path(&relative).ok());
+    let source = tree.as_ref().and_then(|tree| tree.get_path(relative).ok());
     if source
         .as_ref()
         .is_some_and(|entry| entry.kind() == Some(git2::ObjectType::Tree))
@@ -218,13 +277,13 @@ pub fn unstage_file(path: &Path) -> Result<()> {
     // reset_default accepts glob pathspecs. Restore exactly this tree entry,
     // including its mode, so names like route/[id].tsx cannot reset siblings.
     // Removing by path first also drops conflict stages, as reset does.
-    if let Err(error) = index.remove_path(&relative) {
+    if let Err(error) = index.remove_path(relative) {
         if error.code() != ErrorCode::NotFound {
             return Err(error.into());
         }
     }
     if let Some(source) = source {
-        let mut entry = empty_index_entry(&relative);
+        let mut entry = empty_index_entry(relative);
         entry.id = source.id();
         entry.mode = source.filemode() as u32;
         if source.kind() == Some(git2::ObjectType::Blob) {

@@ -9,7 +9,7 @@ mod text_editing;
 
 use backend::PickerBackend;
 use fuzzy_backend::FuzzyListKind;
-pub use result::{PickerAction, PickerField, PickerMode, PickerResult, PickerRole};
+pub use result::{GitPick, PickerAction, PickerField, PickerMode, PickerResult, PickerRole};
 
 use super::{fuzzy, SingleLineInput};
 use std::path::{Path, PathBuf};
@@ -81,6 +81,24 @@ impl Picker {
             self.apply_filter_internal();
         }
         self.selected_index = selected.min(self.filtered_results.len().saturating_sub(1));
+    }
+
+    /// Replaces the rows of a git picker, keeping the selection near where it
+    /// was.
+    pub fn replace_git_rows(&mut self, rows: Vec<(String, GitPick)>) {
+        let (results, picks) = Self::git_results(rows);
+        self.backend = PickerBackend::FuzzyList(FuzzyListKind::Git(picks));
+        self.replace_results_keeping_selection(results);
+    }
+
+    /// The pick of the selected row of a git picker.
+    pub fn selected_git_pick(&self) -> Option<&GitPick> {
+        match &self.backend {
+            PickerBackend::FuzzyList(FuzzyListKind::Git(picks)) => {
+                picks.get(self.selected_result()?.line)
+            }
+            _ => None,
+        }
     }
 
     /// Custom heading, if the opener gave one.
@@ -421,9 +439,9 @@ impl Picker {
                 line: result.line,
                 col: result.col,
             }),
-            PickerBackend::FuzzyList(FuzzyListKind::Command) => Some(PickerAction::RunCommand {
-                command: result.location.clone(),
-            }),
+            PickerBackend::FuzzyList(FuzzyListKind::Git(picks)) => {
+                picks.get(result.line).cloned().map(PickerAction::Git)
+            }
             PickerBackend::FuzzyList(FuzzyListKind::DebugConfig) => {
                 Some(PickerAction::SelectDebugConfig { index: result.line })
             }
@@ -465,7 +483,7 @@ impl Picker {
             PickerBackend::Grep(_) => &PickerMode::LiveGrep,
             PickerBackend::FuzzyList(kind) => match kind {
                 FuzzyListKind::Custom
-                | FuzzyListKind::Command
+                | FuzzyListKind::Git(_)
                 | FuzzyListKind::DebugConfig
                 | FuzzyListKind::MessageAction => &PickerMode::Custom,
                 FuzzyListKind::Completion => &PickerMode::Completion,

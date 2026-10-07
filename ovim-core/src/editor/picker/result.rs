@@ -1,3 +1,6 @@
+use crate::git::ops::GitTarget;
+use std::path::PathBuf;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum PickerMode {
     FindFiles,
@@ -31,8 +34,37 @@ pub enum PickerAction {
     SelectDebugConfig { index: usize },
     /// Answer a server `window/showMessageRequest` with action `index`
     MessageRequestAction { index: usize },
-    /// Run an ex command (git status / log entries)
-    RunCommand { command: String },
+    /// Open a git view for a status / history entry
+    Git(GitPick),
+}
+
+/// What Enter does on a git status / history entry. Entries carry the path
+/// itself rather than an ex command line: file names may contain `|` or
+/// spaces, which an ex parser would split into further commands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GitPick {
+    /// The file's diff in the review of uncommitted changes.
+    DiffFile(GitTarget),
+    /// The file itself.
+    Edit(GitTarget),
+    /// A commit's diff in the review, positioned on `path` when known.
+    Show {
+        root: PathBuf,
+        oid: String,
+        path: Option<String>,
+    },
+    /// The review of all uncommitted changes.
+    DiffHead,
+}
+
+impl GitPick {
+    /// The file the entry stands for, when it is about a single file.
+    pub fn target(&self) -> Option<&GitTarget> {
+        match self {
+            Self::DiffFile(target) | Self::Edit(target) => Some(target),
+            Self::Show { .. } | Self::DiffHead => None,
+        }
+    }
 }
 
 /// What a picker is for, when it needs bindings beyond select/cancel.

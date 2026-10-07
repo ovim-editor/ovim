@@ -2,7 +2,7 @@ use super::backend::PickerBackend;
 use super::fuzzy_backend::FuzzyListKind;
 use super::grep_backend::GrepState;
 use super::nucleo_backend::NucleoState;
-use super::result::{PickerField, PickerResult};
+use super::result::{GitPick, PickerField, PickerResult};
 use super::Picker;
 use crate::editor::SingleLineInput;
 use std::path::PathBuf;
@@ -128,12 +128,30 @@ impl Picker {
         )
     }
 
-    /// Creates a picker whose entries each run an ex command (the entry's
-    /// `location`) when selected.
-    pub fn new_commands(base_dir: PathBuf, results: Vec<PickerResult>, title: &str) -> Self {
+    /// Creates a picker whose rows each open a git view when selected.
+    pub fn new_git(base_dir: PathBuf, rows: Vec<(String, GitPick)>, title: &str) -> Self {
         let preferred_dir = base_dir.clone();
-        Self::new_fuzzy_list(base_dir, preferred_dir, results, FuzzyListKind::Command)
+        let (results, picks) = Self::git_results(rows);
+        Self::new_fuzzy_list(base_dir, preferred_dir, results, FuzzyListKind::Git(picks))
             .with_title(title)
+    }
+
+    /// Display rows for `rows`, each pointing at its pick by index.
+    pub(super) fn git_results(rows: Vec<(String, GitPick)>) -> (Vec<PickerResult>, Vec<GitPick>) {
+        rows.into_iter()
+            .enumerate()
+            .map(|(index, (display, pick))| {
+                let result = PickerResult {
+                    display,
+                    location: String::new(),
+                    line: index,
+                    col: 0,
+                    match_positions: Vec::new(),
+                    content: None,
+                };
+                (result, pick)
+            })
+            .unzip()
     }
 
     /// Creates the live workspace-symbol picker; results arrive from the server.

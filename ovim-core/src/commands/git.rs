@@ -5,6 +5,7 @@
 use super::Ex;
 use crate::command_result::{err, ok_silent, CommandResult};
 use crate::editor::Editor;
+use crate::git::ops::GitTarget;
 
 /// `:GitDiff [base]`: open (or return to) the branch diff review against
 /// the default branch or an explicit ref.
@@ -35,7 +36,9 @@ pub(super) fn diff_file(editor: &mut Editor, ex: &Ex) -> CommandResult {
     if ex.args.is_empty() {
         return err("Usage: :GitDiffFile <path>");
     }
-    match editor.git_show_file_diff(std::path::Path::new(ex.args)) {
+    let result = GitTarget::resolve(std::path::Path::new(ex.args))
+        .and_then(|target| editor.git_show_file_diff(&target));
+    match result {
         Ok(()) => ok_silent(),
         Err(error) => err(format!("GitDiffFile: {error:#}")),
     }
@@ -61,7 +64,10 @@ pub(super) fn show(editor: &mut Editor, ex: &Ex) -> CommandResult {
         Some((oid, path)) => (oid, Some(path.trim())),
         None => (ex.args, None),
     };
-    match editor.git_show_commit(oid, path) {
+    let result = editor
+        .git_root()
+        .and_then(|root| editor.git_show_commit(&root, oid, path));
+    match result {
         Ok(()) => ok_silent(),
         Err(error) => err(format!("GitShow: {error:#}")),
     }

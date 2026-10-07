@@ -179,7 +179,9 @@ pub use navigation_state::NavigationState;
 pub use operators::Operator;
 pub use path_completion::PathCompletionState;
 pub use performance::{PerformanceMetrics, MAX_LATENCY_SAMPLES};
-pub use picker::{Picker, PickerAction, PickerField, PickerMode, PickerResult, PickerRole};
+pub use picker::{
+    GitPick, Picker, PickerAction, PickerField, PickerMode, PickerResult, PickerRole,
+};
 pub use picker_state::PickerState;
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::{RegisterManager, RegisterType};
