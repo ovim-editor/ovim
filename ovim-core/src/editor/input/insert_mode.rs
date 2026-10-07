@@ -148,9 +148,12 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
     }
 
     let block = editor.visual.block_insert.take();
-    if let Some(block) = &block {
-        replicate_block_insert(editor, block, session);
-    }
+    // Whether the typed text was copied onto the other block lines (text with a line
+    // break stays on the first line, where Esc then leaves the cursor as usual).
+    let replicated = block.as_ref().is_some_and(|block| {
+        let inserted = replicate_block_insert(editor, block, session);
+        !inserted.contains('\n')
+    });
 
     // Mark buffer modified for LSP didChange — placed after visual block replay
     // so the server sees ALL changes (first line + replayed lines). The
@@ -173,7 +176,7 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
             left_col,
             change: None,
             ..
-        }) => {
+        }) if replicated => {
             editor
                 .buffer_mut()
                 .cursor_mut()
@@ -192,8 +195,12 @@ fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
 
 /// Visual-block I / A / c: replay the text typed on the first block line on
 /// the other lines, make the whole block (and the `c` delete) one undo step
-/// and install the block repeat for `.`.
-fn replicate_block_insert(editor: &mut Editor, block: &BlockInsert, session: Option<ChangeToken>) {
+/// and install the block repeat for `.`. Returns the text that was typed.
+fn replicate_block_insert(
+    editor: &mut Editor,
+    block: &BlockInsert,
+    session: Option<ChangeToken>,
+) -> String {
     let delete_width = block.change.map_or(0, |(width, _)| width);
     let session = session.and_then(|token| editor.pop_by_token(token));
     let inserted_text = session
@@ -206,13 +213,15 @@ fn replicate_block_insert(editor: &mut Editor, block: &BlockInsert, session: Opt
         let cursor_before = session.cursor_before();
         let mut edits = session.into_edits().unwrap_or_default();
         let column = block.column.offset_by(block.left_col);
-        let ((), sibling_edits) = editor.buffer_mut().record(|buf| {
-            column.insert_on_lines(
-                buf,
-                block.start_line + 1..block.end_line + 1,
-                &inserted_text,
-            )
-        });
+        // Text with a line break goes on the first line only (vim: `:help v_b_I`).
+        let sibling_lines = if inserted_text.contains('\n') {
+            0..0
+        } else {
+            block.start_line + 1..block.end_line + 1
+        };
+        let ((), sibling_edits) = editor
+            .buffer_mut()
+            .record(|buf| column.insert_on_lines(buf, sibling_lines, &inserted_text));
         edits.extend(sibling_edits);
         let delete_token = block.change.and_then(|(_, token)| token);
         if let Some(delete) = delete_token.and_then(|token| editor.pop_by_token(token)) {
@@ -227,15 +236,16 @@ fn replicate_block_insert(editor: &mut Editor, block: &BlockInsert, session: Opt
             .push_change(Change::recorded(edits, cursor_before, cursor_after));
     } else if delete_width == 0 {
         // An I / A that typed nothing changed nothing; `.` keeps its target.
-        return;
+        return inserted_text;
     }
 
     editor.set_repeat_action(RepeatAction::VisualBlockInsert {
         line_count: block.end_line - block.start_line + 1,
         delete_width,
         column: block.column,
-        inserted_text,
+        inserted_text: inserted_text.clone(),
     });
+    inserted_text
 }
 
 /// Whether `key` leaves a completion session alone: typing into the word (the

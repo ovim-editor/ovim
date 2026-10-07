@@ -722,7 +722,12 @@ impl RepeatAction {
                 let start_line = buffer.cursor().line();
                 let start_col = buffer.cursor_char_col();
                 delete_block(buffer, start_line, start_col, *line_count, *delete_width);
-                let end_line = (start_line + line_count).min(buffer.line_count());
+                // Text with a line break goes on the first line only.
+                let end_line = if inserted_text.contains('\n') {
+                    start_line + 1
+                } else {
+                    (start_line + line_count).min(buffer.line_count())
+                };
                 column.offset_by(start_col.0).insert_on_lines(
                     buffer,
                     start_line..end_line,
@@ -731,7 +736,10 @@ impl RepeatAction {
 
                 // vim: `c` leaves the cursor on the last inserted character of
                 // the first line, `I` / `A` at the block's top-left corner.
-                if *delete_width == 0 || inserted_text.is_empty() {
+                // A text with a line break was typed on one line only, where Esc left
+                // the cursor on its last character.
+                let one_line_only = inserted_text.contains('\n');
+                if (*delete_width == 0 && !one_line_only) || inserted_text.is_empty() {
                     set_cursor_on_char(buffer, start_line, start_col);
                 } else {
                     let mut final_line = start_line;
