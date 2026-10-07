@@ -909,9 +909,8 @@ impl LspManager {
         let is_current = |stored: &&StoredDiagnostics| {
             stored.version.unwrap_or(stored.observed_version) == current
         };
-        let has_current = stored.is_none_or(|sets| {
-            sets.is_empty() || sets.values().filter(is_current).next().is_some()
-        });
+        let has_current = stored
+            .is_none_or(|sets| sets.is_empty() || sets.values().any(|stored| is_current(&stored)));
         let merged = match stored {
             None => Vec::new(),
             Some(_) if last_sent < current => Vec::new(),

@@ -197,7 +197,7 @@ impl FakeLsp {
     /// Opens `root`'s `main.fk` in a new tab and waits until its server has it.
     pub async fn open_in_tab(&mut self, root: usize) {
         self.test.editor.new_tab();
-        self.test.editor.open_file(&self.file(root)).unwrap();
+        self.test.editor.open_file(self.file(root)).unwrap();
         self.wait_for_event(root, "textDocument/didOpen").await;
     }
 

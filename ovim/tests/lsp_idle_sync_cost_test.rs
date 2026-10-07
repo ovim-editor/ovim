@@ -47,7 +47,7 @@ async fn ticking_an_idle_editor_does_not_copy_the_open_buffers() {
         lsp.test.editor.open_file(&path).unwrap();
     }
     lsp.pump_until("every buffer to be opened on the server", |lsp| {
-        lsp.events(0, "textDocument/didOpen").len() >= BUFFERS + 1
+        lsp.events(0, "textDocument/didOpen").len() > BUFFERS
     })
     .await;
     // Back on the first tab: the big buffers are hidden from now on.

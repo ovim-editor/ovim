@@ -38,7 +38,7 @@ async fn a_server_started_without_a_project_root_gets_no_watch() {
     )
     .unwrap();
     lsp.test.editor.new_tab();
-    lsp.test.editor.open_file(&loose.join("main.fk")).unwrap();
+    lsp.test.editor.open_file(loose.join("main.fk")).unwrap();
     lsp.pump_until("the loose file's server", |_| {
         !events_in(&loose, "textDocument/didOpen").is_empty()
     })

@@ -1612,8 +1612,8 @@ mod tests {
         fs::write(folder.join("A.java"), "a\n").unwrap();
         fs::write(folder.join("sub/B.java"), "b\n").unwrap();
         let mut editor = Editor::default();
-        editor.open_file(&folder.join("A.java")).unwrap();
-        editor.open_file(&folder.join("sub/B.java")).unwrap();
+        editor.open_file(folder.join("A.java")).unwrap();
+        editor.open_file(folder.join("sub/B.java")).unwrap();
         let moved = dir.path().join("new");
 
         assert!(editor
