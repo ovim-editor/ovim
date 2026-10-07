@@ -2,19 +2,23 @@
 //! buffer (or amend), file and line history, a status list that opens diffs,
 //! and merge conflict resolution.
 //!
-//! The heavy lifting is in [`crate::git::ops`] (libgit2); this module wires it
+//! The heavy lifting is in [`crate::git::ops`] (libgit2, and `git commit`); this module wires it
 //! to buffers, pickers and the existing diff review.
 
 use super::picker::{GitPick, Picker, PickerRole};
-use super::Editor;
+use super::{Editor, ToastLevel, ToastRequest, ToastSource};
 use crate::git::conflict::{self, Resolution};
 use crate::git::ops::{self, GitTarget, LogEntry};
 use crate::mode::Mode;
 use crate::unicode::{CharCol, GraphemeCol};
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, TryRecvError};
 
 /// Display name of the commit message buffer.
 const COMMIT_BUFFER: &str = "[COMMIT_EDITMSG]";
+
+/// The short id and subject of a commit, or what git said when it failed.
+type CommitOutcome = Result<(String, String), String>;
 
 /// An open commit message buffer.
 pub struct CommitSession {
@@ -22,6 +26,8 @@ pub struct CommitSession {
     pub amend: bool,
     /// A path inside the repository being committed to.
     pub anchor: PathBuf,
+    /// The commit running in the background since the message was written.
+    pending: Option<Receiver<CommitOutcome>>,
 }
 
 impl Editor {
@@ -331,10 +337,18 @@ impl Editor {
             self.set_status_message("Nothing to amend: there are no commits yet");
             return;
         }
+        if let Some(operation) = context.operation.filter(|_| amend) {
+            self.set_status_message(format!(
+                "You are in the middle of a {operation} -- cannot amend"
+            ));
+            return;
+        }
 
         let mut text = String::new();
         if amend {
             text.push_str(context.head_message.as_deref().unwrap_or(""));
+        } else if let Some(prepared) = &context.prepared_message {
+            text.push_str(prepared);
         }
         text.push_str("\n\n# Write the commit message. Lines starting with '#' are ignored.\n");
         text.push_str(&format!(
@@ -348,8 +362,12 @@ impl Editor {
         if let Some(branch) = &context.branch {
             text.push_str(&format!("# On branch {branch}\n"));
         }
-        if context.merging {
-            text.push_str("# All conflicts fixed but you are still merging.\n");
+        match context.operation {
+            Some("merge") => text.push_str("# All conflicts fixed but you are still merging.\n"),
+            Some(operation) => text.push_str(&format!(
+                "# All conflicts fixed but the {operation} is not finished.\n"
+            )),
+            None => {}
         }
         let section = |title: &str, lines: &[String]| {
             if lines.is_empty() {
@@ -386,6 +404,7 @@ impl Editor {
             buffer_id: id,
             amend,
             anchor,
+            pending: None,
         }));
         // Start typing right away when the message is empty.
         if !amend {
@@ -402,16 +421,74 @@ impl Editor {
         self.mark_dirty();
     }
 
-    /// Ends the commit message buffer: commits (`commit == true`) or aborts.
-    /// A failed commit keeps the buffer open so the message is not lost.
+    /// Ends the commit message buffer: starts the commit (`commit == true`)
+    /// or aborts. The commit runs in the background because hooks can take a
+    /// long time; [`Self::poll_git_commit`] finishes it. A failed commit keeps
+    /// the buffer open so the message is not lost.
     pub fn finish_commit_message(&mut self, commit: bool) {
-        let Some(session) = self.ui_panels.commit.take() else {
+        let Some(session) = self.ui_panels.commit.as_ref() else {
             return;
         };
+        if session.pending.is_some() {
+            self.set_status_message("A commit is already running");
+            return;
+        }
+        if !commit {
+            if let Some(session) = self.ui_panels.commit.take() {
+                self.close_commit_tab(&session);
+            }
+            self.set_status_message("Commit aborted");
+            return;
+        }
+        let (anchor, amend) = (session.anchor.clone(), session.amend);
         let text = self.buffer().rope().to_string();
-        if commit {
-            match ops::commit(&session.anchor, &text, session.amend) {
-                Ok((short, subject)) => {
+        let prepared = match ops::prepare_commit(&anchor, &text, amend) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.set_status_message(format!("{error:#}"));
+                return;
+            }
+        };
+        let (sender, receiver) = channel();
+        std::thread::spawn(move || {
+            let _ = sender.send(prepared.run().map_err(|error| format!("{error:#}")));
+        });
+        if let Some(session) = self.ui_panels.commit.as_mut() {
+            session.pending = Some(receiver);
+        }
+        self.set_status_message(if amend {
+            "Amending…"
+        } else {
+            "Committing…"
+        });
+    }
+
+    /// True while a commit started from the message buffer is running.
+    pub fn git_commit_pending(&self) -> bool {
+        self.ui_panels
+            .commit
+            .as_ref()
+            .is_some_and(|session| session.pending.is_some())
+    }
+
+    /// Finishes a background commit once it ends. Returns true when something
+    /// changed.
+    pub fn poll_git_commit(&mut self) -> bool {
+        let Some(session) = self.ui_panels.commit.as_mut() else {
+            return false;
+        };
+        let Some(receiver) = session.pending.as_ref() else {
+            return false;
+        };
+        let outcome = match receiver.try_recv() {
+            Ok(outcome) => outcome,
+            Err(TryRecvError::Empty) => return false,
+            Err(TryRecvError::Disconnected) => Err("The commit stopped unexpectedly".to_string()),
+        };
+        session.pending = None;
+        match outcome {
+            Ok((short, subject)) => {
+                if let Some(session) = self.ui_panels.commit.take() {
                     self.close_commit_tab(&session);
                     self.set_status_message(format!(
                         "{} {short}: {subject}",
@@ -421,17 +498,28 @@ impl Editor {
                             "Committed"
                         }
                     ));
-                    self.refresh_git_after_commit();
                 }
-                Err(error) => {
-                    self.ui_panels.commit = Some(session);
-                    self.set_status_message(format!("{error:#}"));
-                }
+                self.refresh_git_after_commit();
             }
-        } else {
-            self.close_commit_tab(&session);
-            self.set_status_message("Commit aborted");
+            Err(output) => self.report_commit_failure(&output),
         }
+        true
+    }
+
+    /// Shows what git said when it refused the commit (a hook's output, a
+    /// signing failure, ...). The message buffer stays open.
+    fn report_commit_failure(&mut self, output: &str) {
+        let last = output.lines().rev().find(|line| !line.trim().is_empty());
+        self.set_status_message(format!(
+            "Commit failed: {}",
+            last.unwrap_or("git commit failed")
+        ));
+        let lines: Vec<&str> = output.lines().collect();
+        let tail = lines[lines.len().saturating_sub(12)..].join("\n");
+        self.push_toast(
+            ToastRequest::new(ToastSource::Git, ToastLevel::Error, tail)
+                .with_title("Commit failed"),
+        );
     }
 
     fn close_commit_tab(&mut self, session: &CommitSession) {
@@ -441,10 +529,24 @@ impl Editor {
             self.buffers[index].mark_clean();
             self.buffers[index].change_manager_mut().mark_saved();
         }
-        if self.tab_count() > 1 {
-            self.close_current_tab();
+        // The commit may have outlived the user's stay in its tab.
+        let tab = self
+            .tab_page_manager
+            .tabs()
+            .iter()
+            .position(|tab| tab.buffer_id() == Some(session.buffer_id));
+        let in_commit_tab = tab.is_none_or(|tab| tab == self.current_tab_index());
+        match tab {
+            Some(tab) if !in_commit_tab && self.tab_count() > 1 => {
+                self.sync_current_tab_buffer();
+                self.tab_page_manager.close_tab(tab);
+            }
+            _ if self.tab_count() > 1 => self.close_current_tab(),
+            _ => {}
         }
-        self.set_mode(Mode::Normal);
+        if in_commit_tab {
+            self.set_mode(Mode::Normal);
+        }
     }
 
     fn refresh_git_after_commit(&mut self) {
@@ -680,10 +782,29 @@ mod tests {
         let mut config = repo.config().unwrap();
         config.set_str("user.name", "Test").unwrap();
         config.set_str("user.email", "t@example.com").unwrap();
+        // Commits run through the git binary: keep the developer's global
+        // signing and hook configuration out of the tests.
+        config.set_bool("commit.gpgsign", false).unwrap();
+        config
+            .set_str("core.hooksPath", root.join(".git/hooks").to_str().unwrap())
+            .unwrap();
         Repo {
             _dir: dir,
             root,
             repo,
+        }
+    }
+
+    /// Waits for the background commit started by `:w` in the message buffer.
+    fn settle_commit(editor: &mut Editor) {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        while editor.git_commit_pending() {
+            editor.poll_git_commit();
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the commit did not finish"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
 
@@ -746,6 +867,9 @@ mod tests {
             .buffer_mut()
             .insert_text_at(0, CharCol(0), "Change a");
         editor.finish_commit_message(true);
+        assert_eq!(editor.status_message(), "Committing…");
+        assert!(editor.git_commit_pending());
+        settle_commit(&mut editor);
         assert!(!editor.is_commit_message_buffer());
         assert!(
             editor.status_message().starts_with("Committed"),
@@ -753,7 +877,7 @@ mod tests {
             editor.status_message()
         );
         let head = repo.repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.message().unwrap(), "Change a");
+        assert_eq!(head.message().unwrap(), "Change a\n");
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -801,6 +925,7 @@ mod tests {
             .starts_with("First try\n"));
         editor.buffer_mut().replace_content("Second try\n");
         editor.finish_commit_message(true);
+        settle_commit(&mut editor);
         assert!(
             editor.status_message().starts_with("Amended"),
             "{}",
@@ -814,7 +939,7 @@ mod tests {
                 .unwrap()
                 .message()
                 .unwrap(),
-            "Second try"
+            "Second try\n"
         );
     }
 

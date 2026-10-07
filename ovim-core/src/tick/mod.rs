@@ -410,6 +410,9 @@ async fn poll_background_tasks(editor: &mut Editor) {
     if editor.poll_git_fetch() {
         editor.mark_dirty();
     }
+    if editor.poll_git_commit() {
+        editor.mark_dirty();
+    }
     // The side-by-side diff review is laid out to a fixed width, so it has to
     // re-flow when the window changes size.
     if editor.relayout_diff_review() {

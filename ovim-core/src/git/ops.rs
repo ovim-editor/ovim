@@ -3,6 +3,9 @@
 //! Everything goes through libgit2, so it needs no `git` binary and behaves the
 //! same in the TUI, the GUI and headless sessions. Functions take any path
 //! inside the repository and work on the repository's working tree.
+//!
+//! Committing prefers the `git` binary, which libgit2 cannot stand in for:
+//! hooks, signing and the merge / cherry-pick / revert bookkeeping are git's.
 
 use anyhow::{anyhow, bail, Context, Result};
 use chrono::{TimeZone, Utc};
@@ -580,7 +583,23 @@ pub struct CommitContext {
     /// Subject and body of HEAD (what an amend starts from).
     pub head_message: Option<String>,
     pub merging: bool,
+    /// The merge, cherry-pick or revert this commit would finish.
+    pub operation: Option<&'static str>,
+    /// What git prepared for the commit that finishes `operation`
+    /// (`.git/MERGE_MSG`).
+    pub prepared_message: Option<String>,
     pub conflicted: Vec<String>,
+}
+
+/// The merge, cherry-pick or revert that is waiting for its commit.
+fn unfinished_operation(repo: &Repository) -> Option<&'static str> {
+    use git2::RepositoryState as State;
+    match repo.state() {
+        State::Merge => Some("merge"),
+        State::Revert | State::RevertSequence => Some("revert"),
+        State::CherryPick | State::CherryPickSequence => Some("cherry-pick"),
+        _ => None,
+    }
 }
 
 pub fn commit_context(path: &Path) -> Result<CommitContext> {
@@ -623,6 +642,11 @@ pub fn commit_context(path: &Path) -> Result<CommitContext> {
         .head()
         .ok()
         .and_then(|head| head.shorthand().map(str::to_string));
+    let operation = unfinished_operation(&repo);
+    let prepared_message = operation
+        .and_then(|_| repo.message().ok())
+        .map(|message| message.trim_end().to_string())
+        .filter(|message| !message.is_empty());
     Ok(CommitContext {
         workdir: workdir_of(path)?,
         branch,
@@ -630,7 +654,9 @@ pub fn commit_context(path: &Path) -> Result<CommitContext> {
         unstaged,
         untracked,
         head_message,
-        merging: repo.state() == git2::RepositoryState::Merge,
+        merging: operation == Some("merge"),
+        operation,
+        prepared_message,
         conflicted,
     })
 }
@@ -642,12 +668,39 @@ pub fn clean_commit_message(text: &str) -> String {
     kept.join("\n").trim().to_string()
 }
 
+/// A commit that passed the quick checks and only has to be made. Hooks can
+/// take minutes, so callers run it off the UI thread.
+#[derive(Debug)]
+pub struct PreparedCommit {
+    root: PathBuf,
+    /// The text of the message buffer, comment lines included.
+    message: String,
+    amend: bool,
+    /// The `git` binary that makes the commit. Without one libgit2 does, which
+    /// cannot run hooks or sign.
+    git: Option<PathBuf>,
+}
+
 /// Commits the index. With `amend` the previous commit is replaced.
 ///
 /// Returns the new commit's short id and subject.
 pub fn commit(path: &Path, message: &str, amend: bool) -> Result<(String, String)> {
-    let message = clean_commit_message(message);
-    if message.is_empty() {
+    prepare_commit(path, message, amend)?.run()
+}
+
+/// Checks that the index can be committed with `message` (the text of the
+/// message buffer) and returns the commit, ready to [`PreparedCommit::run`].
+pub fn prepare_commit(path: &Path, message: &str, amend: bool) -> Result<PreparedCommit> {
+    prepare_commit_with(path, message, amend, which::which("git").ok())
+}
+
+fn prepare_commit_with(
+    path: &Path,
+    message: &str,
+    amend: bool,
+    git: Option<PathBuf>,
+) -> Result<PreparedCommit> {
+    if clean_commit_message(message).is_empty() {
         bail!("Aborting commit: the message is empty");
     }
     let (repo, _) = open(path)?;
@@ -655,56 +708,218 @@ pub fn commit(path: &Path, message: &str, amend: bool) -> Result<(String, String
     if index.has_conflicts() {
         bail!("Cannot commit: unresolved merge conflicts (resolve, then stage the files)");
     }
-    let tree = repo.find_tree(index.write_tree()?)?;
-    let signature = repo.signature().map_err(|error| {
-        anyhow!("Cannot commit: set user.name and user.email in your git config ({error})")
-    })?;
     let head = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
-
-    let oid = if amend {
-        let head = head.ok_or_else(|| anyhow!("Nothing to amend: there are no commits yet"))?;
-        head.amend(
-            Some("HEAD"),
-            None,
-            Some(&signature),
-            None,
-            Some(&message),
-            Some(&tree),
-        )?
+    if amend {
+        if head.is_none() {
+            bail!("Nothing to amend: there are no commits yet");
+        }
+        if let Some(operation) = unfinished_operation(&repo) {
+            bail!("You are in the middle of a {operation} -- cannot amend");
+        }
     } else {
-        if let Some(parent) = &head {
-            if parent.tree_id() == tree.id() && repo.state() != git2::RepositoryState::Merge {
-                bail!("Nothing to commit: no changes are staged");
-            }
-        } else if tree.is_empty() {
+        let tree = index.write_tree()?;
+        let unchanged = match &head {
+            Some(head) => head.tree_id() == tree && unfinished_operation(&repo) != Some("merge"),
+            None => repo.find_tree(tree)?.is_empty(),
+        };
+        if unchanged {
             bail!("Nothing to commit: no changes are staged");
         }
-        let mut parents: Vec<git2::Commit> = head.into_iter().collect();
-        if repo.state() == git2::RepositoryState::Merge {
-            let merge_heads: Vec<Oid> = std::fs::read_to_string(repo.path().join("MERGE_HEAD"))
-                .unwrap_or_default()
-                .lines()
-                .filter_map(|line| Oid::from_str(line.trim()).ok())
-                .collect();
-            for oid in merge_heads {
-                parents.push(repo.find_commit(oid)?);
+    }
+    if git.is_none() {
+        refuse_what_libgit2_cannot_do(&repo)?;
+    }
+    Ok(PreparedCommit {
+        root: canonical_workdir(&repo)?,
+        message: message.to_string(),
+        amend,
+        git,
+    })
+}
+
+/// Without a `git` binary hooks cannot run and commits cannot be signed;
+/// committing anyway would silently skip checks the repository relies on.
+fn refuse_what_libgit2_cannot_do(repo: &Repository) -> Result<()> {
+    const HOOKS: [&str; 4] = [
+        "pre-commit",
+        "prepare-commit-msg",
+        "commit-msg",
+        "post-commit",
+    ];
+    let config = repo.config()?;
+    if config.get_bool("commit.gpgsign").unwrap_or(false) {
+        bail!("Cannot sign the commit: commit.gpgsign is set and no git binary was found");
+    }
+    let hooks = match config.get_path("core.hooksPath") {
+        Ok(path) if path.is_relative() => canonical_workdir(repo)?.join(path),
+        Ok(path) => path,
+        Err(_) => common_dir(repo).join("hooks"),
+    };
+    if let Some(hook) = HOOKS.iter().find(|hook| is_executable(&hooks.join(hook))) {
+        bail!("Cannot run the {hook} hook: no git binary was found");
+    }
+    Ok(())
+}
+
+/// The directory shared by a repository's linked worktrees (`.git`).
+fn common_dir(repo: &Repository) -> PathBuf {
+    let git_dir = repo.path();
+    match std::fs::read_to_string(git_dir.join("commondir")) {
+        Ok(relative) => git_dir.join(relative.trim()),
+        Err(_) => git_dir.to_path_buf(),
+    }
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        path.metadata()
+            .is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
+}
+
+impl PreparedCommit {
+    /// Makes the commit and returns its short id and subject. Blocks for as
+    /// long as the repository's hooks take.
+    pub fn run(self) -> Result<(String, String)> {
+        match self.git.clone() {
+            Some(git) => self.run_git(&git),
+            None => self.run_libgit2(),
+        }
+    }
+
+    /// `git commit`, so hooks, signing and the merge / cherry-pick / revert
+    /// bookkeeping all happen as they do on the command line.
+    fn run_git(&self, git: &Path) -> Result<(String, String)> {
+        use std::io::{Read, Seek, Write};
+        use std::process::{Command, Stdio};
+
+        let repo = Repository::open(&self.root)?;
+        let mut message = tempfile::Builder::new()
+            .prefix("OVIM_COMMIT_MSG")
+            .tempfile_in(repo.path())?;
+        message.write_all(self.message.as_bytes())?;
+        message.flush()?;
+        // A file rather than pipes: a hook that leaves a daemon behind would
+        // hold a pipe open and keep the read waiting after git has finished.
+        let mut output = tempfile::tempfile()?;
+        let mut command = Command::new(git);
+        command
+            .args(["commit", "--cleanup=strip", "-F"])
+            .arg(message.path())
+            .current_dir(&self.root)
+            .stdin(Stdio::null())
+            .stdout(output.try_clone()?)
+            .stderr(output.try_clone()?)
+            // A curses pinentry would draw over the editor.
+            .env_remove("GPG_TTY");
+        if self.amend {
+            command.arg("--amend");
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::process::CommandExt;
+            // No controlling terminal: hooks and signing programs that open
+            // /dev/tty to prompt fail instead of taking over the editor's.
+            // SAFETY: setsid is async-signal-safe and touches no shared state.
+            unsafe {
+                command.pre_exec(|| {
+                    if libc::setsid() == -1 {
+                        return Err(std::io::Error::last_os_error());
+                    }
+                    Ok(())
+                });
             }
         }
-        let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
-        repo.commit(
-            Some("HEAD"),
-            &signature,
-            &signature,
-            &message,
-            &tree,
-            &parent_refs,
-        )?
-    };
-    if repo.state() == git2::RepositoryState::Merge {
-        repo.cleanup_state()?;
+        let status = command
+            .status()
+            .with_context(|| format!("Could not run {}", git.display()))?;
+        if !status.success() {
+            let mut text = String::new();
+            output.rewind()?;
+            output.read_to_string(&mut text)?;
+            let text = text.trim();
+            if text.is_empty() {
+                bail!("git commit failed ({status})");
+            }
+            bail!("{text}");
+        }
+        let repo = Repository::open(&self.root)?;
+        let head = repo.head()?.peel_to_commit()?;
+        Ok((
+            short(head.id()),
+            head.summary().unwrap_or_default().to_string(),
+        ))
     }
-    let subject = message.lines().next().unwrap_or("").to_string();
-    Ok((short(oid), subject))
+
+    /// Commits through libgit2, finishing the merge, cherry-pick or revert the
+    /// way `git commit` does.
+    fn run_libgit2(&self) -> Result<(String, String)> {
+        let message = clean_commit_message(&self.message);
+        let repo = Repository::open(&self.root)?;
+        let mut index = repo.index()?;
+        let tree = repo.find_tree(index.write_tree()?)?;
+        let committer = repo.signature().map_err(|error| {
+            anyhow!("Cannot commit: set user.name and user.email in your git config ({error})")
+        })?;
+        let head = repo.head().ok().and_then(|head| head.peel_to_commit().ok());
+        let full_message = format!("{message}\n");
+
+        let oid = if self.amend {
+            let head = head.ok_or_else(|| anyhow!("Nothing to amend: there are no commits yet"))?;
+            head.amend(
+                Some("HEAD"),
+                None,
+                Some(&committer),
+                None,
+                Some(&full_message),
+                Some(&tree),
+            )?
+        } else {
+            let mut parents: Vec<git2::Commit> = head.into_iter().collect();
+            for oid in read_oids(&repo.path().join("MERGE_HEAD")) {
+                parents.push(repo.find_commit(oid)?);
+            }
+            // A resolved cherry-pick keeps the picked commit's author.
+            let picked = read_oids(&repo.path().join("CHERRY_PICK_HEAD"))
+                .into_iter()
+                .next()
+                .map(|oid| repo.find_commit(oid))
+                .transpose()?;
+            let author = match &picked {
+                Some(commit) => commit.author(),
+                None => committer.clone(),
+            };
+            let parent_refs: Vec<&git2::Commit> = parents.iter().collect();
+            repo.commit(
+                Some("HEAD"),
+                &author,
+                &committer,
+                &full_message,
+                &tree,
+                &parent_refs,
+            )?
+        };
+        if unfinished_operation(&repo).is_some() {
+            repo.cleanup_state()?;
+        }
+        let subject = message.lines().next().unwrap_or("").to_string();
+        Ok((short(oid), subject))
+    }
+}
+
+/// The object ids listed in a git state file such as `MERGE_HEAD`.
+fn read_oids(path: &Path) -> Vec<Oid> {
+    std::fs::read_to_string(path)
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| Oid::from_str(line.trim()).ok())
+        .collect()
 }
 
 // ---------------------------------------------------------------------------
@@ -935,6 +1150,12 @@ mod tests {
             let mut config = repo.config().unwrap();
             config.set_str("user.name", "Test").unwrap();
             config.set_str("user.email", "test@example.com").unwrap();
+            // Commits run through the git binary: keep the developer's global
+            // signing and hook configuration out of the tests.
+            config.set_bool("commit.gpgsign", false).unwrap();
+            config
+                .set_str("core.hooksPath", root.join(".git/hooks").to_str().unwrap())
+                .unwrap();
             Self {
                 _dir: dir,
                 root,
@@ -1212,7 +1433,7 @@ mod tests {
         assert_eq!(short.len(), 7);
         assert_eq!(subject, "First");
         let head = repo.repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.message().unwrap(), "First\n\nbody");
+        assert_eq!(head.message().unwrap(), "First\n\nbody\n");
 
         assert!(commit(&repo.root, "Second", false)
             .unwrap_err()
@@ -1223,9 +1444,192 @@ mod tests {
         stage_file(&a).unwrap();
         commit(&repo.root, "First, amended", true).unwrap();
         let head = repo.repo.head().unwrap().peel_to_commit().unwrap();
-        assert_eq!(head.message().unwrap(), "First, amended");
+        assert_eq!(head.message().unwrap(), "First, amended\n");
         assert_eq!(head.parent_count(), 0, "amend replaced the commit");
         assert_eq!(repo.index_text("a.txt"), "two\n");
+    }
+
+    /// The commit routes under test: the git binary and the libgit2 fallback.
+    fn commit_routes() -> [Option<PathBuf>; 2] {
+        [
+            Some(which::which("git").expect("tests need git on PATH")),
+            None,
+        ]
+    }
+
+    fn commit_via(
+        repo: &Repo,
+        message: &str,
+        amend: bool,
+        git: &Option<PathBuf>,
+    ) -> Result<(String, String)> {
+        prepare_commit_with(&repo.root, message, amend, git.clone())?.run()
+    }
+
+    fn head_commit(repo: &Repo) -> git2::Commit<'_> {
+        repo.repo.head().unwrap().peel_to_commit().unwrap()
+    }
+
+    /// A commit on no branch that adds `name` to the parent's tree.
+    fn side_commit(repo: &Repo, parent: Oid, name: &str, author: &Signature) -> Oid {
+        let parent = repo.repo.find_commit(parent).unwrap();
+        let blob = repo.repo.blob(b"side\n").unwrap();
+        let mut builder = repo
+            .repo
+            .treebuilder(Some(&parent.tree().unwrap()))
+            .unwrap();
+        builder.insert(name, blob, 0o100644).unwrap();
+        let tree = repo.repo.find_tree(builder.write().unwrap()).unwrap();
+        repo.repo
+            .commit(None, author, author, "Add side file", &tree, &[&parent])
+            .unwrap()
+    }
+
+    /// Leaves the repository in the middle of merging `other`, as a merge with
+    /// conflicts that were all resolved and staged would.
+    fn start_merge(repo: &Repo, other: Oid) {
+        let git_dir = repo.repo.path();
+        fs::write(git_dir.join("MERGE_HEAD"), format!("{other}\n")).unwrap();
+        fs::write(git_dir.join("MERGE_MSG"), "Merge branch 'topic'\n").unwrap();
+    }
+
+    fn write_hook(repo: &Repo, name: &str, script: &str) {
+        use std::os::unix::fs::PermissionsExt;
+        let hooks = repo.root.join(".git/hooks");
+        fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join(name);
+        fs::write(&hook, format!("#!/bin/sh\n{script}\n")).unwrap();
+        fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+
+    #[test]
+    fn commit_messages_end_with_a_newline_on_both_routes() {
+        for git in commit_routes() {
+            let repo = Repo::new();
+            let a = repo.write("a.txt", "one\n");
+            stage_file(&a).unwrap();
+            let (_, subject) =
+                commit_via(&repo, "Subject\n\n# comment\nBody\n\n\n", false, &git).unwrap();
+            assert_eq!(subject, "Subject");
+            assert_eq!(head_commit(&repo).message().unwrap(), "Subject\n\nBody\n");
+        }
+    }
+
+    #[test]
+    fn amending_in_the_middle_of_a_merge_is_refused() {
+        for git in commit_routes() {
+            let repo = Repo::new();
+            repo.write("a.txt", "one\n");
+            let first = repo.commit_all("first");
+            repo.write("a.txt", "two\n");
+            repo.commit_all("second");
+            start_merge(&repo, first);
+            let error = commit_via(&repo, "Amended", true, &git).unwrap_err();
+            assert!(error.to_string().contains("middle of a merge"), "{error:#}");
+            assert_eq!(head_commit(&repo).message().unwrap(), "second");
+            assert_eq!(head_commit(&repo).parent_count(), 1, "the merge survives");
+            assert_eq!(repo.repo.state(), git2::RepositoryState::Merge);
+        }
+    }
+
+    #[test]
+    fn committing_a_merge_records_both_parents_and_clears_the_merge_state() {
+        for git in commit_routes() {
+            let repo = Repo::new();
+            repo.write("a.txt", "one\n");
+            let first = repo.commit_all("first");
+            repo.write("a.txt", "two\n");
+            repo.commit_all("second");
+            let side = side_commit(
+                &repo,
+                first,
+                "side.txt",
+                &Signature::now("Test", "test@example.com").unwrap(),
+            );
+            fs::write(repo.root.join("side.txt"), "side\n").unwrap();
+            stage_file(&repo.root.join("side.txt")).unwrap();
+            start_merge(&repo, side);
+            commit_via(&repo, "Merge branch 'topic'", false, &git).unwrap();
+            assert_eq!(head_commit(&repo).parent_count(), 2);
+            assert_eq!(repo.repo.state(), git2::RepositoryState::Clean);
+            assert!(!repo.repo.path().join("MERGE_MSG").exists());
+        }
+    }
+
+    #[test]
+    fn committing_a_resolved_cherry_pick_keeps_the_author_and_clears_the_state() {
+        for git in commit_routes() {
+            let repo = Repo::new();
+            repo.write("a.txt", "one\n");
+            let base = repo.commit_all("base");
+            let other = Signature::now("Other", "other@example.com").unwrap();
+            let picked = side_commit(&repo, base, "b.txt", &other);
+            fs::write(repo.root.join("b.txt"), "side\n").unwrap();
+            stage_file(&repo.root.join("b.txt")).unwrap();
+            fs::write(
+                repo.repo.path().join("CHERRY_PICK_HEAD"),
+                format!("{picked}\n"),
+            )
+            .unwrap();
+            assert_eq!(repo.repo.state(), git2::RepositoryState::CherryPick);
+
+            commit_via(&repo, "Add b", false, &git).unwrap();
+            let head = head_commit(&repo);
+            assert_eq!(head.author().name(), Some("Other"));
+            assert_eq!(head.committer().name(), Some("Test"));
+            assert_eq!(repo.repo.state(), git2::RepositoryState::Clean);
+            assert!(!repo.repo.path().join("CHERRY_PICK_HEAD").exists());
+        }
+    }
+
+    #[test]
+    fn a_failing_hook_prevents_the_commit_and_its_output_is_the_error() {
+        let repo = Repo::new();
+        let a = repo.write("a.txt", "one\n");
+        stage_file(&a).unwrap();
+        write_hook(&repo, "pre-commit", "echo 'lint failed' >&2\nexit 1");
+        let git = Some(which::which("git").expect("tests need git on PATH"));
+        let error = commit_via(&repo, "First", false, &git).unwrap_err();
+        assert!(error.to_string().contains("lint failed"), "{error:#}");
+        assert!(repo.repo.head().is_err(), "no commit was made");
+    }
+
+    #[test]
+    fn without_a_git_binary_commits_that_need_hooks_or_signing_are_refused() {
+        let repo = Repo::new();
+        let a = repo.write("a.txt", "one\n");
+        stage_file(&a).unwrap();
+        write_hook(&repo, "commit-msg", "exit 0");
+        let error = commit_via(&repo, "First", false, &None).unwrap_err();
+        assert!(error.to_string().contains("commit-msg hook"), "{error:#}");
+        assert!(repo.repo.head().is_err(), "no commit was made");
+
+        fs::remove_file(repo.root.join(".git/hooks/commit-msg")).unwrap();
+        repo.repo
+            .config()
+            .unwrap()
+            .set_bool("commit.gpgsign", true)
+            .unwrap();
+        let error = commit_via(&repo, "First", false, &None).unwrap_err();
+        assert!(error.to_string().contains("gpgsign"), "{error:#}");
+        assert!(repo.repo.head().is_err(), "no commit was made");
+    }
+
+    #[test]
+    fn commit_context_reports_the_merge_message_git_prepared() {
+        let repo = Repo::new();
+        repo.write("a.txt", "one\n");
+        let first = repo.commit_all("first");
+        repo.write("a.txt", "two\n");
+        repo.commit_all("second");
+        assert_eq!(commit_context(&repo.root).unwrap().prepared_message, None);
+        start_merge(&repo, first);
+        let context = commit_context(&repo.root).unwrap();
+        assert_eq!(context.operation, Some("merge"));
+        assert_eq!(
+            context.prepared_message.as_deref(),
+            Some("Merge branch 'topic'")
+        );
     }
 
     #[test]

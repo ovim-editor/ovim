@@ -23,6 +23,12 @@ impl Fixture {
         let mut config = repo.config().unwrap();
         config.set_str("user.name", "Test").unwrap();
         config.set_str("user.email", "t@example.com").unwrap();
+        // Commits run through the git binary: keep the developer's global
+        // signing and hook configuration out of the tests.
+        config.set_bool("commit.gpgsign", false).unwrap();
+        config
+            .set_str("core.hooksPath", root.join(".git/hooks").to_str().unwrap())
+            .unwrap();
         Self {
             _dir: dir,
             root,
@@ -77,6 +83,19 @@ impl Fixture {
     }
 }
 
+/// Waits for the background commit started by writing the message buffer.
+fn settle_commit(test: &mut EditorTest) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while test.editor.git_commit_pending() {
+        test.editor.poll_git_commit();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the commit did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 const TEN: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -103,8 +122,9 @@ async fn stage_hunk_commit_and_amend_through_the_leader_keys_and_the_message_buf
     test.type_text("Change line nine");
     test.press_esc();
     test.command("w");
+    settle_commit(&mut test);
     assert!(!test.editor.is_commit_message_buffer());
-    assert_eq!(fixture.head_message(), "Change line nine");
+    assert_eq!(fixture.head_message(), "Change line nine\n");
     assert!(
         test.editor.buffer().file_path().unwrap().ends_with("a.txt"),
         "back in the file"
@@ -122,7 +142,8 @@ async fn stage_hunk_commit_and_amend_through_the_leader_keys_and_the_message_buf
         .starts_with("Change line nine"));
     test.keys("ggA, and two<Esc>");
     test.keys("ZZ");
-    assert_eq!(fixture.head_message(), "Change line nine, and two");
+    settle_commit(&mut test);
+    assert_eq!(fixture.head_message(), "Change line nine, and two\n");
     assert_eq!(
         fixture
             .repo
@@ -132,6 +153,97 @@ async fn stage_hunk_commit_and_amend_through_the_leader_keys_and_the_message_buf
             .unwrap()
             .parent_count(),
         1
+    );
+}
+
+fn write_hook(fixture: &Fixture, name: &str, script: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+    let hooks = fixture.root.join(".git/hooks");
+    fs::create_dir_all(&hooks).unwrap();
+    let hook = hooks.join(name);
+    fs::write(&hook, format!("#!/bin/sh\n{script}\n")).unwrap();
+    fs::set_permissions(&hook, fs::Permissions::from_mode(0o755)).unwrap();
+    hook
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_failing_hook_keeps_the_message_buffer_open_and_shows_its_output() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\n");
+    fixture.commit_all("init");
+    fixture.write("a.txt", "two\n");
+    let hook = write_hook(
+        &fixture,
+        "pre-commit",
+        "sleep 0.3\necho 'lint: 3 problems' >&2\nexit 1",
+    );
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    test.command("GitStage");
+    test.command("GitCommit");
+    test.type_text("Needs lint");
+    test.press_esc();
+    test.command("w");
+    assert!(
+        test.editor.git_commit_pending(),
+        "the editor does not wait for the hook"
+    );
+    assert_eq!(test.editor.status_message(), "Committing…");
+
+    settle_commit(&mut test);
+    assert!(test.editor.is_commit_message_buffer(), "still open");
+    assert!(
+        test.editor.status_message().contains("lint: 3 problems"),
+        "{}",
+        test.editor.status_message()
+    );
+    assert_eq!(fixture.head_message(), "init", "the hook prevented it");
+    assert!(test.buffer_content().starts_with("Needs lint"));
+
+    fs::remove_file(hook).unwrap();
+    test.command("w");
+    settle_commit(&mut test);
+    assert!(!test.editor.is_commit_message_buffer());
+    assert_eq!(fixture.head_message(), "Needs lint\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn a_merge_commit_starts_from_the_prepared_message_and_cannot_be_amended() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\n");
+    fixture.commit_all("first");
+    fixture.write("a.txt", "two\n");
+    fixture.commit_all("second");
+    let first = fixture
+        .repo
+        .head()
+        .unwrap()
+        .peel_to_commit()
+        .unwrap()
+        .parent_id(0)
+        .unwrap();
+    let git_dir = fixture.repo.path();
+    fs::write(git_dir.join("MERGE_HEAD"), format!("{first}\n")).unwrap();
+    fs::write(git_dir.join("MERGE_MSG"), "Merge branch 'topic'\n").unwrap();
+
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    test.command("GitAmend");
+    assert!(!test.editor.is_commit_message_buffer());
+    assert!(
+        test.editor
+            .status_message()
+            .contains("middle of a merge -- cannot amend"),
+        "{}",
+        test.editor.status_message()
+    );
+
+    test.command("GitCommit");
+    assert!(test.editor.is_commit_message_buffer());
+    assert!(
+        test.buffer_content().starts_with("Merge branch 'topic'"),
+        "{}",
+        test.buffer_content()
     );
 }
 
@@ -359,7 +471,12 @@ async fn status_list_keys_stage_unstage_and_edit_and_wq_commits() {
     test.type_text("Via wq");
     test.press_esc();
     test.command("wq");
-    assert_eq!(fixture.head_message(), "Via wq");
+    settle_commit(&mut test);
+    assert_eq!(fixture.head_message(), "Via wq\n");
+    assert!(
+        !test.editor.is_commit_message_buffer(),
+        ":wq leaves the message buffer once the commit succeeded"
+    );
 }
 
 fn assert_signs(before: &str, after: &str, expected: &[(usize, ovim_core::git::LineStatus)]) {
