@@ -616,30 +616,40 @@ impl Editor {
 
                 if new_tab {
                     let origin = self.tab_page_manager.current_tab().id();
-                    match crate::buffer::Buffer::load_file(&path) {
-                        Ok(mut buffer) => {
-                            self.new_tab_for_definition();
-                            let modeline =
-                                crate::modeline::Modeline::parse(&buffer.rope().to_string());
-                            self.initialize_buffer_indent_options(&mut buffer);
-                            self.request_buffer_git_status(&buffer);
-                            super::buffer_manager::mark_library_source_read_only(&mut buffer);
-                            self.buffers[self.current_buffer_index] = buffer;
-                            if let Some(modeline) = modeline.as_ref() {
-                                self.apply_modeline(modeline);
-                            }
-                            // The replacement buffer has a fresh id; repoint
-                            // the tab at it
-                            self.sync_current_tab_buffer();
-                            self.tab_page_manager.current_tab_mut().definition_origin =
-                                Some(origin);
-                            if let Some(path) = self.buffer().file_path() {
-                                self.registers.set_current_file(path.to_string());
-                            }
+                    // A file that is already open shows up as it is, unsaved
+                    // changes included: loading it again would duplicate it.
+                    if let Some(index) = self.find_buffer_by_path(&path.to_string_lossy()) {
+                        self.new_tab_for_existing_buffer(index);
+                        self.tab_page_manager.current_tab_mut().definition_origin = Some(origin);
+                        if let Some(path) = self.buffer().file_path() {
+                            self.registers.set_current_file(path.to_string());
                         }
-                        Err(_) => {
-                            self.set_lsp_status("Failed to open file".to_string());
-                            return false;
+                    } else {
+                        match crate::buffer::Buffer::load_file(&path) {
+                            Ok(mut buffer) => {
+                                self.new_tab_for_definition();
+                                let modeline =
+                                    crate::modeline::Modeline::parse(&buffer.rope().to_string());
+                                self.initialize_buffer_indent_options(&mut buffer);
+                                self.request_buffer_git_status(&buffer);
+                                super::buffer_manager::mark_library_source_read_only(&mut buffer);
+                                self.buffers[self.current_buffer_index] = buffer;
+                                if let Some(modeline) = modeline.as_ref() {
+                                    self.apply_modeline(modeline);
+                                }
+                                // The replacement buffer has a fresh id; repoint
+                                // the tab at it
+                                self.sync_current_tab_buffer();
+                                self.tab_page_manager.current_tab_mut().definition_origin =
+                                    Some(origin);
+                                if let Some(path) = self.buffer().file_path() {
+                                    self.registers.set_current_file(path.to_string());
+                                }
+                            }
+                            Err(_) => {
+                                self.set_lsp_status("Failed to open file".to_string());
+                                return false;
+                            }
                         }
                     }
                 } else if self.buffer().file_path() != Some(path.to_string_lossy().as_ref())
@@ -2668,6 +2678,37 @@ mod tests {
             editor.handle_location_result(Ok(Some(location)), "Definition", "LSP-DEFINITION", true);
         assert!(handled);
         assert_eq!(editor.registers().get(Some('%')), target_path);
+    }
+
+    /// Ctrl-G on a definition in a file that is already open (with unsaved
+    /// changes) opens a tab on that buffer, not a second copy loaded from disk.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn definition_in_new_tab_reuses_an_open_buffer_with_its_changes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        std::fs::write(&path, "fn symbol() {}\n").unwrap();
+        let path = path.canonicalize().unwrap();
+        let mut editor = Editor::new();
+        editor.open_file(&path).unwrap();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "// unsaved\n");
+        let buffers = editor.buffers.len();
+        let tabs = editor.tab_count();
+
+        let location = Location::new(
+            uri_from_file_path(&path).unwrap(),
+            Range::new(Position::new(1, 3), Position::new(1, 9)),
+        );
+        assert!(editor.handle_location_result(Ok(Some(location)), "Definition", "LSP", true));
+
+        assert_eq!(editor.tab_count(), tabs + 1);
+        assert_eq!(editor.buffers.len(), buffers, "no second copy of the file");
+        assert_eq!(
+            editor.buffer().rope().to_string(),
+            "// unsaved\nfn symbol() {}\n"
+        );
+        assert_eq!(editor.buffer().cursor().line(), 1);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

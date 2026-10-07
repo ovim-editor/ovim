@@ -43,6 +43,19 @@ impl Editor {
         self.lsp.state.needs_lsp_init = true;
     }
 
+    /// Opens a new tab showing the already loaded buffer at `index`, with its
+    /// unsaved changes. Like [`Self::new_tab_for_definition`] it keeps the
+    /// return chain.
+    pub(crate) fn new_tab_for_existing_buffer(&mut self, index: usize) {
+        self.sync_current_tab_buffer();
+        self.tab_page_manager.new_tab();
+        let id = self.buffers[index].id();
+        self.tab_page_manager.current_tab_mut().set_buffer_id(id);
+        self.current_buffer_index = index;
+        self.clear_lsp_state();
+        self.lsp.state.needs_lsp_init = true;
+    }
+
     /// Opens a scratch buffer with the given content in a new tab
     pub fn open_scratch_buffer_in_new_tab(&mut self, title: &str, content: &str) {
         self.clear_definition_returns();
