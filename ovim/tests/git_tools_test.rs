@@ -439,3 +439,37 @@ fn deleted_line_counts_are_not_lost_when_signs_share_an_anchor() {
     );
     assert_eq!(status.get_line_status(1), None);
 }
+
+#[test]
+fn signs_include_untracked_files() {
+    use ovim_core::git::LineStatus::Added;
+    let fixture = Fixture::new();
+    fixture.write("base.txt", "base\n");
+    fixture.commit_all("base");
+    let file = fixture.write("new.txt", "new\nfile\n");
+    let status = ovim_core::git::GitStatus::from_file(&file).unwrap();
+    assert_eq!(status.get_line_status(0), Some(Added));
+    assert_eq!(status.get_line_status(1), Some(Added));
+}
+
+#[test]
+fn signs_include_files_before_the_first_commit_and_ignore_ignored_files() {
+    use ovim_core::git::{GitStatus, LineStatus::Added};
+    let fixture = Fixture::new();
+    let file = fixture.write("new.txt", "new\n");
+    assert_eq!(
+        GitStatus::from_file(&file).unwrap().get_line_status(0),
+        Some(Added)
+    );
+    ovim_core::git::ops::stage_file(std::path::Path::new(&file)).unwrap();
+    assert_eq!(
+        GitStatus::from_file(&file).unwrap().get_line_status(0),
+        Some(Added)
+    );
+    fixture.write(".gitignore", "ignored.txt\n");
+    let ignored = fixture.write("ignored.txt", "ignored\n");
+    assert_eq!(
+        GitStatus::from_file(&ignored).unwrap().change_counts(),
+        (0, 0, 0)
+    );
+}

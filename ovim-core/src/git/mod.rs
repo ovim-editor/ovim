@@ -93,42 +93,40 @@ impl GitStatus {
             Err(_) => return Ok(Self::new()),
         };
 
-        // Get HEAD tree
-        let head = match repo.head() {
-            Ok(head) => head,
-            Err(_) => return Ok(Self::new()), // No HEAD (empty repo)
+        // An unborn repository compares against the empty tree. A configured
+        // pull base still needs a real HEAD to resolve its merge-base.
+        let head_commit = match repo.head() {
+            Ok(head) => Some(head.peel_to_commit()?),
+            Err(error) if error.code() == git2::ErrorCode::UnbornBranch => None,
+            Err(error) => return Err(error.into()),
         };
-
-        let head_commit = match head.peel_to_commit() {
-            Ok(commit) => commit,
-            Err(_) => return Ok(Self::new()),
-        };
-
         let base_commit = if let Some(branch) = branch {
             let base = crate::native_diff::resolve_pullbase(file_path, Some(branch))?;
             let base_oid = repo
                 .revparse_single(base.base_ref().unwrap())?
                 .peel_to_commit()?
                 .id();
-            repo.find_commit(repo.merge_base(head_commit.id(), base_oid)?)?
+            let head = head_commit.as_ref().ok_or_else(|| {
+                anyhow::anyhow!("Cannot resolve a pull base before the first commit")
+            })?;
+            Some(repo.find_commit(repo.merge_base(head.id(), base_oid)?)?)
         } else {
             head_commit
         };
-        let head_tree = match base_commit.tree() {
-            Ok(tree) => tree,
-            Err(_) => return Ok(Self::new()),
-        };
+        let head_tree = base_commit
+            .as_ref()
+            .map(|commit| commit.tree())
+            .transpose()?;
 
-        // Compare the selected tree with staged and working-directory changes
         let mut diff_opts = DiffOptions::new();
-        diff_opts.pathspec(relative_path);
-        diff_opts.context_lines(0); // We only need the changed lines
-
+        diff_opts
+            .pathspec(relative_path)
+            .context_lines(0)
+            .include_untracked(true)
+            .recurse_untracked_dirs(true)
+            .show_untracked_content(true);
         let diff =
-            match repo.diff_tree_to_workdir_with_index(Some(&head_tree), Some(&mut diff_opts)) {
-                Ok(diff) => diff,
-                Err(_) => return Ok(Self::new()),
-            };
+            repo.diff_tree_to_workdir_with_index(head_tree.as_ref(), Some(&mut diff_opts))?;
 
         // Zero-context hunks supply coordinates in the working file. Old line
         // numbers cannot locate deletions after earlier insertions/removals.
