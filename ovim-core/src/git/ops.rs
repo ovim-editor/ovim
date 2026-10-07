@@ -14,19 +14,32 @@ use std::path::{Path, PathBuf};
 /// Opens the repository containing `path` and returns it with the path made
 /// relative to the working tree.
 fn open(path: &Path) -> Result<(Repository, PathBuf)> {
-    let repo = Repository::discover(path)
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()?.join(path)
+    };
+    // Deleted files (and deleted parent directories) are valid Git targets.
+    // Discover from the closest surviving ancestor, retaining the missing
+    // suffix and canonicalizing any symlink spelling of the repository root.
+    let existing = absolute
+        .ancestors()
+        .find(|ancestor| ancestor.exists())
+        .ok_or_else(|| anyhow!("{} has no existing ancestor", path.display()))?;
+    let canonical = existing.canonicalize()?;
+    let suffix = absolute.strip_prefix(existing)?;
+    let absolute = if suffix.as_os_str().is_empty() {
+        canonical.clone()
+    } else {
+        canonical.join(suffix)
+    };
+    let repo = Repository::discover(&canonical)
         .with_context(|| format!("{} is not inside a Git repository", path.display()))?;
     let workdir = repo
         .workdir()
         .map(Path::to_path_buf)
         .ok_or_else(|| anyhow!("bare repositories have no working tree"))?;
     let workdir = workdir.canonicalize().unwrap_or(workdir);
-    let absolute = if path.is_absolute() {
-        path.to_path_buf()
-    } else {
-        std::env::current_dir()?.join(path)
-    };
-    let absolute = absolute.canonicalize().unwrap_or(absolute);
     let relative = absolute
         .strip_prefix(&workdir)
         .map(Path::to_path_buf)

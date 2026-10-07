@@ -503,3 +503,24 @@ fn unstage_hunk_preserves_a_tracked_empty_file() {
         " M"
     );
 }
+
+#[test]
+fn stage_and_unstage_a_file_in_a_deleted_directory() {
+    let fixture = Fixture::new();
+    fs::create_dir(fixture.root.join("nested")).unwrap();
+    let file = fixture.write("nested/a.txt", "original\n");
+    fixture.commit_all("base");
+    fs::remove_dir_all(fixture.root.join("nested")).unwrap();
+    let path = std::path::Path::new(&file);
+    ovim_core::git::ops::stage_file(path).unwrap();
+    assert_eq!(
+        ovim_core::git::ops::status(&fixture.root).unwrap()[0].code(),
+        "D "
+    );
+    ovim_core::git::ops::unstage_file(path).unwrap();
+    assert_eq!(fixture.staged("nested/a.txt"), "original\n");
+    assert_eq!(
+        ovim_core::git::ops::status(&fixture.root).unwrap()[0].code(),
+        " D"
+    );
+}
