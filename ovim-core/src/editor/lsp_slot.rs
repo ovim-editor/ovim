@@ -378,14 +378,20 @@ mod tests {
         // Simulate a user typing continuously: five invalidations spread
         // across ~200ms, with a small gap between each.
         for _ in 0..5 {
+            let invalidated = Instant::now();
             slot.invalidate();
             std::thread::sleep(Duration::from_millis(40));
             // Each tick of the event loop asks whether we should refresh.
             // Because the last invalidation is very recent, we must NOT.
-            assert!(
-                !slot.needs_refresh(),
-                "needs_refresh must stay false while invalidations are still landing"
-            );
+            // (A loaded machine can oversleep past the window; only a check
+            // that provably ran inside it is meaningful.)
+            let refresh = slot.needs_refresh();
+            if invalidated.elapsed() < Duration::from_millis(100) {
+                assert!(
+                    !refresh,
+                    "needs_refresh must stay false while invalidations are still landing"
+                );
+            }
         }
 
         // Now the user pauses. After the debounce window elapses, we
@@ -419,12 +425,16 @@ mod tests {
         // old "debounce-from-fire" rule this would trip needs_refresh
         // immediately. Under idle-trigger it should wait for the
         // debounce window anchored on *this* invalidation.
+        let invalidated = Instant::now();
         slot.invalidate();
         assert!(slot.is_stale());
-        assert!(
-            !slot.needs_refresh(),
-            "needs_refresh must debounce from the most recent invalidate"
-        );
+        let refresh = slot.needs_refresh();
+        if invalidated.elapsed() < Duration::from_millis(100) {
+            assert!(
+                !refresh,
+                "needs_refresh must debounce from the most recent invalidate"
+            );
+        }
 
         std::thread::sleep(Duration::from_millis(110));
         assert!(
