@@ -70,7 +70,7 @@ message telling you what to add.
 
 `:make` and the test keys for other languages (`cargo test`, `vitest`, `pytest`,
 `go test`, ...) run through the same machinery: their output streams into the run
-console, `Space r s` / `:LaunchStop` stops them (the whole process group), and
+console, `Space r s` / `:RunStop` stops them (the whole process group), and
 starting a new run stops the one still going. `:make` puts diagnostics in the
 quickfix list and opens the first *error*; failing tests fill the quickfix list
 silently and show in the test panel. Both save modified buffers first.

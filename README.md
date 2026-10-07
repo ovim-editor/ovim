@@ -174,7 +174,7 @@ vim.ai.setup({
 
 All `:set` options mirror Vim — `:set wrap`, `:set clipboard=unnamedplus`, `:set textwidth=80`, etc.
 
-To enable Exa for web searches in the AI chat, get an API key at https://exa.ai and set it up in ovim with `:exa`.
+To enable Exa for web searches in the AI chat, get an API key at https://exa.ai and set it up in ovim with `/exa`.
 
 See [Configuration](user-docs/configuration.md) and [Options Reference](user-docs/options.md) for the full list.
 

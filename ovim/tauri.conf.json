@@ -34,7 +34,7 @@
     "targets": "all",
     "category": "DeveloperTool",
     "publisher": "Ovim contributors",
-    "homepage": "https://github.com/adrianhelvik/ovim",
+    "homepage": "https://github.com/ovim-editor/ovim",
     "shortDescription": "A fast, batteries-included native Vim editor",
     "longDescription": "Ovim combines Vim editing semantics with tree-sitter syntax, language servers, debugging, test integration, and AI assistance in a native desktop workbench.",
     "licenseFile": "../LICENSE",

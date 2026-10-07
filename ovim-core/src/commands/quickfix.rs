@@ -31,7 +31,7 @@ pub fn jump_to_quickfix_entry(editor: &mut Editor, entry: &QuickfixEntry) -> Com
 }
 
 /// Execute :make command — runs makeprg through the launch pipeline (so
-/// `:LaunchStop` stops it and a second `:make` replaces it); its diagnostics
+/// `:RunStop` stops it and a second `:make` replaces it); its diagnostics
 /// become the quickfix list when it finishes.
 pub(super) fn make(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let args = ex.args;
