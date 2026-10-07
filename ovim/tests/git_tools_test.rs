@@ -96,6 +96,19 @@ fn settle_commit(test: &mut EditorTest) {
     }
 }
 
+/// Waits for the background history lookup to open its picker.
+fn settle_history(test: &mut EditorTest) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+    while test.editor.git_history_pending() {
+        test.editor.poll_git_history();
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the history lookup did not finish"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+}
+
 const TEN: &str = "l1\nl2\nl3\nl4\nl5\nl6\nl7\nl8\nl9\nl10\n";
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -360,6 +373,7 @@ async fn picker_rows_with_ex_syntax_in_the_file_name_open_that_file_only() {
     assert!(header.contains(name), "cursor is on the file: {header:?}");
 
     test.command("GitLog");
+    settle_history(&mut test);
     test.assert_mode(Mode::Picker);
     test.press_enter();
     assert!(test.editor.is_diff_review_buffer());
@@ -431,6 +445,7 @@ async fn viewing_a_commit_works_when_the_open_file_and_its_directory_are_gone() 
     test.load_file(&file);
     fs::remove_dir_all(fixture.root.join("nested")).unwrap();
     test.command("GitLogAll");
+    settle_history(&mut test);
     test.assert_mode(Mode::Picker);
     test.press_enter();
     assert!(
@@ -522,6 +537,27 @@ async fn submodule_rows_in_the_status_list_stage_unstage_and_open_the_diff() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn history_is_looked_up_in_the_background_and_opens_when_ready() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "one\n");
+    fixture.commit_all("first");
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+
+    test.command("GitLog");
+    assert!(test.editor.git_history_pending());
+    assert_eq!(test.editor.status_message(), "Loading history…");
+    test.assert_mode(Mode::Normal);
+
+    settle_history(&mut test);
+    test.assert_mode(Mode::Picker);
+    assert_eq!(
+        test.editor.picker().unwrap().title(),
+        Some("History of a.txt")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn line_history_lists_the_commits_and_enter_shows_the_diff_of_one() {
     let fixture = Fixture::new();
     let file = fixture.write("a.txt", "alpha\nbeta\ngamma\n");
@@ -535,6 +571,7 @@ async fn line_history_lists_the_commits_and_enter_shows_the_diff_of_one() {
     test.load_file(&file);
     test.keys("2G");
     test.keys(" gL");
+    settle_history(&mut test);
     test.assert_mode(Mode::Picker);
     let picker = test.editor.picker().unwrap();
     assert_eq!(picker.title(), Some("History of line 2"));
@@ -566,6 +603,7 @@ async fn file_history_and_root_commits_are_shown() {
     let mut test = EditorTest::new("");
     test.load_file(&file);
     test.command("GitLog");
+    settle_history(&mut test);
     test.assert_mode(Mode::Picker);
     test.press_enter();
     // A root commit has no parent to review against: shown as a plain diff.

@@ -20,6 +20,15 @@ const COMMIT_BUFFER: &str = "[COMMIT_EDITMSG]";
 /// The short id and subject of a commit, or what git said when it failed.
 type CommitOutcome = Result<(String, String), String>;
 
+/// A history lookup running in the background.
+pub struct PendingGitHistory {
+    receiver: Receiver<Result<Vec<LogEntry>, String>>,
+    title: String,
+    /// Where the lookup started; the picker's rows resolve against its
+    /// repository whatever the user has opened since.
+    anchor: PathBuf,
+}
+
 /// An open commit message buffer.
 pub struct CommitSession {
     pub buffer_id: crate::buffer::BufferId,
@@ -628,21 +637,68 @@ impl Editor {
             .collect()
     }
 
-    fn show_history(&mut self, title: &str, result: anyhow::Result<Vec<LogEntry>>) {
-        let anchor = self.git_anchor();
+    /// Looks the history up on a background thread: walking a long history
+    /// takes seconds. [`Self::poll_git_history`] opens the picker when the
+    /// lookup is done; a newer lookup replaces one still running.
+    fn load_history(
+        &mut self,
+        title: String,
+        anchor: PathBuf,
+        work: impl FnOnce(&Path) -> anyhow::Result<Vec<LogEntry>> + Send + 'static,
+    ) {
+        let (sender, receiver) = channel();
+        let lookup_anchor = anchor.clone();
+        std::thread::spawn(move || {
+            let _ = sender.send(work(&lookup_anchor).map_err(|error| format!("{error:#}")));
+        });
+        self.ui_panels.pending_git_history = Some(PendingGitHistory {
+            receiver,
+            title,
+            anchor,
+        });
+        self.set_status_message("Loading history…");
+    }
+
+    /// True while a history lookup is running.
+    pub fn git_history_pending(&self) -> bool {
+        self.ui_panels.pending_git_history.is_some()
+    }
+
+    /// Opens the history picker once its lookup ends. Returns true when
+    /// something changed.
+    pub fn poll_git_history(&mut self) -> bool {
+        let Some(pending) = self.ui_panels.pending_git_history.take() else {
+            return false;
+        };
+        let result = match pending.receiver.try_recv() {
+            Ok(result) => result,
+            Err(TryRecvError::Empty) => {
+                self.ui_panels.pending_git_history = Some(pending);
+                return false;
+            }
+            Err(TryRecvError::Disconnected) => {
+                Err("The history lookup stopped unexpectedly".to_string())
+            }
+        };
+        self.show_history(&pending.title, &pending.anchor, result);
+        true
+    }
+
+    fn show_history(&mut self, title: &str, anchor: &Path, result: Result<Vec<LogEntry>, String>) {
         match result {
             Ok(entries) if entries.is_empty() => {
                 self.set_status_message("No history found (is the file committed?)")
             }
             Ok(entries) => {
-                let root = ops::workdir_of(&anchor).unwrap_or_else(|_| self.picker_base_dir());
+                let root = ops::workdir_of(anchor).unwrap_or_else(|_| self.picker_base_dir());
                 let rows = Self::history_rows(entries, &root);
                 let picker = Picker::new_git(root, rows, title);
+                self.clear_status_message();
                 self.set_picker(picker);
                 self.set_mode(Mode::Picker);
                 self.mark_picker_selection_changed();
             }
-            Err(error) => self.set_status_message(format!("Git: {error:#}")),
+            Err(error) => self.set_status_message(format!("Git: {error}")),
         }
     }
 
@@ -652,17 +708,17 @@ impl Editor {
             return;
         }
         let anchor = self.git_anchor();
-        let name = self.current_file_name();
-        let result = ops::file_history(&anchor, 300);
-        self.show_history(&format!("History of {name}"), result);
+        let title = format!("History of {}", self.current_file_name());
+        self.load_history(title, anchor, |anchor| ops::file_history(anchor, 300));
     }
 
     /// `:GitLogAll` — the repository's recent commits.
     pub fn open_repo_history_picker(&mut self) {
         let anchor = self.git_anchor();
-        let root = ops::workdir_of(&anchor).unwrap_or_else(|_| anchor.clone());
-        let result = ops::file_history(&root, 300);
-        self.show_history("Commits", result);
+        self.load_history("Commits".to_string(), anchor, |anchor| {
+            let root = ops::workdir_of(anchor).unwrap_or_else(|_| anchor.to_path_buf());
+            ops::file_history(&root, 300)
+        });
     }
 
     /// `<Space>gL` / `:GitLineLog` — commits that changed the cursor line,
@@ -677,8 +733,10 @@ impl Editor {
         }
         let anchor = self.git_anchor();
         let line = self.buffer().cursor().line();
-        let result = ops::line_history(&anchor, line, 50);
-        self.show_history(&format!("History of line {}", line + 1), result);
+        let title = format!("History of line {}", line + 1);
+        self.load_history(title, anchor, move |anchor| {
+            ops::line_history(anchor, line, 50)
+        });
     }
 
     /// Enter on a history entry: the commit's diff in the review UI, on the

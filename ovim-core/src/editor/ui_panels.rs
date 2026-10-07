@@ -61,6 +61,8 @@ pub struct UiPanels {
     pub search_replace: Option<Box<super::search_replace::SearchReplacePanel>>,
     /// Data behind the Problems picker (severity filter re-uses it).
     pub problems: Option<Box<super::problems::ProblemsState>>,
+    /// Background history lookup (`:GitLog`, `:GitLineLog`), if one is running.
+    pub pending_git_history: Option<super::git_tools::PendingGitHistory>,
     /// Open commit message buffer (`:GitCommit`), if any.
     pub commit: Option<Box<super::git_tools::CommitSession>>,
     /// Cached symbol tree of the current file (breadcrumbs, outline).
