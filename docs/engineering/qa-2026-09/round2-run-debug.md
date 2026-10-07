@@ -6,7 +6,7 @@ Env: OpenJDK 26, Gradle 9.3.1, Maven 3.9.9 (from /tmp/icp), network available. S
 - `mvnmulti` (Maven parent + core + app, guava), `plain` (no build tool), `ktproj` (Java+Kotlin multi-module), `stripe` (resolveLaunch only)
 - extras: attach target `ext.Ticker` on jdwp 5006, `.ovim/debug.toml` with launch/attach/gradle configs, `.run/*.xml`.
 
-Repos: [ovim] = /home/adhv/Projects/ovim, [hyperion] = /home/adhv/Projects/hyperion-ls. Reads of `ovim send` keys used below: `<F9>` breakpoint, `<F5>` debug/continue,
+Repos: [ovim] = `<repo>`, [hyperion] = `<hyperion-ls checkout>`. Reads of `ovim send` keys used below: `<F9>` breakpoint, `<F5>` debug/continue,
 `<Space>rr` run, `<Space>rf` focus console, `<Space>tn/tf/ta/tl/td` tests, `<Space>df` focus debug panel, `<Space>cl/cL` lens.
 Note: I sometimes mis-picked breakpoint lines (a `}` line has no code) and re-did those runs; only findings that reproduced are listed.
 

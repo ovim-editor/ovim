@@ -1,6 +1,6 @@
 # Scout report: ovim editor core + frontends (read-only)
 
-Repo: /home/adhv/Projects/ovim (main @ 41243785). Area: ovim-core editor/commands/input/change tracking, frontend tick/loops, GUI projection,
+Repo: `<repo>` (main @ 41243785). Area: ovim-core editor/commands/input/change tracking, frontend tick/loops, GUI projection,
 TUI renderer, AI subsystems (structural). All line numbers are from that commit. Nothing was executed (no cargo).
 
 ## Stale docs found first (fix in passing; each is cheap and stops agents chasing ghosts)

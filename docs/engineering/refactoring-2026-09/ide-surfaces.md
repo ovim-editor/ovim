@@ -1,7 +1,7 @@
 # Scout report: ovim IDE surfaces (base 9d1aaba9 -> main; PRs #29-#36)
 
 Scope read: 70 commits, +37.5k/-2.9k, 208 files. Read-only; no cargo run. All paths are under
-`/home/adhv/Projects/ovim/` (`core/` below = `ovim-core/src/`, `bin/` = `ovim/src/`).
+`<repo>/` (`core/` below = `ovim-core/src/`, `bin/` = `ovim/src/`).
 Line numbers are from current main (c2168b8f).
 
 Headline: the launch pipeline (PR #30/#33: `launch/*`, `editor/launch_flow.rs`) is the good, tokio-based,
