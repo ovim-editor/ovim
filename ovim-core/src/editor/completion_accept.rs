@@ -304,15 +304,27 @@ impl Editor {
     }
 
     /// Applies `edits` (pre-edit char offsets, any order) as a single undo
-    /// step and puts the cursor at `cursor` (a post-edit char offset). The
-    /// insert-mode recording is closed first and restarted afterwards so the
-    /// edit is its own `Recorded` entry (see the note in
-    /// `accept_completion_item`).
+    /// step and puts the cursor at `cursor` (a post-edit char offset).
+    ///
+    /// A lone edit made while an insert session is recording (the completion
+    /// itself) simply joins that session: the typed text, the completion and
+    /// whatever is typed next are one undo step and one `.` repeat, as in
+    /// Vim (`ofoo<C-n> baz<Esc>` then `u` removes the whole line; `.` types
+    /// `foobar baz` again - verified in `nvim --clean`). Several edits (a
+    /// completion with auto-imports elsewhere in the file) cannot join it: the
+    /// recorded edits of a session replay at offsets relative to its origin,
+    /// and an edit far away would land somewhere else on repeat. They close
+    /// the session first and restart it afterwards, so each batch is its own
+    /// `Recorded` entry at offsets that match the rope it was captured in.
     pub(super) fn apply_offset_edits_as_one_undo(
         &mut self,
         mut edits: Vec<PlannedEdit>,
         cursor: usize,
     ) {
+        if edits.len() == 1 && self.buffer().is_recording() {
+            self.apply_offset_edit_in_session(edits.remove(0), cursor);
+            return;
+        }
         let cursor_before = CursorPos::new(
             self.buffer().cursor().line(),
             GraphemeCol(self.buffer().cursor().col().0),
@@ -372,5 +384,29 @@ impl Editor {
             self.start_change_building(cursor_after);
             self.set_change_entry_mode(entry_mode);
         }
+    }
+
+    /// Applies one edit inside the live insert-mode recording, so it becomes
+    /// part of the session's undo entry and `.` repeat.
+    fn apply_offset_edit_in_session(&mut self, edit: PlannedEdit, cursor: usize) {
+        self.record_session_edit(|buf| {
+            if edit.end > edit.start {
+                buf.delete_char_range(edit.start, edit.end);
+            }
+            if !edit.text.is_empty() {
+                let line = buf.rope().char_to_line(edit.start);
+                let col = edit.start - buf.rope().line_to_char(line);
+                buf.insert_text_at(line, CharCol(col), &edit.text);
+            }
+            true
+        });
+        let (line, col) = {
+            let rope = self.buffer().rope();
+            let target = cursor.min(rope.len_chars());
+            let line = rope.char_to_line(target);
+            (line, target - rope.line_to_char(line))
+        };
+        self.buffer_mut().set_cursor_char_col(line, CharCol(col));
+        self.mark_buffer_modified();
     }
 }

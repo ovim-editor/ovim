@@ -518,6 +518,28 @@ async fn accepting_is_refused_when_the_cursor_left_the_completion_line() {
     session.stop().await;
 }
 
+/// Typing, accepting a completion and typing on is one insert, as in vim:
+/// one undo takes it all back and `.` types the completed text again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn accepting_a_completion_does_not_split_the_insert() {
+    let mut session = Session::new("").await;
+    session.set_completion(items(&["getEmail"]));
+    session.test.keys("ige");
+    session.pump_menu().await;
+    session.test.press_enter();
+    session.test.keys("!<Esc>");
+    assert_eq!(session.line(0), "getEmail!");
+
+    session.test.keys(".");
+    assert_eq!(session.line(0), "getEmailgetEmail!!");
+
+    session.test.keys("u");
+    assert_eq!(session.line(0), "getEmail!");
+    session.test.keys("u");
+    assert_eq!(session.line(0), "");
+    session.stop().await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_answer_for_a_line_the_user_left_is_dropped() {
     let mut session = Session::new("first\nsecond\n").await;
@@ -755,8 +777,9 @@ async fn escape_leaves_the_snippet_and_insert_mode_and_undo_removes_the_expansio
     assert_ne!(session.test.cursor().1, 5);
     session.test.keys("<Esc>u");
     assert_eq!(session.line(0), "call(a)");
+    // The typed `cal` and the expansion are one insert: one undo takes both.
     session.test.keys("u");
-    assert_eq!(session.line(0), "cal");
+    assert_eq!(session.line(0), "");
     session.stop().await;
 }
 
