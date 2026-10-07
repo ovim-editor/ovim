@@ -2,11 +2,15 @@
 //!
 //! The editor tick must never block on a child, so a spawned process is fully
 //! owned by background tasks that stream output lines through a channel the
-//! tick polls with `try_recv`. Children are placed in their own process group
-//! so stopping a run also stops everything it started (Gradle client -> test
-//! worker, `java` launched by a wrapper script, ...). Dropping the handle
-//! kills the group too, so nothing outlives the editor session that
-//! started it.
+//! tick polls with `try_recv`. The channel is bounded: a program that writes
+//! faster than the editor draws is slowed down (its pipe fills up) like it
+//! would be by a terminal that cannot keep up, instead of piling its output
+//! up in memory. How the process ended travels on its own channel, so it is
+//! never stuck behind a backlog of output. Children are placed in their own
+//! process group so stopping a run also stops everything it started (Gradle
+//! client -> test worker, `java` launched by a wrapper script, ...).
+//! Dropping the handle kills the group too, so nothing outlives the editor
+//! session that started it.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -16,6 +20,16 @@ use std::time::Duration;
 use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWriteExt, BufReader};
 use tokio::process::Command;
 use tokio::sync::{mpsc, oneshot};
+
+/// Output lines buffered between the readers and the tick. When the queue is
+/// full the readers wait, which stops the child once its pipe fills up.
+const OUTPUT_QUEUE_LINES: usize = 8192;
+/// Longest output line kept; the rest of a longer line is dropped.
+pub const MAX_LINE_BYTES: usize = 64 * 1024;
+pub(super) const TRUNCATED_MARKER: &str = " ... [line truncated]";
+/// How long an output reader may be idle after the child exited before it is
+/// given up on (a grandchild can hold the pipe open indefinitely).
+const READER_GRACE: Duration = Duration::from_millis(500);
 
 /// Which pipe a line came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -62,7 +76,9 @@ pub struct ExitInfo {
     pub killed: bool,
 }
 
-/// Event streamed from a running process. `Exit` is always the last one.
+/// Event streamed from a running process. `Exit` is always the last one,
+/// delivered once every line that was read before the process ended (none,
+/// after [`ProcessHandle::kill`]) has been handed out.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProcEvent {
     Line { stream: StreamKind, text: String },
@@ -71,8 +87,13 @@ pub enum ProcEvent {
 
 /// Owner of a running child process.
 pub struct ProcessHandle {
-    rx: mpsc::UnboundedReceiver<ProcEvent>,
+    lines: mpsc::Receiver<(StreamKind, String)>,
+    exit_rx: oneshot::Receiver<ExitInfo>,
+    /// The exit, once the waiter task reported it and until it is handed out.
+    exit: Option<ExitInfo>,
     kill_tx: Option<oneshot::Sender<()>>,
+    /// Output is discarded from the moment the process is told to die.
+    killed: bool,
     pid: Option<u32>,
     /// Text for the child's stdin; `None` when stdin is closed (or was never
     /// piped). Dropping the sender closes the pipe.
@@ -136,7 +157,8 @@ impl ProcessHandle {
             tx
         });
 
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, lines) = mpsc::channel(OUTPUT_QUEUE_LINES);
+        let (exit_tx, exit_rx) = oneshot::channel();
         let (kill_tx, kill_rx) = oneshot::channel::<()>();
 
         let readers: Vec<tokio::task::JoinHandle<()>> = [
@@ -164,22 +186,27 @@ impl ProcessHandle {
                     }
                 }
             };
-            // Grandchildren that inherited the pipes can keep them open long
-            // after the direct child is gone; do not wait for them forever.
-            for reader in readers {
-                let _ = tokio::time::timeout(Duration::from_millis(500), reader).await;
-            }
-            // Make sure nothing in the group survives a normal exit either
-            // (e.g. a wrapper script that backgrounded the real program).
             if killed {
+                // Nobody wants the output of a stopped process.
+                for reader in &readers {
+                    reader.abort();
+                }
+                // Whatever the group still holds goes with it. After a normal
+                // exit leftovers are not touched: build tools leave daemons
+                // behind on purpose.
                 terminate_group(pid, true);
+            } else {
+                finish_readers(readers, &tx).await;
             }
             let code = status.ok().and_then(|s| s.code());
-            let _ = tx.send(ProcEvent::Exit(ExitInfo { code, killed }));
+            let _ = exit_tx.send(ExitInfo { code, killed });
         });
 
         Ok(Self {
-            rx,
+            lines,
+            exit_rx,
+            exit: None,
+            killed: false,
             kill_tx: Some(kill_tx),
             pid,
             stdin_tx,
@@ -205,7 +232,17 @@ impl ProcessHandle {
 
     /// Next pending event without blocking.
     pub fn try_recv(&mut self) -> Option<ProcEvent> {
-        self.rx.try_recv().ok()
+        // Look at the exit before the lines: everything the readers queued
+        // before the process was reported gone is then already visible.
+        if self.exit.is_none() {
+            self.exit = self.exit_rx.try_recv().ok();
+        }
+        if self.killed {
+            while self.lines.try_recv().is_ok() {}
+        } else if let Ok((stream, text)) = self.lines.try_recv() {
+            return Some(ProcEvent::Line { stream, text });
+        }
+        self.exit.take().map(ProcEvent::Exit)
     }
 
     /// Process id of the direct child, when known.
@@ -214,42 +251,130 @@ impl ProcessHandle {
     }
 
     /// Asks the process group to terminate (SIGTERM, then SIGKILL after 3s).
-    /// The `Exit` event still arrives through the channel.
+    /// Output not handed out yet is discarded; the `Exit` event still
+    /// arrives through `try_recv`.
     pub fn kill(&mut self) {
+        self.killed = true;
         if let Some(tx) = self.kill_tx.take() {
             let _ = tx.send(());
         }
     }
 }
 
+/// Waits for the output readers once the child is gone. Grandchildren that
+/// inherited the pipes can keep them open long after the direct child, so a
+/// reader with nothing to deliver is given up on after a short grace. One
+/// blocked on a full queue is not idle (the editor is behind), and is waited
+/// for so no output is lost.
+async fn finish_readers(readers: Vec<tokio::task::JoinHandle<()>>, tx: &mpsc::Sender<OutputLine>) {
+    for mut reader in readers {
+        loop {
+            match tokio::time::timeout(READER_GRACE, &mut reader).await {
+                Ok(_) => break,
+                Err(_) if tx.capacity() == 0 && !tx.is_closed() => {}
+                Err(_) => {
+                    reader.abort();
+                    break;
+                }
+            }
+        }
+    }
+}
+
+type OutputLine = (StreamKind, String);
+
+/// Assembles one output line from pipe chunks: bounded in length, with
+/// carriage-return progress output reduced to what a terminal would finally
+/// show.
+#[derive(Default)]
+struct LineBuilder {
+    buf: Vec<u8>,
+    /// Bytes beyond [`MAX_LINE_BYTES`] were dropped.
+    truncated: bool,
+    /// A `\r` was seen: it replaces what came before if more text follows,
+    /// and is dropped at the end of the line (`\r\n`).
+    carriage_return: bool,
+    /// Any byte has arrived since the last line was taken.
+    started: bool,
+}
+
+impl LineBuilder {
+    fn push(&mut self, bytes: &[u8]) {
+        if bytes.is_empty() {
+            return;
+        }
+        self.started = true;
+        let mut parts = bytes.split(|&b| b == b'\r');
+        self.append(parts.next().unwrap_or_default());
+        for part in parts {
+            self.carriage_return = true;
+            self.append(part);
+        }
+    }
+
+    fn append(&mut self, part: &[u8]) {
+        if part.is_empty() {
+            return;
+        }
+        if std::mem::take(&mut self.carriage_return) {
+            self.buf.clear();
+            self.truncated = false;
+        }
+        let room = MAX_LINE_BYTES - self.buf.len();
+        self.truncated |= part.len() > room;
+        self.buf.extend_from_slice(&part[..part.len().min(room)]);
+    }
+
+    /// The finished line; the builder starts over.
+    fn take(&mut self) -> String {
+        let mut text = String::from_utf8_lossy(&self.buf).into_owned();
+        if self.truncated {
+            // The cut may have split a multi-byte character.
+            text.truncate(text.trim_end_matches('\u{FFFD}').len());
+            text.push_str(TRUNCATED_MARKER);
+        }
+        self.buf.clear();
+        self.truncated = false;
+        self.carriage_return = false;
+        self.started = false;
+        text
+    }
+}
+
 fn spawn_reader<R>(
     stream: R,
     kind: StreamKind,
-    tx: mpsc::UnboundedSender<ProcEvent>,
+    tx: mpsc::Sender<OutputLine>,
 ) -> tokio::task::JoinHandle<()>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     tokio::spawn(async move {
         let mut reader = BufReader::new(stream);
-        let mut buf = Vec::new();
+        let mut line = LineBuilder::default();
         loop {
-            buf.clear();
-            match reader.read_until(b'\n', &mut buf).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {
-                    while matches!(buf.last(), Some(b'\n' | b'\r')) {
-                        buf.pop();
-                    }
-                    let text = String::from_utf8_lossy(&buf);
-                    // Carriage-return progress output: keep what the
-                    // terminal would finally show.
-                    let text = text.rsplit('\r').next().unwrap_or("").to_string();
-                    if tx.send(ProcEvent::Line { stream: kind, text }).is_err() {
-                        break;
-                    }
+            let chunk = match reader.fill_buf().await {
+                Ok(chunk) if !chunk.is_empty() => chunk,
+                _ => break,
+            };
+            let (used, complete) = match chunk.iter().position(|&b| b == b'\n') {
+                Some(end) => {
+                    line.push(&chunk[..end]);
+                    (end + 1, true)
                 }
+                None => {
+                    line.push(chunk);
+                    (chunk.len(), false)
+                }
+            };
+            reader.consume(used);
+            // A full queue parks the reader here until the tick catches up.
+            if complete && tx.send((kind, line.take())).await.is_err() {
+                return;
             }
+        }
+        if line.started {
+            let _ = tx.send((kind, line.take())).await;
         }
     })
 }
@@ -402,6 +527,72 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(lines, vec![(StreamKind::Stdout, "tail".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn carriage_return_progress_output_keeps_what_the_terminal_shows() {
+        let mut handle =
+            ProcessHandle::spawn(&spec("printf 'a\\rb\\r\\nc\\n10%%\\r20%%\\r30%%'")).unwrap();
+        let (lines, _) = tokio::time::timeout(Duration::from_secs(5), drain(&mut handle))
+            .await
+            .unwrap();
+        let out: Vec<&str> = lines.iter().map(|(_, t)| t.as_str()).collect();
+        assert_eq!(out, vec!["b", "c", "30%"]);
+    }
+
+    #[tokio::test]
+    async fn a_very_long_line_is_cut_with_a_marker() {
+        // No newline at all: the reader must not buffer the whole stream.
+        let mut handle =
+            ProcessHandle::spawn(&spec("head -c 300000 /dev/zero | tr '\\0' a")).unwrap();
+        let (lines, _) = tokio::time::timeout(Duration::from_secs(5), drain(&mut handle))
+            .await
+            .unwrap();
+        assert_eq!(lines.len(), 1);
+        let text = &lines[0].1;
+        assert!(text.ends_with(TRUNCATED_MARKER), "{}", text.len());
+        assert_eq!(text.len(), MAX_LINE_BYTES + TRUNCATED_MARKER.len());
+    }
+
+    #[tokio::test]
+    async fn a_cut_inside_a_multibyte_character_leaves_no_replacement_character() {
+        // 3-byte characters; 64 KiB is not a multiple of 3.
+        let mut handle =
+            ProcessHandle::spawn(&spec("yes '\u{20ac}' | tr -d '\\n' | head -c 200000")).unwrap();
+        let (lines, _) = tokio::time::timeout(Duration::from_secs(5), drain(&mut handle))
+            .await
+            .unwrap();
+        assert_eq!(lines.len(), 1);
+        assert!(!lines[0].1.contains('\u{FFFD}'), "{}", lines[0].1.len());
+        assert!(lines[0].1.ends_with(TRUNCATED_MARKER));
+    }
+
+    #[tokio::test]
+    async fn a_slow_consumer_loses_no_output_and_sees_the_exit_last() {
+        // More lines than the queue holds, all written before the child
+        // exits: the readers wait for the consumer instead of giving up.
+        let total = OUTPUT_QUEUE_LINES + 3000;
+        let mut handle = ProcessHandle::spawn(&spec(&format!("yes x | head -n {total}"))).unwrap();
+        tokio::time::sleep(READER_GRACE * 3).await;
+        let (lines, exit) = tokio::time::timeout(Duration::from_secs(10), drain(&mut handle))
+            .await
+            .unwrap();
+        assert_eq!(lines.len(), total);
+        assert_eq!(exit.code, Some(0));
+    }
+
+    #[tokio::test]
+    async fn an_unread_flood_stays_bounded_and_stop_ends_it_promptly() {
+        let mut handle = ProcessHandle::spawn(&spec("yes")).unwrap();
+        // Nobody reads: the queue fills up and the child is held back.
+        tokio::time::sleep(Duration::from_millis(500)).await;
+        assert_eq!(handle.lines.len(), OUTPUT_QUEUE_LINES);
+        handle.kill();
+        let (lines, exit) = tokio::time::timeout(Duration::from_secs(10), drain(&mut handle))
+            .await
+            .expect("the exit was stuck behind the output backlog");
+        assert!(exit.killed);
+        assert!(lines.is_empty(), "output of a stopped process is dropped");
     }
 
     #[tokio::test]

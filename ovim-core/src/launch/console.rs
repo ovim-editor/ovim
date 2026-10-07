@@ -11,10 +11,13 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::plan::LaunchMode;
+use super::process::{MAX_LINE_BYTES, TRUNCATED_MARKER};
 use super::stacktrace::{parse_console_location, ConsoleLocation};
 
 /// Retained lines per run; older lines are dropped from the front.
 pub const MAX_CONSOLE_LINES: usize = 20_000;
+/// Retained text per run; older lines are dropped from the front.
+pub const MAX_CONSOLE_BYTES: usize = 8 << 20;
 /// Retained runs; the oldest finished run is dropped first.
 pub const MAX_RUNS: usize = 8;
 
@@ -99,8 +102,11 @@ pub struct RunRecord {
     pub status: RunStatus,
     pub exit_code: Option<i32>,
     pub lines: Vec<ConsoleLine>,
-    /// Lines dropped from the front once [`MAX_CONSOLE_LINES`] was exceeded.
+    /// Lines dropped from the front once [`MAX_CONSOLE_LINES`] or
+    /// [`MAX_CONSOLE_BYTES`] was exceeded.
     pub truncated: usize,
+    /// Text bytes held in `lines`.
+    bytes: usize,
     pub started: Instant,
     pub duration: Option<Duration>,
     /// Text of a final line that has not been terminated by a newline yet
@@ -121,6 +127,7 @@ impl RunRecord {
             exit_code: None,
             lines: Vec::new(),
             truncated: 0,
+            bytes: 0,
             started: Instant::now(),
             duration: None,
             partial: None,
@@ -134,7 +141,7 @@ impl RunRecord {
 
     /// Appends one complete line.
     pub fn push_line(&mut self, kind: LineKind, text: impl Into<String>) {
-        let text = text.into();
+        let text = clip_line(text.into());
         let location = if text.contains(".java")
             || text.contains(".kt")
             || text.contains(".scala")
@@ -144,16 +151,31 @@ impl RunRecord {
         } else {
             None
         };
+        self.bytes += text.len();
         self.lines.push(ConsoleLine {
             kind,
             text,
             location,
         });
-        if self.lines.len() > MAX_CONSOLE_LINES {
-            let excess = self.lines.len() - MAX_CONSOLE_LINES / 2;
-            self.lines.drain(..excess);
-            self.truncated += excess;
+        if self.lines.len() > MAX_CONSOLE_LINES || self.bytes > MAX_CONSOLE_BYTES {
+            self.drop_oldest_lines();
         }
+    }
+
+    /// Drops lines from the front down to half of either cap, so the next
+    /// drop is a long way off. The newest line always stays.
+    fn drop_oldest_lines(&mut self) {
+        let (mut count, mut bytes) = (0, 0);
+        while count + 1 < self.lines.len()
+            && (self.lines.len() - count > MAX_CONSOLE_LINES / 2
+                || self.bytes - bytes > MAX_CONSOLE_BYTES / 2)
+        {
+            bytes += self.lines[count].text.len();
+            count += 1;
+        }
+        self.lines.drain(..count);
+        self.bytes -= bytes;
+        self.truncated += count;
     }
 
     /// Appends text that may hold several lines and end mid-line.
@@ -172,7 +194,10 @@ impl RunRecord {
         for piece in pieces {
             self.push_line(kind, piece.to_string());
         }
-        if !tail.is_empty() && !ends_with_newline {
+        if tail.len() > MAX_LINE_BYTES {
+            // Never wait for the end of a line that is already too long.
+            self.push_line(kind, tail.to_string());
+        } else if !tail.is_empty() && !ends_with_newline {
             self.partial = Some((kind, tail.to_string()));
         }
     }
@@ -215,6 +240,21 @@ impl RunRecord {
             }
         }
     }
+}
+
+/// Cuts `text` to [`MAX_LINE_BYTES`] (at a character boundary) with a marker.
+/// A line the process reader already cut passes untouched.
+fn clip_line(mut text: String) -> String {
+    if text.len() <= MAX_LINE_BYTES + TRUNCATED_MARKER.len() {
+        return text;
+    }
+    let mut cut = MAX_LINE_BYTES;
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    text.truncate(cut);
+    text.push_str(TRUNCATED_MARKER);
+    text
 }
 
 /// State of the run console panel.
@@ -433,6 +473,54 @@ mod tests {
             format!("l{}", MAX_CONSOLE_LINES + 4)
         );
         assert_eq!(r.truncated + r.lines.len(), MAX_CONSOLE_LINES + 5);
+    }
+
+    #[test]
+    fn the_byte_cap_drops_old_lines_even_when_there_are_few_of_them() {
+        let mut r = record();
+        let long = "x".repeat(MAX_LINE_BYTES);
+        let lines = MAX_CONSOLE_BYTES / MAX_LINE_BYTES + 5;
+        for i in 0..lines {
+            r.push_line(LineKind::Stdout, format!("{i}{long}"));
+            assert!(r.bytes <= MAX_CONSOLE_BYTES + 2 * MAX_LINE_BYTES);
+        }
+        assert!(r.lines.len() < lines);
+        assert!(r
+            .lines
+            .last()
+            .unwrap()
+            .text
+            .starts_with(&(lines - 1).to_string()));
+        assert_eq!(r.truncated + r.lines.len(), lines);
+        assert_eq!(r.bytes, r.lines.iter().map(|l| l.text.len()).sum::<usize>());
+    }
+
+    #[test]
+    fn an_overlong_line_is_cut_at_a_character_boundary_with_a_marker() {
+        let mut r = record();
+        r.push_line(LineKind::Stdout, "\u{20ac}".repeat(MAX_LINE_BYTES));
+        let text = &r.lines[0].text;
+        assert!(text.ends_with(TRUNCATED_MARKER));
+        assert!(text.len() <= MAX_LINE_BYTES + TRUNCATED_MARKER.len());
+        assert!(!text.contains('\u{FFFD}'));
+        // A line the process reader already cut is not cut twice.
+        let cut = format!("{}{TRUNCATED_MARKER}", "a".repeat(MAX_LINE_BYTES));
+        r.push_line(LineKind::Stdout, cut.clone());
+        assert_eq!(r.lines[1].text, cut);
+    }
+
+    #[test]
+    fn an_endless_unterminated_chunk_stream_does_not_pile_up_as_a_partial_line() {
+        let mut r = record();
+        for _ in 0..10 {
+            r.push_chunk(LineKind::Stdout, &"y".repeat(MAX_LINE_BYTES));
+        }
+        r.push_chunk(LineKind::Stdout, &"y".repeat(MAX_LINE_BYTES + 1));
+        assert!(r
+            .partial
+            .as_ref()
+            .is_none_or(|(_, p)| p.len() <= MAX_LINE_BYTES));
+        assert!(!r.lines.is_empty());
     }
 
     #[test]

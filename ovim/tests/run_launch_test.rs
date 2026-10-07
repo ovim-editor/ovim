@@ -487,6 +487,38 @@ async fn rerun_replaces_the_running_program() {
     s.stop_lsp().await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_program_flooding_its_output_is_held_back_and_stop_ends_it_promptly() {
+    let mut s = Session::new(&resolve_commands()).await;
+    s.test.command("set makeprg=yes");
+    s.test.command("make");
+    s.until("output to flow", |s| run_len(s) > 5_000).await;
+    // Many ticks' worth of a program that never stops writing.
+    for _ in 0..50 {
+        s.tick().await;
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+    let lines = run_len(&s);
+    assert!(
+        lines <= ovim_core::launch::console::MAX_CONSOLE_LINES,
+        "{lines}"
+    );
+
+    s.test.keys(" rs");
+    s.until("the run to stop", |s| s.run_finished()).await;
+    assert_eq!(s.outcome(), RunOutcome::Stopped);
+    assert!(!s.test.editor.is_launch_active());
+    assert!(!s
+        .test
+        .editor
+        .run_console()
+        .viewed()
+        .unwrap()
+        .status
+        .is_active());
+    s.stop_lsp().await;
+}
+
 // ---------------------------------------------------------------------------
 // Resolution fallbacks and messages
 // ---------------------------------------------------------------------------
