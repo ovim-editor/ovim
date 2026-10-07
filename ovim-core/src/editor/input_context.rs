@@ -33,6 +33,12 @@ pub struct InputContext {
 
     /// Original key events that produced pending_mapping_sequence
     pub pending_mapping_events: Vec<KeyEvent>,
+
+    /// How deeply ex command lines are nested right now (see `Editor::nested`)
+    pub(super) ex_line_depth: usize,
+
+    /// How deeply `:normal` commands are nested right now
+    pub(super) normal_depth: usize,
 }
 
 impl InputContext {
@@ -45,6 +51,8 @@ impl InputContext {
             leader_key: ' ', // default space
             pending_mapping_sequence: String::new(),
             pending_mapping_events: Vec::new(),
+            ex_line_depth: 0,
+            normal_depth: 0,
         }
     }
 }

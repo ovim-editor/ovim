@@ -321,3 +321,25 @@ fn lua_reads_the_current_line_and_line_count_after_edits() {
     );
     assert_eq!(editor.execute_lua("return vim.fn.line('$')").unwrap(), "3");
 }
+
+#[test]
+fn sourcing_a_file_that_sources_itself_terminates() {
+    // nvim --clean: a script that `:source`s itself stops with
+    // "E169: Command too recursive". Before the guard ovim overflowed its
+    // stack and aborted.
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("loop.lua");
+    std::fs::write(&path, format!("vim.cmd('source {}')\n", path.display())).unwrap();
+    let mut editor = Editor::new();
+    editor.enable_lua().expect("Failed to enable Lua");
+
+    // The innermost failure is reported by log and a "N command(s) failed"
+    // suffix on the message; what matters is that this returns at all.
+    let result =
+        ovim::commands::execute_command(&mut editor, &format!("source {}", path.display()));
+
+    assert!(
+        matches!(result, ovim::command_result::CommandResult::Success(_)),
+        "unexpected result: {result:?}"
+    );
+}

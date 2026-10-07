@@ -111,3 +111,44 @@ fn test_empty_search_repeats_last() {
         "n should still advance after an empty-pattern search"
     );
 }
+
+// nvim --clean (0.12.2): `:nmap Q :normal Q<CR>` then a typed `Q` stops with
+// "E169: Command too recursive"; `:normal Q` run from a script stops with
+// "E192: Recursive use of :normal too deep". The buffer is left alone and the
+// editor survives. Before the guard ovim overflowed its stack and aborted.
+fn assert_stopped_by_recursion_guard(test: &EditorTest) {
+    let status = test.editor.status_message();
+    assert!(
+        status.contains("E192") || status.contains("E169"),
+        "expected a recursion error, got: {status:?}"
+    );
+}
+
+#[test]
+fn recursive_normal_mapping_stops_with_an_error() {
+    let mut test = EditorTest::new("a\nb\n");
+    // Not `test.command`, which would type the `<CR>` as an Enter key.
+    ovim::commands::execute_command(&mut test.editor, "nmap Q :normal Q<CR>");
+    test.keys("Q");
+    assert_stopped_by_recursion_guard(&test);
+    assert_eq!(test.buffer_content(), "a\nb\n");
+}
+
+#[test]
+fn recursive_normal_mapping_stops_inside_global() {
+    // nvim --clean: `:g/a/normal Q` with the same mapping reports E169.
+    let mut test = EditorTest::new("a\nb\n");
+    ovim::commands::execute_command(&mut test.editor, "nmap Q :normal Q<CR>");
+    test.command("g/a/normal Q");
+    assert_stopped_by_recursion_guard(&test);
+    assert_eq!(test.buffer_content(), "a\nb\n");
+}
+
+#[test]
+fn nested_normal_still_works_a_few_levels_deep() {
+    // nvim --clean: `:nmap Q :normal x<CR>` then `:normal Q` deletes one character.
+    let mut test = EditorTest::new("abc\n");
+    ovim::commands::execute_command(&mut test.editor, "nmap Q :normal x<CR>");
+    test.command("normal Q");
+    assert_eq!(test.buffer_content(), "bc\n");
+}

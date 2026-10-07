@@ -1,4 +1,4 @@
-use crate::editor::{Editor, InputState, MapMode};
+use crate::editor::{Editor, InputState, MapMode, Nesting};
 use crate::mode::Mode;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
@@ -534,6 +534,14 @@ impl InputHandler {
     /// unfinished command or mode is ended with <Esc>, as vim does.
     /// `remap` is false for `:normal!`.
     pub(crate) fn type_normal_keys(editor: &mut Editor, keys: &str, remap: bool) -> Result<()> {
+        editor
+            .nested(Nesting::Normal, |editor| {
+                Self::type_normal_keys_nested(editor, keys, remap)
+            })
+            .unwrap_or_else(|| Err(anyhow::anyhow!("E192: Recursive use of :normal too deep")))
+    }
+
+    fn type_normal_keys_nested(editor: &mut Editor, keys: &str, remap: bool) -> Result<()> {
         if editor.mode() != Mode::Normal {
             Self::handle_key_event_internal(
                 editor,

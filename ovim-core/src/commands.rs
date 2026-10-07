@@ -27,7 +27,7 @@ use range::LineRange;
 pub use table::command_names;
 
 use crate::command_result::{err, ok_silent, CommandResult};
-use crate::editor::Editor;
+use crate::editor::{Editor, Nesting};
 use contexts::BufferKind;
 use table::{ExCommand, RangePolicy};
 
@@ -66,6 +66,12 @@ pub fn execute_command(editor: &mut Editor, command: &str) -> CommandResult {
 /// Run the commands of `line` in order. An error stops the rest of the line
 /// (vim); otherwise the last message is the result.
 pub(crate) fn run_line(editor: &mut Editor, line: &str) -> CommandResult {
+    editor
+        .nested(Nesting::ExLine, |editor| run_commands(editor, line))
+        .unwrap_or_else(|| err("E169: Command too recursive"))
+}
+
+fn run_commands(editor: &mut Editor, line: &str) -> CommandResult {
     let mut rest = line;
     let mut result = ok_silent();
     loop {
@@ -181,7 +187,7 @@ mod characterization_tests;
 mod tests {
     use super::execute_command;
     use crate::command_result::CommandResult;
-    use crate::editor::{Editor, EditorServices};
+    use crate::editor::{Editor, EditorServices, Nesting};
     use crate::unicode::CharCol;
 
     #[test]
@@ -227,6 +233,30 @@ mod tests {
         let result = execute_command(&mut editor, "w!");
         assert!(matches!(result, CommandResult::Success(_)));
         assert_eq!(std::fs::read_to_string(&path).unwrap(), "local original\n");
+    }
+
+    #[test]
+    fn command_lines_nested_past_the_limit_fail_with_e169() {
+        // vim: "E169: Command too recursive" once command lines nest too deep.
+        fn deepest(editor: &mut Editor) -> CommandResult {
+            match editor.nested(Nesting::ExLine, deepest) {
+                Some(result) => result,
+                None => execute_command(editor, "set number"),
+            }
+        }
+        let mut editor = Editor::new();
+
+        let result = deepest(&mut editor);
+
+        assert!(
+            matches!(result, CommandResult::Error(ref e) if e.error.starts_with("E169")),
+            "unexpected result: {result:?}"
+        );
+        // Unwinding restores the depth, so ordinary commands work again.
+        assert!(matches!(
+            execute_command(&mut editor, "set number"),
+            CommandResult::Success(_)
+        ));
     }
 
     #[test]

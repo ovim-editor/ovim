@@ -16,7 +16,51 @@
 
 use super::Editor;
 
+/// Nested ex command lines (`:source` of itself, `:cdo`, `:g`, Lua) fail
+/// with E169 past this depth. vim allows 'maxmapdepth' (1000), but every
+/// level here is a stack of native frames: a debug build overflows a 2 MiB
+/// thread a few hundred levels down, and real use never nests this far.
+const MAX_EX_LINE_DEPTH: usize = 100;
+
+/// `:normal` nested in itself (through mappings or `:g`) fails with E192
+/// past this depth.
+const MAX_NORMAL_DEPTH: usize = 50;
+
+/// The kinds of dispatch that can re-enter themselves without bound.
+#[derive(Clone, Copy)]
+pub(crate) enum Nesting {
+    /// A command line run by [`crate::commands::run_line`].
+    ExLine,
+    /// Keys typed by `:normal`.
+    Normal,
+}
+
 impl Editor {
+    /// Run `run` one level deeper in `kind`. Returns `None` without running
+    /// it when that nesting is already too deep: a mapping that invokes
+    /// itself through `:normal` would otherwise overflow the stack and take
+    /// every unsaved buffer with it.
+    pub(crate) fn nested<R>(
+        &mut self,
+        kind: Nesting,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> Option<R> {
+        let (depth, max) = match kind {
+            Nesting::ExLine => (&mut self.input.ex_line_depth, MAX_EX_LINE_DEPTH),
+            Nesting::Normal => (&mut self.input.normal_depth, MAX_NORMAL_DEPTH),
+        };
+        if *depth >= max {
+            return None;
+        }
+        *depth += 1;
+        let result = run(self);
+        match kind {
+            Nesting::ExLine => self.input.ex_line_depth -= 1,
+            Nesting::Normal => self.input.normal_depth -= 1,
+        }
+        Some(result)
+    }
+
     /// Run synchronous commands as one unit of clipboard synchronization.
     /// Frontends may use this for an explicit programmatic command batch;
     /// unrelated physical events should remain separate scopes.

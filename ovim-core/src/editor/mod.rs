@@ -162,6 +162,7 @@ pub use diff_review::{
     DiffLayout, DiffOverlayViewState, DiffReviewState, PendingGitFetch, DIFF_REVIEW_TITLE_PREFIX,
 };
 pub use editing_state::{EditingState, PendingChangeRepeat};
+pub(crate) use execution::Nesting;
 pub use filetree::{FileTree, FileTreeAction, FileTreeClipboardKind, TreeNode};
 pub use fold::{Fold, FoldManager};
 pub use input::mouse::handle_mouse_event;
