@@ -48,15 +48,30 @@ fn run_piped(editor: &mut Editor, command: &str, input: Option<&str>) -> std::io
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()?;
-        if let (Some(input), Some(stdin)) = (input, child.stdin.as_mut()) {
-            // A command that exits without reading its input (`:w !true`)
-            // closes the pipe; vim does not treat that as a failure.
-            match stdin.write_all(input.as_bytes()) {
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {}
-                other => other?,
+        let stdin = child.stdin.take();
+        // Feed stdin from its own thread: a filter such as `cat` fills its
+        // stdout pipe while we are still writing, so writing everything
+        // before reading anything deadlocks on large input.
+        std::thread::scope(|scope| {
+            let writer = input.zip(stdin).map(|(input, mut stdin)| {
+                scope.spawn(move || {
+                    // A command that exits without reading its input
+                    // (`:w !true`) closes the pipe; vim does not treat that
+                    // as a failure.
+                    match stdin.write_all(input.as_bytes()) {
+                        Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => Ok(()),
+                        other => other,
+                    }
+                })
+            });
+            let output = child.wait_with_output();
+            if let Some(writer) = writer {
+                if let Ok(Err(error)) = writer.join() {
+                    return Err(error);
+                }
             }
-        }
-        child.wait_with_output()
+            output
+        })
     })
 }
 

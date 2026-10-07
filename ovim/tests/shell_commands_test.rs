@@ -193,6 +193,68 @@ fn test_filter_entire_buffer() {
     assert_eq!(lines[2], "cherry", "Third line should be cherry");
 }
 
+/// Aborts the process if a test blocks, so a regression to a pipe deadlock
+/// fails fast instead of hanging CI. Dropping the guard disarms it.
+struct Watchdog(std::sync::mpsc::Sender<()>);
+
+impl Watchdog {
+    fn arm(seconds: u64) -> Self {
+        let (disarm, armed) = std::sync::mpsc::channel::<()>();
+        std::thread::spawn(move || {
+            if matches!(
+                armed.recv_timeout(std::time::Duration::from_secs(seconds)),
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout)
+            ) {
+                eprintln!("watchdog: test blocked for {seconds}s (pipe deadlock?)");
+                std::process::exit(101);
+            }
+        });
+        Watchdog(disarm)
+    }
+}
+
+#[test]
+fn filter_handles_input_larger_than_the_pipe_buffer() {
+    // Writing all of stdin before reading stdout deadlocks once the child's
+    // output fills the pipe (~64 KiB): `cat` blocks writing, ovim blocks writing.
+    let _watchdog = Watchdog::arm(60);
+    let line = format!("{}\n", "x".repeat(99));
+    let content = line.repeat(10_000);
+    let mut test = EditorTest::new(&content);
+
+    InputHandler::execute_command_string(&mut test.editor, "%!cat").unwrap();
+
+    assert_eq!(test.buffer_content(), content);
+}
+
+#[test]
+fn write_to_command_handles_input_larger_than_the_pipe_buffer() {
+    let _watchdog = Watchdog::arm(60);
+    let content = format!("{}\n", "x".repeat(99)).repeat(10_000);
+    let mut test = EditorTest::new(&content);
+
+    let result = ovim::commands::execute_command(&mut test.editor, "w !cat");
+
+    match result {
+        ovim::command_result::CommandResult::Success(success) => {
+            let message = success.message.expect("a summary of the write");
+            assert!(message.starts_with("10000 lines written"), "got: {message}");
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+}
+
+#[test]
+fn filter_that_ignores_its_input_still_completes() {
+    let _watchdog = Watchdog::arm(60);
+    let content = format!("{}\n", "x".repeat(99)).repeat(10_000);
+    let mut test = EditorTest::new(&content);
+
+    InputHandler::execute_command_string(&mut test.editor, "%!echo done").unwrap();
+
+    assert_eq!(test.buffer_content(), "done\n");
+}
+
 #[test]
 fn test_filter_entire_buffer_undo_redo_macro_flow() {
     editor_flow_test! {
