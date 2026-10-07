@@ -93,3 +93,46 @@ fn substitute_case_insensitive() {
     test.command(":%s/hello/hi/gi");
     assert_eq!(test.buffer_content(), "hi hi hi\n");
 }
+
+// nvim --clean: `:%s/[0-9]//gn` on "a1b2", "c3", "d" reports
+// "3 matches on 2 lines" and leaves the buffer, cursor and modified flag alone.
+#[test]
+fn n_flag_counts_matches_without_editing() {
+    let mut test = EditorTest::new("a1b2\nc3\nd\n");
+    test.command("%s/[0-9]//gn");
+    assert_eq!(test.buffer_content(), "a1b2\nc3\nd\n");
+    assert_eq!(test.editor.status_message(), "3 matches on 2 lines");
+    assert!(!test.editor.is_modified());
+    test.assert_cursor(0, 0);
+}
+
+// nvim --clean: without `g` only the first match of each line counts
+// ("2 matches on 2 lines"), a single match reads "1 match on 1 line", and the
+// cursor stays where it was.
+#[test]
+fn n_flag_counts_one_match_per_line_without_g() {
+    let mut test = EditorTest::new("a1b2\nc3\nd\n");
+    test.keys("j");
+    test.command("%s/[0-9]//n");
+    assert_eq!(test.editor.status_message(), "2 matches on 2 lines");
+    test.assert_cursor(1, 0);
+    test.command("%s/1//n");
+    assert_eq!(test.editor.status_message(), "1 match on 1 line");
+    assert_eq!(test.buffer_content(), "a1b2\nc3\nd\n");
+}
+
+// nvim --clean: `:%s/z//n` is "E486: Pattern not found: z"; with the `e`
+// flag it is silent. `n` ignores `c` (no prompt) and works in a
+// nomodifiable buffer.
+#[test]
+fn n_flag_reports_e486_unless_e_and_ignores_confirm_and_modifiable() {
+    let mut test = EditorTest::new("a1b2\nc3\nd\n");
+    test.command("%s/z//n");
+    assert_eq!(test.editor.status_message(), "E486: Pattern not found: z");
+    test.command("%s/z//ne");
+    assert_eq!(test.buffer_content(), "a1b2\nc3\nd\n");
+    test.command("set nomodifiable");
+    test.command("%s/1//ngc");
+    assert_eq!(test.editor.status_message(), "1 match on 1 line");
+    test.assert_mode(ovim::mode::Mode::Normal);
+}

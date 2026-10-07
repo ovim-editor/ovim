@@ -196,19 +196,61 @@ fn substitute_lines(
     last_changed
 }
 
+/// `:s///n`: report how many matches (one per line without `g`) the
+/// substitution would replace, leaving the buffer and cursor alone.
+fn count_matches(
+    editor: &Editor,
+    substitution: &Substitution,
+    lines: std::ops::RangeInclusive<usize>,
+    quiet: bool,
+) -> CommandResult {
+    let (mut matches, mut matching_lines) = (0, 0);
+    for line in lines {
+        let Some(text) = editor.buffer().line_text(line) else {
+            continue;
+        };
+        let found = if substitution.global {
+            substitution.regex.find_iter(&text).count()
+        } else {
+            usize::from(substitution.regex.is_match(&text))
+        };
+        if found > 0 {
+            matches += found;
+            matching_lines += 1;
+        }
+    }
+    if matches == 0 {
+        return if quiet {
+            ok_silent()
+        } else {
+            err(format!("E486: Pattern not found: {}", substitution.pattern))
+        };
+    }
+    ok(format!(
+        "{matches} match{} on {matching_lines} line{}",
+        if matches == 1 { "" } else { "es" },
+        if matching_lines == 1 { "" } else { "s" }
+    ))
+}
+
 /// `:[range]s[ubstitute]/{pattern}/{string}/[flags]` with flags `g`, `i`,
-/// `I`, `c` (confirm each) and `e` (no error when nothing matches).
+/// `I`, `c` (confirm each), `e` (no error when nothing matches) and `n`
+/// (only count the matches).
 pub(super) fn substitute(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let (substitution, flags) = match parse_substitution(editor, ex.args) {
         Ok(parsed) => parsed,
         Err(error) => return error,
     };
-    if !editor.buffer().is_modifiable() {
-        return super::edit::unmodifiable();
-    }
     let (start, end) = ex.range.expect("line-range command").indexes();
     let end = end.min(editor.buffer().line_count().saturating_sub(1));
 
+    // Counting changes nothing, so it also works in a read-only buffer.
+    if flags.contains('n') {
+        return count_matches(editor, &substitution, start..=end, flags.contains('e'));
+    }
+    if !editor.buffer().is_modifiable() {
+        return super::edit::unmodifiable();
+    }
     if flags.contains('c') {
         let mut matches = Vec::new();
         for line in start..=end {
