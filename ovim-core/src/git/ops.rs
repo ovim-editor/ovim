@@ -20,7 +20,7 @@ const SKIP_WORKTREE: u16 = 1 << 14;
 
 /// Opens the repository containing `path` and returns it with the path made
 /// relative to the working tree.
-fn open(path: &Path) -> Result<(Repository, PathBuf)> {
+pub(crate) fn open(path: &Path) -> Result<(Repository, PathBuf)> {
     let absolute = if path.is_absolute() {
         path.to_path_buf()
     } else {
@@ -491,16 +491,16 @@ fn write_index_text(
     new_mode: u32,
 ) -> Result<()> {
     let mut index = repo.index()?;
-    let mut entry = index.get_path(relative, 0).unwrap_or_else(|| {
+    let entry = index.get_path(relative, 0).unwrap_or_else(|| {
         let mut entry = empty_index_entry(relative);
         entry.mode = new_mode;
         entry
     });
+    index.add_frombuffer(&entry, content)?;
     // Unknown stat data: git and libgit2 then compare the contents when asked
-    // whether the working tree file differs. A size taken from the blob would
+    // whether the working tree file differs. The size of the blob would
     // mismatch a file whose line endings are converted on checkout, and the
     // file would show as modified although it matches what was staged.
-    index.add_frombuffer(&entry, content)?;
     if let Some(mut written) = index.get_path(relative, 0) {
         written.file_size = 0;
         written.mtime = git2::IndexTime::new(0, 0);

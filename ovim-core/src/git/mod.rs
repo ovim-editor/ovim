@@ -297,7 +297,7 @@ impl GitBlame {
 /// Returns the current git branch name for a file path.
 /// Returns `None` for non-git files. Uses short OID for detached HEAD.
 pub fn branch_name<P: AsRef<Path>>(file_path: P) -> Option<String> {
-    let repo = Repository::discover(file_path.as_ref()).ok()?;
+    let (repo, _) = ops::open(file_path.as_ref()).ok()?;
     let head = repo.head().ok()?;
     if head.is_branch() {
         head.shorthand().map(|s| s.to_string())
@@ -326,8 +326,7 @@ pub fn commit_info<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<Commit
         });
     }
 
-    let file_path = file_path.as_ref();
-    let repo = Repository::discover(file_path)?;
+    let (repo, _) = ops::open(file_path.as_ref())?;
     let oid = Oid::from_str(oid_hex)?;
     let commit = repo.find_commit(oid)?;
 
@@ -357,8 +356,7 @@ pub fn commit_diff<P: AsRef<Path>>(file_path: P, oid_hex: &str) -> Result<String
         return Ok("Not yet committed".to_string());
     }
 
-    let file_path = file_path.as_ref();
-    let repo = Repository::discover(file_path)?;
+    let (repo, _) = ops::open(file_path.as_ref())?;
     let oid = Oid::from_str(oid_hex)?;
     let commit = repo.find_commit(oid)?;
     let tree = commit.tree()?;
@@ -450,6 +448,33 @@ mod tests {
             patch.contains("diff --git a/a.txt b/a.txt"),
             "commit patch inherited the repo's diff prefix config: {patch}"
         );
+    }
+
+    /// A deleted file (or a deleted directory) still names its repository.
+    #[test]
+    fn commit_views_and_branch_name_resolve_a_deleted_path() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(temp.path()).unwrap();
+        let repo = Repository::init(&root).unwrap();
+        let file = root.join("nested/a.txt");
+        std::fs::create_dir_all(file.parent().unwrap()).unwrap();
+        std::fs::write(&file, "one\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index
+            .add_path(std::path::Path::new("nested/a.txt"))
+            .unwrap();
+        index.write().unwrap();
+        let tree = repo.find_tree(index.write_tree().unwrap()).unwrap();
+        let signature = git2::Signature::now("Ovim", "ovim@example.com").unwrap();
+        let oid = repo
+            .commit(Some("HEAD"), &signature, &signature, "c1", &tree, &[])
+            .unwrap()
+            .to_string();
+        std::fs::remove_dir_all(root.join("nested")).unwrap();
+
+        assert!(branch_name(&file).is_some());
+        assert_eq!(commit_info(&file, &oid).unwrap().subject, "c1");
+        assert!(commit_diff(&file, &oid).unwrap().contains("+one"));
     }
 
     #[test]
