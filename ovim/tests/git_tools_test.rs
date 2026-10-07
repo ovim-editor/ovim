@@ -156,6 +156,7 @@ async fn stage_hunk_commit_and_amend_through_the_leader_keys_and_the_message_buf
     );
 }
 
+#[cfg(unix)]
 fn write_hook(fixture: &Fixture, name: &str, script: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
     let hooks = fixture.root.join(".git/hooks");
@@ -166,6 +167,7 @@ fn write_hook(fixture: &Fixture, name: &str, script: &str) -> PathBuf {
     hook
 }
 
+#[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn a_failing_hook_keeps_the_message_buffer_open_and_shows_its_output() {
     let fixture = Fixture::new();

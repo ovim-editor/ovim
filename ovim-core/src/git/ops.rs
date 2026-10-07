@@ -256,9 +256,11 @@ pub fn stage_target(target: &GitTarget) -> Result<()> {
 
 fn stage_in(repo: &Repository, relative: &Path) -> Result<()> {
     let mut index = repo.index()?;
+    // `exists` follows symlinks, so a link whose target is gone would count as
+    // missing and be staged as deleted.
     let exists = repo
         .workdir()
-        .map(|workdir| workdir.join(relative).exists())
+        .map(|workdir| std::fs::symlink_metadata(workdir.join(relative)).is_ok())
         .unwrap_or(false);
     if exists {
         index.add_path(relative)?;
@@ -1317,6 +1319,21 @@ mod tests {
         assert_eq!(repo.index_text("kept.txt"), "kept, edited\n");
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn staging_a_dangling_symlink_stages_the_link_not_its_deletion() {
+        let repo = Repo::new();
+        repo.write("target.txt", "target\n");
+        std::os::unix::fs::symlink("target.txt", repo.root.join("link")).unwrap();
+        repo.commit_all("init");
+        fs::remove_file(repo.root.join("link")).unwrap();
+        std::os::unix::fs::symlink("missing.txt", repo.root.join("link")).unwrap();
+
+        stage_file(&repo.root.join("link")).unwrap();
+        assert_eq!(repo.index_text("link"), "missing.txt");
+        assert_eq!(status(&repo.root).unwrap()[0].code(), "M ");
+    }
+
     #[test]
     fn stage_and_unstage_a_file() {
         let repo = Repo::new();
@@ -1471,6 +1488,7 @@ mod tests {
         );
     }
 
+    #[cfg(unix)]
     #[test]
     fn stage_hunk_of_a_new_executable_file_keeps_its_mode() {
         use std::os::unix::fs::PermissionsExt;
@@ -1600,6 +1618,7 @@ mod tests {
         fs::write(git_dir.join("MERGE_MSG"), "Merge branch 'topic'\n").unwrap();
     }
 
+    #[cfg(unix)]
     fn write_hook(repo: &Repo, name: &str, script: &str) {
         use std::os::unix::fs::PermissionsExt;
         let hooks = repo.root.join(".git/hooks");
@@ -1689,6 +1708,7 @@ mod tests {
         }
     }
 
+    #[cfg(unix)]
     #[test]
     fn a_failing_hook_prevents_the_commit_and_its_output_is_the_error() {
         let repo = Repo::new();
@@ -1701,6 +1721,7 @@ mod tests {
         assert!(repo.repo.head().is_err(), "no commit was made");
     }
 
+    #[cfg(unix)]
     #[test]
     fn without_a_git_binary_commits_that_need_hooks_or_signing_are_refused() {
         let repo = Repo::new();
