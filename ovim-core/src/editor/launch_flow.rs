@@ -1352,7 +1352,7 @@ impl Editor {
             .plan
             .as_ref()
             .is_some_and(|p| p.kind == PlanKind::Attach);
-        self.dap_manager.pending_action = Some(PendingDebugAction::Start {
+        self.dap_manager.queue(PendingDebugAction::Start {
             command,
             args,
             attach,
@@ -1416,9 +1416,7 @@ impl Editor {
     /// Starting the adapter, launching, or attaching failed. The session is
     /// torn down completely (adapter killed, state reset).
     pub fn launch_debug_failed(&mut self, message: String) {
-        self.dap_manager.pending_action = None;
-        self.dap_manager.state.end_session_keep_output();
-        self.dap_manager.attach_request = None;
+        self.dap_manager.abort_session();
         if let Some(mut job) = self.launch.job.take() {
             self.fail_job(&mut job, format!("Debug failed: {message}"));
         } else {

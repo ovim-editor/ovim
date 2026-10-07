@@ -105,7 +105,7 @@ impl Editor {
 
         // === Debug adapter ===
         dap::process_dap_events(editor);
-        dap::process_pending_debug_action(editor).await;
+        dap::process_pending_debug_action(editor);
         // Build / run / debug launch state machine (non-blocking: child output
         // and language-server answers are polled, never awaited).
         if editor.poll_launch() {

@@ -159,158 +159,31 @@ impl Editor {
         })
     }
 
-    /// Process DAP events. Returns the number of events processed.
+    /// Takes in what the debug session task has reported since the last tick:
+    /// adapter events and the answers to earlier requests. Returns how many
+    /// there were.
     pub fn process_dap_events(&mut self) -> usize {
-        self.dap_manager.process_events()
-    }
-
-    /// Start a debug session by spawning a debug adapter and initialising
-    /// it. `attach` is sent once the adapter reports `initialized`. A failure
-    /// leaves nothing behind: the adapter is killed and state is reset.
-    pub async fn start_debug_session(
-        &mut self,
-        command: &str,
-        args: &[String],
-        attach: serde_json::Value,
-    ) -> anyhow::Result<()> {
-        self.dap_manager.attach_request = Some(attach);
-        let result = async {
-            self.dap_manager.start(command, args).await?;
-            self.dap_manager.initialize().await
+        let mut count = self.dap_manager.process_events();
+        for result in self.dap_manager.take_results() {
+            self.apply_dap_result(result);
+            count += 1;
         }
-        .await;
-        if let Err(e) = result {
-            let _ = self.dap_manager.disconnect().await;
+        if count > 0 {
             self.mark_dirty();
-            return Err(e);
         }
-        self.mark_dirty();
-        Ok(())
+        count
     }
 
-    /// Stop the current debug session.
-    pub async fn stop_debug_session(&mut self) -> anyhow::Result<()> {
-        self.dap_manager.disconnect().await?;
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Continue execution (resume from stopped state).
-    pub async fn debug_continue(&mut self) -> anyhow::Result<()> {
-        let thread_id = self.dap_manager.state.stopped_thread.unwrap_or(1);
-        self.dap_manager.continue_(thread_id).await?;
-        self.dap_manager.state.is_running = true;
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Step over (next line).
-    pub async fn debug_step_over(&mut self) -> anyhow::Result<()> {
-        let thread_id = self.dap_manager.state.stopped_thread.unwrap_or(1);
-        self.dap_manager.next(thread_id).await?;
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Step into.
-    pub async fn debug_step_in(&mut self) -> anyhow::Result<()> {
-        let thread_id = self.dap_manager.state.stopped_thread.unwrap_or(1);
-        self.dap_manager.step_in(thread_id).await?;
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Step out.
-    pub async fn debug_step_out(&mut self) -> anyhow::Result<()> {
-        let thread_id = self.dap_manager.state.stopped_thread.unwrap_or(1);
-        self.dap_manager.step_out(thread_id).await?;
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Fetch and store the stack trace for the stopped thread.
-    pub async fn debug_fetch_stack_trace(&mut self) -> anyhow::Result<()> {
-        let thread_id = self.dap_manager.state.stopped_thread.unwrap_or(1);
-        let frames = self.dap_manager.stack_trace(thread_id).await?;
-        self.dap_manager.state.stack_frames = frames;
-        self.dap_manager.state.selected_frame = 0;
-        self.dap_manager.state.update_execution_position();
-        // Show where the debuggee stopped, even in a file that is not open.
-        self.show_frame_source(0);
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Lists the debuggee's threads for the panel (best effort).
-    pub async fn debug_fetch_threads(&mut self) {
-        if let Ok(threads) = self.dap_manager.threads().await {
-            // Not if the debuggee resumed in the meantime.
-            if !self.dap_manager.state.is_running {
-                self.dap_manager.state.threads = threads;
-            }
+    /// Hands the queued debug actions to the session task. Never waits for
+    /// the adapter.
+    pub fn run_pending_debug_actions(&mut self) {
+        let notices = self.dap_manager.dispatch();
+        if !notices.is_empty() {
+            self.mark_dirty();
         }
-        self.mark_dirty();
-    }
-
-    /// When the debuggee stopped on an exception: ask the adapter what was
-    /// thrown and show it in the panel, the status line and the console.
-    /// The stop event's own description is the fallback.
-    pub async fn debug_fetch_exception_info(&mut self) {
-        if self.dap_manager.state.stop_reason.as_deref() != Some("exception") {
-            return;
+        for notice in notices {
+            self.set_status_message(notice);
         }
-        let thread_id = self.dap_manager.state.event_thread.unwrap_or(1);
-        if self.dap_manager.state.stopped_thread.unwrap_or(thread_id) != thread_id {
-            return;
-        }
-        let summary = match self.dap_manager.exception_info(thread_id).await {
-            Ok(info) => Some(info.summary()),
-            Err(_) => self.dap_manager.state.exception.clone(),
-        };
-        // The debuggee may have been resumed while the request was in flight.
-        if self.dap_manager.state.stop_reason.as_deref() != Some("exception") {
-            return;
-        }
-        if let Some(summary) = summary {
-            self.set_status_message(format!("Exception: {summary}"));
-            self.dap_manager
-                .log_console(format!("Stopped on exception: {summary}"));
-            self.dap_manager.state.exception = Some(summary);
-        }
-        self.mark_dirty();
-    }
-
-    /// Fetch and store scopes for the currently selected frame.
-    pub async fn debug_fetch_scopes(&mut self) -> anyhow::Result<()> {
-        let frame_id = self
-            .dap_manager
-            .state
-            .stack_frames
-            .get(self.dap_manager.state.selected_frame)
-            .map(|f| f.id)
-            .unwrap_or(0);
-        let scopes = self.dap_manager.scopes(frame_id).await?;
-        self.dap_manager.state.scopes = scopes;
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Fetch and store variables for a given reference.
-    pub async fn debug_fetch_variables(&mut self, variables_reference: u64) -> anyhow::Result<()> {
-        let vars = self.dap_manager.variables(variables_reference).await?;
-        self.dap_manager
-            .state
-            .variables
-            .insert(variables_reference, vars);
-        self.mark_dirty();
-        Ok(())
-    }
-
-    /// Send breakpoints for a file to the debug adapter.
-    pub async fn debug_sync_breakpoints(&mut self, path: &Path) -> anyhow::Result<()> {
-        self.dap_manager.set_breakpoints(path).await?;
-        self.mark_dirty();
-        Ok(())
     }
 
     /// Toggle debug panels visibility. An explicit toggle pins the panel: it
@@ -424,8 +297,8 @@ impl Editor {
         if !state.expanded_refs.remove(&var_ref) {
             state.expanded_refs.insert(var_ref);
             if !state.variables.contains_key(&var_ref) {
-                self.dap_manager.pending_action =
-                    Some(crate::dap::PendingDebugAction::FetchVariables { var_ref });
+                self.dap_manager
+                    .queue(crate::dap::PendingDebugAction::FetchVariables { var_ref });
             }
         }
         self.mark_dirty();
@@ -465,7 +338,9 @@ impl Editor {
         state.scopes.clear();
         state.variables.clear();
         state.clear_watch_values();
-        self.dap_manager.pending_action = Some(crate::dap::PendingDebugAction::FetchState);
+        self.dap_manager.invalidate_inspection();
+        self.dap_manager
+            .queue(crate::dap::PendingDebugAction::FetchState);
         self.mark_dirty();
     }
 
@@ -634,7 +509,8 @@ impl Editor {
                 variables_reference: 0,
             });
         if self.is_debug_stopped() {
-            self.dap_manager.pending_action = Some(crate::dap::PendingDebugAction::RefreshWatches);
+            self.dap_manager
+                .queue(crate::dap::PendingDebugAction::RefreshWatches);
         }
         self.mark_dirty();
     }
@@ -644,42 +520,6 @@ impl Editor {
         let watches = &mut self.dap_manager.state.watches;
         if index < watches.len() {
             watches.remove(index);
-        }
-        self.mark_dirty();
-    }
-
-    /// Re-evaluates every watch in the selected frame.
-    pub async fn debug_refresh_watches(&mut self) {
-        let frame_id = self.selected_frame_id();
-        let expressions: Vec<String> = self
-            .dap_manager
-            .state
-            .watches
-            .iter()
-            .map(|w| w.expression.clone())
-            .collect();
-        for (index, expression) in expressions.into_iter().enumerate() {
-            let result = self
-                .dap_manager
-                .evaluate(&expression, frame_id, Some("watch"))
-                .await;
-            if let Some(watch) = self.dap_manager.state.watches.get_mut(index) {
-                if watch.expression != expression {
-                    continue;
-                }
-                match result {
-                    Ok((value, type_, var_ref)) => {
-                        watch.result = Some(Ok(value));
-                        watch.type_ = type_;
-                        watch.variables_reference = var_ref;
-                    }
-                    Err(e) => {
-                        watch.result = Some(Err(e.to_string()));
-                        watch.type_ = None;
-                        watch.variables_reference = 0;
-                    }
-                }
-            }
         }
         self.mark_dirty();
     }
@@ -778,15 +618,15 @@ impl Editor {
             self.show_frame_source(index);
 
             // Queue scopes + variables refresh for the new frame.
-            self.dap_manager.pending_action =
-                Some(crate::dap::PendingDebugAction::SelectFrame { index });
+            self.dap_manager
+                .queue(crate::dap::PendingDebugAction::SelectFrame { index });
             self.mark_dirty();
         }
     }
 
     /// Opens the frame's source file (when it has one) and puts the cursor on
     /// its line.
-    fn show_frame_source(&mut self, index: usize) {
+    pub(super) fn show_frame_source(&mut self, index: usize) {
         let Some(frame) = self.dap_manager.state.stack_frames.get(index) else {
             return;
         };

@@ -129,15 +129,17 @@ async fn tick_defers_lsp_init_while_a_yank_flash_is_visible() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn tick_runs_the_queued_debug_action_and_marks_dirty() {
     let mut editor = Editor::with_content("x\n");
-    editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Evaluate {
-        expression: "x".to_string(),
-    });
+    editor
+        .dap_manager_mut()
+        .queue(PendingDebugAction::Evaluate {
+            expression: "x".to_string(),
+        });
     editor.mark_clean();
     let mut state = TickState::new();
 
     let _ = tick(&mut editor, &mut state).await;
 
-    assert!(editor.dap_manager_mut().pending_action.is_none());
+    assert_eq!(editor.dap_manager().queued().count(), 0);
     assert!(
         editor.status_message().starts_with("Eval error:"),
         "{}",

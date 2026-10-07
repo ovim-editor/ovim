@@ -28,8 +28,9 @@ fn handle(editor: &mut Editor, key_event: KeyEvent) -> bool {
         // F5 - continue (if a session is stopped/running) or debug whatever is at the cursor
         KeyCode::F(5) => {
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::Continue);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::Continue);
             } else {
                 editor.launch_at_cursor(crate::launch::LaunchMode::Debug);
             }
@@ -51,8 +52,9 @@ fn handle(editor: &mut Editor, key_event: KeyEvent) -> bool {
         // F10 - step over
         KeyCode::F(10) => {
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepOver);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepOver);
             }
             true
         }
@@ -64,7 +66,7 @@ fn handle(editor: &mut Editor, key_event: KeyEvent) -> bool {
                 } else {
                     crate::dap::PendingDebugAction::StepIn
                 };
-                editor.dap_manager_mut().pending_action = Some(action);
+                editor.dap_manager_mut().queue(action);
             }
             true
         }

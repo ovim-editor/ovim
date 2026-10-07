@@ -67,7 +67,7 @@ pub fn handle_debug_panel_mode(editor: &mut Editor, key: KeyEvent) -> Result<()>
 
 fn step(editor: &mut Editor, action: PendingDebugAction) {
     if editor.is_debug_active() {
-        editor.dap_manager_mut().pending_action = Some(action);
+        editor.dap_manager_mut().queue(action);
     } else {
         editor.set_status_message("No debug session");
     }

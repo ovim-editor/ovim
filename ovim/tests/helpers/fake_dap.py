@@ -17,6 +17,7 @@ argv[1] is a directory shared with the test:
       "evaluate": {"<expression>": {"result": ..., "type": ..., "variablesReference": ...}}
       "move_breakpoints": {"<line>": <line>}: setBreakpoints puts those lines elsewhere
       "unverified_breakpoints": [<line>]: answered as {"verified": false} without a line
+      "delays": {"<command>": <seconds>}: sleep that long before handling the request
 """
 
 import json
@@ -76,6 +77,7 @@ while True:
     with (root / "events.jsonl").open("a") as log:
         log.write(json.dumps(request) + "\n")
     command = request.get("command")
+    time.sleep(scenario.get("delays", {}).get(command, 0))
     if command == "initialize":
         if "initialize_error" in scenario:
             respond(request, success=False, message=scenario["initialize_error"])

@@ -138,8 +138,9 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
             // <Space>dc - Continue (if a session is active) or debug whatever
             // is at the cursor (same path as F5).
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::Continue);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::Continue);
             } else {
                 editor.launch_at_cursor(crate::launch::LaunchMode::Debug);
             }
@@ -158,24 +159,27 @@ fn handle_leader_sequence(editor: &mut Editor, keys: &[char], next_key: char) ->
         (&['d'], 'n') => {
             // <Space>dn - Step over (next)
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepOver);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepOver);
             }
             editor.reset_input_state();
         }
         (&['d'], 'i') => {
             // <Space>di - Step into
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepIn);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepIn);
             }
             editor.reset_input_state();
         }
         (&['d'], 'o') => {
             // <Space>do - Step out
             if editor.is_debug_active() {
-                editor.dap_manager_mut().pending_action =
-                    Some(crate::dap::PendingDebugAction::StepOut);
+                editor
+                    .dap_manager_mut()
+                    .queue(crate::dap::PendingDebugAction::StepOut);
             }
             editor.reset_input_state();
         }

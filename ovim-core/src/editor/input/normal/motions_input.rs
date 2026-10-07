@@ -45,8 +45,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
                 // when on `name`) and show it, with its children, in the hover popup.
                 match editor.debug_expression_at_cursor() {
                     Some(expression) => {
-                        editor.dap_manager_mut().pending_action =
-                            Some(crate::dap::PendingDebugAction::EvaluateHover { expression });
+                        editor
+                            .dap_manager_mut()
+                            .queue(crate::dap::PendingDebugAction::EvaluateHover { expression });
                     }
                     None => editor.set_status_message("No expression under the cursor"),
                 }

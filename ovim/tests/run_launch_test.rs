@@ -1074,7 +1074,7 @@ async fn stopping_before_the_debugger_has_started_ends_the_run_and_frees_the_lau
     d.inner
         .until("the debugger to be queued", |s| {
             matches!(
-                s.test.editor.dap_manager().pending_action,
+                s.test.editor.dap_manager().queued().next(),
                 Some(ovim_core::dap::PendingDebugAction::Start { .. })
             )
         })
@@ -1102,6 +1102,138 @@ async fn stopping_before_the_debugger_has_started_ends_the_run_and_frees_the_lau
         .await;
     d.inner.test.keys(" ds");
     d.inner.until("stopped again", |s| s.run_finished()).await;
+    d.inner.stop_lsp().await;
+}
+
+/// How long one tick took.
+async fn timed_tick(s: &mut Session) -> Duration {
+    let started = std::time::Instant::now();
+    s.tick().await;
+    started.elapsed()
+}
+
+/// A debug session that talks to an attach config's fake adapter (see
+/// `delays` in `fake_dap.py`).
+async fn attach_session(scenario: Value) -> (DebugSession, PathBuf) {
+    let mut d = DebugSession::new(&["something.else"]).await;
+    std::fs::create_dir_all(d.inner.root.join(".ovim")).unwrap();
+    std::fs::write(
+        d.inner.root.join(".ovim/debug.toml"),
+        "[[config]]\nname = \"Remote\"\ntype = \"attach\"\nport = 5005\n",
+    )
+    .unwrap();
+    let adapter = d.adapter(scenario);
+    d.inner
+        .test
+        .editor
+        .launch_at_cursor_with(ovim_core::launch::LaunchMode::Debug, Some(adapter));
+    let dap_dir = d.dap_dir.clone();
+    (d, dap_dir)
+}
+
+/// Every debugger request used to be awaited inside the tick: an adapter that
+/// answers `attach` after three seconds froze the editor for three seconds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_slow_adapter_does_not_stall_the_tick() {
+    let (mut d, dap_dir) = attach_session(json!({"delays": {"attach": 3.0}})).await;
+    d.inner
+        .until("the attach request", |_| {
+            !dap_requests(&dap_dir, "attach").is_empty()
+        })
+        .await;
+
+    // `attach` is outstanding for the next three seconds.
+    let mut slowest = Duration::ZERO;
+    for _ in 0..40 {
+        slowest = slowest.max(timed_tick(&mut d.inner).await);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(
+        dap_requests(&dap_dir, "configurationDone").is_empty(),
+        "the adapter is still sitting on attach"
+    );
+    assert!(
+        slowest < Duration::from_millis(300),
+        "a tick took {slowest:?} while a request was outstanding"
+    );
+    assert!(d.inner.test.editor.is_debug_active());
+
+    // The session carries on once the adapter answers.
+    d.inner
+        .until("configurationDone", |_| {
+            !dap_requests(&dap_dir, "configurationDone").is_empty()
+        })
+        .await;
+    d.inner.test.keys(" ds");
+    d.inner.until("stopped", |s| s.run_finished()).await;
+    d.inner.stop_lsp().await;
+}
+
+/// A hung adapter used to hold the editor for the request's 30 second
+/// timeout, and Stop could not even be pressed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stop_ends_the_session_while_the_adapter_hangs_on_a_request() {
+    let (mut d, dap_dir) = attach_session(json!({"delays": {"attach": 600.0}})).await;
+    d.inner
+        .until("the attach request", |_| {
+            !dap_requests(&dap_dir, "attach").is_empty()
+        })
+        .await;
+    let pid = d.pid().unwrap();
+
+    d.inner.test.keys(" ds");
+    let mut slowest = Duration::ZERO;
+    let stopped_at = std::time::Instant::now();
+    while !d.inner.run_finished() {
+        slowest = slowest.max(timed_tick(&mut d.inner).await);
+        assert!(
+            stopped_at.elapsed() < Duration::from_secs(8),
+            "Stop did not get through to the hung adapter\n{}",
+            d.inner.console_text()
+        );
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+
+    assert_eq!(d.inner.outcome(), RunOutcome::Stopped);
+    assert!(slowest < Duration::from_millis(300), "{slowest:?}");
+    assert!(!d.inner.test.editor.is_debug_active());
+    wait_gone(pid).await;
+    assert!(!process_alive(pid), "the hung adapter is killed");
+    d.inner.stop_lsp().await;
+}
+
+/// The chain of requests that follows a stop (stack, threads, scopes,
+/// variables, watches) runs off the tick as well, and Stop cuts it short.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn loading_a_stop_does_not_stall_the_tick_and_stop_works_meanwhile() {
+    let mut d = DebugSession::new(&resolve_commands()).await;
+    let mut scenario = stopped_scenario(&d.inner.root);
+    scenario["delays"] = json!({"stackTrace": 600.0});
+    let adapter = d.adapter(scenario);
+    d.inner.script_resolve(d.inner.main_plan(None));
+    d.inner
+        .test
+        .editor
+        .launch_at_cursor_with(ovim_core::launch::LaunchMode::Debug, Some(adapter));
+    let dap_dir = d.dap_dir.clone();
+    d.inner
+        .until("the stack request", |s| {
+            s.test.editor.is_debug_stopped() && !dap_requests(&dap_dir, "stackTrace").is_empty()
+        })
+        .await;
+
+    // Stopped, with the stack still on its way: the editor stays usable.
+    let mut slowest = Duration::ZERO;
+    for _ in 0..10 {
+        slowest = slowest.max(timed_tick(&mut d.inner).await);
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
+    assert!(slowest < Duration::from_millis(300), "{slowest:?}");
+    assert!(d.inner.test.editor.debug_state().stack_frames.is_empty());
+
+    d.inner.test.keys(" ds");
+    d.inner.until("stopped", |s| s.run_finished()).await;
+    assert!(!d.inner.test.editor.is_debug_active());
     d.inner.stop_lsp().await;
 }
 

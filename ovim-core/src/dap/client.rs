@@ -381,6 +381,30 @@ impl DebugAdapterClient {
 
     /// Kills the adapter process. Never blocks.
     pub fn kill(&self) {
+        self.killer().kill();
+    }
+
+    /// A handle that can kill the adapter without access to the client, for
+    /// whoever has to end a session whose task is busy talking to it.
+    pub fn killer(&self) -> AdapterKiller {
+        AdapterKiller {
+            process: self.process.clone(),
+            killed: self.killed.clone(),
+        }
+    }
+}
+
+/// Kills a debug adapter process (see [`DebugAdapterClient::killer`]).
+#[derive(Clone)]
+pub struct AdapterKiller {
+    process: Arc<std::sync::Mutex<Child>>,
+    killed: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl AdapterKiller {
+    /// Kills the adapter process. Never blocks. Its end is not reported as a
+    /// crash.
+    pub fn kill(&self) {
         self.killed.store(true, Ordering::SeqCst);
         if let Ok(mut child) = self.process.lock() {
             let _ = child.start_kill();

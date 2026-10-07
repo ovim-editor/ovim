@@ -9,7 +9,7 @@ use crate::editor::{BreakpointExtra, Editor};
 const DEBUG_USAGE: &str = "Usage: :debug [start [cmd]|run|last|config|stop|continue|next|stepin|stepout|breakpoint|panels|console]";
 
 fn step(editor: &mut Editor, action: PendingDebugAction, message: &'static str) -> CommandResult {
-    editor.dap_manager_mut().pending_action = Some(action);
+    editor.dap_manager_mut().queue(action);
     ok(message)
 }
 
@@ -72,9 +72,11 @@ pub(super) fn eval(editor: &mut Editor, ex: &Ex) -> CommandResult {
     if !editor.is_debug_stopped() {
         return err("Not stopped at a breakpoint");
     }
-    editor.dap_manager_mut().pending_action = Some(PendingDebugAction::Evaluate {
-        expression: ex.args.to_string(),
-    });
+    editor
+        .dap_manager_mut()
+        .queue(PendingDebugAction::Evaluate {
+            expression: ex.args.to_string(),
+        });
     ok("Evaluating...")
 }
 
@@ -166,8 +168,9 @@ pub(super) fn expand(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let state = &mut editor.dap_manager_mut().state;
     if !state.expanded_refs.remove(&var_ref) {
         state.expanded_refs.insert(var_ref);
-        editor.dap_manager_mut().pending_action =
-            Some(PendingDebugAction::FetchVariables { var_ref });
+        editor
+            .dap_manager_mut()
+            .queue(PendingDebugAction::FetchVariables { var_ref });
     }
     editor.mark_dirty();
     ok(format!("Toggled expansion of '{}'", name))

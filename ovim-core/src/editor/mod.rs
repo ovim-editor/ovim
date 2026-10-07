@@ -51,6 +51,7 @@ mod completion;
 mod completion_accept;
 pub mod completion_match;
 mod debug_integration;
+mod debug_results;
 pub mod decoration;
 mod diff_review;
 mod editing_state;
