@@ -164,18 +164,24 @@ fn setup_pending_state(editor: &mut Editor, key_event: KeyEvent) -> Result<bool>
     let KeyCode::Char(key) = key_event.code else {
         return Ok(false);
     };
-    let operator = |operator| InputState::OperatorPending { operator };
     let awaiting = |motion| InputState::AwaitingChar {
         motion,
         operator: None,
     };
+    let operator = match key {
+        'd' => Some(Operator::Delete),
+        'y' => Some(Operator::Yank),
+        'c' => Some(Operator::Change),
+        '>' => Some(Operator::Indent),
+        '<' => Some(Operator::Dedent),
+        '=' => Some(Operator::AutoIndent),
+        _ => None,
+    };
+    if let Some(operator) = operator {
+        editor.enter_operator_pending(operator);
+        return Ok(true);
+    }
     let state = match key {
-        'd' => operator(Operator::Delete),
-        'y' => operator(Operator::Yank),
-        'c' => operator(Operator::Change),
-        '>' => operator(Operator::Indent),
-        '<' => operator(Operator::Dedent),
-        '=' => operator(Operator::AutoIndent),
         'g' => InputState::GPrefix { operator: None },
         'z' => InputState::ZPrefix,
         'Z' => InputState::QuitPrefix,

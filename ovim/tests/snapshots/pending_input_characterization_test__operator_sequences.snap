@@ -502,7 +502,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2dFa          | 2[n=2] d[n=2,op=Delete] F[n=2,op=Delete,char=FindBack/Some(Delete)] a[-] => Normal (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha "
 2dl           | 2[n=2] d[n=2,op=Delete] l[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha ta gamma\nxdelta\n\nlast line here\n" @"="be"
 2d}           | 2[n=2] d[n=2,op=Delete] }[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nlast line here\n" @"="beta gamma\nxdelta\n"
-2d2w          | 2[n=2] d[n=2,op=Delete] 2[n=22,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n" @"="beta gamma\nxdelta\n\nlast line here"
+2d2w          | 2[n=2] d[n=2,op=Delete] 2[n=4,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nlast line here\n" @"="beta gamma\nxdelta\n"
 2dd           | 2[n=2] d[n=2,op=Delete] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
 2dc           | 2[n=2] d[n=2,op=Delete] c[op=Change] => Normal (1,8)
 2dy           | 2[n=2] d[n=2,op=Delete] y[op=Yank] => Normal (1,8)
@@ -542,7 +542,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2cFa          | 2[n=2] c[n=2,op=Change] F[n=2,op=Change,char=FindBack/Some(Change)] a[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  beta gamma\nxdelta\n\nlast line here\n" @"="alpha "
 2cl           | 2[n=2] c[n=2,op=Change] l[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha ta gamma\nxdelta\n\nlast line here\n" @"="be"
 2c}           | 2[n=2] c[n=2,op=Change] }[-] => Insert (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nlast line here\n" @"="beta gamma\nxdelta\n"
-2c2w          | 2[n=2] c[n=2,op=Change] 2[n=22,op=Change] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha \n" @"="beta gamma\nxdelta\n\nlast line here"
+2c2w          | 2[n=2] c[n=2,op=Change] 2[n=4,op=Change] w[-] => Insert (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha  line here\n" @"="beta gamma\nxdelta\n\nlast"
 2cd           | 2[n=2] c[n=2,op=Change] d[op=Delete] => Normal (1,8)
 2cc           | 2[n=2] c[n=2,op=Change] c[-] => Insert (1,2) text="foo bar(baz, qux) \"str\" end\n  \n\nlast line here\n" @"="  alpha beta gamma\nxdelta\n"
 2cy           | 2[n=2] c[n=2,op=Change] y[op=Yank] => Normal (1,8)
@@ -582,7 +582,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2yFa          | 2[n=2] y[n=2,op=Yank] F[n=2,op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,2) @"="alpha "
 2yl           | 2[n=2] y[n=2,op=Yank] l[-] => Normal (1,8) @"="be"
 2y}           | 2[n=2] y[n=2,op=Yank] }[-] => Normal (1,8) @"="beta gamma\nxdelta\n"
-2y2w          | 2[n=2] y[n=2,op=Yank] 2[n=22,op=Yank] w[-] => Normal (1,8) @"="beta gamma\nxdelta\n\nlast line "
+2y2w          | 2[n=2] y[n=2,op=Yank] 2[n=4,op=Yank] w[-] => Normal (1,8) @"="beta gamma\nxdelta\n\n"
 2yd           | 2[n=2] y[n=2,op=Yank] d[op=Delete] => Normal (1,8)
 2yc           | 2[n=2] y[n=2,op=Yank] c[op=Change] => Normal (1,8)
 2yy           | 2[n=2] y[n=2,op=Yank] y[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n"
@@ -622,7 +622,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2<Fa          | 2[n=2] <Fa[-] => Normal (1,6)
 2<l           | 2[n=2] <[n=2,op=Dedent] l[-] => Normal (1,9)
 2<}           | 2[n=2] <[n=2,op=Dedent] }[-] => Normal (3,0)
-2<2w          | 2[n=2] <[n=2,op=Dedent] 2[n=22,op=Dedent] w[-] => Normal (1,13)
+2<2w          | 2[n=2] <[n=2,op=Dedent] 2[n=4,op=Dedent] w[-] => Normal (1,13)
 2<d           | 2[n=2] <[n=2,op=Dedent] d[op=Delete] => Normal (1,8)
 2<c           | 2[n=2] <[n=2,op=Dedent] c[op=Change] => Normal (1,8)
 2<y           | 2[n=2] <[n=2,op=Dedent] y[op=Yank] => Normal (1,8)
@@ -662,7 +662,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2>Fa          | 2[n=2] >[n=2,op=Indent] F[char=FindBack/None] a[-] => Normal (1,6)
 2>l           | 2[n=2] >[n=2,op=Indent] l[-] => Normal (1,9)
 2>}           | 2[n=2] >[n=2,op=Indent] }[-] => Normal (3,0)
-2>2w          | 2[n=2] >[n=2,op=Indent] 2[n=22,op=Indent] w[-] => Normal (1,13)
+2>2w          | 2[n=2] >[n=2,op=Indent] 2[n=4,op=Indent] w[-] => Normal (1,13)
 2>d           | 2[n=2] >[n=2,op=Indent] d[op=Delete] => Normal (1,8)
 2>c           | 2[n=2] >[n=2,op=Indent] c[op=Change] => Normal (1,8)
 2>y           | 2[n=2] >[n=2,op=Indent] y[op=Yank] => Normal (1,8)
@@ -702,7 +702,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2=Fa          | 2[n=2] =[n=2,op=AutoIndent] F[char=FindBack/None] a[-] => Normal (1,6)
 2=l           | 2[n=2] =[n=2,op=AutoIndent] l[-] => Normal (1,9)
 2=}           | 2[n=2] =[n=2,op=AutoIndent] }[-] => Normal (3,0)
-2=2w          | 2[n=2] =[n=2,op=AutoIndent] 2[n=22,op=AutoIndent] w[-] => Normal (1,13)
+2=2w          | 2[n=2] =[n=2,op=AutoIndent] 2[n=4,op=AutoIndent] w[-] => Normal (1,13)
 2=d           | 2[n=2] =[n=2,op=AutoIndent] d[op=Delete] => Normal (1,8)
 2=c           | 2[n=2] =[n=2,op=AutoIndent] c[op=Change] => Normal (1,8)
 2=y           | 2[n=2] =[n=2,op=AutoIndent] y[op=Yank] => Normal (1,8)
@@ -742,7 +742,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2guFa         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] F[char=FindBack/None] a[-] => Normal (1,6)
 2gul          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] l[-] => Normal (1,9)
 2gu}          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] }[-] => Normal (3,0)
-2gu2w         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] 2[n=22,op=Lowercase] w[-] => Normal (1,8)
+2gu2w         | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] 2[n=4,op=Lowercase] w[-] => Normal (1,8)
 2gud          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] d[op=Delete] => Normal (1,8)
 2guc          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] c[op=Change] => Normal (1,8)
 2guy          | 2[n=2] g[n=2,cmd=g] u[n=2,op=Lowercase] y[op=Yank] => Normal (1,8)
@@ -782,7 +782,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2gUFa         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] F[char=FindBack/None] a[-] => Normal (1,6)
 2gUl          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] l[-] => Normal (1,9)
 2gU}          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] }[-] => Normal (3,0)
-2gU2w         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] 2[n=22,op=Uppercase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nLAST LINE here\n"
+2gU2w         | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] 2[n=4,op=Uppercase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
 2gUd          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] d[op=Delete] => Normal (1,8)
 2gUc          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] c[op=Change] => Normal (1,8)
 2gUy          | 2[n=2] g[n=2,cmd=g] U[n=2,op=Uppercase] y[op=Yank] => Normal (1,8)
@@ -822,7 +822,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2g~Fa         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] F[char=FindBack/None] a[-] => Normal (1,6)
 2g~l          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] l[-] => Normal (1,9)
 2g~}          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] }[-] => Normal (3,0)
-2g~2w         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] 2[n=22,op=ToggleCase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nLAST LINE here\n"
+2g~2w         | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] 2[n=4,op=ToggleCase] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA GAMMA\nXDELTA\n\nlast line here\n"
 2g~d          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] d[op=Delete] => Normal (1,8)
 2g~c          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] c[op=Change] => Normal (1,8)
 2g~y          | 2[n=2] g[n=2,cmd=g] ~[n=2,op=ToggleCase] y[op=Yank] => Normal (1,8)
@@ -942,7 +942,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2zfFa         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] F[char=FindBack/None] a[-] => Normal (1,6)
 2zfl          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] l[-] => Normal (1,9)
 2zf}          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] }[-] => Normal (4,0)
-2zf2w         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] 2[n=22,op=Fold] w[-] => Normal (1,13)
+2zf2w         | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] 2[n=4,op=Fold] w[-] => Normal (1,13)
 2zfd          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] d[op=Delete] => Normal (1,8)
 2zfc          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] c[op=Change] => Normal (1,8)
 2zfy          | 2[n=2] z[n=2,cmd=z] f[n=2,op=Fold] y[op=Yank] => Normal (1,8)

@@ -1817,6 +1817,13 @@ impl Editor {
         self.input.count = Some(current * 10 + digit);
     }
 
+    /// Starts an operator (`d`, `y`, `gU`, ...): a count typed so far belongs to
+    /// the operator, and digits typed next start the motion's own count.
+    pub fn enter_operator_pending(&mut self, operator: Operator) {
+        let count = self.input.count.take();
+        self.set_input_state(InputState::OperatorPending { operator, count });
+    }
+
     /// Clears the count
     pub fn clear_count(&mut self) {
         self.input.count = None;

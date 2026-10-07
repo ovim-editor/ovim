@@ -47,6 +47,10 @@ pub enum InputState {
     OperatorPending {
         /// The operator waiting for a motion
         operator: Operator,
+        /// Count typed before the operator (`2` in `2d3w`). Digits typed after
+        /// it accumulate in the editor's count; the two multiply when the
+        /// motion arrives.
+        count: Option<usize>,
     },
 
     /// 'g' prefix pressed, awaiting second character (`gg`, `gd`, `gu`...).
@@ -102,7 +106,7 @@ impl InputState {
     /// Returns the pending operator, if any.
     pub fn pending_operator(&self) -> Option<Operator> {
         match self {
-            Self::OperatorPending { operator } => Some(*operator),
+            Self::OperatorPending { operator, .. } => Some(*operator),
             Self::AwaitingChar { operator, .. }
             | Self::GPrefix { operator }
             | Self::TextObjectPending { operator, .. } => *operator,
@@ -277,6 +281,7 @@ mod tests {
             (
                 InputState::OperatorPending {
                     operator: Operator::Delete,
+                    count: None,
                 },
                 delete,
                 None,

@@ -29,14 +29,27 @@ use super::super::case;
 ///
 /// Returns `Ok(true)` if the key was handled, `Ok(false)` otherwise.
 pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
-    let (operator, g_prefix) = match *editor.input_state() {
-        InputState::OperatorPending { operator } => (operator, false),
+    let (operator, operator_count, g_prefix) = match *editor.input_state() {
+        InputState::OperatorPending { operator, count } => (operator, count, false),
         InputState::GPrefix {
             operator: Some(operator),
-        } => (operator, true),
+        } => (operator, None, true),
         _ => return Ok(false),
     };
 
+    // Digits after the operator start the motion's own count (`d10j`); `0` only
+    // continues one, otherwise it is the line-start motion.
+    if let KeyCode::Char(c @ '0'..='9') = key_event.code {
+        if !g_prefix && (c != '0' || editor.count().is_some()) {
+            editor.append_count(c as usize - '0' as usize);
+            return Ok(true);
+        }
+    }
+    // The motion is here: `[n]op[m]motion` repeats it n * m times.
+    if let Some(operator_count) = operator_count {
+        let motion_count = editor.count().unwrap_or(1);
+        editor.set_count(operator_count.saturating_mul(motion_count));
+    }
     let count = editor.effective_count();
 
     // After an operator, `g` only continues as the `gg`, `gn` and `gN`
@@ -595,16 +608,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let end_line = current_line + 1;
             helpers::dedent_lines_with_tracking(editor, start_line, end_line, cursor_before)?;
             editor.clear_count();
-            true
-        }
-
-        // =====================================================================
-        // Count digits after operator (e.g., d2w)
-        // =====================================================================
-        (_, KeyCode::Char(c)) if c.is_ascii_digit() && c != '0' => {
-            let digit = c.to_digit(10).unwrap() as usize;
-            editor.append_count(digit);
-            editor.set_input_state(InputState::OperatorPending { operator });
             true
         }
 

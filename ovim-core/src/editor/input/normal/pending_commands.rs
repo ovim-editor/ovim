@@ -102,19 +102,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
         }
         ('g', KeyCode::Char('u')) => {
-            editor.set_input_state(InputState::OperatorPending {
-                operator: Operator::Lowercase,
-            });
+            editor.enter_operator_pending(Operator::Lowercase);
         }
         ('g', KeyCode::Char('U')) => {
-            editor.set_input_state(InputState::OperatorPending {
-                operator: Operator::Uppercase,
-            });
+            editor.enter_operator_pending(Operator::Uppercase);
         }
         ('g', KeyCode::Char('~')) => {
-            editor.set_input_state(InputState::OperatorPending {
-                operator: Operator::ToggleCase,
-            });
+            editor.enter_operator_pending(Operator::ToggleCase);
         }
         ('g', KeyCode::Char('r')) => editor.set_input_state(InputState::LspPrefix),
         ('g', KeyCode::Char('i')) => {
@@ -371,9 +365,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         ('z', KeyCode::Char(key)) if editor.fold_command(key) => {}
         ('z', KeyCode::Char('f')) => {
-            editor.set_input_state(InputState::OperatorPending {
-                operator: Operator::Fold,
-            });
+            editor.enter_operator_pending(Operator::Fold);
         }
         ('z', KeyCode::Char('z')) => {
             // [count]zz — scroll cursor line (or line [count]) to center

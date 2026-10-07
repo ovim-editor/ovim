@@ -440,7 +440,7 @@ ciwX<Esc>.    | c[op=Change] i[op=Change,cmd=i] w[-] X[-] <Esc>[-] .[-] => Norma
 cwY<Esc>j.    | c[op=Change] w[-] Y[-] <Esc>[-] j[-] .[-] => Normal (2,5) text="foo bar(baz, qux) \"str\" end\n  alpha Y gamma\nxdeltY\n\nlast line here\n" @"="a"
 3dd           | 3[n=3] d[n=3,op=Delete] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nlast line here\n" @"="  alpha beta gamma\nxdelta\n\n"
 d3d           | d[op=Delete] 3[n=3,op=Delete] d[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nlast line here\n" @"="  alpha beta gamma\nxdelta\n\n"
-2d2w          | 2[n=2] d[n=2,op=Delete] 2[n=22,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \n" @"="beta gamma\nxdelta\n\nlast line here"
+2d2w          | 2[n=2] d[n=2,op=Delete] 2[n=4,op=Delete] w[-] => Normal (1,7) text="foo bar(baz, qux) \"str\" end\n  alpha \nlast line here\n" @"="beta gamma\nxdelta\n"
 dfa.          | d[op=Delete] f[op=Delete,char=Find/Some(Delete)] a[-] .[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha mma\nxdelta\n\nlast line here\n" @"=" ga"
 dta;          | d[op=Delete] t[op=Delete,char=Till/Some(Delete)] a[-] ;[-] => Normal (1,10) text="foo bar(baz, qux) \"str\" end\n  alpha a gamma\nxdelta\n\nlast line here\n" @"="bet"
 yiwP          | y[op=Yank] i[op=Yank,cmd=i] w[-] P[-] => Normal (1,11) text="foo bar(baz, qux) \"str\" end\n  alpha betabeta gamma\nxdelta\n\nlast line here\n" @"="beta"

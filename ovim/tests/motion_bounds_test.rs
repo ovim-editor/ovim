@@ -744,9 +744,15 @@ fn test_d10w_beyond_buffer() {
 
     test.keys("d10w"); // Try to delete 10 words
 
-    assert_eq!(test.buffer_content(), "one two three\n");
+    // nvim --clean: `d10w` on "one two three" deletes all three words (the count is
+    // `10`, not `d1` followed by the `0` motion); the register holds "one two three".
+    assert_eq!(test.buffer_content(), "\n");
+    assert_eq!(
+        test.get_register_content('"').as_deref(),
+        Some("one two three")
+    );
 
-    test.assert_cursor(0, 4);
+    test.assert_cursor(0, 0);
 }
 
 #[test]

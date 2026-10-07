@@ -41,7 +41,16 @@ fn tokens(keys: &str) -> Vec<String> {
 fn pending(test: &EditorTest) -> String {
     let editor = &test.editor;
     let mut parts = Vec::new();
-    if let Some(count) = editor.count() {
+    // A count typed before the operator lives in the pending operator; the
+    // count a motion would repeat is the product of both.
+    let operator_count = match editor.input_state() {
+        InputState::OperatorPending { count, .. } => *count,
+        _ => None,
+    };
+    if let Some(count) = match (operator_count, editor.count()) {
+        (Some(before), Some(after)) => Some(before * after),
+        (before, after) => before.or(after),
+    } {
         parts.push(format!("n={count}"));
     }
     if let Some(op) = editor.input_state().pending_operator() {
