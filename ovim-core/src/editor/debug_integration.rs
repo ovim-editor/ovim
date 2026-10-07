@@ -66,6 +66,62 @@ impl Editor {
         self.after_breakpoint_change();
     }
 
+    /// Carries the breakpoints of the current file along with edits to its
+    /// text: the edits since the last call are replayed onto their lines.
+    /// Edits that cannot be replayed (the file was reloaded) leave them be.
+    pub(crate) fn follow_breakpoints_through_edits(&mut self) {
+        let now = (self.buffer().id(), self.buffer().version());
+        let Some(seen) = self.dap_manager.state.followed_edits.replace(now) else {
+            return;
+        };
+        if seen == now || seen.0 != now.0 {
+            return;
+        }
+        let Some((path, moved)) = self.breakpoint_lines_after_edits(seen.1) else {
+            return;
+        };
+        self.dap_manager
+            .state
+            .remap_breakpoint_lines(&path, |line| {
+                moved.get(&line).copied().unwrap_or(Some(line))
+            });
+        self.mark_dirty();
+    }
+
+    /// Where the breakpoint lines of the current file went (`None`: deleted)
+    /// through the edits since buffer `version`.
+    fn breakpoint_lines_after_edits(
+        &self,
+        version: usize,
+    ) -> Option<(
+        std::path::PathBuf,
+        std::collections::HashMap<u64, Option<u64>>,
+    )> {
+        let buffer = self.buffer();
+        let path = std::path::PathBuf::from(buffer.file_path()?);
+        let bps = self.dap_manager.state.breakpoints.get(&path)?;
+        // Every text edit is in both journals; a mismatch means some edit
+        // (or a reload) is missing from the edit log.
+        let edits = buffer.edit_log().edits_since(version as u64)?;
+        let changes = buffer.line_changes_since(version)?;
+        if edits.is_empty() || edits.len() != changes.len() {
+            return None;
+        }
+        let projection = crate::dap::follow::LineProjection::new(buffer.rope(), &edits)?;
+        let moved = bps
+            .iter()
+            .flat_map(|bp| [Some(bp.line), bp.actual_line])
+            .flatten()
+            .map(|line| {
+                let to = projection
+                    .line(line.saturating_sub(1) as usize)
+                    .map(|l| l as u64 + 1);
+                (line, to)
+            })
+            .collect();
+        Some((path, moved))
+    }
+
     /// Get breakpoint lines for the current file (1-based).
     pub fn current_file_breakpoint_lines(&self) -> Vec<u64> {
         let Some(file_path) = self.buffer().file_path() else {

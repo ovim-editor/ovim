@@ -146,6 +146,27 @@ async fn tick_runs_the_queued_debug_action_and_marks_dirty() {
     assert!(editor.is_dirty());
 }
 
+/// Edits that do not come through a key (the API, LSP, Lua) still move the
+/// breakpoints of the file; the keys cover the rest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn tick_carries_breakpoints_along_with_edits_made_outside_the_keys() {
+    let mut editor = Editor::with_content("a\nb\nc\n");
+    editor.set_file_path("/nonexistent/Main.java".to_string());
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(2, crate::unicode::GraphemeCol::ZERO);
+    editor.toggle_breakpoint();
+    let mut state = TickState::new();
+    let _ = tick(&mut editor, &mut state).await;
+    assert_eq!(editor.current_file_breakpoint_lines(), vec![3]);
+
+    editor.buffer_mut().insert_text_at(0, CharCol(0), "new\n");
+    let _ = tick(&mut editor, &mut state).await;
+
+    assert_eq!(editor.current_file_breakpoint_lines(), vec![4]);
+}
+
 /// The GUI and TUI drained picker results after the tick while the headless
 /// loop only received them in its own select arms; the tick now delivers them
 /// for every frontend.

@@ -16,6 +16,7 @@
 //! - `types`: Client-side DAP type definitions
 
 pub mod client;
+pub mod follow;
 pub mod panel;
 pub mod protocol;
 pub mod state;

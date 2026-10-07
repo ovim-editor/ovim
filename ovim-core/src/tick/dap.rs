@@ -6,6 +6,8 @@ use crate::editor::Editor;
 
 /// Poll DAP events and auto-fetch stack trace on stop.
 pub(super) fn process_dap_events(editor: &mut Editor) {
+    // Edits that did not come through a key (API, LSP, Lua) move breakpoints too.
+    editor.follow_breakpoints_through_edits();
     let dap_count = editor.process_dap_events();
     if dap_count > 0 {
         crate::log_debug!("tick", "Processed {} DAP events", dap_count);

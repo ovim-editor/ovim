@@ -109,6 +109,9 @@ pub struct DebugState {
     // ---- Breakpoints ----
     /// Breakpoints per file path.
     pub breakpoints: HashMap<PathBuf, Vec<BreakpointState>>,
+    /// The buffer (id, version) the breakpoint lines are known to match; the
+    /// edits since then still have to be carried over to them.
+    pub followed_edits: Option<(u64, usize)>,
 
     // ---- Stack trace ----
     /// Stack frames from the last stop.
@@ -166,6 +169,7 @@ impl DebugState {
             stop_reason: None,
             exception: None,
             breakpoints: HashMap::new(),
+            followed_edits: None,
             stack_frames: Vec::new(),
             selected_frame: 0,
             scopes: Vec::new(),
@@ -289,6 +293,29 @@ impl DebugState {
             bp.id = dap_bp.id;
             bp.actual_line = dap_bp.line.filter(|line| *line != bp.line);
         }
+        entry.sort_by_key(BreakpointState::shown_line);
+    }
+
+    /// Moves the breakpoints of `path` to the lines `map` sends theirs to; a
+    /// breakpoint whose line maps to `None` is dropped.
+    pub fn remap_breakpoint_lines(&mut self, path: &Path, map: impl Fn(u64) -> Option<u64>) {
+        let Some(entry) = self.breakpoints.get_mut(path) else {
+            return;
+        };
+        entry.retain_mut(|bp| {
+            let Some(line) = map(bp.line) else {
+                return false;
+            };
+            bp.line = line;
+            bp.actual_line = bp
+                .actual_line
+                .and_then(&map)
+                .filter(|actual| *actual != line);
+            true
+        });
+        // Lines joined into one carry one breakpoint.
+        let mut seen = HashSet::new();
+        entry.retain(|bp| seen.insert(bp.line));
         entry.sort_by_key(BreakpointState::shown_line);
     }
 
