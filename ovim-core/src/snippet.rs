@@ -223,8 +223,11 @@ impl Emitter<'_> {
                 }
                 Node::Variable { name, children } => {
                     match (self.vars)(name) {
-                        Some(value) => self.push(&value),
-                        None if !children.is_empty() => self.emit(children, register),
+                        Some(value) if !value.is_empty() => self.push(&value),
+                        // Known but empty (no selection, empty clipboard): the
+                        // default applies, as in VS Code.
+                        Some(_) | None if !children.is_empty() => self.emit(children, register),
+                        Some(_) => {}
                         // VS Code inserts the variable name for unknown ones.
                         None => self.push(name),
                     }
@@ -585,6 +588,24 @@ mod tests {
         assert_eq!(parse("${UNKNOWN:fallback}").text, "fallback");
         assert_eq!(parse("$UNKNOWN").text, "UNKNOWN");
         assert_eq!(parse("${TM_FILENAME:fallback}").text, "Main.java");
+    }
+
+    /// A variable that is known but empty (no selection) uses its default.
+    #[test]
+    fn empty_variables_fall_back_to_their_default() {
+        let snippet = |input: &str| {
+            Snippet::parse(input, &|name| match name {
+                "TM_SELECTED_TEXT" | "CLIPBOARD" => Some(String::new()),
+                "TM_FILENAME" => Some("Main.java".to_string()),
+                _ => None,
+            })
+        };
+        assert_eq!(snippet("${TM_SELECTED_TEXT:default}").text, "default");
+        assert_eq!(snippet("${CLIPBOARD:$TM_FILENAME}").text, "Main.java");
+        // No default: empty stays empty, it is not replaced by the name.
+        assert_eq!(snippet("[$TM_SELECTED_TEXT]").text, "[]");
+        // A non-empty value still beats the default.
+        assert_eq!(snippet("${TM_FILENAME:default}").text, "Main.java");
     }
 
     #[test]
