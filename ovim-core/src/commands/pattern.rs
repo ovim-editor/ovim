@@ -140,13 +140,13 @@ fn parse_substitution(
         }
         last
     } else {
-        editor.registers_mut().set_last_search(raw_pattern.clone());
         raw_pattern
     };
     let regex = regex::RegexBuilder::new(&pattern)
         .case_insensitive(flags.contains('i') && !flags.contains('I'))
         .build()
         .map_err(|_| err(format!("Invalid regex pattern: {pattern}")))?;
+    editor.set_last_search_pattern(&pattern);
     Ok((
         Substitution {
             regex,
@@ -159,17 +159,26 @@ fn parse_substitution(
     ))
 }
 
+/// What [`substitute_lines`] changed.
+struct Substituted {
+    /// How many lines the substitution changed.
+    lines: usize,
+    /// The last changed line (0-based), after any line splits.
+    last_line: Option<usize>,
+}
+
 /// Substitute on 0-based `lines` as one undo step, bottom-up: a replacement
 /// containing `\r` splits its line and would shift the lines below it
-/// (OV-00244). Returns the last changed line.
+/// (OV-00244).
 fn substitute_lines(
     editor: &mut Editor,
     substitution: &Substitution,
     lines: &[usize],
-) -> Option<usize> {
+) -> Substituted {
     let cursor_before = editor.cursor_position();
-    let (last_changed, edits) = editor.buffer_mut().record(|buffer| {
+    let ((last_line, changed), edits) = editor.buffer_mut().record(|buffer| {
         let mut last_changed = None;
+        let mut changed = 0;
         for &line in lines.iter().rev() {
             let Some(text) = buffer.line_text(line) else {
                 continue;
@@ -182,18 +191,22 @@ fn substitute_lines(
                 // Lines split by `\r` push the last changed line down.
                 let added = replaced.matches('\n').count();
                 last_changed = Some(last_changed.map_or(line + added, |last: usize| last + added));
+                changed += 1;
             }
         }
-        last_changed
+        (last_changed, changed)
     });
     if !edits.is_empty() {
-        if let Some(line) = last_changed {
+        if let Some(line) = last_line {
             cursor_to_first_non_blank(editor, line);
         }
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
-    last_changed
+    Substituted {
+        lines: changed,
+        last_line,
+    }
 }
 
 /// `:s///n`: report how many matches (one per line without `g`) the
@@ -286,7 +299,7 @@ pub(super) fn substitute(editor: &mut Editor, ex: &Ex) -> CommandResult {
     }
 
     let lines: Vec<usize> = (start..=end).collect();
-    if substitute_lines(editor, &substitution, &lines).is_none() && !flags.contains('e') {
+    if substitute_lines(editor, &substitution, &lines).lines == 0 && !flags.contains('e') {
         // `:cdo` / `:cfdo` rely on this error to stop at a failing entry.
         return err(format!("E486: Pattern not found: {}", substitution.pattern));
     }
@@ -342,6 +355,7 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
         Ok(regex) => regex,
         Err(_) => return err(format!("Invalid regex pattern: {pattern}")),
     };
+    editor.set_last_search_pattern(&pattern);
     let range = ex.range.expect("line-range command");
     let (start, end) = range.indexes();
     let end = end.min(editor.buffer().line_count().saturating_sub(1));
@@ -399,8 +413,8 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
                 Ok(parsed) => parsed,
                 Err(error) => return error,
             };
-            substitute_lines(editor, &substitution, &lines);
-            ok(format!("Substituted on {} line(s)", lines.len()))
+            let substituted = substitute_lines(editor, &substitution, &lines);
+            ok(format!("Substituted on {} line(s)", substituted.lines))
         }
         "norm[al]" => {
             super::edit::one_undo_step(editor, |editor| global_normal(editor, &lines, command))

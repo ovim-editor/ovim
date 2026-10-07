@@ -166,3 +166,44 @@ fn bar_after_the_closing_delimiter_chains_commands() {
     test.command("s/a/X/g|s/b/Y/");
     assert_eq!(test.buffer_content(), "X Y\n");
 }
+
+// nvim --clean: inside `:g/b/`, an empty `:s` pattern is the :g pattern, so
+// `:g/b/s//X/` on "abc", "b", "zzz" gives "aXc", "X", "zzz" (not E35).
+#[test]
+fn global_sets_the_pattern_an_empty_substitute_pattern_reuses() {
+    let mut test = EditorTest::new("abc\nb\nzzz\n");
+    test.command("g/b/s//X/");
+    assert_eq!(test.buffer_content(), "aXc\nX\nzzz\n");
+}
+
+// nvim --clean: after `/zzz`, `:2s/b/B/` makes `b` the last search pattern, so
+// `n` from line 2 lands on the next `b` (line 3) instead of searching `zzz`.
+#[test]
+fn substitute_becomes_the_pattern_of_n() {
+    let mut test = EditorTest::new("x\nab\nb\nzzz\nb\n");
+    test.keys("/zzz<CR>gg");
+    test.command("2s/b/B/");
+    test.keys("n");
+    test.assert_cursor(2, 0);
+}
+
+// nvim --clean: `:g/b/y` makes `b` the last search pattern: from the top,
+// `n` goes to the first line with a `b`.
+#[test]
+fn global_becomes_the_pattern_of_n() {
+    let mut test = EditorTest::new("x\nb1\nzzz\nb2\n");
+    test.keys("/zzz<CR>gg");
+    test.command("g/b/y");
+    test.keys("n");
+    test.assert_cursor(1, 0);
+}
+
+// nvim --clean: `:g/b/s/a/X/` on "ab", "b", "b" changes one line, and the
+// message counts that line, not the three that matched `b`.
+#[test]
+fn global_substitute_reports_the_lines_it_changed() {
+    let mut test = EditorTest::new("ab\nb\nb\n");
+    test.command("g/b/s/a/X/");
+    assert_eq!(test.buffer_content(), "Xb\nb\nb\n");
+    assert_eq!(test.editor.status_message(), "Substituted on 1 line(s)");
+}

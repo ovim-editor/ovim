@@ -111,6 +111,19 @@ impl Editor {
         self.search.current_search = None;
     }
 
+    /// Makes `pattern` the last search pattern, as `:s` and `:g` do: the `/`
+    /// register, `n`/`N` and the highlight all follow it, and the direction
+    /// of the last `/` or `?` is kept.
+    pub(crate) fn set_last_search_pattern(&mut self, pattern: &str) {
+        self.registers.set_last_search(pattern.to_string());
+        self.search.current_search = Some(Search::new_with_options(
+            pattern.to_string(),
+            self.search.search_forward,
+            self.options.ignorecase,
+            self.options.smartcase,
+        ));
+    }
+
     /// Executes the current search and moves cursor to first match
     pub fn execute_search(&mut self) {
         // An empty pattern (`/<CR>` or `?<CR>`) repeats the last search in the
