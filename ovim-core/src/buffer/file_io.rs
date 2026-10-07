@@ -219,7 +219,12 @@ impl Buffer {
 
     /// The file bytes: line endings and encoding as loaded.
     fn file_bytes(&self) -> Result<Vec<u8>> {
-        let content = self.rope.to_string();
+        self.encode_for_file(self.rope.to_string())
+    }
+
+    /// `content` (lines ending in `\n`) with the line endings and encoding
+    /// the buffer was loaded with.
+    fn encode_for_file(&self, content: String) -> Result<Vec<u8>> {
         let content = match self.line_ending {
             LineEnding::Lf | LineEnding::Mixed => content,
             LineEnding::Crlf => content.replace('\n', "\r\n"),
@@ -264,6 +269,45 @@ impl Buffer {
         tokio::task::block_in_place(|| {
             tokio::runtime::Handle::current().block_on(self.write_contents_to(&path))
         })
+    }
+
+    /// Write lines `first..=last` (0-based) to a file, replacing its content
+    /// or appending to it, without making it the buffer's file (vim's
+    /// `:{range}w {file}` and `:w >> {file}`). Every line ends in a line
+    /// break. Returns the number of characters written.
+    pub fn write_lines<P: AsRef<Path>>(
+        &self,
+        path: P,
+        first: usize,
+        last: usize,
+        append: bool,
+    ) -> Result<usize> {
+        use std::io::Write;
+
+        let path = normalize_path(path.as_ref());
+        let mut content = String::new();
+        for index in first..=last {
+            if let Some(line) = self.line_text(index) {
+                content.push_str(&line);
+                content.push('\n');
+            }
+        }
+        let chars = content.chars().count();
+        let bytes = self.encode_for_file(content)?;
+        let mut options = std::fs::OpenOptions::new();
+        if append {
+            options.append(true).create(true);
+        } else {
+            options.write(true).create(true).truncate(true);
+        }
+        let mut file = options.open(&path).context(format!(
+            "Failed to open file for writing: {}",
+            path.display()
+        ))?;
+        file.write_all(&bytes)
+            .context("Failed to write file content")?;
+        file.sync_all().context("Failed to sync file to disk")?;
+        Ok(chars)
     }
 
     /// Saves the buffer to its file path (blocking wrapper)

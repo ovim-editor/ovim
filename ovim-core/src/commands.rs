@@ -157,17 +157,25 @@ fn run_parsed(editor: &mut Editor, parsed: &ParsedCmd) -> CommandResult {
 }
 
 /// Expand `~`, `%`, `#` and their modifiers in the file argument of `:e`,
-/// `:w`, `:sp`, `:r`, `:cd`, ... once, before the handler sees it.
+/// `:w`, `:sp`, `:r`, `:cd`, ... once, before the handler sees it. The `>>`
+/// of `:w >> file` is not part of the file name and is kept as typed.
 fn expand_file_argument(editor: &Editor, args: &str) -> Result<String, String> {
-    let home = files::expand_tilde(args)
-        .map_err(|error| format!("Failed to expand path '{args}': {error}"))?;
+    let marker_len = if args.starts_with(">>") {
+        args.len() - args[2..].trim_start().len()
+    } else {
+        0
+    };
+    let (marker, path) = args.split_at(marker_len);
+    let home = files::expand_tilde(path)
+        .map_err(|error| format!("Failed to expand path '{path}': {error}"))?;
     let current_file = editor.buffer().file_path().unwrap_or("");
     let alternate_file = editor.registers().get(Some('#'));
-    crate::editor::shell_expansion::expand_file_argument(
+    let expanded = crate::editor::shell_expansion::expand_file_argument(
         &home.to_string_lossy(),
         current_file,
         &alternate_file,
-    )
+    )?;
+    Ok(format!("{marker}{expanded}"))
 }
 
 /// Run a command line the user typed (`:` prompt, keymaps, Lua, `ZZ`) and

@@ -419,3 +419,145 @@ async fn write_recreates_a_file_deleted_externally() {
     assert_eq!(std::fs::read_to_string(&first).unwrap(), "ne\n");
     assert!(!test.editor.is_modified());
 }
+
+fn error_message(result: ovim::command_result::CommandResult) -> String {
+    match result {
+        ovim::command_result::CommandResult::Error(error) => error.error,
+        other => panic!("expected an error, got {other:?}"),
+    }
+}
+
+fn assert_success(result: ovim::command_result::CommandResult) {
+    assert!(
+        matches!(result, ovim::command_result::CommandResult::Success(_)),
+        "{result:?}"
+    );
+}
+
+// nvim --clean, buffer l1 l2 l3: `:1,2w part.txt` writes "l1\nl2\n" to the new
+// file, again without ! is E13, with ! it overwrites; the buffer stays
+// unnamed and modified.
+#[tokio::test(flavor = "multi_thread")]
+async fn ranged_write_to_another_file_needs_bang_only_for_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let part = dir.path().join("part.txt");
+    let mut test = EditorTest::new("l1\nl2\nl3\n");
+    test.keys("x");
+
+    assert_success(run(&mut test, &format!("1,2w {}", part.display())));
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), "1\nl2\n");
+
+    let message = error_message(run(&mut test, &format!("1,2w {}", part.display())));
+    assert!(message.starts_with("E13:"), "{message}");
+
+    assert_success(run(&mut test, &format!("2,3w! {}", part.display())));
+    assert_eq!(std::fs::read_to_string(&part).unwrap(), "l2\nl3\n");
+
+    assert_eq!(
+        current_file(&test),
+        "",
+        "a partial write does not name the buffer"
+    );
+    assert!(test.editor.is_modified());
+}
+
+// nvim --clean, editing own.txt (own1 own2 own3) after changing line 1:
+// `:1,2w` and `:1,2w own.txt` are E140; `:1,2w!` writes the two lines to
+// own.txt and leaves the buffer modified; a range covering the whole buffer
+// is an ordinary write.
+#[tokio::test(flavor = "multi_thread")]
+async fn ranged_write_to_the_buffers_own_file_needs_bang() {
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("own.txt");
+    std::fs::write(&own, "own1\nown2\nown3\n").unwrap();
+    let mut test = EditorTest::new("");
+    test.load_file(own.to_str().unwrap());
+    test.keys("x");
+
+    let message = error_message(run(&mut test, "1,2w"));
+    assert!(message.starts_with("E140:"), "{message}");
+    let message = error_message(run(&mut test, &format!("1,2w {}", own.display())));
+    assert!(message.starts_with("E140:"), "{message}");
+    assert_eq!(std::fs::read_to_string(&own).unwrap(), "own1\nown2\nown3\n");
+
+    assert_success(run(&mut test, "1,3w"));
+    assert_eq!(std::fs::read_to_string(&own).unwrap(), "wn1\nown2\nown3\n");
+    assert!(!test.editor.is_modified());
+
+    test.keys("x");
+    assert_success(run(&mut test, "1,2w!"));
+    assert_eq!(std::fs::read_to_string(&own).unwrap(), "n1\nown2\n");
+    assert!(test.editor.is_modified());
+}
+
+// nvim --clean, buffer l1 l2 l3: `:w >> f` appends the buffer, `:1,2w >> f`
+// and `:w>>f` append the range / without a blank; `:w >> missing` is E212 and
+// creates nothing; `:w! >> missing` creates it.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_append_adds_to_an_existing_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("log.txt");
+    let missing = dir.path().join("missing.txt");
+    std::fs::write(&target, "old\n").unwrap();
+    let mut test = EditorTest::new("l1\nl2\nl3\n");
+
+    assert_success(run(&mut test, &format!("w >> {}", target.display())));
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old\nl1\nl2\nl3\n"
+    );
+    assert_success(run(&mut test, &format!("2,3w >> {}", target.display())));
+    assert_success(run(&mut test, &format!("1w>>{}", target.display())));
+    assert_eq!(
+        std::fs::read_to_string(&target).unwrap(),
+        "old\nl1\nl2\nl3\nl2\nl3\nl1\n"
+    );
+
+    let message = error_message(run(&mut test, &format!("w >> {}", missing.display())));
+    assert!(message.starts_with("E212:"), "{message}");
+    assert!(!missing.exists());
+    assert_success(run(&mut test, &format!("w! >> {}", missing.display())));
+    assert_eq!(std::fs::read_to_string(&missing).unwrap(), "l1\nl2\nl3\n");
+}
+
+// nvim --clean, editing own.txt: `:2,3w >>` appends lines 2-3 to the buffer's
+// own file without E140 and leaves the buffer modified; with no file name it
+// is E32.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_append_without_a_file_uses_the_buffers_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let own = dir.path().join("own.txt");
+    std::fs::write(&own, "own1\nown2\nown3\n").unwrap();
+    let mut test = EditorTest::new("");
+    test.load_file(own.to_str().unwrap());
+    test.keys("x");
+
+    assert_success(run(&mut test, "2,3w >>"));
+    assert_eq!(
+        std::fs::read_to_string(&own).unwrap(),
+        "own1\nown2\nown3\nown2\nown3\n"
+    );
+    assert!(test.editor.is_modified());
+
+    let mut unnamed = EditorTest::new("text\n");
+    let message = error_message(run(&mut unnamed, "w >>"));
+    assert!(message.starts_with("E32:"), "{message}");
+}
+
+// nvim --clean: `:w existing.txt` in an unnamed buffer is E13; `:w!` writes it
+// and names the buffer.
+#[tokio::test(flavor = "multi_thread")]
+async fn write_of_an_unnamed_buffer_to_an_existing_file_needs_bang() {
+    let dir = tempfile::tempdir().unwrap();
+    let existing = dir.path().join("existing.txt");
+    std::fs::write(&existing, "old\n").unwrap();
+    let mut test = EditorTest::new("l1\nl2\nl3\n");
+
+    let message = error_message(run(&mut test, &format!("w {}", existing.display())));
+    assert!(message.starts_with("E13:"), "{message}");
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "old\n");
+
+    assert_success(run(&mut test, &format!("w! {}", existing.display())));
+    assert_eq!(std::fs::read_to_string(&existing).unwrap(), "l1\nl2\nl3\n");
+    assert!(current_file(&test).ends_with("existing.txt"));
+}

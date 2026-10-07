@@ -250,7 +250,13 @@ fn cases() -> Vec<Case> {
             .file()
             .keys("x")
             .ok(Has("f.txt\" 4L, 16C written")),
+        // nvim --clean: lines 2-3 of the 4-line buffer go to the new file
+        // (8 characters); only a partial write to the buffer's own file is
+        // E140.
         case("2,3w {dir}/part.txt")
+            .file()
+            .ok(Has("part.txt\" 2L, 8C written")),
+        case("2,3w {dir}/f.txt")
             .file()
             .fails("E140: Use ! to write partial buffer"),
         // New: :sav[eas] renames the buffer; an existing file needs `!`.

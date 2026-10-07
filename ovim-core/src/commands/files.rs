@@ -36,12 +36,16 @@ fn same_file(a: &str, b: &str) -> bool {
 }
 
 fn written(path: &str, editor: &Editor) -> String {
-    format!(
-        "\"{}\" {}L, {}C written",
+    report(
         path,
         editor.buffer().line_count(),
-        editor.buffer().rope().len_chars()
+        editor.buffer().rope().len_chars(),
+        "written",
     )
+}
+
+fn report(path: &str, lines: usize, chars: usize, verb: &str) -> String {
+    format!("\"{path}\" {lines}L, {chars}C {verb}")
 }
 
 /// Save the buffer to its file, or make `opts.path` its file.
@@ -103,48 +107,95 @@ pub(super) fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandRes
     }
 }
 
-/// `:[range]w[rite][!] [file]` and `:[range]w[rite] !{cmd}`.
+/// `:[range]w[rite][!] [file]`, `:[range]w[rite][!] >> [file]` and
+/// `:[range]w[rite] !{cmd}`.
 ///
 /// Like vim, `:w {file}` on a named buffer writes a copy and keeps editing
 /// the buffer's own file (`:saveas` renames); an unnamed buffer takes the
-/// name. An existing other file needs `!` (E13).
+/// name. An existing other file needs `!` (E13). Part of the buffer is
+/// written without touching the buffer's state, and to the buffer's own file
+/// only with `!` (E140). `>>` appends to a file that exists (E212; `!`
+/// creates it).
 pub(super) fn write(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let range = ex.range.expect("whole-buffer default");
     if let Some(command) = ex.args.strip_prefix('!') {
-        let range = ex.range.expect("whole-buffer default");
         return super::shell::write_to_command(editor, range, command.trim());
     }
-    if ex.explicit_range {
-        return err("E140: Use ! to write partial buffer");
-    }
+    let (append, file) = match ex.args.strip_prefix(">>") {
+        Some(file) => (true, file.trim_start()),
+        None => (false, ex.args),
+    };
     let current = editor.buffer().file_path().map(str::to_string);
-    let target = match (ex.args, &current) {
-        ("", _) => None,
-        (file, Some(current)) => (!same_file(current, file)).then(|| file.to_string()),
-        // An unnamed buffer takes the name.
-        (file, None) => {
+    let partial = range.start > 1 || range.end < super::range::last_line(editor);
+    let own_file = file.is_empty()
+        || current
+            .as_deref()
+            .is_some_and(|current| same_file(current, file));
+
+    if append {
+        let Some(target) = (!file.is_empty()).then(|| file.to_string()).or(current) else {
+            return err("E32: No file name");
+        };
+        if !ex.bang && !std::path::Path::new(&target).exists() {
+            return err("E212: Can't open file for writing: no such file or directory");
+        }
+        return write_lines(editor, &target, range, true);
+    }
+    if own_file {
+        if !partial {
             return save_buffer(
                 editor,
                 SaveOpts {
-                    path: Some(file),
+                    path: None,
                     force: ex.bang,
                 },
-            )
+            );
         }
-    };
-    let Some(target) = target else {
+        let Some(current) = current else {
+            return err("No file name");
+        };
+        if !ex.bang {
+            return err("E140: Use ! to write partial buffer");
+        }
+        return write_lines(editor, &current, range, false);
+    }
+    if !ex.bang && std::path::Path::new(file).exists() {
+        return err("E13: File exists (add ! to override)");
+    }
+    if partial {
+        return write_lines(editor, file, range, false);
+    }
+    if current.is_none() {
         return save_buffer(
             editor,
             SaveOpts {
-                path: None,
+                path: Some(file),
                 force: ex.bang,
             },
         );
-    };
-    if !ex.bang && std::path::Path::new(&target).exists() {
-        return err("E13: File exists (add ! to override)");
     }
-    match editor.buffer().write_copy(&target) {
-        Ok(()) => ok(written(&target, editor)),
+    match editor.buffer().write_copy(file) {
+        Ok(()) => ok(written(file, editor)),
+        Err(error) => err(format!("Failed to save: {error}")),
+    }
+}
+
+/// Write the lines of `range` to `target` (replacing it, or appending) and
+/// leave the buffer's own state alone: it stays modified.
+fn write_lines(
+    editor: &mut Editor,
+    target: &str,
+    range: super::range::LineRange,
+    append: bool,
+) -> CommandResult {
+    let (start, end) = range.indexes();
+    match editor.buffer().write_lines(target, start, end, append) {
+        Ok(chars) => ok(report(
+            target,
+            end - start + 1,
+            chars,
+            if append { "appended" } else { "written" },
+        )),
         Err(error) => err(format!("Failed to save: {error}")),
     }
 }
