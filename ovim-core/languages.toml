@@ -171,7 +171,7 @@ fallback_commands = [
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. ovim does not download it: build it from the hyperion-ls repo (cargo build --release -p hyperion-lsp) and put the binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
 
 [language.dap]
 command = "hyperion-lsp"
@@ -201,7 +201,7 @@ fallback_commands = [
 ]
 root_markers = ["settings.gradle.kts", "settings.gradle", "pom.xml", "build.gradle.kts", "build.gradle"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. ovim does not download it: build it from the hyperion-ls repo (cargo build --release -p hyperion-lsp) and put the binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
 
 [language.dap]
 command = "hyperion-lsp"
@@ -229,7 +229,7 @@ fallback_commands = [
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. ovim does not download it: build it from the hyperion-ls repo (cargo build --release -p hyperion-lsp) and put the binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
 
 [language.dap]
 command = "hyperion-lsp"
@@ -257,7 +257,7 @@ fallback_commands = [
 ]
 root_markers = ["build.sbt", "settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. ovim does not download it: build it from the hyperion-ls repo (cargo build --release -p hyperion-lsp) and put the binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
 
 [language.dap]
 command = "hyperion-lsp"
