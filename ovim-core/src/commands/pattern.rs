@@ -390,7 +390,8 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
     if matches!(sub.command.names[0], "g[lobal]" | "v[global]") {
         return err("E147: Cannot do :global recursive");
     }
-    let whole = sub.range.is_none();
+    // Commands that go on after a `|` need a run per line.
+    let whole = sub.range.is_none() && sub.next.is_none();
     match sub.command.names[0] {
         "d[elete]" if whole => global_delete(editor, &lines),
         "y[ank]" if whole => {

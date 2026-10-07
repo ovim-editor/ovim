@@ -249,3 +249,27 @@ fn nested_global_is_refused() {
         "E147: Cannot do :global recursive"
     );
 }
+
+// nvim --clean: `:g/b/d|3d` deletes b2, then line 3 of the text left, for
+// each match: "c1 b2 a3 d4a" gives "c1 a3".
+#[test]
+fn global_runs_the_commands_after_a_bar() {
+    let mut test = EditorTest::new("c1\nb2\na3\nd4a\n");
+    test.command("g/b/d|3d");
+    assert_eq!(test.buffer_content(), "c1\na3\n");
+}
+
+// nvim --clean: `:g/o/d | w file` writes after every deletion; the last write
+// holds what is left ("x").
+#[tokio::test(flavor = "multi_thread")]
+async fn global_bar_write_writes_the_file() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("g.txt");
+    std::fs::write(&path, "oo\nx\no\n").unwrap();
+    let mut test = EditorTest::new("");
+    test.load_file(path.to_str().unwrap());
+
+    test.command("g/o/d | w");
+
+    assert_eq!(std::fs::read_to_string(&path).unwrap(), "x\n");
+}

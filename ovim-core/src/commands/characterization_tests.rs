@@ -648,7 +648,8 @@ fn cases() -> Vec<Case> {
             .is("1 line moved")
             .after("  d4a\n  a3\nc1\nb2\n"),
         case("global/a/d").is("Deleted 2 line(s)"),
-        case("g/b/d|3d").is("Deleted 1 line(s)"),
+        // vim: `:g/b/d|3d` deletes b2, then line 3 of what is left.
+        case("g/b/d|3d").after("c1\n  a3\n"),
         case("g/a/g/b/d").fails("E147: Cannot do :global recursive"),
         case("g/a/bogus").fails("E492: Not an editor command: bogus"),
         // ---- shell ----
