@@ -170,52 +170,90 @@ struct TomlEntry {
     settings: Option<toml::Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct TomlFile {
-    #[serde(default)]
-    lsp_settings: Vec<TomlEntry>,
+/// The `[[lsp_settings]]` entries of a user `languages.toml` that could be
+/// read, and what was wrong with the others.
+#[derive(Debug, Default)]
+pub struct ParsedToml {
+    pub entries: Vec<(Vec<String>, UserLspSettings)>,
+    /// One message per entry (or per file) that was skipped, naming it so a
+    /// typo is not silently ignored.
+    pub problems: Vec<String>,
 }
 
-/// Parses the `[[lsp_settings]]` entries of a user `languages.toml`.
-/// Errors name the offending entry so a typo is not silently ignored.
-pub fn parse_toml(text: &str) -> Result<Vec<(Vec<String>, UserLspSettings)>, String> {
-    let file: TomlFile =
-        toml::from_str(text).map_err(|e| format!("invalid [[lsp_settings]]: {e}"))?;
-    let mut out = Vec::new();
-    for (index, entry) in file.lsp_settings.into_iter().enumerate() {
+/// Parses the `[[lsp_settings]]` entries of a user `languages.toml`. A bad
+/// entry is skipped and reported, the rest still apply.
+pub fn parse_toml(text: &str) -> ParsedToml {
+    let mut parsed = ParsedToml::default();
+    let file: toml::Table = match toml::from_str(text) {
+        Ok(file) => file,
+        Err(e) => {
+            parsed.problems.push(format!("invalid languages.toml: {e}"));
+            return parsed;
+        }
+    };
+    let entries = match file.get("lsp_settings") {
+        None => return parsed,
+        Some(toml::Value::Array(entries)) => entries,
+        Some(_) => {
+            parsed
+                .problems
+                .push("invalid [[lsp_settings]]: expected an array of tables".to_string());
+            return parsed;
+        }
+    };
+    for (index, entry) in entries.iter().enumerate() {
+        let number = index + 1;
+        let entry: TomlEntry = match entry.clone().try_into() {
+            Ok(entry) => entry,
+            Err(e) => {
+                parsed
+                    .problems
+                    .push(format!("[[lsp_settings]] entry {number}: {e}"));
+                continue;
+            }
+        };
         let mut languages = entry.languages;
         languages.extend(entry.language);
         if languages.is_empty() {
-            return Err(format!(
-                "[[lsp_settings]] entry {} needs `language = \"...\"` or `languages = [...]`",
-                index + 1
+            parsed.problems.push(format!(
+                "[[lsp_settings]] entry {number} needs `language = \"...\"` or `languages = [...]`"
             ));
+            continue;
         }
         let to_json = |value: Option<toml::Value>| -> Result<Option<Value>, String> {
             value
                 .map(|v| {
-                    serde_json::to_value(v).map_err(|e| format!("[[lsp_settings]] value: {e}"))
+                    serde_json::to_value(v)
+                        .map_err(|e| format!("[[lsp_settings]] entry {number} value: {e}"))
                 })
                 .transpose()
         };
-        out.push((
-            languages,
-            UserLspSettings {
-                initialization_options: to_json(entry.initialization_options)?,
-                settings: to_json(entry.settings)?,
-            },
-        ));
+        match (
+            to_json(entry.initialization_options),
+            to_json(entry.settings),
+        ) {
+            (Ok(initialization_options), Ok(settings)) => parsed.entries.push((
+                languages,
+                UserLspSettings {
+                    initialization_options,
+                    settings,
+                },
+            )),
+            (Err(e), _) | (_, Err(e)) => parsed.problems.push(e),
+        }
     }
-    Ok(out)
+    parsed
 }
 
 /// Loads the `[[lsp_settings]]` of a user `languages.toml` into the store.
-pub fn load_toml(text: &str) -> Result<(), String> {
+/// Returns what was wrong with the entries that were skipped.
+pub fn load_toml(text: &str) -> Vec<String> {
+    let parsed = parse_toml(text);
     let mut store = store().write().unwrap_or_else(|e| e.into_inner());
-    for (languages, settings) in parse_toml(text)? {
-        merge_into(&mut store.toml, &languages, &settings);
+    for (languages, settings) in &parsed.entries {
+        merge_into(&mut store.toml, languages, settings);
     }
-    Ok(())
+    parsed.problems
 }
 
 #[cfg(test)]
@@ -235,19 +273,43 @@ mod tests {
             language = "rust"
             settings = { "rust-analyzer" = { check = { command = "check" } } }
             "#,
-        )
-        .unwrap();
-        assert_eq!(parsed.len(), 2);
-        assert_eq!(parsed[0].0, ["java", "kotlin"]);
+        );
+        assert!(parsed.problems.is_empty(), "{:?}", parsed.problems);
+        let entries = parsed.entries;
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].0, ["java", "kotlin"]);
         assert_eq!(
-            parsed[0].1.initialization_options,
+            entries[0].1.initialization_options,
             Some(json!({"hyperion": {"buildToolClasspath": true}}))
         );
-        assert_eq!(parsed[1].0, ["rust"]);
-        assert_eq!(parsed[1].1.initialization_options, None);
-        assert!(parse_toml("[[lsp_settings]]\nsettings = {}\n")
-            .unwrap_err()
-            .contains("entry 1 needs"));
+        assert_eq!(entries[1].0, ["rust"]);
+        assert_eq!(entries[1].1.initialization_options, None);
+    }
+
+    #[test]
+    fn a_bad_entry_is_skipped_and_reported_without_dropping_the_others() {
+        let parsed = parse_toml(
+            r#"
+            [[lsp_settings]]
+            settings = {}
+
+            [[lsp_settings]]
+            languages = "java"
+
+            [[lsp_settings]]
+            language = "rust"
+            settings = { good = true }
+            "#,
+        );
+        assert_eq!(parsed.entries.len(), 1);
+        assert_eq!(parsed.entries[0].0, ["rust"]);
+        assert_eq!(parsed.problems.len(), 2, "{:?}", parsed.problems);
+        assert!(parsed.problems[0].contains("entry 1 needs"));
+        assert!(parsed.problems[1].contains("entry 2"));
+
+        let broken = parse_toml("[[lsp_settings]\nlanguage = ");
+        assert!(broken.entries.is_empty());
+        assert_eq!(broken.problems.len(), 1);
     }
 
     #[test]

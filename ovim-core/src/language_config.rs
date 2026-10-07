@@ -342,6 +342,9 @@ pub struct LanguageRegistry {
 
     /// Language ID → indices into `companions` vec
     companions_by_language: HashMap<String, Vec<usize>>,
+
+    /// Problems found in the user's `languages.toml`, for the user to see.
+    warnings: Vec<String>,
 }
 
 impl InstallMethod {
@@ -384,23 +387,9 @@ impl LanguageRegistry {
     ///
     /// This should be called early in main() before any language detection.
     pub fn init() -> Result<(), String> {
-        // Load embedded config (compiled into binary)
-        let embedded = include_str!("../languages.toml");
-
-        // Load user config (if exists)
-        let user_config = Self::load_user_config();
-
-        // `[[lsp_settings]]` (initialization options / workspace settings for
-        // language servers) only ever come from the user's own file.
-        if let Some(user) = &user_config {
-            crate::lsp::user_settings::load_toml(user)?;
-        }
-
-        // Parse and merge configurations
-        let (languages, companions) = Self::parse_configs(embedded, user_config)?;
-
-        // Build lookup indices for fast detection
-        let registry = Self::build_indices(languages, companions);
+        // Load embedded config (compiled into binary) and the user's, if any
+        let registry =
+            Self::from_sources(include_str!("../languages.toml"), Self::load_user_config())?;
 
         // Set global singleton (fails if already initialized)
         LANGUAGE_REGISTRY
@@ -408,6 +397,37 @@ impl LanguageRegistry {
             .map_err(|_| "LanguageRegistry already initialized".to_string())?;
 
         Ok(())
+    }
+
+    /// Builds a registry from the embedded config and the user's
+    /// `languages.toml`. A mistake in the user's file costs the part of it
+    /// that is wrong, never the built-in languages.
+    fn from_sources(embedded: &str, user_config: Option<String>) -> Result<Self, String> {
+        let mut warnings = Vec::new();
+
+        // `[[lsp_settings]]` (initialization options / workspace settings for
+        // language servers) only ever come from the user's own file.
+        if let Some(user) = &user_config {
+            warnings.extend(crate::lsp::user_settings::load_toml(user));
+        }
+
+        // Parse and merge configurations
+        let (languages, companions) = match Self::parse_configs(embedded, user_config.clone()) {
+            Ok(parsed) => parsed,
+            Err(error) if user_config.is_some() => {
+                warnings.push(format!("{error}; using the built-in languages only"));
+                Self::parse_configs(embedded, None)?
+            }
+            Err(error) => return Err(error),
+        };
+        for warning in &warnings {
+            crate::log_warn!("language_config", "{}", warning);
+        }
+
+        // Build lookup indices for fast detection
+        let mut registry = Self::build_indices(languages, companions);
+        registry.warnings = warnings;
+        Ok(registry)
     }
 
     /// Get the global registry (panics if not initialized)
@@ -489,6 +509,12 @@ impl LanguageRegistry {
             .get(language_id)
             .map(|indices| indices.iter().map(|&idx| &self.companions[idx]).collect())
             .unwrap_or_default()
+    }
+
+    /// What was wrong with the user's `languages.toml` (entries that were
+    /// skipped, or the whole file when it could not be read).
+    pub fn config_warnings(&self) -> &[String] {
+        &self.warnings
     }
 
     /// List all companion LSP configs
@@ -613,6 +639,7 @@ impl LanguageRegistry {
             by_id,
             companions,
             companions_by_language,
+            warnings: Vec::new(),
         }
     }
 }
@@ -975,6 +1002,45 @@ mod tests {
             seen += 1;
         }
         assert!(seen >= 4, "java, kotlin, groovy and scala use hyperion-lsp");
+    }
+
+    /// One bad `[[lsp_settings]]` entry used to fail the whole registry
+    /// setup, leaving no language known at all.
+    #[test]
+    fn a_bad_lsp_settings_entry_keeps_the_built_in_languages() {
+        let user = r#"
+            [[lsp_settings]]
+            settings = {}
+
+            [[lsp_settings]]
+            language = "registry-test-language"
+            settings = { fine = true }
+        "#;
+        let registry =
+            LanguageRegistry::from_sources(include_str!("../languages.toml"), Some(user.into()))
+                .expect("a settings mistake must not fail the registry");
+
+        assert!(registry.detect("main.rs").is_some());
+        assert_eq!(registry.config_warnings().len(), 1);
+        assert!(registry.config_warnings()[0].contains("entry 1"));
+        // The good entry still applies.
+        assert!(crate::lsp::user_settings::for_language("registry-test-language").is_some());
+    }
+
+    /// A user file that is not even valid TOML does not wipe the built-ins either.
+    #[test]
+    fn an_unreadable_user_file_leaves_the_built_in_languages() {
+        let registry = LanguageRegistry::from_sources(
+            include_str!("../languages.toml"),
+            Some("[[language\nid = ".into()),
+        )
+        .expect("a broken user file must not fail the registry");
+
+        assert!(registry.detect("main.rs").is_some());
+        assert!(registry
+            .config_warnings()
+            .iter()
+            .any(|warning| warning.contains("built-in languages only")));
     }
 
     #[test]

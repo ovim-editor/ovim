@@ -34,6 +34,8 @@ pub struct TickState {
     /// the rehighlight debounce.
     pub(super) edit_seen: Option<(BufferId, usize)>,
     pub(super) last_edit: Instant,
+    /// The user has been told about mistakes in their `languages.toml`.
+    pub(super) config_warnings_shown: bool,
 }
 
 impl Default for TickState {
@@ -68,6 +70,7 @@ impl TickState {
             last_external_file_check: now,
             edit_seen: None,
             last_edit: now,
+            config_warnings_shown: false,
         }
     }
 }

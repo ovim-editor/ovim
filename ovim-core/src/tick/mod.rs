@@ -85,6 +85,7 @@ impl Editor {
     /// be tested without sleeping.
     pub(crate) async fn tick_at(&mut self, state: &mut TickState, now: Instant) -> TickReport {
         let editor = self;
+        report_config_warnings(editor, state);
         // Do not let a slow LSP initialization trap a yank flash on screen. Keep
         // deferring LSP while the flash is visible and for the tick that clears
         // it, giving the frontend one complete tick to paint the clear frame.
@@ -356,6 +357,25 @@ async fn process_lsp_notifications(editor: &mut Editor) {
             });
             editor.mark_dirty();
         }
+    }
+}
+
+/// Tells the user, once, about the parts of their `languages.toml` that were
+/// skipped.
+fn report_config_warnings(editor: &mut Editor, state: &mut TickState) {
+    use crate::editor::{ToastLevel, ToastRequest, ToastSource};
+
+    if std::mem::replace(&mut state.config_warnings_shown, true) {
+        return;
+    }
+    let Some(registry) = crate::language_config::LanguageRegistry::try_get() else {
+        return;
+    };
+    for warning in registry.config_warnings() {
+        editor.push_toast(
+            ToastRequest::new(ToastSource::System, ToastLevel::Warning, warning.clone())
+                .with_title("languages.toml"),
+        );
     }
 }
 

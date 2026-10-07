@@ -471,7 +471,11 @@ fn normalize_path(path: &Path, editor: &mut Editor) -> PathBuf {
 /// servers (e.g., Tailwind CSS for TypeScript) and starts any that should be
 /// active for the current project.
 async fn initialize_companions(request: &InitRequest, language_id: &str, abs_path: &Path) {
-    let companions = LanguageRegistry::get().companions_for_language(language_id);
+    // Languages registered from Lua can reach here without the config registry.
+    let Some(registry) = LanguageRegistry::try_get() else {
+        return;
+    };
+    let companions = registry.companions_for_language(language_id);
     if companions.is_empty() {
         return;
     }
@@ -590,10 +594,12 @@ async fn install_and_start_companion(
 /// The user agreed to install the companion `companion_id`.
 async fn install_approved_companion(request: &InitRequest, companion_id: &str) {
     let language_id = document_language_id(&request.language, &request.abs_path);
-    let companion = LanguageRegistry::get()
-        .companions_for_language(&language_id)
-        .into_iter()
-        .find(|companion| companion.id == companion_id);
+    let companion = LanguageRegistry::try_get().and_then(|registry| {
+        registry
+            .companions_for_language(&language_id)
+            .into_iter()
+            .find(|companion| companion.id == companion_id)
+    });
     let Some((companion, auto_install_config)) =
         companion.and_then(|c| c.auto_install.as_ref().map(|config| (c, config)))
     else {
