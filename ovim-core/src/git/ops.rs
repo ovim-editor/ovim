@@ -667,7 +667,11 @@ pub fn file_history(path: &Path, limit: usize) -> Result<Vec<LogEntry>> {
             None
         };
         let mut options = DiffOptions::new();
-        options.pathspec(&relative).disable_pathspec_match(true);
+        // The repository root has an empty relative path, which as a literal
+        // pathspec would match nothing; the whole tree is wanted instead.
+        if !relative.as_os_str().is_empty() {
+            options.pathspec(&relative).disable_pathspec_match(true);
+        }
         let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?;
         if diff.deltas().len() > 0 {
             entries.push(log_entry(
@@ -950,6 +954,22 @@ mod tests {
         index.read(true).unwrap();
         assert!(!index.has_conflicts());
         assert_eq!(repo.index_text("a.txt"), "base\n");
+    }
+
+    #[test]
+    fn history_of_the_repository_root_lists_every_commit() {
+        let repo = Repo::new();
+        repo.write("a.txt", "one\n");
+        repo.commit_all("first");
+        repo.write("dir/b.txt", "two\n");
+        repo.commit_all("second");
+        let messages: Vec<_> = file_history(&repo.root, 10)
+            .unwrap()
+            .into_iter()
+            .map(|entry| entry.subject)
+            .collect();
+        assert_eq!(messages, ["second", "first"]);
+        assert_eq!(file_history(&repo.root.join("dir"), 10).unwrap().len(), 1);
     }
 
     #[test]
