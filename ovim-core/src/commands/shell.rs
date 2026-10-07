@@ -141,6 +141,7 @@ pub(super) fn read(editor: &mut Editor, ex: &Ex) -> CommandResult {
         return unmodifiable();
     }
     let below = ex.range.expect("line-range command").end;
+    let from_command = ex.args.starts_with('!');
     let (text, message) = if let Some(command) = ex.args.strip_prefix('!') {
         let command = expand(editor, command.trim());
         let output = match run_piped(editor, &command, None) {
@@ -178,10 +179,23 @@ pub(super) fn read(editor: &mut Editor, ex: &Ex) -> CommandResult {
     } else {
         format!("{text}\n")
     };
+    // vim (nvim --clean): the cursor lands on the first line read from a
+    // file, but on the last line of a command's output, at its first
+    // non-blank character.
+    let cursor_line = if from_command {
+        below + text.lines().count().max(1) - 1
+    } else {
+        below
+    };
     editor.record_operation(
         |buffer| {
             insert_lines_below(buffer, below, &text);
-            buffer.cursor_mut().set_position(below, GraphemeCol::ZERO);
+            buffer
+                .cursor_mut()
+                .set_position(cursor_line, GraphemeCol::ZERO);
+            if from_command {
+                crate::editor::Motions::first_non_blank(buffer);
+            }
         },
         None,
     );

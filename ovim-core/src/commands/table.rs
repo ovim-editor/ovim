@@ -53,6 +53,9 @@ pub(crate) struct ExCommand {
     /// `quit`. The first name is the canonical one.
     pub names: &'static [&'static str],
     pub bang: bool,
+    /// A `!` right after the name starts a shell command instead of being a
+    /// bang: `:r!cmd` is `:r !cmd`.
+    pub shell_bang: bool,
     pub range: RangePolicy,
     pub args: ArgKind,
     pub contexts: Contexts,
@@ -82,6 +85,7 @@ const fn ex(names: &'static [&'static str], handler: Handler) -> ExCommand {
     ExCommand {
         names,
         bang: false,
+        shell_bang: false,
         range: RangePolicy::None,
         args: ArgKind::None,
         contexts: Contexts::EDITABLE,
@@ -99,6 +103,10 @@ impl std::fmt::Debug for ExCommand {
 impl ExCommand {
     const fn bang(mut self) -> Self {
         self.bang = true;
+        self
+    }
+    const fn shell_bang(mut self) -> Self {
+        self.shell_bang = true;
         self
     }
     const fn range(mut self, range: RangePolicy) -> Self {
@@ -169,6 +177,7 @@ pub(crate) static COMMANDS: &[ExCommand] = &[
     // ---- shell ----
     ex(&["!"], shell::bang).range(R::Line).args(A::Rest),
     ex(&["r[ead]"], shell::read)
+        .shell_bang()
         .range(R::LineOrZero)
         .args(A::File),
     ex(&["ter[minal]", "sh[ell]"], shell::terminal).args(A::Rest),

@@ -561,3 +561,39 @@ async fn write_of_an_unnamed_buffer_to_an_existing_file_needs_bang() {
     assert_eq!(std::fs::read_to_string(&existing).unwrap(), "l1\nl2\nl3\n");
     assert!(current_file(&test).ends_with("existing.txt"));
 }
+
+// nvim --clean, buffer l1 l2 l3 with the cursor on l1: `:r!echo hi`,
+// `:r! echo hi` and `:r !echo hi` all insert "hi" below the cursor line, and
+// `:0r!echo hi` above the first line, `:3r!echo hi` below the third; the
+// cursor ends on the inserted line.
+#[test]
+fn read_bang_inserts_the_output_of_a_command() {
+    for (command, expected, cursor_line) in [
+        ("r!echo hi", "l1\nhi\nl2\nl3\n", 1),
+        ("r! echo hi", "l1\nhi\nl2\nl3\n", 1),
+        ("r !echo hi", "l1\nhi\nl2\nl3\n", 1),
+        ("0r!echo hi", "hi\nl1\nl2\nl3\n", 0),
+        ("3r!echo hi", "l1\nl2\nl3\nhi\n", 3),
+    ] {
+        let mut test = EditorTest::new("l1\nl2\nl3\n");
+        assert_success(run(&mut test, command));
+        assert_eq!(test.buffer_content(), expected, "{command}");
+        assert_eq!(test.cursor(), (cursor_line, 0), "{command}");
+    }
+}
+
+// nvim --clean: `:2r!printf "a\n  b\n"` inserts both lines below line 2 and
+// leaves the cursor on the last of them, at its first non-blank (line 4,
+// column 3 one-based); a bar belongs to the shell command (`:r!echo a | echo b`
+// inserts only "b").
+#[test]
+fn read_bang_puts_the_cursor_on_the_last_line_and_passes_bars_to_the_shell() {
+    let mut test = EditorTest::new("l1\nl2\nl3\n");
+    assert_success(run(&mut test, "2r!printf 'a\\n  b\\n'"));
+    assert_eq!(test.buffer_content(), "l1\nl2\na\n  b\nl3\n");
+    assert_eq!(test.cursor(), (3, 2));
+
+    let mut test = EditorTest::new("l1\nl2\nl3\n");
+    assert_success(run(&mut test, "r!echo a | echo b"));
+    assert_eq!(test.buffer_content(), "l1\nb\nl2\nl3\n");
+}

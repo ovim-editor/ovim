@@ -116,6 +116,7 @@ pub(crate) fn parse(line: &str) -> Result<ParsedCmd<'_>, ParseError> {
     let command = table::lookup(name).ok_or(ParseError::Unknown)?;
 
     let (bang, after_bang) = match after_name.strip_prefix('!') {
+        Some(_) if command.shell_bang => (false, after_name),
         Some(rest) if name != "!" => {
             if !command.bang {
                 return Err(ParseError::NoBang);
@@ -418,6 +419,13 @@ mod tests {
 
         let (_, name, _, args, _) = head("t0");
         assert_eq!((name, args), ("t".to_string(), "0"));
+
+        // vim: `:r!cmd` is `:r !cmd`, not a bang.
+        let (_, name, bang, args, next) = head("r!echo a | wc");
+        assert_eq!(
+            (name, bang, args, next),
+            ("read".to_string(), false, "!echo a | wc", None)
+        );
 
         let (_, name, _, args, _) = head("r ~/x y.txt");
         assert_eq!((name, args), ("read".to_string(), "~/x y.txt"));
