@@ -102,7 +102,7 @@ yta           | y[op=Yank] t[op=Yank,char=Till/Some(Yank)] a[-] => Normal (1,8) 
 yFa           | y[op=Yank] F[op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,6) @"="a "
 yl            | y[op=Yank] l[-] => Normal (1,8) @"="b"
 y}            | y[op=Yank] }[-] => Normal (1,8) @"="beta gamma\nxdelta"
-y2w           | y[op=Yank] 2[n=2,op=Yank] w[-] => Normal (1,8) @"="beta gamma\n"
+y2w           | y[op=Yank] 2[n=2,op=Yank] w[-] => Normal (1,8) @"="beta gamma"
 yd            | y[op=Yank] d[-] => Normal (1,8)
 yc            | y[op=Yank] c[-] => Normal (1,8)
 yy            | y[op=Yank] y[-] => Normal (1,8) @"="  alpha beta gamma\n"
@@ -562,10 +562,10 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2cgx          | 2[n=2] c[n=2,op=Change] g[n=2,op=Change,cmd=g] x[-] => Normal (1,8)
 2cq           | 2[n=2] c[n=2,op=Change] q[-] => Normal (1,8)
 2c:           | 2[n=2] c[n=2,op=Change] :[-] => Command (1,8)
-2yw           | 2[n=2] y[n=2,op=Yank] w[-] => Normal (1,8) @"="beta gamma\n"
+2yw           | 2[n=2] y[n=2,op=Yank] w[-] => Normal (1,8) @"="beta gamma"
 2ye           | 2[n=2] y[n=2,op=Yank] e[-] => Normal (1,8) @"="beta gamma"
-2yb           | 2[n=2] y[n=2,op=Yank] b[-] => Normal (0,24) @"="end  alpha "
-2y$           | 2[n=2] y[n=2,op=Yank] $[-] => Normal (1,8) @"="beta gamma"
+2yb           | 2[n=2] y[n=2,op=Yank] b[-] => Normal (0,24) @"="end\n  alpha "
+2y$           | 2[n=2] y[n=2,op=Yank] $[-] => Normal (1,8) @"="beta gamma\nxdelta"
 2y0           | 2[n=2] y[n=2,op=Yank] 0[-] => Normal (1,0) @"="  alpha "
 2yj           | 2[n=2] y[n=2,op=Yank] j[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n\n"
 2yk           | 2[n=2] y[n=2,op=Yank] k[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n"
@@ -582,7 +582,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2yFa          | 2[n=2] y[n=2,op=Yank] F[n=2,op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,2) @"="alpha "
 2yl           | 2[n=2] y[n=2,op=Yank] l[-] => Normal (1,8) @"="be"
 2y}           | 2[n=2] y[n=2,op=Yank] }[-] => Normal (1,8) @"="beta gamma\nxdelta\n"
-2y2w          | 2[n=2] y[n=2,op=Yank] 2[n=4,op=Yank] w[-] => Normal (1,8) @"="beta gamma\nxdelta\n\n"
+2y2w          | 2[n=2] y[n=2,op=Yank] 2[n=4,op=Yank] w[-] => Normal (1,8) @"="beta gamma\nxdelta\n"
 2yd           | 2[n=2] y[n=2,op=Yank] d[-] => Normal (1,8)
 2yc           | 2[n=2] y[n=2,op=Yank] c[-] => Normal (1,8)
 2yy           | 2[n=2] y[n=2,op=Yank] y[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n"
@@ -1062,7 +1062,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 "ayFa         | "[cmd="] a[reg=a] y[op=Yank,reg=a] F[op=Yank,reg=a,char=FindBack/Some(Yank)] a[-] => Normal (1,6) @"="a " @a="a "
 "ayl          | "[cmd="] a[reg=a] y[op=Yank,reg=a] l[-] => Normal (1,8) @"="b" @a="b"
 "ay}          | "[cmd="] a[reg=a] y[op=Yank,reg=a] }[-] => Normal (1,8) @"="beta gamma\nxdelta" @a="beta gamma\nxdelta"
-"ay2w         | "[cmd="] a[reg=a] y[op=Yank,reg=a] 2[n=2,op=Yank,reg=a] w[-] => Normal (1,8) @"="beta gamma\n" @a="beta gamma\n"
+"ay2w         | "[cmd="] a[reg=a] y[op=Yank,reg=a] 2[n=2,op=Yank,reg=a] w[-] => Normal (1,8) @"="beta gamma" @a="beta gamma"
 "ayd          | "[cmd="] a[reg=a] y[op=Yank,reg=a] d[reg=a] => Normal (1,8)
 "ayc          | "[cmd="] a[reg=a] y[op=Yank,reg=a] c[reg=a] => Normal (1,8)
 "ayy          | "[cmd="] a[reg=a] y[op=Yank,reg=a] y[-] => Normal (1,8) @"="  alpha beta gamma\n" @a="  alpha beta gamma\n"

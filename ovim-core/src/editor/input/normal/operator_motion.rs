@@ -156,11 +156,15 @@ impl Motion {
                 return line != before.line;
             }
             Self::WordForward { big } => {
+                // With an operator the last word stops at the end of its line, unless
+                // it started on an empty line: then the range reaches the next
+                // word and the exclusive rules (`MotionRange`) classify it.
                 let buf = editor.buffer_mut();
-                if big {
-                    Motions::word_forward_big(buf, count)
-                } else {
-                    Motions::word_forward(buf, count)
+                let (line, end) = buf.operator_word_forward_end(count, big);
+                let natural_line = buf.cursor().line();
+                if !(line < natural_line && buf.line_len(line) == 0) {
+                    let col = buf.line_index(line).char_to_grapheme(end);
+                    buf.cursor_mut().set_position(line, col);
                 }
             }
             Self::WordBackward { big } => {

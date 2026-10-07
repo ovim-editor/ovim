@@ -1685,36 +1685,6 @@ pub fn search_visual_selection_backward(editor: &mut Editor) -> bool {
 // Yank operations (moved from Operators struct for consolidation)
 // ===================================================================
 
-/// Yanks (copies) from current position to end of line
-pub fn yank_to_end_of_line(buffer: &crate::buffer::Buffer) -> anyhow::Result<String> {
-    let cursor = buffer.cursor();
-    let line_idx = cursor.line();
-    let col = cursor.col().0;
-
-    if line_idx >= buffer.line_count() {
-        return Ok(String::new());
-    }
-
-    let line_start = buffer.rope().line_to_char(line_idx);
-    let line = buffer.rope().line(line_idx);
-    let line_end_char = line_start + line.len_chars();
-
-    let yank_from = line_start + col;
-    let line_text = line.to_string();
-    let ends_with_newline = line_text.ends_with('\n');
-    let yank_to = if ends_with_newline {
-        line_end_char - 1
-    } else {
-        line_end_char
-    };
-
-    if yank_from >= yank_to {
-        return Ok(String::new());
-    }
-
-    Ok(buffer.rope().slice(yank_from..yank_to).to_string())
-}
-
 /// Yanks (copies) entire line(s)
 pub fn yank_line(buffer: &crate::buffer::Buffer, count: usize) -> anyhow::Result<String> {
     let cursor = buffer.cursor();
@@ -1738,43 +1708,6 @@ pub fn yank_line(buffer: &crate::buffer::Buffer, count: usize) -> anyhow::Result
     if !yanked.ends_with('\n') {
         yanked.push('\n');
     }
-
-    Ok(yanked)
-}
-
-/// Yanks a word forward from cursor
-pub fn yank_word(buffer: &mut crate::buffer::Buffer, count: usize) -> anyhow::Result<String> {
-    let start_cursor = *buffer.cursor();
-    let start_line = start_cursor.line();
-    let start_col = start_cursor.col().0;
-    let start_char = buffer.rope().line_to_char(start_line) + start_col;
-
-    // Move cursor forward by word
-    crate::editor::Motions::word_forward(buffer, count);
-
-    let end_cursor = buffer.cursor();
-    let end_line = end_cursor.line();
-    let mut end_col = end_cursor.col().0;
-
-    // When the motion didn't move (last word on last line), yank to end of line
-    if end_line == start_line && end_col == start_col {
-        if let Some(line) = buffer.line_text(end_line) {
-            let line_len = line.chars().count();
-            if end_line + 1 >= buffer.line_count() {
-                end_col = line_len;
-            }
-        }
-    }
-
-    let end_char = buffer.rope().line_to_char(end_line) + end_col;
-
-    // Get yanked text
-    let yanked = buffer.rope().slice(start_char..end_char).to_string();
-
-    // Reset cursor to start position
-    buffer
-        .cursor_mut()
-        .set_position(start_line, GraphemeCol(start_col));
 
     Ok(yanked)
 }

@@ -823,49 +823,68 @@ impl Buffer {
         deleted
     }
 
-    /// Deletes from cursor to next word boundary (dw command).
-    /// Returns the deleted text.
-    pub fn delete_word_forward(&mut self, count: usize) -> String {
+    /// Where an operator's `w` (`W` when `big`) stops, as `(line, column)` in chars:
+    /// the next word start, except that vim's eol rule applies to the LAST word
+    /// moved over — when the final `w` crosses a line boundary the operated range
+    /// ends at the eol of the line it crossed FROM, while earlier words (and their
+    /// newlines) are covered in full. Truncating whenever the whole motion crossed
+    /// a line made `d2w` discard everything past the first newline (OV-00289).
+    ///
+    /// Leaves the cursor on the motion's target; callers restore it.
+    pub fn operator_word_forward_end(&mut self, count: usize, big: bool) -> (usize, CharCol) {
         use crate::editor::Motions;
+        let word_forward = |buffer: &mut Self, count: usize| {
+            if big {
+                Motions::word_forward_big(buffer, count)
+            } else {
+                Motions::word_forward(buffer, count)
+            }
+        };
 
         let start_line = self.cursor().line();
-        let start_grapheme = self.cursor().col();
         let start_col = self.cursor_char_col();
-
-        // Vim's eol rule applies only to the LAST word moved over: when the
-        // final `w` crosses a line boundary, the operated range ends at the
-        // eol of the line it crossed FROM — but earlier words (and their
-        // newlines) are deleted in full. Truncating whenever the whole
-        // motion crossed a line made `d2w` discard everything past the
-        // first newline (OV-00289).
         let (prev_line, prev_col) = if count > 1 {
-            Motions::word_forward(self, count - 1);
+            word_forward(self, count - 1);
             (self.cursor().line(), self.cursor_char_col())
         } else {
             (start_line, start_col)
         };
-        Motions::word_forward(self, 1);
+        word_forward(self, 1);
 
         let end_line = self.cursor().line();
-        let mut del_end_line = end_line;
-        let mut end_col = self.cursor_char_col();
+        let end_col = self.cursor_char_col();
+        let line_end = |buffer: &Self, line: usize| {
+            buffer
+                .line_text(line)
+                .map(|text| CharCol(text.chars().count()))
+        };
 
         if end_line > prev_line {
             // Final word motion crossed a newline: stop at eol of the line
             // holding the last word actually moved over.
-            if let Some(line) = self.line_text(prev_line) {
-                del_end_line = prev_line;
-                end_col = CharCol(line.chars().count());
+            if let Some(end) = line_end(self, prev_line) {
+                return (prev_line, end);
             }
         } else if end_line == prev_line && end_col == prev_col && end_line + 1 >= self.line_count()
         {
-            // Motion didn't move — last word on last line. Delete to end of line.
-            if let Some(line) = self.line_text(end_line) {
-                end_col = CharCol(line.chars().count());
+            // Motion didn't move — last word on last line. Run to end of line.
+            if let Some(end) = line_end(self, end_line) {
+                return (end_line, end);
             }
         }
+        (end_line, end_col)
+    }
 
-        let deleted = self.delete_range(start_line, start_col, del_end_line, end_col);
+    /// Deletes from cursor to next word boundary (dw command).
+    /// Returns the deleted text.
+    pub fn delete_word_forward(&mut self, count: usize) -> String {
+        let start_line = self.cursor().line();
+        let start_grapheme = self.cursor().col();
+        let start_col = self.cursor_char_col();
+
+        let (end_line, end_col) = self.operator_word_forward_end(count, false);
+
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
         self.cursor_mut().set_position(start_line, start_grapheme);
         self.clamp_cursor_col();
         deleted
@@ -1279,38 +1298,13 @@ impl Buffer {
     /// Deletes from cursor to next WORD boundary (dW command).
     /// Returns the deleted text.
     pub fn delete_word_forward_big(&mut self, count: usize) -> String {
-        use crate::editor::Motions;
-
         let start_line = self.cursor().line();
         let start_col = self.cursor_char_col();
 
         // Same last-word-only eol rule as delete_word_forward (OV-00289).
-        let (prev_line, prev_col) = if count > 1 {
-            Motions::word_forward_big(self, count - 1);
-            (self.cursor().line(), self.cursor_char_col())
-        } else {
-            (start_line, start_col)
-        };
-        Motions::word_forward_big(self, 1);
+        let (end_line, end_col) = self.operator_word_forward_end(count, true);
 
-        let end_line = self.cursor().line();
-        let mut del_end_line = end_line;
-        let mut end_col = self.cursor_char_col();
-
-        if end_line > prev_line {
-            if let Some(line) = self.line_text(prev_line) {
-                del_end_line = prev_line;
-                end_col = CharCol(line.chars().count());
-            }
-        } else if end_line == prev_line && end_col == prev_col && end_line + 1 >= self.line_count()
-        {
-            // Motion didn't move — last WORD on last line. Delete to end of line.
-            if let Some(line) = self.line_text(end_line) {
-                end_col = CharCol(line.chars().count());
-            }
-        }
-
-        let deleted = self.delete_range(start_line, start_col, del_end_line, end_col);
+        let deleted = self.delete_range(start_line, start_col, end_line, end_col);
         self.set_cursor_char_col(start_line, start_col);
         self.clamp_cursor_col();
         deleted

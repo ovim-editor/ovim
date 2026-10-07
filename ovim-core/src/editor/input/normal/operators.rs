@@ -18,6 +18,7 @@ use crate::editor::{
     RegisterType, TextObjectPrefix,
 };
 use crate::mode::Mode;
+use crate::motion_range::{MotionRange, Wise};
 use crate::repeat_action::{CaseTarget, CaseTransform, RepeatAction};
 use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
@@ -219,31 +220,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             true
         }
-        (Operator::Yank, KeyCode::Char('w')) => {
-            let start_line = editor.buffer().cursor().line();
-            let start_col = editor.buffer().cursor().col().0;
-            let yanked = helpers::yank_word(editor.buffer_mut(), count)?;
-            let end_col = start_col + yanked.chars().count().saturating_sub(1);
-            editor.yank_to_register(yanked);
-            editor.set_yank_flash_range(
-                start_line,
-                GraphemeCol(start_col),
-                start_line,
-                GraphemeCol(end_col),
-            );
-            editor.clear_count();
-            true
-        }
-        (Operator::Yank, KeyCode::Char('$')) => {
-            let line = editor.buffer().cursor().line();
-            let start_col = editor.buffer().cursor().col().0;
-            let yanked = helpers::yank_to_end_of_line(editor.buffer())?;
-            let end_col = start_col + yanked.chars().count().saturating_sub(1);
-            editor.yank_to_register(yanked);
-            editor.set_yank_flash_range(line, GraphemeCol(start_col), line, GraphemeCol(end_col));
-            editor.clear_count();
-            true
-        }
         (Operator::Yank, KeyCode::Char('j')) => {
             handle_yj(editor, count)?;
             true
@@ -258,42 +234,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Yank, KeyCode::Char('{')) => {
             handle_y_paragraph_backward(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('b')) => {
-            handle_yb(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('e')) => {
-            handle_ye(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('B')) => {
-            handle_y_big_b(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('E')) => {
-            handle_y_big_e(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('h')) | (Operator::Yank, KeyCode::Left) => {
-            handle_yh(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('0')) => {
-            handle_y0(editor)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('^')) => {
-            handle_y_caret(editor)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('W')) => {
-            handle_y_big_w(editor, count)?;
-            true
-        }
-        (Operator::Yank, KeyCode::Char('l')) | (Operator::Yank, KeyCode::Right) => {
-            handle_yl(editor, count)?;
             true
         }
         (Operator::Yank, KeyCode::Char('%')) => {
@@ -1348,262 +1288,6 @@ fn handle_d_big_w(editor: &mut Editor, count: usize) -> Result<()> {
 // Yank handlers for new motions (yb, ye, yB, yE, yh, y0, y^, yW)
 // =====================================================================
 
-fn handle_yb(editor: &mut Editor, count: usize) -> Result<()> {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col().0;
-
-    Motions::word_backward(editor.buffer_mut(), count);
-
-    let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col().0;
-
-    // Phase-15 debt: cursor cols are grapheme, yank_range needs char.
-    let yanked = yank_range(
-        editor,
-        end_line,
-        CharCol(end_col),
-        start_line,
-        CharCol(start_col),
-    );
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        end_line,
-        GraphemeCol(end_col),
-        start_line,
-        GraphemeCol(start_col.saturating_sub(1)),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(end_line, GraphemeCol(end_col));
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_ye(editor: &mut Editor, count: usize) -> Result<()> {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col().0;
-
-    Motions::word_end_forward(editor.buffer_mut(), count);
-
-    let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col().0;
-
-    // Inclusive: include the char motion lands on.
-    // Phase-15 debt: cursor cols are grapheme, yank_range needs char.
-    let yanked = yank_range(
-        editor,
-        start_line,
-        CharCol(start_col),
-        end_line,
-        CharCol(end_col + 1),
-    );
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        start_line,
-        GraphemeCol(start_col),
-        end_line,
-        GraphemeCol(end_col),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(start_line, GraphemeCol(start_col));
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_y_big_b(editor: &mut Editor, count: usize) -> Result<()> {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col().0;
-
-    Motions::word_backward_big(editor.buffer_mut(), count);
-
-    let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col().0;
-
-    // Phase-15 debt: cursor cols are grapheme, yank_range needs char.
-    let yanked = yank_range(
-        editor,
-        end_line,
-        CharCol(end_col),
-        start_line,
-        CharCol(start_col),
-    );
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        end_line,
-        GraphemeCol(end_col),
-        start_line,
-        GraphemeCol(start_col.saturating_sub(1)),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(end_line, GraphemeCol(end_col));
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_y_big_e(editor: &mut Editor, count: usize) -> Result<()> {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col().0;
-
-    Motions::word_end_forward_big(editor.buffer_mut(), count);
-
-    let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col().0;
-
-    // Phase-15 debt: cursor cols are grapheme, yank_range needs char.
-    let yanked = yank_range(
-        editor,
-        start_line,
-        CharCol(start_col),
-        end_line,
-        CharCol(end_col + 1),
-    );
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        start_line,
-        GraphemeCol(start_col),
-        end_line,
-        GraphemeCol(end_col),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(start_line, GraphemeCol(start_col));
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_yh(editor: &mut Editor, count: usize) -> Result<()> {
-    let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col().0;
-    if col == 0 {
-        editor.clear_count();
-        return Ok(());
-    }
-    let start_col = col.saturating_sub(count);
-    // Cursor cols are grapheme; convert to char for yank_range (OV-00299).
-    let line_text = editor
-        .buffer()
-        .line_text(line_idx)
-        .unwrap_or_default()
-        .to_string();
-    let start_char = crate::unicode::grapheme_to_char_col(&line_text, GraphemeCol(start_col));
-    let end_char = crate::unicode::grapheme_to_char_col(&line_text, GraphemeCol(col));
-    let yanked = yank_range(editor, line_idx, start_char, line_idx, end_char);
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        line_idx,
-        GraphemeCol(start_col),
-        line_idx,
-        GraphemeCol(col.saturating_sub(1)),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(line_idx, GraphemeCol(start_col));
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_y0(editor: &mut Editor) -> Result<()> {
-    let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col().0;
-    if col == 0 {
-        editor.clear_count();
-        return Ok(());
-    }
-    // Cursor cols are grapheme; convert to char for yank_range (OV-00299).
-    let end_char = editor.buffer().cursor_char_col();
-    let yanked = yank_range(editor, line_idx, CharCol::ZERO, line_idx, end_char);
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        line_idx,
-        GraphemeCol(0),
-        line_idx,
-        GraphemeCol(col.saturating_sub(1)),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(line_idx, GraphemeCol(0));
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_y_caret(editor: &mut Editor) -> Result<()> {
-    let line_idx = editor.buffer().cursor().line();
-    // Compare in char space: first_non_blank_col is char, so convert the
-    // cursor's grapheme col rather than comparing across spaces (OV-00299).
-    let cursor_char = editor.buffer().cursor_char_col();
-    let fnb = editor.buffer().first_non_blank_col(line_idx);
-    if fnb == cursor_char {
-        editor.clear_count();
-        return Ok(());
-    }
-    let (start, end): (CharCol, CharCol) = if fnb < cursor_char {
-        (fnb, cursor_char)
-    } else {
-        (cursor_char, fnb)
-    };
-    let yanked = yank_range(editor, line_idx, start, line_idx, end);
-    editor.yank_to_register(yanked);
-    // Flash cols are grapheme-space: convert back per line.
-    let line_text = editor
-        .buffer()
-        .line_text(line_idx)
-        .unwrap_or_default()
-        .to_string();
-    let start_grapheme = crate::unicode::char_to_grapheme_col(&line_text, start);
-    let end_grapheme = crate::unicode::char_to_grapheme_col(&line_text, end);
-    editor.set_yank_flash_range(
-        line_idx,
-        start_grapheme,
-        line_idx,
-        GraphemeCol(end_grapheme.0.saturating_sub(1)),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(line_idx, start_grapheme);
-    editor.clear_count();
-    Ok(())
-}
-
-fn handle_yl(editor: &mut Editor, count: usize) -> Result<()> {
-    let line_idx = editor.buffer().cursor().line();
-    let col = editor.buffer().cursor().col().0;
-    let line_len = editor
-        .buffer()
-        .line_text(line_idx)
-        .map(|l| l.chars().count())
-        .unwrap_or(0);
-    if col >= line_len.saturating_sub(1) {
-        // At or past last char — yank single char if on last char
-        if col < line_len {
-            let yanked = yank_range(editor, line_idx, CharCol(col), line_idx, CharCol(col + 1));
-            editor.yank_to_register(yanked);
-            editor.set_yank_flash_range(line_idx, GraphemeCol(col), line_idx, GraphemeCol(col));
-        }
-        editor.clear_count();
-        return Ok(());
-    }
-    let end_col = (col + count).min(line_len);
-    let yanked = yank_range(editor, line_idx, CharCol(col), line_idx, CharCol(end_col));
-    editor.yank_to_register(yanked);
-    editor.set_yank_flash_range(
-        line_idx,
-        GraphemeCol(col),
-        line_idx,
-        GraphemeCol(end_col.saturating_sub(1)),
-    );
-    editor.clear_count();
-    Ok(())
-}
-
 fn handle_y_percent(editor: &mut Editor) -> Result<()> {
     use crate::editor::Motions;
 
@@ -1685,39 +1369,8 @@ fn handle_y_percent(editor: &mut Editor) -> Result<()> {
     Ok(())
 }
 
-fn handle_y_big_w(editor: &mut Editor, count: usize) -> Result<()> {
-    let start_line = editor.buffer().cursor().line();
-    let start_col = editor.buffer().cursor().col().0;
-
-    Motions::word_forward_big(editor.buffer_mut(), count);
-
-    let end_line = editor.buffer().cursor().line();
-    let end_col = editor.buffer().cursor().col().0;
-
-    let yanked = yank_range(
-        editor,
-        start_line,
-        CharCol(start_col),
-        end_line,
-        CharCol(end_col),
-    );
-    editor.yank_to_register(yanked);
-    let flash_end_col = if end_col > 0 { end_col - 1 } else { 0 };
-    editor.set_yank_flash_range(
-        start_line,
-        GraphemeCol(start_col),
-        end_line,
-        GraphemeCol(flash_end_col),
-    );
-    editor
-        .buffer_mut()
-        .cursor_mut()
-        .set_position(start_line, GraphemeCol(start_col));
-    editor.clear_count();
-    Ok(())
-}
-
-/// Helper to yank a range of text without modifying the buffer.
+/// Helper to yank a range of text without modifying the buffer. Columns are
+/// char columns (not graphemes); line breaks inside the range are kept.
 fn yank_range(
     editor: &Editor,
     start_line: usize,
@@ -1726,26 +1379,12 @@ fn yank_range(
     end_col: CharCol,
 ) -> String {
     let buf = editor.buffer();
-    let mut result = String::new();
-    for line_idx in start_line..=end_line {
-        if let Some(line) = buf.line_text(line_idx) {
-            let chars: Vec<char> = line.chars().collect();
-            let from = if line_idx == start_line {
-                start_col.0
-            } else {
-                0
-            };
-            let to = if line_idx == end_line {
-                end_col.0.min(chars.len())
-            } else {
-                chars.len()
-            };
-            if from < to {
-                result.extend(&chars[from..to]);
-            }
-        }
-    }
-    result
+    let clamp = |line: usize, col: CharCol| CharCol(col.0.min(buf.line_len(line)));
+    buf.yank_motion_range(MotionRange {
+        start: (start_line, clamp(start_line, start_col)),
+        end: (end_line, clamp(end_line, end_col)),
+        wise: Wise::Charwise,
+    })
 }
 
 // =====================================================================
