@@ -379,6 +379,52 @@ async fn an_answer_that_arrives_after_more_typing_still_opens_the_menu_and_accep
     session.stop().await;
 }
 
+/// A trigger-character completion answers with a range that starts at the
+/// cursor; the filter text typed since is part of the range, not text that
+/// goes in front of the inserted item (`foo.` + `ba` + Enter was `foo.babar`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn text_typed_after_a_trigger_character_is_replaced_by_an_edit_starting_at_the_cursor() {
+    let mut session = Session::new("foo").await;
+    session.set_completion(json!([{
+        "label": "bar",
+        "textEdit": {"range": {"start": {"line": 0, "character": 4},
+                               "end": {"line": 0, "character": 4}},
+                     "newText": "bar"}
+    }]));
+    session.test.keys("A.");
+    session.pump_menu().await;
+    session.test.keys("ba");
+    session.settle().await;
+    assert_eq!(session.labels(), vec!["bar"]);
+
+    session.test.press_enter();
+    assert_eq!(session.line(0), "foo.bar");
+    session.stop().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn insert_and_replace_edits_starting_at_the_cursor_keep_the_text_after_it_correct() {
+    for (accept, expected) in [("<CR>", "foo.barrest"), ("<Tab>", "foo.bar")] {
+        let mut session = Session::new("foorest").await;
+        session.set_completion(json!([{
+            "label": "bar",
+            "textEdit": {"insert": {"start": {"line": 0, "character": 4},
+                                    "end": {"line": 0, "character": 4}},
+                         "replace": {"start": {"line": 0, "character": 4},
+                                     "end": {"line": 0, "character": 8}},
+                         "newText": "bar"}
+        }]));
+        session.test.keys("03li.");
+        session.pump_menu().await;
+        session.test.keys("ba");
+        session.settle().await;
+
+        session.test.keys(accept);
+        assert_eq!(session.line(0), expected, "accepted with {accept}");
+        session.stop().await;
+    }
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn an_answer_for_a_line_the_user_left_is_dropped() {
     let mut session = Session::new("first\nsecond\n").await;

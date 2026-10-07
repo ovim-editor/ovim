@@ -99,11 +99,14 @@ impl Editor {
     }
 
     /// Maps an LSP position from the request's document snapshot to a
-    /// pre-edit char offset in the current buffer.
+    /// pre-edit char offset in the current buffer. `range_end` tells whether
+    /// the position ends its range: text typed at the request position lies
+    /// inside a range that ends there, but in front of one that starts there.
     fn completion_offset(
         &self,
         position: lsp_types::Position,
         rebase: Option<(&CompletionAnchor, usize)>,
+        range_end: bool,
     ) -> usize {
         let rope = self.buffer().rope();
         let line = (position.line as usize).min(rope.len_lines().saturating_sub(1));
@@ -114,7 +117,7 @@ impl Editor {
             _ => self.utf16_to_col(line, position.character).0,
         };
         if let Some((anchor, shift)) = rebase {
-            if anchor.line == line && col >= anchor.col {
+            if anchor.line == line && (col > anchor.col || (col == anchor.col && range_end)) {
                 col += shift;
             }
         }
@@ -164,8 +167,8 @@ impl Editor {
                         (range, ir.new_text.clone())
                     }
                 };
-                let start = self.completion_offset(range.start, rebase);
-                let end = self.completion_offset(range.end, rebase);
+                let start = self.completion_offset(range.start, rebase, false);
+                let end = self.completion_offset(range.end, rebase, true);
                 (start.min(end), start.max(end), new_text)
             }
             None => {
@@ -228,8 +231,11 @@ impl Editor {
         let mut extra: Vec<PlannedEdit> = Vec::new();
         if shift.is_some() {
             for edit in item.additional_text_edits.iter().flatten() {
-                let start = self.completion_offset(edit.range.start, rebase);
-                let end = self.completion_offset(edit.range.end, rebase);
+                // An insertion at the request position stays in front of the
+                // text typed since, so it never swallows that text.
+                let insertion = edit.range.start == edit.range.end;
+                let start = self.completion_offset(edit.range.start, rebase, false);
+                let end = self.completion_offset(edit.range.end, rebase, !insertion);
                 let (start, end) = (start.min(end), start.max(end));
                 // An edit overlapping the main edit could not be applied
                 // consistently; the main edit wins.
