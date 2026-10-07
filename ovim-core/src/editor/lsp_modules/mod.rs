@@ -15,6 +15,7 @@ mod goto;
 mod hierarchy;
 mod hover;
 mod inlay_hints;
+mod joined_servers;
 pub(in crate::editor) mod navigation;
 mod references;
 pub(in crate::editor) mod signature_help;

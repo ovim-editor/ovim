@@ -174,13 +174,18 @@ impl LspStartup {
                 } => {
                     if primary {
                         editor.ensure_lsp_document_synced().await;
-                    } else if let (Some(manager), Some(uri)) = (
+                    } else if let (Some(manager), Some(uri), Some(document_language)) = (
                         editor.lsp_manager(),
                         crate::lsp::uri_from_file_path(&file_path),
+                        editor.language_id_for_path(&file_path),
                     ) {
+                        // Open the document on the companion under the
+                        // document's own language id (not its server id).
                         let version = manager.get_document_version(&uri).await.max(1);
                         let content = editor.buffer().rope().to_string();
-                        let _ = manager.did_open(uri, &server_id, version, content).await;
+                        let _ = manager
+                            .did_open(uri, &server_id, &document_language, version, content)
+                            .await;
                     }
                     editor.set_lsp_status(format!("LSP: {language_id} ready"));
                     editor.request_diagnostics_refresh();

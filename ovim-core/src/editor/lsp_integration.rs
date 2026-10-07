@@ -1991,6 +1991,9 @@ impl Editor {
                 self.lsp.slots.diagnostics.invalidate();
             }
 
+            self.open_document_on_joined_servers(index, &file_path, &uri, &language_id)
+                .await;
+
             let state = self.lsp.state.document_sync.get(&file_path);
             let opened = state.is_some_and(|state| state.did_open_sent);
             if is_current {

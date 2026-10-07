@@ -110,18 +110,23 @@ fn workspace_configuration_values(
 }
 
 impl LspManager {
+    /// Sends `didOpen` for `uri` to the server `server_id`. A server that
+    /// already holds the document is left alone, so repeated opens are
+    /// harmless; a server that joins later (a companion, a restarted
+    /// process) is brought up to date at the version already in flight.
     pub async fn did_open(
         &self,
         uri: Uri,
+        server_id: &str,
         language_id: &str,
         version: i32,
         text: String,
     ) -> Result<()> {
         lsp_debug!(
             "LSP-NOTIFY",
-            "textDocument/didOpen | URI: {} | Language: {} | Version: {} | Size: {} bytes",
+            "textDocument/didOpen | URI: {} | Server: {} | Version: {} | Size: {} bytes",
             uri.as_str(),
-            language_id,
+            server_id,
             version,
             text.len()
         );
@@ -137,77 +142,101 @@ impl LspManager {
             ));
         }
 
-        // Atomically claim the didOpen: insert into document_versions under the
-        // lock so concurrent callers see the URI as already-claimed and return
-        // early. Without this guard, two concurrent callers could both pass a
-        // contains_key check, drop the lock, and each send a didOpen — a
-        // protocol violation. (OV-00210)
+        // Atomically claim the document: insert into document_versions under
+        // the lock so concurrent callers see the URI as already-claimed. The
+        // per-server claim in `open_document_on_server` keeps them from each
+        // sending a didOpen — a protocol violation. (OV-00210)
+        let claimed = self.claim_document(&uri, version).await;
+        let version = if claimed {
+            version
+        } else {
+            self.get_last_sent_version(&uri).await.max(version)
+        };
+
+        let text: Arc<str> = Arc::from(text);
+        match self
+            .open_document_on_server(server_id, &uri, language_id, version, &text)
+            .await
         {
-            let mut versions = self.document_versions.lock().await;
-            if versions.contains_key(&uri) {
-                lsp_debug!(
-                    "LSP-NOTIFY",
-                    "textDocument/didOpen: skipping duplicate open for {}",
-                    uri.as_str()
-                );
-                return Ok(());
+            Ok(true) => {
+                lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
+                self.last_sent_versions
+                    .lock()
+                    .await
+                    .entry(uri)
+                    .or_insert(version);
+                Ok(())
             }
-            versions.insert(uri.clone(), version);
+            Ok(false) => Ok(()),
+            Err(error) => {
+                // Roll back so the next attempt isn't silently masked by the claim.
+                if claimed {
+                    self.document_versions.lock().await.remove(&uri);
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Records the first claim on a document's version; false when the
+    /// document was already claimed.
+    async fn claim_document(&self, uri: &Uri, version: i32) -> bool {
+        let mut versions = self.document_versions.lock().await;
+        if versions.contains_key(uri) {
+            return false;
+        }
+        versions.insert(uri.clone(), version);
+        true
+    }
+
+    /// Sends `didOpen` to one server unless it already holds the document
+    /// (or another caller is opening it). Returns whether it was sent.
+    async fn open_document_on_server(
+        &self,
+        server_id: &str,
+        uri: &Uri,
+        language_id: &str,
+        version: i32,
+        text: &Arc<str>,
+    ) -> Result<bool> {
+        let key = (server_id.to_string(), uri.clone());
+        if self.server_documents.insert(key.clone(), None).is_some() {
+            return Ok(false);
         }
 
         // Clone the server out of the DashMap: holding the shard read guard
         // across the notify await blocks any concurrent server insert or
         // removal on that shard for the whole notify timeout.
-        let server = match self
-            .servers
-            .get(language_id)
-            .map(|entry| entry.value().clone())
-        {
-            Some(s) => s,
-            None => {
-                // Roll back the claim so a future open with a registered server can succeed.
-                self.document_versions.lock().await.remove(&uri);
-                return Err(anyhow::anyhow!("No server for language: {}", language_id));
-            }
+        let Some(server) = self.server_handle(server_id) else {
+            self.server_documents.remove(&key);
+            return Err(anyhow::anyhow!("No server for language: {}", server_id));
         };
 
-        let opened_text: Arc<str> = Arc::from(text.as_str());
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
                 language_id: language_id.to_string(),
                 version,
-                text,
+                text: text.to_string(),
             },
         };
-
-        if let Err(e) = notify_with_timeout(
-            &server,
-            "textDocument/didOpen",
-            serde_json::to_value(params)?,
-        )
-        .await
-        {
-            // Roll back so the next attempt isn't silently masked by the claim.
-            self.document_versions.lock().await.remove(&uri);
-            return Err(e);
+        let sent = match serde_json::to_value(params) {
+            Ok(params) => notify_with_timeout(&server, "textDocument/didOpen", params).await,
+            Err(error) => Err(error.into()),
+        };
+        if let Err(error) = sent {
+            self.server_documents.remove(&key);
+            return Err(error);
         }
-
-        lsp_debug!("LSP-NOTIFY", "textDocument/didOpen sent successfully");
 
         // Record the exact text the server now holds — the baseline for all
         // future incremental diffs to this server (OV-00326).
-        self.server_texts
-            .insert((language_id.to_string(), uri.clone()), opened_text);
-
-        let mut sent = self.last_sent_versions.lock().await;
-        sent.insert(uri, version);
-
-        Ok(())
+        self.server_documents.insert(key, Some(text.clone()));
+        Ok(true)
     }
 
     /// Sends textDocument/didChange to one server, diffing against the
-    /// authoritative per-server baseline in `server_texts` (the exact text
+    /// authoritative per-server baseline in `server_documents` (the exact text
     /// that server last received). Editor-side snapshots are never used as
     /// a diff baseline — they can lag or be poisoned by flush races, and an
     /// incremental edit computed against anything other than the server's
@@ -219,6 +248,7 @@ impl LspManager {
         &self,
         uri: &Uri,
         server_id: &str,
+        language_id: &str,
         text: &Arc<str>,
         version: i32,
     ) -> std::result::Result<bool, DidChangeFailure> {
@@ -262,11 +292,20 @@ impl LspManager {
             }
         }
 
-        let supports_incremental = server.supports_incremental_sync().await;
-        let baseline = self
-            .server_texts
+        let Some(baseline) = self
+            .server_documents
             .get(&(server_id.to_string(), uri.clone()))
-            .map(|entry| entry.value().clone());
+            .map(|entry| entry.value().clone())
+        else {
+            // This server never saw the document (it started after the
+            // primary opened it, or restarted): a didChange for an unopened
+            // document is a protocol violation, so open it at this version.
+            return self
+                .open_document_on_server(server_id, uri, language_id, version, text)
+                .await
+                .map_err(DidChangeFailure::from_notify);
+        };
+        let supports_incremental = server.supports_incremental_sync().await;
 
         let full_doc_size = text.len();
         let content_changes = match (supports_incremental, &baseline) {
@@ -327,8 +366,8 @@ impl LspManager {
 
         // The notification is in the server's ordered outgoing queue: record
         // `text` as this server's content so the next diff builds on it.
-        self.server_texts
-            .insert((server_id.to_string(), uri.clone()), text.clone());
+        self.server_documents
+            .insert((server_id.to_string(), uri.clone()), Some(text.clone()));
 
         Ok(true)
     }
@@ -399,7 +438,7 @@ impl LspManager {
     /// recorded per-server baselines, forcing the next flush to send a full
     /// document update. `Some(_)` is accepted for API compatibility but the
     /// value itself is ignored — incremental diffs are always computed at
-    /// flush time against `server_texts`, the text each server actually
+    /// flush time against `server_documents`, the text each server actually
     /// received (OV-00326).
     pub async fn did_change(
         &self,
@@ -424,7 +463,11 @@ impl LspManager {
         if old_text.is_none() {
             // No trustworthy baseline: force a full-document update on the
             // next flush for every server in this document's group.
-            self.server_texts.retain(|(_, u), _| u != &uri);
+            for mut entry in self.server_documents.iter_mut() {
+                if entry.key().1 == uri {
+                    *entry.value_mut() = None;
+                }
+            }
         }
 
         // Get or create the document's debouncer. The entry persists until
@@ -502,7 +545,7 @@ impl LspManager {
         // Remove debouncer for this document
         self.change_debouncers.remove(&uri);
         self.flush_gates.remove(&uri);
-        self.server_texts.retain(|(_, u), _| u != &uri);
+        self.server_documents.retain(|(_, u), _| u != &uri);
         self.last_local_edit.lock().await.remove(&uri);
 
         // Note: We keep diagnostics - they should remain visible even after file is closed
@@ -515,6 +558,9 @@ impl LspManager {
     // =========================================================================
 
     /// Sends didOpen to the server group responsible for this document.
+    /// Servers that already hold the document are skipped, so calling this
+    /// again opens it on exactly the members that joined since (a companion
+    /// that started late, a restarted server).
     pub async fn did_open_broadcast(
         &self,
         uri: Uri,
@@ -531,28 +577,24 @@ impl LspManager {
             ));
         }
 
-        // Atomically claim the didOpen so concurrent callers don't broadcast
+        // Atomically claim the document so concurrent callers don't broadcast
         // duplicate notifications to every server in the group. The claim
         // is taken before any other check so duplicates short-circuit
         // regardless of transient server-registry state. (OV-00210)
-        {
-            let mut versions = self.document_versions.lock().await;
-            if versions.contains_key(&uri) {
-                lsp_debug!(
-                    "LSP-BROADCAST",
-                    "textDocument/didOpen: skipping duplicate broadcast for {}",
-                    uri.as_str()
-                );
-                return Ok(());
-            }
-            versions.insert(uri.clone(), version);
-        }
+        let claimed = self.claim_document(&uri, version).await;
+        let version = if claimed {
+            version
+        } else {
+            self.get_last_sent_version(&uri).await.max(version)
+        };
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
         if server_ids.is_empty() {
             // Roll back the claim so a future broadcast (with servers
             // registered) is not silently masked.
-            self.document_versions.lock().await.remove(&uri);
+            if claimed {
+                self.document_versions.lock().await.remove(&uri);
+            }
             return Err(anyhow!(
                 "No servers for language '{}' matched document {}",
                 language_id,
@@ -560,44 +602,33 @@ impl LspManager {
             ));
         }
 
+        let mut attempted = 0usize;
         let mut delivered = 0usize;
-        let opened_text: Arc<str> = Arc::from(text.as_str());
+        let text: Arc<str> = Arc::from(text);
         for sid in &server_ids {
-            if let Some(server) = self
-                .servers
-                .get(sid.as_str())
-                .map(|entry| entry.value().clone())
-            {
-                let params = DidOpenTextDocumentParams {
-                    text_document: TextDocumentItem {
-                        uri: uri.clone(),
-                        language_id: language_id.to_string(),
-                        version,
-                        text: text.clone(),
-                    },
-                };
-                if let Err(e) = notify_with_timeout(
-                    &server,
-                    "textDocument/didOpen",
-                    serde_json::to_value(params)?,
-                )
+            match self
+                .open_document_on_server(sid, &uri, language_id, version, &text)
                 .await
-                {
-                    lsp_warn!("LSP-BROADCAST", "didOpen failed for server {}: {}", sid, e);
-                } else {
-                    // Record the exact text this server now holds — the
-                    // baseline for future incremental diffs (OV-00326).
-                    self.server_texts
-                        .insert((sid.clone(), uri.clone()), opened_text.clone());
+            {
+                Ok(true) => {
+                    attempted += 1;
                     delivered += 1;
+                }
+                // Already open there, or being opened by a concurrent caller.
+                Ok(false) => {}
+                Err(e) => {
+                    attempted += 1;
+                    lsp_warn!("LSP-BROADCAST", "didOpen failed for server {}: {}", sid, e);
                 }
             }
         }
 
-        if delivered == 0 {
+        if attempted > 0 && delivered == 0 {
             // Every server refused (dead, wedged, or gone): keeping the claim
             // would make the document look open forever and mask the retry.
-            self.document_versions.lock().await.remove(&uri);
+            if claimed {
+                self.document_versions.lock().await.remove(&uri);
+            }
             return Err(anyhow!(
                 "didOpen for {} was not delivered to any server",
                 uri.as_str()
@@ -605,8 +636,13 @@ impl LspManager {
         }
 
         // Initialize version tracking (once, shared) — version was claimed above.
-        let mut sent = self.last_sent_versions.lock().await;
-        sent.insert(uri, version);
+        if delivered > 0 {
+            self.last_sent_versions
+                .lock()
+                .await
+                .entry(uri)
+                .or_insert(version);
+        }
 
         Ok(())
     }
@@ -687,7 +723,7 @@ impl LspManager {
         for sid in &server_ids {
             match tokio::time::timeout(
                 std::time::Duration::from_secs(5),
-                self.send_did_change_to_server(uri, sid, &text, version),
+                self.send_did_change_to_server(uri, sid, language_id, &text, version),
             )
             .await
             {
@@ -818,6 +854,12 @@ impl LspManager {
 
         let server_ids = self.servers_for_document_uri(language_id, &uri);
         for sid in &server_ids {
+            if !self
+                .server_documents
+                .contains_key(&(sid.clone(), uri.clone()))
+            {
+                continue;
+            }
             if let Some(server) = self
                 .servers
                 .get(sid.as_str())
@@ -845,7 +887,7 @@ impl LspManager {
         self.last_sent_versions.lock().await.remove(&uri);
         self.change_debouncers.remove(&uri);
         self.flush_gates.remove(&uri);
-        self.server_texts.retain(|(_, u), _| u != &uri);
+        self.server_documents.retain(|(_, u), _| u != &uri);
         self.last_local_edit.lock().await.remove(&uri);
         self.deferred_diagnostics
             .lock()
@@ -1857,33 +1899,39 @@ mod tests {
     /// be dropped so the next flush sends a full-document update instead of
     /// an incremental diff against a baseline the server may not have.
     #[tokio::test(flavor = "current_thread")]
-    async fn did_change_without_baseline_drops_server_texts() {
+    async fn did_change_without_baseline_drops_server_documents() {
         let manager = Arc::new(LspManager::new());
         let uri = Uri::from_str("file:///tmp/ovim-force-full.rs").expect("uri");
         let other_uri = Uri::from_str("file:///tmp/ovim-other.rs").expect("uri");
 
-        manager
-            .server_texts
-            .insert(("rust".to_string(), uri.clone()), Arc::from("stale\n"));
-        manager
-            .server_texts
-            .insert(("rust".to_string(), other_uri.clone()), Arc::from("keep\n"));
+        manager.server_documents.insert(
+            ("rust".to_string(), uri.clone()),
+            Some(Arc::from("stale\n")),
+        );
+        manager.server_documents.insert(
+            ("rust".to_string(), other_uri.clone()),
+            Some(Arc::from("keep\n")),
+        );
 
         manager
             .did_change(uri.clone(), "rust", Arc::from("fresh\n"), None)
             .await
             .unwrap();
 
-        assert!(
-            !manager
-                .server_texts
-                .contains_key(&("rust".to_string(), uri.clone())),
-            "force-full resend must drop the recorded baseline for the document"
-        );
-        assert!(
+        assert_eq!(
             manager
-                .server_texts
-                .contains_key(&("rust".to_string(), other_uri.clone())),
+                .server_documents
+                .get(&("rust".to_string(), uri.clone()))
+                .map(|entry| entry.value().clone()),
+            Some(None),
+            "force-full resend must drop the recorded baseline but keep the document open"
+        );
+        assert_eq!(
+            manager
+                .server_documents
+                .get(&("rust".to_string(), other_uri.clone()))
+                .map(|entry| entry.value().clone()),
+            Some(Some(Arc::from("keep\n"))),
             "baselines for other documents must be untouched"
         );
     }
@@ -1965,7 +2013,7 @@ mod tests {
         let uri = Uri::from_str("file:///tmp/ovim-sync-capture.rs").expect("uri");
         let v0 = "fn compute(x: u32) -> u32 {\n    x * 2\n}\n";
         manager
-            .did_open(uri.clone(), "rust", 1, v0.to_string())
+            .did_open(uri.clone(), "rust", "rust", 1, v0.to_string())
             .await
             .expect("didOpen");
 
@@ -2151,10 +2199,10 @@ mod tests {
         let uri = Uri::from_str("file:///tmp/ovim-queue-full.rs").expect("uri");
         manager.servers.insert("rust".to_string(), server);
         manager
-            .server_texts
-            .insert(("rust".to_string(), uri.clone()), Arc::from("a\n"));
+            .server_documents
+            .insert(("rust".to_string(), uri.clone()), Some(Arc::from("a\n")));
         let failure = manager
-            .send_did_change_to_server(&uri, "rust", &Arc::from("ab\n"), 2)
+            .send_did_change_to_server(&uri, "rust", "rust", &Arc::from("ab\n"), 2)
             .await
             .expect_err("didChange must fail on a full queue");
         assert!(
@@ -2252,17 +2300,21 @@ mod tests {
         let manager = Arc::new(LspManager::new());
         let uri = Uri::from_str("file:///tmp/ovim-already-open.rs").expect("uri");
 
-        // Pre-populate document_versions to simulate a prior didOpen.
+        // Pre-populate the claim and the server's copy to simulate a prior
+        // didOpen of this document on this server.
         manager
             .document_versions
             .lock()
             .await
             .insert(uri.clone(), 7);
+        manager
+            .server_documents
+            .insert(("rust".to_string(), uri.clone()), Some(Arc::from("x")));
 
         // Even though no server is registered, this must succeed because
         // the duplicate guard returns early before touching servers.
         let result = manager
-            .did_open(uri.clone(), "rust", 1, "fn main() {}".to_string())
+            .did_open(uri.clone(), "rust", "rust", 1, "fn main() {}".to_string())
             .await;
         assert!(
             result.is_ok(),
@@ -2289,10 +2341,16 @@ mod tests {
             .lock()
             .await
             .insert(uri.clone(), 3);
+        manager
+            .language_server_index
+            .insert("rust".to_string(), vec!["rust".to_string()]);
+        manager
+            .server_documents
+            .insert(("rust".to_string(), uri.clone()), Some(Arc::from("x")));
 
-        // No server group registered. Without the guard this would attempt
-        // to look up servers_for_document_uri and return an error. With the
-        // guard it returns Ok early.
+        // The group's only server already holds the document and is not
+        // registered as running. Without the guard this would try to send a
+        // second didOpen and fail; with it the broadcast is a no-op.
         let result = manager
             .did_open_broadcast(uri.clone(), "rust", 1, "fn main() {}".to_string())
             .await;
@@ -2315,7 +2373,13 @@ mod tests {
         let uri = Uri::from_str("file:///tmp/ovim-rollback.rs").expect("uri");
 
         let result = manager
-            .did_open(uri.clone(), "no-such-language", 1, "x".to_string())
+            .did_open(
+                uri.clone(),
+                "no-such-language",
+                "no-such-language",
+                1,
+                "x".to_string(),
+            )
             .await;
         assert!(result.is_err(), "expected missing-server error");
 

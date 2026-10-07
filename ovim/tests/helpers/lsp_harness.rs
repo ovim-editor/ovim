@@ -18,6 +18,7 @@ pub struct FakeLsp {
     pub test: EditorTest,
     pub channels: TickState,
     dir: tempfile::TempDir,
+    script: PathBuf,
     roots: Vec<PathBuf>,
 }
 
@@ -86,6 +87,7 @@ impl FakeLsp {
             test,
             channels: TickState::new(),
             dir,
+            script,
             roots,
         };
         lsp.wait_for_event(0, "textDocument/didOpen").await;
@@ -175,6 +177,39 @@ impl FakeLsp {
         self.wait_for_event(root, "textDocument/didOpen").await;
     }
 
+    /// Starts a companion server (`fakels:comp`) for `root`'s project. It
+    /// logs into its own control directory, which is returned.
+    pub async fn start_companion(&self, root: usize) -> PathBuf {
+        let control = self
+            .dir
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("companion-ctl");
+        std::fs::create_dir_all(&control).unwrap();
+        std::fs::write(
+            control.join("capabilities.json"),
+            default_capabilities().to_string(),
+        )
+        .unwrap();
+        let manager = self.manager();
+        let server_id = ovim_core::lsp::companion_server_id("fakels", "comp");
+        manager
+            .start_companion_server(
+                &server_id,
+                "python3",
+                vec![
+                    self.script.display().to_string(),
+                    control.display().to_string(),
+                ],
+                &self.roots[root],
+            )
+            .await
+            .unwrap();
+        manager.start_notification_listener(server_id).await;
+        control
+    }
+
     pub fn manager(&self) -> std::sync::Arc<ovim_core::lsp::LspManager> {
         self.test.editor.lsp_manager().unwrap()
     }
@@ -185,4 +220,14 @@ impl FakeLsp {
             let _ = manager.stop_server(&server).await;
         }
     }
+}
+
+/// Every message of `method` the fake server logging into `control` received.
+pub fn events_in(control: &Path, method: &str) -> Vec<Value> {
+    std::fs::read_to_string(control.join("events.jsonl"))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["method"] == method)
+        .collect()
 }

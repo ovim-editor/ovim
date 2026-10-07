@@ -288,14 +288,18 @@ impl LspManager {
     /// it is not treated as a duplicate.
     pub(super) async fn forget_server_documents(&self, server_id: &str) {
         let uris: Vec<Uri> = self
-            .server_texts
+            .server_documents
             .iter()
             .filter(|entry| entry.key().0 == server_id)
             .map(|entry| entry.key().1.clone())
             .collect();
-        self.server_texts.retain(|(sid, _), _| sid != server_id);
+        self.server_documents.retain(|(sid, _), _| sid != server_id);
         for uri in uris {
-            if self.server_texts.iter().any(|entry| entry.key().1 == uri) {
+            if self
+                .server_documents
+                .iter()
+                .any(|entry| entry.key().1 == uri)
+            {
                 continue;
             }
             self.document_versions.lock().await.remove(&uri);

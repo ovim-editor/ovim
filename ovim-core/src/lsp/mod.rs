@@ -222,13 +222,17 @@ pub struct LspManager {
     /// slow server.
     flush_gates: DashMap<Uri, Arc<Mutex<()>>>,
 
-    /// The exact document text each server last received (via didOpen or a
-    /// successful didChange), keyed by (server_id, uri). This is the ONLY
+    /// The documents each server has been sent `didOpen` for, keyed by
+    /// (server_id, uri); the entry is the exact text that server last
+    /// received (via didOpen or a successful didChange). This is the ONLY
     /// trustworthy baseline for incremental diffs: editor-side snapshots
     /// can lag or be poisoned by flush races, and diffing against anything
     /// other than what the server actually holds corrupts the server's
-    /// copy of the document (OV-00326).
-    server_texts: DashMap<(String, Uri), Arc<str>>,
+    /// copy of the document (OV-00326). `None` is an open document whose
+    /// text is unknown, so the next update must be a full one. A server
+    /// without an entry has never opened the document and must get a
+    /// `didOpen`, not a `didChange`.
+    server_documents: DashMap<(String, Uri), Option<Arc<str>>>,
 
     /// Channel for debounce flush requests (URI to flush)
     flush_tx: mpsc::Sender<Uri>,
@@ -322,7 +326,7 @@ impl LspManager {
             notification_rx: Mutex::new(notification_rx),
             change_debouncers: DashMap::new(),
             flush_gates: DashMap::new(),
-            server_texts: DashMap::new(),
+            server_documents: DashMap::new(),
             flush_tx,
             flush_rx: Mutex::new(Some(flush_rx)),
             diagnostics_changed: AtomicBool::new(false),
@@ -440,7 +444,8 @@ impl LspManager {
         if let Some(mut existing) = self.servers.insert(server_id.clone(), server) {
             // The fresh process has no documents open — drop baselines
             // recorded for the replaced instance (OV-00326).
-            self.server_texts.retain(|(sid, _), _| sid != &server_id);
+            self.server_documents
+                .retain(|(sid, _), _| sid != &server_id);
             if let Err(e) = existing.shutdown().await {
                 lsp_warn!(
                     "LspManager",
@@ -517,7 +522,7 @@ impl LspManager {
         if let Some(mut existing) = self.servers.insert(server_id.to_string(), server) {
             // Fresh process, no documents open — drop stale baselines
             // recorded for the replaced instance (OV-00326).
-            self.server_texts.retain(|(sid, _), _| sid != server_id);
+            self.server_documents.retain(|(sid, _), _| sid != server_id);
             if let Err(e) = existing.shutdown().await {
                 lsp_warn!(
                     "LspManager",
@@ -612,6 +617,19 @@ impl LspManager {
         }
 
         Vec::new()
+    }
+
+    /// Whether some server of the document's group has not been sent
+    /// `didOpen` for it: a companion that started after the primary opened
+    /// the document, or a server that restarted.
+    pub fn document_needs_open(&self, language_id: &str, uri: &Uri) -> bool {
+        self.servers_for_document_uri(language_id, uri)
+            .into_iter()
+            .any(|server_id| {
+                !self
+                    .server_documents
+                    .contains_key(&(server_id, uri.clone()))
+            })
     }
 
     /// Convenience wrapper for URI-based document routing.
