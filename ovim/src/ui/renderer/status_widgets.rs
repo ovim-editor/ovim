@@ -266,15 +266,6 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         spans.push(Span::raw(" "));
     }
 
-    spans.push(Span::styled(file, Style::default().fg(status_fg)));
-    spans.push(Span::styled(modified, Style::default().fg(status_fg)));
-    if !branch_display.is_empty() {
-        spans.push(Span::styled(
-            &branch_display,
-            Style::default().fg(status_fg).add_modifier(Modifier::DIM),
-        ));
-    }
-
     // Right-side widgets differ for AI chat mode
     let is_ai_chat = mode == crate::mode::Mode::AiChat;
     let mut right_spans: Vec<Span> = Vec::new();
@@ -375,6 +366,18 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
         } else {
             String::new()
         };
+        // A long message must not push the position off the line: keep the
+        // mode, the modified flag and (at least the start of) the file name.
+        let name_room = UnicodeWidthStr::width(path_file_name(file)).min(STATUS_NAME_ROOM) + 2;
+        let message_room = (area.width as usize).saturating_sub(
+            UnicodeWidthStr::width(mode_indicator.as_str())
+                + 1
+                + UnicodeWidthStr::width(modified)
+                + UnicodeWidthStr::width(diagnostics.as_str())
+                + UnicodeWidthStr::width(position.as_str())
+                + name_room,
+        );
+        let status_message = truncate_with_ellipsis(&status_message, message_room);
 
         if !diagnostics.is_empty() {
             right_spans.push(Span::styled(
@@ -409,6 +412,30 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
                 .fg(accent_fg)
                 .bg(accent_bg)
                 .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // The right side is not negotiable; the file path gives way first (home
+    // becomes `~`, then leading directories drop), then the branch.
+    let right_width: usize = right_spans
+        .iter()
+        .map(|s| UnicodeWidthStr::width(s.content.as_ref()))
+        .sum();
+    let left_room = (area.width as usize).saturating_sub(
+        UnicodeWidthStr::width(mode_indicator.as_str())
+            + status_gap_width(&recording_indicator)
+            + UnicodeWidthStr::width(modified)
+            + right_width,
+    );
+    let home = dirs::home_dir().map(|home| home.to_string_lossy().into_owned());
+    let (file, branch_display) = fit_status_left(file, &branch_display, left_room, home.as_deref());
+    let file = file.as_str();
+    spans.push(Span::styled(file, Style::default().fg(status_fg)));
+    spans.push(Span::styled(modified, Style::default().fg(status_fg)));
+    if !branch_display.is_empty() {
+        spans.push(Span::styled(
+            &branch_display,
+            Style::default().fg(status_fg).add_modifier(Modifier::DIM),
         ));
     }
 
@@ -469,6 +496,88 @@ pub fn render_status_line(frame: &mut Frame, editor: &Editor, theme: &Theme, are
     let paragraph =
         Paragraph::new(status_line).style(Style::default().bg(Color::Reset).fg(status_fg));
     frame.render_widget(paragraph, area);
+}
+
+/// Columns of the file name the status line keeps in front of a long status
+/// message.
+const STATUS_NAME_ROOM: usize = 24;
+
+/// Columns before the file path: the separator, plus the recording badge.
+fn status_gap_width(recording_indicator: &str) -> usize {
+    if recording_indicator.is_empty() {
+        1
+    } else {
+        UnicodeWidthStr::width(recording_indicator) + 1
+    }
+}
+
+fn path_file_name(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Shortens a file path to at most `max_width` columns: `home` becomes `~`,
+/// then leading directories drop (`…/dir/file`), and as a last resort the
+/// file name is cut from the left (`…name`).
+fn shorten_status_path(path: &str, home: Option<&str>, max_width: usize) -> String {
+    if UnicodeWidthStr::width(path) <= max_width {
+        return path.to_string();
+    }
+    let home_relative = home
+        .filter(|home| !home.is_empty() && *home != "/")
+        .and_then(|home| path.strip_prefix(home))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .map(|rest| format!("~/{rest}"));
+    if let Some(shown) = home_relative.as_deref() {
+        if UnicodeWidthStr::width(shown) <= max_width {
+            return shown.to_string();
+        }
+    }
+    let shown = home_relative.as_deref().unwrap_or(path);
+    let parts: Vec<&str> = shown.split('/').filter(|part| !part.is_empty()).collect();
+    // The most trailing components that fit behind the ellipsis.
+    for keep in (1..parts.len()).rev() {
+        let candidate = format!("\u{2026}/{}", parts[parts.len() - keep..].join("/"));
+        if UnicodeWidthStr::width(candidate.as_str()) <= max_width {
+            return candidate;
+        }
+    }
+    // Not even the file name fits: keep its end.
+    let name = parts.last().copied().unwrap_or(shown);
+    let mut tail: Vec<char> = Vec::new();
+    let mut used = 1;
+    for c in name.chars().rev() {
+        let w = unicode_width::UnicodeWidthChar::width(c).unwrap_or(0);
+        if used + w > max_width {
+            break;
+        }
+        tail.push(c);
+        used += w;
+    }
+    tail.reverse();
+    if max_width == 0 {
+        String::new()
+    } else {
+        format!("\u{2026}{}", tail.into_iter().collect::<String>())
+    }
+}
+
+/// Fits the file path and the branch badge into `room` columns: the path is
+/// shortened (down to its file name) before the branch is dropped.
+fn fit_status_left(file: &str, branch: &str, room: usize, home: Option<&str>) -> (String, String) {
+    let width = UnicodeWidthStr::width;
+    if width(file) + width(branch) <= room {
+        return (file.to_string(), branch.to_string());
+    }
+    let path_room = room
+        .saturating_sub(width(branch))
+        .max(width(path_file_name(file)).min(room));
+    if path_room + width(branch) <= room {
+        return (
+            shorten_status_path(file, home, path_room),
+            branch.to_string(),
+        );
+    }
+    (shorten_status_path(file, home, room), String::new())
 }
 
 /// Fits `text` (`Class › method`) into `width` columns, dropping the outermost
@@ -1439,6 +1548,96 @@ mod tests {
         assert!(!cache.would_hit(&editor, 160, 45, true));
         let screen = cache.render(&mut editor, 160, 45, true).unwrap();
         assert!(screen.contains("M:local"), "{screen}");
+    }
+
+    #[test]
+    fn status_paths_shorten_home_then_directories_then_the_name() {
+        use super::{fit_status_left, shorten_status_path};
+        let path = "/home/adhv/Projects/ovim/src/ui/renderer/status_widgets.rs";
+        let home = Some("/home/adhv");
+        assert_eq!(shorten_status_path(path, home, 80), path);
+        assert_eq!(
+            shorten_status_path(path, home, 50),
+            "~/Projects/ovim/src/ui/renderer/status_widgets.rs"
+        );
+        assert_eq!(
+            shorten_status_path(path, home, 30),
+            "\u{2026}/renderer/status_widgets.rs"
+        );
+        assert_eq!(
+            shorten_status_path(path, home, 20),
+            "\u{2026}/status_widgets.rs"
+        );
+        // Not even the name fits: its end is kept.
+        assert_eq!(shorten_status_path(path, home, 10), "\u{2026}idgets.rs");
+        assert_eq!(shorten_status_path(path, home, 0), "");
+        // Home only abbreviates a whole leading component.
+        assert_eq!(
+            shorten_status_path("/home/adhvx/a.rs", home, 14),
+            "\u{2026}/adhvx/a.rs"
+        );
+        for width in 0..70 {
+            assert!(
+                UnicodeWidthStr::width(shorten_status_path(path, home, width).as_str()) <= width
+            );
+        }
+
+        // The branch stays while the path can shorten; it goes before the name.
+        let (file, branch) = fit_status_left(path, " main", 45, home);
+        assert_eq!(branch, " main");
+        assert!(file.starts_with('\u{2026}') && UnicodeWidthStr::width(file.as_str()) <= 40);
+        let (file, branch) = fit_status_left(path, " main", 18, home);
+        assert_eq!(
+            branch, "",
+            "no room for both once the path is down to its name"
+        );
+        assert!(UnicodeWidthStr::width(file.as_str()) <= 18);
+    }
+
+    /// The absolute path (and a long message) used to push the position and
+    /// the diagnostic counts off the end of a narrow status line.
+    #[test]
+    fn narrow_status_lines_keep_the_position_and_the_file_name() {
+        use ratatui::{backend::TestBackend, Terminal};
+        let mut editor = crate::editor::Editor::with_content("fn main() {}\n");
+        editor.set_file_path(
+            "/home/adhv/Projects/ovim/ovim/src/ui/renderer/status_widgets.rs".to_string(),
+        );
+        editor.set_status_message("rust-analyzer finished indexing the whole workspace");
+        for width in [24u16, 32, 40, 60, 90] {
+            let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    super::render_status_line(
+                        frame,
+                        &editor,
+                        &crate::syntax::Theme::default(),
+                        frame.area(),
+                    );
+                })
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.trim_end().ends_with("1:1"),
+                "{width} columns lost the position: {text:?}"
+            );
+            assert!(
+                text.contains("NORMAL") || width < 30,
+                "{width} columns lost the mode: {text:?}"
+            );
+            if width >= 40 {
+                assert!(
+                    text.contains("status_widgets.rs"),
+                    "{width} columns lost the file name: {text:?}"
+                );
+            }
+        }
     }
 
     #[test]
