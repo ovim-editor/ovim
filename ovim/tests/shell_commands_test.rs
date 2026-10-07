@@ -195,7 +195,9 @@ fn test_filter_entire_buffer() {
 
 /// Aborts the process if a test blocks, so a regression to a pipe deadlock
 /// fails fast instead of hanging CI. Dropping the guard disarms it.
-struct Watchdog(std::sync::mpsc::Sender<()>);
+struct Watchdog {
+    _disarm: std::sync::mpsc::Sender<()>,
+}
 
 impl Watchdog {
     fn arm(seconds: u64) -> Self {
@@ -209,7 +211,7 @@ impl Watchdog {
                 std::process::exit(101);
             }
         });
-        Watchdog(disarm)
+        Watchdog { _disarm: disarm }
     }
 }
 

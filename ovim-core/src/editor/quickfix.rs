@@ -150,6 +150,7 @@ impl QuickfixList {
 
     /// Moves to the next entry. On the last one it stays put and returns
     /// `false`: vim's `:cnext` does not wrap (E553).
+    #[allow(clippy::should_implement_trait)]
     pub fn next(&mut self) -> bool {
         if self.selected_index + 1 < self.entries.len() {
             self.selected_index += 1;

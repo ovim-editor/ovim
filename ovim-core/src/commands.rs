@@ -166,10 +166,9 @@ fn run_parsed(editor: &mut Editor, parsed: &ParsedCmd) -> CommandResult {
 /// `:w`, `:sp`, `:r`, `:cd`, ... once, before the handler sees it. The `>>`
 /// of `:w >> file` is not part of the file name and is kept as typed.
 fn expand_file_argument(editor: &Editor, args: &str) -> Result<String, String> {
-    let marker_len = if args.starts_with(">>") {
-        args.len() - args[2..].trim_start().len()
-    } else {
-        0
+    let marker_len = match args.strip_prefix(">>") {
+        Some(rest) => args.len() - rest.trim_start().len(),
+        None => 0,
     };
     let (marker, path) = args.split_at(marker_len);
     let home = files::expand_tilde(path)

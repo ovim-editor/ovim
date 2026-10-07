@@ -122,8 +122,6 @@ fn parse_substitution(
 struct Substituted {
     /// How many lines the substitution changed.
     lines: usize,
-    /// The last changed line (0-based), after any line splits.
-    last_line: Option<usize>,
 }
 
 /// Substitute on 0-based `lines` as one undo step, bottom-up: a replacement
@@ -162,10 +160,7 @@ fn substitute_lines(
         let cursor_after = editor.cursor_position();
         editor.push_recorded_undo(edits, cursor_before, cursor_after);
     }
-    Substituted {
-        lines: changed,
-        last_line,
-    }
+    Substituted { lines: changed }
 }
 
 /// `:s///n`: report how many matches (one per line without `g`) the
