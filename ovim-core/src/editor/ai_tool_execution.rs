@@ -920,15 +920,33 @@ fn extract_position(args: &serde_json::Value) -> Result<(u32, u32), String> {
     Ok(((line - 1) as u32, (col - 1) as u32))
 }
 
+/// How long an AI tool call waits for a language server before giving up.
+/// Tool calls run synchronously on the editor loop, so this bounds how long
+/// a slow server can freeze it.
+const LSP_TOOL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+
+fn block_on_lsp<T>(
+    request: impl std::future::Future<Output = anyhow::Result<T>>,
+) -> anyhow::Result<T> {
+    tokio::task::block_in_place(|| {
+        tokio::runtime::Handle::current().block_on(async {
+            tokio::time::timeout(LSP_TOOL_TIMEOUT, request)
+                .await
+                .unwrap_or_else(|_| {
+                    Err(anyhow::anyhow!(
+                        "the language server did not answer in time"
+                    ))
+                })
+        })
+    })
+}
+
 fn handle_lsp_document_symbols(
     lsp: Arc<crate::lsp::LspManager>,
     uri: lsp_types::Uri,
     language_id: String,
 ) -> ToolResult {
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { lsp.document_symbols(&uri, &language_id).await })
-    });
+    let result = block_on_lsp(async { lsp.document_symbols(&uri, &language_id).await });
 
     match result {
         Ok(symbols) if !symbols.is_empty() => {
@@ -956,10 +974,7 @@ fn handle_lsp_hover(
         Err(e) => return ToolResult::Error(e),
     };
 
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { lsp.hover(&uri, line, col, &language_id).await })
-    });
+    let result = block_on_lsp(async { lsp.hover(&uri, line, col, &language_id).await });
 
     match result {
         Ok(Some(content)) => ToolResult::Success(content),
@@ -981,10 +996,7 @@ fn handle_lsp_goto_definition(
         Err(e) => return ToolResult::Error(e),
     };
 
-    let result = tokio::task::block_in_place(|| {
-        tokio::runtime::Handle::current()
-            .block_on(async { lsp.goto_definition(&uri, line, col, &language_id).await })
-    });
+    let result = block_on_lsp(async { lsp.goto_definition(&uri, line, col, &language_id).await });
 
     match result {
         Ok(Some(location)) => {

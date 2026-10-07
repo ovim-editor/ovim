@@ -469,6 +469,8 @@ pub struct LspState {
     pub workspace_edit_carriers: Vec<crate::buffer::BufferId>,
     /// File-explorer rename waiting for its `willRenameFiles` round trip.
     pub pending_file_rename: Option<(std::path::PathBuf, String)>,
+    /// The rename whose `willRenameFiles` answers are being collected.
+    pub(crate) file_rename_in_flight: Option<super::file_rename::RenameInFlight>,
     /// Server `showMessageRequest`s waiting their turn, the one currently
     /// offered to the user, and answers ready to be sent.
     pub queued_message_requests: std::collections::VecDeque<crate::lsp::MessageRequest>,
@@ -550,6 +552,7 @@ impl LspState {
             fold_markers_key: None,
             workspace_edit_carriers: Vec::new(),
             pending_file_rename: None,
+            file_rename_in_flight: None,
             hierarchy: None,
             queued_message_requests: Default::default(),
             active_message_request: None,

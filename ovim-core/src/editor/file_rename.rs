@@ -33,7 +33,21 @@ impl Editor {
             .collect()
     }
 
+    /// Drives an explorer rename. The servers' `willRenameFiles` answers can
+    /// take seconds, so they are collected in a task and the rename carries on
+    /// in a later tick once they are in: the editor loop never waits for them.
     pub async fn process_pending_file_rename(&mut self) {
+        if let Some(in_flight) = self.lsp.state.file_rename_in_flight.take() {
+            if !in_flight.edits.is_finished() {
+                self.lsp.state.file_rename_in_flight = Some(in_flight);
+                return;
+            }
+            let edits = in_flight.edits.await.unwrap_or_default();
+            self.finish_file_rename(in_flight.original, in_flight.input, in_flight.old, edits)
+                .await;
+            return;
+        }
+
         let Some((original, input)) = self.lsp.state.pending_file_rename.take() else {
             return;
         };
@@ -45,19 +59,40 @@ impl Editor {
                 return;
             }
         };
-        let lsp = self.lsp.state.lsp_manager.clone();
 
         // 1. Let servers rewrite references before the file moves.
+        let Some(lsp) = self.lsp.state.lsp_manager.clone() else {
+            self.finish_file_rename(original, input, old, Vec::new())
+                .await;
+            return;
+        };
+        let renames = [(old.clone(), new)];
+        let edits = tokio::spawn(async move { lsp.will_rename_files(&renames).await });
+        self.lsp.state.file_rename_in_flight = Some(RenameInFlight {
+            original,
+            input,
+            old,
+            edits,
+        });
+    }
+
+    /// Applies the servers' pre-rename edits, renames on disk, moves the open
+    /// buffers along and tells the servers it happened.
+    async fn finish_file_rename(
+        &mut self,
+        original: PathBuf,
+        input: String,
+        old: PathBuf,
+        will_rename_edits: Vec<lsp_types::WorkspaceEdit>,
+    ) {
         let mut edit_problems = Vec::new();
-        if let Some(lsp) = &lsp {
-            for edit in lsp.will_rename_files(&[(old.clone(), new.clone())]).await {
-                match self.apply_workspace_edit(edit) {
-                    Ok(true) => {}
-                    Ok(false) => {
-                        edit_problems.push("some reference updates were not applied".to_string())
-                    }
-                    Err(error) => edit_problems.push(error.to_string()),
+        for edit in will_rename_edits {
+            match self.apply_workspace_edit(edit) {
+                Ok(true) => {}
+                Ok(false) => {
+                    edit_problems.push("some reference updates were not applied".to_string())
                 }
+                Err(error) => edit_problems.push(error.to_string()),
             }
         }
 
@@ -83,9 +118,9 @@ impl Editor {
         }
 
         // 4. Tell servers it happened.
-        if let Some(lsp) = &lsp {
-            lsp.did_rename_files(&[(old.clone(), new_path.clone())])
-                .await;
+        if let Some(lsp) = self.lsp.state.lsp_manager.clone() {
+            let renames = [(old.clone(), new_path.clone())];
+            tokio::spawn(async move { lsp.did_rename_files(&renames).await });
         }
 
         let name = |p: &Path| {
@@ -101,4 +136,12 @@ impl Editor {
         self.set_status_message(status);
         self.mark_dirty();
     }
+}
+
+/// An explorer rename waiting for the servers' `willRenameFiles` answers.
+pub(crate) struct RenameInFlight {
+    original: PathBuf,
+    input: String,
+    old: PathBuf,
+    edits: tokio::task::JoinHandle<Vec<lsp_types::WorkspaceEdit>>,
 }

@@ -358,17 +358,32 @@ pub(crate) async fn handle_api_request(
 
             let _ = tx.send(ApiResponse::Metrics(metrics_info));
         }
+        // The language server may take seconds to answer these: the request is
+        // sent now and answered from a task, so the editor loop (keys, ticks,
+        // rendering) is never held up behind it.
         ApiRequest::GetOutline(tx) => {
-            let info = editor.get_outline().await;
-            let _ = tx.send(ApiResponse::Outline(info));
+            let pending = editor.begin_outline().await;
+            tokio::spawn(async move {
+                if let Ok(info) = pending.await {
+                    let _ = tx.send(ApiResponse::Outline(info));
+                }
+            });
         }
         ApiRequest::SearchSymbol(query, tx) => {
-            let info = editor.search_symbols(&query).await;
-            let _ = tx.send(ApiResponse::SymbolSearch(info));
+            let pending = editor.begin_symbol_search(&query).await;
+            tokio::spawn(async move {
+                if let Ok(info) = pending.await {
+                    let _ = tx.send(ApiResponse::SymbolSearch(info));
+                }
+            });
         }
         ApiRequest::GetTrace(tx) => {
-            let info = editor.get_trace().await;
-            let _ = tx.send(ApiResponse::Trace(info));
+            let pending = editor.begin_trace().await;
+            tokio::spawn(async move {
+                if let Ok(info) = pending.await {
+                    let _ = tx.send(ApiResponse::Trace(info));
+                }
+            });
         }
         ApiRequest::GetDiagnostics(tx) => {
             let file = editor.buffer().file_path().map(|s| s.to_string());
