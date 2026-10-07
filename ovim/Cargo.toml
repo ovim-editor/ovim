@@ -3,6 +3,8 @@ name = "ovim"
 version = "1.3.0"
 edition = "2024"
 description = "Oxidized Vim — a snappy, batteries-included editor with terminal and native GUI frontends, Vim keybindings, Lua config, LSP, and AI built in."
+license = "MIT"
+repository = "https://github.com/ovim-editor/ovim"
 
 [[bin]]
 name = "ovim-gui"
