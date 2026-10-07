@@ -111,6 +111,9 @@ impl PendingWorkspaceEdit {
 /// Reduced to 150ms for faster diagnostics feedback (was 300ms)
 const CHANGE_DEBOUNCE_MS: u64 = 150;
 
+/// (server_id, method, subject): which notifications supersede one another.
+type OverflowKey = (String, String, String);
+
 /// Notification message from a language server
 #[derive(Clone)]
 pub struct LspNotification {
@@ -272,6 +275,10 @@ pub struct LspManager {
     workspace_edit_tx: mpsc::Sender<PendingWorkspaceEdit>,
     workspace_edit_rx: Mutex<mpsc::Receiver<PendingWorkspaceEdit>>,
 
+    /// Notifications that found `notification_tx` full and are worth keeping:
+    /// the latest per (server, method, subject) instead of every one.
+    overflow_notifications: Arc<std::sync::Mutex<HashMap<OverflowKey, (u64, LspNotification)>>>,
+
     /// BUG FIX: Counter for dropped notifications when channel is full
     /// Prevents blocking when notification receiver is slow
     dropped_notifications: Arc<AtomicU64>,
@@ -357,6 +364,7 @@ impl LspManager {
             current_progress: Mutex::new(HashMap::new()),
             workspace_edit_tx,
             workspace_edit_rx: Mutex::new(workspace_edit_rx),
+            overflow_notifications: Arc::default(),
             dropped_notifications: Arc::new(AtomicU64::new(0)),
             startup_gates: DashMap::new(),
             listener_handles: DashMap::new(),

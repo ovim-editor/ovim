@@ -1453,6 +1453,8 @@ impl LspManager {
             notifications.push(notification);
         }
         drop(rx);
+        // What arrived while the channel was full is newer than all of it.
+        notifications.extend(self.take_overflow_notifications());
 
         let count = notifications.len();
         for notification in notifications {
@@ -1552,69 +1554,112 @@ impl LspManager {
 
     /// Starts a background task to listen for notifications and requests from a language server.
     /// `server_id` is the DashMap key: language_id for primaries, "language_id:companion_id" for companions.
-    pub async fn start_notification_listener(&self, server_id: String) {
-        let server = self
-            .servers
-            .get(&server_id)
-            .map(|entry| entry.value().clone());
+    ///
+    /// Server-initiated requests are answered from this task, never queued
+    /// behind the editor loop: it can be parked for minutes (`:terminal`,
+    /// `:!cmd`) and a server waiting for its `workspace/configuration` answer
+    /// would stall meanwhile. Notifications go through the bounded channel;
+    /// when it is full, the ones that only the latest of matters (diagnostics
+    /// of a document, progress of a token) are kept in `overflow_notifications`
+    /// instead of being dropped.
+    pub async fn start_notification_listener(self: &Arc<Self>, server_id: String) {
+        let Some(server) = self.server_handle(&server_id) else {
+            return;
+        };
+        let tx = self.notification_tx.clone();
+        let sid = server_id.clone();
+        let dropped_counter = self.dropped_notifications.clone();
+        let overflow = self.overflow_notifications.clone();
+        let manager = Arc::downgrade(self);
 
-        if let Some(server) = server {
-            let tx = self.notification_tx.clone();
-            let sid = server_id.clone();
-            let dropped_counter = self.dropped_notifications.clone();
+        let handle = tokio::spawn(async move {
+            while let Some(msg) = server.receive().await {
+                if msg.is_request() {
+                    let Some(manager) = manager.upgrade() else {
+                        break;
+                    };
+                    let sid = sid.clone();
+                    tokio::spawn(async move {
+                        manager.handle_server_request(&sid, msg).await;
+                    });
+                    continue;
+                }
+                if !msg.is_notification() {
+                    continue;
+                }
+                let notification = LspNotification {
+                    server_id: sid.clone(),
+                    message: msg,
+                };
 
-            let handle = tokio::spawn(async move {
-                while let Some(msg) = server.receive().await {
-                    // Handle both notifications (no id) and requests from server (has id)
-                    if msg.is_notification() || msg.is_request() {
-                        // Send to manager for processing
-                        let notification = LspNotification {
-                            server_id: sid.clone(),
-                            message: msg,
-                        };
-
-                        // BUG FIX: Use try_send instead of send to avoid blocking
-                        // If channel is full, drop the notification and increment counter
-                        // This prevents deadlocks when the receiver is slow
-                        match tx.try_send(notification) {
-                            Ok(()) => {
-                                // Successfully sent
-                            }
-                            Err(mpsc::error::TrySendError::Full(dropped)) => {
-                                let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
-                                // Always log when dropping server-initiated requests (they expect a response)
-                                if dropped.message.is_request() {
-                                    lsp_error!(
-                                        "Listener",
-                                        "Dropped server-initiated request (channel full): method={:?}",
-                                        dropped.message.method
-                                    );
-                                } else if count.is_multiple_of(100) {
-                                    // Log every 100 dropped notifications to avoid spam
-                                    lsp_error!(
-                                        "Listener",
-                                        "Notification channel full, dropped {} notifications so far",
-                                        count + 1
-                                    );
-                                }
-                            }
-                            Err(mpsc::error::TrySendError::Closed(_)) => {
-                                // Manager dropped, stop listening
+                // Never block on a slow receiver: it would stop this server's
+                // output from being read.
+                match tx.try_send(notification) {
+                    Ok(()) => {}
+                    Err(mpsc::error::TrySendError::Full(full)) => {
+                        let Some(key) = overflow_key(&full) else {
+                            let count = dropped_counter.fetch_add(1, Ordering::Relaxed);
+                            if count.is_multiple_of(100) {
+                                // Log every 100 dropped notifications to avoid spam
                                 lsp_error!(
                                     "Listener",
-                                    "Notification channel closed, stopping listener"
+                                    "Notification channel full, dropped {} notifications so far",
+                                    count + 1
                                 );
-                                break;
                             }
+                            continue;
+                        };
+                        if let Ok(mut held) = overflow.lock() {
+                            held.insert(key, (next_overflow_sequence(), full));
                         }
                     }
+                    Err(mpsc::error::TrySendError::Closed(_)) => {
+                        // Manager dropped, stop listening
+                        lsp_error!("Listener", "Notification channel closed, stopping listener");
+                        break;
+                    }
                 }
-            });
+            }
+        });
 
-            // Store the handle so we can abort it on server stop
-            self.listener_handles.insert(server_id, handle);
-        }
+        // Store the handle so we can abort it on server stop
+        self.listener_handles.insert(server_id, handle);
     }
+
+    /// Takes the notifications kept because the channel was full, in the
+    /// order the server sent them.
+    fn take_overflow_notifications(&self) -> Vec<LspNotification> {
+        let Ok(mut held) = self.overflow_notifications.lock() else {
+            return Vec::new();
+        };
+        let mut taken: Vec<_> = std::mem::take(&mut *held).into_values().collect();
+        taken.sort_by_key(|(sequence, _)| *sequence);
+        taken
+            .into_iter()
+            .map(|(_, notification)| notification)
+            .collect()
+    }
+}
+
+fn next_overflow_sequence() -> u64 {
+    static SEQUENCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+/// What a notification that found the channel full is kept under: (server,
+/// method, subject). A newer notification with the same key replaces it, so
+/// only the latest diagnostics of a document or progress of a token survive.
+/// `None` for the notifications that are simply dropped.
+fn overflow_key(notification: &LspNotification) -> Option<super::OverflowKey> {
+    let method = notification.message.method.as_deref()?;
+    let params = notification.message.params.as_ref()?;
+    let subject = match method {
+        "textDocument/publishDiagnostics" => params.get("uri")?.as_str()?.to_string(),
+        "$/progress" => params.get("token")?.to_string(),
+        "window/showMessage" => params.to_string(),
+        _ => return None,
+    };
+    Some((notification.server_id.clone(), method.to_string(), subject))
 }
 
 #[cfg(test)]

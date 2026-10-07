@@ -228,7 +228,7 @@ impl LspManager {
     /// Replaces the server `server_id` with a freshly spawned one launched
     /// from its recorded spec. The old instance is shut down (and reaped)
     /// first so two heavyweight servers never overlap.
-    async fn restart_server(&self, server_id: &str) -> Result<()> {
+    async fn restart_server(self: &Arc<Self>, server_id: &str) -> Result<()> {
         let spec = self
             .server_specs
             .get(server_id)
