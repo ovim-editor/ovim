@@ -18,7 +18,7 @@ impl Editor {
     /// Open buffers whose file is `path` or lives below it, with the part of
     /// their path relative to `path` (empty for the file itself). Must run
     /// before the rename: it canonicalizes paths that stop existing after it.
-    fn buffers_at_or_below(&self, path: &Path) -> Vec<(usize, PathBuf)> {
+    pub(in crate::editor) fn buffers_at_or_below(&self, path: &Path) -> Vec<(usize, PathBuf)> {
         let Ok(path) = path.canonicalize() else {
             return Vec::new();
         };
@@ -31,6 +31,22 @@ impl Editor {
                 Some((index, relative.to_path_buf()))
             })
             .collect()
+    }
+
+    /// Points the buffers `buffers_at_or_below` found at the moved path.
+    pub(in crate::editor) fn retarget_buffers_after_move(
+        &mut self,
+        affected: Vec<(usize, PathBuf)>,
+        new_path: &Path,
+    ) {
+        for (index, relative) in affected {
+            let target = if relative.as_os_str().is_empty() {
+                new_path.to_path_buf()
+            } else {
+                new_path.join(relative)
+            };
+            self.retarget_buffer_path(index, target);
+        }
     }
 
     /// Drives an explorer rename. The servers' `willRenameFiles` answers can
@@ -108,14 +124,7 @@ impl Editor {
         };
 
         // 3. Open buffers follow their files.
-        for (index, relative) in affected {
-            let target = if relative.as_os_str().is_empty() {
-                new_path.clone()
-            } else {
-                new_path.join(relative)
-            };
-            self.retarget_buffer_path(index, target);
-        }
+        self.retarget_buffers_after_move(affected, &new_path);
 
         // 4. Tell servers it happened.
         if let Some(lsp) = self.lsp.state.lsp_manager.clone() {

@@ -670,22 +670,9 @@ impl Editor {
             {
                 continue;
             }
-            let buffer = &mut self.buffers[index];
-            if buffer.reload_from_disk().is_err() {
+            if !self.reload_buffer_from_disk(index) {
                 continue;
             }
-            buffer.change_manager_mut().mark_saved();
-            buffer.mark_clean();
-            let state = self
-                .lsp
-                .state
-                .document_sync
-                .entry(path.clone())
-                .or_default();
-            state.mark_modified();
-            state.last_flushed_content = None;
-            state.force_full_resend = true;
-            state.mark_saved();
             reloaded.push(path);
         }
         if !reloaded.is_empty() {
@@ -693,6 +680,29 @@ impl Editor {
             self.lsp.slots.inlay_hints.invalidate();
         }
         reloaded
+    }
+
+    /// Replaces the text of the buffer at `index` with what is on disk, as an
+    /// unmodified buffer, and has the language server resend the document.
+    /// Returns false when the file could not be read.
+    pub(crate) fn reload_buffer_from_disk(&mut self, index: usize) -> bool {
+        let Some(buffer) = self.buffers.get_mut(index) else {
+            return false;
+        };
+        let Some(path) = buffer.file_path().map(str::to_string) else {
+            return false;
+        };
+        if buffer.reload_from_disk().is_err() {
+            return false;
+        }
+        buffer.change_manager_mut().mark_saved();
+        buffer.mark_clean();
+        let state = self.lsp.state.document_sync.entry(path).or_default();
+        state.mark_modified();
+        state.last_flushed_content = None;
+        state.force_full_resend = true;
+        state.mark_saved();
+        true
     }
 
     /// Per-buffer variant of [`Editor::is_modified`]: unsaved-changes check
