@@ -2,7 +2,7 @@
 //! `:cla`, `:cdo` and `:cfdo`.
 
 use super::Ex;
-use crate::command_result::{err, ok, CommandResult};
+use crate::command_result::{err, ok, ok_silent, CommandResult};
 use crate::editor::{Editor, QuickfixEntry};
 use crate::unicode::GraphemeCol;
 
@@ -85,17 +85,21 @@ pub(super) fn open(editor: &mut Editor, _ex: &Ex) -> CommandResult {
     ))
 }
 
-/// `:ccl[ose]` clears the list.
+/// `:ccl[ose]` closes the quickfix window; the list stays for `:cn` and `:cp`.
 pub(super) fn close(editor: &mut Editor, _ex: &Ex) -> CommandResult {
-    editor.quickfix_list_mut().clear();
-    ok("Quickfix list cleared")
+    editor.close_quickfix_window();
+    ok_silent()
 }
 
-fn go(editor: &mut Editor, step: fn(&mut crate::editor::QuickfixList)) -> CommandResult {
+/// Move the selection with `step` (false: there was no such entry) and jump.
+fn go(editor: &mut Editor, step: fn(&mut crate::editor::QuickfixList) -> bool) -> CommandResult {
     if editor.quickfix_list().is_empty() {
         return err("Quickfix list is empty");
     }
-    step(editor.quickfix_list_mut());
+    // `999@q` macros stop on this error.
+    if !step(editor.quickfix_list_mut()) {
+        return err("E553: No more items");
+    }
     match editor.quickfix_list().current_entry().cloned() {
         Some(entry) => jump_to_quickfix_entry(editor, &entry),
         None => err("No current entry"),
@@ -111,11 +115,17 @@ pub(super) fn previous(editor: &mut Editor, _ex: &Ex) -> CommandResult {
 }
 
 pub(super) fn first(editor: &mut Editor, _ex: &Ex) -> CommandResult {
-    go(editor, |list| list.first())
+    go(editor, |list| {
+        list.first();
+        true
+    })
 }
 
 pub(super) fn last(editor: &mut Editor, _ex: &Ex) -> CommandResult {
-    go(editor, |list| list.last())
+    go(editor, |list| {
+        list.last();
+        true
+    })
 }
 
 /// `:cdo {cmd}` runs `cmd` at every quickfix entry, `:cfdo {cmd}` at the

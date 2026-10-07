@@ -148,21 +148,25 @@ impl QuickfixList {
         self.entries.get(self.selected_index)
     }
 
-    /// Moves to the next entry
-    pub fn next(&mut self) {
-        if !self.entries.is_empty() {
-            self.selected_index = (self.selected_index + 1) % self.entries.len();
+    /// Moves to the next entry. On the last one it stays put and returns
+    /// `false`: vim's `:cnext` does not wrap (E553).
+    pub fn next(&mut self) -> bool {
+        if self.selected_index + 1 < self.entries.len() {
+            self.selected_index += 1;
+            true
+        } else {
+            false
         }
     }
 
-    /// Moves to the previous entry
-    pub fn previous(&mut self) {
-        if !self.entries.is_empty() {
-            if self.selected_index == 0 {
-                self.selected_index = self.entries.len() - 1;
-            } else {
-                self.selected_index -= 1;
-            }
+    /// Moves to the previous entry. On the first one it stays put and
+    /// returns `false`.
+    pub fn previous(&mut self) -> bool {
+        if self.selected_index > 0 {
+            self.selected_index -= 1;
+            true
+        } else {
+            false
         }
     }
 

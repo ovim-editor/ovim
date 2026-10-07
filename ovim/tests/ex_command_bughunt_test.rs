@@ -312,3 +312,71 @@ fn unusable_percent_and_hash_are_errors() {
     );
     assert_eq!(test.editor.buffer_count(), 1);
 }
+
+fn quickfix_fixture(dir: &tempfile::TempDir) -> Vec<ovim::editor::QuickfixEntry> {
+    let path = dir.path().join("list.txt");
+    std::fs::write(&path, "a\nb\nc\n").unwrap();
+    (1..=3)
+        .map(|line| {
+            ovim::editor::QuickfixEntry::new(
+                Some(path.clone()),
+                line,
+                1,
+                ovim::editor::QuickfixEntryType::Info,
+                format!("item {line}"),
+            )
+        })
+        .collect()
+}
+
+// nvim --clean: with three items, `:cnext` on the last one is
+// "E553: No more items" and stays there (a `999@q` macro relies on it to
+// stop); `:cprev` on the first one is the same error. They do not wrap.
+#[tokio::test(flavor = "multi_thread")]
+async fn cnext_and_cprev_stop_at_the_ends_of_the_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut test = EditorTest::new("");
+    test.editor
+        .set_quickfix_list(quickfix_fixture(&dir), "test".to_string());
+    let cursor_line = |test: &EditorTest| test.editor.buffer().cursor().line();
+
+    run(&mut test, "cfirst");
+    assert_eq!(cursor_line(&test), 0);
+    let before_first = run(&mut test, "cprev");
+    assert!(
+        matches!(&before_first, ovim::command_result::CommandResult::Error(e) if e.error.starts_with("E553")),
+        "{before_first:?}"
+    );
+    assert_eq!(cursor_line(&test), 0);
+
+    run(&mut test, "cnext");
+    run(&mut test, "cnext");
+    assert_eq!(cursor_line(&test), 2);
+    let past_last = run(&mut test, "cnext");
+    assert!(
+        matches!(&past_last, ovim::command_result::CommandResult::Error(e) if e.error.starts_with("E553")),
+        "{past_last:?}"
+    );
+    assert_eq!(cursor_line(&test), 2);
+    run(&mut test, "cprev");
+    assert_eq!(cursor_line(&test), 1);
+}
+
+// nvim --clean: `:cclose` closes the quickfix window and keeps the list, so
+// `:cnext` still moves through it.
+#[tokio::test(flavor = "multi_thread")]
+async fn cclose_keeps_the_quickfix_list() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut test = EditorTest::new("");
+    test.editor
+        .set_quickfix_list(quickfix_fixture(&dir), "test".to_string());
+    test.editor.open_quickfix_window();
+    run(&mut test, "cfirst");
+
+    run(&mut test, "cclose");
+
+    assert!(!test.editor.is_quickfix_window_open());
+    assert_eq!(test.editor.quickfix_list().len(), 3);
+    run(&mut test, "cnext");
+    assert_eq!(test.editor.buffer().cursor().line(), 1);
+}

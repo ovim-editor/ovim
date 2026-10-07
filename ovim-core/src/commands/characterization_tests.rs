@@ -705,8 +705,9 @@ fn cases() -> Vec<Case> {
         case("cope").is("Quickfix list is empty"),
         case("cr").fails("Quickfix list is empty"),
         case("cN").fails("Quickfix list is empty"),
-        case("cclose").is("Quickfix list cleared"),
-        case("ccl").is("Quickfix list cleared"),
+        // vim: `:cclose` only closes the window, silently.
+        case("cclose"),
+        case("ccl"),
         case("cn").fails("Quickfix list is empty"),
         case("cnext").fails("Quickfix list is empty"),
         case("cp").fails("Quickfix list is empty"),
