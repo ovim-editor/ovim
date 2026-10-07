@@ -121,6 +121,7 @@ impl GitStatus {
         let mut diff_opts = DiffOptions::new();
         diff_opts
             .pathspec(relative_path)
+            .disable_pathspec_match(true)
             .context_lines(0)
             .include_untracked(true)
             .recurse_untracked_dirs(true)

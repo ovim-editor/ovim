@@ -524,3 +524,87 @@ fn stage_and_unstage_a_file_in_a_deleted_directory() {
         " D"
     );
 }
+
+#[test]
+fn stage_hunk_treats_brackets_in_a_filename_literally() {
+    let fixture = Fixture::new();
+    fixture.write("a[1].txt", "original\nsecond\n");
+    fixture.write("a1.txt", "other\n");
+    fixture.commit_all("base");
+    let file = fixture.write("a[1].txt", "changed\nSECOND\n");
+    fixture.write("a1.txt", "OTHER\n");
+    assert!(ovim_core::git::ops::stage_hunk(std::path::Path::new(&file), 0).unwrap());
+    assert_eq!(fixture.staged("a[1].txt"), "changed\nSECOND\n");
+    assert_eq!(fixture.staged("a1.txt"), "other\n");
+}
+
+#[test]
+fn unstage_file_does_not_match_other_paths_as_a_glob() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a[1].txt", "original\n");
+    fixture.write("a1.txt", "other\n");
+    fixture.commit_all("base");
+    fixture.write("a[1].txt", "changed\n");
+    fixture.write("a1.txt", "OTHER\n");
+    ovim_core::git::ops::stage_all(&fixture.root).unwrap();
+    ovim_core::git::ops::unstage_file(std::path::Path::new(&file)).unwrap();
+    assert_eq!(fixture.staged("a[1].txt"), "original\n");
+    assert_eq!(fixture.staged("a1.txt"), "OTHER\n");
+}
+
+#[test]
+fn unstage_file_restores_deletions_and_executable_mode() {
+    let fixture = Fixture::new();
+    let file = fixture.write("run.sh", "echo old\n");
+    fixture.commit_all("base");
+    let mut index = fixture.repo.index().unwrap();
+    let mut entry = index.get_path(std::path::Path::new("run.sh"), 0).unwrap();
+    entry.mode = 0o100755;
+    index.add(&entry).unwrap();
+    index.write().unwrap();
+    let tree = fixture.repo.find_tree(index.write_tree().unwrap()).unwrap();
+    let parent = fixture.repo.head().unwrap().peel_to_commit().unwrap();
+    let signature = Signature::now("Test", "t@example.com").unwrap();
+    fixture
+        .repo
+        .commit(
+            Some("HEAD"),
+            &signature,
+            &signature,
+            "executable",
+            &tree,
+            &[&parent],
+        )
+        .unwrap();
+    fs::remove_file(&file).unwrap();
+    let path = std::path::Path::new(&file);
+    ovim_core::git::ops::stage_file(path).unwrap();
+    ovim_core::git::ops::unstage_file(path).unwrap();
+    index.read(true).unwrap();
+    assert_eq!(
+        index
+            .get_path(std::path::Path::new("run.sh"), 0)
+            .unwrap()
+            .mode,
+        0o100755
+    );
+    assert_eq!(fixture.staged("run.sh"), "echo old\n");
+    assert!(!path.exists(), "unstage must not restore the working file");
+}
+
+#[test]
+fn unstage_file_in_an_unborn_repository_removes_only_the_selected_path() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a[1].txt", "new\n");
+    fixture.write("a1.txt", "other\n");
+    ovim_core::git::ops::stage_all(&fixture.root).unwrap();
+    ovim_core::git::ops::unstage_file(std::path::Path::new(&file)).unwrap();
+    assert_eq!(fixture.staged("a1.txt"), "other\n");
+    assert!(fixture
+        .repo
+        .index()
+        .unwrap()
+        .get_path(std::path::Path::new("a[1].txt"), 0)
+        .is_none());
+    assert_eq!(fs::read_to_string(file).unwrap(), "new\n");
+}

@@ -202,17 +202,33 @@ pub fn stage_all(path: &Path) -> Result<()> {
 /// Removes the file from the index, restoring the HEAD version there.
 pub fn unstage_file(path: &Path) -> Result<()> {
     let (repo, relative) = open(path)?;
-    match repo.head().and_then(|head| head.peel_to_commit()) {
-        Ok(commit) => {
-            repo.reset_default(Some(commit.as_object()), [&relative])?;
-        }
-        Err(error) if error.code() == ErrorCode::UnbornBranch => {
-            let mut index = repo.index()?;
-            index.remove_path(&relative)?;
-            index.write()?;
-        }
+    let tree = match repo.head().and_then(|head| head.peel_to_tree()) {
+        Ok(tree) => Some(tree),
+        Err(error) if error.code() == ErrorCode::UnbornBranch => None,
         Err(error) => return Err(error.into()),
+    };
+    let mut index = repo.index()?;
+    // reset_default accepts glob pathspecs. Restore exactly this tree entry,
+    // including its mode, so names like route/[id].tsx cannot reset siblings.
+    match tree.as_ref().and_then(|tree| tree.get_path(&relative).ok()) {
+        Some(source) => {
+            let mut entry = empty_index_entry(&relative);
+            entry.id = source.id();
+            entry.mode = source.filemode() as u32;
+            if source.kind() == Some(git2::ObjectType::Blob) {
+                entry.file_size = repo.find_blob(source.id())?.size() as u32;
+            }
+            index.add(&entry)?;
+        }
+        None => {
+            if let Err(error) = index.remove_path(&relative) {
+                if error.code() != ErrorCode::NotFound {
+                    return Err(error.into());
+                }
+            }
+        }
     }
+    index.write()?;
     Ok(())
 }
 
@@ -298,10 +314,9 @@ fn index_text(repo: &Repository, relative: &Path) -> Result<Vec<u8>> {
     })
 }
 
-/// Replaces the index entry of `relative` with `content`.
-fn write_index_text(repo: &Repository, relative: &Path, content: &[u8]) -> Result<()> {
-    let mut index = repo.index()?;
-    let mut entry = index.get_path(relative, 0).unwrap_or(git2::IndexEntry {
+/// A new index entry without cached worktree stat information.
+fn empty_index_entry(relative: &Path) -> git2::IndexEntry {
+    git2::IndexEntry {
         ctime: git2::IndexTime::new(0, 0),
         mtime: git2::IndexTime::new(0, 0),
         dev: 0,
@@ -313,8 +328,16 @@ fn write_index_text(repo: &Repository, relative: &Path, content: &[u8]) -> Resul
         id: Oid::zero(),
         flags: 0,
         flags_extended: 0,
-        path: relative.to_string_lossy().as_bytes().to_vec(),
-    });
+        path: relative.as_os_str().as_encoded_bytes().to_vec(),
+    }
+}
+
+/// Replaces the index entry of `relative` with `content`.
+fn write_index_text(repo: &Repository, relative: &Path, content: &[u8]) -> Result<()> {
+    let mut index = repo.index()?;
+    let mut entry = index
+        .get_path(relative, 0)
+        .unwrap_or_else(|| empty_index_entry(relative));
     entry.file_size = content.len() as u32;
     index.add_frombuffer(&entry, content)?;
     index.write()?;
@@ -332,6 +355,7 @@ pub fn stage_hunk(path: &Path, line: usize) -> Result<bool> {
     let mut diff_options = DiffOptions::new();
     diff_options
         .pathspec(&relative)
+        .disable_pathspec_match(true)
         .context_lines(0)
         .include_untracked(true)
         .show_untracked_content(true);
@@ -366,7 +390,10 @@ fn worktree_line_to_index_line(
     line: usize,
 ) -> Result<Option<usize>> {
     let mut diff_options = DiffOptions::new();
-    diff_options.pathspec(relative).context_lines(0);
+    diff_options
+        .pathspec(relative)
+        .disable_pathspec_match(true)
+        .context_lines(0);
     let diff = repo.diff_index_to_workdir(None, Some(&mut diff_options))?;
     let target = line as i64 + 1;
     let mut delta = 0i64;
@@ -403,7 +430,10 @@ pub fn unstage_hunk(path: &Path, line: usize) -> Result<bool> {
     };
     let head_tree = repo.head().ok().and_then(|head| head.peel_to_tree().ok());
     let mut diff_options = DiffOptions::new();
-    diff_options.pathspec(&relative).context_lines(0);
+    diff_options
+        .pathspec(&relative)
+        .disable_pathspec_match(true)
+        .context_lines(0);
     let diff = repo.diff_tree_to_index(head_tree.as_ref(), None, Some(&mut diff_options))?;
     let target = index_line as u32 + 1;
     let Some((old_start, old_lines, new_start, new_lines)) = hunk_ranges(&diff)?
@@ -633,7 +663,7 @@ pub fn file_history(path: &Path, limit: usize) -> Result<Vec<LogEntry>> {
             None
         };
         let mut options = DiffOptions::new();
-        options.pathspec(&relative);
+        options.pathspec(&relative).disable_pathspec_match(true);
         let diff = repo.diff_tree_to_tree(parent_tree.as_ref(), Some(&tree), Some(&mut options))?;
         if diff.deltas().len() > 0 {
             entries.push(log_entry(
@@ -693,7 +723,10 @@ pub fn line_history(path: &Path, line: usize, limit: usize) -> Result<Vec<LogEnt
                 path: Some(current_path.to_string_lossy().to_string()),
             });
             let mut diff_options = DiffOptions::new();
-            diff_options.pathspec(&current_path).context_lines(0);
+            diff_options
+                .pathspec(&current_path)
+                .disable_pathspec_match(true)
+                .context_lines(0);
             let diff =
                 repo.diff_tree_to_workdir_with_index(Some(&head.tree()?), Some(&mut diff_options))?;
             match map_line_to_old_side(&diff, current_line)? {
@@ -720,7 +753,10 @@ pub fn line_history(path: &Path, line: usize, limit: usize) -> Result<Vec<LogEnt
         }
         let parent = commit.parent(0)?;
         let mut diff_options = DiffOptions::new();
-        diff_options.pathspec(&commit_path).context_lines(0);
+        diff_options
+            .pathspec(&commit_path)
+            .disable_pathspec_match(true)
+            .context_lines(0);
         let mut diff = repo.diff_tree_to_tree(
             Some(&parent.tree()?),
             Some(&commit.tree()?),
