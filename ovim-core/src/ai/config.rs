@@ -24,6 +24,10 @@ pub struct AiPermissionModeOption {
     pub id: &'static str,
     pub label: &'static str,
     pub description: &'static str,
+    /// A mode that disables the provider's approval prompts. Pickers never
+    /// offer it, it is enabled only by an explicit, repeated command, and it
+    /// applies to the current chat without being remembered.
+    pub requires_confirmation: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

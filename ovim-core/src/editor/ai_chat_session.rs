@@ -140,6 +140,24 @@ impl Editor {
             .or_else(|| profile.default_permission_mode())
     }
 
+    /// The modes the pickers offer. A mode that needs confirmation appears
+    /// only while it is active, so no picker action can select it.
+    pub fn ai_chat_pickable_permission_modes(&self) -> Vec<crate::ai::AiPermissionModeOption> {
+        let active = self.ai_chat_permission_mode();
+        self.ai_chat_permission_modes()
+            .iter()
+            .filter(|option| !option.requires_confirmation || active == Some(option.id))
+            .copied()
+            .collect()
+    }
+
+    /// Whether the active permission mode disables the provider's approval
+    /// prompts. Frontends keep a warning visible while this holds.
+    pub fn ai_chat_permission_mode_skips_approvals(&self) -> bool {
+        self.ai_chat_permission_mode()
+            .is_some_and(crate::ai::claude_code::permission_mode_requires_confirmation)
+    }
+
     pub fn set_ai_chat_permission_mode(&mut self, mode: &str) -> bool {
         if self.ai_chat_has_pending_work() {
             self.set_status_message(
@@ -154,12 +172,39 @@ impl Editor {
             self.set_status_message(error.to_string());
             return false;
         }
+        let confirm_first = profile
+            .permission_modes()
+            .iter()
+            .find(|option| option.id == mode)
+            .filter(|option| option.requires_confirmation)
+            .map(|option| option.label);
+        let already_active = self.ai_chat_permission_mode() == Some(mode);
         let Some(chat) = self.ai_state.chat.as_mut() else {
             return false;
         };
+        if let Some(label) = confirm_first.filter(|_| !already_active) {
+            if chat.pending_permission_confirmation.as_deref() != Some(mode) {
+                chat.pending_permission_confirmation = Some(mode.to_string());
+                self.set_status_message(format!(
+                    "{label} skips {}'s approval prompts for this chat. Run /permissions {mode} again to confirm.",
+                    profile.display_name()
+                ));
+                return false;
+            }
+        }
+        chat.pending_permission_confirmation = None;
         chat.permission_mode_override = Some(mode.to_string());
         chat.follow_chat_default = chat.opts.name != "query";
         self.ai_state.chat_config_override = false;
+        if confirm_first.is_some() {
+            // Never persisted: the next chat and the next start use the
+            // remembered safe mode or the provider default.
+            self.set_status_message(format!(
+                "AI permission mode: {mode} (this chat only; not remembered)"
+            ));
+            self.mark_dirty();
+            return true;
+        }
         let selection = crate::ai::chat_preference::ChatSelection {
             profile: profile.name.clone(),
             provider: profile.provider,
@@ -180,22 +225,25 @@ impl Editor {
         true
     }
 
+    /// Step through the pickable permission modes. The list does not wrap, so
+    /// stepping past either end is a no-op rather than a jump to the far end.
     pub fn cycle_ai_chat_permission_mode(&mut self, forward: bool) -> bool {
         let Some(current) = self.ai_chat_permission_mode().map(str::to_owned) else {
             return false;
         };
-        let modes = self.ai_chat_permission_modes();
+        let modes = self.ai_chat_pickable_permission_modes();
         let current = modes
             .iter()
             .position(|option| option.id == current)
             .unwrap_or(0);
         let next = if forward {
-            (current + 1) % modes.len()
-        } else if current == 0 {
-            modes.len() - 1
+            (current + 1).min(modes.len().saturating_sub(1))
         } else {
-            current - 1
+            current.saturating_sub(1)
         };
+        if next == current {
+            return false;
+        }
         self.set_ai_chat_permission_mode(modes[next].id)
     }
 

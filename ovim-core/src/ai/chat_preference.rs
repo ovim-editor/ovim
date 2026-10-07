@@ -18,6 +18,19 @@ pub(crate) struct ChatSelection {
 }
 
 impl ChatSelection {
+    /// A permission mode that disables approval prompts is never remembered:
+    /// the next start falls back to the provider default.
+    fn without_unconfirmed_permission_mode(mut self) -> Self {
+        if self
+            .permission_mode
+            .as_deref()
+            .is_some_and(super::claude_code::permission_mode_requires_confirmation)
+        {
+            self.permission_mode = None;
+        }
+        self
+    }
+
     pub fn resolve<'a>(&self, config: &'a AiConfig) -> Option<&'a AiProfileConfig> {
         let profile = config.resolve_profile(&self.profile)?;
         if profile.provider != self.provider {
@@ -64,7 +77,9 @@ impl ChatPreference {
     pub fn load(path: PathBuf) -> Self {
         let selection = match std::fs::read(&path) {
             Ok(bytes) => match serde_json::from_slice::<Document>(&bytes) {
-                Ok(document) if document.version == 1 => Some(document.selection),
+                Ok(document) if document.version == 1 => {
+                    Some(document.selection.without_unconfirmed_permission_mode())
+                }
                 _ => {
                     crate::log_warn!("ai", "Ignoring invalid chat preference: {}", path.display());
                     None
@@ -96,6 +111,7 @@ impl ChatPreference {
     /// Commit only complete selections. Unique temporary files also make
     /// concurrent editors safe: the last successful selection wins.
     pub fn remember(&mut self, selection: ChatSelection) -> Result<()> {
+        let selection = selection.without_unconfirmed_permission_mode();
         self.selection = Some(selection.clone());
         let Some(path) = &self.path else {
             return Ok(());

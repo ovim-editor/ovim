@@ -504,9 +504,18 @@ prompt. Bypass permissions skips ordinary approval prompts; Claude policy and
 hook restrictions still apply. The exact stable IDs are available with
 `/permissions auto|default|acceptEdits|plan|dontAsk|bypassPermissions`.
 
+The terminal picker steps through the first five modes with the arrow keys and
+stops at either end instead of wrapping. Bypass permissions is never a picker
+choice. Enable it by running `/permissions bypassPermissions` twice: the first
+run only explains and asks for confirmation, and any other permission change
+cancels it. Bypass applies to the current chat only and is never saved, so a new
+chat or a restart returns to the remembered mode (Auto by default). While it is
+active, a red `BYPASS` badge stays in the chat header in the terminal and the
+GUI. Run `/permissions auto` (or any other mode) to turn it off.
+
 Changing the permission mode is blocked during an active turn. The choice is
-stored beside the selected provider/model in `chat-preference.json`; older
-preference files use Auto. Switching to a provider without permission modes
+stored beside the selected provider/model in `chat-preference.json`, except
+Bypass permissions; older preference files use Auto. Switching to a provider without permission modes
 removes the control and cannot carry a Claude mode into that provider. The
 selected mode is part of Claude's native-session fingerprint, so a mode change
 does not resume a checkpoint created under another mode.

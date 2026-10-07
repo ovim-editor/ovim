@@ -24,34 +24,48 @@ pub(crate) const PERMISSION_MODES: &[super::AiPermissionModeOption] = &[
         id: "auto",
         label: "Auto",
         description: "Let Claude classify permission prompts and approve or deny them.",
+        requires_confirmation: false,
     },
     super::AiPermissionModeOption {
         id: "default",
         label: "Manual",
         description: "Ask before operations that require permission.",
+        requires_confirmation: false,
     },
     super::AiPermissionModeOption {
         id: "acceptEdits",
         label: "Accept edits",
         description: "Approve file edits automatically and ask for other protected operations.",
+        requires_confirmation: false,
     },
     super::AiPermissionModeOption {
         id: "plan",
         label: "Plan",
         description: "Explore and plan; ask before changing project files.",
+        requires_confirmation: false,
     },
     super::AiPermissionModeOption {
         id: "dontAsk",
         label: "Don't ask",
         description: "Deny calls that would require approval instead of prompting.",
+        requires_confirmation: false,
     },
     super::AiPermissionModeOption {
         id: "bypassPermissions",
         label: "Bypass permissions",
         description:
             "Skip ordinary approval prompts; Claude policy and hook restrictions still apply.",
+        requires_confirmation: true,
     },
 ];
+
+/// Whether `mode` disables approval prompts and so needs an explicit,
+/// repeated command to enable and is never remembered.
+pub(crate) fn permission_mode_requires_confirmation(mode: &str) -> bool {
+    PERMISSION_MODES
+        .iter()
+        .any(|option| option.id == mode && option.requires_confirmation)
+}
 
 pub(crate) const PERMISSION_CAPABILITY: super::AiPermissionModes = super::AiPermissionModes {
     default: "auto",

@@ -125,7 +125,19 @@ impl Editor {
             model: (profile.provider == crate::ai::AiProviderKind::ClaudeCode)
                 .then(|| model.into()),
             permission_mode: if current_provider == Some(profile.provider) {
+                // A mode that skips approval prompts is never remembered;
+                // keep the last remembered mode instead.
+                let remembered = self
+                    .ai_state
+                    .chat_preference
+                    .selection
+                    .as_ref()
+                    .and_then(|selection| selection.permission_mode.as_deref());
                 self.ai_chat_permission_mode()
+                    .filter(|mode| {
+                        !crate::ai::claude_code::permission_mode_requires_confirmation(mode)
+                    })
+                    .or(remembered)
                     .filter(|mode| profile.validate_permission_mode(mode).is_ok())
                     .or_else(|| profile.default_permission_mode())
                     .map(str::to_owned)
@@ -608,7 +620,7 @@ mod model_selection_tests {
         assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
         assert!(!editor.set_ai_chat_permission_mode("manual"));
         assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
-        assert!(editor.set_ai_chat_permission_mode("bypassPermissions"));
+        enable_bypass(&mut editor);
 
         let mut second = editor.ai_state.config.profiles["claude_code"].clone();
         second.name = "claude_other".into();
@@ -625,6 +637,125 @@ mod model_selection_tests {
         assert_eq!(editor.ai_chat_permission_mode(), None);
         assert!(editor.ai_select_chat_profile("claude_code"));
         assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+    }
+
+    /// Bypass takes the same command twice; the first only asks.
+    fn enable_bypass(editor: &mut crate::editor::Editor) {
+        assert!(!editor.set_ai_chat_permission_mode("bypassPermissions"));
+        assert!(editor.status_message().contains("again to confirm"));
+        assert!(editor.set_ai_chat_permission_mode("bypassPermissions"));
+    }
+
+    #[test]
+    fn permission_cycle_clamps_at_both_ends_and_never_reaches_bypass() {
+        let mut editor = editor();
+        assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        // Stepping back from the first mode must not wrap to the last one.
+        assert!(!editor.cycle_ai_chat_permission_mode(false));
+        assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        let mut seen = vec!["auto".to_string()];
+        while editor.cycle_ai_chat_permission_mode(true) {
+            seen.push(editor.ai_chat_permission_mode().unwrap().to_string());
+        }
+        assert_eq!(seen, ["auto", "default", "acceptEdits", "plan", "dontAsk"]);
+        assert_eq!(editor.ai_chat_permission_mode(), Some("dontAsk"));
+        assert!(!editor.ai_chat_permission_mode_skips_approvals());
+        assert!(editor
+            .ai_chat_pickable_permission_modes()
+            .iter()
+            .all(|option| option.id != "bypassPermissions"));
+    }
+
+    #[test]
+    fn bypass_needs_a_repeated_command_and_other_changes_cancel_it() {
+        let mut editor = editor();
+        assert!(!editor.set_ai_chat_permission_mode("bypassPermissions"));
+        assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        // Anything else in between cancels the pending confirmation.
+        assert!(editor.set_ai_chat_permission_mode("plan"));
+        assert!(!editor.set_ai_chat_permission_mode("bypassPermissions"));
+        assert_eq!(editor.ai_chat_permission_mode(), Some("plan"));
+        assert!(editor.set_ai_chat_permission_mode("bypassPermissions"));
+        assert_eq!(editor.ai_chat_permission_mode(), Some("bypassPermissions"));
+        assert!(editor.ai_chat_permission_mode_skips_approvals());
+
+        // While active it is the last picker row; the cycle can leave it but
+        // can never re-enter it.
+        let pickable: Vec<_> = editor
+            .ai_chat_pickable_permission_modes()
+            .iter()
+            .map(|option| option.id)
+            .collect();
+        assert_eq!(pickable.last(), Some(&"bypassPermissions"));
+        assert!(!editor.cycle_ai_chat_permission_mode(true));
+        assert!(editor.cycle_ai_chat_permission_mode(false));
+        assert_eq!(editor.ai_chat_permission_mode(), Some("dontAsk"));
+        assert!(!editor.ai_chat_permission_mode_skips_approvals());
+        assert!(!editor.cycle_ai_chat_permission_mode(true));
+        assert_eq!(editor.ai_chat_permission_mode(), Some("dontAsk"));
+    }
+
+    #[test]
+    fn slash_command_enables_bypass_only_when_repeated() {
+        let mut editor = editor();
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/permissions bypassPermissions")
+            .unwrap());
+        assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/permissions bypassPermissions")
+            .unwrap());
+        assert_eq!(editor.ai_chat_permission_mode(), Some("bypassPermissions"));
+        assert!(editor
+            .try_execute_ai_chat_slash_command("/permissions auto")
+            .unwrap());
+        assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+    }
+
+    #[test]
+    fn bypass_is_never_remembered_across_chats_or_restarts() {
+        use crate::ai::chat_preference::ChatPreference;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preference.json");
+        let mut first = editor();
+        first.ai_state.chat_preference = ChatPreference::load(path.clone());
+        assert!(first.set_ai_chat_permission_mode("plan"));
+        enable_bypass(&mut first);
+        assert_eq!(first.ai_chat_permission_mode(), Some("bypassPermissions"));
+        // Switching model while bypassed keeps the last remembered safe mode.
+        assert!(first.ai_select_chat_model("claude_code", "opus"));
+        assert_eq!(first.ai_chat_permission_mode(), Some("bypassPermissions"));
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert!(!saved.contains("bypassPermissions"), "{saved}");
+        assert!(saved.contains("\"plan\""), "{saved}");
+        drop(first);
+
+        let mut reopened = editor();
+        reopened.ai_state.chat = None;
+        reopened.ai_state.chat_preference = ChatPreference::load(path);
+        reopened
+            .open_ai_chat(crate::ai::ChatOpts::default())
+            .unwrap();
+        assert_eq!(reopened.ai_chat_permission_mode(), Some("plan"));
+    }
+
+    #[test]
+    fn preference_files_written_with_bypass_load_as_the_default_mode() {
+        use crate::ai::chat_preference::ChatPreference;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("preference.json");
+        std::fs::write(
+            &path,
+            r#"{"version":1,"selection":{"profile":"claude_code","provider":"claude_code","model":"opus","permission_mode":"bypassPermissions"}}"#,
+        )
+        .unwrap();
+        let mut editor = editor();
+        editor.ai_state.chat = None;
+        editor.ai_state.chat_preference = ChatPreference::load(path);
+        editor.open_ai_chat(crate::ai::ChatOpts::default()).unwrap();
+        assert_eq!(editor.ai_chat_selected_model(), "opus");
+        assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        assert!(!editor.ai_chat_permission_mode_skips_approvals());
     }
 
     #[test]

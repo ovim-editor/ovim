@@ -419,7 +419,16 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
     }
     let yolo_enabled = editor.ai_chat_yolo_mode();
     let external_agent = editor.ai_chat_uses_external_agent();
-    let yolo_label = if external_agent {
+    // Claude's bypass mode has no toggle to show, so it takes the slot: the
+    // warning stays visible at any panel width.
+    let skips_approvals = external_agent && editor.ai_chat_permission_mode_skips_approvals();
+    let yolo_label = if skips_approvals {
+        if area.width >= 60 {
+            " BYPASS PERMISSIONS "
+        } else {
+            " BYPASS "
+        }
+    } else if external_agent {
         ""
     } else if yolo_enabled {
         " YOLO ON "
@@ -428,7 +437,12 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
     };
     let yolo_width = text_display_width(yolo_label).min(area.width as usize) as u16;
     let yolo_x = area.right().saturating_sub(yolo_width);
-    let yolo_style = if yolo_enabled {
+    let yolo_style = if skips_approvals {
+        Style::default()
+            .fg(Color::White)
+            .bg(Color::Rgb(176, 32, 32))
+            .add_modifier(Modifier::BOLD)
+    } else if yolo_enabled {
         Style::default()
             .fg(Color::Rgb(255, 220, 120))
             .bg(Color::Rgb(100, 48, 28))
@@ -523,9 +537,15 @@ fn render_chat_header(frame: &mut Frame, editor: &mut Editor, area: Rect) -> Opt
     if show_permission {
         spans.push(Span::styled(
             permission_label.expect("permission label checked"),
-            Style::default()
-                .fg(Color::Rgb(180, 226, 210))
-                .bg(Color::Rgb(38, 66, 59)),
+            if skips_approvals {
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(176, 32, 32))
+            } else {
+                Style::default()
+                    .fg(Color::Rgb(180, 226, 210))
+                    .bg(Color::Rgb(38, 66, 59))
+            },
         ));
         controls_width += permission_width;
     }
@@ -2423,7 +2443,7 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
     let active_model = editor.ai_chat_selected_model().to_string();
     let active_profile = editor.ai_chat_effective_profile();
     let active_effort = editor.ai_chat_reasoning_effort_selection();
-    let permission_modes = editor.ai_chat_permission_modes();
+    let permission_modes = editor.ai_chat_pickable_permission_modes();
     let active_permission = editor.ai_chat_permission_mode().map(str::to_owned);
     let section = editor.ai_chat_model_picker_section();
     let content_rows = model_options.len()
@@ -2510,7 +2530,7 @@ fn render_model_picker(frame: &mut Frame, editor: &mut Editor, anchor: Option<Re
                     .add_modifier(Modifier::BOLD),
             ),
         );
-        for option in permission_modes {
+        for option in &permission_modes {
             let selected = Some(option.id) == active_permission.as_deref();
             let marker = if selected { "●" } else { "○" };
             items.push(
@@ -2893,6 +2913,85 @@ mod tests {
         assert_eq!(compute_chat_split(area, false, None).1.width, 35);
     }
 
+    fn claude_editor() -> Editor {
+        let mut editor = Editor::default();
+        let mut profile = editor.ai_state.config.profiles["local"].clone();
+        profile.name = "claude_code".into();
+        profile.provider = ovim_core::ai::AiProviderKind::ClaudeCode;
+        profile.model = "default".into();
+        editor
+            .ai_state
+            .config
+            .profiles
+            .insert(profile.name.clone(), profile);
+        editor
+            .open_ai_chat(ovim_core::ai::ChatOpts::default())
+            .unwrap();
+        assert!(editor.ai_select_chat_profile("claude_code"));
+        editor
+    }
+
+    fn rendered_header(editor: &mut Editor, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, 1)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_chat_header(frame, editor, Rect::new(0, 0, width, 1));
+            })
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn header_warns_at_every_width_while_claude_bypasses_permissions() {
+        let mut editor = claude_editor();
+        for width in [30, 40, 80] {
+            assert!(!rendered_header(&mut editor, width).contains("BYPASS"));
+        }
+        assert!(!editor.set_ai_chat_permission_mode("bypassPermissions"));
+        assert!(!rendered_header(&mut editor, 40).contains("BYPASS"));
+        assert!(editor.set_ai_chat_permission_mode("bypassPermissions"));
+        for width in [30, 40, 80] {
+            let header = rendered_header(&mut editor, width);
+            assert!(header.contains("BYPASS"), "{width}: {header:?}");
+        }
+        assert!(rendered_header(&mut editor, 80).contains("BYPASS PERMISSIONS"));
+        assert!(editor.set_ai_chat_permission_mode("plan"));
+        assert!(!rendered_header(&mut editor, 40).contains("BYPASS"));
+    }
+
+    #[test]
+    fn permission_picker_never_offers_bypass_as_a_row() {
+        let mut editor = claude_editor();
+        editor.open_ai_chat_model_picker(ovim_core::editor::ChatModelPickerSection::Permission);
+        let mut terminal = Terminal::new(TestBackend::new(60, 40)).unwrap();
+        terminal
+            .draw(|frame| {
+                super::render_model_picker(frame, &mut editor, None, Rect::new(0, 0, 60, 40))
+            })
+            .unwrap();
+        let rendered: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(rendered.contains("Don't ask"));
+        assert!(!rendered.contains("Bypass"));
+        assert!(editor
+            .render_cache
+            .ai_chat_interactions
+            .permission_picker_options
+            .iter()
+            .all(|(_, mode)| mode != "bypassPermissions"));
+    }
+
     #[test]
     fn permission_picker_keeps_selected_mode_and_mouse_target_visible_in_short_panel() {
         let mut editor = Editor::default();
@@ -2909,6 +3008,8 @@ mod tests {
             .open_ai_chat(ovim_core::ai::ChatOpts::default())
             .unwrap();
         assert!(editor.ai_select_chat_profile("claude_code"));
+        // Enabling bypass takes two identical commands; it is never a picker row.
+        assert!(!editor.set_ai_chat_permission_mode("bypassPermissions"));
         assert!(editor.set_ai_chat_permission_mode("bypassPermissions"));
         editor.open_ai_chat_model_picker(ovim_core::editor::ChatModelPickerSection::Permission);
         let mut terminal = Terminal::new(TestBackend::new(40, 10)).unwrap();

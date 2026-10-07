@@ -3573,6 +3573,19 @@ kbd {
     border-color: color-mix(in srgb, var(--warning) 62%, var(--border));
     background: color-mix(in srgb, var(--warning) 9%, transparent);
 }
+.chat-bypass-warning {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    height: 24px;
+    padding: 0 7px;
+    color: var(--error);
+    border: 1px solid color-mix(in srgb, var(--error) 62%, var(--border));
+    border-radius: var(--radius-2);
+    background: color-mix(in srgb, var(--error) 12%, transparent);
+    font: 600 var(--text-micro)/1 var(--editor-font);
+    letter-spacing: 0.035em;
+}
 @media (max-width: 1180px) {
     .ai-panel > .side-panel-header {
         flex-wrap: wrap;

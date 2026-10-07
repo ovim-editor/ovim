@@ -3738,7 +3738,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                 .map(|effort| (*effort).to_string())
                 .collect(),
             permission_mode: editor.ai_chat_permission_mode().map(str::to_owned),
-            permission_modes: editor.ai_chat_permission_modes().to_vec(),
+            permission_modes: editor.ai_chat_pickable_permission_modes(),
             yolo_mode: editor.ai_chat_yolo_mode(),
             comprehension_policy: editor.ai_chat_comprehension_policy().as_str().to_string(),
             comprehension_checkpoint: editor

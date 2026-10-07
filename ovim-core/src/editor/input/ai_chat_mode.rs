@@ -1043,6 +1043,17 @@ mod tests {
             editor.ai_chat_model_picker_section(),
             ChatModelPickerSection::Permission
         );
+        // The default is the first mode. Stepping up from it must not wrap to
+        // the last mode (bypass), which would apply immediately.
+        for key in [
+            KeyCode::Up,
+            KeyCode::Left,
+            KeyCode::Char('k'),
+            KeyCode::Char('h'),
+        ] {
+            handle_ai_chat_mode(&mut editor, KeyEvent::new(key, Modifiers::NONE)).unwrap();
+            assert_eq!(editor.ai_chat_permission_mode(), Some("auto"));
+        }
         handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Down, Modifiers::NONE)).unwrap();
         assert_eq!(editor.ai_chat_permission_mode(), Some("default"));
         handle_ai_chat_mode(&mut editor, KeyEvent::new(KeyCode::Enter, Modifiers::NONE)).unwrap();

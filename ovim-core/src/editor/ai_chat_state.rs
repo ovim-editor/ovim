@@ -764,6 +764,9 @@ pub struct AiChatState {
     pub reasoning_effort_override: Option<String>,
     /// Provider-owned permission mode. `None` uses that provider's default.
     pub permission_mode_override: Option<String>,
+    /// A permission mode that needs confirmation and has been requested once.
+    /// Repeating the request enables it; any other change clears it.
+    pub pending_permission_confirmation: Option<String>,
     /// Viewport behavior for chat history.
     pub viewport: ChatViewportState,
     /// Incremented whenever `/clear` starts a fresh provider context.
@@ -1072,6 +1075,7 @@ impl AiChatState {
             model_picker_section: ChatModelPickerSection::Model,
             reasoning_effort_override: None,
             permission_mode_override: None,
+            pending_permission_confirmation: None,
             viewport: ChatViewportState::default(),
             context_generation: 0,
             compaction_checkpoint: None,

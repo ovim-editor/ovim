@@ -1133,6 +1133,15 @@ export const ChatPanel = (props: {
                         </button>
                     </div>
                 </Show>
+                <Show when={props.chat.permissionMode === "bypassPermissions"}>
+                    <span
+                        class="chat-bypass-warning"
+                        role="status"
+                        title="Claude is not asking for permission in this chat. Run /permissions auto to restore prompts."
+                    >
+                        BYPASS PERMISSIONS
+                    </span>
+                </Show>
             </header>
             <div class="chat-body">
                 <Show when={props.chat.agents.length}>
