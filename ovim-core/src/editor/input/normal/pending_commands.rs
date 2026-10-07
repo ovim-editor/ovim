@@ -464,22 +464,30 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         ('[', KeyCode::Char('[')) => {
             let count = editor.effective_count();
-            Motions::section_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char(']')) => {
             let count = editor.effective_count();
-            Motions::section_end_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_end_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char('{')) => {
             let count = editor.effective_count();
-            Motions::unmatched_brace_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_brace_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char('(')) => {
             let count = editor.effective_count();
-            Motions::unmatched_paren_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_paren_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         ('[', KeyCode::Char('m')) => {
@@ -529,22 +537,30 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         (']', KeyCode::Char(']')) => {
             let count = editor.effective_count();
-            Motions::section_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char('[')) => {
             let count = editor.effective_count();
-            Motions::section_end_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::section_end_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char('}')) => {
             let count = editor.effective_count();
-            Motions::unmatched_brace_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_brace_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char(')')) => {
             let count = editor.effective_count();
-            Motions::unmatched_paren_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::unmatched_paren_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
         }
         (']', KeyCode::Char('m')) => {

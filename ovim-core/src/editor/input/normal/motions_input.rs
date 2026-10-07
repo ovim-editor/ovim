@@ -183,14 +183,18 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         KeyCode::Char('H') => {
             let offset = editor.effective_count().saturating_sub(1);
             let scroll_offset = editor.scroll_offset();
-            Motions::move_to_screen_top(editor.buffer_mut(), scroll_offset, offset);
+            editor.record_jump_if_moved(|editor| {
+                Motions::move_to_screen_top(editor.buffer_mut(), scroll_offset, offset)
+            });
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('M') => {
             let scroll_offset = editor.scroll_offset();
             let viewport_height = editor.viewport_height();
-            Motions::move_to_screen_middle(editor.buffer_mut(), scroll_offset, viewport_height);
+            editor.record_jump_if_moved(|editor| {
+                Motions::move_to_screen_middle(editor.buffer_mut(), scroll_offset, viewport_height)
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -198,12 +202,14 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             let offset = editor.effective_count().saturating_sub(1);
             let scroll_offset = editor.scroll_offset();
             let viewport_height = editor.viewport_height();
-            Motions::move_to_screen_bottom(
-                editor.buffer_mut(),
-                scroll_offset,
-                viewport_height,
-                offset,
-            );
+            editor.record_jump_if_moved(|editor| {
+                Motions::move_to_screen_bottom(
+                    editor.buffer_mut(),
+                    scroll_offset,
+                    viewport_height,
+                    offset,
+                )
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -226,7 +232,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
 
         // Jump to matching bracket
         KeyCode::Char('%') => {
-            Motions::jump_to_matching_bracket(editor.buffer_mut());
+            editor.record_jump_if_moved(|editor| {
+                Motions::jump_to_matching_bracket(editor.buffer_mut())
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -234,13 +242,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Paragraph motions
         KeyCode::Char('}') => {
             let count = editor.effective_count();
-            Motions::paragraph_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::paragraph_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('{') => {
             let count = editor.effective_count();
-            Motions::paragraph_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::paragraph_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -248,13 +260,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // Sentence motions
         KeyCode::Char(')') => {
             let count = editor.effective_count();
-            Motions::sentence_forward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::sentence_forward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
         KeyCode::Char('(') => {
             let count = editor.effective_count();
-            Motions::sentence_backward(editor.buffer_mut(), count);
+            editor.record_jump_if_moved(|editor| {
+                Motions::sentence_backward(editor.buffer_mut(), count)
+            });
             editor.clear_count();
             Ok(true)
         }
@@ -423,11 +439,17 @@ fn search_word(editor: &mut Editor, forward: bool) {
     );
     let line = editor.buffer().cursor().line();
     if let Some((line, col)) = editor.step_search(&mut search, (line, start), count) {
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line, GraphemeCol(col));
+        editor.record_jump_if_moved(|editor| {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(line, GraphemeCol(col));
+        });
     }
+    // `*` and `#` set the last search pattern too (`:s//x/` and `n` use it).
+    editor
+        .registers_mut()
+        .set_last_search(search.pattern().to_string());
     editor.set_current_search(search);
 }
 

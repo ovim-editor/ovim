@@ -206,6 +206,18 @@ impl Editor {
         self.nav.jump_list.add_jump(entry);
     }
 
+    /// Runs a jump motion (`%`, `{`, `)`, `H`, `n`, ...): when it moves the cursor,
+    /// the position it left goes into the jump list (Vim's `setpcmark`) so `<C-o>`
+    /// returns to it.
+    pub fn record_jump_if_moved<R>(&mut self, motion: impl FnOnce(&mut Self) -> R) -> R {
+        let before = self.current_jump_entry();
+        let result = motion(self);
+        if self.current_jump_entry() != before {
+            self.nav.jump_list.add_jump(before);
+        }
+        result
+    }
+
     /// Moves to a jump-list entry, switching buffers when it is in another file.
     fn go_to_jump_entry(&mut self, entry: super::marks::JumpEntry) -> bool {
         if let Some(file) = entry.file.as_deref() {

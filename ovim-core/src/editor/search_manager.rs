@@ -207,6 +207,13 @@ impl Editor {
 
         let found = match self.step_search(&mut search, origin, count) {
             Some((line, col)) => {
+                if commit {
+                    // `<C-o>` returns to where the search began, not to the preview.
+                    self.buffer_mut()
+                        .cursor_mut()
+                        .set_position(origin.0, GraphemeCol(origin.1));
+                    self.add_jump();
+                }
                 self.buffer_mut()
                     .cursor_mut()
                     .set_position(line, GraphemeCol(col));
@@ -265,9 +272,12 @@ impl Editor {
         let count = self.effective_count();
         self.clear_count();
         if let Some((line, col)) = self.search_target(reverse, count) {
-            self.buffer_mut()
-                .cursor_mut()
-                .set_position(line, GraphemeCol(col));
+            self.record_jump_if_moved(|editor| {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(line, GraphemeCol(col));
+            });
         }
     }
 

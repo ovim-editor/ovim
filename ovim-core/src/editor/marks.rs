@@ -201,6 +201,14 @@ impl JumpList {
     /// `here` is the cursor position, recorded on the first step after a jump.
     fn step(&mut self, count: isize, here: JumpEntry) -> Option<JumpEntry> {
         self.cleanup();
+        // Not navigating yet: a last jump that left from this very line is a phantom
+        // (jumping "back" would not move), so it goes (Vim's `cleanup_jumplist`).
+        if self.current == self.jumps.len()
+            && self.jumps.last().is_some_and(|last| last.same_place(&here))
+        {
+            self.jumps.pop();
+            self.current = self.jumps.len();
+        }
         if self.jumps.is_empty() {
             return None;
         }
