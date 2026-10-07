@@ -306,12 +306,8 @@ impl DapManager {
         Ok(())
     }
 
-    /// Set breakpoints for a source file.
-    pub async fn set_breakpoints(
-        &mut self,
-        path: &Path,
-        lines: &[u64],
-    ) -> Result<Vec<DapBreakpoint>> {
+    /// Sends the enabled breakpoints of a source file.
+    pub async fn set_breakpoints(&mut self, path: &Path) -> Result<Vec<DapBreakpoint>> {
         if self.client.is_none() {
             anyhow::bail!("no debug adapter running");
         }
@@ -327,20 +323,19 @@ impl DapManager {
         let log_ok = self.supports_log_points() != Some(false);
         let hit_ok = self.supports_hit_conditions() != Some(false);
         let mut skipped = Vec::new();
+        let mut sent = Vec::new();
         let mut source_bps: Vec<DapSourceBreakpoint> = Vec::new();
-        for &line in lines {
-            let bp = self.state.breakpoint_at(path, line);
-            let log_message = bp.and_then(|b| b.log_message.clone());
-            let hit_condition = bp.and_then(|b| b.hit_condition.clone());
-            if (log_message.is_some() && !log_ok) || (hit_condition.is_some() && !hit_ok) {
-                skipped.push(line);
+        for bp in self.state.enabled_breakpoints(path) {
+            if (bp.log_message.is_some() && !log_ok) || (bp.hit_condition.is_some() && !hit_ok) {
+                skipped.push(bp.line);
                 continue;
             }
+            sent.push(bp.line);
             source_bps.push(DapSourceBreakpoint {
-                line,
-                condition: bp.and_then(|b| b.condition.clone()),
-                hit_condition,
-                log_message,
+                line: bp.line,
+                condition: bp.condition,
+                hit_condition: bp.hit_condition,
+                log_message: bp.log_message,
             });
         }
         if !skipped.is_empty() {
@@ -356,25 +351,15 @@ impl DapManager {
             ));
         }
 
-        let kept_back: Vec<state::BreakpointState> = skipped
-            .iter()
-            .filter_map(|&line| self.state.breakpoint_at(path, line).cloned())
-            .collect();
         let client = self
             .client
             .as_ref()
             .ok_or_else(|| anyhow::anyhow!("no debug adapter running"))?;
         let result = client.set_breakpoints(&source, &source_bps).await?;
 
-        // Update state (the ones we did not send stay, unverified).
-        self.state.update_breakpoints(path, &result);
-        if let Some(entry) = self.state.breakpoints.get_mut(path) {
-            for mut bp in kept_back {
-                bp.verified = false;
-                entry.push(bp);
-            }
-            entry.sort_by_key(|bp| bp.line);
-        }
+        // The ones we did not send stay, unverified.
+        self.state.update_breakpoints(path, &sent, &result);
+        self.state.mark_breakpoints_unverified(path, &skipped);
 
         Ok(result)
     }

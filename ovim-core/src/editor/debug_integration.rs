@@ -93,13 +93,7 @@ impl Editor {
 
     /// Like [`breakpoint_marker_at`](Self::breakpoint_marker_at) for any file.
     pub fn breakpoint_marker_in(&self, path: &Path, line_1based: u64) -> Option<BreakpointMarker> {
-        let bp = self
-            .dap_manager
-            .state
-            .breakpoints
-            .get(path)?
-            .iter()
-            .find(|bp| bp.line == line_1based)?;
+        let bp = self.dap_manager.state.breakpoint_at(path, line_1based)?;
         Some(if !bp.enabled {
             BreakpointMarker::Disabled
         } else if bp.condition.is_some() || bp.log_message.is_some() || bp.hit_condition.is_some() {
@@ -258,8 +252,7 @@ impl Editor {
 
     /// Send breakpoints for a file to the debug adapter.
     pub async fn debug_sync_breakpoints(&mut self, path: &Path) -> anyhow::Result<()> {
-        let lines = self.dap_manager.state.enabled_breakpoint_lines(path);
-        self.dap_manager.set_breakpoints(path, &lines).await?;
+        self.dap_manager.set_breakpoints(path).await?;
         self.mark_dirty();
         Ok(())
     }

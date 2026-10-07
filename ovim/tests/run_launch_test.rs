@@ -2139,6 +2139,79 @@ async fn logpoints_and_hit_counts_follow_the_adapters_capabilities() {
     }
 }
 
+/// An adapter may put a breakpoint on another line (the next executable one)
+/// or leave the line out of an unverified answer. Neither may cost the user
+/// the breakpoint or what they attached to it: later syncs still send the
+/// line they chose, with its condition.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_breakpoint_the_adapter_moves_keeps_its_condition_in_later_syncs() {
+    let mut d = DebugSession::new(&resolve_commands()).await;
+    let adapter = d.adapter(json!({
+        "move_breakpoints": {"1": 3},
+        "unverified_breakpoints": [2]
+    }));
+    d.inner.script_resolve(d.inner.main_plan(None));
+    let file = d.inner.root.join("Main.controlled");
+    d.inner.test.set_cursor(0, 0);
+    d.inner.test.command("DebugCondition n > 1");
+    d.inner.test.editor.toggle_breakpoint_at(&file, 2);
+    d.inner
+        .test
+        .editor
+        .launch_at_cursor_with(ovim_core::launch::LaunchMode::Debug, Some(adapter));
+    let dap_dir = d.dap_dir.clone();
+    d.inner
+        .until("configurationDone", |_| {
+            !dap_requests(&dap_dir, "configurationDone").is_empty()
+        })
+        .await;
+
+    let state = d.inner.test.editor.debug_state();
+    assert_eq!(
+        state.breakpoint_lines(&file),
+        vec![2, 3],
+        "drawn where the adapter put them"
+    );
+    let by_line = |request: &Value| {
+        let mut sent = request["arguments"]["breakpoints"]
+            .as_array()
+            .unwrap()
+            .clone();
+        sent.sort_by_key(|bp| bp["line"].as_u64());
+        Value::Array(sent)
+    };
+    let sent = d.requests("setBreakpoints");
+    assert_eq!(
+        by_line(sent.last().unwrap()),
+        json!([{"line": 1, "condition": "n > 1"}, {"line": 2}])
+    );
+
+    d.inner
+        .test
+        .editor
+        .dap_manager_mut()
+        .request_breakpoint_sync();
+    let baseline = sent.len();
+    d.inner
+        .until("the second sync", |_| {
+            dap_requests(&dap_dir, "setBreakpoints").len() > baseline
+        })
+        .await;
+    let resent = d.requests("setBreakpoints").last().unwrap().clone();
+    assert_eq!(
+        by_line(&resent),
+        json!([{"line": 1, "condition": "n > 1"}, {"line": 2}]),
+        "the condition and the requested lines survive the adapter's answer"
+    );
+    let state = d.inner.test.editor.debug_state();
+    assert_eq!(state.breakpoint_lines(&file), vec![2, 3]);
+    assert!(state.is_conditional_breakpoint(&file, 3));
+
+    d.inner.test.keys(" ds");
+    d.inner.until("stopped", |s| s.run_finished()).await;
+    d.inner.stop_lsp().await;
+}
+
 /// OV-00449: panels can be resized (`:PanelSize`, `+`/`-` in the console).
 #[test]
 fn panel_size_command_resizes_the_side_panels_and_the_console() {

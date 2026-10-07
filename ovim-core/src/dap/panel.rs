@@ -278,14 +278,14 @@ pub fn rows(state: &DebugState) -> Vec<PanelRow> {
         let mut row = PanelRow::new(
             RowKind::Breakpoint {
                 path: path.to_path_buf(),
-                line: bp.line,
+                line: bp.shown_line(),
                 enabled: bp.enabled,
                 verified: bp.verified,
                 conditional: bp.condition.is_some()
                     || bp.log_message.is_some()
                     || bp.hit_condition.is_some(),
             },
-            format!("{name}:{}", bp.line),
+            format!("{name}:{}", bp.shown_line()),
         );
         row.depth = 1;
         let mut notes = Vec::new();
@@ -445,10 +445,17 @@ mod tests {
         s.toggle_breakpoint(f, 3);
         s.toggle_breakpoint(f, 9);
         assert_eq!(s.toggle_breakpoint_enabled(f, 3), Some(false));
-        assert_eq!(s.enabled_breakpoint_lines(f), vec![9]);
+        assert_eq!(
+            s.enabled_breakpoints(f)
+                .iter()
+                .map(|bp| bp.line)
+                .collect::<Vec<_>>(),
+            vec![9]
+        );
         // The adapter's answer only mentions the enabled one.
         s.update_breakpoints(
             f,
+            &[9],
             &[crate::dap::types::DapBreakpoint {
                 id: Some(1),
                 verified: true,

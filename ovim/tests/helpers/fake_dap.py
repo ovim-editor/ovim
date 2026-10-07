@@ -15,6 +15,8 @@ argv[1] is a directory shared with the test:
       "variables": {"<variablesReference>": [variable, ...]}
       "exception_info": body answered to exceptionInfo (else it fails)
       "evaluate": {"<expression>": {"result": ..., "type": ..., "variablesReference": ...}}
+      "move_breakpoints": {"<line>": <line>}: setBreakpoints puts those lines elsewhere
+      "unverified_breakpoints": [<line>]: answered as {"verified": false} without a line
 """
 
 import json
@@ -90,8 +92,15 @@ while True:
         else:
             respond(request)
     elif command == "setBreakpoints":
-        lines = [b["line"] for b in request["arguments"].get("breakpoints", [])]
-        respond(request, {"breakpoints": [{"verified": True, "line": l} for l in lines]})
+        moves = scenario.get("move_breakpoints", {})
+        unverified = scenario.get("unverified_breakpoints", [])
+        answers = []
+        for b in request["arguments"].get("breakpoints", []):
+            if b["line"] in unverified:
+                answers.append({"verified": False})
+            else:
+                answers.append({"verified": True, "line": moves.get(str(b["line"]), b["line"])})
+        respond(request, {"breakpoints": answers})
     elif command == "configurationDone":
         respond(request)
         for item in scenario.get("on_configuration_done", []):

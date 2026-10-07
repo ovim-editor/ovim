@@ -10,8 +10,13 @@ use super::types::{DapBreakpoint, DapScope, DapStackFrame, DapThread, DapVariabl
 /// Per-line breakpoint state.
 #[derive(Debug, Clone)]
 pub struct BreakpointState {
-    /// 1-based line number.
+    /// 1-based line the user asked for. This is the breakpoint's identity:
+    /// it is what every sync sends, so the adapter resolves it afresh.
     pub line: u64,
+    /// 1-based line the adapter put the breakpoint on when it moved it (to
+    /// the next executable line, say). `None` until the adapter has answered
+    /// and when it gave no line.
+    pub actual_line: Option<u64>,
     /// Whether the debug adapter confirmed this breakpoint.
     pub verified: bool,
     /// DAP-assigned breakpoint ID.
@@ -26,6 +31,27 @@ pub struct BreakpointState {
     /// Disabled breakpoints stay in the list (and the gutter, hollow) but are
     /// not sent to the adapter.
     pub enabled: bool,
+}
+
+impl BreakpointState {
+    fn new(line: u64) -> Self {
+        Self {
+            line,
+            actual_line: None,
+            verified: false,
+            id: None,
+            condition: None,
+            log_message: None,
+            hit_condition: None,
+            enabled: true,
+        }
+    }
+
+    /// The line the breakpoint is drawn on and found by: where the adapter
+    /// put it, else where the user did.
+    pub fn shown_line(&self) -> u64 {
+        self.actual_line.unwrap_or(self.line)
+    }
 }
 
 /// A watch expression, re-evaluated at every stop.
@@ -161,49 +187,36 @@ impl DebugState {
     pub fn toggle_breakpoint(&mut self, path: &Path, line: u64) -> Vec<u64> {
         let entry = self.breakpoints.entry(path.to_path_buf()).or_default();
 
-        if let Some(idx) = entry.iter().position(|bp| bp.line == line) {
-            entry.remove(idx);
+        if entry.iter().any(|bp| bp.shown_line() == line) {
+            entry.retain(|bp| bp.shown_line() != line);
         } else {
-            entry.push(BreakpointState {
-                line,
-                verified: false,
-                id: None,
-                condition: None,
-                log_message: None,
-                hit_condition: None,
-                enabled: true,
-            });
+            entry.push(BreakpointState::new(line));
+            entry.sort_by_key(BreakpointState::shown_line);
         }
 
-        entry.iter().map(|bp| bp.line).collect()
+        entry.iter().map(BreakpointState::shown_line).collect()
     }
 
-    /// Get breakpoint lines for a file.
+    /// Lines to draw breakpoints on for a file.
     pub fn breakpoint_lines(&self, path: &Path) -> Vec<u64> {
         self.breakpoints
             .get(path)
-            .map(|bps| bps.iter().map(|bp| bp.line).collect())
+            .map(|bps| bps.iter().map(BreakpointState::shown_line).collect())
             .unwrap_or_default()
     }
 
-    /// Lines the adapter should know about (enabled breakpoints only).
-    pub fn enabled_breakpoint_lines(&self, path: &Path) -> Vec<u64> {
+    /// The enabled breakpoints the adapter should know about, in the order
+    /// they are sent.
+    pub fn enabled_breakpoints(&self, path: &Path) -> Vec<BreakpointState> {
         self.breakpoints
             .get(path)
-            .map(|bps| {
-                bps.iter()
-                    .filter(|bp| bp.enabled)
-                    .map(|bp| bp.line)
-                    .collect()
-            })
+            .map(|bps| bps.iter().filter(|bp| bp.enabled).cloned().collect())
             .unwrap_or_default()
     }
 
     /// Whether the breakpoint at `line` exists and is enabled.
     pub fn is_breakpoint_enabled(&self, path: &Path, line: u64) -> bool {
-        self.breakpoints
-            .get(path)
-            .is_some_and(|bps| bps.iter().any(|bp| bp.line == line && bp.enabled))
+        self.breakpoint_at(path, line).is_some_and(|bp| bp.enabled)
     }
 
     /// Removes a breakpoint. Returns whether one existed.
@@ -212,7 +225,7 @@ impl DebugState {
             return false;
         };
         let before = entry.len();
-        entry.retain(|bp| bp.line != line);
+        entry.retain(|bp| bp.shown_line() != line);
         // The (now empty) entry stays so the next sync tells the adapter
         // that the file has no breakpoints any more.
         entry.len() != before
@@ -225,7 +238,7 @@ impl DebugState {
             .breakpoints
             .get_mut(path)?
             .iter_mut()
-            .find(|bp| bp.line == line)?;
+            .find(|bp| bp.shown_line() == line)?;
         bp.enabled = !bp.enabled;
         Some(bp.enabled)
     }
@@ -237,41 +250,57 @@ impl DebugState {
             .iter()
             .flat_map(|(path, bps)| bps.iter().map(move |bp| (path.as_path(), bp)))
             .collect();
-        all.sort_by(|a, b| a.0.cmp(b.0).then(a.1.line.cmp(&b.1.line)));
+        all.sort_by(|a, b| a.0.cmp(b.0).then(a.1.shown_line().cmp(&b.1.shown_line())));
         all
     }
 
     /// Check if a line has a breakpoint.
     pub fn has_breakpoint(&self, path: &Path, line: u64) -> bool {
-        self.breakpoints
-            .get(path)
-            .is_some_and(|bps| bps.iter().any(|bp| bp.line == line))
+        self.breakpoint_at(path, line).is_some()
     }
 
-    /// Update breakpoints with responses from the debug adapter.
-    pub fn update_breakpoints(&mut self, path: &Path, dap_bps: &[DapBreakpoint]) {
-        let entry = self.breakpoints.entry(path.to_path_buf()).or_default();
-        let old_entries = entry.clone();
-        entry.clear();
-        // Disabled breakpoints were not sent, so the reply knows nothing of them.
-        entry.extend(old_entries.iter().filter(|bp| !bp.enabled).cloned());
-        for bp in dap_bps {
-            if let Some(line) = bp.line {
-                // Keep what the user attached to the breakpoint (the reply
-                // knows nothing of it).
-                let old = old_entries.iter().find(|old| old.line == line);
-                entry.push(BreakpointState {
-                    line,
-                    verified: bp.verified,
-                    id: bp.id,
-                    condition: old.and_then(|o| o.condition.clone()),
-                    log_message: old.and_then(|o| o.log_message.clone()),
-                    hit_condition: old.and_then(|o| o.hit_condition.clone()),
-                    enabled: true,
-                });
-            }
+    /// Applies the adapter's answer to a `setBreakpoints` request.
+    ///
+    /// `sent` holds the requested line of each breakpoint in the order they
+    /// were sent. DAP answers with one entry per request, in the same order,
+    /// so entries are matched by position: the line in an answer is where the
+    /// adapter *put* the breakpoint (it may have moved it), and an unverified
+    /// entry may leave it out. What the user attached to a breakpoint
+    /// (condition, logpoint, hit count) never depends on the answer.
+    pub fn update_breakpoints(&mut self, path: &Path, sent: &[u64], reply: &[DapBreakpoint]) {
+        let Some(entry) = self.breakpoints.get_mut(path) else {
+            return;
+        };
+        let mut answered = vec![false; entry.len()];
+        for (requested, dap_bp) in sent.iter().zip(reply) {
+            // The user may have changed breakpoints while the request was in
+            // flight; one that is gone has nothing to update. Duplicates of a
+            // requested line are answered in order.
+            let Some(index) = entry
+                .iter()
+                .enumerate()
+                .position(|(i, bp)| bp.line == *requested && bp.enabled && !answered[i])
+            else {
+                continue;
+            };
+            answered[index] = true;
+            let bp = &mut entry[index];
+            bp.verified = dap_bp.verified;
+            bp.id = dap_bp.id;
+            bp.actual_line = dap_bp.line.filter(|line| *line != bp.line);
         }
-        entry.sort_by_key(|bp| bp.line);
+        entry.sort_by_key(BreakpointState::shown_line);
+    }
+
+    /// Marks the breakpoints requested at `lines` as not known to the adapter.
+    pub fn mark_breakpoints_unverified(&mut self, path: &Path, lines: &[u64]) {
+        let Some(entry) = self.breakpoints.get_mut(path) else {
+            return;
+        };
+        for bp in entry.iter_mut().filter(|bp| lines.contains(&bp.line)) {
+            bp.verified = false;
+            bp.actual_line = None;
+        }
     }
 
     /// Update the execution position from the selected stack frame.
@@ -312,37 +341,27 @@ impl DebugState {
 
     fn edit_breakpoint(&mut self, path: &Path, line: u64, edit: impl FnOnce(&mut BreakpointState)) {
         let entry = self.breakpoints.entry(path.to_path_buf()).or_default();
-        if let Some(bp) = entry.iter_mut().find(|bp| bp.line == line) {
+        if let Some(bp) = entry.iter_mut().find(|bp| bp.shown_line() == line) {
             edit(bp);
         } else {
-            let mut bp = BreakpointState {
-                line,
-                verified: false,
-                id: None,
-                condition: None,
-                log_message: None,
-                hit_condition: None,
-                enabled: true,
-            };
+            let mut bp = BreakpointState::new(line);
             edit(&mut bp);
             entry.push(bp);
-            entry.sort_by_key(|bp| bp.line);
+            entry.sort_by_key(BreakpointState::shown_line);
         }
     }
 
-    /// The breakpoint at `line`, if any.
+    /// The breakpoint drawn at `line`, if any.
     pub fn breakpoint_at(&self, path: &Path, line: u64) -> Option<&BreakpointState> {
         self.breakpoints
             .get(path)?
             .iter()
-            .find(|bp| bp.line == line)
+            .find(|bp| bp.shown_line() == line)
     }
 
     /// Get the condition for a breakpoint at a given line, if any.
     pub fn breakpoint_condition(&self, path: &Path, line: u64) -> Option<&str> {
-        self.breakpoints
-            .get(path)
-            .and_then(|bps| bps.iter().find(|bp| bp.line == line))
+        self.breakpoint_at(path, line)
             .and_then(|bp| bp.condition.as_deref())
     }
 
@@ -388,5 +407,115 @@ impl DebugState {
             watch.type_ = None;
             watch.variables_reference = 0;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const FILE: &str = "/p/A.java";
+
+    fn file() -> &'static Path {
+        Path::new(FILE)
+    }
+
+    fn reply(line: Option<u64>, verified: bool) -> DapBreakpoint {
+        DapBreakpoint {
+            id: Some(7),
+            verified,
+            message: None,
+            line,
+        }
+    }
+
+    #[test]
+    fn a_breakpoint_the_adapter_moves_keeps_its_condition_and_requested_line() {
+        let mut s = DebugState::new();
+        s.set_breakpoint_condition(file(), 10, Some("n > 1".into()));
+        s.set_breakpoint_log_message(file(), 20, Some("hit {n}".into()));
+        s.set_breakpoint_hit_condition(file(), 30, Some("%2".into()));
+
+        // The adapter moves each to the next executable line.
+        s.update_breakpoints(
+            file(),
+            &[10, 20, 30],
+            &[
+                reply(Some(12), true),
+                reply(Some(22), true),
+                reply(Some(33), true),
+            ],
+        );
+
+        let sent = s.enabled_breakpoints(file());
+        assert_eq!(
+            sent.iter().map(|bp| bp.line).collect::<Vec<_>>(),
+            vec![10, 20, 30],
+            "the next sync asks for the lines the user chose"
+        );
+        assert_eq!(sent[0].condition.as_deref(), Some("n > 1"));
+        assert_eq!(sent[1].log_message.as_deref(), Some("hit {n}"));
+        assert_eq!(sent[2].hit_condition.as_deref(), Some("%2"));
+        // Drawn and found where the adapter put them.
+        assert_eq!(s.breakpoint_lines(file()), vec![12, 22, 33]);
+        assert!(s.is_conditional_breakpoint(file(), 12));
+        assert!(!s.has_breakpoint(file(), 10));
+        assert!(sent.iter().all(|bp| bp.verified));
+    }
+
+    #[test]
+    fn an_unverified_answer_without_a_line_keeps_the_breakpoint() {
+        let mut s = DebugState::new();
+        s.set_breakpoint_condition(file(), 10, Some("n > 1".into()));
+        s.toggle_breakpoint(file(), 20);
+
+        s.update_breakpoints(
+            file(),
+            &[10, 20],
+            &[reply(None, false), reply(Some(20), true)],
+        );
+
+        assert_eq!(s.breakpoint_lines(file()), vec![10, 20]);
+        let first = s.breakpoint_at(file(), 10).unwrap();
+        assert!(!first.verified);
+        assert_eq!(first.condition.as_deref(), Some("n > 1"));
+        assert!(s.breakpoint_at(file(), 20).unwrap().verified);
+    }
+
+    #[test]
+    fn a_short_answer_does_not_delete_the_breakpoints_it_leaves_out() {
+        let mut s = DebugState::new();
+        s.toggle_breakpoint(file(), 10);
+        s.toggle_breakpoint(file(), 20);
+
+        s.update_breakpoints(file(), &[10, 20], &[reply(Some(10), true)]);
+
+        assert_eq!(s.breakpoint_lines(file()), vec![10, 20]);
+    }
+
+    #[test]
+    fn answers_for_breakpoints_removed_in_the_meantime_are_ignored() {
+        let mut s = DebugState::new();
+        s.toggle_breakpoint(file(), 10);
+        s.toggle_breakpoint(file(), 20);
+        s.remove_breakpoint(file(), 10);
+
+        s.update_breakpoints(
+            file(),
+            &[10, 20],
+            &[reply(Some(11), true), reply(Some(21), true)],
+        );
+
+        assert_eq!(s.breakpoint_lines(file()), vec![21]);
+    }
+
+    #[test]
+    fn toggling_where_a_moved_breakpoint_is_drawn_removes_it() {
+        let mut s = DebugState::new();
+        s.toggle_breakpoint(file(), 10);
+        s.update_breakpoints(file(), &[10], &[reply(Some(12), true)]);
+
+        assert_eq!(s.toggle_breakpoint(file(), 12), Vec::<u64>::new());
+        assert!(s.breakpoints[file()].is_empty());
     }
 }
