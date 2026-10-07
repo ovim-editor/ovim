@@ -308,7 +308,7 @@ pub(crate) static COMMANDS: &[ExCommand] = &[
     ex(&["so[urce]"], options::source).args(A::File),
     ex(&["reload", "ConfigReload"], options::reload),
     // ---- quickfix and project ----
-    ex(&["mak[e]"], quickfix::make).bang().args(A::Rest),
+    ex(&["mak[e]"], quickfix::make).bang().args(A::Text),
     ex(&["cope[n]"], quickfix::open),
     ex(&["ccl[ose]"], quickfix::close),
     ex(&["cn[ext]"], quickfix::next).bang(),

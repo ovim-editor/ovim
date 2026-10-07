@@ -380,3 +380,21 @@ async fn cclose_keeps_the_quickfix_list() {
     run(&mut test, "cnext");
     assert_eq!(test.editor.buffer().cursor().line(), 1);
 }
+
+// nvim --clean: `:make hello | let g:x = 1` runs makeprg with just "hello" and
+// then the command after the bar.
+#[test]
+fn make_arguments_end_at_a_bar() {
+    let mut test = EditorTest::new("text\n");
+    test.editor.options.makeprg = "echo".to_string();
+
+    let result = run(&mut test, "make hello | set number");
+
+    match result {
+        ovim::command_result::CommandResult::Success(success) => {
+            assert_eq!(success.message.as_deref(), Some("Running: echo hello"));
+        }
+        other => panic!("unexpected result: {other:?}"),
+    }
+    assert!(test.editor.options.number, "the command after | ran");
+}
