@@ -182,7 +182,11 @@ pub fn resolve_pullbase(path: &Path, branch: Option<&str>) -> Result<ReviewBase>
 pub fn resolve_base(path: &Path) -> Result<ReviewBase> {
     let repo = Repository::discover(path)
         .with_context(|| format!("{} is not inside a Git worktree", path.display()))?;
-    let head_oid = resolve_commit_oid(&repo, "HEAD").context("The repository has no commits")?;
+    if head_is_unborn(&repo) {
+        // Nothing to compare with yet: the review shows everything as added.
+        return Ok(ReviewBase::head());
+    }
+    let head_oid = resolve_commit_oid(&repo, "HEAD")?;
     let head_branch = repo
         .head()
         .ok()
@@ -587,14 +591,13 @@ fn build_diff<'repo>(repo: &'repo Repository, spec: &str) -> Result<(Diff<'repo>
         .new_prefix("b");
 
     let (mut diff, comparison_base_oid) = if let Some(base) = spec.strip_suffix("...WORKTREE") {
-        let (base_tree, oid) = merge_base_tree(repo, base.trim())?;
+        let (base_tree, oid) = worktree_base(repo, base.trim(), true)?;
         (
             repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut options))?,
             oid,
         )
     } else if let Some(base) = spec.strip_suffix("..WORKTREE") {
-        let oid = resolve_commit_oid(repo, base.trim())?;
-        let base_tree = repo.find_commit(oid)?.tree()?;
+        let (base_tree, oid) = worktree_base(repo, base.trim(), false)?;
         (
             repo.diff_tree_to_workdir_with_index(Some(&base_tree), Some(&mut options))?,
             oid,
@@ -636,6 +639,30 @@ fn resolve_tree<'repo>(repo: &'repo Repository, reference: &str) -> Result<Tree<
     repo.find_commit(resolve_commit_oid(repo, reference)?)?
         .tree()
         .with_context(|| format!("Could not read the tree for {reference}"))
+}
+
+/// True before the first commit, when `HEAD` names a branch with no commit.
+pub(crate) fn head_is_unborn(repo: &Repository) -> bool {
+    matches!(repo.head(), Err(error) if error.code() == git2::ErrorCode::UnbornBranch)
+}
+
+/// The tree (and the commit it belongs to) a working tree comparison starts
+/// from. Before the first commit `HEAD` resolves to nothing: the base is then
+/// the empty tree, and the commit is the zero id.
+fn worktree_base<'repo>(
+    repo: &'repo Repository,
+    base: &str,
+    merge_base: bool,
+) -> Result<(Tree<'repo>, Oid)> {
+    if base == "HEAD" && head_is_unborn(repo) {
+        let empty = repo.find_tree(repo.treebuilder(None)?.write()?)?;
+        return Ok((empty, Oid::zero()));
+    }
+    if merge_base {
+        return merge_base_tree(repo, base);
+    }
+    let oid = resolve_commit_oid(repo, base)?;
+    Ok((repo.find_commit(oid)?.tree()?, oid))
 }
 
 fn merge_base_tree<'repo>(repo: &'repo Repository, base: &str) -> Result<(Tree<'repo>, Oid)> {
@@ -828,6 +855,33 @@ mod tests {
         assert_eq!(ReviewBase::explicit("HEAD~3").base_ref(), Some("HEAD~3"));
         assert_eq!(ReviewBase::explicit("main..feature").spec, "main..feature");
         assert_eq!(ReviewBase::explicit("main..feature").base_ref(), None);
+    }
+
+    #[test]
+    fn review_before_the_first_commit_compares_against_the_empty_tree() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = Repository::init(temp.path()).unwrap();
+        fs::write(temp.path().join("staged.txt"), "staged\n").unwrap();
+        let mut index = repo.index().unwrap();
+        index.add_path(Path::new("staged.txt")).unwrap();
+        index.write().unwrap();
+        fs::write(temp.path().join("untracked.txt"), "untracked\n").unwrap();
+
+        // The automatic base and the explicit `HEAD` of the status list.
+        for base in [
+            resolve_base(temp.path()).unwrap(),
+            ReviewBase::explicit("HEAD"),
+        ] {
+            let snapshot = review_display_snapshot(temp.path(), &base).unwrap();
+            let paths: Vec<&str> = snapshot
+                .patch
+                .files
+                .iter()
+                .map(|file| file.path.as_str())
+                .collect();
+            assert_eq!(paths, ["staged.txt", "untracked.txt"]);
+            assert!(snapshot.patch.text.contains("+staged"));
+        }
     }
 
     #[test]

@@ -194,7 +194,12 @@ impl ReviewSnapshot {
     fn capture_sources(&mut self, path: &Path) -> Result<()> {
         let repo = Repository::discover(path)?;
         let base_oid = Oid::from_str(&self.patch.comparison_base_oid)?;
-        let old_tree = repo.find_commit(base_oid)?.tree()?;
+        let old_tree = if base_oid.is_zero() {
+            // Compared before the first commit: the base is the empty tree.
+            repo.find_tree(repo.treebuilder(None)?.write()?)?
+        } else {
+            repo.find_commit(base_oid)?.tree()?
+        };
         let new_tree = comparison_target_tree(&repo, &self.patch.base.spec)?;
         let mut remaining = MAX_FROZEN_SOURCE_BYTES;
         let mut identities = Vec::new();

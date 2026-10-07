@@ -368,6 +368,24 @@ async fn picker_rows_with_ex_syntax_in_the_file_name_open_that_file_only() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn status_list_enter_works_before_the_first_commit() {
+    let fixture = Fixture::new();
+    let file = fixture.write("a.txt", "brand new\n");
+    let mut test = EditorTest::new("");
+    test.load_file(&file);
+    test.keys(" gg");
+    test.assert_mode(Mode::Picker);
+    test.press_enter();
+    test.assert_mode(Mode::Normal);
+    assert!(
+        test.editor.is_diff_review_buffer(),
+        "{}",
+        test.editor.status_message()
+    );
+    assert!(test.buffer_content().contains("brand new"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn line_history_lists_the_commits_and_enter_shows_the_diff_of_one() {
     let fixture = Fixture::new();
     let file = fixture.write("a.txt", "alpha\nbeta\ngamma\n");
