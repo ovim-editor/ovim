@@ -34,6 +34,13 @@ pub struct EditingState {
     pub pending_register_insert: bool,
     /// Awaiting one normal-mode command for Ctrl-O in insert mode
     pub insert_normal_pending: bool,
+    /// The line Ctrl-O was pressed on when the insert cursor was past the end of it.
+    /// The command's cursor is clamped onto the last character; coming back it is
+    /// restored past the end (vim's `ins_at_eol`).
+    pub insert_normal_eol_line: Option<usize>,
+    /// The goal column to give that clamped cursor, so `j`/`k` onto a longer line
+    /// still land past the end of the text as well.
+    pub insert_normal_eol_goal: Option<usize>,
     /// Text and cursor state for LSP rename mode.
     pub rename_input: SingleLineInput,
     /// Tab stops of the snippet just expanded from a completion.

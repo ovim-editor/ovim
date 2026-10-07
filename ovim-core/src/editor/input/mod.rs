@@ -231,6 +231,7 @@ impl InputHandler {
                 && editor.count().is_none()
             {
                 editor.editing.insert_normal_pending = false;
+                Self::restore_insert_position_at_eol(editor);
                 editor.start_change_building(editor.cursor_position());
                 editor.set_mode(Mode::Insert);
             }
@@ -300,6 +301,15 @@ impl InputHandler {
             _ => editor.buffer_mut().validate_cursor_position(),
         }
 
+        // Ctrl-O at the end of a line: the clamped cursor keeps the column it left from
+        // as its goal, so a following `j`/`k` can land past the end of a longer line.
+        if let Some(goal) = editor.editing.insert_normal_eol_goal.take() {
+            let cursor = editor.buffer_mut().cursor_mut();
+            if cursor.desired_col() < goal {
+                cursor.update_desired_col(crate::unicode::GraphemeCol(goal));
+            }
+        }
+
         result
     }
 
@@ -325,6 +335,24 @@ impl InputHandler {
                 editor.buffer().change_manager().repeat_checkpoint(),
             )
         })
+    }
+
+    /// Back to Insert mode after Ctrl-O: the temporary Normal mode cannot rest past
+    /// the end of a line, so a cursor that was there (and stayed on that line) or that
+    /// `$`/`j` left with a goal column beyond the text, sitting on the last character,
+    /// returns to just past it (vim's `ins_at_eol`) instead of before that character.
+    fn restore_insert_position_at_eol(editor: &mut Editor) {
+        let eol_line = editor.editing.insert_normal_eol_line.take();
+        let cursor = editor.buffer().cursor();
+        let (line, col) = (cursor.line(), cursor.col().0);
+        let wants_eol = eol_line == Some(line) || cursor.desired_col() > col;
+        let len = editor.buffer().line_index(line).grapheme_count();
+        if wants_eol && col + 1 == len {
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_col_preserve_desired(crate::unicode::GraphemeCol(len));
+        }
     }
 
     /// The register typed with `"x` that a Normal-mode command is about to run with,

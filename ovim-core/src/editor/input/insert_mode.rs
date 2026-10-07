@@ -334,6 +334,17 @@ pub fn handle_insert_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         }
         // Ctrl-O - Execute one normal mode command, then return to insert
         KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::CONTROL) => {
+            let cursor = *editor.buffer().cursor();
+            let len = editor.buffer().line_index(cursor.line()).grapheme_count();
+            let at_eol = cursor.col().0 >= len;
+            editor.editing.insert_normal_eol_line = at_eol.then(|| cursor.line());
+            // A goal column of "end of line" (`$`) survives the clamp as well.
+            let goal = if cursor.desired_col() == usize::MAX {
+                usize::MAX
+            } else {
+                len
+            };
+            editor.editing.insert_normal_eol_goal = at_eol.then_some(goal);
             finish_insert_mode(editor, true);
             editor.editing.insert_normal_pending = true;
         }
