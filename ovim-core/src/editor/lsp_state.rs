@@ -459,6 +459,9 @@ pub struct LspState {
     pub fold_tracking: Option<(usize, std::time::Instant)>,
     /// `(header line, hidden line count)` of the fold markers currently shown.
     pub fold_markers: Vec<(usize, usize)>,
+    /// Buffer and fold generation `fold_markers` was derived from, so a key
+    /// that changed no fold skips the marker pass.
+    pub fold_markers_key: Option<(crate::buffer::BufferId, u64)>,
     /// Buffers created purely to carry a workspace edit for a file the user
     /// never opened (OV-00450). Only these may be written through to disk;
     /// a buffer the user opened, even if hidden, is never persisted behind
@@ -544,6 +547,7 @@ impl LspState {
             pending_did_close: Vec::new(),
             fold_tracking: None,
             fold_markers: Vec::new(),
+            fold_markers_key: None,
             workspace_edit_carriers: Vec::new(),
             pending_file_rename: None,
             hierarchy: None,

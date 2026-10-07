@@ -421,6 +421,7 @@ impl Editor {
     }
 
     fn clear_fold_markers(&mut self) {
+        self.lsp.state.fold_markers_key = None;
         if self.lsp.state.fold_markers.is_empty() {
             return;
         }
@@ -433,17 +434,14 @@ impl Editor {
 
     /// Re-renders the `⋯ N lines` markers when the set of closed folds changed.
     pub(crate) fn refresh_fold_view(&mut self) {
-        let manager = self.buffer().fold_manager();
-        let mut markers: Vec<(usize, usize)> = manager
-            .folds()
-            .iter()
-            .filter_map(|fold| {
-                manager
-                    .folded_line_count_at(fold.start_line())
-                    .map(|count| (fold.start_line(), count))
-            })
-            .collect();
-        markers.dedup();
+        let buffer = self.buffer();
+        let manager = buffer.fold_manager();
+        let key = (buffer.id(), manager.generation());
+        if self.lsp.state.fold_markers_key == Some(key) {
+            return;
+        }
+        let markers: Vec<(usize, usize)> = manager.closed_fold_headers().collect();
+        self.lsp.state.fold_markers_key = Some(key);
         if markers == self.lsp.state.fold_markers {
             return;
         }
@@ -600,5 +598,62 @@ impl Editor {
         manager.toggle_fold_at(line);
         self.after_fold_change();
         true
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// About 47k lines and 9.5k functions: `zM` closes all of them.
+    fn editor_with_many_closed_folds() -> Editor {
+        let text: String = (0..9_500)
+            .map(|n| format!("fn f{n}() {{\n    let x = {n};\n    x + 1\n}}\n\n"))
+            .collect();
+        let mut editor = Editor::with_content(&text);
+        editor
+            .buffer_mut()
+            .set_file_path("/tmp/many_folds.rs".to_string());
+        editor.buffer_mut().enable_syntax_highlighting();
+        assert!(editor.fold_command('M'));
+        assert!(editor.buffer().fold_manager().folds().len() > 9_000);
+        editor
+    }
+
+    /// `sync_folds_after_key` runs after every key and used to rescan all
+    /// folds twice per call (140-160 ms per `j` on a 48k-line Rust file).
+    /// With nothing changed it must be a few lookups; the bound is orders of
+    /// magnitude above that so debug builds and slow machines cannot trip it.
+    #[test]
+    fn per_key_fold_bookkeeping_does_not_scale_with_the_fold_count() {
+        let mut editor = editor_with_many_closed_folds();
+        let version = editor.buffer().version();
+        let started = std::time::Instant::now();
+        for _ in 0..100 {
+            let cursor = editor.buffer().cursor();
+            editor.sync_folds_after_key(cursor.line(), cursor.col(), version);
+        }
+        let elapsed = started.elapsed();
+        assert!(
+            elapsed < std::time::Duration::from_millis(500),
+            "100 keys over 9.5k closed folds took {elapsed:?}"
+        );
+    }
+
+    /// The markers are rebuilt only when a fold changed, and then match the
+    /// closed folds.
+    #[test]
+    fn fold_markers_follow_the_closed_folds_and_skip_unchanged_state() {
+        let mut editor = Editor::with_content("a\n  b\n  c\nd\n  e\n  f\n");
+        assert!(editor.fold_command('M'));
+        assert_eq!(editor.lsp.state.fold_markers, vec![(0, 2), (3, 2)]);
+        let key = editor.lsp.state.fold_markers_key;
+        assert!(key.is_some());
+        // Nothing changed: the pass is a no-op and keeps its key.
+        editor.refresh_fold_view();
+        assert_eq!(editor.lsp.state.fold_markers_key, key);
+        assert!(editor.fold_command('o'));
+        assert_eq!(editor.lsp.state.fold_markers, vec![(3, 2)]);
+        assert_ne!(editor.lsp.state.fold_markers_key, key);
     }
 }

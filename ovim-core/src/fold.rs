@@ -8,6 +8,15 @@
 //! A closed fold hides `start + 1 ..= end`; its header line stays visible.
 //! Nested folds inside a closed fold are hidden with it, and the *outermost*
 //! closed fold containing a line decides how that line is displayed.
+//!
+//! The renderer and the cursor rules ask about closed folds on every key and
+//! frame, so those queries are answered from an index of the outermost closed
+//! folds that is rebuilt once per [`FoldManager::generation`], never by
+//! rescanning every fold.
+
+use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::OnceLock;
 
 /// Where a fold came from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -134,6 +143,59 @@ impl Fold {
     }
 }
 
+/// Source of [`FoldManager::generation`] values. Global, so a freshly created
+/// manager (a reloaded buffer) never repeats a generation a cache has seen.
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
+
+/// What the closed folds hide, derived from the folds once per generation.
+#[derive(Debug, Clone, Default)]
+struct ClosedIndex {
+    /// Outermost closed folds as `(start, end)`, ascending and disjoint.
+    outer: Vec<(usize, usize)>,
+    /// Merged inclusive hidden line ranges (`start + 1 ..= end` of each outer
+    /// fold; ranges that touch are joined), ascending.
+    hidden: Vec<(usize, usize)>,
+    /// Lines hidden by `hidden[..i]`, so lookups need no summing.
+    hidden_before: Vec<usize>,
+}
+
+impl ClosedIndex {
+    fn build(folds: &[Fold]) -> Self {
+        // `folds` is sorted by start, so one sweep that tracks the end of the
+        // current outermost closed fold finds every outer fold. A closed fold
+        // that starts inside it is nested (or, for crossing folds, extends it).
+        let mut outer: Vec<(usize, usize)> = Vec::new();
+        for fold in folds.iter().filter(|fold| !fold.is_open()) {
+            match outer.last_mut() {
+                Some(last) if fold.start_line <= last.1 => last.1 = last.1.max(fold.end_line),
+                _ => outer.push((fold.start_line, fold.end_line)),
+            }
+        }
+        let mut hidden: Vec<(usize, usize)> = Vec::new();
+        for &(start, end) in &outer {
+            let (start, end) = (start + 1, end);
+            match hidden.last_mut() {
+                Some(last) if start <= last.1 + 1 => last.1 = last.1.max(end),
+                _ => hidden.push((start, end)),
+            }
+        }
+        let mut total = 0;
+        let hidden_before = hidden
+            .iter()
+            .map(|&(start, end)| {
+                let before = total;
+                total += end - start + 1;
+                before
+            })
+            .collect();
+        Self {
+            outer,
+            hidden,
+            hidden_before,
+        }
+    }
+}
+
 /// Manages folds for a buffer
 #[derive(Debug, Clone)]
 pub struct FoldManager {
@@ -156,6 +218,11 @@ pub struct FoldManager {
     /// deepest nesting, so the first `zm` is useful (Vim under
     /// `foldlevelstart=99` needs ~99 `zm` before anything happens).
     foldlevel: Option<usize>,
+    /// Changes whenever the folds, their open/closed state or `foldenable`
+    /// change; see [`Self::generation`].
+    generation: u64,
+    /// Closed-fold lookup tables for the current generation.
+    closed: OnceLock<ClosedIndex>,
 }
 
 impl FoldManager {
@@ -169,7 +236,28 @@ impl FoldManager {
             active: false,
             source: FoldSource::Indent,
             foldlevel: None,
+            generation: next_generation(),
+            closed: OnceLock::new(),
         }
+    }
+
+    /// An opaque value that differs whenever what the folds show may have
+    /// changed (a fold added, moved, opened or closed; `foldenable` toggled)
+    /// and is the same otherwise. Unique across managers, so a cache keyed on
+    /// it also notices the manager being replaced.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    /// Records that the folds changed: bumps the generation and drops the
+    /// lookup tables derived from them.
+    fn touch(&mut self) {
+        self.generation = next_generation();
+        self.closed = OnceLock::new();
+    }
+
+    fn closed_index(&self) -> &ClosedIndex {
+        self.closed.get_or_init(|| ClosedIndex::build(&self.folds))
     }
 
     fn sort(&mut self) {
@@ -208,6 +296,7 @@ impl FoldManager {
         self.folds
             .retain(|f| !f.overlaps(&fold) || f.encloses(&fold) || fold.encloses(f));
         self.insert(fold);
+        self.touch();
     }
 
     // ----- state queries ---------------------------------------------------
@@ -226,7 +315,10 @@ impl FoldManager {
     }
 
     pub fn set_enabled(&mut self, enabled: bool) {
-        self.enabled = enabled;
+        if self.enabled != enabled {
+            self.enabled = enabled;
+            self.touch();
+        }
     }
 
     /// True once the user has used a fold command on this buffer.
@@ -255,10 +347,23 @@ impl FoldManager {
         if !self.enabled {
             return None;
         }
-        self.folds
-            .iter()
-            .find(|fold| !fold.is_open() && fold.contains_line(line))
-            .map(|fold| (fold.start_line, fold.end_line))
+        let outer = &self.closed_index().outer;
+        let after = outer.partition_point(|&(start, _)| start <= line);
+        outer[..after]
+            .last()
+            .copied()
+            .filter(|&(_, end)| line <= end)
+    }
+
+    /// Every outermost closed fold as `(header line, hidden line count)`,
+    /// ascending: the lines that carry a `⋯ N lines` marker.
+    pub fn closed_fold_headers(&self) -> impl Iterator<Item = (usize, usize)> + '_ {
+        let outer: &[(usize, usize)] = if self.enabled {
+            &self.closed_index().outer
+        } else {
+            &[]
+        };
+        outer.iter().map(|&(start, end)| (start, end - start))
     }
 
     /// Checks if a line is hidden by a closed fold (the header is not hidden).
@@ -313,33 +418,29 @@ impl FoldManager {
     }
 
     /// Merged inclusive ranges of hidden lines, ascending.
-    pub fn hidden_ranges(&self) -> Vec<(usize, usize)> {
+    pub fn hidden_ranges(&self) -> &[(usize, usize)] {
         if !self.enabled {
-            return Vec::new();
+            return &[];
         }
-        let mut ranges: Vec<(usize, usize)> = Vec::new();
-        for fold in self.folds.iter().filter(|f| !f.is_open()) {
-            let (start, end) = (fold.start_line + 1, fold.end_line);
-            match ranges.last_mut() {
-                Some(last) if start <= last.1 + 1 => last.1 = last.1.max(end),
-                _ => ranges.push((start, end)),
-            }
-        }
-        ranges
+        &self.closed_index().hidden
     }
 
     /// Number of hidden lines strictly before `line`.
     pub fn hidden_count_before(&self, line: usize) -> usize {
-        self.hidden_ranges()
-            .iter()
-            .map(|&(start, end)| {
-                if line <= start {
-                    0
-                } else {
-                    end.min(line - 1) - start + 1
-                }
-            })
-            .sum()
+        if !self.enabled {
+            return 0;
+        }
+        let index = self.closed_index();
+        // Ranges starting before `line` are hidden in full except the last,
+        // which `line` may cut short.
+        let before = index.hidden.partition_point(|&(start, _)| start < line);
+        match before.checked_sub(1) {
+            Some(last) => {
+                let (start, end) = index.hidden[last];
+                index.hidden_before[last] + end.min(line - 1) - start + 1
+            }
+            None => 0,
+        }
     }
 
     /// Index of `line` among the visible lines (hidden lines removed).
@@ -349,15 +450,33 @@ impl FoldManager {
 
     /// The logical line that is the `index`-th visible line.
     pub fn line_at_visible_index(&self, index: usize) -> usize {
-        let mut line = index;
-        for (start, end) in self.hidden_ranges() {
-            if line >= start {
-                line += end - start + 1;
+        if !self.enabled {
+            return index;
+        }
+        let ClosedIndex {
+            hidden,
+            hidden_before,
+            ..
+        } = self.closed_index();
+        // Range `i` begins hiding at visible index `start - hidden_before[i]`
+        // (strictly increasing): every range that begins at or before `index`
+        // shifts the result by its length.
+        let (mut low, mut high) = (0, hidden.len());
+        while low < high {
+            let mid = (low + high) / 2;
+            if hidden[mid].0 - hidden_before[mid] <= index {
+                low = mid + 1;
             } else {
-                break;
+                high = mid;
             }
         }
-        line
+        match low.checked_sub(1) {
+            Some(last) => {
+                let (start, end) = hidden[last];
+                index + hidden_before[last] + (end - start + 1)
+            }
+            None => index,
+        }
     }
 
     /// First visible line at or after `line`, if any before `line_count`.
@@ -411,6 +530,7 @@ impl FoldManager {
         for index in self.chain(line) {
             if !self.folds[index].is_open() {
                 self.folds[index].open();
+                self.touch();
                 return true;
             }
         }
@@ -429,6 +549,7 @@ impl FoldManager {
         match target {
             Some(index) => {
                 self.folds[index].close();
+                self.touch();
                 true
             }
             None => false,
@@ -453,6 +574,9 @@ impl FoldManager {
                 changed = true;
             }
         }
+        if changed {
+            self.touch();
+        }
         changed
     }
 
@@ -464,6 +588,9 @@ impl FoldManager {
                 self.folds[index].close();
                 changed = true;
             }
+        }
+        if changed {
+            self.touch();
         }
         changed
     }
@@ -534,8 +661,13 @@ impl FoldManager {
     fn apply_foldlevel(&mut self) {
         let level = self.foldlevel();
         let levels = self.nesting_levels();
+        let mut changed = false;
         for (fold, depth) in self.folds.iter_mut().zip(levels) {
+            changed |= fold.open != (depth <= level);
             fold.open = depth <= level;
+        }
+        if changed {
+            self.touch();
         }
     }
 
@@ -581,6 +713,7 @@ impl FoldManager {
     pub fn delete_fold_at(&mut self, line: usize) {
         if let Some(&index) = self.chain(line).last() {
             self.folds.remove(index);
+            self.touch();
         }
     }
 
@@ -590,6 +723,7 @@ impl FoldManager {
         if let Some(&outer) = self.chain(line).first() {
             let outer = self.folds[outer].clone();
             self.folds.retain(|f| !outer.encloses(f));
+            self.touch();
         }
     }
 
@@ -597,6 +731,7 @@ impl FoldManager {
     pub fn delete_all(&mut self) {
         self.folds.clear();
         self.auto_version = None;
+        self.touch();
     }
 
     // ----- motions -------------------------------------------------------------
@@ -671,13 +806,20 @@ impl FoldManager {
         source: FoldSource,
     ) {
         self.source = source;
-        let previous: Vec<Fold> = self
-            .folds
-            .iter()
-            .filter(|f| f.origin == FoldOrigin::Auto)
-            .cloned()
-            .collect();
-        self.folds.retain(|f| f.origin == FoldOrigin::Manual);
+        let before = self.folds.clone();
+        let (manual, auto): (Vec<Fold>, Vec<Fold>) = std::mem::take(&mut self.folds)
+            .into_iter()
+            .partition(|f| f.origin == FoldOrigin::Manual);
+        self.folds = manual;
+        // State of the previous automatic folds, by exact range and (for a
+        // fold whose end moved) by header line; `auto` is sorted, so the
+        // first fold seen at a header line is its outermost.
+        let mut open_by_range: HashMap<(usize, usize), bool> = HashMap::with_capacity(auto.len());
+        let mut open_by_start: HashMap<usize, bool> = HashMap::with_capacity(auto.len());
+        for fold in &auto {
+            open_by_range.insert((fold.start_line, fold.end_line), fold.open);
+            open_by_start.entry(fold.start_line).or_insert(fold.open);
+        }
 
         let mut incoming: Vec<(usize, usize)> = ranges
             .iter()
@@ -687,24 +829,34 @@ impl FoldManager {
         incoming.sort_by(|a, b| a.0.cmp(&b.0).then(b.1.cmp(&a.1)));
         incoming.dedup();
 
-        let mut accepted: Vec<Fold> = Vec::new();
-        let mut fresh_starts: Vec<usize> = Vec::new();
+        let mut accepted: Vec<Fold> = Vec::with_capacity(incoming.len());
+        let mut fresh_starts: HashSet<usize> = HashSet::new();
+        // Ends of the accepted folds that enclose the current candidate: a
+        // nested chain, so the innermost (last) has the smallest end.
+        let mut enclosing_ends: Vec<usize> = Vec::new();
         for (start, end) in incoming {
+            while enclosing_ends.last().is_some_and(|&top| top < start) {
+                enclosing_ends.pop();
+            }
+            // Candidates arrive by start, so an accepted fold that reaches the
+            // candidate's start but not its end crosses it. Manual folds are
+            // few and in no order relative to the candidates; check them all.
             let candidate = Fold::auto(start, end, true);
-            let crosses = accepted.iter().chain(self.folds.iter()).any(|f| {
+            let crosses_accepted = enclosing_ends.last().is_some_and(|&top| top < end);
+            let crosses_manual = self.folds.iter().any(|f| {
                 f.overlaps(&candidate) && !f.encloses(&candidate) && !candidate.encloses(f)
             });
-            if crosses {
+            if crosses_accepted || crosses_manual {
                 continue;
             }
-            let open = previous
-                .iter()
-                .find(|f| f.start_line == start && f.end_line == end)
-                .or_else(|| previous.iter().find(|f| f.start_line == start))
-                .map(|f| f.open);
+            let open = open_by_range
+                .get(&(start, end))
+                .or_else(|| open_by_start.get(&start))
+                .copied();
             accepted.push(Fold::auto(start, end, open.unwrap_or(true)));
+            enclosing_ends.push(end);
             if open.is_none() {
-                fresh_starts.push(start);
+                fresh_starts.insert(start);
             }
         }
         self.folds.extend(accepted);
@@ -721,6 +873,9 @@ impl FoldManager {
         }
         self.synced_line_count = line_count;
         self.auto_version = Some(buffer_version);
+        if self.folds != before {
+            self.touch();
+        }
     }
 
     /// Keeps fold ranges aligned with the text after an edit that changed the
@@ -748,12 +903,17 @@ impl FoldManager {
             fold.start_line < fold.end_line
         });
         self.sort();
+        self.touch();
     }
 
     /// Records the current line count without moving anything.
     pub fn note_line_count(&mut self, line_count: usize) {
         self.synced_line_count = line_count;
     }
+}
+
+fn next_generation() -> u64 {
+    NEXT_GENERATION.fetch_add(1, Ordering::Relaxed)
 }
 
 impl Default for FoldManager {
@@ -1164,6 +1324,116 @@ mod tests {
         assert_eq!(m.next_visible_line(3, 10), Some(6));
         assert_eq!(m.next_visible_line(2, 10), Some(2));
         assert_eq!(m.next_visible_line(6, 10), Some(6));
+    }
+
+    /// The old per-line bookkeeping rescanned every fold for every query, so
+    /// a few thousand folds made each keystroke cost tens of milliseconds.
+    /// 20k nested folds: building, closing and 100k queries finish in well
+    /// under a second now (they took minutes when quadratic).
+    #[test]
+    fn thousands_of_folds_cost_a_single_pass() {
+        let ranges: Vec<(usize, usize)> = (0..10_000)
+            .flat_map(|n| [(n * 10, n * 10 + 8), (n * 10 + 2, n * 10 + 6)])
+            .collect();
+        let started = std::time::Instant::now();
+        let mut m = FoldManager::new();
+        m.set_auto_folds(&ranges, 100_000, 1, true);
+        m.close_all();
+        assert_eq!(m.folds().len(), 20_000);
+        let mut hidden = 0;
+        for line in 0..100_000 {
+            hidden += usize::from(m.is_line_hidden(line));
+            m.visible_index(line);
+        }
+        assert_eq!(hidden, 10_000 * 8);
+        assert_eq!(m.closed_fold_headers().count(), 10_000);
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn generation_changes_only_when_the_folds_do() {
+        let mut m = nested();
+        let first = m.generation();
+        assert!(!m.open_one(3), "already open: nothing changes");
+        assert_eq!(m.generation(), first);
+        assert!(m.close_one(3));
+        let closed = m.generation();
+        assert_ne!(closed, first);
+        // An identical recompute keeps the generation (and the state).
+        m.set_auto_folds(&[(0, 9), (2, 4), (6, 8)], 12, 2, true);
+        assert_eq!(m.generation(), closed);
+        m.set_auto_folds(&[(0, 9), (2, 5), (6, 8)], 12, 3, true);
+        assert_ne!(m.generation(), closed);
+        m.set_enabled(true);
+        let before = m.generation();
+        m.set_enabled(false);
+        assert_ne!(m.generation(), before);
+        assert_ne!(
+            FoldManager::new().generation(),
+            FoldManager::new().generation(),
+            "a replaced manager never repeats a generation"
+        );
+    }
+
+    /// Markers sit on the headers of the outermost closed folds, once each,
+    /// counting the lines the fold hides.
+    #[test]
+    fn closed_fold_headers_are_the_outermost_closed_folds() {
+        let mut m = nested();
+        assert_eq!(m.closed_fold_headers().count(), 0);
+        m.close_one(3);
+        assert_eq!(m.closed_fold_headers().collect::<Vec<_>>(), vec![(2, 2)]);
+        m.close_one(3);
+        assert_eq!(
+            m.closed_fold_headers().collect::<Vec<_>>(),
+            vec![(0, 9)],
+            "the outer fold swallows the nested marker"
+        );
+        m.set_enabled(false);
+        assert_eq!(m.closed_fold_headers().count(), 0);
+    }
+
+    /// The indexed lookups agree with a line-by-line walk.
+    #[test]
+    fn indexed_lookups_match_a_naive_walk() {
+        let mut m = FoldManager::new();
+        m.set_auto_folds(
+            &[
+                (0, 3),
+                (2, 3),
+                (5, 9),
+                (6, 7),
+                (9, 9 + 1),
+                (14, 20),
+                (16, 18),
+            ],
+            30,
+            1,
+            true,
+        );
+        m.close_all();
+        m.open_one(6); // opens (5,9) only
+        let naive_hidden: Vec<bool> = (0..30)
+            .map(|line| {
+                m.folds()
+                    .iter()
+                    .any(|f| !f.is_open() && line > f.start_line() && line <= f.end_line())
+            })
+            .collect();
+        for line in 0..30 {
+            assert_eq!(m.is_line_hidden(line), naive_hidden[line], "line {line}");
+            let before = naive_hidden[..line].iter().filter(|&&h| h).count();
+            assert_eq!(m.hidden_count_before(line), before, "before {line}");
+            assert_eq!(m.visible_index(line), line - before);
+        }
+        let visible: Vec<usize> = (0..30).filter(|&line| !naive_hidden[line]).collect();
+        for (index, &line) in visible.iter().enumerate() {
+            assert_eq!(m.line_at_visible_index(index), line, "index {index}");
+        }
     }
 
     #[test]
