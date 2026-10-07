@@ -213,6 +213,13 @@ impl LspManager {
             return Err(anyhow::anyhow!("No server for language: {}", server_id));
         };
 
+        // A server that did not ask for open/close notifications still holds
+        // the document as far as bookkeeping goes; it is just never told.
+        if !server.wants_open_close() {
+            self.server_documents.insert(key, Some(text.clone()));
+            return Ok(true);
+        }
+
         let params = DidOpenTextDocumentParams {
             text_document: TextDocumentItem {
                 uri: uri.clone(),
@@ -291,6 +298,12 @@ impl LspManager {
                     server_id
                 )));
             }
+        }
+
+        // A server that asked for no change notifications gets none (nor does
+        // one that was never told about the document): it reads files itself.
+        if !server.wants_changes() || !server.wants_open_close() {
+            return Ok(false);
         }
 
         let Some(baseline) = self
@@ -831,9 +844,14 @@ impl LspManager {
                 .get(sid.as_str())
                 .map(|entry| entry.value().clone())
             {
+                // Only servers that asked for saves get them, and the text
+                // only if they asked for that too.
+                let Some(include_text) = server.wants_save() else {
+                    continue;
+                };
                 let params = DidSaveTextDocumentParams {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
-                    text: text.clone(),
+                    text: text.clone().filter(|_| include_text),
                 };
                 if let Err(e) = notify_with_timeout(
                     &server,
@@ -868,6 +886,9 @@ impl LspManager {
                 .get(sid.as_str())
                 .map(|entry| entry.value().clone())
             {
+                if !server.wants_open_close() {
+                    continue;
+                }
                 let params = DidCloseTextDocumentParams {
                     text_document: TextDocumentIdentifier { uri: uri.clone() },
                 };

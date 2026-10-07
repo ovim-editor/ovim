@@ -92,6 +92,13 @@ bitflags::bitflags! {
         const INLAY_HINT         = 1 << 22;
         const SEMANTIC_TOKENS    = 1 << 23;
         const CODE_LENS          = 1 << 24;
+        // Text synchronization the server opted out of. They are negative so a
+        // server that announced nothing (or has not initialized yet) is sent
+        // everything, as before.
+        const NO_OPEN_CLOSE      = 1 << 25;
+        const NO_CHANGE_SYNC     = 1 << 26;
+        const NO_SAVE            = 1 << 27;
+        const SAVE_WITH_TEXT     = 1 << 28;
     }
 }
 
@@ -310,6 +317,41 @@ fn capability_flags(caps: &ServerCapabilities) -> LspCapFlags {
     };
     if incremental {
         flags |= F::INCREMENTAL_SYNC;
+    }
+
+    // Text synchronization: only what the server asked for is sent. A bare
+    // sync kind implies open/close notifications and, for lack of anything
+    // more specific, saves without text.
+    use lsp_types::{
+        TextDocumentSyncCapability, TextDocumentSyncKind, TextDocumentSyncSaveOptions,
+    };
+    match &caps.text_document_sync {
+        Some(TextDocumentSyncCapability::Kind(kind)) => {
+            if *kind == TextDocumentSyncKind::NONE {
+                flags |= F::NO_CHANGE_SYNC;
+            }
+        }
+        Some(TextDocumentSyncCapability::Options(options)) => {
+            if options.open_close != Some(true) {
+                flags |= F::NO_OPEN_CLOSE;
+            }
+            if options
+                .change
+                .is_none_or(|kind| kind == TextDocumentSyncKind::NONE)
+            {
+                flags |= F::NO_CHANGE_SYNC;
+            }
+            match &options.save {
+                None | Some(TextDocumentSyncSaveOptions::Supported(false)) => flags |= F::NO_SAVE,
+                Some(TextDocumentSyncSaveOptions::Supported(true)) => {}
+                Some(TextDocumentSyncSaveOptions::SaveOptions(save)) => {
+                    if save.include_text == Some(true) {
+                        flags |= F::SAVE_WITH_TEXT;
+                    }
+                }
+            }
+        }
+        None => {}
     }
 
     // Type hierarchy: read from the raw initialize response (see
@@ -2095,6 +2137,22 @@ impl LanguageServer {
         self.inner.has_cap(LspCapFlags::INCREMENTAL_SYNC)
     }
 
+    /// Whether the server wants `didOpen` / `didClose` (lock-free).
+    pub fn wants_open_close(&self) -> bool {
+        !self.inner.has_cap(LspCapFlags::NO_OPEN_CLOSE)
+    }
+
+    /// Whether the server wants `didChange` (lock-free).
+    pub fn wants_changes(&self) -> bool {
+        !self.inner.has_cap(LspCapFlags::NO_CHANGE_SYNC)
+    }
+
+    /// Whether the server wants `didSave`, and whether with the text.
+    pub fn wants_save(&self) -> Option<bool> {
+        (!self.inner.has_cap(LspCapFlags::NO_SAVE))
+            .then(|| self.inner.has_cap(LspCapFlags::SAVE_WITH_TEXT))
+    }
+
     /// Test-only: force the incremental-sync capability so sync tests can
     /// exercise the diff path against a fake server that never negotiates
     /// capabilities.
@@ -2540,6 +2598,32 @@ mod tests {
             assert!(flags.contains(expected), "{expected:?} in {flags:?}");
         }
         assert!(!flags.contains(LspCapFlags::REFERENCES));
+    }
+
+    #[test]
+    fn text_sync_options_decide_which_notifications_a_server_gets() {
+        let announced = |sync: serde_json::Value| flags_of(json!({ "textDocumentSync": sync }));
+        let optouts = LspCapFlags::NO_OPEN_CLOSE
+            | LspCapFlags::NO_CHANGE_SYNC
+            | LspCapFlags::NO_SAVE
+            | LspCapFlags::SAVE_WITH_TEXT;
+
+        // Nothing announced: everything is sent (a server that has not
+        // initialized yet, or one that says nothing).
+        assert!(flags_of(json!({})).intersection(optouts).is_empty());
+        // A bare kind: open/close and saves (without text) stay on.
+        assert!(announced(json!(1)).intersection(optouts).is_empty());
+        assert!(announced(json!(0)).contains(LspCapFlags::NO_CHANGE_SYNC));
+
+        let silent = announced(json!({}));
+        assert!(silent.contains(
+            LspCapFlags::NO_OPEN_CLOSE | LspCapFlags::NO_CHANGE_SYNC | LspCapFlags::NO_SAVE
+        ));
+        let wanting =
+            announced(json!({"openClose": true, "change": 2, "save": {"includeText": true}}));
+        assert_eq!(wanting.intersection(optouts), LspCapFlags::SAVE_WITH_TEXT);
+        let plain_save = announced(json!({"openClose": true, "change": 1, "save": true}));
+        assert!(plain_save.intersection(optouts).is_empty());
     }
 
     /// A server that prints bytes that are not UTF-8 must keep a reader on

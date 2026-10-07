@@ -39,6 +39,21 @@ impl FakeLsp {
     /// `roots` project roots; the first root's `main.fk` is the current buffer
     /// and has been opened on its server when this returns.
     pub async fn start_with(content: &str, roots: usize, capabilities: Value) -> Self {
+        Self::start_waiting_for(content, roots, capabilities, "textDocument/didOpen").await
+    }
+
+    /// [`Self::start_with`] for a server that is not told about opened
+    /// documents: it waits for the server's `initialized` instead.
+    pub async fn start_unannounced(content: &str, capabilities: Value) -> Self {
+        Self::start_waiting_for(content, 1, capabilities, "initialized").await
+    }
+
+    async fn start_waiting_for(
+        content: &str,
+        roots: usize,
+        capabilities: Value,
+        event: &str,
+    ) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let base = dir.path().canonicalize().unwrap();
         let script = base.join("server.py");
@@ -90,7 +105,7 @@ impl FakeLsp {
             script,
             roots,
         };
-        lsp.wait_for_event(0, "textDocument/didOpen").await;
+        lsp.wait_for_event(0, event).await;
         lsp
     }
 
