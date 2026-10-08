@@ -1,4 +1,4 @@
-use super::marks::{JumpList, MarkManager, TagStack};
+use super::marks::{JumpEntry, JumpList, MarkManager, TagStack};
 use super::{FindDirection, FindType};
 
 /// Navigation state: marks, jump list, tag stack, and find repeat.
@@ -7,6 +7,9 @@ pub struct NavigationState {
     pub marks: MarkManager,
     /// Jump list for Ctrl-O and Ctrl-I
     pub jump_list: JumpList,
+    /// The position before the latest jump (`''` and `` ` ` ``); `None` until
+    /// there has been one, when it is the start of the buffer.
+    pub context_mark: Option<JumpEntry>,
     /// Tag stack for Ctrl-T (LSP goto definition/implementation/type navigation)
     pub tag_stack: TagStack,
     /// Last find motion (for ; and , repeat)
@@ -19,6 +22,7 @@ impl Default for NavigationState {
         Self {
             marks: MarkManager::new(),
             jump_list: JumpList::new(),
+            context_mark: None,
             tag_stack: TagStack::new(),
             last_find: None,
         }

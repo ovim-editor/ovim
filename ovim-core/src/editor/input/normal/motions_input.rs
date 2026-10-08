@@ -220,12 +220,13 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             } else {
                 max_line
             };
-            editor.add_jump();
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol::ZERO);
-            Motions::first_non_blank(editor.buffer_mut());
+            editor.record_jump_if_moved(|editor| {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, GraphemeCol::ZERO);
+                Motions::first_non_blank(editor.buffer_mut());
+            });
             editor.clear_count();
             Ok(true)
         }

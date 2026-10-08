@@ -28,14 +28,15 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // 'g' - Go commands
         // =====================================================================
         ('g', KeyCode::Char('g')) => {
-            editor.add_jump();
             let max_line = editor.buffer().line_count().saturating_sub(1);
             let target_line = editor.count().unwrap_or(1).saturating_sub(1).min(max_line);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(target_line, GraphemeCol::ZERO);
-            Motions::first_non_blank(editor.buffer_mut());
+            editor.record_jump_if_moved(|editor| {
+                editor
+                    .buffer_mut()
+                    .cursor_mut()
+                    .set_position(target_line, GraphemeCol::ZERO);
+                Motions::first_non_blank(editor.buffer_mut());
+            });
             editor.clear_count();
         }
         ('g', KeyCode::Char('d')) => {

@@ -105,6 +105,9 @@ fn handle_set_mark(editor: &mut Editor, target: char) {
 fn resolve_mark(editor: &Editor, target: char) -> Option<(usize, usize)> {
     if crate::editor::mark_jump::is_local_mark(target) {
         editor.local_mark(target)
+    } else if matches!(target, '\'' | '`') {
+        let mark = editor.context_mark_position();
+        Some((mark.line, mark.col))
     } else {
         // Only local marks supported with operators for now.
         // Global marks (A-Z) involve file switching.
@@ -141,7 +144,7 @@ fn handle_mark_operator(
 
 fn handle_jump_mark_line(editor: &mut Editor, target: char) {
     if target == '\'' {
-        editor.jump_back();
+        editor.jump_to_context_mark(true);
         return;
     }
 
@@ -158,7 +161,7 @@ fn handle_jump_mark_line(editor: &mut Editor, target: char) {
 
 fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
     if target == '`' {
-        editor.jump_back();
+        editor.jump_to_context_mark(false);
         return;
     }
 

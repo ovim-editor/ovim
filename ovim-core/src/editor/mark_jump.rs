@@ -214,6 +214,7 @@ impl Editor {
     /// before a jump (Vim's `setpcmark`).
     pub fn add_jump(&mut self) {
         let entry = self.current_jump_entry();
+        self.nav.context_mark = Some(entry.clone());
         self.nav.jump_list.add_jump(entry);
     }
 
@@ -224,9 +225,32 @@ impl Editor {
         let before = self.current_jump_entry();
         let result = motion(self);
         if self.current_jump_entry() != before {
+            self.nav.context_mark = Some(before.clone());
             self.nav.jump_list.add_jump(before);
         }
         result
+    }
+
+    /// Where `''` and `` ` ` `` go: the position before the latest jump, which is
+    /// the start of the buffer before the first one.
+    pub fn context_mark_position(&self) -> super::marks::JumpEntry {
+        self.nav.context_mark.clone().unwrap_or_else(|| {
+            super::marks::JumpEntry::new(self.buffer().file_path().map(|p| p.to_string()), 0, 0)
+        })
+    }
+
+    /// `''` (`linewise`) and `` ` ` ``: jumps to the position before the latest jump.
+    /// Where it jumped from becomes that position, so repeating it toggles.
+    pub fn jump_to_context_mark(&mut self, linewise: bool) -> bool {
+        let target = self.context_mark_position();
+        self.add_jump();
+        if !self.go_to_jump_entry(target) {
+            return false;
+        }
+        if linewise {
+            Motions::first_non_blank(self.buffer_mut());
+        }
+        true
     }
 
     /// Moves to a jump-list entry, switching buffers when it is in another file.
