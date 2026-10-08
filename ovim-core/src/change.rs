@@ -104,11 +104,24 @@ pub enum TextObjectType {
 }
 
 impl TextObjectType {
-    /// A change can insert inside an empty pair or quote even though there is
-    /// no text for a delete or visual selection to operate on.
+    /// A change can insert inside an empty pair or quote, or on an empty line
+    /// (`ciw`), even though there is no text for a delete or visual selection to
+    /// operate on.
     pub fn resolve_for_change(&self, buffer: &Buffer) -> Option<TextObjectRange> {
         if let Some(range) = self.resolve(buffer) {
             return Some(range);
+        }
+        let line = buffer.cursor().line();
+        if matches!(self, Self::Word { inner: true, .. })
+            && line < buffer.line_count()
+            && buffer.line_len(line) == 0
+        {
+            return Some(TextObjectRange {
+                start_line: line,
+                start_col: CharCol::ZERO,
+                end_line: line,
+                end_col: CharCol::ZERO,
+            });
         }
         let around = match self {
             Self::Paired {
