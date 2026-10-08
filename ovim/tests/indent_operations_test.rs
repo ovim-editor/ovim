@@ -272,11 +272,11 @@ fn test_visual_reselect_indent() {
         .keys("gv") // Reselect
         .press('>'); // Indent again (lines 1 and 2 again)
 
-    // After first >, cursor goes to start line (0, 4). gv reselects using saved visual marks,
-    // but since cursor moved to line 0, gv selects only line 0. Second > indents only line 0.
+    // nvim (`normal! Vj>gv>` with shiftwidth=4): gv reselects both lines even though the first
+    // `>` left the cursor on line 1, so the second `>` indents both again.
     assert_eq!(
         test.buffer_content(),
-        "        line 1\n    line 2\nline 3\n"
+        "        line 1\n        line 2\nline 3\n"
     );
     test.assert_cursor(0, 8);
 }

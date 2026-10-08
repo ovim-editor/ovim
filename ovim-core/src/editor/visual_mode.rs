@@ -1,3 +1,4 @@
+use super::visual_context::VisualSelection;
 use super::Editor;
 use crate::mode::Mode;
 use crate::unicode::{grapheme_count, GraphemeCol};
@@ -55,19 +56,25 @@ impl Editor {
 
     /// Saves the current visual selection for gv command
     pub fn save_last_visual_selection(&mut self) {
-        if let Some(selection) = self.visual_selection() {
-            self.visual.last_visual_selection = Some((selection.0, selection.1, self.mode));
+        if let Some(selection) = self.selection_when_key_arrived() {
+            self.visual.last_visual_selection = Some(selection);
         }
+    }
+
+    /// The selection as it stood when the key being handled arrived, with the
+    /// mode it was made in. An operator that moves the cursor before Visual
+    /// mode ends must not change what `gv` and the `'<` `'>` marks record.
+    fn selection_when_key_arrived(&self) -> Option<VisualSelection> {
+        self.visual.key_selection.or_else(|| {
+            let (start, end) = self.visual_selection()?;
+            Some((start, end, self.mode))
+        })
     }
 
     /// Records `'<` and `'>` for the selection of a Visual mode that is
     /// ending (what `:'<,'>` and `` `< `` read).
     pub(super) fn store_visual_marks(&mut self) {
-        let selection = match self.visual.key_selection {
-            Some((start, end, _)) => Some((start, end)),
-            None => self.visual_selection(),
-        };
-        let Some((start, end)) = selection else {
+        let Some((start, end, _)) = self.selection_when_key_arrived() else {
             return;
         };
         for (name, (line, col)) in [('<', start), ('>', end)] {

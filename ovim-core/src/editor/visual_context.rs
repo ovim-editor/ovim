@@ -16,9 +16,8 @@ pub struct VisualContext {
     /// Last visual selection (start, end, mode) for `gv` command
     pub last_visual_selection: Option<VisualSelection>,
 
-    /// The selection as it stood when the key being handled arrived. An
-    /// operator that moves the cursor before Visual mode ends must not change
-    /// what `'<` and `'>` record.
+    /// The selection as it stood when the key being handled arrived (see
+    /// `Editor::selection_when_key_arrived`).
     pub key_selection: Option<VisualSelection>,
 
     /// True when `$` was pressed in visual block mode — means "extend each
