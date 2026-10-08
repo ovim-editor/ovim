@@ -275,9 +275,6 @@ impl Editor {
                 .retain(|id| *id != viewed);
             self.lsp.state.needs_lsp_init = true;
 
-            // Clear buffer-local marks (a-z) when switching files
-            self.nav.marks.clear();
-
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
 
@@ -308,9 +305,6 @@ impl Editor {
 
             self.current_buffer_index = (self.current_buffer_index + 1) % self.buffers.len();
             self.lsp.state.needs_lsp_init = true;
-
-            // Clear buffer-local marks (a-z) when switching files
-            self.nav.marks.clear();
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();
@@ -351,9 +345,6 @@ impl Editor {
                 self.current_buffer_index - 1
             };
             self.lsp.state.needs_lsp_init = true;
-
-            // Clear buffer-local marks (a-z) when switching files
-            self.nav.marks.clear();
 
             // Clear LSP UI state (hover, completions, etc.)
             self.clear_lsp_state();

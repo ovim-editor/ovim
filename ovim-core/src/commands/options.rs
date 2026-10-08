@@ -153,7 +153,6 @@ pub(super) fn registers(editor: &mut Editor, ex: &Ex) -> CommandResult {
 pub(super) fn marks(editor: &mut Editor, ex: &Ex) -> CommandResult {
     let wanted: Vec<char> = ex.args.chars().filter(|c| !c.is_whitespace()).collect();
     let lines: Vec<String> = editor
-        .marks()
         .list_marks()
         .into_iter()
         .filter(|(name, ..)| wanted.is_empty() || wanted.contains(name))

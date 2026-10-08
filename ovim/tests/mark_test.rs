@@ -799,7 +799,7 @@ fn test_ov00190_backtick_local_mark_clamps_to_eof_after_delete() {
     // Mark the last line.
     test.keys("G").press('m').press('a');
     assert_eq!(
-        test.editor.marks().get_mark('a').expect("mark set").line,
+        test.editor.buffer().local_mark('a').expect("mark set").0,
         2,
         "test setup: mark recorded on the original line 2"
     );

@@ -142,6 +142,7 @@ impl Buffer {
             line_changes: crate::text_index::LineChangeLog::default(),
             display_name: None,
             indent_options: None,
+            local_marks: Default::default(),
         };
 
         // Don't enable syntax highlighting immediately - defer for lazy loading

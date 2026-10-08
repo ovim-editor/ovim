@@ -16,6 +16,11 @@ pub struct VisualContext {
     /// Last visual selection (start, end, mode) for `gv` command
     pub last_visual_selection: Option<VisualSelection>,
 
+    /// The selection as it stood when the key being handled arrived. An
+    /// operator that moves the cursor before Visual mode ends must not change
+    /// what `'<` and `'>` record.
+    pub key_selection: Option<VisualSelection>,
+
     /// True when `$` was pressed in visual block mode — means "extend each
     /// line to its own end-of-line" rather than a fixed column.
     pub visual_block_dollar: bool,
@@ -27,6 +32,7 @@ impl VisualContext {
             visual_start: None,
             block_insert: None,
             last_visual_selection: None,
+            key_selection: None,
             visual_block_dollar: false,
         }
     }

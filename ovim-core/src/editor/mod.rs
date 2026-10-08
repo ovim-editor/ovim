@@ -179,7 +179,7 @@ pub use lsp_state::{
 };
 pub use lsp_ui::LspUi;
 pub use macros::MacroManager;
-pub use marks::{GlobalMark, JumpEntry, JumpList, Mark, MarkManager, TagEntry, TagStack};
+pub use marks::{GlobalMark, JumpEntry, JumpList, MarkManager, TagEntry, TagStack};
 pub use motions::Motions;
 pub use navigation_state::NavigationState;
 pub use operators::Operator;
@@ -808,6 +808,9 @@ impl Editor {
         // the end of every line, exactly as `$` typed inside the block does.
         if mode == Mode::VisualBlock && self.mode != Mode::VisualBlock {
             self.visual.visual_block_dollar = self.buffer().cursor().desired_col() == usize::MAX;
+        }
+        if self.mode.is_visual() && !mode.is_visual() {
+            self.store_visual_marks();
         }
         self.mode = mode;
         if mode != Mode::Insert {

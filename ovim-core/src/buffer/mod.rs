@@ -4,6 +4,7 @@ mod file_io;
 mod highlight_index;
 mod highlighting;
 mod line_ending;
+mod marks;
 mod text_ops;
 
 pub use cursor::Cursor;
@@ -132,6 +133,9 @@ pub struct Buffer {
     /// editor defaults; file-backed buffers are pinned when they are added to
     /// an editor so later changes cannot leak across already-open files.
     indent_options: Option<crate::indentation::IndentOptions>,
+    /// Marks `a`-`z`, `<` and `>`, kept in step with the text by the edit
+    /// primitives.
+    local_marks: marks::LocalMarks,
 }
 
 impl Buffer {
@@ -172,6 +176,7 @@ impl Buffer {
             line_changes: LineChangeLog::default(),
             display_name: None,
             indent_options: None,
+            local_marks: marks::LocalMarks::default(),
         }
     }
 
@@ -285,6 +290,7 @@ impl Buffer {
             line_changes: LineChangeLog::default(),
             display_name: None,
             indent_options: None,
+            local_marks: marks::LocalMarks::default(),
         }
     }
 

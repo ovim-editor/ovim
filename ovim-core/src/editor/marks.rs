@@ -1,12 +1,5 @@
 use std::collections::HashMap;
 
-/// Represents a position in the buffer
-#[derive(Clone, Copy, Debug)]
-pub struct Mark {
-    pub line: usize,
-    pub col: usize,
-}
-
 /// Represents a global mark (includes file path)
 #[derive(Clone, Debug)]
 pub struct GlobalMark {
@@ -17,104 +10,49 @@ pub struct GlobalMark {
     pub col: usize,
 }
 
-/// Manages marks (a-z for buffer-local marks, A-Z for global marks)
+/// Manages the global marks (A-Z), which persist across files. The
+/// buffer-local marks (a-z, `<`, `>`) live on their `Buffer`.
 #[derive(Clone, Debug, Default)]
 pub struct MarkManager {
-    /// Buffer-local marks (a-z)
-    marks: HashMap<char, Mark>,
-    /// Global marks (A-Z) - persist across files
     global_marks: HashMap<char, GlobalMark>,
 }
 
 impl MarkManager {
     /// Creates a new mark manager
     pub fn new() -> Self {
-        Self {
-            marks: HashMap::new(),
-            global_marks: HashMap::new(),
-        }
+        Self::default()
     }
 
-    /// Sets a mark at the given position (buffer-local for a-z, global for A-Z)
-    pub fn set_mark(
+    /// Sets a global mark (A-Z) at the given position
+    pub fn set_global_mark(
         &mut self,
         name: char,
         line: usize,
         col: usize,
         file_path: Option<&str>,
     ) -> bool {
-        if name.is_ascii_lowercase() {
-            self.marks.insert(name, Mark { line, col });
-            true
-        } else if name.is_ascii_uppercase() {
-            self.global_marks.insert(
-                name,
-                GlobalMark {
-                    file_path: file_path.map(str::to_string),
-                    line,
-                    col,
-                },
-            );
-            true
-        } else {
-            false
+        if !name.is_ascii_uppercase() {
+            return false;
         }
-    }
-
-    /// Gets a local mark by name (a-z)
-    pub fn get_mark(&self, name: char) -> Option<Mark> {
-        self.marks.get(&name).copied()
+        self.global_marks.insert(
+            name,
+            GlobalMark {
+                file_path: file_path.map(str::to_string),
+                line,
+                col,
+            },
+        );
+        true
     }
 
     /// Gets a global mark by name (A-Z)
     pub fn get_global_mark(&self, name: char) -> Option<&GlobalMark> {
-        if name.is_ascii_uppercase() {
-            self.global_marks.get(&name)
-        } else {
-            None
-        }
-    }
-
-    /// Clears all local marks (a-z) - global marks are preserved
-    pub fn clear(&mut self) {
-        self.marks.clear();
-    }
-
-    /// Clears all marks including global marks
-    pub fn clear_all(&mut self) {
-        self.marks.clear();
-        self.global_marks.clear();
-    }
-
-    /// Returns an iterator over all local marks
-    pub fn iter(&self) -> impl Iterator<Item = (char, Mark)> + '_ {
-        self.marks.iter().map(|(k, v)| (*k, *v))
+        self.global_marks.get(&name)
     }
 
     /// Returns an iterator over all global marks
     pub fn iter_global(&self) -> impl Iterator<Item = (char, &GlobalMark)> + '_ {
         self.global_marks.iter().map(|(k, v)| (*k, v))
-    }
-
-    /// Lists all marks as (name, line, col, file_path) tuples for display
-    pub fn list_marks(&self) -> Vec<(char, usize, usize, Option<String>)> {
-        let mut result = Vec::new();
-
-        // Local marks (a-z) sorted
-        let mut local: Vec<_> = self.marks.iter().collect();
-        local.sort_by_key(|(k, _)| *k);
-        for (name, mark) in local {
-            result.push((*name, mark.line, mark.col, None));
-        }
-
-        // Global marks (A-Z) sorted
-        let mut global: Vec<_> = self.global_marks.iter().collect();
-        global.sort_by_key(|(k, _)| *k);
-        for (name, mark) in global {
-            result.push((*name, mark.line, mark.col, mark.file_path.clone()));
-        }
-
-        result
     }
 }
 

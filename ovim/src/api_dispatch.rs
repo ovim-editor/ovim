@@ -975,15 +975,10 @@ pub(crate) fn create_snapshot_with_dimensions(
 
     // Get marks
     let mut marks = HashMap::new();
-    let mark_manager = editor.marks();
-    for (name, mark) in mark_manager.iter() {
-        marks.insert(
-            name.to_string(),
-            CursorPosition {
-                line: mark.line,
-                column: mark.col,
-            },
-        );
+    for (name, line, col, file) in editor.list_marks() {
+        if file.is_none() {
+            marks.insert(name.to_string(), CursorPosition { line, column: col });
+        }
     }
 
     // Get picker state if in picker mode

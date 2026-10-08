@@ -97,8 +97,8 @@ fn handle_set_mark(editor: &mut Editor, target: char) {
 
 /// Resolves a mark character to a `(line, col)` position, if set.
 fn resolve_mark(editor: &Editor, target: char) -> Option<(usize, usize)> {
-    if target.is_ascii_lowercase() {
-        editor.nav.marks.get_mark(target).map(|m| (m.line, m.col))
+    if crate::editor::mark_jump::is_local_mark(target) {
+        editor.local_mark(target)
     } else {
         // Only local marks supported with operators for now.
         // Global marks (A-Z) involve file switching.
@@ -139,7 +139,9 @@ fn handle_jump_mark_line(editor: &mut Editor, target: char) {
         return;
     }
 
-    if !(target.is_ascii_lowercase() || target.is_ascii_uppercase() || matches!(target, '.' | '^'))
+    if !(target.is_ascii_lowercase()
+        || target.is_ascii_uppercase()
+        || matches!(target, '<' | '>' | '.' | '^'))
     {
         return;
     }
@@ -156,7 +158,7 @@ fn handle_jump_mark_exact(editor: &mut Editor, target: char) {
 
     if !(target.is_ascii_lowercase()
         || target.is_ascii_uppercase()
-        || matches!(target, '.' | '^' | '[' | ']'))
+        || matches!(target, '<' | '>' | '.' | '^' | '[' | ']'))
     {
         return;
     }

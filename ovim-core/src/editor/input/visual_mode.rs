@@ -158,6 +158,15 @@ fn handle_visual_leader_input(
 
 /// Handles input in Visual mode (Visual, VisualLine, VisualBlock)
 pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    editor.visual.key_selection = editor
+        .visual_selection()
+        .map(|(start, end)| (start, end, editor.mode()));
+    let result = handle_visual_key(editor, key_event);
+    editor.visual.key_selection = None;
+    result
+}
+
+fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
     // =====================================================================
     // INPUT STATE CHECK (must happen before mode-specific handling)
     // =====================================================================
@@ -425,6 +434,12 @@ pub fn handle_visual_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
         KeyCode::Char('%') => {
             Motions::jump_to_matching_bracket(editor.buffer_mut());
             editor.clear_count();
+        }
+        // The command line on the selected lines (`:'<,'>`)
+        KeyCode::Char(':') => {
+            helpers::exit_visual_mode_to_normal(editor);
+            editor.set_command_line("'<,'>");
+            editor.set_mode(Mode::Command);
         }
         // Search forward in visual mode
         KeyCode::Char('/') => {

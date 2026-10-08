@@ -17,15 +17,26 @@ fn clamp_grapheme_col(buffer: &Buffer, line_idx: usize, col: usize) -> usize {
     col.min(line_len.saturating_sub(1))
 }
 
+/// Marks that belong to a buffer: `a`-`z` and the Visual marks `<` and `>`.
+/// The others (`A`-`Z`) are global and carry a file.
+pub(super) fn is_local_mark(name: char) -> bool {
+    name.is_ascii_lowercase() || matches!(name, '<' | '>')
+}
+
 impl Editor {
     /// Sets a mark at the current cursor position
     pub fn set_mark(&mut self, name: char) -> bool {
         let cursor_line = self.buffer().cursor().line();
-        let cursor_col = self.buffer().cursor().col().0;
+        let cursor_col = self.buffer().cursor().col();
+        if is_local_mark(name) {
+            self.buffer_mut()
+                .set_local_mark(name, cursor_line, cursor_col);
+            return true;
+        }
         let file_path = self.buffer().file_path().map(|s| s.to_string());
         self.nav
             .marks
-            .set_mark(name, cursor_line, cursor_col, file_path.as_deref())
+            .set_global_mark(name, cursor_line, cursor_col.0, file_path.as_deref())
     }
 
     /// Jumps to a mark (exact position with backtick)
@@ -48,17 +59,17 @@ impl Editor {
             return true;
         }
 
-        // Try local mark first (a-z)
-        if name.is_ascii_lowercase() {
-            if let Some(mark) = self.nav.marks.get_mark(name) {
+        // Try local mark first (a-z, < and >)
+        if is_local_mark(name) {
+            if let Some((mark_line, mark_col)) = self.buffer().local_mark(name) {
                 // OV-00190: clamp to current buffer bounds. The mark may point
                 // past EOF if lines were deleted after it was set; uncapped,
                 // `set_position` would land the cursor outside the rope and
                 // subsequent motions / rendering would panic or display
                 // garbage. Same shape as the global-mark branch below.
                 let max_line = self.buffer().line_count().saturating_sub(1);
-                let clamped_line = mark.line.min(max_line);
-                let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, mark.col);
+                let clamped_line = mark_line.min(max_line);
+                let clamped_col = clamp_grapheme_col(self.buffer(), clamped_line, mark_col.0);
 
                 self.buffer_mut()
                     .cursor_mut()
@@ -112,14 +123,14 @@ impl Editor {
             return false;
         }
 
-        // Try local mark first (a-z)
-        if name.is_ascii_lowercase() {
-            if let Some(mark) = self.nav.marks.get_mark(name) {
+        // Try local mark first (a-z, < and >)
+        if is_local_mark(name) {
+            if let Some((mark_line, _)) = self.buffer().local_mark(name) {
                 // OV-00190: clamp the mark line to current buffer bounds so a
                 // line deleted after the mark was set doesn't land the cursor
                 // past EOF. Mirrors the global-mark branch below.
                 let max_line = self.buffer().line_count().saturating_sub(1);
-                let clamped_line = mark.line.min(max_line);
+                let clamped_line = mark_line.min(max_line);
 
                 // Find first non-blank character on the line (char index → grapheme)
                 let first_non_blank = if let Some(line_text) = self.buffer().line_text(clamped_line)
@@ -331,9 +342,34 @@ impl Editor {
         moved
     }
 
-    /// Gets the mark manager (for reading marks)
+    /// Gets the mark manager (the global marks `A`-`Z`)
     pub fn marks(&self) -> &MarkManager {
         &self.nav.marks
+    }
+
+    /// Where the buffer-local mark `name` points: a line and a grapheme column.
+    pub fn local_mark(&self, name: char) -> Option<(usize, usize)> {
+        let (line, col) = self.buffer().local_mark(name)?;
+        Some((line, col.0))
+    }
+
+    /// Every mark that is set, for `:marks`: (name, line, column, file) with
+    /// the file only on global marks.
+    pub fn list_marks(&self) -> Vec<(char, usize, usize, Option<String>)> {
+        let mut marks: Vec<_> = self
+            .buffer()
+            .local_marks()
+            .into_iter()
+            .map(|(name, line, col)| (name, line, col.0, None))
+            .collect();
+        let mut global: Vec<_> = self.nav.marks.iter_global().collect();
+        global.sort_by_key(|(name, _)| *name);
+        marks.extend(
+            global
+                .into_iter()
+                .map(|(name, mark)| (name, mark.line, mark.col, mark.file_path.clone())),
+        );
+        marks
     }
 
     /// Pushes current position to tag stack before LSP navigation (gd/gD/gy)

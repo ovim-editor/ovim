@@ -46,7 +46,9 @@ impl Buffer {
         self.shift_highlights_for_insertion(line, byte_col, text);
 
         let text_edit = self.prepare_text_edit(insert_pos, insert_pos);
+        let lines_before = self.rope.len_lines();
         self.rope.insert(insert_pos, text);
+        self.adjust_marks_for_insert(line, col_clamped, text, lines_before);
         self.finish_text_edit(text_edit, text);
         self.modified = true;
 
@@ -226,6 +228,7 @@ impl Buffer {
         );
 
         let text_edit = self.prepare_text_edit(start_pos, end_pos);
+        self.adjust_marks_for_removal(start_pos, end_pos);
         self.rope.remove(start_pos..end_pos);
         self.finish_text_edit(text_edit, "");
         self.modified = true;
@@ -306,6 +309,7 @@ impl Buffer {
         self.shift_highlights_for_deletion(start_line, start_byte_col, end_line, end_byte_col);
 
         let text_edit = self.prepare_text_edit(start_pos, end_pos);
+        self.adjust_marks_for_removal(start_pos, end_pos);
         self.rope.remove(start_pos..end_pos);
         self.finish_text_edit(text_edit, "");
         self.modified = true;
@@ -400,20 +404,29 @@ impl Buffer {
 
             // Trim leading whitespace from next line
             let next_trimmed = next_line_text.trim_start();
+            let current_len = current_line_text.chars().count();
 
-            // Build the joined line
-            let joined = if next_trimmed.is_empty() {
-                // Next line is all whitespace, just use current line
-                current_line_text.clone()
+            // Join with edits at the seam only, so the marks on the next line
+            // follow its text up to this one.
+            if next_trimmed.is_empty() {
+                // Next line is all whitespace, just keep the current line
+                let next_len = next_line_text.chars().count();
+                self.delete_range(
+                    start_line,
+                    CharCol(current_len),
+                    start_line + 1,
+                    CharCol(next_len),
+                );
             } else {
-                format!("{}{}{}", current_line_text, separator, next_trimmed)
-            };
-
-            // Delete both lines (from start_line to start_line+2)
-            self.delete_range(start_line, CharCol::ZERO, start_line + 2, CharCol::ZERO);
-
-            // Insert the joined line with newline
-            self.insert_text_at(start_line, CharCol::ZERO, &format!("{}\n", joined));
+                self.insert_text_at(start_line, CharCol(current_len), separator);
+                let next_indent = next_line_text.chars().count() - next_trimmed.chars().count();
+                self.delete_range(
+                    start_line,
+                    CharCol(current_len + separator.chars().count()),
+                    start_line + 1,
+                    CharCol(next_indent),
+                );
+            }
 
             // Position cursor at the junction point (end of original first line).
             // cursor.col() is a grapheme index, so use grapheme_count (not chars().count()).
@@ -732,8 +745,11 @@ impl Buffer {
             .line_text(start_line)
             .map(|line| crate::indentation::leading_str(&line).to_string())
             .unwrap_or_default();
+        // The first line is rewritten, not removed: its marks stay (Vim).
+        let marks = self.marks_on_line(start_line);
         let deleted = self.delete_range(start_line, CharCol::ZERO, end_line, CharCol::ZERO);
         self.insert_text_at(start_line, CharCol::ZERO, &format!("{indent}\n"));
+        self.restore_marks_on_line(start_line, marks);
         self.set_cursor_char_col(start_line, CharCol(indent.chars().count()));
         deleted
     }

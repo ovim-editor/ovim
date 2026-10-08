@@ -60,6 +60,26 @@ impl Editor {
         }
     }
 
+    /// Records `'<` and `'>` for the selection of a Visual mode that is
+    /// ending (what `:'<,'>` and `` `< `` read).
+    pub(super) fn store_visual_marks(&mut self) {
+        let selection = match self.visual.key_selection {
+            Some((start, end, _)) => Some((start, end)),
+            None => self.visual_selection(),
+        };
+        let Some((start, end)) = selection else {
+            return;
+        };
+        for (name, (line, col)) in [('<', start), ('>', end)] {
+            let line_len = self
+                .buffer()
+                .line_text(line)
+                .map_or(0, |text| grapheme_count(&text));
+            self.buffer_mut()
+                .set_local_mark(name, line, GraphemeCol(col.min(line_len)));
+        }
+    }
+
     /// Restores the last visual selection (gv command)
     pub fn restore_last_visual_selection(&mut self) {
         if let Some((start, end, mode)) = self.visual.last_visual_selection {

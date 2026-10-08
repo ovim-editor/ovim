@@ -100,11 +100,7 @@ fn mark_line(editor: &Editor, mark: char) -> Result<usize, String> {
             .filter(|global| global.file_path.as_deref() == editor.buffer().file_path())
             .map(|global| global.line)
     } else {
-        editor
-            .nav
-            .marks
-            .get_mark(mark)
-            .map(|position| position.line)
+        editor.local_mark(mark).map(|(line, _)| line)
     };
     line.map(|line| line + 1)
         .ok_or_else(|| "E20: Mark not set".to_string())

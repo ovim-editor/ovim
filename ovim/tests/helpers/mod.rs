@@ -169,6 +169,7 @@ impl EditorTest {
                         "Tab" => self.press_key(KeyCode::Tab),
                         "BS" | "Backspace" => self.press_backspace(),
                         "Space" => self.press(' '),
+                        "lt" => self.press('<'),
                         "Del" | "Delete" => self.press_key(KeyCode::Delete),
                         "Home" => self.press_key(KeyCode::Home),
                         "End" => self.press_key(KeyCode::End),
