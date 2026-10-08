@@ -25,6 +25,7 @@
 
 use crate::buffer::Buffer;
 use crate::edit::Edit;
+use crate::motion_range::{MotionRange, Wise};
 use crate::repeat_action::RepeatAction;
 use crate::textobjects::{TextObjectRange, TextObjects};
 use crate::unicode::{CharCol, GraphemeCol};
@@ -138,6 +139,19 @@ impl TextObjectType {
                 end_col: around.start_col + 1,
                 ..around
             })
+        } else if matches!(self, Self::Paired { .. })
+            && around.end_line == around.start_line + 1
+            && around.end_col.0 == 1
+            && around.start_col.0 + 1 >= buffer.line_len(around.start_line)
+        {
+            // `{` at the end of a line with `}` alone at the start of the next: a
+            // change inserts at the start of the closing line.
+            Some(TextObjectRange {
+                start_line: around.end_line,
+                start_col: CharCol::ZERO,
+                end_line: around.end_line,
+                end_col: CharCol::ZERO,
+            })
         } else {
             None
         }
@@ -196,6 +210,55 @@ impl TextObjectType {
         }
     }
 
+    /// The range a delete, yank or change of this object acts on and whether it acts on
+    /// whole lines. Vim applies its exclusive-motion rules (`:help exclusive`) to the
+    /// inner part of a bracket pair that ends at the start of a line: the end retreats
+    /// to the end of the previous line, and starting in the indent makes it linewise
+    /// (`di{` on a block leaves the braces on their own lines). Paragraphs are linewise.
+    pub fn resolve_for_operator(
+        &self,
+        buffer: &mut Buffer,
+        count: usize,
+        change: bool,
+    ) -> Option<(TextObjectRange, bool)> {
+        let range = if change {
+            self.resolve_for_change_counted(buffer, count)
+        } else {
+            self.resolve_counted(buffer, count)
+        }?;
+        match self {
+            Self::Paragraph { .. } => Some((range, true)),
+            Self::Paired { inner: true, .. } => {
+                let classified = MotionRange::from_exclusive(
+                    buffer,
+                    (range.start_line, range.start_col),
+                    (range.end_line, range.end_col),
+                );
+                Some(match classified.wise {
+                    Wise::Linewise => (
+                        TextObjectRange {
+                            start_line: classified.start.0,
+                            start_col: CharCol::ZERO,
+                            end_line: classified.end.0 + 1,
+                            end_col: CharCol::ZERO,
+                        },
+                        true,
+                    ),
+                    Wise::Charwise => (
+                        TextObjectRange {
+                            start_line: classified.start.0,
+                            start_col: classified.start.1,
+                            end_line: classified.end.0,
+                            end_col: classified.end.1,
+                        },
+                        false,
+                    ),
+                })
+            }
+            _ => Some((range, false)),
+        }
+    }
+
     /// Puts the cursor on the first character after `range` (the start of the next
     /// line when the range ends at the end of its line, or is linewise). `false` at the
     /// buffer end.
@@ -233,7 +296,7 @@ impl TextObjectType {
             let line = rope.char_to_line(before);
             let col = before - rope.line_to_char(line);
             buffer.set_cursor_char_col(line, crate::unicode::CharCol(col));
-            around = TextObjects::paired_delimiters(buffer, open, close, true)?;
+            around = TextObjects::paired_delimiters_around(buffer, open, close, true, false)?;
         }
         if !inner {
             return Some(around);

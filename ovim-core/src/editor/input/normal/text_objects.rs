@@ -10,7 +10,7 @@ use crate::editor::{
 };
 use crate::mode::Mode;
 use crate::repeat_action::{CaseTransform, RepeatAction};
-use crate::{KeyCode, KeyEvent};
+use crate::KeyEvent;
 use anyhow::Result;
 
 /// Try to handle a text object after operator + 'i' or 'a'.
@@ -35,21 +35,25 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     ) else {
         return Ok(true);
     };
-    let result = if operator == Operator::Change {
-        object_type.resolve_for_change_counted(editor.buffer_mut(), count)
-    } else {
-        object_type.resolve_counted(editor.buffer_mut(), count)
-    };
-    if let Some(range) = result {
+    // Delete, yank and change act on the range as Vim classifies it (whole lines or not).
+    let result =
+        match operator {
+            Operator::Delete | Operator::Yank | Operator::Change => object_type
+                .resolve_for_operator(editor.buffer_mut(), count, operator == Operator::Change),
+            _ => object_type
+                .resolve_counted(editor.buffer_mut(), count)
+                .map(|range| (range, false)),
+        };
+    if let Some((range, linewise)) = result {
         match operator {
             Operator::Delete => {
-                apply_delete_operator(editor, range, object_type, count)?;
+                apply_delete_operator(editor, range, object_type, count, linewise)?;
             }
             Operator::Yank => {
-                apply_yank_operator(editor, range, key_event.code)?;
+                apply_yank_operator(editor, range, linewise)?;
             }
             Operator::Change => {
-                apply_change_operator(editor, range, object_type, count)?;
+                apply_change_operator(editor, range, object_type, count, linewise)?;
             }
             Operator::Lowercase => {
                 apply_case_operator(editor, range, object_type, CaseTransform::Lower)?;
@@ -85,8 +89,10 @@ fn apply_delete_operator(
     range: TextObjectRange,
     object_type: TextObjectType,
     count: usize,
+    linewise: bool,
 ) -> Result<()> {
     let cursor_before = editor.cursor_position();
+    let is_paragraph = matches!(object_type, TextObjectType::Paragraph { .. });
 
     let deleted = TextObjects::yank_range(editor.buffer(), range)?;
 
@@ -102,11 +108,10 @@ fn apply_delete_operator(
     });
     let cursor_after = editor.cursor_position();
     if !edits.is_empty() {
-        // Paragraph text objects (dip/dap) are linewise — store the register as
-        // Line so a subsequent `p` pastes it as whole new lines, mirroring the
-        // yank path's `p`-key branch. Otherwise a Character register splices the
-        // paragraph into the middle of the current line.
-        let reg_type = if matches!(object_type, TextObjectType::Paragraph { .. }) {
+        // Linewise objects (dip/dap, di{ over whole lines) go to a Line register so a
+        // subsequent `p` pastes them as whole new lines; a Character register would
+        // splice them into the middle of the current line.
+        let reg_type = if linewise {
             RegisterType::Line
         } else {
             RegisterType::Character
@@ -116,17 +121,20 @@ fn apply_delete_operator(
         editor.set_repeat_action(RepeatAction::DeleteTextObject { object_type, count });
     }
     helpers::clamp_cursor_to_buffer(editor);
+    if linewise && !is_paragraph {
+        // Like `dd`, whole-line deletes leave the cursor on the first non-blank.
+        let first_non_blank = editor.buffer().first_non_blank_col(range.start_line);
+        editor
+            .buffer_mut()
+            .set_cursor_char_col(range.start_line, first_non_blank);
+    }
 
     Ok(())
 }
 
-fn apply_yank_operator(
-    editor: &mut Editor,
-    range: TextObjectRange,
-    key_code: KeyCode,
-) -> Result<()> {
+fn apply_yank_operator(editor: &mut Editor, range: TextObjectRange, linewise: bool) -> Result<()> {
     let yanked = TextObjects::yank_range(editor.buffer(), range)?;
-    let reg_type = if key_code == KeyCode::Char('p') {
+    let reg_type = if linewise {
         RegisterType::Line
     } else {
         RegisterType::Character
@@ -164,9 +172,10 @@ fn apply_change_operator(
     range: TextObjectRange,
     object_type: TextObjectType,
     count: usize,
+    linewise: bool,
 ) -> Result<()> {
-    // A paragraph is changed as lines: they become one empty line to type on.
-    if matches!(object_type, TextObjectType::Paragraph { .. }) {
+    // Lines are changed as lines: they become one empty line to type on.
+    if linewise {
         let (first, last) = range.covered_lines(editor.buffer());
         return super::operators::change_lines(
             editor,

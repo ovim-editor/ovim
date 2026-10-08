@@ -320,6 +320,19 @@ impl RepeatAction {
                 object_type: TextObjectType::Paragraph { .. },
                 ..
             } => RegisterType::Line,
+            // The inner part of a bracket pair over whole lines (`di{`).
+            Self::DeleteTextObject {
+                object_type: TextObjectType::Paired { inner: true, .. },
+                ..
+            } => {
+                let starts_line =
+                    before.line_to_char(before.char_to_line(first.offset())) == first.offset();
+                if starts_line && first.text().ends_with('\n') {
+                    RegisterType::Line
+                } else {
+                    RegisterType::Character
+                }
+            }
             Self::Change { delete, .. } => return delete.deleted_register(edits, before),
             Self::DeleteVisualBlock { .. } | Self::VisualBlockInsert { .. } => RegisterType::Block,
             Self::DeleteParagraphForward { .. } | Self::DeleteParagraphBackward { .. } => {
@@ -734,7 +747,15 @@ impl RepeatAction {
                 }
                 let line = buffer.cursor().line();
                 let col = buffer.cursor().col();
-                if *linewise {
+                // A text object is linewise or not by what it covers where it is
+                // repeated, not where it was first used.
+                let linewise = match delete.as_ref() {
+                    Self::DeleteTextObject { object_type, count } => object_type
+                        .resolve_for_operator(buffer, *count, true)
+                        .map_or(*linewise, |(_, whole_lines)| whole_lines),
+                    _ => *linewise,
+                };
+                if linewise {
                     // Resolve the range before deleting: normal-mode deletion
                     // clamps a last-line cursor onto the preceding line.
                     let (start, end) = match delete.as_ref() {
@@ -756,7 +777,8 @@ impl RepeatAction {
                 } else {
                     let version = buffer.version();
                     if let Self::DeleteTextObject { object_type, count } = delete.as_ref() {
-                        if let Some(range) = object_type.resolve_for_change_counted(buffer, *count)
+                        if let Some((range, _)) =
+                            object_type.resolve_for_operator(buffer, *count, true)
                         {
                             buffer.delete_range(
                                 range.start_line,
@@ -812,7 +834,7 @@ impl RepeatAction {
                         final_col = final_col.saturating_sub(1);
                         buffer.set_cursor_char_col(final_line, final_col);
                     }
-                } else if *linewise {
+                } else if linewise {
                     let line = buffer.cursor().line();
                     let len = buffer.line_len(line);
                     buffer.delete_range(line, CharCol::ZERO, line, CharCol(len));

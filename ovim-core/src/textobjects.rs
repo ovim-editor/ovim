@@ -445,6 +445,18 @@ impl TextObjects {
         close_char: char,
         include_delimiters: bool,
     ) -> Option<TextObjectRange> {
+        Self::paired_delimiters_around(buffer, open_char, close_char, include_delimiters, true)
+    }
+
+    /// Like [`Self::paired_delimiters`]; `look_ahead` also takes the first pair that
+    /// opens later on the cursor line when the cursor is not inside one.
+    pub fn paired_delimiters_around(
+        buffer: &Buffer,
+        open_char: char,
+        close_char: char,
+        include_delimiters: bool,
+        look_ahead: bool,
+    ) -> Option<TextObjectRange> {
         let cursor_line = buffer.cursor().line();
         let cursor_col = buffer.cursor_char_col().0;
         let rope = buffer.rope();
@@ -485,6 +497,12 @@ impl TextObjects {
             }
         }
 
+        if open_pos.is_none() && look_ahead {
+            // Not inside a pair: take the first one that opens later on this line.
+            let line_end = rope.line_to_char(cursor_line) + buffer.line_len(cursor_line);
+            open_pos = (cursor_char_offset..line_end).find(|&i| rope.char(i) == open_char);
+        }
+
         let open_offset = open_pos?;
 
         // Search forward from open delimiter for matching close
@@ -520,10 +538,25 @@ impl TextObjects {
                 end_col: CharCol(close_col + 1),
             })
         } else {
-            // "inner" - exclude the delimiters
-            // Start is one char after open delimiter
-            let inner_start_offset = open_offset + 1;
-            let inner_end_offset = close_offset;
+            // "inner" - exclude the delimiters, and as Vim does the line breaks
+            // next to them: text that starts on the line after an opening
+            // delimiter at the end of its line, and ends in front of a closing
+            // delimiter that has only blanks before it, starts and ends at the
+            // start of a line.
+            let mut inner_start_offset = open_offset + 1;
+            let mut inner_end_offset = close_offset;
+            if inner_start_offset < rope.len_chars() && rope.char(inner_start_offset) == '\n' {
+                inner_start_offset += 1;
+            }
+            let close_line_start = rope.line_to_char(close_line);
+            if close_line > open_line
+                && rope
+                    .slice(close_line_start..close_offset)
+                    .chars()
+                    .all(|c| c == ' ' || c == '\t')
+            {
+                inner_end_offset = close_line_start;
+            }
 
             if inner_start_offset >= inner_end_offset {
                 return None; // Empty content
@@ -531,12 +564,14 @@ impl TextObjects {
 
             let start_line = rope.char_to_line(inner_start_offset);
             let start_col = inner_start_offset - rope.line_to_char(start_line);
+            let end_line = rope.char_to_line(inner_end_offset);
+            let end_col = inner_end_offset - rope.line_to_char(end_line);
 
             Some(TextObjectRange {
                 start_line,
                 start_col: CharCol(start_col),
-                end_line: close_line,
-                end_col: CharCol(close_col),
+                end_line,
+                end_col: CharCol(end_col),
             })
         }
     }

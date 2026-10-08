@@ -678,7 +678,7 @@ impl Buffer {
 
     /// Finds and deletes a text object at the current cursor position.
     pub fn delete_text_object(&mut self, object_type: &TextObjectType, count: usize) {
-        if let Some(range) = object_type.resolve_counted(self, count) {
+        if let Some((range, _)) = object_type.resolve_for_operator(self, count, false) {
             self.delete_range(
                 range.start_line,
                 range.start_col,
