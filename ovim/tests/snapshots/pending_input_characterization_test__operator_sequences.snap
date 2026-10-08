@@ -96,7 +96,7 @@ yiw           | y[op=Yank] i[op=Yank,cmd=i] w[-] => Normal (1,8) @"="beta"
 yaw           | y[op=Yank] a[op=Yank,cmd=a] w[-] => Normal (1,8) @"="beta "
 yi(           | y[op=Yank] i[op=Yank,cmd=i] ([-] => Normal (1,8)
 ya"           | y[op=Yank] a[op=Yank,cmd=a] "[-] => Normal (1,8)
-yip           | y[op=Yank] i[op=Yank,cmd=i] p[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+yip           | y[op=Yank] i[op=Yank,cmd=i] p[-] => Normal (0,0) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
 yfa           | y[op=Yank] f[op=Yank,char=Find/Some(Yank)] a[-] => Normal (1,8) @"="beta"
 yta           | y[op=Yank] t[op=Yank,char=Till/Some(Yank)] a[-] => Normal (1,8) @"="bet"
 yFa           | y[op=Yank] F[op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,6) @"="a "
@@ -576,7 +576,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 2yaw          | 2[n=2] y[n=2,op=Yank] a[n=2,op=Yank,cmd=a] w[-] => Normal (1,8) @"="beta gamma"
 2yi(          | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] ([-] => Normal (1,8)
 2ya"          | 2[n=2] y[n=2,op=Yank] a[n=2,op=Yank,cmd=a] "[-] => Normal (1,8)
-2yip          | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] p[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n\n"
+2yip          | 2[n=2] y[n=2,op=Yank] i[n=2,op=Yank,cmd=i] p[-] => Normal (0,0) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n\n"
 2yfa          | 2[n=2] y[n=2,op=Yank] f[n=2,op=Yank,char=Find/Some(Yank)] a[-] => Normal (1,8) @"="beta ga"
 2yta          | 2[n=2] y[n=2,op=Yank] t[n=2,op=Yank,char=Till/Some(Yank)] a[-] => Normal (1,8) @"="beta g"
 2yFa          | 2[n=2] y[n=2,op=Yank] F[n=2,op=Yank,char=FindBack/Some(Yank)] a[-] => Normal (1,2) @"="alpha "
@@ -1056,7 +1056,7 @@ zf:           | z[cmd=z] f[op=Fold] :[-] => Command (1,8)
 "ayaw         | "[cmd="] a[reg=a] y[op=Yank,reg=a] a[op=Yank,cmd=a,reg=a] w[-] => Normal (1,8) @"="beta " @a="beta "
 "ayi(         | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] ([reg=a] => Normal (1,8)
 "aya"         | "[cmd="] a[reg=a] y[op=Yank,reg=a] a[op=Yank,cmd=a,reg=a] "[reg=a] => Normal (1,8)
-"ayip         | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] p[-] => Normal (1,8) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
+"ayip         | "[cmd="] a[reg=a] y[op=Yank,reg=a] i[op=Yank,cmd=i,reg=a] p[-] => Normal (0,0) @"="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n" @a="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\nxdelta\n"
 "ayfa         | "[cmd="] a[reg=a] y[op=Yank,reg=a] f[op=Yank,reg=a,char=Find/Some(Yank)] a[-] => Normal (1,8) @"="beta" @a="beta"
 "ayta         | "[cmd="] a[reg=a] y[op=Yank,reg=a] t[op=Yank,reg=a,char=Till/Some(Yank)] a[-] => Normal (1,8) @"="bet" @a="bet"
 "ayFa         | "[cmd="] a[reg=a] y[op=Yank,reg=a] F[op=Yank,reg=a,char=FindBack/Some(Yank)] a[-] => Normal (1,6) @"="a " @a="a "

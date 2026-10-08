@@ -770,6 +770,27 @@ impl TextObjects {
         (start_line, start_col, end_line, end_col)
     }
 
+    /// The lines `start_line..=end_line` with their line breaks: the range ends at the
+    /// start of the next line, or of the empty line after the buffer's final break.
+    fn whole_lines(buffer: &Buffer, start_line: usize, end_line: usize) -> TextObjectRange {
+        if end_line + 1 < buffer.raw_line_count() {
+            TextObjectRange {
+                start_line,
+                start_col: CharCol::ZERO,
+                end_line: end_line + 1,
+                end_col: CharCol::ZERO,
+            }
+        } else {
+            // No line break after the last line: end at its end.
+            TextObjectRange {
+                start_line,
+                start_col: CharCol::ZERO,
+                end_line,
+                end_col: CharCol(crate::display::line_content_len(buffer.rope(), end_line)),
+            }
+        }
+    }
+
     /// Gets the range for "inner paragraph" (ip)
     /// A paragraph is a sequence of non-blank lines separated by blank lines
     pub fn inner_paragraph(buffer: &Buffer) -> Option<TextObjectRange> {
@@ -807,25 +828,7 @@ impl TextObjects {
             end_line += 1;
         }
 
-        // Paragraph operations are linewise - include the trailing newline
-        // by pointing to start of next line (or end of file if last line)
-        if end_line + 1 < line_count {
-            Some(TextObjectRange {
-                start_line,
-                start_col: CharCol::ZERO,
-                end_line: end_line + 1,
-                end_col: CharCol::ZERO,
-            })
-        } else {
-            // Last line of file - use the actual end
-            let end_col = crate::display::line_content_len(buffer.rope(), end_line);
-            Some(TextObjectRange {
-                start_line,
-                start_col: CharCol::ZERO,
-                end_line,
-                end_col: CharCol(end_col),
-            })
-        }
+        Some(Self::whole_lines(buffer, start_line, end_line))
     }
 
     /// Gets the range for "around paragraph" (ap)
@@ -889,25 +892,7 @@ impl TextObjects {
             }
         }
 
-        // Paragraph operations are linewise - include the trailing newline
-        // by pointing to start of next line (or end of file if last line)
-        if end_line + 1 < line_count {
-            Some(TextObjectRange {
-                start_line,
-                start_col: CharCol::ZERO,
-                end_line: end_line + 1,
-                end_col: CharCol::ZERO,
-            })
-        } else {
-            // Last line of file - use the actual end
-            let end_col = crate::display::line_content_len(buffer.rope(), end_line);
-            Some(TextObjectRange {
-                start_line,
-                start_col: CharCol::ZERO,
-                end_line,
-                end_col: CharCol(end_col),
-            })
-        }
+        Some(Self::whole_lines(buffer, start_line, end_line))
     }
 
     /// Gets the range for "inner sentence" (is)

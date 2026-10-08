@@ -164,6 +164,10 @@ fn apply_yank_operator(editor: &mut Editor, range: TextObjectRange, linewise: bo
             end_grapheme,
         );
     }
+    // The cursor goes to the start of what was yanked.
+    editor
+        .buffer_mut()
+        .set_cursor_char_col(range.start_line, range.start_col);
     Ok(())
 }
 

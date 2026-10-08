@@ -691,8 +691,9 @@ fn test_register_chain_operations() {
         .keys("\"ap"); // Paste from a
 
     // Complex chain - verify actual behavior
-    assert_eq!(test.buffer_content(), "one tonetwotonetwowowo three four\n");
-    test.assert_cursor(0, 19);
+    // nvim: each `yiw` leaves the cursor at the start of the word it yanked
+    assert_eq!(test.buffer_content(), "one ttonetwowoonetwowo three four\n");
+    test.assert_cursor(0, 13);
 }
 
 #[test]
