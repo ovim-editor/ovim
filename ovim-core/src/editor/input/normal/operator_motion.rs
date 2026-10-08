@@ -117,6 +117,9 @@ impl Motion {
             | Self::WordEndBackward { .. }
             | Self::LineEnd
             | Self::MatchingBracket => Reach::Inclusive,
+            Self::ParagraphForward if Motions::paragraph_end_is_inclusive(editor.buffer()) => {
+                Reach::Inclusive
+            }
             // The repeated find is inclusive going forward, exclusive going back.
             Self::FindRepeat { reverse } => match editor.get_last_find().map(|find| find.2) {
                 Some(direction) if (direction == FindDirection::Forward) != reverse => {
@@ -218,8 +221,16 @@ impl Motion {
                 let col = (count - 1).min(len.saturating_sub(1));
                 editor.buffer_mut().cursor_mut().set_col(GraphemeCol(col));
             }
-            Self::ParagraphForward => Motions::paragraph_forward(editor.buffer_mut(), count),
-            Self::ParagraphBackward => Motions::paragraph_backward(editor.buffer_mut(), count),
+            Self::ParagraphForward => {
+                if !Motions::paragraph_forward(editor.buffer_mut(), count) {
+                    return false;
+                }
+            }
+            Self::ParagraphBackward => {
+                if !Motions::paragraph_backward(editor.buffer_mut(), count) {
+                    return false;
+                }
+            }
             Self::SentenceForward => Motions::sentence_forward(editor.buffer_mut(), count),
             Self::SentenceBackward => Motions::sentence_backward(editor.buffer_mut(), count),
             Self::MatchingBracket => {
@@ -266,8 +277,9 @@ pub(super) fn apply_motion_operator(
     count: usize,
 ) -> Result<()> {
     let start = editor.cursor_position();
-    let reach = motion.reach(editor);
     let moved = motion.apply(editor, count);
+    // After the motion: where a `}` ended decides whether it is inclusive.
+    let reach = motion.reach(editor);
     let target = editor.cursor_position();
     editor
         .buffer_mut()

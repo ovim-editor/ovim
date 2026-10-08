@@ -548,8 +548,8 @@ fn test_close_brace_at_eof() {
 
     assert_eq!(test.buffer_content(), "para 1\n\npara 2\n");
 
-    // No next paragraph — cursor stays on last line
-    test.assert_cursor(2, 0);
+    // nvim: no next paragraph — the cursor ends on the last character of the buffer
+    test.assert_cursor(2, 5);
 }
 
 #[test]
@@ -568,13 +568,13 @@ fn test_open_brace_at_beginning() {
 fn test_close_brace_no_blank_lines() {
     let mut test = EditorTest::new("line 1\nline 2\nline 3");
 
-    test.press('}') // No paragraphs, should go to end?
+    test.press('}') // No paragraphs: goes to the last character
         .press('}');
 
     assert_eq!(test.buffer_content(), "line 1\nline 2\nline 3\n");
 
-    // No blank lines — cursor stays on last line
-    test.assert_cursor(2, 0);
+    // nvim: no blank lines — the cursor ends on the last character of the buffer
+    test.assert_cursor(2, 5);
 }
 
 // ============================================================================

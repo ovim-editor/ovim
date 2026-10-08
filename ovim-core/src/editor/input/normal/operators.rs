@@ -893,11 +893,18 @@ fn handle_y_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
     let start_grapheme = editor.buffer().cursor().col();
     let start_col = editor.buffer().cursor_char_col();
 
-    Motions::paragraph_forward(editor.buffer_mut(), count);
-    let end = (
+    if !Motions::paragraph_forward(editor.buffer_mut(), count) {
+        editor.clear_count();
+        return Ok(());
+    }
+    let mut end = (
         editor.buffer().cursor().line(),
         editor.buffer().cursor_char_col(),
     );
+    if Motions::paragraph_end_is_inclusive(editor.buffer()) {
+        // Ending on the buffer's last character takes it too.
+        end.1 = CharCol(editor.buffer().line_len(end.0));
+    }
 
     // } is exclusive: a mid-line y} yanks charwise up to the end of the
     // paragraph's last line; a line-start y} yanks linewise (OV-00293).
@@ -924,7 +931,10 @@ fn handle_y_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
     let end_line = editor.buffer().cursor().line();
     let end_col = editor.buffer().cursor_char_col();
 
-    Motions::paragraph_backward(editor.buffer_mut(), count);
+    if !Motions::paragraph_backward(editor.buffer_mut(), count) {
+        editor.clear_count();
+        return Ok(());
+    }
     let start = (
         editor.buffer().cursor().line(),
         editor.buffer().cursor_char_col(),
@@ -1105,7 +1115,7 @@ fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
 
     let ((deleted, wise), edits) = editor
         .buffer_mut()
-        .record(|buf| buf.delete_paragraph_forward(count));
+        .record(|buf| buf.change_paragraph_forward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
@@ -1131,7 +1141,7 @@ fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> 
 
     let ((deleted, wise), edits) = editor
         .buffer_mut()
-        .record(|buf| buf.delete_paragraph_backward(count));
+        .record(|buf| buf.change_paragraph_backward(count));
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))

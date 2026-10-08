@@ -70,6 +70,23 @@ impl MotionRange {
 
         Self { start, end, wise }
     }
+
+    /// `d` makes a charwise range over several lines linewise when it starts in the
+    /// indent and ends at the end of its last line (Vim's `op_delete`), so `d}` or
+    /// `d2$` from the start of a line leaves no empty line behind.
+    pub fn linewise_for_delete(mut self, buffer: &Buffer) -> Self {
+        if self.wise == Wise::Charwise
+            && self.end.0 > self.start.0
+            && self.start.1 <= buffer.first_non_blank_col(self.start.0)
+            && buffer
+                .line_text(self.end.0)
+                .is_none_or(|text| text.chars().skip(self.end.1 .0).all(char::is_whitespace))
+        {
+            self.wise = Wise::Linewise;
+            self.start.1 = CharCol::ZERO;
+        }
+        self
+    }
 }
 
 impl Buffer {

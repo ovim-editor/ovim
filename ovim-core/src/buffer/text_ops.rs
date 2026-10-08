@@ -931,6 +931,23 @@ impl Buffer {
         &mut self,
         count: usize,
     ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_forward(count, true)
+    }
+
+    /// `c}` delete phase: like [`Self::delete_paragraph_forward`] but a range over
+    /// several lines stays characterwise (only `d` makes it linewise).
+    pub fn change_paragraph_forward(
+        &mut self,
+        count: usize,
+    ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_forward(count, false)
+    }
+
+    fn remove_paragraph_forward(
+        &mut self,
+        count: usize,
+        linewise_when_possible: bool,
+    ) -> (String, crate::motion_range::Wise) {
         use crate::editor::Motions;
         use crate::motion_range::MotionRange;
 
@@ -938,18 +955,38 @@ impl Buffer {
         let start_grapheme = self.cursor().col();
         let start_col = self.cursor_char_col();
 
-        Motions::paragraph_forward(self, count);
-        let end = (self.cursor().line(), self.cursor_char_col());
+        if !Motions::paragraph_forward(self, count) {
+            return (String::new(), crate::motion_range::Wise::Charwise);
+        }
+        let mut end = (self.cursor().line(), self.cursor_char_col());
+        if Motions::paragraph_end_is_inclusive(self) {
+            // Ending on the buffer's last character takes it too.
+            end.1 = CharCol(self.line_len(end.0));
+        }
 
         // } is an exclusive motion: normalize with vim's exclusive
         // adjustments so a d} from mid-line keeps the blank separator line
         // and yields a charwise register (OV-00293).
-        let range = MotionRange::from_exclusive(self, (start_line, start_col), end);
+        let mut range = MotionRange::from_exclusive(self, (start_line, start_col), end);
+        if linewise_when_possible {
+            range = range.linewise_for_delete(self);
+        }
         let deleted = self.delete_motion_range(range);
         self.cursor_mut().set_position(start_line, start_grapheme);
         // validate_cursor_position clamps both line (may be past EOF after delete)
-        // and column, which is a superset of clamp_cursor_col
-        self.validate_cursor_position();
+        // and column, which is a superset of clamp_cursor_col. A change types at
+        // the start of the deleted range, even past the end of the line left.
+        if linewise_when_possible {
+            self.validate_cursor_position();
+            if range.wise == crate::motion_range::Wise::Linewise {
+                // Like `dd`: the cursor goes to the first non-blank of the line left there.
+                let line = self.cursor().line();
+                let first_non_blank = self.first_non_blank_col(line);
+                self.set_cursor_char_col(line, first_non_blank);
+            }
+        } else {
+            self.validate_cursor_line();
+        }
         (deleted, range.wise)
     }
 
@@ -959,18 +996,39 @@ impl Buffer {
         &mut self,
         count: usize,
     ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_backward(count, true)
+    }
+
+    /// `c{` delete phase: see [`Self::change_paragraph_forward`].
+    pub fn change_paragraph_backward(
+        &mut self,
+        count: usize,
+    ) -> (String, crate::motion_range::Wise) {
+        self.remove_paragraph_backward(count, false)
+    }
+
+    fn remove_paragraph_backward(
+        &mut self,
+        count: usize,
+        linewise_when_possible: bool,
+    ) -> (String, crate::motion_range::Wise) {
         use crate::editor::Motions;
         use crate::motion_range::MotionRange;
 
         let end_line = self.cursor().line();
         let end_col = self.cursor_char_col();
 
-        Motions::paragraph_backward(self, count);
+        if !Motions::paragraph_backward(self, count) {
+            return (String::new(), crate::motion_range::Wise::Charwise);
+        }
         let start = (self.cursor().line(), self.cursor_char_col());
 
         // { is exclusive: the original cursor position is excluded from the
         // operated range, with vim's col-0 adjustments applied (OV-00293).
-        let range = MotionRange::from_exclusive(self, start, (end_line, end_col));
+        let mut range = MotionRange::from_exclusive(self, start, (end_line, end_col));
+        if linewise_when_possible {
+            range = range.linewise_for_delete(self);
+        }
         let deleted = self.delete_motion_range(range);
         self.cursor_mut()
             .set_position(range.start.0, GraphemeCol(0));

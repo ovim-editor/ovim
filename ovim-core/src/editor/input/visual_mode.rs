@@ -432,6 +432,19 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
         KeyCode::Char(',') => {
             editor.repeat_last_find(true);
         }
+        // Paragraph motions
+        KeyCode::Char(key @ ('}' | '{')) => {
+            editor.set_visual_block_dollar(false);
+            let count = editor.effective_count();
+            editor.record_jump_if_moved(|editor| {
+                if key == '}' {
+                    Motions::paragraph_forward(editor.buffer_mut(), count)
+                } else {
+                    Motions::paragraph_backward(editor.buffer_mut(), count)
+                }
+            });
+            editor.clear_count();
+        }
         // Jump to matching bracket (%)
         KeyCode::Char('%') => {
             Motions::jump_to_matching_bracket(editor.buffer_mut());
