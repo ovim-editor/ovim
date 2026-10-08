@@ -213,6 +213,10 @@ fn substitute_chars(editor: &mut Editor) -> Result<()> {
 
 /// S - substitute entire line
 fn substitute_line(editor: &mut Editor) -> Result<()> {
+    if helpers::linewise_count_fails(editor, editor.effective_count()) {
+        editor.clear_count();
+        return Ok(());
+    }
     let count = editor.linewise_count_over_folds(editor.effective_count());
     let start = editor.buffer().cursor().line();
     let end = (start + count).min(editor.buffer().line_count());
@@ -221,6 +225,10 @@ fn substitute_line(editor: &mut Editor) -> Result<()> {
 
 /// Y - yank line
 fn yank_line(editor: &mut Editor) -> Result<()> {
+    if helpers::linewise_count_fails(editor, editor.effective_count()) {
+        editor.clear_count();
+        return Ok(());
+    }
     let count = editor.linewise_count_over_folds(editor.effective_count());
     let start_line = editor.buffer().cursor().line();
     let end_line = (start_line + count).min(editor.buffer().line_count()) - 1;

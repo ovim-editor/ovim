@@ -1391,6 +1391,13 @@ pub fn join_lines_no_space(editor: &mut Editor, count: usize) -> Result<()> {
     )
 }
 
+/// A doubled linewise command (`2dd`, `3>>`, `2S`) takes `count - 1` lines
+/// below the cursor line like `j` does: with a count above 1 it fails on the
+/// last line, and a count reaching past the end is clamped.
+pub fn linewise_count_fails(editor: &Editor, count: usize) -> bool {
+    count > 1 && editor.buffer().cursor().line() + 1 >= editor.buffer().line_count()
+}
+
 pub fn indent_lines_with_tracking(
     editor: &mut Editor,
     start_line: usize,

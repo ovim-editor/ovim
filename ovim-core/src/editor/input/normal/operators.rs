@@ -133,6 +133,32 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
     // Clear pending operator for the main match (will be restored if needed)
     editor.reset_input_state();
 
+    // `j` / `k` fail on the last / first line, which cancels the operator
+    // (`dj` there deletes nothing), as does a doubled operator with a count
+    // (`2dd`); a count reaching past the edge is clamped.
+    let doubled = matches!(
+        (operator, key_event.code),
+        (Operator::Delete, KeyCode::Char('d'))
+            | (Operator::Yank, KeyCode::Char('y'))
+            | (Operator::Change, KeyCode::Char('c'))
+            | (Operator::Indent, KeyCode::Char('>'))
+            | (Operator::Dedent, KeyCode::Char('<'))
+            | (Operator::AutoIndent, KeyCode::Char('='))
+            | (Operator::Lowercase, KeyCode::Char('u'))
+            | (Operator::Uppercase, KeyCode::Char('U'))
+            | (Operator::ToggleCase, KeyCode::Char('~'))
+    );
+    let at_edge = match key_event.code {
+        KeyCode::Char('j') | KeyCode::Down => helpers::linewise_count_fails(editor, 2),
+        KeyCode::Char('k') | KeyCode::Up => editor.buffer().cursor().line() == 0,
+        _ => doubled && helpers::linewise_count_fails(editor, count),
+    };
+    if at_edge {
+        editor.clear_count();
+        editor.signal_macro_abort();
+        return Ok(true);
+    }
+
     let handled = match (operator, key_event.code) {
         // =====================================================================
         // Delete operations

@@ -372,9 +372,33 @@ impl RepeatAction {
         Some((text, register_type))
     }
 
+    /// Whether the line motion behind this action has nowhere to go from the
+    /// cursor, so repeating it does nothing (`.` after `dj` or `2dd` on the
+    /// last line, after `dk` on the first).
+    fn fails_at_cursor(&self, buffer: &Buffer) -> bool {
+        let line = buffer.cursor().line();
+        let on_last_line = line + 1 >= buffer.line_count();
+        match self {
+            Self::DeleteLines { count: lines }
+            | Self::IndentLines {
+                line_count: lines, ..
+            }
+            | Self::DedentLines {
+                line_count: lines, ..
+            } => *lines > 1 && on_last_line,
+            Self::DeleteLineDown { .. } => on_last_line,
+            Self::DeleteLineUp { .. } => line == 0,
+            Self::Change { delete, .. } => delete.fails_at_cursor(buffer),
+            _ => false,
+        }
+    }
+
     /// Execute this action at the current cursor position.
     /// Caller is responsible for wrapping in `buffer.record()`.
     pub fn execute(&self, buffer: &mut Buffer) {
+        if self.fails_at_cursor(buffer) {
+            return;
+        }
         match self {
             Self::JoinLines { count, add_space } => {
                 if *add_space {

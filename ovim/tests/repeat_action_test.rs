@@ -698,41 +698,22 @@ fn test_dedent_spaces_then_tab() {
 
 #[test]
 fn test_indent_multiline_near_eof() {
-    // >2j on the second-to-last line: should indent what's available
+    // nvim: `>j` on the last line fails (there is no line below), so nothing is indented
     let mut test = EditorTest::new("aaa\nbbb\nccc");
     test.keys("jj"); // Move to last line (ccc)
-    test.keys(">j"); // >j on last line — only 1 line to indent
+    test.keys(">j");
 
-    let content = test.buffer_content();
-    let lines: Vec<&str> = content.trim_end().split('\n').collect();
-    assert_eq!(lines[0], "aaa");
-    assert_eq!(lines[1], "bbb");
-    assert!(
-        lines[2].starts_with("    "),
-        "Last line should be indented: {:?}",
-        lines[2]
-    );
+    assert_eq!(test.buffer_content(), "aaa\nbbb\nccc\n");
 }
 
 #[test]
 fn test_indent_multiline_dot_repeat_near_eof() {
-    // >j indents 2 lines, then repeat near EOF where fewer lines exist
+    // nvim: `>j` indents 2 lines; `.` on the last line repeats `>j` there, which fails (no
+    // line below), so nothing more is indented
     let mut test = EditorTest::new("aaa\nbbb\nccc\nddd");
     test.keys(">j"); // Indent lines 0-1 (2 lines)
     test.keys("jjj"); // Move to last line (ddd, now line 3)
-    test.press('.'); // Repeat >j — only 1 line available (line 3)
+    test.press('.');
 
-    let content = test.buffer_content();
-    let lines: Vec<&str> = content.trim_end().split('\n').collect();
-    // Lines 0-1 indented by original, line 3 indented by repeat
-    assert!(lines[0].starts_with("    "));
-    assert!(lines[1].starts_with("    "));
-    assert!(
-        !lines[2].starts_with("    "),
-        "Line 2 should not be indented"
-    );
-    assert!(
-        lines[3].starts_with("    "),
-        "Line 3 should be indented by repeat"
-    );
+    assert_eq!(test.buffer_content(), "    aaa\n    bbb\nccc\nddd\n");
 }

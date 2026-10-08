@@ -453,10 +453,10 @@ fn test_indent_at_eof() {
 
     test.keys("G") // Last line
         .keys(">>")
-        .keys(">j"); // Try to indent beyond EOF (no effect, already at last line)
+        .keys(">j"); // Beyond EOF: `j` fails on the last line, so nothing is indented (nvim)
 
-    assert_eq!(test.buffer_content(), "line 1\n        line 2\n");
-    test.assert_cursor(1, 8);
+    assert_eq!(test.buffer_content(), "line 1\n    line 2\n");
+    test.assert_cursor(1, 4);
 }
 
 #[test]

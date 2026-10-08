@@ -204,6 +204,9 @@ impl Motion {
             }
             Self::FirstNonBlankDown => {
                 let last = editor.buffer().line_count().saturating_sub(1);
+                if count > 1 && before.line >= last {
+                    return false;
+                }
                 let line = (before.line + count - 1).min(last);
                 editor.buffer_mut().cursor_mut().set_line(line);
                 Motions::first_non_blank(editor.buffer_mut());
