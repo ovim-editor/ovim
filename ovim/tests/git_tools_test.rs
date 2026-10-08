@@ -355,8 +355,11 @@ async fn status_list_enter_opens_the_diff_review_on_that_file() {
 async fn picker_rows_with_ex_syntax_in_the_file_name_open_that_file_only() {
     let fixture = Fixture::new();
     let name = "n.txt|r !touch PWNED";
-    let file = fixture.write(name, "one\n");
+    let file = fixture.write(name, "zero\n");
     fixture.commit_all("init");
+    // A commit with a parent, so its history row opens in the review.
+    fixture.write(name, "one\n");
+    fixture.commit_all("edit");
     fixture.write(name, "changed\n");
     let pwned = std::env::current_dir().unwrap().join("PWNED");
     let _ = fs::remove_file(&pwned);
@@ -377,6 +380,15 @@ async fn picker_rows_with_ex_syntax_in_the_file_name_open_that_file_only() {
     test.assert_mode(Mode::Picker);
     test.press_enter();
     assert!(test.editor.is_diff_review_buffer());
+    assert!(
+        test.editor.status_message().contains("^.."),
+        "the commit is reviewed"
+    );
+    assert_eq!(
+        test.editor.git_root().unwrap(),
+        fs::canonicalize(&fixture.root).unwrap(),
+        "the review is of the fixture repository, not the working directory's"
+    );
     assert!(!pwned.exists(), "a shell command ran from a file name");
     assert!(!fixture.root.join("PWNED").exists());
 }

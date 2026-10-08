@@ -48,6 +48,12 @@ impl Editor {
                 return session.anchor.clone();
             }
         }
+        // The review buffer has no file; it belongs to the repository it shows.
+        if let Some(review) = self.ui_panels.diff_review.as_ref() {
+            if review.buffer_id == self.buffer().id() {
+                return review.patch().root.clone();
+            }
+        }
         match self.buffer().file_path() {
             Some(path) if !super::buffer_manager::is_scratch_path(path) => {
                 let path = Path::new(path);
