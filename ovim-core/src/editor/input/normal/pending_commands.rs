@@ -438,7 +438,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         // =====================================================================
         // 'q' - Start macro recording
         // =====================================================================
-        ('q', KeyCode::Char(ch)) if ch.is_ascii_lowercase() => {
+        ('q', KeyCode::Char(ch)) if ch.is_ascii_alphabetic() => {
             editor.start_macro_recording(ch);
         }
 

@@ -453,11 +453,11 @@ fn test_macro_uppercase_register() {
         .press('x')
         .press('q');
 
-    // Play combined macro
+    // Play combined macro: register a holds `xx` now (nvim: `qaxqqAxq@a` on "test" empties it)
     test.press('@').press('a');
 
-    assert_eq!(test.buffer_content(), "st\n");
-    test.assert_cursor(0, 1);
+    assert_eq!(test.buffer_content(), "\n");
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

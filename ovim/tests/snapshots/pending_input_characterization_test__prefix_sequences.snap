@@ -226,14 +226,14 @@ Z:            | Z[cmd=Z] :[-] => Normal (1,8)
 ":            | "[cmd="] :[reg=:] => Normal (1,8)
 qg            | q[cmd=q] g[-] => Normal (1,8) recording
 qe            | q[cmd=q] e[-] => Normal (1,8) recording
-qE            | q[cmd=q] E[-] => Normal (1,8)
+qE            | q[cmd=q] E[-] => Normal (1,8) recording
 q_            | q[cmd=q] _[-] => Normal (1,8)
-qJ            | q[cmd=q] J[-] => Normal (1,8)
+qJ            | q[cmd=q] J[-] => Normal (1,8) recording
 qu            | q[cmd=q] u[-] => Normal (1,8) recording
-qU            | q[cmd=q] U[-] => Normal (1,8)
+qU            | q[cmd=q] U[-] => Normal (1,8) recording
 q~            | q[cmd=q] ~[-] => Normal (1,8)
 qi            | q[cmd=q] i[-] => Normal (1,8) recording
-qI            | q[cmd=q] I[-] => Normal (1,8)
+qI            | q[cmd=q] I[-] => Normal (1,8) recording
 qv            | q[cmd=q] v[-] => Normal (1,8) recording
 q'            | q[cmd=q] '[-] => Normal (1,8)
 qr            | q[cmd=q] r[-] => Normal (1,8) recording
@@ -242,7 +242,7 @@ qt            | q[cmd=q] t[-] => Normal (1,8) recording
 qf            | q[cmd=q] f[-] => Normal (1,8) recording
 qa            | q[cmd=q] a[-] => Normal (1,8) recording
 qb            | q[cmd=q] b[-] => Normal (1,8) recording
-qQ            | q[cmd=q] Q[-] => Normal (1,8)
+qQ            | q[cmd=q] Q[-] => Normal (1,8) recording
 q[            | q[cmd=q] [[-] => Normal (1,8)
 q]            | q[cmd=q] ][-] => Normal (1,8)
 qm            | q[cmd=q] m[-] => Normal (1,8) recording
@@ -417,8 +417,8 @@ guw.          | g[cmd=g] u[op=Lowercase] w[-] .[-] => Normal (1,8)
 gUiw          | g[cmd=g] U[op=Uppercase] i[op=Uppercase,cmd=i] w[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha BETA gamma\nxdelta\n\nlast line here\n"
 zfj           | z[cmd=z] f[op=Fold] j[-] => Normal (1,8)
 zfjzo         | z[cmd=z] f[op=Fold] j[-] z[cmd=z] o[-] => Normal (1,8)
-qaxq          | q[cmd=q] a[-] x[-] q[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b"
-qaxq@a        | q[cmd=q] a[-] x[-] q[-] @[cmd=@] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha ta gamma\nxdelta\n\nlast line here\n" @"="e"
+qaxq          | q[cmd=q] a[-] x[-] q[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha eta gamma\nxdelta\n\nlast line here\n" @"="b" @a="x"
+qaxq@a        | q[cmd=q] a[-] x[-] q[-] @[cmd=@] a[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha ta gamma\nxdelta\n\nlast line here\n" @"="e" @a="x"
 "ayy"ap       | "[cmd="] a[reg=a] y[op=Yank,reg=a] y[-] "[cmd="] a[reg=a] p[-] => Normal (2,2) text="foo bar(baz, qux) \"str\" end\n  alpha beta gamma\n  alpha beta gamma\nxdelta\n\nlast line here\n" @"="  alpha beta gamma\n" @a="  alpha beta gamma\n"
 "a2yy         | "[cmd="] a[reg=a] 2[n=2,reg=a] y[n=2,op=Yank,reg=a] y[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n" @a="  alpha beta gamma\nxdelta\n"
 2"ayy         | 2[n=2] "[n=2,cmd="] a[n=2,reg=a] y[n=2,op=Yank,reg=a] y[-] => Normal (1,8) @"="  alpha beta gamma\nxdelta\n" @a="  alpha beta gamma\nxdelta\n"

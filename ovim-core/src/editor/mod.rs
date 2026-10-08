@@ -750,11 +750,6 @@ impl Editor {
         self.macro_manager.start_recording(register)
     }
 
-    /// Stops macro recording
-    pub fn stop_macro_recording(&mut self) {
-        self.macro_manager.stop_recording();
-    }
-
     /// Records a key event in the current macro
     pub fn record_macro_event(&mut self, event: crate::KeyEvent) {
         self.macro_manager.record_event(event);
@@ -768,11 +763,6 @@ impl Editor {
     /// Gets the register being recorded
     pub fn recording_register(&self) -> Option<char> {
         self.macro_manager.recording_register()
-    }
-
-    /// Gets a macro by register for playback
-    pub fn get_macro(&self, register: char) -> Option<&Vec<crate::KeyEvent>> {
-        self.macro_manager.get_macro(register)
     }
 
     /// Sets the last played macro register (for @@)
