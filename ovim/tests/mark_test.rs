@@ -82,14 +82,15 @@ fn test_backtick_exact_position() {
         .press('a')
         .keys("gg") // Go to beginning
         .press('`')
-        .press('a'); // Should return to "test"
+        .press('a'); // Should return to where `m` was typed
 
     assert_eq!(
         test.buffer_content(),
         "hello world test
 "
     );
-    test.assert_cursor(0, 12);
+    // nvim: the third `w` stops on the last character of the buffer
+    test.assert_cursor(0, 15);
 }
 
 #[test]

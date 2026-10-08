@@ -936,7 +936,7 @@ pub fn change_case(buffer: &mut Buffer, transform: CaseTransform, target: CaseTa
             if inclusive {
                 crate::editor::Motions::word_end_forward(buffer, count);
             } else {
-                crate::editor::Motions::word_forward(buffer, count);
+                crate::editor::Motions::word_forward_or_stay(buffer, count, false);
             }
             let end = (buffer.cursor().line(), buffer.cursor().col().0);
             // Inclusive motions land ON the last affected character.

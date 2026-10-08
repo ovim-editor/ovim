@@ -16,8 +16,8 @@ fn test_w_at_last_word() {
 
     assert_eq!(test.buffer_content(), "hello world\n");
 
-    // At last word on last line — cursor stays at "world" start
-    test.assert_cursor(0, 6);
+    // nvim: on the last word of the buffer `w` goes to its last character
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -29,21 +29,20 @@ fn test_w_multiple_at_end() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // At last word on last line — cursor stays at "three" start
-    test.assert_cursor(0, 8);
+    // nvim: ends on the last character of the buffer
+    test.assert_cursor(0, 12);
 }
 
 #[test]
 fn test_w_single_word() {
     let mut test = EditorTest::new("word");
 
-    test.press('w') // No next word — stays at start
+    test.press('w') // No next word — goes to the last character (nvim)
         .press('w');
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    // Single word, no next word — cursor stays at (0, 0)
-    test.assert_cursor(0, 0);
+    test.assert_cursor(0, 3);
 }
 
 #[test]
@@ -67,8 +66,8 @@ fn test_w_with_count_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // Ends at last word "three" start
-    test.assert_cursor(0, 8);
+    // nvim: ends on the last character of the buffer
+    test.assert_cursor(0, 12);
 }
 
 #[test]
@@ -91,8 +90,8 @@ fn test_w_on_whitespace_only() {
 
     assert_eq!(test.buffer_content(), "     \n");
 
-    // No next word — cursor stays at (0, 0)
-    test.assert_cursor(0, 0);
+    // nvim: no next word — goes to the last character
+    test.assert_cursor(0, 4);
 }
 
 // ============================================================================
@@ -108,8 +107,8 @@ fn test_W_at_last_WORD() {
 
     assert_eq!(test.buffer_content(), "hello-world test\n");
 
-    // At last WORD on last line — cursor stays at "test" start
-    test.assert_cursor(0, 12);
+    // nvim: on the last WORD of the buffer `W` goes to its last character
+    test.assert_cursor(0, 15);
 }
 
 #[test]
@@ -120,8 +119,8 @@ fn test_W_beyond_buffer() {
 
     assert_eq!(test.buffer_content(), "one\n");
 
-    // Single WORD, no next — cursor stays at (0, 0)
-    test.assert_cursor(0, 0);
+    // nvim: single WORD, no next — goes to its last character
+    test.assert_cursor(0, 2);
 }
 
 // ============================================================================

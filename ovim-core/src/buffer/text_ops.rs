@@ -849,13 +849,8 @@ impl Buffer {
     /// Leaves the cursor on the motion's target; callers restore it.
     pub fn operator_word_forward_end(&mut self, count: usize, big: bool) -> (usize, CharCol) {
         use crate::editor::Motions;
-        let word_forward = |buffer: &mut Self, count: usize| {
-            if big {
-                Motions::word_forward_big(buffer, count)
-            } else {
-                Motions::word_forward(buffer, count)
-            }
-        };
+        let word_forward =
+            |buffer: &mut Self, count: usize| Motions::word_forward_or_stay(buffer, count, big);
 
         let start_line = self.cursor().line();
         let start_col = self.cursor_char_col();

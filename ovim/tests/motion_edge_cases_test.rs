@@ -62,13 +62,12 @@ fn test_w_at_last_word() {
     let mut test = EditorTest::new("hello world");
 
     test.keys("w") // Move to "world"
-        .press('w') // At last word — stays put
-        .press('w'); // Still stays
+        .press('w') // At last word — goes to its last character (nvim)
+        .press('w'); // Stays there
 
     assert_eq!(test.buffer_content(), "hello world\n");
 
-    // At last word on last line — cursor stays at "world" start
-    test.assert_cursor(0, 6);
+    test.assert_cursor(0, 10);
 }
 
 #[test]
@@ -408,8 +407,8 @@ fn test_w_count_exceeds_words() {
 
     assert_eq!(test.buffer_content(), "one two three\n");
 
-    // Ends at last word "three" start
-    test.assert_cursor(0, 8);
+    // nvim: ends on the last character of the buffer
+    test.assert_cursor(0, 12);
 }
 
 #[test]

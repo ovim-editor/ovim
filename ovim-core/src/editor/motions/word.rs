@@ -48,17 +48,27 @@ fn skip_whitespace_forward(index: &LineIndex, start: usize) -> usize {
 impl Motions {
     pub fn word_forward(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {
-            Self::word_forward_once(buffer, false);
+            Self::word_forward_once(buffer, false, true);
         }
     }
 
     pub fn word_forward_big(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {
-            Self::word_forward_once(buffer, true);
+            Self::word_forward_once(buffer, true, true);
         }
     }
 
-    fn word_forward_once(buffer: &mut Buffer, big_word: bool) {
+    /// `w` / `W` for an operator: stays where it is when no word follows, so the
+    /// operator can take the rest of the buffer's last line.
+    pub fn word_forward_or_stay(buffer: &mut Buffer, count: usize, big: bool) {
+        for _ in 0..count {
+            Self::word_forward_once(buffer, big, false);
+        }
+    }
+
+    /// `to_buffer_end`: with no word after the cursor, go to the last character of
+    /// the buffer (Vim's `w`) instead of staying.
+    fn word_forward_once(buffer: &mut Buffer, big_word: bool, to_buffer_end: bool) {
         let line_idx = buffer.cursor().line();
         let col = buffer.cursor().col().0;
         if line_idx >= buffer.line_count() {
@@ -68,9 +78,7 @@ impl Motions {
         let index = buffer.line_index(line_idx);
         let line_len = index.grapheme_count();
         if col >= line_len {
-            if let Some((next_line, next_col)) = Self::find_next_word_start(buffer, line_idx + 1) {
-                buffer.cursor_mut().set_position(next_line, next_col);
-            }
+            Self::move_to_next_word_or_buffer_end(buffer, line_idx, to_buffer_end);
             return;
         }
 
@@ -119,12 +127,30 @@ impl Motions {
         new_col = skip_whitespace_forward(&index, new_col);
 
         if new_col >= line_len {
-            if let Some((next_line, next_col)) = Self::find_next_word_start(buffer, line_idx + 1) {
-                buffer.cursor_mut().set_position(next_line, next_col);
-            }
+            Self::move_to_next_word_or_buffer_end(buffer, line_idx, to_buffer_end);
         } else {
             buffer.cursor_mut().set_col(GraphemeCol(new_col));
         }
+    }
+
+    /// Moves to the start of the next word after `line_idx`; with none left, to
+    /// the last character of the buffer, as Vim's `w` does (when `to_buffer_end`).
+    fn move_to_next_word_or_buffer_end(buffer: &mut Buffer, line_idx: usize, to_buffer_end: bool) {
+        if let Some((next_line, next_col)) = Self::find_next_word_start(buffer, line_idx + 1) {
+            buffer.cursor_mut().set_position(next_line, next_col);
+            return;
+        }
+        if !to_buffer_end {
+            return;
+        }
+        let last_line = buffer.line_count().saturating_sub(1);
+        let last_col = buffer
+            .line_index(last_line)
+            .grapheme_count()
+            .saturating_sub(1);
+        buffer
+            .cursor_mut()
+            .set_position(last_line, GraphemeCol(last_col));
     }
 
     /// Empty lines are word boundaries; whitespace-only lines are skipped.
