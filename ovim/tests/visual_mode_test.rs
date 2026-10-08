@@ -355,7 +355,8 @@ fn test_v_with_dollar() {
     test.press('v').keys("$"); // Select to end of line
 
     assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 10);
+    // nvim: `v$` leaves the cursor on the line break, one past the last character.
+    test.assert_cursor(0, 11);
 }
 
 #[test]

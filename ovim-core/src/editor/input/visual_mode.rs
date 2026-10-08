@@ -342,16 +342,18 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     cursor.update_desired_col(GraphemeCol(usize::MAX));
                 }
             } else {
-                // Normal visual mode: move to end of current line
-                let line_idx = editor.buffer().cursor().line();
-                if let Some(line) = editor.buffer().line_text(line_idx) {
-                    let line_len = line.chars().count();
-                    let col = if line_len > 0 { line_len - 1 } else { 0 };
-                    let cursor = editor.buffer_mut().cursor_mut();
-                    cursor.set_col(GraphemeCol(col));
-                    // Set desired_col to usize::MAX to indicate "always end of line"
-                    cursor.update_desired_col(GraphemeCol(usize::MAX));
-                }
+                // Characterwise: `$` goes onto the line break, so the
+                // selection includes it (`v$d` joins the next line), and
+                // `[count]$` goes down `count - 1` lines first.
+                let down = editor.effective_count() - 1;
+                let max_line = editor.buffer().line_count().saturating_sub(1);
+                let line_idx = (editor.buffer().cursor().line() + down).min(max_line);
+                let line_len = editor.buffer().line_index(line_idx).grapheme_count();
+                let cursor = editor.buffer_mut().cursor_mut();
+                cursor.set_position(line_idx, GraphemeCol(line_len));
+                // Set desired_col to usize::MAX to indicate "always end of line"
+                cursor.update_desired_col(GraphemeCol(usize::MAX));
+                editor.clear_count();
             }
         }
         KeyCode::Char('G') => {

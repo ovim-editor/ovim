@@ -18,8 +18,13 @@ impl Editor {
         let start_text = buffer.line_text(start_line)?;
         let end_text = buffer.line_slice(end_line)?.to_string();
         let start_col = crate::unicode::grapheme_to_char_col(&start_text, GraphemeCol(start_col));
-        let end_col =
+        let mut end_col =
             crate::unicode::grapheme_to_char_col(&end_text, GraphemeCol(end_col.saturating_add(1)));
+        // The last line has no line break to select (`v$d` there leaves an
+        // empty line).
+        if end_line + 1 >= buffer.line_count() {
+            end_col.0 = end_col.0.min(buffer.line_len(end_line));
+        }
         let end_offset = buffer.rope().line_to_char(end_line) + end_col.0;
         let end_line = buffer.rope().char_to_line(end_offset);
         let end_col = crate::unicode::CharCol(end_offset - buffer.rope().line_to_char(end_line));

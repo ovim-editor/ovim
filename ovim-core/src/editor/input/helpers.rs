@@ -70,7 +70,13 @@ pub fn move_right(editor: &mut Editor) {
         line_len.saturating_sub(1)
     };
 
-    let new_col = cursor.col().0.saturating_add(count).min(max_col);
+    // `l` never moves left: on the line break after `v$` it stays.
+    let new_col = cursor
+        .col()
+        .0
+        .saturating_add(count)
+        .min(max_col)
+        .max(cursor.col().0);
     cursor.set_col(GraphemeCol(new_col));
     editor.clear_count();
 }
@@ -133,7 +139,10 @@ pub fn clamp_cursor_with_goal_column(editor: &mut Editor) {
     // usize::MAX is a sentinel value meaning "always end of line".
     let to_eol = desired == usize::MAX;
     // In VisualBlock mode, preserve desired column even if beyond line end.
-    let target_col = if to_eol {
+    let target_col = if to_eol && mode == Mode::Visual {
+        // After `v$` the cursor sits on the line break of every line it visits.
+        line_len
+    } else if to_eol {
         max_col
     } else if mode == Mode::VisualBlock {
         desired
