@@ -483,6 +483,32 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
+        // `s` is `c`; `Y`, `D`, `C`, `X`, `S` and `R` act on whole lines, except in
+        // Visual-block mode, where `D` and `C` go to the end of the line and `X` and
+        // `Y` are `d` and `y` (Vim's `v_visop`).
+        KeyCode::Char(key @ ('s' | 'Y' | 'D' | 'C' | 'X' | 'S' | 'R')) => {
+            let block = editor.mode() == Mode::VisualBlock;
+            let register = editor.pending_register();
+            if block && matches!(key, 'D' | 'C') {
+                let end_of_line = KeyEvent::new(KeyCode::Char('$'), Modifiers::NONE);
+                handle_visual_key(editor, end_of_line)?;
+            } else if key != 's' && (!block || matches!(key, 'S' | 'R')) {
+                editor.set_visual_block_dollar(false);
+                editor.set_mode(Mode::VisualLine);
+                if let Some(register) = register {
+                    editor.set_pending_register(register);
+                }
+            }
+            let operator = match key {
+                'Y' => 'y',
+                'D' | 'X' => 'd',
+                _ => 'c',
+            };
+            return handle_visual_key(
+                editor,
+                KeyEvent::new(KeyCode::Char(operator), Modifiers::NONE),
+            );
+        }
         // Delete selection
         KeyCode::Char('d') | KeyCode::Char('x') | KeyCode::Delete => {
             helpers::delete_visual_selection(editor)?;
