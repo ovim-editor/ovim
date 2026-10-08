@@ -14,17 +14,23 @@ use unicode_segmentation::UnicodeSegmentation;
 
 use super::helpers::{compose_conceal_and_tabs, expand_tabs_with_mapping, remap_char_col};
 use super::layout::{BufferLayout, GUTTER_SPACING, SIGN_WIDTH};
+use super::line_cache::{LineCacheFrame, LineCacheKey, LineRenderCache};
 use super::styles::{
     blame_color_for_hash, blame_style, get_diagnostic_sign_style, get_git_sign_style,
     get_line_number_style, remap_highlights,
 };
 use crate::syntax::HighlightGroup;
 use ovim_core::buffer::Cursor;
-use ovim_core::line_layout::{LayoutFragment, LayoutFragmentKind, LayoutRow};
+use ovim_core::editor::{DiffReviewState, WrapMap};
+use ovim_core::line_layout::{IndexedLineLayout, LayoutFragment, LayoutFragmentKind, LayoutRow};
+use ovim_core::markdown_conceal::{ConcealedLink, LineTransform};
+use ovim_core::search::Search;
+use ovim_core::text_index::LineIndex;
 use ovim_core::unicode::{
     char_to_grapheme_col, grapheme_count, grapheme_to_char_col, CharCol, GraphemeCol,
 };
 use std::ops::Range;
+use std::sync::Arc;
 
 /// Window-specific rendering context for multi-window support.
 /// When provided, these values override the editor's focused window state.
@@ -516,7 +522,7 @@ fn compute_blame_brackets(
     start_line: usize,
     end_line: usize,
     author_width: usize,
-) -> Vec<(BlameBracket, String, String, Color)> {
+) -> Vec<BlameRow> {
     let mut result = Vec::with_capacity(end_line.saturating_sub(start_line));
 
     for line_idx in start_line..end_line {
@@ -559,9 +565,33 @@ fn compute_blame_brackets(
     result
 }
 
-/// Builds a gutter line for a logical line (line number + git sign / diagnostic sign).
-/// If `is_continuation` is true, produces a blank gutter row.
-/// Diagnostic signs take priority over git signs when both are present.
+/// One visible line's blame gutter entry: bracket, short hash, author, hash colour.
+type BlameRow = (BlameBracket, String, String, Color);
+
+/// Pre-computes the blame rows for the visible lines, if blame is shown.
+fn visible_blame_brackets(
+    buffer: &crate::buffer::Buffer,
+    blame_width: usize,
+    start_line: usize,
+    end_line: usize,
+) -> Option<Vec<BlameRow>> {
+    if blame_width > 0 {
+        if let Some(blame) = buffer.git_blame() {
+            let author_width = blame_width.saturating_sub(1 + 1 + 5 + 1 + 1); // bracket+sp+hash+sp+trailing_sp
+            Some(compute_blame_brackets(
+                blame,
+                start_line,
+                end_line,
+                author_width,
+            ))
+        } else {
+            None
+        }
+    } else {
+        None
+    }
+}
+
 /// Invariant context for gutter rendering within a single render pass.
 /// Constructed once before the line loop and passed to all `build_gutter_line` calls.
 struct GutterContext<'a> {
@@ -582,110 +612,110 @@ fn line_is_in_walkthrough(range: Option<(usize, usize)>, line_idx: usize) -> boo
     range.is_some_and(|(start, end)| line_idx >= start && line_idx <= end)
 }
 
-fn build_gutter_line(
-    ctx: &GutterContext,
-    line_idx: usize,
-    is_continuation: bool,
-    line_diagnostics: &[lsp_types::Diagnostic],
-    blame_info: Option<&(BlameBracket, String, String, Color)>,
-) -> Line<'static> {
-    let editor = ctx.editor;
-    let buffer = ctx.buffer;
-    let theme = ctx.theme;
-    let line_num_width = ctx.line_num_width;
-    let cursor_line = ctx.cursor_line;
-    let blame_width = ctx.blame_width;
-    let fold_width = ctx.fold_width;
-
-    if is_continuation {
-        // Blank gutter for wrap continuation rows
-        let width = blame_width + fold_width + SIGN_WIDTH + line_num_width + GUTTER_SPACING;
-        if blame_width > 0 {
-            if let Some((_, _, _, color)) = blame_info {
-                return Line::from(vec![
-                    Span::styled(" ".repeat(blame_width), blame_style(*color, theme)),
-                    Span::raw(" ".repeat(width - blame_width)),
-                ]);
-            }
+/// Blank gutter for wrap continuation rows; the blame column keeps its colour.
+fn continuation_gutter_line(ctx: &GutterContext, blame_info: Option<&BlameRow>) -> Line<'static> {
+    let width = ctx.blame_width + ctx.fold_width + SIGN_WIDTH + ctx.line_num_width + GUTTER_SPACING;
+    if ctx.blame_width > 0 {
+        if let Some((_, _, _, color)) = blame_info {
+            return Line::from(vec![
+                Span::styled(" ".repeat(ctx.blame_width), blame_style(*color, ctx.theme)),
+                Span::raw(" ".repeat(width - ctx.blame_width)),
+            ]);
         }
-        return Line::from(" ".repeat(width));
     }
+    Line::from(" ".repeat(width))
+}
 
-    let mut spans = Vec::new();
+/// Blame column: branch bracket, plus hash and author on the first line of a
+/// commit's group.
+fn blame_gutter_span(
+    blame_width: usize,
+    blame_info: Option<&BlameRow>,
+    theme: &Theme,
+) -> Span<'static> {
+    if let Some((bracket, hash, author, color)) = blame_info {
+        let bracket_ch = match bracket {
+            BlameBracket::None => ' ',
+            BlameBracket::Top => '╭',
+            BlameBracket::Mid => '│',
+            BlameBracket::Bottom => '╰',
+        };
 
-    // Blame column (if active)
-    if blame_width > 0 {
-        if let Some((bracket, hash, author, color)) = blame_info {
-            let bracket_ch = match bracket {
-                BlameBracket::None => ' ',
-                BlameBracket::Top => '╭',
-                BlameBracket::Mid => '│',
-                BlameBracket::Bottom => '╰',
-            };
+        // Show hash+author only on first line of group or single lines
+        let show_info = *bracket == BlameBracket::None || *bracket == BlameBracket::Top;
+        let content_width = blame_width - 2; // minus bracket + leading space
 
-            // Show hash+author only on first line of group or single lines
-            let show_info = *bracket == BlameBracket::None || *bracket == BlameBracket::Top;
-            let content_width = blame_width - 2; // minus bracket + leading space
-
-            let text = if show_info && !hash.is_empty() {
-                let info_str = format!("{} {}", hash, author);
-                format!(
-                    "{} {:content_width$}",
-                    bracket_ch,
-                    info_str,
-                    content_width = content_width
-                )
-            } else {
-                format!(
-                    "{} {:content_width$}",
-                    bracket_ch,
-                    "",
-                    content_width = content_width
-                )
-            };
-
-            // Truncate to blame_width
-            let text: String = text.chars().take(blame_width).collect();
-            spans.push(Span::styled(text, blame_style(*color, theme)));
+        let text = if show_info && !hash.is_empty() {
+            let info_str = format!("{} {}", hash, author);
+            format!(
+                "{} {:content_width$}",
+                bracket_ch,
+                info_str,
+                content_width = content_width
+            )
         } else {
-            spans.push(Span::raw(" ".repeat(blame_width)));
-        }
-    }
+            format!(
+                "{} {:content_width$}",
+                bracket_ch,
+                "",
+                content_width = content_width
+            )
+        };
 
-    // Fold column: `-` heads an open fold, `+` a closed one, `|` inside.
-    if fold_width > 0 {
-        let cells: String = editor
-            .fold_gutter_cells(line_idx, fold_width)
-            .into_iter()
-            .map(|mark| mark.glyph())
-            .collect();
-        let has_mark = cells.chars().any(|c| c != ' ');
-        spans.push(Span::styled(
-            cells,
-            Style::default().fg(if has_mark {
-                Color::DarkGray
-            } else {
-                Color::Reset
-            }),
-        ));
+        // Truncate to blame_width
+        let text: String = text.chars().take(blame_width).collect();
+        Span::styled(text, blame_style(*color, theme))
+    } else {
+        Span::raw(" ".repeat(blame_width))
     }
+}
 
-    let line_num_text = if editor.options.relative_number {
-        let rel = if line_idx == cursor_line {
+/// Fold column: `-` heads an open fold, `+` a closed one, `|` inside.
+fn fold_gutter_span(editor: &Editor, line_idx: usize, fold_width: usize) -> Span<'static> {
+    let cells: String = editor
+        .fold_gutter_cells(line_idx, fold_width)
+        .into_iter()
+        .map(|mark| mark.glyph())
+        .collect();
+    let has_mark = cells.chars().any(|c| c != ' ');
+    Span::styled(
+        cells,
+        Style::default().fg(if has_mark {
+            Color::DarkGray
+        } else {
+            Color::Reset
+        }),
+    )
+}
+
+fn line_number_text(ctx: &GutterContext, line_idx: usize) -> String {
+    let editor = ctx.editor;
+    let line_num_width = ctx.line_num_width;
+    if editor.options.relative_number {
+        let rel = if line_idx == ctx.cursor_line {
             line_idx + 1
         } else {
-            line_idx.abs_diff(cursor_line)
+            line_idx.abs_diff(ctx.cursor_line)
         };
         format!("{:>width$} ", rel, width = line_num_width)
     } else if editor.options.number {
         format!("{:>width$} ", line_idx + 1, width = line_num_width)
     } else {
         "  ".to_string()
-    };
+    }
+}
 
-    // Sign priority: breakpoint+exec > breakpoint > execution line > diagnostics >
-    // walkthrough focus > agent edits > git. The walkthrough marker makes the
-    // explained block visible even on blank or very short lines.
+/// Picks the sign glyph and colour for a line.
+/// Sign priority: breakpoint+exec > breakpoint > execution line > diagnostics >
+/// walkthrough focus > agent edits > git. The walkthrough marker makes the
+/// explained block visible even on blank or very short lines.
+fn gutter_sign(
+    ctx: &GutterContext,
+    line_idx: usize,
+    line_diagnostics: &[lsp_types::Diagnostic],
+) -> (&'static str, Color) {
+    let editor = ctx.editor;
+    let buffer = ctx.buffer;
     let line_1based = (line_idx + 1) as u64;
     let breakpoint = editor.breakpoint_marker_at(line_1based);
     let has_breakpoint = breakpoint.is_some();
@@ -704,7 +734,7 @@ fn build_gutter_line(
         Some(BreakpointMarker::Conditional) => ("◆ ", "◆▶", Color::Red),
         _ => ("● ", "●▶", Color::Red),
     };
-    let (sign_text, sign_color) = if has_breakpoint && is_exec_line {
+    if has_breakpoint && is_exec_line {
         (bp_exec_glyph, bp_color)
     } else if has_breakpoint {
         (bp_glyph, bp_color)
@@ -720,8 +750,38 @@ fn build_gutter_line(
     } else {
         let git_status = buffer.git_status().get_line_status(line_idx);
         get_git_sign_style(git_status)
-    };
-    let line_num_style = get_line_number_style(line_idx == cursor_line, theme);
+    }
+}
+
+/// Builds a gutter line for a logical line (blame, fold column, line number
+/// and sign).
+/// If `is_continuation` is true, produces a blank gutter row.
+/// Diagnostic signs take priority over git signs when both are present.
+fn build_gutter_line(
+    ctx: &GutterContext,
+    line_idx: usize,
+    is_continuation: bool,
+    line_diagnostics: &[lsp_types::Diagnostic],
+    blame_info: Option<&BlameRow>,
+) -> Line<'static> {
+    if is_continuation {
+        return continuation_gutter_line(ctx, blame_info);
+    }
+
+    let mut spans = Vec::new();
+
+    // Blame column (if active)
+    if ctx.blame_width > 0 {
+        spans.push(blame_gutter_span(ctx.blame_width, blame_info, ctx.theme));
+    }
+
+    if ctx.fold_width > 0 {
+        spans.push(fold_gutter_span(ctx.editor, line_idx, ctx.fold_width));
+    }
+
+    let line_num_text = line_number_text(ctx, line_idx);
+    let (sign_text, sign_color) = gutter_sign(ctx, line_idx, line_diagnostics);
+    let line_num_style = get_line_number_style(line_idx == ctx.cursor_line, ctx.theme);
 
     let sign_span = Span::styled(
         sign_text,
@@ -1572,58 +1632,495 @@ fn render_indexed_fragments(
     Line::from(spans)
 }
 
-/// Renders the buffer content and returns the viewport start line.
-pub fn render_buffer(
-    frame: &mut Frame,
-    editor: &Editor,
-    theme: &Theme,
-    layout: &BufferLayout,
-    line_cache: &mut super::line_cache::LineRenderCache,
-    window_context: Option<&WindowRenderContext>,
-) -> usize {
+/// The AI selection a code walkthrough highlights, reduced to the fields
+/// rendering reads (the snapshot type is private to ovim-core).
+#[derive(Clone, Copy)]
+struct AiSelectionSpan {
+    start_line: usize,
+    end_line: usize,
+    start_col: usize,
+    end_col: usize,
+    start_char: usize,
+    end_char: usize,
+    selection_mode: crate::mode::Mode,
+}
+
+impl AiSelectionSpan {
+    fn contains_line(&self, line_idx: usize) -> bool {
+        line_idx >= self.start_line && line_idx <= self.end_line
+    }
+
+    fn is_linewise(&self) -> bool {
+        self.selection_mode == crate::mode::Mode::VisualLine
+    }
+}
+
+/// Frame-wide, read-only inputs shared by every line of one `render_buffer`
+/// pass: viewport geometry, the overlays that can touch a line, and the
+/// per-frame projections of decorations and diagnostics.
+struct BufferRenderContext<'a> {
+    editor: &'a Editor,
+    buffer: &'a crate::buffer::Buffer,
+    theme: &'a Theme,
+    line_count: usize,
+    // Viewport.
+    visible_lines: usize,
+    start_line: usize,
+    /// Visual sub-row offset within `start_line`: the first `top_skip` wrapped
+    /// rows of the top logical line are scrolled off the top edge. Only
+    /// meaningful under soft wrap, so it is 0 otherwise.
+    top_skip: usize,
+    h_offset: usize,
+    wrap: bool,
+    has_wrap: bool,
+    wrap_map: Option<&'a WrapMap>,
+    /// The document code-box (fixed at the layout's setting, i.e. textwidth
+    /// in centered mode); `render_width` is how wide the line actually renders
+    /// into. They differ in centered mode by exactly the diagnostic margin
+    /// width.
+    text_width: usize,
+    render_width: usize,
+    tab_width: usize,
+    // Overlays.
+    cursorline: bool,
+    cursor_line_idx: usize,
+    visual_selection: Option<((usize, usize), (usize, usize))>,
+    ai_selection: Option<AiSelectionSpan>,
+    walkthrough: bool,
+    current_search: Option<&'a Search>,
+    bracket_positions: Option<((usize, usize), (usize, usize))>,
+    is_md_file: bool,
+    markdown_conceal: bool,
+    /// The branch diff review paints added/removed backgrounds per row; every
+    /// other buffer skips this entirely.
+    diff_review_tints: Option<&'a DiffReviewState>,
+    // Per-frame projections.
+    projected_decorations: Arc<ProjectedDecorations>,
+    projected_diagnostics: ProjectedDiagnostics,
+    buffer_id: u64,
+    cache_frame: LineCacheFrame,
+    // Gutter (built inline so it matches wrap continuation rows).
+    has_gutter: bool,
+    gutter: GutterContext<'a>,
+    blame_brackets: Option<Vec<BlameRow>>,
+}
+
+impl<'a> BufferRenderContext<'a> {
+    fn new(
+        editor: &'a Editor,
+        theme: &'a Theme,
+        layout: &BufferLayout,
+        window_context: Option<&'a WindowRenderContext>,
+    ) -> Self {
+        let buffer = editor.buffer();
+        // Use window-specific cursor if provided (for non-focused windows)
+        let cursor = window_context
+            .and_then(|ctx| ctx.cursor.as_ref())
+            .unwrap_or_else(|| buffer.cursor());
+
+        // Use Vim-compatible line count: trailing newline's phantom empty line
+        // should not be rendered. The cursor is always bounded to real lines.
+        let line_count = buffer.line_count();
+
+        // Calculate visible range using scroll offset (not centering)
+        // Use window-specific scroll offset if provided
+        let visible_lines = layout.buffer_area.height as usize;
+        let start_line = window_context
+            .and_then(|ctx| ctx.scroll_offset)
+            .unwrap_or_else(|| editor.scroll_offset());
+        let top_skip = window_context
+            .and_then(|ctx| ctx.scroll_subrow)
+            .unwrap_or_else(|| editor.scroll_subrow());
+
+        // Get horizontal viewport settings
+        // Use window-specific horizontal offset if provided
+        let h_offset = window_context
+            .and_then(|ctx| ctx.horizontal_offset)
+            .unwrap_or_else(|| editor.horizontal_offset());
+        let wrap = editor.options.wrap;
+
+        // Get visual selection if in visual mode
+        let visual_selection = if editor.mode().is_visual() {
+            editor.visual_selection()
+        } else {
+            None
+        };
+        let has_code_walkthrough = editor.ai_chat_has_pending_code_explanation();
+        let ai_selection = if has_code_walkthrough {
+            editor
+                .ai_state
+                .active_selection
+                .as_ref()
+                .map(|selection| AiSelectionSpan {
+                    start_line: selection.start_line,
+                    end_line: selection.end_line,
+                    start_col: selection.start_col,
+                    end_col: selection.end_col,
+                    start_char: selection.start_char,
+                    end_char: selection.end_char,
+                    selection_mode: selection.selection_mode,
+                })
+        } else {
+            None
+        };
+        let walkthrough_range = if has_code_walkthrough {
+            ai_selection.map(|selection| (selection.start_line, selection.end_line))
+        } else {
+            None
+        };
+
+        // Get current search if active
+        let current_search = editor.search.current_search.as_ref();
+
+        // Find matching bracket position if showmatch is enabled
+        let bracket_positions = if editor.options.showmatch {
+            matching_bracket_pair(buffer, cursor)
+        } else {
+            None
+        };
+
+        let tab_width = editor.indent_options().tab_width;
+        let cursor_line_idx = cursor.line();
+        let text_width = layout.text_width;
+        let render_width = layout.render_width();
+        // Non-focused split panes carry the index of their own wrap map (built at
+        // their own width); the single-window / focused path uses the global one.
+        let wrap_map = match window_context.and_then(|ctx| ctx.wrap_map_window_index) {
+            Some(window_idx) => editor
+                .window_manager()
+                .and_then(|wm| wm.get_window(window_idx))
+                .and_then(|w| w.wrap_map()),
+            None => editor.wrap_map(),
+        };
+        let has_wrap = wrap && wrap_map.is_some();
+        // Sub-row scroll only applies under soft wrap — the renderer can't begin
+        // partway into a logical line otherwise.
+        let top_skip = if has_wrap { top_skip } else { 0 };
+        let buffer_id = buffer.id();
+        let cache_frame = LineCacheFrame {
+            buffer_id,
+            buffer_version: buffer.version(),
+            highlight_generation: buffer.highlight_projection_generation(),
+            h_offset,
+            text_width,
+            wrap,
+            tab_width,
+            markdown_conceal: editor.options.markdown_conceal,
+        };
+
+        // Pre-compute blame brackets for visible lines
+        let blame_width = layout.blame_width;
+        let blame_brackets = visible_blame_brackets(
+            buffer,
+            blame_width,
+            start_line,
+            line_count.min(start_line + visible_lines + 50),
+        );
+
+        let gutter = GutterContext {
+            editor,
+            buffer,
+            theme,
+            line_num_width: layout.line_num_width,
+            cursor_line: cursor_line_idx,
+            blame_width,
+            fold_width: layout.fold_width,
+            walkthrough_range,
+        };
+
+        let is_md_file = buffer
+            .file_path()
+            .map(|p| p.ends_with(".md"))
+            .unwrap_or(false);
+
+        let diff_review_tints = editor
+            .diff_review()
+            .filter(|state| state.buffer_id == editor.buffer().id());
+
+        // Decorations projected through the edit log, shared with cursor math and
+        // wrap layout (re-projected only after an edit or a decoration change).
+        // Per-line lookups in the loop below read from a line-keyed map.
+        let projected_decorations = if editor.ai_code_explanation_is_presenting_snapshot() {
+            // Walkthrough code pages render an immutable virtual snapshot, not the
+            // live LSP document. Reusing the editor-global decoration map here can
+            // attach diagnostics and inlay hints from a different document state to
+            // coincidentally matching lines in the snapshot.
+            Default::default()
+        } else {
+            editor.projected_decorations()
+        };
+        // Raw diagnostics projected through the same edit log, once per frame:
+        // the squiggle, gutter sign, and echo must land on the same line as the
+        // projected EOL virtual text above. (OV-00328)
+        let projected_diagnostics = if editor.ai_code_explanation_is_presenting_snapshot() {
+            ProjectedDiagnostics::default()
+        } else {
+            editor.project_diagnostics()
+        };
+
+        Self {
+            editor,
+            buffer,
+            theme,
+            line_count,
+            visible_lines,
+            start_line,
+            top_skip,
+            h_offset,
+            wrap,
+            has_wrap,
+            wrap_map,
+            text_width,
+            render_width,
+            tab_width,
+            cursorline: editor.options.cursorline,
+            cursor_line_idx,
+            visual_selection,
+            ai_selection,
+            walkthrough: walkthrough_range.is_some(),
+            current_search,
+            bracket_positions,
+            is_md_file,
+            markdown_conceal: editor.options.markdown_conceal,
+            diff_review_tints,
+            projected_decorations,
+            projected_diagnostics,
+            buffer_id,
+            cache_frame,
+            has_gutter: layout.gutter_width > 0,
+            gutter,
+            blame_brackets,
+        }
+    }
+
+    /// Background for a diff-review added/removed tint.
+    fn diff_tint_color(&self, added: bool) -> Color {
+        crate::key_convert::convert_core_color(self.theme.get_ui_color(if added {
+            UiGroup::DiffAddedBg
+        } else {
+            UiGroup::DiffRemovedBg
+        }))
+    }
+
+    /// A tint that runs to the end of the line keeps going through the
+    /// padding, so a changed row reads as a full-width band.
+    fn trailing_background(&self, line_idx: usize) -> Option<Color> {
+        self.diff_review_tints
+            .and_then(|state| state.line_trailing_tint(line_idx))
+            .map(|added| self.diff_tint_color(added))
+    }
+
+    /// Pads a row to the render width, extending a trailing tint if any.
+    fn pad_row(&self, row: &mut Line<'static>, trailing_background: Option<Color>) {
+        match trailing_background {
+            Some(color) => pad_line_to_styled(row, self.render_width, color),
+            None => pad_line_to(row, self.render_width),
+        }
+    }
+
+    fn blank_row(&self) -> Line<'static> {
+        Line::from(" ".repeat(self.render_width))
+    }
+
+    fn gutter_row(
+        &self,
+        line_idx: usize,
+        is_continuation: bool,
+        line_diagnostics: &[lsp_types::Diagnostic],
+    ) -> Line<'static> {
+        build_gutter_line(
+            &self.gutter,
+            line_idx,
+            is_continuation,
+            line_diagnostics,
+            self.blame_brackets
+                .as_ref()
+                .and_then(|brackets| brackets.get(line_idx - self.start_line)),
+        )
+    }
+
+    /// Scrollbar thumb geometry in visual rows: (total rows, top row).
+    fn scrollbar_extent(&self) -> (usize, usize) {
+        if self.has_wrap {
+            self.wrap_map
+                .map(|map| {
+                    (
+                        map.total_visual_lines(),
+                        map.viewport_top_visual_row(self.start_line, self.top_skip),
+                    )
+                })
+                .unwrap_or((self.line_count, self.start_line))
+        } else {
+            (self.line_count, self.start_line)
+        }
+    }
+
+    /// Facts about one logical line that every pipeline needs before it
+    /// chooses how to draw it.
+    fn line_frame(&self, line_idx: usize) -> LineFrame<'_> {
+        // Determine upfront if this line has transient overlays that prevent caching.
+        let has_visual_on_line = self
+            .visual_selection
+            .map(|((sl, _), (el, _))| line_idx >= sl && line_idx <= el)
+            .unwrap_or(false);
+        let is_cursor_line = self.cursorline && line_idx == self.cursor_line_idx;
+        let is_cursor_line_for_conceal =
+            line_idx == self.cursor_line_idx && self.markdown_conceal && self.is_md_file;
+        let has_yank_flash = self
+            .editor
+            .yank_flash()
+            .is_some_and(|f| f.contains_line(line_idx));
+        let diagnostics = self.projected_diagnostics.for_line(line_idx);
+        let has_bracket = self
+            .bracket_positions
+            .is_some_and(|((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
+        let has_search = self.current_search.is_some();
+        let has_ai_selection_on_line = self
+            .ai_selection
+            .map(|selection| selection.contains_line(line_idx))
+            .unwrap_or(false);
+        let is_stable = !has_visual_on_line
+            && !is_cursor_line
+            && !is_cursor_line_for_conceal
+            && !has_yank_flash
+            && !has_bracket
+            && !has_search
+            && !has_ai_selection_on_line;
+
+        // Per-line decoration hash from the per-frame projection. Lets the
+        // line cache invalidate only the lines whose decorations actually
+        // changed (vs. the previous global generation counter that wiped
+        // every cached line on any LSP push).
+        let dec_hash = line_decoration_cache_hash(
+            &self.projected_decorations,
+            &self.projected_diagnostics,
+            line_idx,
+        );
+        LineFrame {
+            line_idx,
+            has_visual_on_line,
+            is_cursor_line,
+            is_cursor_line_for_conceal,
+            is_stable,
+            diagnostics,
+            dec_hash,
+            cache_key: self.cache_frame.key(line_idx, dec_hash),
+        }
+    }
+}
+
+/// Per-line facts shared by both line pipelines.
+struct LineFrame<'a> {
+    line_idx: usize,
+    has_visual_on_line: bool,
+    /// The cursorline option is on and the cursor is on this line.
+    is_cursor_line: bool,
+    /// Markdown conceal is skipped on the cursor line so editing isn't blind.
+    is_cursor_line_for_conceal: bool,
+    /// No transient overlay prevents caching the rendered line.
+    is_stable: bool,
+    /// Diagnostics starting on this line, for the gutter sign.
+    diagnostics: &'a [lsp_types::Diagnostic],
+    dec_hash: u64,
+    cache_key: LineCacheKey,
+}
+
+/// Rows emitted so far: text rows, their gutter rows, and the visual-row budget.
+#[derive(Default)]
+struct RowOutput {
+    lines: Vec<Line<'static>>,
+    gutter_lines: Vec<Line<'static>>,
+    visual_rows_used: usize,
+}
+
+impl RowOutput {
+    fn has_room(&self, ctx: &BufferRenderContext<'_>) -> bool {
+        self.visual_rows_used < ctx.visible_lines
+    }
+
+    /// Appends a text row and, when a gutter is drawn, its gutter row.
+    fn push_row(
+        &mut self,
+        ctx: &BufferRenderContext<'_>,
+        line_idx: usize,
+        is_continuation: bool,
+        line_diagnostics: &[lsp_types::Diagnostic],
+        row: Line<'static>,
+    ) {
+        if ctx.has_gutter {
+            self.gutter_lines
+                .push(ctx.gutter_row(line_idx, is_continuation, line_diagnostics));
+        }
+        self.lines.push(row);
+        self.visual_rows_used += 1;
+    }
+
+    /// Appends a blank text row with no gutter row.
+    fn push_blank(&mut self, ctx: &BufferRenderContext<'_>) {
+        self.lines.push(ctx.blank_row());
+        self.visual_rows_used += 1;
+    }
+}
+
+/// Mutable per-frame state threaded through the line pipelines.
+struct RenderState<'a> {
+    line_cache: &'a mut LineRenderCache,
+    /// Reusable scratch buffers for shift_highlights_for_viewport — avoids
+    /// allocating two Vec<usize> per visible line per frame.
+    hl_shift_buffers: HighlightShiftBuffers,
+    out: RowOutput,
+}
+
+/// A line's inline and end-of-line decorations, split by placement.
+struct LineDecorations<'a> {
+    inline: Vec<&'a Decoration>,
+    eol: Vec<&'a Decoration>,
+}
+
+impl<'a> LineDecorations<'a> {
+    fn split(decorations: &'a [Decoration]) -> Self {
+        Self {
+            inline: decorations
+                .iter()
+                .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
+                .collect(),
+            eol: decorations
+                .iter()
+                .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
+                .collect(),
+        }
+    }
+}
+
+/// Finds the bracket pair to highlight as (cursor position, matching
+/// position), both as (line, char column).
+fn matching_bracket_pair(
+    buffer: &crate::buffer::Buffer,
+    cursor: &Cursor,
+) -> Option<((usize, usize), (usize, usize))> {
+    find_matching_bracket_position(buffer).map(|matching_pos| {
+        (
+            (
+                cursor.line(),
+                buffer
+                    .line_index(cursor.line())
+                    .grapheme_to_char(cursor.col())
+                    .0,
+            ),
+            matching_pos,
+        )
+    })
+}
+
+/// Splits the layout into the gutter (left of `buffer_area`) and text_area
+/// (from end of gutter to right edge of render_area). When render_area equals
+/// buffer_area (the common case), text_area is exactly buffer_area minus the
+/// gutter — same as before. In centered mode render_area extends past
+/// buffer_area, giving text_area a wider rect that includes the diagnostic
+/// margin.
+fn buffer_areas(layout: &BufferLayout) -> (Option<Rect>, Rect) {
     let area = layout.buffer_area;
-    let buffer = editor.buffer();
-    let rope = buffer.rope();
-
-    // Use window-specific cursor if provided (for non-focused windows)
-    let cursor = window_context
-        .and_then(|ctx| ctx.cursor.as_ref())
-        .unwrap_or_else(|| buffer.cursor());
-
-    // Use Vim-compatible line count: trailing newline's phantom empty line
-    // should not be rendered. The cursor is always bounded to real lines.
-    let line_count = buffer.line_count();
-
-    // Calculate visible range using scroll offset (not centering)
-    // Use window-specific scroll offset if provided
-    let visible_lines = area.height as usize;
-    let start_line = window_context
-        .and_then(|ctx| ctx.scroll_offset)
-        .unwrap_or_else(|| editor.scroll_offset());
-    // Visual sub-row offset within `start_line`: the first `top_skip` wrapped
-    // rows of the top logical line are scrolled off the top edge. Only meaningful
-    // under soft wrap (set to 0 otherwise below, once `has_wrap` is known).
-    let mut top_skip = window_context
-        .and_then(|ctx| ctx.scroll_subrow)
-        .unwrap_or_else(|| editor.scroll_subrow());
-
-    // Get horizontal viewport settings
-    // Use window-specific horizontal offset if provided
-    let h_offset = window_context
-        .and_then(|ctx| ctx.horizontal_offset)
-        .unwrap_or_else(|| editor.horizontal_offset());
-    let wrap = editor.options.wrap;
-
-    // Use layout-provided dimensions
-    let line_num_width = layout.line_num_width;
     let gutter_width_u16 = layout.gutter_width as u16;
-
-    // Split layout into gutter (left of buffer_area) and text_area (from
-    // end of gutter to right edge of render_area). When render_area equals
-    // buffer_area (the common case), text_area is exactly buffer_area
-    // minus the gutter — same as before. In centered mode render_area
-    // extends past buffer_area, giving text_area a wider rect that
-    // includes the diagnostic margin.
     let render_area = layout.render_area;
     let render_right = render_area.x + render_area.width;
     let gutter_area = if layout.gutter_width > 0 {
@@ -1642,1262 +2139,1295 @@ pub fn render_buffer(
         width: render_right.saturating_sub(area.x + gutter_width_u16),
         height: area.height,
     };
+    (gutter_area, text_area)
+}
 
-    // Get visual selection if in visual mode
-    let visual_selection = if editor.mode().is_visual() {
-        editor.visual_selection()
-    } else {
-        None
-    };
-    let has_code_walkthrough = editor.ai_chat_has_pending_code_explanation();
-    let ai_selection = if has_code_walkthrough {
-        editor.ai_state.active_selection.as_ref()
-    } else {
-        None
-    };
-    let walkthrough_range = if has_code_walkthrough {
-        ai_selection.map(|selection| (selection.start_line, selection.end_line))
-    } else {
-        None
-    };
-
-    // Get current search if active
-    let current_search = editor.search.current_search.as_ref();
-
-    // Find matching bracket position if showmatch is enabled
-    let bracket_positions: Option<((usize, usize), (usize, usize))> = if editor.options.showmatch {
-        find_matching_bracket_position(buffer).map(|matching_pos| {
-            (
-                (
-                    cursor.line(),
-                    buffer
-                        .line_index(cursor.line())
-                        .grapheme_to_char(cursor.col())
-                        .0,
-                ),
-                matching_pos,
-            )
-        })
-    } else {
-        None
-    };
+/// Renders the buffer content and returns the viewport start line.
+pub fn render_buffer(
+    frame: &mut Frame,
+    editor: &Editor,
+    theme: &Theme,
+    layout: &BufferLayout,
+    line_cache: &mut LineRenderCache,
+    window_context: Option<&WindowRenderContext>,
+) -> usize {
+    let ctx = BufferRenderContext::new(editor, theme, layout, window_context);
+    let (gutter_area, text_area) = buffer_areas(layout);
+    line_cache.begin_frame(ctx.cache_frame);
 
     // Build the visible text with syntax highlighting
-    // Gutter lines are built inline to match wrap continuation rows
-    let mut lines = Vec::new();
-    let mut gutter_lines: Vec<Line<'static>> = Vec::new();
-    let tab_width = editor.indent_options().tab_width;
-    let cursorline = editor.options.cursorline;
-    let cursor_line_idx = cursor.line();
-    // `text_width` is the document code-box (fixed at the layout's setting,
-    // i.e. textwidth in centered mode); `render_width` is how wide the line
-    // actually renders into. They differ in centered mode by exactly the
-    // diagnostic margin width.
-    let text_width = layout.text_width;
-    let render_width = layout.render_width();
-    let blank_line = " ".repeat(render_width);
-    // Non-focused split panes carry the index of their own wrap map (built at
-    // their own width); the single-window / focused path uses the global one.
-    let wrap_map = match window_context.and_then(|ctx| ctx.wrap_map_window_index) {
-        Some(window_idx) => editor
-            .window_manager()
-            .and_then(|wm| wm.get_window(window_idx))
-            .and_then(|w| w.wrap_map()),
-        None => editor.wrap_map(),
-    };
-    let has_wrap = wrap && wrap_map.is_some();
-    // Sub-row scroll only applies under soft wrap — the renderer can't begin
-    // partway into a logical line otherwise.
-    if !has_wrap {
-        top_skip = 0;
-    }
-    // Indexed geometry seeks directly to a scrolled sub-row; never construct
-    // the offscreen prefix just to discard it.
-    let emit_budget = visible_lines;
-    let mut visual_rows_used = 0;
-    let buffer_id = buffer.id();
-    let cache_frame = super::line_cache::LineCacheFrame {
-        buffer_id,
-        buffer_version: buffer.version(),
-        highlight_generation: buffer.highlight_projection_generation(),
-        h_offset,
-        text_width,
-        wrap,
-        tab_width,
-        markdown_conceal: editor.options.markdown_conceal,
-    };
-    line_cache.begin_frame(cache_frame);
-
-    // Pre-compute blame brackets for visible lines
-    let blame_width = layout.blame_width;
-    let blame_brackets = if blame_width > 0 {
-        if let Some(blame) = buffer.git_blame() {
-            let author_width = blame_width.saturating_sub(1 + 1 + 5 + 1 + 1); // bracket+sp+hash+sp+trailing_sp
-            Some(compute_blame_brackets(
-                blame,
-                start_line,
-                line_count.min(start_line + visible_lines + 50),
-                author_width,
-            ))
-        } else {
-            None
-        }
-    } else {
-        None
+    let mut state = RenderState {
+        line_cache,
+        hl_shift_buffers: HighlightShiftBuffers::new(),
+        out: RowOutput::default(),
     };
 
-    let gutter_ctx = GutterContext {
-        editor,
-        buffer,
-        theme,
-        line_num_width,
-        cursor_line: cursor_line_idx,
-        blame_width,
-        fold_width: layout.fold_width,
-        walkthrough_range,
-    };
-
-    let is_md_file = buffer
-        .file_path()
-        .map(|p| p.ends_with(".md"))
-        .unwrap_or(false);
-
-    // Reusable scratch buffers for shift_highlights_for_viewport — avoids
-    // allocating two Vec<usize> per visible line per frame.
-    let mut hl_shift_buffers = HighlightShiftBuffers::new();
-
-    // The branch diff review paints added/removed backgrounds per row; every
-    // other buffer skips this entirely.
-    let diff_review_tints = editor
-        .diff_review()
-        .filter(|state| state.buffer_id == editor.buffer().id());
-    let diff_tint_color = |added: bool| {
-        crate::key_convert::convert_core_color(theme.get_ui_color(if added {
-            UiGroup::DiffAddedBg
-        } else {
-            UiGroup::DiffRemovedBg
-        }))
-    };
-
-    // Decorations projected through the edit log, shared with cursor math and
-    // wrap layout (re-projected only after an edit or a decoration change).
-    // Per-line lookups in the loop below read from a line-keyed map.
-    let projected_decorations = if editor.ai_code_explanation_is_presenting_snapshot() {
-        // Walkthrough code pages render an immutable virtual snapshot, not the
-        // live LSP document. Reusing the editor-global decoration map here can
-        // attach diagnostics and inlay hints from a different document state to
-        // coincidentally matching lines in the snapshot.
-        Default::default()
-    } else {
-        editor.projected_decorations()
-    };
-    // Raw diagnostics projected through the same edit log, once per frame:
-    // the squiggle, gutter sign, and echo must land on the same line as the
-    // projected EOL virtual text above. (OV-00328)
-    let projected_diagnostics = if editor.ai_code_explanation_is_presenting_snapshot() {
-        ovim_core::editor::ProjectedDiagnostics::default()
-    } else {
-        editor.project_diagnostics()
-    };
-
-    let mut line_idx = start_line;
-    while line_idx < line_count && visual_rows_used < emit_budget {
+    let mut line_idx = ctx.start_line;
+    while line_idx < ctx.line_count && state.out.has_room(&ctx) {
         // Lines inside a closed fold are not drawn: skip the whole body.
-        if let Some((start, end)) = buffer.fold_manager().closed_fold_at(line_idx) {
+        if let Some((start, end)) = ctx.buffer.fold_manager().closed_fold_at(line_idx) {
             if line_idx > start {
                 line_idx = end + 1;
                 continue;
             }
         }
-        if line_idx < rope.len_lines() {
-            // --- Cache check: try to reuse a previously rendered stable line ---
-            // Determine upfront if this line has transient overlays that prevent caching.
-            let has_visual_on_line = visual_selection
-                .map(|((sl, _), (el, _))| line_idx >= sl && line_idx <= el)
-                .unwrap_or(false);
-            let is_cursor_line_early = cursorline && line_idx == cursor_line_idx;
-            let is_cursor_line_for_conceal =
-                line_idx == cursor_line_idx && editor.options.markdown_conceal && is_md_file;
-            let has_yank_flash = editor
-                .yank_flash()
-                .is_some_and(|f| f.contains_line(line_idx));
-            let line_diagnostics_early = projected_diagnostics.for_line(line_idx);
-            let has_bracket = bracket_positions
-                .is_some_and(|((l1, _), (l2, _))| line_idx == l1 || line_idx == l2);
-            let has_search = current_search.is_some();
-            let has_ai_selection_on_line = ai_selection
-                .map(|selection| line_idx >= selection.start_line && line_idx <= selection.end_line)
-                .unwrap_or(false);
-            let is_stable = !has_visual_on_line
-                && !is_cursor_line_early
-                && !is_cursor_line_for_conceal
-                && !has_yank_flash
-                && !has_bracket
-                && !has_search
-                && !has_ai_selection_on_line;
-
-            let md_conceal = editor.options.markdown_conceal;
-            // Per-line decoration hash from the per-frame projection. Lets the
-            // line cache invalidate only the lines whose decorations actually
-            // changed (vs. the previous global generation counter that wiped
-            // every cached line on any LSP push).
-            let dec_hash = line_decoration_cache_hash(
-                &projected_decorations,
-                &projected_diagnostics,
-                line_idx,
-            );
-            let cache_key = cache_frame.key(line_idx, dec_hash);
-
-            // Long logical lines and sub-row viewports render from shared
-            // source-aware fragments. All temporary strings/style runs are
-            // bounded by the visible rows, including deeply scrolled lines.
-            let source_index = buffer.line_index(line_idx);
-            if source_index.len_bytes() > 4096 || (line_idx == start_line && top_skip > 0) {
-                let line_start_char = rope.line_to_char(line_idx);
-                let line_decorations = projected_decorations.for_line(line_idx);
-                let mut inline: Vec<&Decoration> = line_decorations
-                    .iter()
-                    .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
-                    .collect();
-                inline.sort_by_key(|d| (d.placement.char_offset(), d.priority));
-                let eol: Vec<&Decoration> = line_decorations
-                    .iter()
-                    .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
-                    .collect();
-                let map_layout = has_wrap
-                    .then(|| wrap_map.and_then(|map| map.line_layout(line_idx)))
-                    .flatten();
-                let cached_indexed = if map_layout.is_none() {
-                    Some(line_cache.indexed_line(
-                        buffer_id,
-                        line_idx,
-                        source_index.clone(),
-                        text_width,
-                        tab_width,
-                        is_md_file && md_conceal && !is_cursor_line_for_conceal,
-                        dec_hash,
-                        &inline,
-                        line_start_char,
-                    ))
-                } else {
-                    None
-                };
-                let indexed_layout =
-                    map_layout.unwrap_or_else(|| &cached_indexed.as_ref().unwrap().layout);
-                let transform = if map_layout.is_some() {
-                    wrap_map.and_then(|map| map.line_transform(line_idx))
-                } else {
-                    cached_indexed
-                        .as_ref()
-                        .and_then(|cached| cached.transform.as_deref())
-                };
-                let links = if map_layout.is_some() {
-                    wrap_map
-                        .map(|map| map.line_concealed_links(line_idx))
-                        .unwrap_or(&[])
-                } else {
-                    cached_indexed
-                        .as_ref()
-                        .map(|cached| cached.links.as_ref())
-                        .unwrap_or(&[])
-                };
-                let view_index = indexed_layout.line();
-                let source_byte_to_view_char = |byte: usize| -> usize {
-                    transform
-                        .map(|map| {
-                            map.src_to_view
-                                .get(byte)
-                                .copied()
-                                .unwrap_or(view_index.len_chars())
-                        })
-                        .unwrap_or_else(|| source_index.byte_to_char(byte))
-                };
-                let source_char_to_view = |col: usize| -> usize {
-                    source_byte_to_view_char(source_index.char_to_byte(col))
-                };
-                let source_byte_to_view_byte = |byte: usize| -> usize {
-                    if transform.is_some() {
-                        view_index.char_to_byte(source_byte_to_view_char(byte))
-                    } else {
-                        byte.min(view_index.len_bytes())
-                    }
-                };
-                let mut precedes = false;
-                let mut extends = false;
-                let mut content_budget = text_width;
-                // Blanks after the `<` standing in for the rest of a wide
-                // glyph the indicator cut in half.
-                let mut cut_cells = 0;
-                let rows = if has_wrap {
-                    let first = if line_idx == start_line { top_skip } else { 0 };
-                    indexed_layout
-                        .row_fragments(first..first.saturating_add(emit_budget - visual_rows_used))
-                } else {
-                    let total = indexed_layout
-                        .display_range_for_row(indexed_layout.row_count().saturating_sub(1))
-                        .map(|range| range.end)
-                        .unwrap_or(0);
-                    // The `<` indicator covers the first cell, so text shows
-                    // from the next one and keeps its column.
-                    let requested_start = if total <= text_width {
-                        0
-                    } else {
-                        h_offset + usize::from(h_offset > 0)
-                    };
-                    let first = indexed_layout.fragments_for_display_range(
-                        requested_start..requested_start.saturating_add(1),
-                    );
-                    let mut actual_start = first
-                        .first()
-                        .map(|fragment| fragment.display_start)
-                        .unwrap_or(requested_start);
-                    precedes = total > text_width && h_offset > 0;
-                    if precedes && actual_start < requested_start {
-                        let fragment_end =
-                            actual_start + first.first().map_or(0, |fragment| fragment.cells);
-                        cut_cells = fragment_end.saturating_sub(requested_start);
-                        actual_start = fragment_end;
-                    }
-                    let available = text_width
-                        .saturating_sub(usize::from(precedes))
-                        .saturating_sub(cut_cells);
-                    extends = total.saturating_sub(actual_start) > available
-                        && (!precedes || text_width > 1);
-                    content_budget = available.saturating_sub(usize::from(extends));
-                    vec![LayoutRow {
-                        index: 0,
-                        display_start: actual_start,
-                        display_end: actual_start.saturating_add(content_budget).min(total),
-                        fragments: indexed_layout.fragments_for_display_range(
-                            actual_start..actual_start.saturating_add(content_budget),
-                        ),
-                    }]
-                };
-                let visible_byte_start = rows
-                    .iter()
-                    .flat_map(|row| &row.fragments)
-                    .filter_map(|fragment| {
-                        fragment.source.as_ref().map(|source| source.bytes.start)
-                    })
-                    .min()
-                    .unwrap_or(0);
-                let visible_byte_end = rows
-                    .iter()
-                    .flat_map(|row| &row.fragments)
-                    .filter_map(|fragment| fragment.source.as_ref().map(|source| source.bytes.end))
-                    .max()
-                    .unwrap_or(0);
-                let source_byte_window = if let Some(mapped) = transform {
-                    let view_start = view_index.byte_to_char(visible_byte_start);
-                    let view_end = view_index.byte_to_char(visible_byte_end);
-                    let after_start = mapped.src_to_view.partition_point(|&col| col <= view_start);
-                    let prior = mapped
-                        .src_to_view
-                        .get(after_start.saturating_sub(1))
-                        .copied()
-                        .unwrap_or(0);
-                    let start = mapped.src_to_view.partition_point(|&col| col < prior);
-                    let end = mapped.src_to_view.partition_point(|&col| col < view_end);
-                    start..end.min(source_index.len_bytes())
-                } else {
-                    visible_byte_start..visible_byte_end
-                };
-                let mapped_syntax: Vec<_> = buffer
-                    .highlights_in_byte_range(line_idx, source_byte_window)
-                    .iter()
-                    .map(|(range, group)| {
-                        (
-                            source_byte_to_view_byte(range.start)
-                                ..source_byte_to_view_byte(range.end),
-                            *group,
-                        )
-                    })
-                    .collect();
-                let syntax =
-                    resolve_indexed_syntax(&mapped_syntax, visible_byte_start..visible_byte_end);
-                let selected = visual_selection.and_then(|((sl, sc), (el, ec))| {
-                    if line_idx < sl || line_idx > el {
-                        return None;
-                    }
-                    let block = editor.mode() == crate::mode::Mode::VisualBlock;
-                    let start = if block || line_idx == sl { sc } else { 0 };
-                    let end = if block || line_idx == el {
-                        ec.saturating_add(1)
-                    } else {
-                        source_index.grapheme_count()
-                    };
-                    Some(
-                        source_char_to_view(source_index.grapheme_to_char(GraphemeCol(start)).0)
-                            ..source_char_to_view(
-                                source_index.grapheme_to_char(GraphemeCol(end)).0,
-                            ),
-                    )
-                });
-                let search = current_search
-                    .map(|search| search.find_all_in_index(view_index))
-                    .unwrap_or_default();
-                let diagnostics = projected_diagnostics
-                    .covering(line_idx)
-                    .filter_map(|diagnostic| {
-                        let start = if line_idx == diagnostic.range.start.line as usize {
-                            source_index.utf16_to_char(diagnostic.range.start.character as usize)
-                        } else {
-                            0
-                        };
-                        let end = if line_idx == diagnostic.range.end.line as usize {
-                            source_index.utf16_to_char(diagnostic.range.end.character as usize)
-                        } else {
-                            source_index.len_chars()
-                        };
-                        if start >= end {
-                            return None;
-                        }
-                        let start = source_index
-                            .grapheme_to_char(source_index.char_to_grapheme(CharCol(start)))
-                            .0;
-                        let last = source_index.char_to_grapheme(CharCol(end - 1));
-                        let end = source_index.grapheme_to_char(GraphemeCol(last.0 + 1)).0;
-                        let color = match diagnostic.severity {
-                            Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                            Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                            Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                            _ => Color::Red,
-                        };
-                        Some(RemappedDiagnostic {
-                            start: source_char_to_view(start),
-                            end: source_char_to_view(end),
-                            color,
-                        })
-                    })
-                    .collect();
-                let backgrounds = diff_review_tints
-                    .map(|state| {
-                        state
-                            .line_tints(line_idx)
-                            .into_iter()
-                            .map(|(range, added)| {
-                                (
-                                    source_byte_to_view_byte(range.start)
-                                        ..source_byte_to_view_byte(range.end),
-                                    diff_tint_color(added),
-                                )
-                            })
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let trailing_background = diff_review_tints
-                    .and_then(|state| state.line_trailing_tint(line_idx))
-                    .map(diff_tint_color);
-                let yank = editor
-                    .yank_flash()
-                    .filter(|flash| flash.contains_line(line_idx))
-                    .map(|flash| {
-                        flash
-                            .col_range_for_line(line_idx)
-                            .map(|(start, end)| {
-                                source_char_to_view(start)
-                                    ..source_char_to_view(end.saturating_add(1))
-                            })
-                            .unwrap_or(0..view_index.len_chars())
-                    });
-                let ai = ai_selection
-                    .filter(|selection| {
-                        line_idx >= selection.start_line && line_idx <= selection.end_line
-                    })
-                    .map(|selection| {
-                        let start = if selection.selection_mode == crate::mode::Mode::VisualLine
-                            || line_idx != selection.start_line
-                        {
-                            0
-                        } else {
-                            selection
-                                .start_char
-                                .saturating_sub(line_start_char)
-                                .min(source_index.len_chars())
-                        };
-                        let end = if selection.selection_mode == crate::mode::Mode::VisualLine
-                            || line_idx != selection.end_line
-                        {
-                            source_index.len_chars()
-                        } else {
-                            selection
-                                .end_char
-                                .saturating_sub(line_start_char)
-                                .min(source_index.len_chars())
-                        };
-                        source_char_to_view(start)..source_char_to_view(end)
-                    });
-                let bracket = bracket_positions.and_then(|((l1, c1), (l2, c2))| {
-                    if line_idx == l1 {
-                        Some(source_char_to_view(c1))
-                    } else if line_idx == l2 {
-                        Some(source_char_to_view(c2))
-                    } else {
-                        None
-                    }
-                });
-                let styles = IndexedRowStyles {
-                    theme,
-                    syntax,
-                    selected,
-                    search: &search,
-                    diagnostics,
-                    backgrounds,
-                    cursorline: is_cursor_line_early,
-                    yank,
-                    ai,
-                    links,
-                    bracket,
-                    walkthrough: walkthrough_range.is_some(),
-                };
-                for row in rows {
-                    let mut rendered = render_indexed_fragments(&row.fragments, &styles, &inline);
-                    if !has_wrap {
-                        truncate_line_to_width(&mut rendered, content_budget);
-                        pad_line_to(&mut rendered, content_budget);
-                        if precedes {
-                            rendered
-                                .spans
-                                .insert(0, Span::raw(format!("<{}", " ".repeat(cut_cells))));
-                        }
-                        if extends {
-                            rendered.spans.push(Span::raw(">"));
-                        }
-                        place_eol_on_line(&mut rendered, &eol, text_width, render_width);
-                    } else if row.index + 1 == indexed_layout.row_count() {
-                        place_eol_on_line(&mut rendered, &eol, text_width, render_width);
-                    } else if render_width > text_width {
-                        apply_eol_decorations(
-                            &mut rendered,
-                            &[],
-                            EolPlacement::AtBoxEdge {
-                                code_box_width: text_width,
-                                render_width,
-                            },
-                        );
-                    }
-                    if let Some(color) = trailing_background {
-                        pad_line_to_styled(&mut rendered, render_width, color);
-                    } else {
-                        pad_line_to(&mut rendered, render_width);
-                    }
-                    if gutter_area.is_some() {
-                        gutter_lines.push(build_gutter_line(
-                            &gutter_ctx,
-                            line_idx,
-                            has_wrap && row.index > 0,
-                            line_diagnostics_early,
-                            blame_brackets
-                                .as_ref()
-                                .and_then(|brackets| brackets.get(line_idx - start_line)),
-                        ));
-                    }
-                    lines.push(rendered);
-                    visual_rows_used += 1;
-                }
-                line_idx += 1;
-                continue;
-            }
-
-            if is_stable {
-                if let Some(cached_line) = line_cache.get(&cache_key) {
-                    let mut cached_line = cached_line.clone();
-                    // Cached line has inline decorations but needs
-                    // EOL decorations (diagnostics) applied fresh. The
-                    // per-frame projection cache (built before the loop)
-                    // avoids re-scanning every decoration here.
-                    let eol_decs: Vec<&Decoration> = projected_decorations.eol_for_line(line_idx);
-
-                    if has_wrap {
-                        let mut visual_rows = split_line_into_rows(cached_line, text_width);
-                        place_eol_on_visual_rows(
-                            &mut visual_rows,
-                            &eol_decs,
-                            text_width,
-                            render_width,
-                        );
-                        for (row_idx, row) in visual_rows.into_iter().enumerate() {
-                            if visual_rows_used >= emit_budget {
-                                break;
-                            }
-                            if gutter_area.is_some() {
-                                gutter_lines.push(build_gutter_line(
-                                    &gutter_ctx,
-                                    line_idx,
-                                    row_idx > 0,
-                                    line_diagnostics_early,
-                                    blame_brackets
-                                        .as_ref()
-                                        .and_then(|b| b.get(line_idx - start_line)),
-                                ));
-                            }
-                            lines.push(row);
-                            visual_rows_used += 1;
-                        }
-                    } else {
-                        place_eol_on_line(&mut cached_line, &eol_decs, text_width, render_width);
-                        match diff_review_tints.and_then(|state| state.line_trailing_tint(line_idx))
-                        {
-                            Some(added) => pad_line_to_styled(
-                                &mut cached_line,
-                                render_width,
-                                diff_tint_color(added),
-                            ),
-                            None => pad_line_to(&mut cached_line, render_width),
-                        }
-                        if gutter_area.is_some() {
-                            gutter_lines.push(build_gutter_line(
-                                &gutter_ctx,
-                                line_idx,
-                                false,
-                                line_diagnostics_early,
-                                blame_brackets
-                                    .as_ref()
-                                    .and_then(|b| b.get(line_idx - start_line)),
-                            ));
-                        }
-                        lines.push(cached_line);
-                        visual_rows_used += 1;
-                    }
-                    line_idx += 1;
-                    continue;
-                }
-            }
-
-            // Visible content of the line (trailing terminator stripped).
-            let line_text_original = ovim_core::display::line_content(rope, line_idx);
-
-            // Optional markdown conceal (skip on cursor line so editing isn't blind)
-            let (exp, concealed_links) =
-                if is_md_file && editor.options.markdown_conceal && !is_cursor_line_for_conceal {
-                    let spans = scan_markdown_conceal(&line_text_original);
-                    if spans.is_empty() {
-                        (
-                            expand_tabs_with_mapping(&line_text_original, tab_width),
-                            Vec::new(),
-                        )
-                    } else {
-                        let transform = crate::ui::renderer::markdown_conceal::apply_conceal(
-                            &line_text_original,
-                            &spans,
-                        );
-                        let links = crate::ui::renderer::markdown_conceal::extract_concealed_links(
-                            &spans, &transform,
-                        );
-                        (
-                            compose_conceal_and_tabs(&line_text_original, &transform, tab_width),
-                            links,
-                        )
-                    }
-                } else {
-                    (
-                        expand_tabs_with_mapping(&line_text_original, tab_width),
-                        Vec::new(),
-                    )
-                };
-            let expanded_text = exp.text;
-            let conceal_byte_map = exp.byte_mapping;
-            let control_ranges = exp.control_ranges;
-            let char_mapping = exp.char_mapping;
-
-            let viewport =
-                (!wrap).then(|| slice_horizontal_viewport(&expanded_text, h_offset, text_width));
-            let left = viewport.as_ref().map_or(0, |view| view.left);
-            let line_text = viewport
-                .as_ref()
-                .map(|view| view.text.as_str())
-                .unwrap_or(&expanded_text);
-
-            // Get syntax highlights for this line and remap them for expanded text
-            let original_highlights = buffer.highlights_for_line(line_idx);
-            let mut syntax_highlights = remap_highlights(&original_highlights, &conceal_byte_map);
-
-            // Shift syntax highlights for horizontal viewport if nowrap
-            if !wrap {
-                syntax_highlights = shift_highlights_for_viewport(
-                    &syntax_highlights,
-                    &expanded_text,
-                    line_text,
-                    h_offset,
-                    text_width,
-                    left,
-                    &mut hl_shift_buffers,
-                );
-            }
-
-            // Diff review: added/removed background tints, in the same byte
-            // space as the syntax highlights above.
-            let mut background_ranges: Vec<(Range<usize>, Color)> = diff_review_tints
-                .map(|state| {
-                    state
-                        .line_tints(line_idx)
-                        .into_iter()
-                        .map(|(range, added)| (range, diff_tint_color(added)))
-                        .collect()
-                })
-                .unwrap_or_default();
-            // A just-entered snippet placeholder reads as selected: typing
-            // replaces it (see `Editor::snippet_placeholder_highlight`).
-            if let Some((hl_line, start_col, end_col)) = editor.snippet_placeholder_highlight() {
-                if hl_line == line_idx {
-                    let mut offsets = line_text_original
-                        .char_indices()
-                        .map(|(byte, _)| byte)
-                        .chain(std::iter::once(line_text_original.len()));
-                    let start = offsets.clone().nth(start_col);
-                    let end = offsets.nth(end_col);
-                    if let (Some(start), Some(end)) = (start, end) {
-                        background_ranges.push((start..end, Color::Rgb(62, 84, 140)));
-                    }
-                }
-            }
-            if !background_ranges.is_empty() {
-                background_ranges = remap_highlights(&background_ranges, &conceal_byte_map);
-                if !wrap {
-                    background_ranges = shift_highlights_for_viewport(
-                        &background_ranges,
-                        &expanded_text,
-                        line_text,
-                        h_offset,
-                        text_width,
-                        left,
-                        &mut hl_shift_buffers,
-                    );
-                }
-            }
-            // A tint that runs to the end of the line keeps going through the
-            // padding, so a changed row reads as a full-width band. Derived
-            // from the unsliced row so a cache hit pads identically.
-            let trailing_background = diff_review_tints
-                .and_then(|state| state.line_trailing_tint(line_idx))
-                .map(diff_tint_color);
-
-            // Check if we need special highlighting (visual selection or search)
-            let has_visual_selection = has_visual_on_line;
-
-            let search_matches = if let Some(search) = current_search {
-                search.find_all_in_line(line_text)
-            } else {
-                Vec::new()
-            };
-
-            // Check if this is the cursor line and cursorline option is on
-            let is_cursor_line = is_cursor_line_early;
-
-            // Project this row's inclusive grapheme selection to a half-open
-            // scalar range before conceal, tab expansion or viewport slicing.
-            // In block mode every row needs its own conversion: equal grapheme
-            // columns need not have equal scalar or display columns.
-            let remapped_visual_selection = visual_selection.and_then(|((sl, sc), (el, ec))| {
-                if line_idx < sl || line_idx > el {
-                    return None;
-                }
-                let block = editor.mode() == crate::mode::Mode::VisualBlock;
-                let start = if block || line_idx == sl { sc } else { 0 };
-                let end = if block || line_idx == el {
-                    ec.saturating_add(1)
-                } else {
-                    grapheme_count(&line_text_original)
-                };
-                let expand = |col| {
-                    remap_char_col(
-                        grapheme_to_char_col(&line_text_original, GraphemeCol(col)).0,
-                        &char_mapping,
-                    )
-                };
-                let range = expand(start)..expand(end);
-                if let Some(viewport) = &viewport {
-                    viewport.project_range(range)
-                } else {
-                    (!range.is_empty()).then_some(range)
-                }
-            });
-
-            // Check if this line has a bracket to highlight (remap through char_mapping)
-            let bracket_col = bracket_positions.and_then(|((l1, c1), (l2, c2))| {
-                if line_idx == l1 {
-                    Some(remap_char_col(c1, &char_mapping))
-                } else if line_idx == l2 {
-                    Some(remap_char_col(c2, &char_mapping))
-                } else {
-                    None
-                }
-            });
-
-            // Adjust bracket column for horizontal viewport if nowrap
-            let bracket_col = if !wrap {
-                bracket_col.and_then(|expanded_char_col| {
-                    // Convert expanded char index to display column
-                    let display_col =
-                        expanded_char_to_display_col(&expanded_text, expanded_char_col);
-                    // Check if bracket is in visible horizontal range
-                    if display_col >= h_offset + left && display_col < h_offset + text_width {
-                        // Convert to char index in the sliced text
-                        let viewport_display_col = display_col - h_offset;
-                        let sliced_char_idx =
-                            display_col_to_char_idx(line_text, viewport_display_col);
-                        Some(sliced_char_idx)
-                    } else {
-                        None // Bracket is outside viewport
-                    }
-                })
-            } else {
-                bracket_col
-            };
-
-            // Underlines cover the complete span. Gutter signs and EOL
-            // messages still use the diagnostics starting on this line.
-            let remapped_diagnostics: Vec<RemappedDiagnostic> = projected_diagnostics
-                .covering(line_idx)
-                .filter_map(|diagnostic| {
-                    let range = ovim_core::lsp::diagnostic_char_range(
-                        diagnostic,
-                        line_idx,
-                        &line_text_original,
-                    )?;
-                    if range.is_empty() {
-                        return None;
-                    }
-                    // A terminal cell cannot underline half a grapheme. Round
-                    // outward before tabs/conceal so accents and ZWJ sequences
-                    // never get split into differently styled spans.
-                    let start = char_to_grapheme_col(&line_text_original, CharCol(range.start));
-                    let last = char_to_grapheme_col(&line_text_original, CharCol(range.end - 1));
-                    let start = grapheme_to_char_col(&line_text_original, start).0;
-                    let end = grapheme_to_char_col(&line_text_original, GraphemeCol(last.0 + 1)).0;
-                    let range =
-                        remap_char_col(start, &char_mapping)..remap_char_col(end, &char_mapping);
-                    let range = if let Some(viewport) = &viewport {
-                        viewport.project_range(range)?
-                    } else if range.is_empty() {
-                        return None;
-                    } else {
-                        range
-                    };
-                    let color = match diagnostic.severity {
-                        Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
-                        Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                        Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                        Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                        _ => Color::Red,
-                    };
-                    Some(RemappedDiagnostic {
-                        start: range.start,
-                        end: range.end,
-                        color,
-                    })
-                })
-                .collect();
-            let has_diagnostics = !remapped_diagnostics.is_empty();
-            let line_char_count = line_text_original.chars().count();
-            let ai_selection_ranges = if let Some(selection) = ai_selection {
-                if line_idx < selection.start_line || line_idx > selection.end_line {
-                    Vec::new()
-                } else {
-                    let (start_col, end_col_inclusive) =
-                        if selection.selection_mode == crate::mode::Mode::VisualLine {
-                            if line_char_count == 0 {
-                                (0, 0)
-                            } else {
-                                (0, line_char_count - 1)
-                            }
-                        } else if selection.start_line == selection.end_line {
-                            (
-                                selection.start_col,
-                                selection.end_col.min(line_char_count.saturating_sub(1)),
-                            )
-                        } else if line_idx == selection.start_line {
-                            (selection.start_col, line_char_count.saturating_sub(1))
-                        } else if line_idx == selection.end_line {
-                            (0, selection.end_col.min(line_char_count.saturating_sub(1)))
-                        } else if line_char_count == 0 {
-                            (0, 0)
-                        } else {
-                            (0, line_char_count - 1)
-                        };
-
-                    if line_char_count == 0 || end_col_inclusive < start_col {
-                        Vec::new()
-                    } else {
-                        let mut start = remap_char_col(start_col, &char_mapping);
-                        let mut end_exclusive = remap_char_col(
-                            (end_col_inclusive + 1).min(line_char_count),
-                            &char_mapping,
-                        );
-
-                        if !wrap {
-                            let start_display = expanded_char_to_display_col(&expanded_text, start);
-                            let end_display =
-                                expanded_char_to_display_col(&expanded_text, end_exclusive);
-                            if end_display <= h_offset + left
-                                || start_display >= h_offset + text_width
-                            {
-                                Vec::new()
-                            } else {
-                                start = display_col_to_char_idx(
-                                    line_text,
-                                    start_display.saturating_sub(h_offset).max(left),
-                                );
-                                end_exclusive = display_col_to_char_idx(
-                                    line_text,
-                                    end_display.saturating_sub(h_offset),
-                                );
-                                if end_exclusive > start {
-                                    vec![(start, end_exclusive - 1)]
-                                } else {
-                                    Vec::new()
-                                }
-                            }
-                        } else if end_exclusive > start {
-                            vec![(start, end_exclusive - 1)]
-                        } else {
-                            Vec::new()
-                        }
-                    }
-                }
-            } else {
-                Vec::new()
-            };
-
-            // Check if this line is in a yank flash region
-            let yank_flash = editor.yank_flash().and_then(|flash| {
-                if flash.contains_line(line_idx) {
-                    Some(flash.col_range_for_line(line_idx))
-                } else {
-                    None
-                }
-            });
-
-            // Inline decorations (inlay hints) and EOL decorations (LSP
-            // diagnostics rendered as virtual text) both need the detailed
-            // path: inline decs require `apply_inline_decorations` to splice
-            // their spans into the rendered line, and EOL decs require the
-            // EOL placement step that the simple path doesn't run. Use the
-            // unprojected `for_line` here for a cheap BTreeMap lookup; the
-            // detailed block does the projection.
-            let any_decoration = !editor.decorations.for_line(line_idx).is_empty();
-
-            // Always use character-by-character rendering if we have any highlighting
-            let needs_detailed_rendering = has_visual_selection
-                || !search_matches.is_empty()
-                || !syntax_highlights.is_empty()
-                || is_cursor_line
-                || bracket_col.is_some()
-                || has_diagnostics
-                || yank_flash.is_some()
-                || !ai_selection_ranges.is_empty()
-                || !concealed_links.is_empty()
-                || !background_ranges.is_empty()
-                || any_decoration;
-
-            if needs_detailed_rendering {
-                let mut line = render_line_with_highlights(
-                    theme,
-                    line_text,
-                    remapped_visual_selection,
-                    &search_matches,
-                    &syntax_highlights,
-                    &remapped_diagnostics,
-                    &control_ranges,
-                    &background_ranges,
-                );
-
-                // Apply cursorline background if this is the cursor line
-                if is_cursor_line && yank_flash.is_none() {
-                    let cursorline_bg = Color::Rgb(40, 40, 50); // Subtle dark blue background
-                    for span in &mut line.spans {
-                        if span.style.bg.is_none() || span.style.bg == Some(Color::Reset) {
-                            span.style = span.style.bg(cursorline_bg);
-                        }
-                    }
-                }
-
-                // Apply yank flash highlight
-                if let Some(col_range) = yank_flash {
-                    let flash_bg = Color::Rgb(60, 50, 20); // Warm amber glow
-                    match col_range {
-                        None => {
-                            // Linewise flash: highlight entire line
-                            for span in &mut line.spans {
-                                span.style = span.style.bg(flash_bg);
-                            }
-                        }
-                        Some((start_col, end_col)) => {
-                            // Character-wise flash: highlight column range
-                            apply_bg_to_column_range(&mut line, start_col, end_col, flash_bg);
-                        }
-                    }
-                }
-
-                // Preserve syntax colors while making an interactive walkthrough
-                // more prominent than an ordinary AI-prompt selection.
-                let ai_selection_bg = if walkthrough_range.is_some() {
-                    WALKTHROUGH_SELECTION_BG
-                } else {
-                    Color::Rgb(62, 70, 82)
-                };
-                for (start_col, end_col) in &ai_selection_ranges {
-                    apply_bg_to_column_range(&mut line, *start_col, *end_col, ai_selection_bg);
-                }
-
-                // Apply concealed link underline styling
-                if !concealed_links.is_empty() {
-                    let link_color = Color::Rgb(100, 149, 237); // Cornflower blue
-                    for link in &concealed_links {
-                        apply_fg_modifier_to_column_range(
-                            &mut line,
-                            link.view_start,
-                            link.view_end,
-                            link_color,
-                            Modifier::UNDERLINED,
-                        );
-                    }
-                }
-
-                // Apply bracket highlighting
-                if let Some(col) = bracket_col {
-                    let bracket_style = Style::default()
-                        .fg(Color::Yellow)
-                        .add_modifier(Modifier::BOLD);
-                    apply_style_at_column(&mut line, col, bracket_style);
-                }
-
-                // Apply decorations from the unified DecorationMap BEFORE
-                // caching.  The cache key includes dec_gen so it misses when
-                // decorations change.  Storing the decorated line ensures
-                // cache-hit frames render the same decorations that cursor
-                // positioning (inline_width_before) accounts for.
-                //
-                // Step E: read projected offsets from the per-frame
-                // projection cache built before the loop.  In steady state
-                // (accumulator keeps `source_version` current) this yields
-                // the same result as the stored offsets; when Step F removes
-                // the accumulator the projection becomes the sole source of
-                // truth.
-                let line_decorations = projected_decorations.for_line(line_idx);
-                let inline_decs: Vec<&Decoration> = line_decorations
-                    .iter()
-                    .filter(|d| matches!(d.placement, DecorationPlacement::Inline { .. }))
-                    .collect();
-                let eol_decs: Vec<&Decoration> = line_decorations
-                    .iter()
-                    .filter(|d| matches!(d.placement, DecorationPlacement::EndOfLine { .. }))
-                    .collect();
-
-                if !inline_decs.is_empty() {
-                    let line_start_offset = editor.buffer().rope().line_to_char(line_idx);
-                    apply_inline_decorations(
-                        &mut line,
-                        &inline_decs,
-                        &char_mapping,
-                        h_offset,
-                        wrap,
-                        line_start_offset,
-                    );
-                }
-
-                // Store in cache AFTER decorations so cache-hit frames
-                // match cursor positioning.
-                line_cache.put(cache_key, line.clone(), is_stable);
-
-                // Soft wrap: split into visual rows if needed
-                if has_wrap {
-                    let mut visual_rows = split_line_into_rows(line, text_width);
-                    place_eol_on_visual_rows(&mut visual_rows, &eol_decs, text_width, render_width);
-                    for (row_idx, row) in visual_rows.into_iter().enumerate() {
-                        if visual_rows_used >= emit_budget {
-                            break;
-                        }
-                        if gutter_area.is_some() {
-                            gutter_lines.push(build_gutter_line(
-                                &gutter_ctx,
-                                line_idx,
-                                row_idx > 0,
-                                line_diagnostics_early,
-                                blame_brackets
-                                    .as_ref()
-                                    .and_then(|b| b.get(line_idx - start_line)),
-                            ));
-                        }
-                        lines.push(row);
-                        visual_rows_used += 1;
-                    }
-                } else {
-                    // No wrap: in non-centered mode, ratatui clips overflow
-                    // at text_area's right edge, so we don't truncate (cursor
-                    // tracking would desync). In centered mode, AtBoxEdge
-                    // explicitly clips at the code-box and pads into the
-                    // diagnostic margin — `place_eol_on_line` picks the
-                    // right strategy.
-                    place_eol_on_line(&mut line, &eol_decs, text_width, render_width);
-                    match trailing_background {
-                        Some(color) => pad_line_to_styled(&mut line, render_width, color),
-                        None => pad_line_to(&mut line, render_width),
-                    }
-                    if gutter_area.is_some() {
-                        gutter_lines.push(build_gutter_line(
-                            &gutter_ctx,
-                            line_idx,
-                            false,
-                            line_diagnostics_early,
-                            blame_brackets
-                                .as_ref()
-                                .and_then(|b| b.get(line_idx - start_line)),
-                        ));
-                    }
-                    lines.push(line);
-                    visual_rows_used += 1;
-                }
-            } else {
-                // Simple rendering path (no highlighting) — always stable
-                let simple_line = Line::from(line_text.to_string());
-                line_cache.put(cache_key, simple_line, true);
-
-                if has_wrap {
-                    if line_text.is_empty() {
-                        if gutter_area.is_some() {
-                            gutter_lines.push(build_gutter_line(
-                                &gutter_ctx,
-                                line_idx,
-                                false,
-                                &[],
-                                blame_brackets
-                                    .as_ref()
-                                    .and_then(|b| b.get(line_idx - start_line)),
-                            ));
-                        }
-                        lines.push(Line::from(" ".repeat(render_width)));
-                        visual_rows_used += 1;
-                    } else {
-                        // Split by display width, not char count — CJK/emoji
-                        // characters are width 2 and would overflow the terminal
-                        // row if counted as 1.
-                        let mut chunk_idx = 0;
-                        let mut row_text = String::new();
-                        let mut row_width = 0;
-
-                        for grapheme in line_text.graphemes(true) {
-                            let ch_width = grapheme_display_width(grapheme);
-
-                            if row_width + ch_width > text_width && !row_text.is_empty() {
-                                // Flush current row
-                                if visual_rows_used >= emit_budget {
-                                    break;
-                                }
-                                if gutter_area.is_some() {
-                                    gutter_lines.push(build_gutter_line(
-                                        &gutter_ctx,
-                                        line_idx,
-                                        chunk_idx > 0,
-                                        &[],
-                                        blame_brackets
-                                            .as_ref()
-                                            .and_then(|b| b.get(line_idx - start_line)),
-                                    ));
-                                }
-                                let pad = render_width.saturating_sub(row_width);
-                                if pad > 0 {
-                                    row_text.push_str(&" ".repeat(pad));
-                                }
-                                lines.push(Line::from(std::mem::take(&mut row_text)));
-                                visual_rows_used += 1;
-                                chunk_idx += 1;
-                                row_width = 0;
-                            }
-
-                            row_text.push_str(grapheme);
-                            row_width += ch_width;
-                        }
-
-                        // Flush the last row
-                        if !row_text.is_empty() && visual_rows_used < emit_budget {
-                            if gutter_area.is_some() {
-                                gutter_lines.push(build_gutter_line(
-                                    &gutter_ctx,
-                                    line_idx,
-                                    chunk_idx > 0,
-                                    &[],
-                                    blame_brackets
-                                        .as_ref()
-                                        .and_then(|b| b.get(line_idx - start_line)),
-                                ));
-                            }
-                            let pad = render_width.saturating_sub(row_width);
-                            if pad > 0 {
-                                row_text.push_str(&" ".repeat(pad));
-                            }
-                            lines.push(Line::from(row_text));
-                            visual_rows_used += 1;
-                        }
-                    }
-                } else {
-                    // No wrap: pad simple lines too
-                    if gutter_area.is_some() {
-                        gutter_lines.push(build_gutter_line(
-                            &gutter_ctx,
-                            line_idx,
-                            false,
-                            &[],
-                            blame_brackets
-                                .as_ref()
-                                .and_then(|b| b.get(line_idx - start_line)),
-                        ));
-                    }
-                    let line_display_len = unicode_width::UnicodeWidthStr::width(line_text);
-                    let line_text = if line_display_len < render_width {
-                        format!(
-                            "{}{}",
-                            line_text,
-                            " ".repeat(render_width - line_display_len)
-                        )
-                    } else {
-                        line_text.to_string()
-                    };
-                    lines.push(Line::from(line_text));
-                    visual_rows_used += 1;
-                }
-            }
+        if line_idx < ctx.buffer.rope().len_lines() {
+            render_logical_line(&ctx, &mut state, line_idx);
         } else {
             // Line beyond end of file - clear it
-            lines.push(Line::from(blank_line.clone()));
-            visual_rows_used += 1;
+            state.out.push_blank(&ctx);
         }
         line_idx += 1;
     }
 
     // Fill remaining rows with blanks
-    while visual_rows_used < visible_lines {
-        lines.push(Line::from(blank_line.clone()));
-        visual_rows_used += 1;
+    while state.out.has_room(&ctx) {
+        state.out.push_blank(&ctx);
     }
 
     // Render gutter
     if let Some(gutter_area) = gutter_area {
-        let gutter_paragraph = Paragraph::new(gutter_lines);
+        let gutter_paragraph = Paragraph::new(state.out.gutter_lines);
         frame.render_widget(gutter_paragraph, gutter_area);
     }
 
-    let paragraph = Paragraph::new(lines)
+    let paragraph = Paragraph::new(state.out.lines)
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, text_area);
     if let Some(rail) = layout.scrollbar_area {
-        let (total, top) = if has_wrap {
-            wrap_map
-                .map(|map| {
-                    (
-                        map.total_visual_lines(),
-                        map.viewport_top_visual_row(start_line, top_skip),
-                    )
-                })
-                .unwrap_or((line_count, start_line))
-        } else {
-            (line_count, start_line)
-        };
+        let (total, top) = ctx.scrollbar_extent();
         render_diff_scrollbar(frame, rail, total, top, theme);
     }
 
-    start_line
+    ctx.start_line
+}
+
+/// Draws one logical line into `state.out`, picking a pipeline: the indexed
+/// one for long lines and scrolled sub-rows, the cache for unchanged lines,
+/// and the legacy one for everything else.
+fn render_logical_line(
+    ctx: &BufferRenderContext<'_>,
+    state: &mut RenderState<'_>,
+    line_idx: usize,
+) {
+    let line = ctx.line_frame(line_idx);
+
+    // Long logical lines and sub-row viewports render from shared
+    // source-aware fragments. All temporary strings/style runs are
+    // bounded by the visible rows, including deeply scrolled lines.
+    let source_index = ctx.buffer.line_index(line_idx);
+    if source_index.len_bytes() > 4096 || (line_idx == ctx.start_line && ctx.top_skip > 0) {
+        emit_indexed_line(ctx, state, &line, &source_index);
+        return;
+    }
+
+    if line.is_stable {
+        if let Some(cached_line) = state.line_cache.get(&line.cache_key) {
+            let cached_line = cached_line.clone();
+            emit_cached_line(ctx, &mut state.out, &line, cached_line);
+            return;
+        }
+    }
+
+    emit_legacy_line(ctx, state, &line);
+}
+
+/// Emits a line that was rendered on an earlier frame.
+fn emit_cached_line(
+    ctx: &BufferRenderContext<'_>,
+    out: &mut RowOutput,
+    line: &LineFrame<'_>,
+    cached_line: Line<'static>,
+) {
+    // Cached line has inline decorations but needs
+    // EOL decorations (diagnostics) applied fresh. The
+    // per-frame projection cache (built before the loop)
+    // avoids re-scanning every decoration here.
+    let eol_decs: Vec<&Decoration> = ctx.projected_decorations.eol_for_line(line.line_idx);
+    if ctx.has_wrap {
+        emit_wrapped_rows(ctx, out, line, cached_line, &eol_decs);
+    } else {
+        emit_unwrapped_row(ctx, out, line, cached_line, &eol_decs);
+    }
+}
+
+/// Soft wrap: splits a styled line into visual rows and emits as many as fit.
+fn emit_wrapped_rows(
+    ctx: &BufferRenderContext<'_>,
+    out: &mut RowOutput,
+    line: &LineFrame<'_>,
+    rendered: Line<'static>,
+    eol_decs: &[&Decoration],
+) {
+    let mut visual_rows = split_line_into_rows(rendered, ctx.text_width);
+    place_eol_on_visual_rows(&mut visual_rows, eol_decs, ctx.text_width, ctx.render_width);
+    for (row_idx, row) in visual_rows.into_iter().enumerate() {
+        if !out.has_room(ctx) {
+            break;
+        }
+        out.push_row(ctx, line.line_idx, row_idx > 0, line.diagnostics, row);
+    }
+}
+
+/// No wrap: in non-centered mode, ratatui clips overflow
+/// at text_area's right edge, so we don't truncate (cursor
+/// tracking would desync). In centered mode, AtBoxEdge
+/// explicitly clips at the code-box and pads into the
+/// diagnostic margin — `place_eol_on_line` picks the
+/// right strategy.
+fn emit_unwrapped_row(
+    ctx: &BufferRenderContext<'_>,
+    out: &mut RowOutput,
+    line: &LineFrame<'_>,
+    mut rendered: Line<'static>,
+    eol_decs: &[&Decoration],
+) {
+    place_eol_on_line(&mut rendered, eol_decs, ctx.text_width, ctx.render_width);
+    ctx.pad_row(&mut rendered, ctx.trailing_background(line.line_idx));
+    out.push_row(ctx, line.line_idx, false, line.diagnostics, rendered);
+}
+
+// ---------------------------------------------------------------------------
+// Indexed pipeline: long lines and scrolled sub-rows
+// ---------------------------------------------------------------------------
+
+/// One line's source text and the view text it renders from (the source with
+/// markdown conceal applied, if any), with conversions between the two.
+struct IndexedView<'a> {
+    source_index: &'a LineIndex,
+    view_index: &'a Arc<LineIndex>,
+    transform: Option<&'a LineTransform>,
+}
+
+impl IndexedView<'_> {
+    fn source_byte_to_view_char(&self, byte: usize) -> usize {
+        self.transform
+            .map(|map| {
+                map.src_to_view
+                    .get(byte)
+                    .copied()
+                    .unwrap_or(self.view_index.len_chars())
+            })
+            .unwrap_or_else(|| self.source_index.byte_to_char(byte))
+    }
+
+    fn source_char_to_view(&self, col: usize) -> usize {
+        self.source_byte_to_view_char(self.source_index.char_to_byte(col))
+    }
+
+    fn source_byte_to_view_byte(&self, byte: usize) -> usize {
+        if self.transform.is_some() {
+            self.view_index
+                .char_to_byte(self.source_byte_to_view_char(byte))
+        } else {
+            byte.min(self.view_index.len_bytes())
+        }
+    }
+}
+
+/// The layout rows to draw for an indexed line, plus the horizontal-scroll
+/// indicators that frame the single row of a nowrap line.
+struct IndexedRows {
+    rows: Vec<LayoutRow>,
+    precedes: bool,
+    extends: bool,
+    content_budget: usize,
+    /// Blanks after the `<` standing in for the rest of a wide
+    /// glyph the indicator cut in half.
+    cut_cells: usize,
+}
+
+/// Selects the visible rows of an indexed line: the wrapped rows that fit in
+/// `rows_left` (starting at the sub-row scroll on the top line), or the one
+/// horizontally scrolled nowrap row.
+fn indexed_visible_rows(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    layout: &IndexedLineLayout,
+    rows_left: usize,
+) -> IndexedRows {
+    let text_width = ctx.text_width;
+    let h_offset = ctx.h_offset;
+    let mut precedes = false;
+    let mut extends = false;
+    let mut content_budget = text_width;
+    let mut cut_cells = 0;
+    let rows = if ctx.has_wrap {
+        let first = if line_idx == ctx.start_line {
+            ctx.top_skip
+        } else {
+            0
+        };
+        layout.row_fragments(first..first.saturating_add(rows_left))
+    } else {
+        let total = layout
+            .display_range_for_row(layout.row_count().saturating_sub(1))
+            .map(|range| range.end)
+            .unwrap_or(0);
+        // The `<` indicator covers the first cell, so text shows
+        // from the next one and keeps its column.
+        let requested_start = if total <= text_width {
+            0
+        } else {
+            h_offset + usize::from(h_offset > 0)
+        };
+        let first =
+            layout.fragments_for_display_range(requested_start..requested_start.saturating_add(1));
+        let mut actual_start = first
+            .first()
+            .map(|fragment| fragment.display_start)
+            .unwrap_or(requested_start);
+        precedes = total > text_width && h_offset > 0;
+        if precedes && actual_start < requested_start {
+            let fragment_end = actual_start + first.first().map_or(0, |fragment| fragment.cells);
+            cut_cells = fragment_end.saturating_sub(requested_start);
+            actual_start = fragment_end;
+        }
+        let available = text_width
+            .saturating_sub(usize::from(precedes))
+            .saturating_sub(cut_cells);
+        extends = total.saturating_sub(actual_start) > available && (!precedes || text_width > 1);
+        content_budget = available.saturating_sub(usize::from(extends));
+        vec![LayoutRow {
+            index: 0,
+            display_start: actual_start,
+            display_end: actual_start.saturating_add(content_budget).min(total),
+            fragments: layout.fragments_for_display_range(
+                actual_start..actual_start.saturating_add(content_budget),
+            ),
+        }]
+    };
+    IndexedRows {
+        rows,
+        precedes,
+        extends,
+        content_budget,
+        cut_cells,
+    }
+}
+
+/// Syntax highlights covering the visible rows, mapped into view bytes and
+/// resolved to the style changes inside the visible byte interval.
+fn indexed_visible_syntax(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+    rows: &[LayoutRow],
+) -> Vec<(Range<usize>, HighlightGroup)> {
+    let visible_byte_start = rows
+        .iter()
+        .flat_map(|row| &row.fragments)
+        .filter_map(|fragment| fragment.source.as_ref().map(|source| source.bytes.start))
+        .min()
+        .unwrap_or(0);
+    let visible_byte_end = rows
+        .iter()
+        .flat_map(|row| &row.fragments)
+        .filter_map(|fragment| fragment.source.as_ref().map(|source| source.bytes.end))
+        .max()
+        .unwrap_or(0);
+    let source_byte_window = if let Some(mapped) = view.transform {
+        let view_start = view.view_index.byte_to_char(visible_byte_start);
+        let view_end = view.view_index.byte_to_char(visible_byte_end);
+        let after_start = mapped.src_to_view.partition_point(|&col| col <= view_start);
+        let prior = mapped
+            .src_to_view
+            .get(after_start.saturating_sub(1))
+            .copied()
+            .unwrap_or(0);
+        let start = mapped.src_to_view.partition_point(|&col| col < prior);
+        let end = mapped.src_to_view.partition_point(|&col| col < view_end);
+        start..end.min(view.source_index.len_bytes())
+    } else {
+        visible_byte_start..visible_byte_end
+    };
+    let mapped_syntax: Vec<_> = ctx
+        .buffer
+        .highlights_in_byte_range(line_idx, source_byte_window)
+        .iter()
+        .map(|(range, group)| {
+            (
+                view.source_byte_to_view_byte(range.start)
+                    ..view.source_byte_to_view_byte(range.end),
+                *group,
+            )
+        })
+        .collect();
+    resolve_indexed_syntax(&mapped_syntax, visible_byte_start..visible_byte_end)
+}
+
+/// The visual selection on this line as a view char range.
+fn indexed_selection(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+) -> Option<Range<usize>> {
+    ctx.visual_selection.and_then(|((sl, sc), (el, ec))| {
+        if line_idx < sl || line_idx > el {
+            return None;
+        }
+        let block = ctx.editor.mode() == crate::mode::Mode::VisualBlock;
+        let start = if block || line_idx == sl { sc } else { 0 };
+        let end = if block || line_idx == el {
+            ec.saturating_add(1)
+        } else {
+            view.source_index.grapheme_count()
+        };
+        Some(
+            view.source_char_to_view(view.source_index.grapheme_to_char(GraphemeCol(start)).0)
+                ..view.source_char_to_view(view.source_index.grapheme_to_char(GraphemeCol(end)).0),
+        )
+    })
+}
+
+/// Diagnostics covering this line as view char ranges.
+fn indexed_diagnostics(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+) -> Vec<RemappedDiagnostic> {
+    let source_index = view.source_index;
+    ctx.projected_diagnostics
+        .covering(line_idx)
+        .filter_map(|diagnostic| {
+            let start = if line_idx == diagnostic.range.start.line as usize {
+                source_index.utf16_to_char(diagnostic.range.start.character as usize)
+            } else {
+                0
+            };
+            let end = if line_idx == diagnostic.range.end.line as usize {
+                source_index.utf16_to_char(diagnostic.range.end.character as usize)
+            } else {
+                source_index.len_chars()
+            };
+            if start >= end {
+                return None;
+            }
+            let start = source_index
+                .grapheme_to_char(source_index.char_to_grapheme(CharCol(start)))
+                .0;
+            let last = source_index.char_to_grapheme(CharCol(end - 1));
+            let end = source_index.grapheme_to_char(GraphemeCol(last.0 + 1)).0;
+            let color = match diagnostic.severity {
+                Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
+                Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
+                _ => Color::Red,
+            };
+            Some(RemappedDiagnostic {
+                start: view.source_char_to_view(start),
+                end: view.source_char_to_view(end),
+                color,
+            })
+        })
+        .collect()
+}
+
+/// Diff-review background tints on this line as view byte ranges.
+fn indexed_backgrounds(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+) -> Vec<(Range<usize>, Color)> {
+    ctx.diff_review_tints
+        .map(|state| {
+            state
+                .line_tints(line_idx)
+                .into_iter()
+                .map(|(range, added)| {
+                    (
+                        view.source_byte_to_view_byte(range.start)
+                            ..view.source_byte_to_view_byte(range.end),
+                        ctx.diff_tint_color(added),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The yank flash on this line as a view char range.
+fn indexed_yank(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+) -> Option<Range<usize>> {
+    ctx.editor
+        .yank_flash()
+        .filter(|flash| flash.contains_line(line_idx))
+        .map(|flash| {
+            flash
+                .col_range_for_line(line_idx)
+                .map(|(start, end)| {
+                    view.source_char_to_view(start)..view.source_char_to_view(end.saturating_add(1))
+                })
+                .unwrap_or(0..view.view_index.len_chars())
+        })
+}
+
+/// The AI selection on this line as a view char range.
+fn indexed_ai_selection(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+) -> Option<Range<usize>> {
+    let line_start_char = ctx.buffer.rope().line_to_char(line_idx);
+    let source_index = view.source_index;
+    ctx.ai_selection
+        .filter(|selection| selection.contains_line(line_idx))
+        .map(|selection| {
+            let start = if selection.is_linewise() || line_idx != selection.start_line {
+                0
+            } else {
+                selection
+                    .start_char
+                    .saturating_sub(line_start_char)
+                    .min(source_index.len_chars())
+            };
+            let end = if selection.is_linewise() || line_idx != selection.end_line {
+                source_index.len_chars()
+            } else {
+                selection
+                    .end_char
+                    .saturating_sub(line_start_char)
+                    .min(source_index.len_chars())
+            };
+            view.source_char_to_view(start)..view.source_char_to_view(end)
+        })
+}
+
+/// The matching-bracket highlight on this line as a view char column.
+fn indexed_bracket(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    view: &IndexedView<'_>,
+) -> Option<usize> {
+    ctx.bracket_positions.and_then(|((l1, c1), (l2, c2))| {
+        if line_idx == l1 {
+            Some(view.source_char_to_view(c1))
+        } else if line_idx == l2 {
+            Some(view.source_char_to_view(c2))
+        } else {
+            None
+        }
+    })
+}
+
+/// Collects every overlay that can style the visible rows of an indexed line.
+fn indexed_row_styles<'s>(
+    ctx: &BufferRenderContext<'s>,
+    line: &LineFrame<'_>,
+    view: &IndexedView<'_>,
+    syntax: Vec<(Range<usize>, HighlightGroup)>,
+    search: &'s [(usize, usize)],
+    links: &'s [ConcealedLink],
+) -> IndexedRowStyles<'s> {
+    let line_idx = line.line_idx;
+    IndexedRowStyles {
+        theme: ctx.theme,
+        syntax,
+        selected: indexed_selection(ctx, line_idx, view),
+        search,
+        diagnostics: indexed_diagnostics(ctx, line_idx, view),
+        backgrounds: indexed_backgrounds(ctx, line_idx, view),
+        cursorline: line.is_cursor_line,
+        yank: indexed_yank(ctx, line_idx, view),
+        ai: indexed_ai_selection(ctx, line_idx, view),
+        links,
+        bracket: indexed_bracket(ctx, line_idx, view),
+        walkthrough: ctx.walkthrough,
+    }
+}
+
+/// Draws a long line (or a scrolled sub-row of a wrapped one) from source-aware
+/// layout fragments, computing styles only for the visible rows.
+fn emit_indexed_line(
+    ctx: &BufferRenderContext<'_>,
+    state: &mut RenderState<'_>,
+    line: &LineFrame<'_>,
+    source_index: &Arc<LineIndex>,
+) {
+    let line_idx = line.line_idx;
+    let line_start_char = ctx.buffer.rope().line_to_char(line_idx);
+    let mut decorations = LineDecorations::split(ctx.projected_decorations.for_line(line_idx));
+    decorations
+        .inline
+        .sort_by_key(|d| (d.placement.char_offset(), d.priority));
+    let map_layout = ctx
+        .has_wrap
+        .then(|| ctx.wrap_map.and_then(|map| map.line_layout(line_idx)))
+        .flatten();
+    let cached_indexed = if map_layout.is_none() {
+        Some(state.line_cache.indexed_line(
+            ctx.buffer_id,
+            line_idx,
+            source_index.clone(),
+            ctx.text_width,
+            ctx.tab_width,
+            ctx.is_md_file && ctx.markdown_conceal && !line.is_cursor_line_for_conceal,
+            line.dec_hash,
+            &decorations.inline,
+            line_start_char,
+        ))
+    } else {
+        None
+    };
+    let indexed_layout = map_layout.unwrap_or_else(|| &cached_indexed.as_ref().unwrap().layout);
+    let transform = if map_layout.is_some() {
+        ctx.wrap_map.and_then(|map| map.line_transform(line_idx))
+    } else {
+        cached_indexed
+            .as_ref()
+            .and_then(|cached| cached.transform.as_deref())
+    };
+    let links = if map_layout.is_some() {
+        ctx.wrap_map
+            .map(|map| map.line_concealed_links(line_idx))
+            .unwrap_or(&[])
+    } else {
+        cached_indexed
+            .as_ref()
+            .map(|cached| cached.links.as_ref())
+            .unwrap_or(&[])
+    };
+    let view = IndexedView {
+        source_index,
+        view_index: indexed_layout.line(),
+        transform,
+    };
+    // Indexed geometry seeks directly to a scrolled sub-row; never construct
+    // the offscreen prefix just to discard it.
+    let rows = indexed_visible_rows(
+        ctx,
+        line_idx,
+        indexed_layout,
+        ctx.visible_lines - state.out.visual_rows_used,
+    );
+    let syntax = indexed_visible_syntax(ctx, line_idx, &view, &rows.rows);
+    let search = ctx
+        .current_search
+        .map(|search| search.find_all_in_index(view.view_index))
+        .unwrap_or_default();
+    let styles = indexed_row_styles(ctx, line, &view, syntax, &search, links);
+    emit_indexed_rows(
+        ctx,
+        &mut state.out,
+        line,
+        indexed_layout.row_count(),
+        rows,
+        &styles,
+        &decorations,
+    );
+}
+
+/// Renders the selected layout rows into styled, padded text rows.
+fn emit_indexed_rows(
+    ctx: &BufferRenderContext<'_>,
+    out: &mut RowOutput,
+    line: &LineFrame<'_>,
+    row_count: usize,
+    visible: IndexedRows,
+    styles: &IndexedRowStyles<'_>,
+    decorations: &LineDecorations<'_>,
+) {
+    let text_width = ctx.text_width;
+    let render_width = ctx.render_width;
+    let trailing_background = ctx.trailing_background(line.line_idx);
+    for row in visible.rows {
+        let mut rendered = render_indexed_fragments(&row.fragments, styles, &decorations.inline);
+        if !ctx.has_wrap {
+            truncate_line_to_width(&mut rendered, visible.content_budget);
+            pad_line_to(&mut rendered, visible.content_budget);
+            if visible.precedes {
+                rendered
+                    .spans
+                    .insert(0, Span::raw(format!("<{}", " ".repeat(visible.cut_cells))));
+            }
+            if visible.extends {
+                rendered.spans.push(Span::raw(">"));
+            }
+            place_eol_on_line(&mut rendered, &decorations.eol, text_width, render_width);
+        } else if row.index + 1 == row_count {
+            place_eol_on_line(&mut rendered, &decorations.eol, text_width, render_width);
+        } else if render_width > text_width {
+            apply_eol_decorations(
+                &mut rendered,
+                &[],
+                EolPlacement::AtBoxEdge {
+                    code_box_width: text_width,
+                    render_width,
+                },
+            );
+        }
+        ctx.pad_row(&mut rendered, trailing_background);
+        out.push_row(
+            ctx,
+            line.line_idx,
+            ctx.has_wrap && row.index > 0,
+            line.diagnostics,
+            rendered,
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Legacy pipeline: lines up to 4096 bytes
+// ---------------------------------------------------------------------------
+
+/// The text of one line prepared for the legacy renderer: markdown-concealed,
+/// tab-expanded, and (without wrap) sliced to the horizontal viewport. All
+/// overlay coordinates are relative to `visible()`.
+struct LegacyLineText {
+    /// Visible content of the line (trailing terminator stripped).
+    original: String,
+    expanded: String,
+    conceal_byte_map: Vec<(usize, usize)>,
+    control_ranges: Vec<Range<usize>>,
+    char_mapping: Vec<usize>,
+    concealed_links: Vec<ConcealedLink>,
+    viewport: Option<HorizontalViewport>,
+}
+
+impl LegacyLineText {
+    fn new(ctx: &BufferRenderContext<'_>, line_idx: usize, conceal_disabled: bool) -> Self {
+        let tab_width = ctx.tab_width;
+        let original = ovim_core::display::line_content(ctx.buffer.rope(), line_idx);
+
+        // Optional markdown conceal (skip on cursor line so editing isn't blind)
+        let (exp, concealed_links) = if ctx.is_md_file && ctx.markdown_conceal && !conceal_disabled
+        {
+            let spans = scan_markdown_conceal(&original);
+            if spans.is_empty() {
+                (expand_tabs_with_mapping(&original, tab_width), Vec::new())
+            } else {
+                let transform =
+                    crate::ui::renderer::markdown_conceal::apply_conceal(&original, &spans);
+                let links = crate::ui::renderer::markdown_conceal::extract_concealed_links(
+                    &spans, &transform,
+                );
+                (
+                    compose_conceal_and_tabs(&original, &transform, tab_width),
+                    links,
+                )
+            }
+        } else {
+            (expand_tabs_with_mapping(&original, tab_width), Vec::new())
+        };
+
+        let viewport =
+            (!ctx.wrap).then(|| slice_horizontal_viewport(&exp.text, ctx.h_offset, ctx.text_width));
+        Self {
+            original,
+            expanded: exp.text,
+            conceal_byte_map: exp.byte_mapping,
+            control_ranges: exp.control_ranges,
+            char_mapping: exp.char_mapping,
+            concealed_links,
+            viewport,
+        }
+    }
+
+    /// Cells before the first displayed source character (see `HorizontalViewport`).
+    fn left(&self) -> usize {
+        self.viewport.as_ref().map_or(0, |view| view.left)
+    }
+
+    /// The text that is drawn: the viewport slice, or the whole expanded line.
+    fn visible(&self) -> &str {
+        self.viewport
+            .as_ref()
+            .map(|view| view.text.as_str())
+            .unwrap_or(&self.expanded)
+    }
+
+    /// Shifts highlight ranges (in expanded bytes) into `visible()` bytes
+    /// under the horizontal viewport.
+    fn shift_for_viewport<T: Copy>(
+        &self,
+        ctx: &BufferRenderContext<'_>,
+        highlights: &[(Range<usize>, T)],
+        buffers: &mut HighlightShiftBuffers,
+    ) -> Vec<(Range<usize>, T)> {
+        shift_highlights_for_viewport(
+            highlights,
+            &self.expanded,
+            self.visible(),
+            ctx.h_offset,
+            ctx.text_width,
+            self.left(),
+            buffers,
+        )
+    }
+}
+
+/// Every overlay that can style a legacy line, in `LegacyLineText::visible()`
+/// coordinates.
+struct LegacyOverlays {
+    syntax_highlights: Vec<(Range<usize>, HighlightGroup)>,
+    background_ranges: Vec<(Range<usize>, Color)>,
+    search_matches: Vec<(usize, usize)>,
+    visual_selection: Option<Range<usize>>,
+    bracket_col: Option<usize>,
+    diagnostics: Vec<RemappedDiagnostic>,
+    ai_selection_ranges: Vec<(usize, usize)>,
+    yank_flash: Option<Option<(usize, usize)>>,
+}
+
+/// Get syntax highlights for this line and remap them for expanded text
+fn legacy_syntax_highlights(
+    ctx: &BufferRenderContext<'_>,
+    shift_buffers: &mut HighlightShiftBuffers,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> Vec<(Range<usize>, HighlightGroup)> {
+    let original_highlights = ctx.buffer.highlights_for_line(line_idx);
+    let mut syntax_highlights = remap_highlights(&original_highlights, &text.conceal_byte_map);
+
+    // Shift syntax highlights for horizontal viewport if nowrap
+    if !ctx.wrap {
+        syntax_highlights = text.shift_for_viewport(ctx, &syntax_highlights, shift_buffers);
+    }
+    syntax_highlights
+}
+
+/// Diff review tints and a just-entered snippet placeholder, in the same byte
+/// space as the syntax highlights.
+fn legacy_background_ranges(
+    ctx: &BufferRenderContext<'_>,
+    shift_buffers: &mut HighlightShiftBuffers,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> Vec<(Range<usize>, Color)> {
+    // Diff review: added/removed background tints, in the same byte
+    // space as the syntax highlights above.
+    let mut background_ranges: Vec<(Range<usize>, Color)> = ctx
+        .diff_review_tints
+        .map(|state| {
+            state
+                .line_tints(line_idx)
+                .into_iter()
+                .map(|(range, added)| (range, ctx.diff_tint_color(added)))
+                .collect()
+        })
+        .unwrap_or_default();
+    // A just-entered snippet placeholder reads as selected: typing
+    // replaces it (see `Editor::snippet_placeholder_highlight`).
+    if let Some((hl_line, start_col, end_col)) = ctx.editor.snippet_placeholder_highlight() {
+        if hl_line == line_idx {
+            let mut offsets = text
+                .original
+                .char_indices()
+                .map(|(byte, _)| byte)
+                .chain(std::iter::once(text.original.len()));
+            let start = offsets.clone().nth(start_col);
+            let end = offsets.nth(end_col);
+            if let (Some(start), Some(end)) = (start, end) {
+                background_ranges.push((start..end, Color::Rgb(62, 84, 140)));
+            }
+        }
+    }
+    if !background_ranges.is_empty() {
+        background_ranges = remap_highlights(&background_ranges, &text.conceal_byte_map);
+        if !ctx.wrap {
+            background_ranges = text.shift_for_viewport(ctx, &background_ranges, shift_buffers);
+        }
+    }
+    background_ranges
+}
+
+/// Project this row's inclusive grapheme selection to a half-open
+/// scalar range before conceal, tab expansion or viewport slicing.
+/// In block mode every row needs its own conversion: equal grapheme
+/// columns need not have equal scalar or display columns.
+fn legacy_visual_selection(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> Option<Range<usize>> {
+    ctx.visual_selection.and_then(|((sl, sc), (el, ec))| {
+        if line_idx < sl || line_idx > el {
+            return None;
+        }
+        let block = ctx.editor.mode() == crate::mode::Mode::VisualBlock;
+        let start = if block || line_idx == sl { sc } else { 0 };
+        let end = if block || line_idx == el {
+            ec.saturating_add(1)
+        } else {
+            grapheme_count(&text.original)
+        };
+        let expand = |col| {
+            remap_char_col(
+                grapheme_to_char_col(&text.original, GraphemeCol(col)).0,
+                &text.char_mapping,
+            )
+        };
+        let range = expand(start)..expand(end);
+        if let Some(viewport) = &text.viewport {
+            viewport.project_range(range)
+        } else {
+            (!range.is_empty()).then_some(range)
+        }
+    })
+}
+
+/// Check if this line has a bracket to highlight (remap through char_mapping)
+fn legacy_bracket_col(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> Option<usize> {
+    let bracket_col = ctx.bracket_positions.and_then(|((l1, c1), (l2, c2))| {
+        if line_idx == l1 {
+            Some(remap_char_col(c1, &text.char_mapping))
+        } else if line_idx == l2 {
+            Some(remap_char_col(c2, &text.char_mapping))
+        } else {
+            None
+        }
+    });
+
+    // Adjust bracket column for horizontal viewport if nowrap
+    if !ctx.wrap {
+        bracket_col.and_then(|expanded_char_col| {
+            // Convert expanded char index to display column
+            let display_col = expanded_char_to_display_col(&text.expanded, expanded_char_col);
+            // Check if bracket is in visible horizontal range
+            if display_col >= ctx.h_offset + text.left()
+                && display_col < ctx.h_offset + ctx.text_width
+            {
+                // Convert to char index in the sliced text
+                let viewport_display_col = display_col - ctx.h_offset;
+                let sliced_char_idx = display_col_to_char_idx(text.visible(), viewport_display_col);
+                Some(sliced_char_idx)
+            } else {
+                None // Bracket is outside viewport
+            }
+        })
+    } else {
+        bracket_col
+    }
+}
+
+/// Underlines cover the complete span. Gutter signs and EOL
+/// messages still use the diagnostics starting on this line.
+fn legacy_diagnostics(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> Vec<RemappedDiagnostic> {
+    let line_text_original = &text.original;
+    ctx.projected_diagnostics
+        .covering(line_idx)
+        .filter_map(|diagnostic| {
+            let range =
+                ovim_core::lsp::diagnostic_char_range(diagnostic, line_idx, line_text_original)?;
+            if range.is_empty() {
+                return None;
+            }
+            // A terminal cell cannot underline half a grapheme. Round
+            // outward before tabs/conceal so accents and ZWJ sequences
+            // never get split into differently styled spans.
+            let start = char_to_grapheme_col(line_text_original, CharCol(range.start));
+            let last = char_to_grapheme_col(line_text_original, CharCol(range.end - 1));
+            let start = grapheme_to_char_col(line_text_original, start).0;
+            let end = grapheme_to_char_col(line_text_original, GraphemeCol(last.0 + 1)).0;
+            let range =
+                remap_char_col(start, &text.char_mapping)..remap_char_col(end, &text.char_mapping);
+            let range = if let Some(viewport) = &text.viewport {
+                viewport.project_range(range)?
+            } else if range.is_empty() {
+                return None;
+            } else {
+                range
+            };
+            let color = match diagnostic.severity {
+                Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
+                Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
+                Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
+                Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
+                _ => Color::Red,
+            };
+            Some(RemappedDiagnostic {
+                start: range.start,
+                end: range.end,
+                color,
+            })
+        })
+        .collect()
+}
+
+/// The AI selection on this line as inclusive (start, end) char column pairs
+/// in `visible()` coordinates.
+fn legacy_ai_selection_ranges(
+    ctx: &BufferRenderContext<'_>,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> Vec<(usize, usize)> {
+    let Some(selection) = ctx.ai_selection else {
+        return Vec::new();
+    };
+    if !selection.contains_line(line_idx) {
+        return Vec::new();
+    }
+    let line_char_count = text.original.chars().count();
+    let (start_col, end_col_inclusive) = if selection.is_linewise() {
+        if line_char_count == 0 {
+            (0, 0)
+        } else {
+            (0, line_char_count - 1)
+        }
+    } else if selection.start_line == selection.end_line {
+        (
+            selection.start_col,
+            selection.end_col.min(line_char_count.saturating_sub(1)),
+        )
+    } else if line_idx == selection.start_line {
+        (selection.start_col, line_char_count.saturating_sub(1))
+    } else if line_idx == selection.end_line {
+        (0, selection.end_col.min(line_char_count.saturating_sub(1)))
+    } else if line_char_count == 0 {
+        (0, 0)
+    } else {
+        (0, line_char_count - 1)
+    };
+
+    if line_char_count == 0 || end_col_inclusive < start_col {
+        return Vec::new();
+    }
+    let mut start = remap_char_col(start_col, &text.char_mapping);
+    let mut end_exclusive = remap_char_col(
+        (end_col_inclusive + 1).min(line_char_count),
+        &text.char_mapping,
+    );
+
+    if !ctx.wrap {
+        let start_display = expanded_char_to_display_col(&text.expanded, start);
+        let end_display = expanded_char_to_display_col(&text.expanded, end_exclusive);
+        if end_display <= ctx.h_offset + text.left()
+            || start_display >= ctx.h_offset + ctx.text_width
+        {
+            Vec::new()
+        } else {
+            start = display_col_to_char_idx(
+                text.visible(),
+                start_display.saturating_sub(ctx.h_offset).max(text.left()),
+            );
+            end_exclusive =
+                display_col_to_char_idx(text.visible(), end_display.saturating_sub(ctx.h_offset));
+            if end_exclusive > start {
+                vec![(start, end_exclusive - 1)]
+            } else {
+                Vec::new()
+            }
+        }
+    } else if end_exclusive > start {
+        vec![(start, end_exclusive - 1)]
+    } else {
+        Vec::new()
+    }
+}
+
+/// Computes every overlay for a legacy line.
+fn legacy_overlays(
+    ctx: &BufferRenderContext<'_>,
+    shift_buffers: &mut HighlightShiftBuffers,
+    line_idx: usize,
+    text: &LegacyLineText,
+) -> LegacyOverlays {
+    let syntax_highlights = legacy_syntax_highlights(ctx, shift_buffers, line_idx, text);
+    let background_ranges = legacy_background_ranges(ctx, shift_buffers, line_idx, text);
+
+    // Check if we need special highlighting (visual selection or search)
+    let search_matches = if let Some(search) = ctx.current_search {
+        search.find_all_in_line(text.visible())
+    } else {
+        Vec::new()
+    };
+
+    LegacyOverlays {
+        syntax_highlights,
+        background_ranges,
+        search_matches,
+        visual_selection: legacy_visual_selection(ctx, line_idx, text),
+        bracket_col: legacy_bracket_col(ctx, line_idx, text),
+        diagnostics: legacy_diagnostics(ctx, line_idx, text),
+        ai_selection_ranges: legacy_ai_selection_ranges(ctx, line_idx, text),
+        // Check if this line is in a yank flash region
+        yank_flash: ctx.editor.yank_flash().and_then(|flash| {
+            if flash.contains_line(line_idx) {
+                Some(flash.col_range_for_line(line_idx))
+            } else {
+                None
+            }
+        }),
+    }
+}
+
+/// Whether the line needs the character-by-character renderer. Inline
+/// decorations (inlay hints) and EOL decorations (LSP diagnostics rendered as
+/// virtual text) both need the detailed path: inline decs require
+/// `apply_inline_decorations` to splice their spans into the rendered line,
+/// and EOL decs require the EOL placement step that the simple path doesn't
+/// run. Use the unprojected `for_line` here for a cheap BTreeMap lookup; the
+/// detailed block does the projection.
+fn needs_detailed_rendering(
+    ctx: &BufferRenderContext<'_>,
+    line: &LineFrame<'_>,
+    text: &LegacyLineText,
+    overlays: &LegacyOverlays,
+) -> bool {
+    let any_decoration = !ctx.editor.decorations.for_line(line.line_idx).is_empty();
+
+    // Always use character-by-character rendering if we have any highlighting
+    line.has_visual_on_line
+        || !overlays.search_matches.is_empty()
+        || !overlays.syntax_highlights.is_empty()
+        || line.is_cursor_line
+        || overlays.bracket_col.is_some()
+        || !overlays.diagnostics.is_empty()
+        || overlays.yank_flash.is_some()
+        || !overlays.ai_selection_ranges.is_empty()
+        || !text.concealed_links.is_empty()
+        || !overlays.background_ranges.is_empty()
+        || any_decoration
+}
+
+/// Draws a line of up to 4096 bytes: prepares its text, computes the
+/// overlays, then emits it through the detailed or simple renderer.
+fn emit_legacy_line(
+    ctx: &BufferRenderContext<'_>,
+    state: &mut RenderState<'_>,
+    line: &LineFrame<'_>,
+) {
+    let line_idx = line.line_idx;
+    let text = LegacyLineText::new(ctx, line_idx, line.is_cursor_line_for_conceal);
+    let overlays = legacy_overlays(ctx, &mut state.hl_shift_buffers, line_idx, &text);
+
+    if needs_detailed_rendering(ctx, line, &text, &overlays) {
+        emit_detailed_line(ctx, state, line, &text, &overlays);
+    } else {
+        emit_simple_line(ctx, state, line, text.visible());
+    }
+}
+
+/// Styles a rendered line with the overlays that are applied after the
+/// character-by-character pass: cursorline, yank flash, AI selection,
+/// concealed links and the matching bracket.
+fn apply_legacy_overlays(
+    ctx: &BufferRenderContext<'_>,
+    line: &LineFrame<'_>,
+    text: &LegacyLineText,
+    overlays: &LegacyOverlays,
+    rendered: &mut Line<'static>,
+) {
+    // Apply cursorline background if this is the cursor line
+    if line.is_cursor_line && overlays.yank_flash.is_none() {
+        let cursorline_bg = Color::Rgb(40, 40, 50); // Subtle dark blue background
+        for span in &mut rendered.spans {
+            if span.style.bg.is_none() || span.style.bg == Some(Color::Reset) {
+                span.style = span.style.bg(cursorline_bg);
+            }
+        }
+    }
+
+    // Apply yank flash highlight
+    if let Some(col_range) = overlays.yank_flash {
+        let flash_bg = Color::Rgb(60, 50, 20); // Warm amber glow
+        match col_range {
+            None => {
+                // Linewise flash: highlight entire line
+                for span in &mut rendered.spans {
+                    span.style = span.style.bg(flash_bg);
+                }
+            }
+            Some((start_col, end_col)) => {
+                // Character-wise flash: highlight column range
+                apply_bg_to_column_range(rendered, start_col, end_col, flash_bg);
+            }
+        }
+    }
+
+    // Preserve syntax colors while making an interactive walkthrough
+    // more prominent than an ordinary AI-prompt selection.
+    let ai_selection_bg = if ctx.walkthrough {
+        WALKTHROUGH_SELECTION_BG
+    } else {
+        Color::Rgb(62, 70, 82)
+    };
+    for (start_col, end_col) in &overlays.ai_selection_ranges {
+        apply_bg_to_column_range(rendered, *start_col, *end_col, ai_selection_bg);
+    }
+
+    // Apply concealed link underline styling
+    if !text.concealed_links.is_empty() {
+        let link_color = Color::Rgb(100, 149, 237); // Cornflower blue
+        for link in &text.concealed_links {
+            apply_fg_modifier_to_column_range(
+                rendered,
+                link.view_start,
+                link.view_end,
+                link_color,
+                Modifier::UNDERLINED,
+            );
+        }
+    }
+
+    // Apply bracket highlighting
+    if let Some(col) = overlays.bracket_col {
+        let bracket_style = Style::default()
+            .fg(Color::Yellow)
+            .add_modifier(Modifier::BOLD);
+        apply_style_at_column(rendered, col, bracket_style);
+    }
+}
+
+/// Draws a line through the character-by-character renderer, caches it, and
+/// emits its rows.
+fn emit_detailed_line(
+    ctx: &BufferRenderContext<'_>,
+    state: &mut RenderState<'_>,
+    line: &LineFrame<'_>,
+    text: &LegacyLineText,
+    overlays: &LegacyOverlays,
+) {
+    let line_idx = line.line_idx;
+    let mut rendered = render_line_with_highlights(
+        ctx.theme,
+        text.visible(),
+        overlays.visual_selection.clone(),
+        &overlays.search_matches,
+        &overlays.syntax_highlights,
+        &overlays.diagnostics,
+        &text.control_ranges,
+        &overlays.background_ranges,
+    );
+    apply_legacy_overlays(ctx, line, text, overlays, &mut rendered);
+
+    // Apply decorations from the unified DecorationMap BEFORE
+    // caching.  The cache key includes dec_gen so it misses when
+    // decorations change.  Storing the decorated line ensures
+    // cache-hit frames render the same decorations that cursor
+    // positioning (inline_width_before) accounts for.
+    //
+    // Step E: read projected offsets from the per-frame
+    // projection cache built before the loop.  In steady state
+    // (accumulator keeps `source_version` current) this yields
+    // the same result as the stored offsets; when Step F removes
+    // the accumulator the projection becomes the sole source of
+    // truth.
+    let decorations = LineDecorations::split(ctx.projected_decorations.for_line(line_idx));
+
+    if !decorations.inline.is_empty() {
+        let line_start_offset = ctx.buffer.rope().line_to_char(line_idx);
+        apply_inline_decorations(
+            &mut rendered,
+            &decorations.inline,
+            &text.char_mapping,
+            ctx.h_offset,
+            ctx.wrap,
+            line_start_offset,
+        );
+    }
+
+    // Store in cache AFTER decorations so cache-hit frames
+    // match cursor positioning.
+    state
+        .line_cache
+        .put(line.cache_key, rendered.clone(), line.is_stable);
+
+    if ctx.has_wrap {
+        emit_wrapped_rows(ctx, &mut state.out, line, rendered, &decorations.eol);
+    } else {
+        emit_unwrapped_row(ctx, &mut state.out, line, rendered, &decorations.eol);
+    }
+}
+
+/// Draws a line with no highlighting: plain text padded to the render width
+/// and, under soft wrap, split by display width.
+fn emit_simple_line(
+    ctx: &BufferRenderContext<'_>,
+    state: &mut RenderState<'_>,
+    line: &LineFrame<'_>,
+    line_text: &str,
+) {
+    // Simple rendering path (no highlighting) — always stable
+    let simple_line = Line::from(line_text.to_string());
+    state.line_cache.put(line.cache_key, simple_line, true);
+
+    if ctx.has_wrap {
+        emit_simple_wrapped_rows(ctx, &mut state.out, line.line_idx, line_text);
+    } else {
+        // No wrap: pad simple lines too
+        let line_display_len = unicode_width::UnicodeWidthStr::width(line_text);
+        let line_text = if line_display_len < ctx.render_width {
+            format!(
+                "{}{}",
+                line_text,
+                " ".repeat(ctx.render_width - line_display_len)
+            )
+        } else {
+            line_text.to_string()
+        };
+        state
+            .out
+            .push_row(ctx, line.line_idx, false, &[], Line::from(line_text));
+    }
+}
+
+fn emit_simple_wrapped_rows(
+    ctx: &BufferRenderContext<'_>,
+    out: &mut RowOutput,
+    line_idx: usize,
+    line_text: &str,
+) {
+    if line_text.is_empty() {
+        out.push_row(ctx, line_idx, false, &[], ctx.blank_row());
+        return;
+    }
+
+    // Split by display width, not char count — CJK/emoji
+    // characters are width 2 and would overflow the terminal
+    // row if counted as 1.
+    let mut chunk_idx = 0;
+    let mut row_text = String::new();
+    let mut row_width = 0;
+
+    for grapheme in line_text.graphemes(true) {
+        let ch_width = grapheme_display_width(grapheme);
+
+        if row_width + ch_width > ctx.text_width && !row_text.is_empty() {
+            // Flush current row
+            if !out.has_room(ctx) {
+                break;
+            }
+            let pad = ctx.render_width.saturating_sub(row_width);
+            if pad > 0 {
+                row_text.push_str(&" ".repeat(pad));
+            }
+            out.push_row(
+                ctx,
+                line_idx,
+                chunk_idx > 0,
+                &[],
+                Line::from(std::mem::take(&mut row_text)),
+            );
+            chunk_idx += 1;
+            row_width = 0;
+        }
+
+        row_text.push_str(grapheme);
+        row_width += ch_width;
+    }
+
+    // Flush the last row
+    if !row_text.is_empty() && out.has_room(ctx) {
+        let pad = ctx.render_width.saturating_sub(row_width);
+        if pad > 0 {
+            row_text.push_str(&" ".repeat(pad));
+        }
+        out.push_row(ctx, line_idx, chunk_idx > 0, &[], Line::from(row_text));
+    }
 }
 
 /// A diagnostic range remapped to expanded char indices for rendering
