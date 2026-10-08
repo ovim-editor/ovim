@@ -4,7 +4,6 @@ use super::{StreamChunk, ToolCallInfo};
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::io::Read;
 use std::path::PathBuf;
 use std::process::Stdio;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
@@ -13,6 +12,8 @@ use tokio::sync::mpsc::UnboundedSender;
 #[path = "claude/approval.rs"]
 mod approval;
 pub(crate) use approval::permission_summary;
+#[path = "claude/sdk_install.rs"]
+mod sdk_install;
 
 const MAX_EVENT_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const SDK_VERSION: &str = "0.3.278";
@@ -313,10 +314,10 @@ async fn read_event(reader: &mut (impl AsyncBufRead + Unpin)) -> Result<Option<E
 
 pub(crate) async fn stream(request: Request, tx: UnboundedSender<StreamChunk>) -> Result<()> {
     let directory = tempfile::Builder::new().prefix("ovim-claude-").tempdir()?;
-    let mut sdk = Vec::new();
-    flate2::read::GzDecoder::new(include_bytes!("claude/sdk.mjs.gz").as_slice())
-        .read_to_end(&mut sdk)?;
-    std::fs::write(directory.path().join("sdk.mjs"), sdk)?;
+    std::fs::copy(
+        sdk_install::ensure_sdk().await?,
+        directory.path().join("sdk.mjs"),
+    )?;
     std::fs::write(
         directory.path().join("editor-mcp.mjs"),
         include_str!("claude/editor-mcp.mjs"),
@@ -612,19 +613,6 @@ mod tests {
         let other = tempfile::tempdir().unwrap();
         std::fs::create_dir(other.path().join(".claude")).unwrap();
         assert!(has_project_configuration(other.path()));
-    }
-
-    #[test]
-    fn shipped_sdk_is_the_unmodified_pinned_module() {
-        use sha2::{Digest, Sha256};
-        let mut sdk = Vec::new();
-        flate2::read::GzDecoder::new(include_bytes!("claude/sdk.mjs.gz").as_slice())
-            .read_to_end(&mut sdk)
-            .unwrap();
-        assert_eq!(
-            format!("{:x}", Sha256::digest(sdk)),
-            "d768bb75542ea853a66c570bd82b010a7b843f4949ab3ebb20e9d1f2a27af881"
-        );
     }
 
     #[cfg(unix)]

@@ -449,8 +449,11 @@ Claude's own terminal flow:
 claude auth login
 ```
 
-Ovim includes a pinned, unmodified SDK module. It does not install npm packages
-on startup, read Claude credential files, or implement its own Claude login.
+The SDK is not bundled with Ovim. The first Claude Agent chat installs the
+pinned version (`@anthropic-ai/claude-agent-sdk` 0.3.278) with npm into
+`~/.cache/ovim/claude-agent-sdk/` and checks it against a known hash; later
+chats reuse it. Ovim does not read Claude credential files or implement its own
+Claude login.
 Your usual Claude environment and user settings apply. Account or
 organization restrictions reported by Claude also apply in Ovim.
 
