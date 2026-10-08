@@ -24,6 +24,25 @@ impl RegisterContent {
     fn new(text: String, reg_type: RegisterType) -> Self {
         Self { text, reg_type }
     }
+
+    /// Appends to the register (`"Ayy`). Characterwise text joins the last
+    /// line of the old text; a linewise side makes the result linewise, each
+    /// part on its own lines.
+    fn append(&mut self, text: &str, reg_type: RegisterType) {
+        if self.reg_type == RegisterType::Line || reg_type == RegisterType::Line {
+            if !self.text.is_empty() && !self.text.ends_with('\n') {
+                self.text.push('\n');
+            }
+            self.text.push_str(text);
+            if !self.text.ends_with('\n') {
+                self.text.push('\n');
+            }
+            self.reg_type = RegisterType::Line;
+        } else {
+            self.text.push_str(text);
+            self.reg_type = reg_type;
+        }
+    }
 }
 
 /// In-memory register contents, independent of external clipboard access.
@@ -168,10 +187,7 @@ impl RegisterManager {
                 self.storage
                     .registers
                     .entry(lowercase)
-                    .and_modify(|v| {
-                        v.text.push_str(&value);
-                        v.reg_type = reg_type;
-                    })
+                    .and_modify(|v| v.append(&value, reg_type))
                     .or_insert(content);
             }
             _ => {}

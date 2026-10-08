@@ -2063,8 +2063,9 @@ impl Editor {
                 _ => {
                     self.registers
                         .set_with_type(Some(reg), text.clone(), reg_type);
-                    // Also update unnamed + yank register (Vim behavior)
-                    self.registers.yank_with_type(text.clone(), reg_type);
+                    // The unnamed register follows the named one (all of it
+                    // after an append) but the yank register `0` is left alone.
+                    self.unnamed_follows_register(reg);
                 }
             }
         } else {
@@ -2074,6 +2075,12 @@ impl Editor {
         if !self.options.clipboard.is_empty() {
             self.registers.set_clipboard(text);
         }
+    }
+
+    /// Points the unnamed register at what `register` now holds.
+    fn unnamed_follows_register(&mut self, register: char) {
+        let (text, reg_type) = self.registers.get_with_type(Some(register));
+        self.registers.set_with_type(None, text, reg_type);
     }
 
     /// Deletes text and stores in the appropriate register (pending_register or default)
@@ -2105,7 +2112,7 @@ impl Editor {
                         .set_with_type(Some(reg), text.clone(), reg_type);
                     // Explicit-register deletes also update unnamed, but do not
                     // rotate numbered or small-delete registers.
-                    self.registers.set_with_type(None, text.clone(), reg_type);
+                    self.unnamed_follows_register(reg);
                 }
             }
         } else {
