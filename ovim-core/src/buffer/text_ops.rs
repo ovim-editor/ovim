@@ -1093,6 +1093,13 @@ impl Buffer {
         let end_char = grapheme_to_char_col(&line_text, GraphemeCol(grapheme_col.0 + count));
 
         let deleted = self.delete_range(line_idx, start_char, line_idx, end_char);
+        if ch == '\n' {
+            // `r<CR>`: the characters give way to a single line break.
+            self.insert_text_at(line_idx, start_char, "\n");
+            self.cursor_mut()
+                .set_position(line_idx + 1, GraphemeCol::ZERO);
+            return deleted;
+        }
         let replacement = ch.to_string().repeat(count);
         self.insert_text_at(line_idx, start_char, &replacement);
 

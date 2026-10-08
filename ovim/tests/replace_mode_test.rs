@@ -72,10 +72,9 @@ fn test_r_with_newline() {
         .press('r')
         .press_enter(); // Replace 'w' with newline
 
-    // In vim, r<Enter> replaces char with newline, splitting the line
-    // Actual behavior: stays on same line (newline replaces char in place)
-    assert_eq!(test.buffer_content(), "hello world\n");
-    test.assert_cursor(0, 6);
+    // nvim: r<Enter> replaces the character with a line break
+    assert_eq!(test.buffer_content(), "hello \norld\n");
+    test.assert_cursor(1, 0);
 }
 
 // ============================================================================

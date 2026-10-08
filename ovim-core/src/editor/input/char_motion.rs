@@ -37,6 +37,12 @@ pub fn handle_char_motion(
         return Ok(());
     }
 
+    // `r<CR>` replaces the characters with a line break
+    let key = match (motion, key.code) {
+        (CharMotion::Replace, KeyCode::Enter) => KeyEvent::new(KeyCode::Char('\n'), key.modifiers),
+        _ => key,
+    };
+
     // We need a character to proceed
     let KeyCode::Char(target) = key.code else {
         // Non-character key - cancel
