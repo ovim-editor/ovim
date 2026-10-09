@@ -42,16 +42,33 @@ pub(super) fn truncate_with_ellipsis(text: &str, max_width: usize) -> String {
 // Styled Word Wrap
 // ---------------------------------------------------------------------------
 
-/// Wraps a styled `Line` (multi-span) into rows fitting within `max_width`.
-/// Preserves span styles and moves a whole word to the next row whenever that
-/// word fits there. Only words wider than a complete row are split.
+/// A wrapped row and its visible byte range in the original styled line.
+pub(super) struct WrappedChatLine {
+    pub(super) spans: Vec<Span<'static>>,
+    pub(super) source: std::ops::Range<usize>,
+}
+
+/// Wrap styled text without splitting words that fit on a complete row.
 pub(super) fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Vec<Span<'static>>> {
+    styled_word_wrap_line_with_ranges(line, max_width)
+        .into_iter()
+        .map(|row| row.spans)
+        .collect()
+}
+
+pub(super) fn styled_word_wrap_line_with_ranges(
+    line: &Line<'_>,
+    max_width: usize,
+) -> Vec<WrappedChatLine> {
     if max_width == 0 {
-        return vec![line
-            .spans
-            .iter()
-            .map(|s| Span::styled(s.content.to_string(), s.style))
-            .collect()];
+        return vec![WrappedChatLine {
+            spans: line
+                .spans
+                .iter()
+                .map(|span| Span::styled(span.content.to_string(), span.style))
+                .collect(),
+            source: 0..line.spans.iter().map(|span| span.content.len()).sum(),
+        }];
     }
 
     let mut text = String::new();
@@ -65,7 +82,10 @@ pub(super) fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Ve
     }
 
     if text.is_empty() {
-        return vec![vec![]];
+        return vec![WrappedChatLine {
+            spans: vec![],
+            source: 0..0,
+        }];
     }
 
     wrap_chat_input_rows(&text, max_width, 4)
@@ -81,14 +101,18 @@ pub(super) fn styled_word_wrap_line(line: &Line<'_>, max_width: usize) -> Vec<Ve
             let visible_end = trailing_whitespace
                 .map(|index| row.visible_start + index)
                 .unwrap_or(row.end);
-            styled_ranges
+            let spans = styled_ranges
                 .iter()
                 .filter_map(|&(style_start, style_end, style)| {
                     let start = row.visible_start.max(style_start);
                     let end = visible_end.min(style_end);
                     (start < end).then(|| Span::styled(text[start..end].to_string(), style))
                 })
-                .collect()
+                .collect();
+            WrappedChatLine {
+                spans,
+                source: row.visible_start..visible_end,
+            }
         })
         .collect()
 }

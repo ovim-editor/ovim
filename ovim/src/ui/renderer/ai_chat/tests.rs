@@ -1163,3 +1163,229 @@ fn chat_text_selection_highlights_only_the_selected_columns() {
         .iter()
         .any(|span| { span.content == "cd" && span.style.bg == Some(Color::Rgb(74, 96, 145)) }));
 }
+
+fn append_assistant_link_message(editor: &mut Editor, content: &str) {
+    let chat = editor.ai_state.chat.as_ref().unwrap();
+    let key = (chat.origin_buffer_id, chat.opts.name.clone());
+    editor
+        .ai_state
+        .conversations
+        .get_mut(&key)
+        .unwrap()
+        .append_assistant_message(content.into(), "model".into());
+}
+
+fn chat_mouse(
+    editor: &mut Editor,
+    kind: ovim_core::MouseEventKind,
+    col: u16,
+    row: u16,
+) -> Option<String> {
+    ovim_core::editor::handle_mouse_event(
+        editor,
+        ovim_core::MouseEvent {
+            kind,
+            column: col,
+            row,
+        },
+    )
+    .unwrap()
+}
+
+#[test]
+fn chat_links_activate_from_rendered_cells_after_wrapping_scrolling_and_cache_hits() {
+    use ovim_core::{MouseButton, MouseEventKind};
+    let mut editor = Editor::default();
+    editor
+        .open_ai_chat(ovim_core::ai::ChatOpts::default())
+        .unwrap();
+    append_assistant_link_message(
+        &mut editor,
+        concat!(
+            "Before\n\n[世界 long repeated link label](https://example.com/first)\n\n",
+            "[世界 long repeated link label](https://example.com/second)\n\n",
+            "| Source | Purpose |\n| --- | --- |\n| [Guide](https://example.com/table) | Help |\n",
+            "\nMore\n\nMore\n\nMore\n\nEnd"
+        ),
+    );
+    let theme = crate::syntax::Theme::default();
+    let mut cache = LineRenderCache::new();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    let mut activated = std::collections::BTreeSet::new();
+    for scroll in [0, 3, 7, 12, 20] {
+        editor.ai_chat_scroll_viewport_up(scroll);
+        for _ in 0..2 {
+            terminal
+                .draw(|frame| {
+                    super::render_chat_panel_cached(
+                        frame,
+                        &mut editor,
+                        Rect::new(40, 0, 24, 22),
+                        &theme,
+                        &mut cache,
+                    )
+                })
+                .unwrap();
+        }
+        assert!(cache.chat_hits > 0);
+        let area = editor.render_cache.ai_chat_interactions.history.unwrap();
+        let start = editor.render_cache.ai_chat_last_visible_start_row;
+        let end = editor.render_cache.ai_chat_last_visible_end_row;
+        let links = editor.render_cache.ai_chat_interactions.links.clone();
+        for link in links.iter().filter(|link| (start..end).contains(&link.row)) {
+            let row = area.y + (link.row - start) as u16;
+            for column in link.columns.clone() {
+                let col = area.x + column as u16;
+                assert!(area.contains(col, row));
+                assert!(chat_mouse(
+                    &mut editor,
+                    MouseEventKind::Down(MouseButton::Left),
+                    col,
+                    row
+                )
+                .is_none());
+                assert_eq!(
+                    chat_mouse(&mut editor, MouseEventKind::Up(MouseButton::Left), col, row)
+                        .as_deref(),
+                    Some(link.destination.as_str())
+                );
+                activated.insert(link.destination.clone());
+            }
+        }
+    }
+    assert_eq!(
+        activated,
+        [
+            "https://example.com/first",
+            "https://example.com/second",
+            "https://example.com/table"
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect()
+    );
+}
+
+#[test]
+fn dragging_a_chat_link_selects_text_instead_of_opening_it() {
+    use ovim_core::{MouseButton, MouseEventKind};
+    let mut editor = Editor::default();
+    editor.registers_mut().use_memory_clipboard();
+    editor
+        .open_ai_chat(ovim_core::ai::ChatOpts::default())
+        .unwrap();
+    append_assistant_link_message(&mut editor, "[Guide](https://example.com/guide)");
+    let theme = crate::syntax::Theme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+        })
+        .unwrap();
+    let link = editor.render_cache.ai_chat_interactions.links[0].clone();
+    let area = editor.render_cache.ai_chat_interactions.history.unwrap();
+    let row = area.y + (link.row - editor.render_cache.ai_chat_last_visible_start_row) as u16;
+    let col = area.x + link.columns.start as u16;
+    chat_mouse(
+        &mut editor,
+        MouseEventKind::Down(MouseButton::Left),
+        col,
+        row,
+    );
+    chat_mouse(
+        &mut editor,
+        MouseEventKind::Drag(MouseButton::Left),
+        col + 3,
+        row,
+    );
+    assert!(chat_mouse(
+        &mut editor,
+        MouseEventKind::Up(MouseButton::Left),
+        col + 3,
+        row
+    )
+    .is_none());
+    assert_eq!(editor.mode(), ovim_core::mode::Mode::AiChat);
+    chat_mouse(
+        &mut editor,
+        MouseEventKind::Down(MouseButton::Left),
+        col,
+        row,
+    );
+    assert!(chat_mouse(
+        &mut editor,
+        MouseEventKind::Up(MouseButton::Left),
+        col - 1,
+        row
+    )
+    .is_none());
+}
+
+#[test]
+fn streaming_chat_links_have_click_targets() {
+    let mut editor = Editor::default();
+    editor
+        .open_ai_chat(ovim_core::ai::ChatOpts::default())
+        .unwrap();
+    editor.ai_state.chat.as_mut().unwrap().streaming_content =
+        Some("[Guide](https://example.com/live)".into());
+    let theme = crate::syntax::Theme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+        })
+        .unwrap();
+    assert_eq!(editor.render_cache.ai_chat_interactions.links.len(), 1);
+    assert_eq!(
+        editor.render_cache.ai_chat_interactions.links[0].destination,
+        "https://example.com/live"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn clicking_a_file_link_on_the_drawn_terminal_opens_its_source() {
+    use ovim_core::{MouseButton, MouseEventKind};
+    let root = tempfile::tempdir().unwrap();
+    let file = root.path().join("source.rs");
+    std::fs::write(&file, "one\ntwo\nthree\n").unwrap();
+    let mut editor = Editor::default();
+    editor.set_workspace_root(root.path()).unwrap();
+    editor
+        .open_ai_chat(ovim_core::ai::ChatOpts::default())
+        .unwrap();
+    append_assistant_link_message(&mut editor, "Open [Source](source.rs:2:2).");
+    let theme = crate::syntax::Theme::default();
+    let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+    terminal
+        .draw(|frame| {
+            super::render_chat_panel(frame, &mut editor, Rect::new(40, 0, 40, 22), &theme)
+        })
+        .unwrap();
+
+    // Locate the actual drawn label, independently of the link hit-test metadata.
+    let buffer = terminal.backend().buffer();
+    let (col, row) = (0..24)
+        .flat_map(|row| (40..75).map(move |col| (col, row)))
+        .find(|&(col, row)| {
+            (col..col + 6)
+                .map(|x| buffer[(x, row)].symbol())
+                .collect::<String>()
+                == "Source"
+        })
+        .expect("Source label on the terminal");
+    chat_mouse(
+        &mut editor,
+        MouseEventKind::Down(MouseButton::Left),
+        col,
+        row,
+    );
+    assert!(chat_mouse(&mut editor, MouseEventKind::Up(MouseButton::Left), col, row).is_none());
+    assert_eq!(editor.mode(), ovim_core::mode::Mode::Normal);
+    assert_eq!(
+        editor.buffer().file_path(),
+        file.canonicalize().unwrap().to_str()
+    );
+    assert_eq!(editor.buffer().cursor().line(), 1);
+    assert_eq!(editor.buffer().cursor().col().0, 1);
+}

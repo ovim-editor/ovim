@@ -1,5 +1,6 @@
 use crate::syntax::Theme;
 use ovim_core::ai::chat_types::{ChatMessage, ChatRole};
+use ovim_core::editor::ChatLink;
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -8,7 +9,7 @@ use std::hash::{Hash, Hasher};
 
 use super::ai_chat_style::{message_row_style, MessageRowStyle, ACCENT_USER, TEXT_DIM};
 use super::ai_chat_text::{
-    styled_word_wrap_line, text_display_width, truncate_with_ellipsis, word_wrap,
+    styled_word_wrap_line_with_ranges, text_display_width, truncate_with_ellipsis, word_wrap,
 };
 use super::line_cache::ChatBubbleCacheKey;
 
@@ -54,6 +55,7 @@ pub(super) fn chat_bubble_cache_key(
 pub(super) struct ChatBubbleRender {
     pub(super) lines: Vec<Line<'static>>,
     pub(super) images: Vec<BubbleImagePlacement>,
+    pub(super) links: Vec<ChatLink>,
     /// Pending math images must be polled again instead of freezing the raw
     /// LaTeX fallback in the chat-bubble cache.
     pub(super) cacheable: bool,
@@ -206,6 +208,7 @@ pub(super) fn render_chat_bubble(
     let text_style = Style::default().fg(row_style.text_fg);
     let mut lines = Vec::new();
     let mut images = Vec::new();
+    let mut links = Vec::new();
     let mut cacheable = true;
 
     let label = match message.role {
@@ -301,6 +304,7 @@ pub(super) fn render_chat_bubble(
             &md_elements,
             &mut lines,
             &mut images,
+            &mut links,
             panel_width,
             inner_width,
             accent_glyph,
@@ -353,6 +357,7 @@ pub(super) fn render_chat_bubble(
     ChatBubbleRender {
         lines,
         images,
+        links,
         cacheable,
     }
 }
@@ -362,6 +367,7 @@ fn append_assistant_markdown(
     elements: &[super::markdown::MarkdownElement],
     lines: &mut Vec<Line<'static>>,
     images: &mut Vec<BubbleImagePlacement>,
+    links: &mut Vec<ChatLink>,
     panel_width: usize,
     inner_width: usize,
     accent_glyph: &str,
@@ -383,6 +389,7 @@ fn append_assistant_markdown(
         append_ordinary_markdown(
             &ordinary,
             lines,
+            links,
             panel_width,
             inner_width,
             accent_glyph,
@@ -430,6 +437,7 @@ fn append_assistant_markdown(
             append_ordinary_markdown(
                 &[MarkdownElement::DisplayMath(math.clone())],
                 lines,
+                links,
                 panel_width,
                 inner_width,
                 accent_glyph,
@@ -442,6 +450,7 @@ fn append_assistant_markdown(
     append_ordinary_markdown(
         &ordinary,
         lines,
+        links,
         panel_width,
         inner_width,
         accent_glyph,
@@ -455,6 +464,7 @@ fn append_assistant_markdown(
 fn append_ordinary_markdown(
     elements: &[super::markdown::MarkdownElement],
     lines: &mut Vec<Line<'static>>,
+    links: &mut Vec<ChatLink>,
     panel_width: usize,
     inner_width: usize,
     accent_glyph: &str,
@@ -464,15 +474,36 @@ fn append_ordinary_markdown(
     if elements.is_empty() {
         return;
     }
-    let markdown_lines = super::markdown::render_markdown(elements, inner_width, Some(theme));
-    for markdown_line in &markdown_lines {
-        for row_spans in styled_word_wrap_line(markdown_line, inner_width) {
+    let (markdown_lines, markdown_links) =
+        super::markdown::render_markdown_with_links(elements, inner_width, Some(theme));
+    for (markdown_row, markdown_line) in markdown_lines.iter().enumerate() {
+        let text: String = markdown_line
+            .spans
+            .iter()
+            .map(|span| span.content.as_ref())
+            .collect();
+        for row in styled_word_wrap_line_with_ranges(markdown_line, inner_width) {
+            for link in markdown_links
+                .iter()
+                .filter(|link| link.row == markdown_row)
+            {
+                let start = row.source.start.max(link.bytes.start);
+                let end = row.source.end.min(link.bytes.end);
+                if start < end {
+                    let column = 2 + text_display_width(&text[row.source.start..start]);
+                    links.push(ChatLink {
+                        row: lines.len(),
+                        columns: column..column + text_display_width(&text[start..end]),
+                        destination: link.destination.clone(),
+                    });
+                }
+            }
             lines.push(render_card_styled_line(
                 panel_width,
                 accent_glyph,
                 row_style.accent,
                 row_style.body_bg,
-                row_spans,
+                row.spans,
             ));
         }
     }

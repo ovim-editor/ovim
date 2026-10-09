@@ -8,6 +8,7 @@ mod ai_chat_commands;
 mod ai_chat_exa;
 mod ai_chat_images;
 pub mod ai_chat_input;
+mod ai_chat_links;
 mod ai_chat_mutations;
 #[cfg(test)]
 mod ai_chat_parked_tests;
@@ -204,7 +205,7 @@ pub use picker::{
 pub use picker_state::PickerState;
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::{RegisterManager, RegisterType};
-pub use render_cache::RenderCache;
+pub use render_cache::{ChatLink, RenderCache};
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
 pub use services::EditorServices;

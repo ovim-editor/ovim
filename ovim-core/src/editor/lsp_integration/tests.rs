@@ -75,6 +75,8 @@ async fn switching_buffers_keeps_documents_open_and_deleting_closes_them() {
     let b = dir.path().join("B.java");
     std::fs::write(&a, "class A {}\n").unwrap();
     std::fs::write(&b, "class B {}\n").unwrap();
+    let a = a.canonicalize().unwrap();
+    let b = b.canonicalize().unwrap();
     let mut editor = Editor::default();
     editor.enable_lsp();
     editor.load_file(&a).unwrap();

@@ -412,7 +412,7 @@ mod tests {
         let path = dir.path().join("a.txt");
         fs::write(&path, "old\n").unwrap();
         let mut overlays = HashMap::new();
-        overlays.insert(path.clone(), "new new\n".to_string());
+        overlays.insert(path.canonicalize().unwrap(), "new new\n".to_string());
         let outcome =
             search_project(dir.path(), &opts("new"), &overlays, &AtomicBool::new(false)).unwrap();
         assert_eq!(outcome.match_count(), 2);

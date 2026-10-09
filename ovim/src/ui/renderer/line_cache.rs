@@ -54,6 +54,7 @@ pub(crate) struct CachedChatImage {
 pub(crate) struct CachedChatBubble {
     pub lines: Vec<Line<'static>>,
     pub images: Vec<CachedChatImage>,
+    pub links: Vec<ovim_core::editor::ChatLink>,
 }
 
 /// Per-frame inputs every cached line's validity depends on. Built once

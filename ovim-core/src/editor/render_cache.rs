@@ -4,6 +4,14 @@ pub struct ChatTextPoint {
     pub column: usize,
 }
 
+/// Link coordinates in the complete, wrapped chat history (before scrolling).
+#[derive(Debug, Clone)]
+pub struct ChatLink {
+    pub row: usize,
+    pub columns: std::ops::Range<usize>,
+    pub destination: String,
+}
+
 /// Hit-test geometry produced atomically by the latest chat render pass.
 /// Keeping these targets together prevents input from mixing stale controls
 /// from one frame with current controls from another.
@@ -18,6 +26,7 @@ pub struct ChatInteractionGeometry {
     pub effort_picker_options: Vec<(crate::Rect, String)>,
     pub permission_picker_options: Vec<(crate::Rect, String)>,
     pub history: Option<crate::Rect>,
+    pub links: Vec<ChatLink>,
     pub slash_completions: Vec<(crate::Rect, usize)>,
     pub branches: Vec<(crate::Rect, crate::ai::chat_types::NodeId)>,
     pub tool_replays: Vec<(crate::Rect, String)>,
@@ -167,6 +176,11 @@ mod tests {
             effort_picker_options: vec![(rect(), "medium".into())],
             permission_picker_options: vec![(rect(), "auto".into())],
             history: Some(rect()),
+            links: vec![super::ChatLink {
+                row: 1,
+                columns: 2..5,
+                destination: "https://example.com".into(),
+            }],
             slash_completions: vec![(rect(), 1)],
             branches: vec![(rect(), 2)],
             tool_replays: vec![(rect(), "call-1".into())],
@@ -183,6 +197,7 @@ mod tests {
         assert!(interactions.effort_picker_options.is_empty());
         assert!(interactions.permission_picker_options.is_empty());
         assert!(interactions.history.is_none());
+        assert!(interactions.links.is_empty());
         assert!(interactions.slash_completions.is_empty());
         assert!(interactions.branches.is_empty());
         assert!(interactions.tool_replays.is_empty());

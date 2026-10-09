@@ -35,6 +35,7 @@ pub(super) fn render_message_history(
 ) {
     editor.render_cache.ai_chat_interactions.history =
         Some(crate::key_convert::convert_ratatui_rect(area));
+    editor.render_cache.ai_chat_interactions.links.clear();
     editor.render_cache.ai_chat_last_queued_row_spans.clear();
     editor.render_cache.ai_chat_last_shell_row_spans.clear();
     let messages = editor.ai_chat_messages();
@@ -98,6 +99,7 @@ pub(super) fn render_message_history(
     let mut branch_controls = Vec::new();
     let mut tool_replay_controls = Vec::new();
     let mut inline_images = Vec::new();
+    let mut history_links = Vec::new();
     for (idx, msg) in messages.iter().enumerate() {
         let is_selected = focus == ChatFocus::MessageHistory && Some(idx) == selected_idx;
 
@@ -184,6 +186,7 @@ pub(super) fn render_message_history(
             if let Some(cached) = cache.get_chat_bubble(&key) {
                 ChatBubbleRender {
                     lines: cached.lines,
+                    links: cached.links,
                     images: cached
                         .images
                         .into_iter()
@@ -214,6 +217,7 @@ pub(super) fn render_message_history(
                         key,
                         CachedChatBubble {
                             lines: bubble.lines.clone(),
+                            links: bubble.links.clone(),
                             images: bubble
                                 .images
                                 .iter()
@@ -252,6 +256,10 @@ pub(super) fn render_message_history(
                 previous,
                 next,
             });
+        }
+        for mut link in bubble.links {
+            link.row += msg_row_start;
+            history_links.push(link);
         }
         for image in bubble.images {
             inline_images.push(HistoryImagePlacement {
@@ -325,6 +333,10 @@ pub(super) fn render_message_history(
                 editor.render_cache.terminal_image_support,
             );
             let msg_row_start = rendered_lines.len();
+            for mut link in bubble.links {
+                link.row += msg_row_start;
+                history_links.push(link);
+            }
             for image in bubble.images {
                 inline_images.push(HistoryImagePlacement {
                     row: msg_row_start + image.row,
@@ -422,6 +434,7 @@ pub(super) fn render_message_history(
 
     // Display from bottom of area. While pinned, keep viewport stable even
     // when new streaming rows are appended.
+    editor.render_cache.ai_chat_interactions.links = history_links;
     let visible_rows = area.height as usize;
     let total = rendered_lines.len();
     editor.render_cache.ai_chat_last_total_rows = total;

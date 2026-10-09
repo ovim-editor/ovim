@@ -828,6 +828,7 @@ struct Fixture {
 
 fn fixture(case: &Case) -> Fixture {
     let mut editor = Editor::with_content(case.text);
+    editor.registers_mut().use_memory_clipboard();
     let mut cmd = case.cmd.to_string();
     let dir = if case.file {
         let dir = tempfile::tempdir().unwrap();

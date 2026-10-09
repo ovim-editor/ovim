@@ -45,7 +45,7 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Opti
             handle_left_drag(editor, event.column, event.row)?;
         }
         MouseEventKind::Up(MouseButton::Left) => {
-            handle_left_release(editor)?;
+            return handle_left_release(editor, event.column, event.row);
         }
         MouseEventKind::ScrollUp => {
             handle_scroll(editor, true, event.column, event.row)?;
@@ -826,20 +826,43 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     Ok(())
 }
 
-fn handle_left_release(editor: &mut Editor) -> Result<()> {
+fn handle_left_release(editor: &mut Editor, col: u16, row: u16) -> Result<Option<String>> {
     if editor.render_cache.test_panel_drag.take().is_some() {
-        return Ok(());
+        return Ok(None);
     }
     if editor.render_cache.ai_chat_separator_dragging {
         editor.render_cache.ai_chat_separator_dragging = false;
-        return Ok(());
+        return Ok(None);
     }
     if editor.render_cache.ai_chat_text_selecting {
+        let destination = editor
+            .render_cache
+            .ai_chat_text_selection
+            .filter(|selection| !selection.moved)
+            .and_then(|selection| {
+                let (row, column) = ai_chat_screen_position(editor, col, row)?;
+                let point = crate::editor::render_cache::ChatTextPoint { row, column };
+                if selection.anchor != point {
+                    return None;
+                }
+                editor
+                    .render_cache
+                    .ai_chat_interactions
+                    .links
+                    .iter()
+                    .find(|link| link.row == row && link.columns.contains(&column))
+                    .map(|link| link.destination.clone())
+            });
         editor.finish_ai_chat_text_selection();
-        return Ok(());
+        if editor.mode() == Mode::AiChat {
+            if let Some(destination) = destination {
+                return Ok(editor.open_ai_chat_link(&destination));
+            }
+        }
+        return Ok(None);
     }
     editor.render_cache.mouse_state.is_dragging = false;
-    Ok(())
+    Ok(None)
 }
 
 fn ai_chat_screen_position(editor: &Editor, col: u16, row: u16) -> Option<(usize, usize)> {
@@ -1042,7 +1065,7 @@ mod tests {
         assert_eq!(editor.test_panel().width_delta, 70);
         handle_left_drag(&mut editor, 200, 5).unwrap();
         assert_eq!(editor.test_panel().width_delta, -20);
-        handle_left_release(&mut editor).unwrap();
+        handle_left_release(&mut editor, 200, 5).unwrap();
         assert!(editor.render_cache.test_panel_drag.is_none());
         handle_left_drag(&mut editor, 60, 5).unwrap();
         assert_eq!(editor.test_panel().width_delta, -20);

@@ -661,6 +661,12 @@ top right of the editor; a paused approval uses an attention badge instead.
 Press Ctrl-C with the chat open to stop the current generation without closing
 or clearing the conversation; any partial response remains in history.
 
+In terminal chat, click a rendered Markdown link to open it. Website links open
+in your default browser; project-file links open in Ovim. File links can include
+`:line:column` or `#Lline` locations. Relative paths use the workspace root (or
+the chat's original file directory when there is no repository). Drag across a
+link to select and copy text instead. Opening a file preserves the conversation.
+
 Persisted conversations are not restored automatically when starting a new
 Ovim process. This avoids accidentally sending a large historical conversation
 to a provider. Start Ovim with `--resume` only when you explicitly want to
