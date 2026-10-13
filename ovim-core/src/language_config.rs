@@ -1126,6 +1126,30 @@ mod tests {
     }
 
     #[test]
+    fn embedded_npm_installs_pin_typescript_below_7() {
+        // TypeScript 7.x (the native port) ships no tsserver.js or
+        // tsserverlibrary.js, which every node-based server here loads. An
+        // unpinned `typescript` resolves to 7.x and the server can't start,
+        // and a "repair" reinstall just reproduces the same sandbox.
+        let (languages, companions) =
+            LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
+        let methods = languages
+            .iter()
+            .filter_map(|l| l.lsp.as_ref()?.auto_install.as_ref())
+            .chain(companions.iter().filter_map(|c| c.auto_install.as_ref()))
+            .map(|config| &config.method);
+        for method in methods {
+            for package in method.npm_packages() {
+                assert_ne!(
+                    package, "typescript",
+                    "unpinned typescript in npm auto-install {:?}",
+                    method
+                );
+            }
+        }
+    }
+
+    #[test]
     fn embedded_config_includes_astro_lsp_and_tailwind_companion() {
         let (languages, companions) =
             LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();

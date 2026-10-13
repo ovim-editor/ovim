@@ -158,7 +158,7 @@ impl LspStartup {
             file_path.to_string(),
             tokio::spawn(async move {
                 match approval {
-                    InstallApproval::None => initialize_configured_lsp(&request).await,
+                    InstallApproval::None => initialize_configured_lsp(&request, None).await,
                     InstallApproval::Server => install_approved(&request).await,
                     InstallApproval::Companion(id) => {
                         install_approved_companion(&request, &id).await

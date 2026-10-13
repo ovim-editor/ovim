@@ -59,10 +59,12 @@ fallback_commands = [
     "~/.local/share/pnpm/typescript-language-server"
 ]
 root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
-install_hint = "Install with: npm install -g typescript-language-server typescript"
+install_hint = "Install with: npm install -g typescript-language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
+# typescript@6 is pinned: typescript-language-server drives tsserver.js,
+# which TypeScript 7.x (the native port) no longer ships.
+method = { type = "npm", packages = ["typescript-language-server", "typescript@6"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -89,10 +91,12 @@ fallback_commands = [
     "~/.local/share/pnpm/typescript-language-server"
 ]
 root_markers = ["package.json", "tsconfig.json", "jsconfig.json", "node_modules"]
-install_hint = "Install with: npm install -g typescript-language-server typescript"
+install_hint = "Install with: npm install -g typescript-language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
+# typescript@6 is pinned: typescript-language-server drives tsserver.js,
+# which TypeScript 7.x (the native port) no longer ships.
+method = { type = "npm", packages = ["typescript-language-server", "typescript@6"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================
@@ -116,10 +120,12 @@ fallback_commands = [
     "~/.npm-global/bin/typescript-language-server"
 ]
 root_markers = ["package.json", "node_modules", ".git"]
-install_hint = "Install with: npm install -g typescript-language-server typescript"
+install_hint = "Install with: npm install -g typescript-language-server typescript@6"
 
 [language.lsp.auto_install]
-method = { type = "npm", packages = ["typescript-language-server", "typescript"], bin = "typescript-language-server" }
+# typescript@6 is pinned: typescript-language-server drives tsserver.js,
+# which TypeScript 7.x (the native port) no longer ships.
+method = { type = "npm", packages = ["typescript-language-server", "typescript@6"], bin = "typescript-language-server" }
 policy = "auto_on_missing_or_known_failure"
 
 # ============================================================================

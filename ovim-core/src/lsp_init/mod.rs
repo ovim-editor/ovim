@@ -19,7 +19,12 @@ use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 /// Install and initialize configured servers without borrowing the frontend.
-async fn initialize_configured_lsp(request: &InitRequest) {
+///
+/// `installed` is a server binary an approved install just produced. It wins
+/// over command resolution: a reinstall that repairs a failing start lands in
+/// ovim's sandbox, and resolving again could pick the same broken binary
+/// from PATH that failed in the first place.
+async fn initialize_configured_lsp(request: &InitRequest, installed: Option<&Path>) {
     let abs_path = &request.abs_path;
     let language = &request.language;
     let lang_config = &language.config;
@@ -28,7 +33,10 @@ async fn initialize_configured_lsp(request: &InitRequest) {
     };
 
     // Try to find LSP server binary (primary command + fallbacks)
-    let mut server_command = match find_lsp_command(lsp_config) {
+    let resolved = installed
+        .map(|path| path.to_string_lossy().into_owned())
+        .or_else(|| find_lsp_command(lsp_config));
+    let mut server_command = match resolved {
         Some(cmd) => cmd,
         None => {
             // LSP server not found - try auto-install if configured
@@ -277,8 +285,9 @@ async fn initialize_configured_lsp(request: &InitRequest) {
                         .await
                         {
                             InstallResult::Success(path) => {
-                                server_command = find_lsp_command(lsp_config)
-                                    .unwrap_or_else(|| path.to_string_lossy().to_string());
+                                // Retry the binary just installed; resolving
+                                // again could return the one that failed.
+                                server_command = path.to_string_lossy().into_owned();
                                 crate::lsp_info!(
                                     "LSP",
                                     "Auto-repair completed for {}. Retrying with '{}'",
@@ -815,12 +824,11 @@ async fn install_approved(request: &InitRequest) {
                 path.display()
             );
 
-            // Guard against an infinite consent loop: only re-run init if the
-            // binary is now discoverable. Re-running init when find_lsp_command
-            // still can't locate the server would drop straight back into the
-            // auto-install branch and re-raise the install prompt (the bug this
-            // guard fixes — seen with go/dotnet installs whose bin dirs aren't
-            // on PATH). If we can't find it, report an actionable status instead.
+            // Only start the server if command resolution can find it too:
+            // otherwise every later file open would drop straight back into
+            // the auto-install branch and re-raise the install prompt (seen
+            // with go/dotnet installs whose bin dirs aren't on PATH). Report
+            // an actionable status instead.
             if find_lsp_command(lsp_config).is_some() {
                 request
                     .status(format!(
@@ -828,8 +836,7 @@ async fn install_approved(request: &InitRequest) {
                         lsp_config.command
                     ))
                     .await;
-                // find_lsp_command will now succeed and skip auto-install.
-                initialize_configured_lsp(request).await;
+                initialize_configured_lsp(request, Some(&path)).await;
             } else {
                 request
                     .status(format!(
