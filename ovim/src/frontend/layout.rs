@@ -93,6 +93,20 @@ impl GutterWidths {
     }
 }
 
+/// Split reviews need the whole pane for their two source columns. Keep the
+/// configured limit intact so unified reviews and ordinary buffers restore it.
+pub fn effective_textwidth(editor: &Editor) -> Option<usize> {
+    if editor.is_diff_review_buffer()
+        && editor
+            .diff_review()
+            .is_some_and(|review| review.layout == DiffLayout::Split)
+    {
+        None
+    } else {
+        editor.options.textwidth
+    }
+}
+
 /// A panel that shares the width with the editor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Panel {

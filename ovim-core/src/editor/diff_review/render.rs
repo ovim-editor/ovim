@@ -41,9 +41,9 @@ const KEY_HINT: &str =
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum DiffLayout {
     /// One column, raw patch text: what `git diff` prints.
-    #[default]
     Unified,
     /// Old on the left, new on the right, with source line numbers.
+    #[default]
     Split,
 }
 

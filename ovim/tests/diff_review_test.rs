@@ -391,6 +391,8 @@ async fn saved_review_opens_context_outside_the_patch_after_source_deletion() {
 async fn leader_gd_opens_a_highlighted_review_in_a_new_tab() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     assert_eq!(test.editor.tab_count(), 1);
 
     test.keys(" gd");
@@ -423,6 +425,8 @@ async fn leader_gd_opens_a_highlighted_review_in_a_new_tab() {
 async fn bracket_c_walks_hunks_and_enter_opens_the_source_line() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
 
     test.keys("]c");
@@ -461,6 +465,8 @@ async fn bracket_c_walks_hunks_and_enter_opens_the_source_line() {
 async fn enter_on_a_removed_line_lands_where_the_removal_happened() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
 
     let removed = line_index_of(&test, "-two");
@@ -476,6 +482,8 @@ async fn enter_on_a_removed_line_lands_where_the_removal_happened() {
 async fn enter_on_a_file_row_jumps_to_that_file_and_opens_new_files() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
 
     let row = line_index_of(&test, "  A  b.txt  +1  [ ]");
@@ -494,6 +502,8 @@ async fn enter_on_a_file_row_jumps_to_that_file_and_opens_new_files() {
 async fn leader_gd_resumes_the_review_at_the_same_hunk_after_editing() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
 
     let four = line_index_of(&test, "+four");
@@ -545,6 +555,8 @@ async fn q_closes_the_review_and_drops_its_buffer() {
 async fn gitdiff_command_accepts_an_explicit_base() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
 
     let result = ovim_core::commands::execute_command(&mut test.editor, "GitDiff HEAD");
     assert!(
@@ -576,6 +588,8 @@ async fn on_the_default_branch_the_review_shows_uncommitted_changes() {
     fs::write(root.join("a.txt"), "one\nuncommitted\n").unwrap();
 
     let mut test = EditorTest::new("");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.editor.open_file(root.join("a.txt").as_path()).unwrap();
     test.keys(" gd");
 
@@ -651,7 +665,7 @@ fn line_containing(test: &EditorTest, needle: &str) -> usize {
 async fn the_patch_is_highlighted_with_each_file_s_own_grammar() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gd");
+    test.keys(" gds");
 
     // `let` inside an added line is a Rust keyword, not "an added line".
     let added = line_index_of(&test, "+    let x = 42;");
@@ -682,7 +696,7 @@ async fn the_patch_is_highlighted_with_each_file_s_own_grammar() {
 async fn changed_rows_carry_a_background_tint_and_context_rows_do_not() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gd");
+    test.keys(" gds");
 
     let added = line_index_of(&test, "+    let x = 42;");
     let removed = line_index_of(&test, "-    let x = 1;");
@@ -704,7 +718,7 @@ async fn changed_rows_carry_a_background_tint_and_context_rows_do_not() {
 async fn only_the_side_that_changed_is_tinted_in_the_split_layout() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gds");
+    test.keys(" gd");
 
     // A rewritten line pairs a removal on the left with an addition on the
     // right, so the row carries both tints and the band ends on the new side.
@@ -728,14 +742,14 @@ async fn only_the_side_that_changed_is_tinted_in_the_split_layout() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn s_switches_between_the_unified_and_split_layouts() {
+async fn split_is_default_and_s_switches_between_layouts() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
     test.keys(" gd");
-    assert!(buffer_text(&test).contains("diff --git a/a.rs b/a.rs"));
-    assert!(!buffer_text(&test).contains('│'));
-
-    test.keys("s");
+    assert_eq!(
+        test.editor.diff_review().unwrap().layout,
+        ovim_core::editor::DiffLayout::Split
+    );
 
     let text = buffer_text(&test);
     assert!(
@@ -764,7 +778,7 @@ async fn s_switches_between_the_unified_and_split_layouts() {
 async fn split_rows_align_after_expanding_tabs() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gds");
+    test.keys(" gd");
 
     // The added line is indented with a tab; both sides must still line up on
     // the separator column.
@@ -794,11 +808,11 @@ async fn split_rows_align_after_expanding_tabs() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
-async fn split_separator_tracks_the_rendered_viewport_center() {
+async fn split_separator_tracks_the_full_viewport_despite_textwidth() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.editor.options.textwidth = None;
-    test.keys(" gds");
+    test.editor.options.textwidth = Some(80);
+    test.keys(" gd");
 
     let render_at = |test: &mut EditorTest, columns| {
         ovim::ui::render_editor_to_ansi(&mut test.editor, columns, 40).unwrap();
@@ -810,6 +824,10 @@ async fn split_separator_tracks_the_rendered_viewport_center() {
         );
     };
     render_at(&mut test, 180);
+    assert_eq!(
+        test.editor.render_cache.last_buffer_area.unwrap().width,
+        179
+    );
 
     let separator = |test: &EditorTest| {
         let row = line_containing(test, "let x = 1;");
@@ -832,6 +850,18 @@ async fn split_separator_tracks_the_rendered_viewport_center() {
         resized.abs_diff(resized_center) <= 1,
         "separator at {resized}"
     );
+    assert_eq!(
+        test.editor.render_cache.last_buffer_area.unwrap().width,
+        239
+    );
+    assert_eq!(ovim::frontend::compute_text_width(&test.editor, 240), 239);
+    test.keys("s");
+    ovim::ui::render_editor_to_ansi(&mut test.editor, 240, 40).unwrap();
+    assert_eq!(test.editor.render_cache.last_buffer_area.unwrap().width, 79);
+    assert_eq!(test.editor.options.textwidth, Some(80));
+    test.keys("q");
+    ovim::ui::render_editor_to_ansi(&mut test.editor, 240, 40).unwrap();
+    assert_eq!(test.editor.render_cache.last_buffer_area.unwrap().width, 80);
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
@@ -840,7 +870,7 @@ async fn split_review_uses_its_source_numbers_instead_of_an_outer_gutter() {
     let mut test = fixture.open();
     test.editor.options.number = true;
     test.editor.options.textwidth = None;
-    test.keys(" gds");
+    test.keys(" gd");
 
     ovim::ui::render_editor_to_ansi(&mut test.editor, 120, 30).unwrap();
     assert_eq!(test.editor.render_cache.last_gutter_width, 0);
@@ -868,7 +898,7 @@ async fn split_review_uses_its_source_numbers_instead_of_an_outer_gutter() {
 async fn enter_in_the_split_layout_opens_the_column_under_the_cursor() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gds");
+    test.keys(" gd");
 
     let row = line_containing(&test, "let x = 42;");
     let text = test.editor.buffer().line_text(row).unwrap().to_string();
@@ -896,7 +926,7 @@ async fn enter_in_the_split_layout_opens_the_column_under_the_cursor() {
 async fn enter_on_the_old_column_lands_where_the_removal_happened() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gds");
+    test.keys(" gd");
 
     let row = line_containing(&test, "let x = 1;");
     let text = test.editor.buffer().line_text(row).unwrap().to_string();
@@ -913,7 +943,7 @@ async fn enter_on_the_old_column_lands_where_the_removal_happened() {
 async fn clicking_the_toolbar_switches_layout_without_moving_the_cursor() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
-    test.keys(" gd");
+    test.keys(" gds");
 
     let toolbar = line_containing(&test, "[ Split ]");
     let text = test.editor.buffer().line_text(toolbar).unwrap().to_string();
@@ -941,6 +971,8 @@ async fn clicking_the_toolbar_switches_layout_without_moving_the_cursor() {
 async fn switching_layout_keeps_the_cursor_on_the_same_change() {
     let fixture = RustFixture::new();
     let mut test = fixture.open();
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
 
     let added = line_index_of(&test, "+\tlet y = \"two\";");
@@ -960,7 +992,7 @@ async fn switching_layout_keeps_the_cursor_on_the_same_change() {
 async fn hunk_and_file_navigation_work_in_the_split_layout() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
-    test.keys(" gds");
+    test.keys(" gd");
 
     test.keys("]f");
     assert!(
@@ -997,7 +1029,7 @@ async fn the_layout_choice_survives_closing_and_reopening_the_review() {
 
     test.keys(" gd");
     assert!(
-        buffer_text(&test).contains('│'),
+        buffer_text(&test).contains("diff --git"),
         "the next review opens in the layout you last chose"
     );
 }
@@ -1040,7 +1072,7 @@ async fn the_split_layout_handles_a_branch_with_no_changes() {
 
     let mut test = EditorTest::new("");
     test.editor.open_file(root.join("a.txt").as_path()).unwrap();
-    test.keys(" gds");
+    test.keys(" gd");
 
     let text = buffer_text(&test);
     assert!(text.contains("No changes"), "{text}");
@@ -1073,7 +1105,7 @@ async fn the_split_layout_shows_deletions_and_binaries() {
     test.editor
         .open_file(root.join("keep.txt").as_path())
         .unwrap();
-    test.keys(" gds");
+    test.keys(" gd");
 
     let text = buffer_text(&test);
     assert!(text.contains("── blob.bin "), "{text}");
@@ -1109,7 +1141,7 @@ async fn a_long_line_wraps_inside_its_split_column() {
 
     let mut test = EditorTest::new("");
     test.editor.open_file(root.join("a.txt").as_path()).unwrap();
-    test.keys(" gds");
+    test.keys(" gd");
 
     let rows: Vec<String> = (0..test.editor.buffer().line_count())
         .filter_map(|index| test.editor.buffer().line_text(index).map(|t| t.to_string()))
@@ -2068,6 +2100,8 @@ async fn paired_context_stays_with_each_file_and_stops_at_capture_gaps() {
 
     for split in [false, true] {
         let mut test = EditorTest::new("");
+        test.editor
+            .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
         test.editor.open_file(root.join("old.rs")).unwrap();
         test.editor
             .open_custom_diff_review("Move", custom.clone())
@@ -2284,6 +2318,8 @@ fn truncated_diff_still_opens_as_a_display_snapshot_without_restoration_proof() 
 async fn checking_files_hides_only_review_content_and_survives_refresh_and_reopen() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
     let original = test.editor.diff_review().unwrap().patch().clone();
     test.keys("]fx");
@@ -2319,6 +2355,8 @@ async fn checking_files_hides_only_review_content_and_survives_refresh_and_reope
 async fn changed_checked_file_reappears_while_unchanged_file_stays_checked() {
     let fixture = Fixture::new();
     let mut test = open_editor_on(&fixture, "a.txt");
+    test.editor
+        .set_diff_review_layout(ovim_core::editor::DiffLayout::Unified);
     test.keys(" gd");
     for path in ["a.txt", "b.txt"] {
         test.editor

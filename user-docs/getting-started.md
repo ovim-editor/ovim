@@ -47,13 +47,16 @@ patch in its own tab with a file summary at the top. Each hunk is coloured with
 the grammar of the file it came from — the way `delta` renders a patch — and
 added and removed rows carry a background tint.
 
-The toolbar above the patch switches between two layouts. Click a button, press
+Reviews open in split layout by default. Your layout choice is remembered for
+the rest of the session. The toolbar above the patch switches between two layouts. Click a button, press
 `s`, or run `:GitDiffLayout split` / `:GitDiffLayout unified`:
 
 - **Unified** shows the raw patch, so the buffer still yanks as a valid patch.
 - **Split** puts the old file on the left and the new one on the right, with
   source line numbers on both sides. Long lines wrap inside their column, and
-  the view re-flows when the window changes width.
+  the view re-flows when the window changes width. Split reviews use the full
+  available width, ignoring `textwidth`; unified reviews and ordinary files
+  retain the configured limit.
 
 In the GUI, side-by-side review uses two compact code panes. Curved ribbons
 connect matching change sections, so a short replacement does not leave a tall

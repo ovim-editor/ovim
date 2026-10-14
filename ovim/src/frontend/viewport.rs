@@ -1,4 +1,4 @@
-use super::layout::{FrameLayout, GutterWidths};
+use super::layout::{effective_textwidth, FrameLayout, GutterWidths};
 use crate::editor::Editor;
 use ovim_core::Rect;
 
@@ -30,7 +30,7 @@ pub fn handle_viewport_resize(editor: &mut Editor, width: u16, height: u16) {
     };
 
     // Apply textwidth centering: narrowing changes wrap width, but not viewport height.
-    if let Some(textwidth) = editor.options.textwidth {
+    if let Some(textwidth) = effective_textwidth(editor) {
         let max_width = textwidth as u16;
         if content_width > max_width {
             content_width = max_width;
@@ -93,7 +93,7 @@ pub fn compute_text_width(editor: &Editor, content_width: u16) -> usize {
 
     // Apply textwidth narrowing (OV-00019: must match renderer's BufferLayout
     // which narrows buffer_area to textwidth before computing text_width).
-    let effective_width = if let Some(textwidth) = editor.options.textwidth {
+    let effective_width = if let Some(textwidth) = effective_textwidth(editor) {
         let max = textwidth as u16;
         if content_width > max {
             max

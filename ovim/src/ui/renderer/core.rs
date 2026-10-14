@@ -28,7 +28,7 @@ use super::status_widgets::{
     render_progress_line, render_rename_input, render_search_line, render_status_line,
     render_tab_bar, render_top_right_toasts,
 };
-use crate::frontend::layout::FrameLayout;
+use crate::frontend::layout::{effective_textwidth, FrameLayout};
 
 // ---------------------------------------------------------------------------
 // Frame layout types
@@ -139,7 +139,7 @@ fn render_buffer_area(
         }
     } else {
         // Single window — apply textwidth centering if set
-        let buffer_area = if let Some(textwidth) = editor.options.textwidth {
+        let buffer_area = if let Some(textwidth) = effective_textwidth(editor) {
             let max_width = textwidth as u16;
             if areas.buffer_chunk.width > max_width {
                 let margin = (areas.buffer_chunk.width - max_width) / 2;
