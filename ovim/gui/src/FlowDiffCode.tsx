@@ -1,3 +1,4 @@
+import { CommentedLine, type DiffCommentsController } from "./FlowDiffComments";
 import {
     replacementParts,
     type FlowDiffFile,
@@ -11,6 +12,7 @@ function lineParts(line: FlowDiffLine, counterpart: FlowDiffLine | undefined) {
 }
 
 export function FileLine(props: {
+    comments?: DiffCommentsController;
     file: FlowDiffFile;
     pathOverride?: string;
     line: FlowDiffLine;
@@ -91,38 +93,56 @@ export function FileLine(props: {
         });
     };
     return (
-        <div
-            class={`flow-code-line ${props.line.kind}`}
-            data-source-path={
-                props.pathOverride ||
-                (props.side === "old"
-                    ? props.file.oldPath || props.file.path
-                    : props.file.path)
+        <CommentedLine
+            comments={props.comments}
+            sourceText={props.line.text}
+            target={
+                number() === undefined
+                    ? undefined
+                    : {
+                          path:
+                              props.pathOverride ||
+                              (props.side === "old"
+                                  ? props.file.oldPath || props.file.path
+                                  : props.file.path),
+                          line: number()!,
+                          side: props.side,
+                      }
             }
-            data-source-line={number()}
-            data-source-side={props.side}
         >
-            <button
-                type="button"
-                class="flow-line-number"
-                aria-label={`${props.side === "old" ? "Before" : "After"} line ${number() ?? "unavailable"}${canOpen() ? ", open source" : ""}`}
-                disabled={
-                    !canOpen() &&
-                    (props.line.reviewLine === undefined ||
-                        !props.onNavigateReviewLine)
+            <div
+                class={`flow-code-line ${props.line.kind}`}
+                data-source-path={
+                    props.pathOverride ||
+                    (props.side === "old"
+                        ? props.file.oldPath || props.file.path
+                        : props.file.path)
                 }
-                onClick={open}
+                data-source-line={number()}
+                data-source-side={props.side}
             >
-                {number() ?? ""}
-            </button>
-            <span class="flow-line-mark" aria-hidden="true">
-                {props.line.kind === "added"
-                    ? "+"
-                    : props.line.kind === "removed"
-                      ? "−"
-                      : ""}
-            </span>
-            <code class="flow-line-text">{coloredText()}</code>
-        </div>
+                <button
+                    type="button"
+                    class="flow-line-number"
+                    aria-label={`${props.side === "old" ? "Before" : "After"} line ${number() ?? "unavailable"}${canOpen() ? ", open source" : ""}`}
+                    disabled={
+                        !canOpen() &&
+                        (props.line.reviewLine === undefined ||
+                            !props.onNavigateReviewLine)
+                    }
+                    onClick={open}
+                >
+                    {number() ?? ""}
+                </button>
+                <span class="flow-line-mark" aria-hidden="true">
+                    {props.line.kind === "added"
+                        ? "+"
+                        : props.line.kind === "removed"
+                          ? "−"
+                          : ""}
+                </span>
+                <code class="flow-line-text">{coloredText()}</code>
+            </div>
+        </CommentedLine>
     );
 }

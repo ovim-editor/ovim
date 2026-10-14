@@ -104,7 +104,18 @@ export interface GuiDiffMove {
     new: GuiDiffMoveEndpoint;
 }
 
+export interface GuiDiffComment {
+    id: number;
+    path: string;
+    line: number;
+    side: "old" | "new";
+    before: boolean;
+    text: string;
+    excerpt: string;
+}
+
 export interface GuiDiffDocument {
+    comments?: GuiDiffComment[];
     title: string;
     provenance?: {
         baseLabel: string;
@@ -165,6 +176,7 @@ export interface GuiAiChat {
     externalQuestion?: boolean;
     profile: string;
     model?: string;
+    pendingDiffComments?: string | null;
     pendingCodeAttachment?: {
         bufferId: number;
         label: string;

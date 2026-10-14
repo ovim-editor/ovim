@@ -947,3 +947,71 @@ it("gd routes the selected diff symbol with its UTF-16 source column", () => {
     expect(result.getByRole("status").textContent).toContain("Click a symbol");
     result.unmount();
 });
+
+it("adds a multiline diff comment above a selected line and retains a failed save", async () => {
+    const save = vi
+        .fn()
+        .mockRejectedValueOnce(new Error("Source changed"))
+        .mockResolvedValue(undefined);
+    const ui = render(() => (
+        <FlowDiff review={{ ...review, managed: true }} onComment={save} />
+    ));
+    const source = ui.container.querySelector(
+        '[data-source-side="new"][data-source-line="5"]',
+    )!;
+    fireEvent.click(source);
+    fireEvent.keyDown(ui.getByRole("region", { name: "Diff review" }), {
+        key: "O",
+    });
+    const input = ui.getByRole("textbox", {
+        name: "Diff comment",
+    }) as HTMLTextAreaElement;
+    fireEvent.input(input, { target: { value: "Why shorter?\n第二个问题" } });
+    fireEvent.keyDown(input, { key: "Escape" });
+    await waitFor(() =>
+        expect(ui.getByRole("alert").textContent).toContain("Source changed"),
+    );
+    expect(input.value).toBe("Why shorter?\n第二个问题");
+    fireEvent.click(ui.getByRole("button", { name: "Save comment" }));
+    await waitFor(() =>
+        expect(ui.queryByRole("textbox", { name: "Diff comment" })).toBeNull(),
+    );
+    expect(save).toHaveBeenLastCalledWith({
+        path: "src/uneven.ts",
+        line: 5,
+        side: "new",
+        before: true,
+        text: "Why shorter?\n第二个问题",
+        id: undefined,
+    });
+});
+
+it("renders saved user comments separately from agent notes and clears explicitly", () => {
+    const action = vi.fn();
+    const ui = render(() => (
+        <FlowDiff
+            review={{
+                ...review,
+                managed: true,
+                comments: [
+                    {
+                        id: 1,
+                        path: "src/uneven.ts",
+                        line: 5,
+                        side: "new",
+                        before: false,
+                        text: "Check the boundary",
+                        excerpt: "short version",
+                    },
+                ],
+            }}
+            onComment={vi.fn()}
+            onAction={action}
+        />
+    ));
+    expect(ui.getByText("Check the boundary")).toBeTruthy();
+    fireEvent.click(ui.getByRole("button", { name: "Delete" }));
+    expect(action).toHaveBeenCalledWith("remove_comment:1");
+    fireEvent.click(ui.getByRole("button", { name: "Clear comments (1)" }));
+    expect(action).toHaveBeenCalledWith("clear_comments");
+});

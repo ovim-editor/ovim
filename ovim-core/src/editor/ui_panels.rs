@@ -41,6 +41,8 @@ pub struct UiPanels {
     pub toast_center: ToastCenter,
     /// Open branch diff review (`<Space>gd`), if any
     pub diff_review: Option<Box<super::diff_review::DiffReviewState>>,
+    /// Unsent annotations for reviews closed or replaced during this session.
+    pub closed_diff_comments: std::collections::BTreeMap<String, (u64, Vec<super::DiffComment>)>,
     /// Shared durable refinements, enabled by frontends or explicitly injected by tests.
     pub diff_review_store: Option<crate::native_diff::store::ReviewStore>,
     /// Latest agent arrangement for each Git worktree in this editor session.

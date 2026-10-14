@@ -30,6 +30,16 @@ async fn gui_diff_action(
     bridge.diff_action(pane, buffer_id, action).await
 }
 
+#[tauri::command]
+async fn gui_diff_comment(
+    bridge: State<'_, GuiBridge>,
+    pane: usize,
+    buffer_id: u64,
+    comment: super::diff::GuiDiffCommentInput,
+) -> Result<(), String> {
+    bridge.diff_comment(pane, buffer_id, comment).await
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum DiffExportKind {
     Png,
@@ -643,6 +653,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
         .invoke_handler(tauri::generate_handler![
             gui_snapshot,
             gui_diff_action,
+            gui_diff_comment,
             gui_save_diff_export,
             gui_open_diff_source,
             gui_vector_preview,

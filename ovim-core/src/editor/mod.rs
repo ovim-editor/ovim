@@ -173,7 +173,8 @@ pub use completion::{
 pub use completion_accept::CompletionAcceptMode;
 pub use debug_integration::{BreakpointExtra, BreakpointMarker};
 pub use diff_review::{
-    DiffLayout, DiffOverlayViewState, DiffReviewState, PendingGitFetch, DIFF_REVIEW_TITLE_PREFIX,
+    DiffComment, DiffCommentsAttachment, DiffLayout, DiffOverlayViewState, DiffReviewState,
+    PendingGitFetch, DIFF_REVIEW_TITLE_PREFIX,
 };
 pub use editing_state::{EditingState, PendingChangeRepeat};
 pub(crate) use execution::Nesting;
@@ -768,7 +769,9 @@ impl Editor {
     pub fn set_mode(&mut self, mode: Mode) {
         // A buffer that is not modifiable (library source, virtual document)
         // cannot be typed into: `i`, `a`, `o`, `c...` stay in Normal mode.
-        let mode = if matches!(mode, Mode::Insert | Mode::Replace) && !self.buffer().is_modifiable()
+        let mode = if matches!(mode, Mode::Insert | Mode::Replace)
+            && !self.buffer().is_modifiable()
+            && !(mode == Mode::Insert && self.is_editing_diff_comment())
         {
             self.report_unmodifiable();
             // Insert-entering commands opened a change session first.

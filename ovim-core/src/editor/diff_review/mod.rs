@@ -12,7 +12,8 @@
 //! - `Enter` (or `gf`) opens the file at the line under the cursor in the tab
 //!   the review was opened from; `<Space>gd` returns to the review, refreshed
 //! - `w` hides equal paired changes in curated reviews, ignoring whitespace
-//! - `o` toggles saved moves, `O` opens their frozen snapshot
+//! - `o` / `O` add user comments below / above a source line
+//! - `Alt-o` toggles saved moves, `Alt-O` opens their frozen snapshot
 //! - `r` refreshes, `q` closes, `<Space>gf` fetches the base branch
 //!
 //! The base is chosen by [`crate::native_diff::resolve_base`], which prefers
@@ -20,6 +21,8 @@
 //! HEAD so a stale local or remote copy never pollutes the review.
 
 mod checks;
+mod comments;
+pub use comments::{DiffComment, DiffCommentsAttachment};
 mod highlight;
 mod render;
 
@@ -43,6 +46,10 @@ use render::{
 
 /// State of the open branch review, if any.
 pub struct DiffReviewState {
+    comments: Vec<DiffComment>,
+    comment_rows: Vec<Option<u64>>,
+    comment_draft: Option<comments::CommentDraft>,
+    next_comment_id: u64,
     item_rows: Vec<Option<String>>,
     pub checked_items: std::collections::BTreeSet<String>,
     pub show_checked: bool,
@@ -612,7 +619,12 @@ impl Editor {
         self.open_diff_buffer_in_new_tab(&rendered.title, &rendered.text);
         let buffer_id = self.buffer().id();
 
+        self.archive_diff_comments();
         self.ui_panels.diff_review = Some(Box::new(DiffReviewState {
+            comments: Vec::new(),
+            comment_rows: Vec::new(),
+            comment_draft: None,
+            next_comment_id: 1,
             item_rows: Vec::new(),
             checked_items: Default::default(),
             show_checked: false,
@@ -644,6 +656,7 @@ impl Editor {
             toolbar: Toolbar::default(),
             text_lines: Vec::new(),
         }));
+        self.restore_diff_comments();
         self.apply_rendered_review(rendered);
 
         let message = self
@@ -718,7 +731,12 @@ impl Editor {
         let origin_tab = self.current_tab_index();
         self.open_diff_buffer_in_new_tab(&rendered.title, &rendered.text);
         let buffer_id = self.buffer().id();
+        self.archive_diff_comments();
         self.ui_panels.diff_review = Some(Box::new(DiffReviewState {
+            comments: Vec::new(),
+            comment_rows: Vec::new(),
+            comment_draft: None,
+            next_comment_id: 1,
             item_rows: Vec::new(),
             checked_items: Default::default(),
             show_checked: false,
@@ -747,6 +765,7 @@ impl Editor {
             code_highlights: Vec::new(),
             custom_targets: Vec::new(),
         }));
+        self.restore_diff_comments();
         self.apply_rendered_review(rendered);
         self.mark_dirty();
         Ok(())
@@ -797,6 +816,12 @@ impl Editor {
             .map(|(_, custom)| custom.snapshot.clone())
             .unwrap_or(context_snapshot);
         let anchor = self.diff_review_anchor(index, true);
+        let comparison_changed = self
+            .diff_review()
+            .is_some_and(|state| state.comment_identity() != comments::review_identity(&patch));
+        if comparison_changed {
+            self.archive_diff_comments();
+        }
         {
             let state = self.ui_panels.diff_review.as_mut().expect("review state");
             state.patch_line_ranges = patch_line_ranges(&patch);
@@ -809,6 +834,9 @@ impl Editor {
             state.custom = overlay.as_ref().map(|(_, custom)| custom.clone());
             state.custom_title = overlay.as_ref().map(|(title, _)| title.clone());
             state.live_overlay = overlay.is_some();
+        }
+        if comparison_changed {
+            self.restore_diff_comments();
         }
         self.rerender_diff_review(anchor);
 
@@ -1053,6 +1081,7 @@ impl Editor {
 
     /// Closes the review tab and drops its buffer and state.
     pub fn close_diff_review(&mut self) {
+        self.archive_diff_comments();
         let Some(index) = self.review_buffer_index() else {
             self.ui_panels.diff_review = None;
             return;
@@ -1680,6 +1709,7 @@ impl Editor {
             &state.checked_items,
             state.show_checked,
         );
+        comments::insert_comments(state, &mut rendered);
         state.item_rows = rendered.item_rows.clone();
         self.buffers[index].replace_content(&rendered.text);
         self.buffers[index].set_forced_highlights(rendered.highlights);

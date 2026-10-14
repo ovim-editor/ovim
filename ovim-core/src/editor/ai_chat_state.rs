@@ -652,6 +652,7 @@ pub struct QueuedChatInput {
     pub content: String,
     pub images: Vec<ImageAttachment>,
     pub code_attachment: Option<CodeAttachment>,
+    pub diff_comments: Option<super::DiffCommentsAttachment>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -749,6 +750,7 @@ pub struct AiChatState {
     pub pending_images: Vec<ImageAttachment>,
     /// Visually selected code attached to the current composer.
     pub pending_code_attachment: Option<CodeAttachment>,
+    pub pending_diff_comments: Option<super::DiffCommentsAttachment>,
     /// Image currently expanded over the chat panel.
     pub image_modal: Option<PathBuf>,
     /// First-run/recovery dialog for Ovim-owned Exa web search.
@@ -1073,6 +1075,7 @@ impl AiChatState {
             slash_completion_selected: 0,
             pending_images: Vec::new(),
             pending_code_attachment: None,
+            pending_diff_comments: None,
             image_modal: None,
             exa_setup: None,
             queued_inputs: VecDeque::new(),

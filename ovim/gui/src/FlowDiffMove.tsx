@@ -1,3 +1,4 @@
+import type { DiffCommentsController } from "./FlowDiffComments";
 import { For, Show, createEffect, createMemo } from "solid-js";
 import { FileLine, type Side } from "./FlowDiffCode";
 import type {
@@ -35,6 +36,7 @@ export function pairedMoveLine(
 }
 
 export function MoveOverlay(props: {
+    comments?: DiffCommentsController;
     move: FlowDiffMove;
     reconstruction: Reconstruction;
     hideEqual?: boolean;
@@ -140,6 +142,7 @@ export function MoveOverlay(props: {
                                             }}
                                         >
                                             <FileLine
+                                                comments={props.comments}
                                                 file={props.file}
                                                 pathOverride={endpoint().path}
                                                 line={line}

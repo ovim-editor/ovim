@@ -174,6 +174,9 @@ impl Editor {
 
     /// Handles a bracketed paste event (for all supported modes, including chat input).
     pub fn handle_paste_event(&mut self, text: &str) -> Result<()> {
+        if self.paste_diff_comment(text) {
+            return Ok(());
+        }
         if self.is_pseudocode_buffer() && !matches!(self.mode(), Mode::Command | Mode::Search) {
             self.set_status_message("Pseudocode is a reading view; press Enter to edit source");
             return Ok(());

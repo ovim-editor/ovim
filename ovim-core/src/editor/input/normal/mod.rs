@@ -145,12 +145,31 @@ fn try_handle_diff_review_key(editor: &mut Editor, key_event: KeyEvent) -> bool 
         {
             editor.toggle_diff_review_notes();
         }
-        KeyCode::Char('o') => {
+        KeyCode::Char('o')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.begin_diff_comment(false)
+        }
+        KeyCode::Char('O')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT) =>
+        {
+            editor.begin_diff_comment(true)
+        }
+        KeyCode::Char('D')
+            if !key_event
+                .modifiers
+                .intersects(Modifiers::CONTROL | Modifiers::ALT)
+                && editor.delete_diff_comment_at_cursor() => {}
+        KeyCode::Char('o') if key_event.modifiers.contains(Modifiers::ALT) => {
             if let Err(error) = editor.toggle_diff_review_overlay() {
                 editor.set_status_message(format!("Diff overlay: {error:#}"));
             }
         }
-        KeyCode::Char('O') => {
+        KeyCode::Char('O') if key_event.modifiers.contains(Modifiers::ALT) => {
             if let Err(error) = editor.open_saved_diff_overlay() {
                 editor.set_status_message(format!("Diff overlay: {error:#}"));
             }

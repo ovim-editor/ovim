@@ -42,7 +42,8 @@ impl Editor {
     pub(crate) fn queue_current_ai_chat_input(&mut self, requested_kind: QueuedChatInputKind) {
         let input = self.ai_chat_input().trim().to_string();
         let has_images = !self.ai_chat_pending_images().is_empty();
-        let has_code_attachment = self.ai_chat_pending_code_attachment().is_some();
+        let has_code_attachment = self.ai_chat_pending_code_attachment().is_some()
+            || self.pending_diff_comments().is_some();
         if input.is_empty() && !has_images && !has_code_attachment {
             return;
         }
@@ -63,12 +64,14 @@ impl Editor {
             chat.input_cursor = 0;
             let images = std::mem::take(&mut chat.pending_images);
             let code_attachment = chat.pending_code_attachment.take();
+            let diff_comments = chat.pending_diff_comments.take();
             chat.queued_inputs.push_back(QueuedChatInput {
                 id,
                 kind,
                 content: input.clone(),
                 images,
                 code_attachment,
+                diff_comments,
             });
             if kind == QueuedChatInputKind::Steer {
                 if let Some(tx) = chat
@@ -238,6 +241,7 @@ impl Editor {
             chat.input_cursor = chat.input.len();
             chat.pending_images = item.images;
             chat.pending_code_attachment = item.code_attachment;
+            chat.pending_diff_comments = item.diff_comments;
             chat.history.selected_queued_id = None;
             chat.history.selected_node_id = None;
             chat.focus = crate::ai::chat_types::ChatFocus::TextInput;
@@ -256,6 +260,7 @@ impl Editor {
                 chat.input_cursor,
                 std::mem::take(&mut chat.pending_images),
                 chat.pending_code_attachment.take(),
+                chat.pending_diff_comments.take(),
             )
         });
 
@@ -272,11 +277,13 @@ impl Editor {
                 if item.kind == QueuedChatInputKind::Steer {
                     item.kind = QueuedChatInputKind::FollowUp;
                 }
+                let retry_item = item.clone();
                 if let Some(chat) = self.ai_state.chat.as_mut() {
                     chat.input = item.content;
                     chat.input_cursor = chat.input.len();
                     chat.pending_images = item.images;
                     chat.pending_code_attachment = item.code_attachment;
+                    chat.pending_diff_comments = item.diff_comments;
                 }
                 match item.kind {
                     QueuedChatInputKind::Command => {
@@ -291,19 +298,32 @@ impl Editor {
                     }
                     QueuedChatInputKind::FollowUp | QueuedChatInputKind::Steer => {
                         self.submit_ai_chat_message()?;
+                        let unconsumed = self.ai_state.chat.as_ref().is_some_and(|chat| {
+                            !chat.input.is_empty()
+                                || !chat.pending_images.is_empty()
+                                || chat.pending_code_attachment.is_some()
+                                || chat.pending_diff_comments.is_some()
+                        });
+                        if unconsumed {
+                            if let Some(chat) = self.ai_state.chat.as_mut() {
+                                chat.queued_inputs.push_front(retry_item);
+                            }
+                            return Ok(false);
+                        }
                         return Ok(true);
                     }
                 }
             }
         })();
 
-        if let (Some(chat), Some((input, cursor, images, code_attachment))) =
+        if let (Some(chat), Some((input, cursor, images, code_attachment, diff_comments))) =
             (self.ai_state.chat.as_mut(), draft)
         {
             chat.input = input;
             chat.input_cursor = cursor.min(chat.input.len());
             chat.pending_images = images;
             chat.pending_code_attachment = code_attachment;
+            chat.pending_diff_comments = diff_comments;
         }
 
         result
@@ -370,6 +390,7 @@ mod tests {
             content: content.clone(),
             images: Vec::new(),
             code_attachment: None,
+            diff_comments: None,
         });
         chat.pending_code_explanation = Some(PendingCodeExplanation {
             tool_call: ToolCallInfo {
@@ -510,6 +531,7 @@ mod tests {
             content: "older queued follow-up".into(),
             images: Vec::new(),
             code_attachment: None,
+            diff_comments: None,
         });
 
         assert!(editor.start_next_queued_ai_chat_input().unwrap());

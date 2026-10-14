@@ -2524,3 +2524,79 @@ async fn section_checks_survive_removing_the_custom_overlay() {
         .checked_items
         .contains(&id));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn diff_comments_are_editable_without_changing_the_patch_and_attach_to_chat() {
+    let fixture = RustFixture::new();
+    let mut test = fixture.open();
+    test.keys(" gd");
+    let original = test.editor.diff_review().unwrap().patch().clone();
+    let row = line_containing(&test, "let x = 42;");
+    test.set_cursor(row, 100);
+    test.keys("oWhy 42?");
+    assert_eq!(test.editor.mode(), Mode::Insert);
+    assert!(buffer_text(&test).contains("  # Why 42?"));
+    test.press_key(KeyCode::Esc);
+    assert_eq!(test.editor.mode(), Mode::Normal);
+    let comment = test.editor.diff_review().unwrap().comments()[0].clone();
+    assert_eq!(comment.path, "a.rs");
+    assert_eq!(comment.line, 2);
+    assert_eq!(comment.side, "new");
+    assert_eq!(comment.excerpt, "    let x = 42;");
+    assert_eq!(test.editor.diff_review().unwrap().patch(), &original);
+    test.editor
+        .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+        .unwrap();
+    let attached = test.editor.pending_diff_comments().unwrap();
+    assert_eq!(attached.comments, vec![comment]);
+    assert!(attached.message().contains("a.rs:2 (new side"));
+    test.editor.remove_diff_comments_attachment();
+    assert_eq!(test.editor.diff_review().unwrap().comments().len(), 1);
+    test.editor.close_ai_chat();
+    test.editor
+        .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+        .unwrap();
+    assert!(test.editor.pending_diff_comments().is_some());
+    test.editor.clear_diff_comments();
+    assert!(test.editor.pending_diff_comments().is_none());
+    assert!(test.editor.diff_review().unwrap().comments().is_empty());
+    assert_eq!(test.editor.diff_review().unwrap().patch(), &original);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn diff_comment_unicode_paste_cancel_delete_and_resize_preserve_source_navigation() {
+    let fixture = RustFixture::new();
+    let mut test = fixture.open();
+    test.keys(" gd");
+    let row = line_containing(&test, "let x = 1;");
+    test.set_cursor(row, 0);
+    test.keys("O");
+    test.editor
+        .handle_paste_event("Hvorfor æøå?\n第二个问题")
+        .unwrap();
+    test.press_key(KeyCode::Esc);
+    assert_eq!(test.editor.diff_review().unwrap().comments().len(), 1);
+    test.keys("s");
+    ovim::ui::render_editor_to_ansi(&mut test.editor, 90, 30).unwrap();
+    assert!(buffer_text(&test).contains("Hvorfor æøå?"));
+    let row = line_containing(&test, "# 第二个问题");
+    test.set_cursor(row, 0);
+    test.keys("o!");
+    test.editor.handle_paste_event("ignored").unwrap();
+    ovim_core::editor::InputHandler::handle_key_event(
+        &mut test.editor,
+        ovim_core::KeyEvent::new(KeyCode::Char('c'), ovim_core::Modifiers::CONTROL),
+    )
+    .unwrap();
+    assert!(buffer_text(&test).contains("# 第二个问题"));
+    assert!(!buffer_text(&test).contains("ignored"));
+    let row = line_containing(&test, "# 第二个问题");
+    test.set_cursor(row, 0);
+    test.keys("D");
+    assert_eq!(test.editor.diff_review().unwrap().comments().len(), 0);
+    let row = line_containing(&test, "+    let x = 42;");
+    test.set_cursor(row, 0);
+    test.press_key(KeyCode::Enter);
+    assert!(test.editor.buffer().file_path().unwrap().ends_with("a.rs"));
+    assert_eq!(current_line(&test), "    let x = 42;");
+}

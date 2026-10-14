@@ -4021,3 +4021,28 @@ kbd {
 .breadcrumbs .symbol-crumb {
     color: color-mix(in srgb, var(--accent) 70%, var(--text-primary));
 }
+
+.chat-diff-comments {
+    margin: 4px 0 8px;
+    padding: 8px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 12px;
+}
+.chat-diff-comments summary {
+    cursor: pointer;
+}
+.chat-diff-comments summary button {
+    float: right;
+    cursor: pointer;
+    color: inherit;
+    background: transparent;
+    border: 0;
+}
+.chat-diff-comments pre {
+    max-height: 180px;
+    overflow: auto;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    font: inherit;
+}

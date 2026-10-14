@@ -347,6 +347,14 @@ pub(crate) static COMMANDS: &[ExCommand] = &[
     ex(&["Buffers"], call!(open_buffer_picker())),
     // ---- git ----
     ex(&["GitDiff", "gitdiff", "DiffReview"], git::diff_review).args(A::Text),
+    ex(&["DiffCommentsDetach"], |editor, _| {
+        editor.remove_diff_comments_attachment();
+        ok_silent()
+    }),
+    ex(&["DiffCommentsClear"], |editor, _| {
+        editor.clear_diff_comments();
+        ok_silent()
+    }),
     ex(&["GitDiffLayout", "gitdifflayout"], git::diff_layout).args(A::Text),
     ex(&["GitDiffFile"], git::diff_file).args(A::File),
     ex(&["GitEdit"], git::edit).args(A::File),

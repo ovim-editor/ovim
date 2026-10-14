@@ -58,6 +58,23 @@ the rest of the session. The toolbar above the patch switches between two layout
   available width, ignoring `textwidth`; unified reviews and ordinary files
   retain the configured limit.
 
+Add comments while reviewing with `o` below a source line or `O` above it.
+Only comment text is editable; the patch stays read-only. `Enter` adds a line,
+`Esc` saves, and `Ctrl-C` cancels in the terminal. On a saved comment, `o` edits
+and `D` deletes it. In the GUI, click a code line and press `o`/`O`, or use its
+**+** button; comments have Edit and Delete buttons. `Esc` or `Ctrl+Enter` saves.
+
+Opening AI chat from the diff attaches the comments with their captured source,
+file, line, side, and comparison. Add your question and send. Comments clear
+once the message is accepted for an agent turn; queued messages keep their
+comments until that turn starts. A failed submission keeps them available.
+The GUI attachment expands for review and can be removed without deleting the
+comments. In terminal chat, Backspace on an empty input removes the attachment.
+Use **Clear comments** or `:DiffCommentsClear` to discard annotations. Unsent
+comments survive closing and reopening the same comparison within the session.
+Saved comparison controls remain available with `Alt-o` / `Alt-O` in the terminal
+and the existing comparison button in the GUI.
+
 In the GUI, side-by-side review uses two compact code panes. Curved ribbons
 connect matching change sections, so a short replacement does not leave a tall
 blank space beside a long removal. Scrolling follows corresponding sections;

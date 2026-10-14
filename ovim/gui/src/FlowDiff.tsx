@@ -1,3 +1,4 @@
+import { createDiffComments, type CommentInput } from "./FlowDiffComments";
 import {
     For,
     Show,
@@ -42,6 +43,7 @@ export type FlowDiffProps = {
         side: Side,
         column: number,
     ) => void;
+    onComment?: (comment: CommentInput) => Promise<void>;
     onLayoutChange?: (layout: "split" | "unified") => void;
     onExport?: (file: DiffImageFile) => Promise<boolean>;
     onAction?: (
@@ -50,6 +52,8 @@ export type FlowDiffProps = {
             | `check:${string}`
             | "q"
             | "r"
+            | "clear_comments"
+            | `remove_comment:${number}`
             | "toggle_overlay"
             | "open_saved_overlay"
             | "return_to_live_diff",
@@ -102,6 +106,11 @@ export default function FlowDiff(props: FlowDiffProps) {
         onCleanup(() =>
             panel?.removeEventListener("ovim-diff-find", openSearch),
         );
+    });
+    const comments = createDiffComments({
+        comments: () => props.review.comments ?? [],
+        save: props.onComment,
+        remove: (id) => props.onAction?.(`remove_comment:${id}`),
     });
     const [hideEqual, setHideEqual] = createSignal(false);
     const [showNotes, setShowNotes] = createSignal(true);
@@ -242,6 +251,28 @@ export default function FlowDiff(props: FlowDiffProps) {
     const allSections = createMemo(() =>
         visibleFiles().flatMap((item) =>
             fileSections(item).map((section) => ({ file: item, section })),
+        ),
+    );
+    const unplacedComments = createMemo(() =>
+        (props.review.comments ?? []).filter(
+            (comment) =>
+                !visibleFiles().some((item) =>
+                    fileSections(item).some((section) =>
+                        (comment.side === "old"
+                            ? section.left
+                            : section.right
+                        ).some(
+                            (line) =>
+                                (comment.side === "old"
+                                    ? item.oldPath || item.path
+                                    : item.path) === comment.path &&
+                                (comment.side === "old"
+                                    ? line.oldLine
+                                    : line.newLine) === comment.line &&
+                                line.text === comment.excerpt,
+                        ),
+                    ),
+                ),
         ),
     );
     const file = createMemo(
@@ -710,6 +741,7 @@ export default function FlowDiff(props: FlowDiffProps) {
                 <For each={lines}>
                     {(line, index) => (
                         <FileLine
+                            comments={comments}
                             file={item}
                             line={line}
                             counterpart={
@@ -734,6 +766,7 @@ export default function FlowDiff(props: FlowDiffProps) {
                     }
                 >
                     <MoveOverlay
+                        comments={comments}
                         hideEqual={hideEqual()}
                         move={section.move!}
                         reconstruction={reconstruction()}
@@ -767,6 +800,7 @@ export default function FlowDiff(props: FlowDiffProps) {
         counterpart?: FlowDiffLine,
     ) => (
         <FileLine
+            comments={comments}
             file={item}
             line={line}
             side={side}
@@ -992,6 +1026,24 @@ export default function FlowDiff(props: FlowDiffProps) {
             target?.scrollBy?.({ top: event.key === "ArrowDown" ? 48 : -48 });
             return;
         }
+        if ((event.key === "o" || event.key === "O") && props.onComment) {
+            event.preventDefault();
+            const row =
+                panel?.querySelector<HTMLElement>(
+                    "[data-active=true] [data-source-line]",
+                ) || panel?.querySelector<HTMLElement>("[data-source-line]");
+            const target =
+                comments.selected() ||
+                (row
+                    ? {
+                          path: row.dataset.sourcePath!,
+                          line: Number(row.dataset.sourceLine),
+                          side: row.dataset.sourceSide as Side,
+                      }
+                    : undefined);
+            if (target) comments.begin(target, event.key === "O");
+            return;
+        }
         if (event.key === "g") {
             pendingGo = true;
             return;
@@ -1122,12 +1174,58 @@ export default function FlowDiff(props: FlowDiffProps) {
                     {navigationMessage()}
                 </div>
             </Show>
+            <Show when={unplacedComments().length}>
+                <details class="flow-unplaced-comments">
+                    <summary>
+                        {unplacedComments().length} comments on source that
+                        changed or is hidden
+                    </summary>
+                    <For each={unplacedComments()}>
+                        {(comment) => (
+                            <article>
+                                <strong>
+                                    {comment.path}:{comment.line} ·{" "}
+                                    {comment.side} side
+                                </strong>
+                                <code>{comment.excerpt}</code>
+                                <p>{comment.text}</p>
+                                <button
+                                    type="button"
+                                    onClick={() =>
+                                        props.onAction?.(
+                                            `remove_comment:${comment.id}`,
+                                        )
+                                    }
+                                >
+                                    Delete comment
+                                </button>
+                            </article>
+                        )}
+                    </For>
+                </details>
+            </Show>
             <header class="flow-toolbar">
                 <div class="flow-toolbar-title" title={props.review.title}>
                     <strong>Review</strong>
                     <span>{props.review.title}</span>
                 </div>
                 <div class="flow-toolbar-actions">
+                    <Show when={props.onComment}>
+                        <span class="flow-comment-hint">o / O comment</span>
+                    </Show>
+                    <Show when={props.review.comments?.length}>
+                        <button
+                            type="button"
+                            class="flow-clear-comments"
+                            disabled={comments.saving()}
+                            onClick={() => {
+                                comments.cancel();
+                                props.onAction?.("clear_comments");
+                            }}
+                        >
+                            Clear comments ({props.review.comments!.length})
+                        </button>
+                    </Show>
                     <Show
                         when={
                             props.review.custom &&
@@ -1658,6 +1756,9 @@ export default function FlowDiff(props: FlowDiffProps) {
                                                                 }
                                                             >
                                                                 <MoveOverlay
+                                                                    comments={
+                                                                        comments
+                                                                    }
                                                                     hideEqual={hideEqual()}
                                                                     move={
                                                                         section.move!

@@ -644,6 +644,7 @@ pub struct GuiAiChat {
     pub profile: String,
     pub model: String,
     pub pending_code_attachment: Option<GuiCodeAttachment>,
+    pub pending_diff_comments: Option<String>,
     pub profiles: Vec<GuiAiProfileOption>,
     pub reasoning_effort: String,
     pub reasoning_effort_selection: String,
@@ -998,6 +999,12 @@ enum GuiRequest {
     WorkspaceDirectory {
         reply: oneshot::Sender<Result<std::path::PathBuf, String>>,
     },
+    DiffComment {
+        pane: usize,
+        buffer_id: u64,
+        comment: diff::GuiDiffCommentInput,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     DiffAction {
         pane: usize,
         buffer_id: u64,
@@ -1260,6 +1267,21 @@ impl GuiBridge {
         response
             .await
             .map_err(|_| "The Ovim editor thread closed the response".to_string())?
+    }
+
+    pub async fn diff_comment(
+        &self,
+        pane: usize,
+        buffer_id: u64,
+        comment: diff::GuiDiffCommentInput,
+    ) -> Result<(), String> {
+        self.request(|reply| GuiRequest::DiffComment {
+            pane,
+            buffer_id,
+            comment,
+            reply,
+        })
+        .await
     }
 
     pub async fn diff_action(
@@ -1875,6 +1897,15 @@ async fn handle_request(
             let _ = reply.send(directory);
             return;
         }
+        GuiRequest::DiffComment {
+            pane,
+            buffer_id,
+            comment,
+            reply,
+        } => (
+            reply,
+            diff::add_comment(editor, pane, buffer_id, comment).map_err(anyhow::Error::msg),
+        ),
         GuiRequest::DiffAction {
             pane,
             buffer_id,
@@ -3718,6 +3749,7 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             external_question: editor.ai_chat_has_external_question(),
             profile: editor.ai_chat_effective_profile(),
             model: editor.ai_chat_selected_model().to_string(),
+            pending_diff_comments: editor.pending_diff_comments().map(|c| c.message()),
             pending_code_attachment: editor.ai_chat_pending_code_attachment().map(|attachment| {
                 GuiCodeAttachment {
                     buffer_id: attachment.buffer_id,
@@ -3763,7 +3795,8 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
                     .to_string(),
                     content: truncate_panel_text(&item.content, 8_000),
                     image_count: item.images.len(),
-                    has_code_attachment: item.code_attachment.is_some(),
+                    has_code_attachment: item.code_attachment.is_some()
+                        || item.diff_comments.is_some(),
                     selected: selected_queued_id == Some(item.id),
                 })
                 .collect(),

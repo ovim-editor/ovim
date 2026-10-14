@@ -47,6 +47,7 @@ impl Editor {
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.mode_before_chat = mode_before;
             }
+            self.attach_diff_comments_to_chat();
             self.set_mode(Mode::AiChat);
             self.maybe_prompt_codex_auth_on_chat_open();
             self.maybe_prompt_exa_on_chat_open();
@@ -127,6 +128,7 @@ impl Editor {
             });
         chat.buffer_was_clean_at_chat_start = buffer_clean;
         self.ai_state.chat = Some(chat);
+        self.attach_diff_comments_to_chat();
         self.set_mode(Mode::AiChat);
         self.maybe_prompt_no_repo_session_folder_access_on_chat_open();
         self.maybe_prompt_codex_auth_on_chat_open();

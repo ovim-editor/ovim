@@ -794,8 +794,8 @@
     top: 30px;
 }
 /* A one-line excerpt still offers both directions without covering its number. */
-:is(.flow-section, .flow-unified-section):has(> .flow-code-line):not(
-        :has(> .flow-code-line ~ .flow-code-line)
+:is(.flow-section, .flow-unified-section):has(> .flow-commented-line):not(
+        :has(> .flow-commented-line ~ .flow-commented-line)
     )
     > .flow-expand-context {
     height: 11px;
@@ -841,4 +841,119 @@
 .flow-navigation-message {
     padding: 8px 12px;
     color: var(--text-secondary);
+}
+
+.flow-commented-line {
+    position: relative;
+    min-width: 0;
+}
+.flow-comment-source {
+    position: relative;
+}
+.flow-add-comment {
+    position: absolute;
+    right: 4px;
+    top: 0;
+    opacity: 0;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface-1);
+    color: var(--text-primary);
+    cursor: pointer;
+}
+.flow-comment-source:hover .flow-add-comment,
+.flow-add-comment:focus-visible,
+.comment-selected > .flow-comment-source .flow-add-comment {
+    opacity: 1;
+}
+.comment-selected > .flow-comment-source {
+    outline: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+    outline-offset: -1px;
+}
+.flow-user-comment,
+.flow-comment-editor {
+    margin: 5px 8px 5px 34px;
+    padding: 10px 12px;
+    border-left: 3px solid var(--accent);
+    border-radius: 4px;
+    background: color-mix(in srgb, var(--accent) 7%, var(--canvas));
+    color: var(--text-primary);
+    font: 13px/1.5 var(--ui-font);
+    white-space: normal;
+}
+.flow-user-comment p {
+    margin: 6px 0;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.flow-comment-label,
+.flow-comment-hint {
+    opacity: 0.7;
+    font-size: 12px;
+}
+.flow-comment-editor textarea {
+    display: block;
+    box-sizing: border-box;
+    margin: 6px 0;
+    width: 100%;
+    min-height: 72px;
+    resize: vertical;
+    color: inherit;
+    background: #0002;
+    border: 1px solid color-mix(in srgb, var(--accent) 45%, transparent);
+    border-radius: 4px;
+    padding: 8px;
+    font: inherit;
+}
+.flow-comment-actions {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 8px;
+    font-size: 11px;
+}
+.flow-comment-actions span {
+    margin-right: auto;
+    opacity: 0.65;
+}
+.flow-comment-actions button {
+    cursor: pointer;
+    color: inherit;
+    background: color-mix(in srgb, var(--accent) 10%, transparent);
+    border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+    border-radius: 4px;
+    padding: 3px 8px;
+}
+
+.flow-unplaced-comments {
+    padding: 8px 12px;
+    flex-shrink: 0;
+    max-height: 30%;
+    overflow: auto;
+    border-bottom: 1px solid var(--border);
+}
+.flow-unplaced-comments article {
+    padding: 8px;
+}
+.flow-unplaced-comments code {
+    display: block;
+    white-space: pre-wrap;
+}
+.flow-unplaced-comments p {
+    white-space: pre-wrap;
+}
+
+.flow-clear-comments {
+    height: 27px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-2);
+    padding: 0 8px;
+    background: transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    white-space: nowrap;
+}
+.flow-clear-comments:hover {
+    color: var(--text-primary);
+    background: var(--surface-1);
 }

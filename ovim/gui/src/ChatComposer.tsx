@@ -48,6 +48,7 @@ export default function ChatComposer(props: {
     bindInput?: (input: HTMLTextAreaElement | undefined) => void;
     onUpdate?: (update: ChatInputUpdate) => Promise<void>;
     onWidth?: (columns: number) => void;
+    onRemoveDiffComments?: () => void;
     onRemoveImage?: (index: number) => void;
 }) {
     const [draft, setDraft] = createSignal(props.chat.input);
@@ -207,6 +208,24 @@ export default function ChatComposer(props: {
             classList={{ waiting: props.chat.waiting }}
             aria-busy={props.chat.waiting}
         >
+            <Show when={props.chat.pendingDiffComments}>
+                <details class="chat-diff-comments">
+                    <summary>
+                        Attached diff comments{" "}
+                        <button
+                            type="button"
+                            aria-label="Remove diff comments attachment"
+                            onClick={(event) => {
+                                event.preventDefault();
+                                props.onRemoveDiffComments?.();
+                            }}
+                        >
+                            ×
+                        </button>
+                    </summary>
+                    <pre>{props.chat.pendingDiffComments}</pre>
+                </details>
+            </Show>
             <Show when={props.chat.pendingImages.length}>
                 <div
                     class="chat-attachments"

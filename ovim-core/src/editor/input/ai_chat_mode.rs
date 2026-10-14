@@ -323,7 +323,10 @@ fn handle_text_input(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     remove_attachment = true;
                 }
             }
-            if remove_attachment && !editor.remove_ai_chat_code_attachment() {
+            if remove_attachment
+                && !editor.remove_diff_comments_attachment()
+                && !editor.remove_ai_chat_code_attachment()
+            {
                 editor.remove_last_ai_chat_image();
             }
             editor.reset_ai_chat_slash_completion();

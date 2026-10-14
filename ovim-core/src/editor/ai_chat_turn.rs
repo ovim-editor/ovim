@@ -19,7 +19,7 @@ impl Editor {
             Some(chat) => (
                 chat.input.trim().to_string(),
                 !chat.pending_images.is_empty(),
-                chat.pending_code_attachment.is_some(),
+                chat.pending_code_attachment.is_some() || chat.pending_diff_comments.is_some(),
             ),
             None => return Ok(()),
         };
@@ -66,15 +66,23 @@ impl Editor {
             return Ok(());
         }
 
+        let diff_comments = self.pending_diff_comments().cloned();
+        let input_with_comments = diff_comments
+            .as_ref()
+            .map(|comments| format!("{}\n{}", comments.message(), input))
+            .unwrap_or_else(|| input.clone());
         let message_input = self
             .ai_state
             .chat
             .as_ref()
             .and_then(|chat| chat.pending_code_attachment.as_ref())
             .map(|attachment| {
-                super::ai_chat_code_attachment::compose_code_attachment_message(attachment, &input)
+                super::ai_chat_code_attachment::compose_code_attachment_message(
+                    attachment,
+                    &input_with_comments,
+                )
             })
-            .unwrap_or_else(|| input.clone());
+            .unwrap_or(input_with_comments);
         let runtime_input = if message_input.is_empty() {
             "[Image attachment]".to_string()
         } else {
@@ -123,6 +131,7 @@ impl Editor {
         chat.input.clear();
         chat.input_cursor = 0;
         chat.pending_code_attachment = None;
+        chat.pending_diff_comments = None;
         chat.waiting = true;
         chat.viewport.row_scroll_from_bottom = 0;
         chat.viewport.follow_latest = true;
@@ -139,7 +148,10 @@ impl Editor {
             }
             if let Some(chat) = self.ai_state.chat.as_mut() {
                 chat.waiting = false;
+                chat.pending_diff_comments = diff_comments;
             }
+        } else if let Some(comments) = &diff_comments {
+            self.consume_diff_comments(comments);
         }
 
         Ok(())

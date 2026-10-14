@@ -980,6 +980,7 @@ export const ChatPanel = (props: {
     onInputUpdate?: (update: ChatInputUpdate) => Promise<void>;
     onSetupKey?: (key: string) => void;
     onInputWidth?: (columns: number) => void;
+    onRemoveDiffComments?: () => void;
     onRemoveImage?: (index: number) => void;
     onProfile?: (profile: string, model?: string) => void;
     onReasoningEffort?: (effort: string) => void;
@@ -1370,6 +1371,7 @@ export const ChatPanel = (props: {
                     bindInput={props.bindInput}
                     onUpdate={props.onInputUpdate}
                     onWidth={props.onInputWidth}
+                    onRemoveDiffComments={props.onRemoveDiffComments}
                     onRemoveImage={props.onRemoveImage}
                 />
             </Show>
@@ -2550,6 +2552,11 @@ function App() {
                                     columns,
                                 })
                             }
+                            onRemoveDiffComments={() =>
+                                void mutate("gui_editor_command", {
+                                    command: "DiffCommentsDetach",
+                                })
+                            }
                             onRemoveImage={(index) =>
                                 void mutate("gui_remove_chat_image", { index })
                             }
@@ -2848,6 +2855,16 @@ function App() {
                 {(review) => (
                     <FlowDiff
                         review={review()}
+                        onComment={
+                            review().managed
+                                ? (comment) =>
+                                      mutateStrict("gui_diff_comment", {
+                                          pane: props.pane.index,
+                                          bufferId: props.pane.bufferId,
+                                          comment,
+                                      })
+                                : undefined
+                        }
                         syntax={view().theme.syntax}
                         onExport={
                             native
@@ -3009,6 +3026,11 @@ function App() {
                     }
                     onInputWidth={(columns) =>
                         void mutate("gui_set_chat_input_width", { columns })
+                    }
+                    onRemoveDiffComments={() =>
+                        void mutate("gui_editor_command", {
+                            command: "DiffCommentsDetach",
+                        })
                     }
                     onRemoveImage={(index) =>
                         void mutate("gui_remove_chat_image", { index })

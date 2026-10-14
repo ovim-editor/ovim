@@ -13,6 +13,7 @@ use ovim_core::native_diff::{ChangeRef, CustomReview, PatchLineKind, ReviewPatch
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffReview {
+    pub comments: Vec<ovim_core::editor::DiffComment>,
     pub title: String,
     pub layout: &'static str,
     pub managed: bool,
@@ -243,6 +244,7 @@ fn project_review_patch(title: &str, review: &DiffReviewState) -> GuiDiffReview 
     }
 
     GuiDiffReview {
+        comments: review.comments().to_vec(),
         title: title.to_string(),
         layout: layout_name(review.layout),
         managed: true,
@@ -685,6 +687,7 @@ fn project_standalone(title: &str, path: &str, content: &str) -> GuiDiffReview {
     }
 
     GuiDiffReview {
+        comments: Vec::new(),
         title: title.to_string(),
         layout: "split",
         managed: false,
@@ -795,6 +798,11 @@ pub fn perform_diff_action(
         action if managed && action.starts_with("check:") => {
             editor
                 .toggle_diff_review_check(action.strip_prefix("check:").expect("check action"))?;
+        }
+        "clear_comments" if managed => editor.clear_diff_comments(),
+        action if managed && action.starts_with("remove_comment:") => {
+            let id = action[15..].parse().map_err(|_| "Invalid comment id")?;
+            editor.remove_diff_comment(id);
         }
         "refresh" if managed => editor.refresh_diff_review(),
         "split" if managed => editor.set_diff_review_layout(DiffLayout::Split),
@@ -1497,5 +1505,109 @@ mod tests {
         let error = perform_diff_action(&mut editor, 0, buffer_id + 1, "close").unwrap_err();
         assert!(error.contains("pane has changed"));
         assert_eq!(editor.tab_count(), tab_count);
+    }
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn user_comments_validate_source_and_round_trip_through_native_projection() {
+        let dir = tempfile::tempdir().unwrap();
+        let repo = Repository::init(dir.path()).unwrap();
+        let file = dir.path().join("payment.ts");
+        fs::write(
+            &file,
+            "function acceptPayment(amount: number) {\n  return amount >= 0;\n}\n",
+        )
+        .unwrap();
+        commit(&repo);
+        fs::write(
+            &file,
+            "function acceptPayment(amount: number) {\n  return amount > 0;\n}\n",
+        )
+        .unwrap();
+        let mut editor = Editor::default();
+        editor.open_file(&file).unwrap();
+        editor.open_diff_review(Some("HEAD")).unwrap();
+        editor.init_window_manager(180, 40);
+        let buffer_id = editor.buffer().id();
+        let initial = project_diff(&editor, editor.buffer()).unwrap();
+        let input = |id, text: &str| GuiDiffCommentInput {
+            id,
+            path: "payment.ts".into(),
+            line: 2,
+            side: "new".into(),
+            before: true,
+            text: text.into(),
+        };
+        assert!(add_comment(&mut editor, 0, buffer_id + 1, input(None, "stale")).is_err());
+        let mut invalid = input(None, "outside diff");
+        invalid.path = "../secret".into();
+        assert!(add_comment(&mut editor, 0, buffer_id, invalid).is_err());
+        let mut invalid = input(None, "wrong side");
+        invalid.side = "unknown".into();
+        assert!(add_comment(&mut editor, 0, buffer_id, invalid).is_err());
+        assert!(add_comment(&mut editor, 0, buffer_id, input(None, "   ")).is_err());
+        assert!(add_comment(&mut editor, 0, buffer_id, input(None, &"x".repeat(32769))).is_err());
+        add_comment(
+            &mut editor,
+            0,
+            buffer_id,
+            input(None, "Should zero still be valid?\nHva med refusjoner?"),
+        )
+        .unwrap();
+        let added = project_diff(&editor, editor.buffer()).unwrap();
+        assert_eq!(added.comments[0].excerpt, "  return amount > 0;");
+        add_comment(
+            &mut editor,
+            0,
+            buffer_id,
+            input(
+                Some(added.comments[0].id),
+                "Why reject zero?\n第二个问题：负数呢？",
+            ),
+        )
+        .unwrap();
+        let edited = project_diff(&editor, editor.buffer()).unwrap();
+        editor.set_diff_review_layout(DiffLayout::Unified);
+        let unified = project_diff(&editor, editor.buffer()).unwrap();
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let attachment = editor.pending_diff_comments().unwrap().message();
+        editor.clear_diff_comments();
+        let cleared = project_diff(&editor, editor.buffer()).unwrap();
+        assert!(cleared.comments.is_empty());
+        assert!(editor.pending_diff_comments().is_none());
+        if let Ok(path) = std::env::var("OVIM_COMMENT_QA_FIXTURE") {
+            fs::write(path, serde_json::to_vec_pretty(&serde_json::json!({"initial":initial,"added":added,"edited":edited,"unified":unified,"cleared":cleared,"attachment":attachment})).unwrap()).unwrap();
+        }
+    }
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct GuiDiffCommentInput {
+    pub id: Option<u64>,
+    pub path: String,
+    pub line: usize,
+    pub side: String,
+    pub before: bool,
+    pub text: String,
+}
+
+pub fn add_comment(
+    editor: &mut Editor,
+    pane: usize,
+    buffer_id: u64,
+    comment: GuiDiffCommentInput,
+) -> Result<(), String> {
+    focus_diff_pane(editor, pane, buffer_id)?;
+    if let Some(id) = comment.id {
+        editor.update_diff_comment(id, &comment.text)
+    } else {
+        editor.add_diff_comment(
+            &comment.path,
+            comment.line,
+            &comment.side,
+            comment.before,
+            &comment.text,
+        )
     }
 }

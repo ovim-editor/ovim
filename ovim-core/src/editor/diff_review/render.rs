@@ -35,7 +35,7 @@ const MIN_SPLIT_TEXT_WIDTH: usize = 8;
 const MAX_WRAP_ROWS: usize = 12;
 
 const KEY_HINT: &str =
-    "# Enter open at cursor · ]c [c hunk · ]f [f file · o overlay · O saved · K/J context ↑/↓ · x check · X show checked · r refresh · q close · <Space>gf fetch base";
+    "# Enter open at cursor · ]c [c hunk · ]f [f file · o/O comment · Alt-o overlay · Alt-O saved · K/J context ↑/↓ · x check · X show checked · r refresh · q close · <Space>gf fetch base";
 
 /// How the patch body is laid out.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -567,9 +567,9 @@ pub fn render_custom(
         .any(|section| section.message.is_some());
     builder.header(
         if has_notes {
-            "# Enter open source · ]c [c section · o live/overlay · O saved · s layout · w hide equal · a notes · K/J context ↑/↓ · x check · X show checked · r refresh/redraw · q close"
+            "# Enter open source · ]c [c section · o/O comment · Alt-o live/overlay · Alt-O saved · s layout · w hide equal · a notes · K/J context ↑/↓ · x check · X show checked · r refresh/redraw · q close"
         } else {
-            "# Enter open source · ]c [c section · o live/overlay · O saved · s layout · w hide equal · K/J context ↑/↓ · x check · X show checked · r refresh/redraw · q close"
+            "# Enter open source · ]c [c section · o/O comment · Alt-o live/overlay · Alt-O saved · s layout · w hide equal · K/J context ↑/↓ · x check · X show checked · r refresh/redraw · q close"
         },
         Some(HighlightGroup::Comment),
     );

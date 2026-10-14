@@ -105,6 +105,11 @@ pub(super) fn render_text_input(
         };
         format!("{}{suffix}", attachment.label())
     });
+    let code_attachment = match (code_attachment, editor.pending_diff_comments()) {
+        (Some(code), Some(comments)) => Some(format!("{code} · {}", comments.label())),
+        (None, Some(comments)) => Some(comments.label()),
+        (code, None) => code,
+    };
     let composer_title = editor.ai_agent_composer_title();
     let top = if let Some(title) = composer_title {
         let title = truncate_with_ellipsis(&title, w.saturating_sub(4));
