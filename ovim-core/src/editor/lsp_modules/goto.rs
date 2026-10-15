@@ -225,3 +225,24 @@ struct GotoPrepared {
     character: u32,
     language_id: String,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn prepares_definition_request_inside_dynamic_route() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("app/[id]/page.tsx");
+        let mut editor = Editor::with_content("const value = 1;\n");
+        editor.set_file_path(path.to_string_lossy().into_owned());
+        editor.lsp.state.lsp_manager = Some(std::sync::Arc::new(crate::lsp::LspManager::new()));
+
+        let request = editor
+            .prepare_goto_request("goto-definition")
+            .await
+            .unwrap();
+        assert_eq!(crate::lsp::uri_to_file_path(&request.uri), Some(path));
+        assert_eq!(request.language_id, "typescriptreact");
+    }
+}

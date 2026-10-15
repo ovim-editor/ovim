@@ -17,6 +17,29 @@ fn location(path: &std::path::Path, line: u32, character: u32) -> Location {
     }
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn definition_opens_percent_encoded_dynamic_route() {
+    let dir = tempfile::tempdir().unwrap();
+    let target = dir.path().join("app/[id]/page.tsx");
+    std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+    std::fs::write(&target, "// route\nexport const value = 1;\n").unwrap();
+    for new_tab in [false, true] {
+        let mut editor = Editor::with_content("value\n");
+        assert!(editor.handle_goto_location(
+            Some(location(&target, 1, 13)),
+            "Definition",
+            "test",
+            new_tab
+        ));
+        assert_eq!(
+            editor.buffer().file_path().map(std::path::Path::new),
+            Some(target.canonicalize().unwrap().as_path())
+        );
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        assert_eq!(editor.buffer().cursor().col().0, 13);
+    }
+}
+
 /// OV-00454: an LSP jump is a jump. `<C-o>` returns to where gd/gi/gr was
 /// pressed (also across files) and `<C-i>` goes forward again.
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
