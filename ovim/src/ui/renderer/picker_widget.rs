@@ -98,14 +98,16 @@ fn find_highlight_at_byte(
     None
 }
 
-/// Calculates the picker overlay area (centered, takes up 80% of screen)
+/// Calculates the picker overlay area (80% width, 60% height, centered).
 pub fn get_picker_area(full_area: Rect) -> Rect {
-    let width = ((full_area.width * 80) / 100).max(60).min(full_area.width);
-    let height = ((full_area.height * 60) / 100)
+    let width = ((u32::from(full_area.width) * 80 / 100) as u16)
+        .max(60)
+        .min(full_area.width);
+    let height = ((u32::from(full_area.height) * 60 / 100) as u16)
         .max(15)
         .min(full_area.height);
-    let x = full_area.width.saturating_sub(width) / 2;
-    let y = full_area.height.saturating_sub(height) / 2;
+    let x = full_area.x + full_area.width.saturating_sub(width) / 2;
+    let y = full_area.y + full_area.height.saturating_sub(height) / 2;
 
     Rect::new(x, y, width, height)
 }
@@ -927,12 +929,16 @@ fn render_picker_preview(
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
 
+    if inner_area.is_empty() {
+        return;
+    }
+
     frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
     // Try to get preview with fallback - show stale preview while new one loads
     // This eliminates the jarring "Loading..." flash when navigating quickly
     let file_path = &result.location;
-    let (preview, _is_stale) = match editor.get_preview_with_fallback(file_path) {
+    let (preview, is_stale) = match editor.get_preview_with_fallback(file_path) {
         Some((p, is_stale)) => (p, is_stale),
         None => {
             // No preview available at all (first time opening picker)
@@ -964,17 +970,19 @@ fn render_picker_preview(
     let max_lines = inner_area.height as usize;
     let total_lines = preview.content.lines().count();
 
-    // Calculate which lines to show
-    let (start_line, end_line) = if result.line > 0 && result.line < total_lines {
-        // For LiveGrep results, center around the matched line
-        let context = max_lines / 2;
-        let start = result.line.saturating_sub(context);
-        let end = (result.line + context).min(total_lines);
-        (start, end)
-    } else {
-        // For file finder, show from the top
-        (0, max_lines.min(total_lines))
-    };
+    // A file result has no target line; grep and LSP locations are zero-based,
+    // so their first line must be highlighted too. A stale file cannot supply
+    // context for the newly selected location.
+    let target_line = (!is_stale
+        && result.line < total_lines
+        && editor.picker().is_some_and(|picker| {
+            matches!(
+                picker.mode(),
+                crate::editor::PickerMode::LiveGrep | crate::editor::PickerMode::LspLocations
+            )
+        }))
+    .then_some(result.line);
+    let visible_lines = preview_line_range(total_lines, max_lines, target_line);
 
     // Skip expensive syntax highlighting during rapid scrolling for responsive feel.
     // Plain text rendering is ~10x faster than syntax-highlighted rendering.
@@ -985,26 +993,35 @@ fn render_picker_preview(
         match crate::syntax::SyntaxHighlighter::new(preview.language.unwrap()) {
             Ok(mut highlighter) => {
                 render_preview_with_syntax(
-                    frame,
                     &mut highlighter,
                     preview,
-                    result,
+                    target_line,
                     &theme,
                     inner_area,
-                    start_line,
-                    end_line,
-                    total_lines,
+                    visible_lines.clone(),
                     &mut lines_to_render,
                 );
             }
             Err(_) => {
                 // Fall back to plain text
-                render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+                render_plain_preview(
+                    &preview.content,
+                    target_line,
+                    inner_area,
+                    visible_lines.clone(),
+                    &mut lines_to_render,
+                );
             }
         }
     } else {
         // Plain text preview (fast path for rapid scrolling or unsupported languages)
-        render_plain_preview(&preview.content, result, inner_area, &mut lines_to_render);
+        render_plain_preview(
+            &preview.content,
+            target_line,
+            inner_area,
+            visible_lines.clone(),
+            &mut lines_to_render,
+        );
     }
 
     let paragraph =
@@ -1012,18 +1029,25 @@ fn render_picker_preview(
     frame.render_widget(paragraph, inner_area);
 }
 
+/// Fill the viewport while keeping the target visible, shifting the window at
+/// either end of the file instead of dropping the missing half of the context.
+fn preview_line_range(total_lines: usize, height: usize, target: Option<usize>) -> Range<usize> {
+    let count = height.min(total_lines);
+    let start = target
+        .filter(|&line| line < total_lines)
+        .map(|line| line.saturating_sub(count / 2).min(total_lines - count))
+        .unwrap_or(0);
+    start..start + count
+}
+
 /// Renders preview with syntax highlighting
-#[allow(clippy::too_many_arguments)]
 fn render_preview_with_syntax(
-    _frame: &mut Frame,
     highlighter: &mut crate::syntax::SyntaxHighlighter,
     preview: &crate::editor::PreviewCache,
-    result: &crate::editor::PickerResult,
+    target_line: Option<usize>,
     theme: &crate::syntax::Theme,
     area: Rect,
-    start_line: usize,
-    end_line: usize,
-    total_lines: usize,
+    visible_lines: Range<usize>,
     lines_to_render: &mut Vec<Line<'static>>,
 ) {
     // Parse only once if not already parsed
@@ -1032,7 +1056,7 @@ fn render_preview_with_syntax(
     // Check if we need to parse (if any line in our range is not cached)
     {
         let cache = preview.highlighted_lines.borrow();
-        for line_idx in start_line..end_line {
+        for line_idx in visible_lines.clone() {
             if !cache.contains_key(&line_idx) {
                 need_parsing = true;
                 break;
@@ -1046,7 +1070,7 @@ fn render_preview_with_syntax(
 
         // Cache highlights for the visible range
         let mut cache = preview.highlighted_lines.borrow_mut();
-        for line_idx in start_line..end_line {
+        for line_idx in visible_lines.clone() {
             cache
                 .entry(line_idx)
                 .or_insert_with(|| highlighter.highlights_for_line(line_idx, &preview.content));
@@ -1054,10 +1078,10 @@ fn render_preview_with_syntax(
     }
 
     for (line_idx, line_text) in preview.content.lines().enumerate() {
-        if line_idx < start_line {
+        if line_idx < visible_lines.start {
             continue;
         }
-        if line_idx >= end_line {
+        if line_idx >= visible_lines.end {
             break;
         }
 
@@ -1080,8 +1104,7 @@ fn render_preview_with_syntax(
             .cloned()
             .unwrap_or_default();
         let highlights = remap_highlights(&original_highlights, &tab_mapping);
-        let is_target_line =
-            result.line > 0 && result.line < total_lines && line_idx == result.line;
+        let is_target_line = target_line == Some(line_idx);
 
         // Build the line with syntax highlighting
         let mut spans = Vec::new();
@@ -1151,28 +1174,16 @@ fn render_preview_with_syntax(
 /// Renders plain text preview without syntax highlighting
 fn render_plain_preview(
     content: &str,
-    result: &crate::editor::PickerResult,
+    target_line: Option<usize>,
     area: Rect,
+    visible_lines: Range<usize>,
     lines: &mut Vec<Line<'static>>,
 ) {
-    let max_lines = area.height as usize;
-    let total_lines = content.lines().count();
-
-    // Calculate which lines to show
-    let (start_line, end_line) = if result.line > 0 && result.line < total_lines {
-        let context = max_lines / 2;
-        let start = result.line.saturating_sub(context);
-        let end = (result.line + context).min(total_lines);
-        (start, end)
-    } else {
-        (0, max_lines.min(total_lines))
-    };
-
     for (line_idx, line_text) in content.lines().enumerate() {
-        if line_idx < start_line {
+        if line_idx < visible_lines.start {
             continue;
         }
-        if line_idx >= end_line {
+        if line_idx >= visible_lines.end {
             break;
         }
 
@@ -1183,8 +1194,7 @@ fn render_plain_preview(
         let content_width = area.width.saturating_sub(7) as usize;
         let line_text = truncate_to_width(&line_text, content_width);
 
-        let is_target_line =
-            result.line > 0 && result.line < total_lines && line_idx == result.line;
+        let is_target_line = target_line == Some(line_idx);
 
         let line_num = format!("{:>4} \u{2502} ", line_idx + 1);
         let line_num_style = if is_target_line {
@@ -1219,6 +1229,9 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
 
     let inner_area = preview_block.inner(area);
     frame.render_widget(preview_block, area);
+    if inner_area.is_empty() {
+        return;
+    }
 
     frame.render_widget(Fill::bg(picker_colors::BG_ALT), inner_area);
 
@@ -1243,9 +1256,131 @@ fn render_picker_empty_state(frame: &mut Frame, area: Rect) {
 }
 
 #[cfg(test)]
-mod symbol_row_tests {
+mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
+
+    #[test]
+    fn preview_window_fills_available_rows_and_keeps_target_visible() {
+        for total in 0usize..40 {
+            for height in 0..45 {
+                for target in [
+                    None,
+                    Some(0),
+                    Some(1),
+                    Some(total / 2),
+                    Some(total.saturating_sub(1)),
+                    Some(total),
+                    Some(usize::MAX),
+                ] {
+                    let range = preview_line_range(total, height, target);
+                    assert_eq!(range.len(), height.min(total));
+                    assert!(range.end <= total);
+                    if let Some(target) = target.filter(|&line| line < total && height > 0) {
+                        assert!(range.contains(&target), "{range:?}, target {target}");
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn rendered_previews_fill_rows_at_file_boundaries_with_and_without_syntax() {
+        for language in [None, Some(crate::syntax::Language::Rust)] {
+            for height in [1, 2, 7, 8, 25] {
+                for target in [0, 1, 10, 19] {
+                    let mut editor = Editor::default();
+                    editor.set_picker(crate::editor::Picker::new_lsp_locations(
+                        std::path::PathBuf::from("/tmp"),
+                        Vec::new(),
+                    ));
+                    let content = (0..20)
+                        .map(|line| format!("const VALUE_{line}: u32 = {line};\n"))
+                        .collect::<String>();
+                    editor.picker_state.preview_cache.insert(
+                        "preview.rs".into(),
+                        crate::editor::PreviewCache {
+                            content,
+                            highlighted_lines: Default::default(),
+                            language,
+                        },
+                    );
+                    let result = row("preview", "", "preview.rs", target);
+                    let mut terminal = Terminal::new(TestBackend::new(80, height)).unwrap();
+                    terminal
+                        .draw(|frame| {
+                            render_picker_preview(frame, &mut editor, &result, frame.area())
+                        })
+                        .unwrap();
+                    let buffer = terminal.backend().buffer();
+                    let expected = preview_line_range(20, height as usize, Some(target));
+                    for (y, line) in expected.enumerate() {
+                        let text = (0..80)
+                            .map(|x| buffer[(x, y as u16)].symbol())
+                            .collect::<String>();
+                        assert!(
+                            text.contains(&format!("VALUE_{line}:")),
+                            "height={height}, target={target}, row={y}: {text}"
+                        );
+                        assert_eq!(
+                            buffer[(4, y as u16)].fg == picker_colors::GREEN,
+                            line == target
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn file_and_stale_previews_do_not_highlight_a_location() {
+        for stale in [false, true] {
+            let mut editor = Editor::default();
+            let root = std::path::PathBuf::from("/tmp");
+            editor.set_picker(if stale {
+                crate::editor::Picker::new_lsp_locations(root, Vec::new())
+            } else {
+                crate::editor::Picker::new_file_finder(root.clone(), root)
+            });
+            editor.picker_state.preview_cache.insert(
+                "cached.txt".into(),
+                crate::editor::PreviewCache {
+                    content: "first\nsecond\nthird\n".into(),
+                    highlighted_lines: Default::default(),
+                    language: None,
+                },
+            );
+            editor.set_last_shown_preview("cached.txt");
+            let result = row(
+                "preview",
+                "",
+                if stale { "loading.txt" } else { "cached.txt" },
+                1,
+            );
+            let mut terminal = Terminal::new(TestBackend::new(40, 1)).unwrap();
+            terminal
+                .draw(|frame| render_picker_preview(frame, &mut editor, &result, frame.area()))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let text = (0..40).map(|x| buffer[(x, 0)].symbol()).collect::<String>();
+            assert!(text.contains("first"), "{text}");
+            assert_ne!(buffer[(4, 0)].fg, picker_colors::GREEN);
+        }
+    }
+
+    #[test]
+    fn picker_area_stays_inside_offset_and_large_viewports() {
+        for area in [
+            Rect::new(12, 8, 160, 50),
+            Rect::new(3, 4, 20, 8),
+            Rect::new(0, 0, 2000, 1000),
+        ] {
+            let picker = get_picker_area(area);
+            assert_eq!(picker.intersection(area), picker);
+            assert_eq!(picker.x - area.x, (area.width - picker.width) / 2);
+            assert_eq!(picker.y - area.y, (area.height - picker.height) / 2);
+        }
+    }
 
     fn row(name: &str, content: &str, path: &str, line: usize) -> crate::editor::PickerResult {
         crate::editor::PickerResult {
