@@ -955,15 +955,6 @@ impl Editor {
                         })
                     })
                     .transpose()?;
-                let (old_path, new_path, patch) = self
-                    .load_walkthrough_diff_section(&snapshot_id, old, new)
-                    .map_err(|error| ToolResult::Error(format!("step {step_number}: {error}")))?;
-                let line_count = patch.lines().count();
-                if line_count > safe_range {
-                    return Err(ToolResult::Error(format!(
-                        "step {step_number} diff occupies {line_count} lines (maximum {safe_range}); use smaller old/new offset and count slices"
-                    )));
-                }
                 let wrap_width =
                     (self.options.wrap && self.render_cache.last_text_width > 0).then(|| {
                         self.render_cache.last_text_width.saturating_add(
@@ -972,6 +963,23 @@ impl Editor {
                                 .map_or(0, |area| area.width as usize),
                         )
                     });
+                let presentation = self
+                    .load_walkthrough_diff_section(&snapshot_id, old, new, |patch| {
+                        let line_count = patch.lines().count();
+                        line_count <= safe_range
+                            && self
+                                .code_explanation_source_metrics(patch, 1, line_count, wrap_width)
+                                .visual_rows
+                                .is_none_or(|rows| rows <= safe_range)
+                    })
+                    .map_err(|error| ToolResult::Error(format!("step {step_number}: {error}")))?;
+                let patch = presentation.patch;
+                let line_count = patch.lines().count();
+                if line_count > safe_range {
+                    return Err(ToolResult::Error(format!(
+                        "step {step_number} diff occupies {line_count} lines (maximum {safe_range}); use smaller old/new offset and count slices"
+                    )));
+                }
                 let metrics =
                     self.code_explanation_source_metrics(&patch, 1, line_count, wrap_width);
                 if let Some(rows) = metrics.visual_rows.filter(|rows| *rows > safe_range) {
@@ -981,9 +989,10 @@ impl Editor {
                 }
                 steps.push(CodeExplanationStep::Diff {
                     title,
-                    old_path,
-                    new_path,
+                    old_path: presentation.old_path,
+                    new_path: presentation.new_path,
                     patch: Arc::from(patch),
+                    focus: presentation.focus,
                     comment,
                 });
                 continue;
@@ -1238,7 +1247,8 @@ impl Editor {
             pending.presentation_buffer_id = None;
         }
 
-        let (source, syntax_path, display_name, selection) = match step {
+        let highlight = matches!(&step, CodeExplanationStep::Code { .. });
+        let (source, syntax_path, display_name, (start_line, end_line)) = match step {
             CodeExplanationStep::Code {
                 absolute_path,
                 snapshot,
@@ -1267,14 +1277,14 @@ impl Editor {
                     source,
                     absolute_path.to_string_lossy().into_owned(),
                     display_name,
-                    Some((start_line, end_line)),
+                    (start_line, end_line),
                 )
             }
-            CodeExplanationStep::Diff { patch, .. } => (
+            CodeExplanationStep::Diff { patch, focus, .. } => (
                 patch,
                 "walkthrough.diff".to_string(),
                 "Selected diff".to_string(),
-                None,
+                focus,
             ),
             CodeExplanationStep::Concept { .. } => {
                 self.ai_state.active_selection = None;
@@ -1301,23 +1311,18 @@ impl Editor {
             pending.presentation_buffer_id = Some(presentation_buffer_id);
         }
 
-        let Some((start_line, end_line)) = selection else {
+        let selected = if highlight {
+            self.execute_navigation_tool(
+                "select_text",
+                &json!({
+                    "start_line": start_line,
+                    "end_line": end_line,
+                }),
+            )
+        } else {
             self.ai_state.active_selection = None;
-            self.buffer_mut()
-                .cursor_mut()
-                .set_position(0, crate::unicode::GraphemeCol::ZERO);
-            self.viewport.scroll_offset = 0;
-            self.viewport.scroll_subrow = 0;
-            self.mark_dirty();
-            return Ok(());
+            ToolResult::Success(String::new())
         };
-        let selected = self.execute_navigation_tool(
-            "select_text",
-            &json!({
-                "start_line": start_line,
-                "end_line": end_line,
-            }),
-        );
         if let ToolResult::Error(error) = selected {
             self.discard_code_explanation_presentation_buffer(
                 Some(presentation_buffer_id),
@@ -1329,21 +1334,29 @@ impl Editor {
         Ok(())
     }
 
-    /// Center the complete selection in the unobscured code area. Frontends may
-    /// supply measured rows above their card; oversized ranges start at the top.
+    /// Center the focused code or change in the unobscured area. Diff excerpts
+    /// keep their headers and surrounding source visible whenever the full
+    /// excerpt fits. Frontends may supply measured rows above their card.
     pub fn position_code_explanation(&mut self, visible_rows: usize) {
-        let Some(CodeExplanationView {
-            page:
-                CodeExplanationPageView::Code {
-                    start_line,
-                    end_line,
-                    ..
-                },
-            ..
-        }) = self.ai_code_explanation_view()
+        let Some(step) = self
+            .ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_code_explanation.as_ref())
+            .and_then(|pending| pending.steps.get(pending.current))
         else {
             return;
         };
+        let (start_line, end_line) = match step {
+            CodeExplanationStep::Code {
+                start_line,
+                end_line,
+                ..
+            } => (*start_line, *end_line),
+            CodeExplanationStep::Diff { focus, .. } => *focus,
+            CodeExplanationStep::Concept { .. } => return,
+        };
+        let diff = matches!(step, CodeExplanationStep::Diff { .. });
         let start = start_line.saturating_sub(1);
         let width = self.render_cache.last_text_width;
         if self.options.wrap && width > 0 {
@@ -1353,13 +1366,19 @@ impl Editor {
         let (offset, subrow) = if let Some(map) = self.wrap_map().filter(|_| self.options.wrap) {
             let first = map.logical_to_visual(start);
             let height = map.logical_to_visual(end_line).saturating_sub(first);
-            map.visual_to_logical(first.saturating_sub(visible_rows.saturating_sub(height) / 2))
+            let mut top = first.saturating_sub(visible_rows.saturating_sub(height) / 2);
+            if diff {
+                let total = map.logical_to_visual(self.buffer().line_count());
+                top = top.min(total.saturating_sub(visible_rows));
+            }
+            map.visual_to_logical(top)
         } else {
             let height = end_line.saturating_sub(start);
-            (
-                start.saturating_sub(visible_rows.saturating_sub(height) / 2),
-                0,
-            )
+            let mut top = start.saturating_sub(visible_rows.saturating_sub(height) / 2);
+            if diff {
+                top = top.min(self.buffer().line_count().saturating_sub(visible_rows));
+            }
+            (top, 0)
         };
         self.buffer_mut()
             .cursor_mut()
@@ -1468,6 +1487,7 @@ fn walkthrough_question_prompt(
             new_path,
             comment,
             patch,
+            ..
         } => {
             let paths = format!(
                 "{} → {}",
@@ -1538,6 +1558,7 @@ mod diff_prompt_tests {
             old_path: Some("before.rs".into()),
             new_path: Some("after.rs".into()),
             patch: Arc::from("--- before.rs\n+++ after.rs\n@@ -3,1 +7,1 @@\n-old\n+new\n"),
+            focus: (4, 5),
             comment: "The new guard rejects empty input.".into(),
         };
         let prompt = walkthrough_question_prompt(1, &step, "What changed?");

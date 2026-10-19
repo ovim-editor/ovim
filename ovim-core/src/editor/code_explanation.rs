@@ -46,6 +46,8 @@ pub enum CodeExplanationStep {
         old_path: Option<String>,
         new_path: Option<String>,
         patch: Arc<str>,
+        /// Inclusive presentation rows occupied by the selected change.
+        focus: (usize, usize),
         comment: String,
     },
 }

@@ -390,6 +390,7 @@ impl ReviewPatch {
 pub mod context;
 mod custom;
 pub mod store;
+pub(crate) mod walkthrough;
 pub use custom::{
     review_display_snapshot, review_snapshot, ChangeBlock, ChangeRef, CustomReview, DiffPairing,
     FrozenSource, ReviewSection, ReviewSectionLine, ReviewSnapshot, SourceFileSnapshot,

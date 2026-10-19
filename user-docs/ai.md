@@ -583,8 +583,8 @@ The private MCP connection also exposes editor tools:
 - `explain_with_codebase` presents an interactive concept/code/diff
   walkthrough. Claude waits until you finish, dismiss it, or ask a question.
   Questions return to the running Claude turn. Completed walkthroughs support replay.
-  Diff pages use `read_diff` snapshot IDs and old/new block slices, and show only
-  the selected change alongside its explanation.
+  Diff pages use `read_diff` snapshot IDs and old/new block slices, and show
+  the selected change with surrounding frozen source context and an explanation.
 - `read_diff` reads a saved snapshot of the comparison used by `<leader>gd`,
   respecting `pullbase` and its directory overrides.
 - `show_custom_diff` arranges snapshot ranges into labelled replacements,
@@ -745,7 +745,7 @@ Process output is intentionally ephemeral and bounded. Ovim retains at most
 older output is marked as discarded or expired while the durable tool result
 remains in conversation history.
 
-Walkthroughs combine concept pages and code pages in one linear sequence.
+Walkthroughs combine concept, code, and diff pages in one linear sequence.
 Concept pages use a larger centered panel for an introduction, prerequisite
 mental model, transition, or synthesis that does not belong to one source
 range. Their body is limited by the current terminal dimensions, and the agent
@@ -758,8 +758,17 @@ walkthrough snapshots are retained for replay in a 10 MiB, oldest-first cache,
 so later buffer edits, external file changes, renames, or deletions do not replace
 cached code. Files of 5 MiB or larger are deliberately not retained and are read
 from the current buffer or disk when their page is shown; this keeps a single
-large source from displacing useful tutorials. Both page types aim to teach one
-new idea at a time and introduce only the context needed for the next page.
+large source from displacing useful tutorials.
+
+Diff pages show the selected change with surrounding source captured by
+`read_diff`. Ovim fits this context above the explanation card while keeping the
+selected additions and removals distinct. Ordinary replacements share unchanged
+context; partial slices and reassigned changes use labeled before/after source
+excerpts with their original line ranges. Context stays frozen on replay even
+when the working file changes or is deleted. If a snapshot has no surrounding
+source or the selected change fills the available space, the page shows just
+the selected change. Every page aims to teach one new idea at a time and
+introduce only the context needed for the next page.
 
 Move between pages with Left/Right (or `h`/`l`). Press Space to ask about the
 current page; its explanation is attached as quoted context, Enter sends,

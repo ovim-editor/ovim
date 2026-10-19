@@ -209,7 +209,8 @@ impl Editor {
         snapshot_id: &str,
         old: Option<ChangeRef>,
         new: Option<ChangeRef>,
-    ) -> Result<(Option<String>, Option<String>, String), String> {
+        fits: impl Fn(&str) -> bool,
+    ) -> Result<native_diff::walkthrough::WalkthroughDiff, String> {
         let artifacts = DiffArtifacts::open(self)?;
         let snapshot: ReviewSnapshot = artifacts.load("snapshot", snapshot_id)?;
         if snapshot.id != snapshot_id {
@@ -226,44 +227,9 @@ impl Editor {
             .reassign(&[pairing])
             .map_err(|error| format!("Invalid diff section: {error:#}"))?;
         let section = &review.sections[0];
-        let old_path = section.old_path.clone();
-        let new_path = section.new_path.clone();
-        let old_start = section
-            .lines
-            .iter()
-            .find_map(|line| line.old_line)
-            .unwrap_or(0);
-        let new_start = section
-            .lines
-            .iter()
-            .find_map(|line| line.new_line)
-            .unwrap_or(0);
-        let old_count = section
-            .lines
-            .iter()
-            .filter(|line| line.old_line.is_some())
-            .count();
-        let new_count = section
-            .lines
-            .iter()
-            .filter(|line| line.new_line.is_some())
-            .count();
-        let mut patch = format!(
-            "--- {}\n+++ {}\n@@ -{old_start},{old_count} +{new_start},{new_count} @@\n",
-            old_path.as_deref().unwrap_or("/dev/null"),
-            new_path.as_deref().unwrap_or("/dev/null"),
-        );
-        for line in &section.lines {
-            let marker = match line.kind {
-                native_diff::PatchLineKind::Removed => '-',
-                native_diff::PatchLineKind::Added => '+',
-                _ => return Err("Diff section contains an unexpected line kind".into()),
-            };
-            patch.push(marker);
-            patch.push_str(&line.text);
-            patch.push('\n');
-        }
-        Ok((old_path, new_path, patch))
+        Ok(native_diff::walkthrough::walkthrough_diff(
+            &snapshot, section, fits,
+        ))
     }
 
     /// The MCP request ID differs from the provider's chat tool ID. Alias the
@@ -693,6 +659,7 @@ mod tests {
                     count: Some(1),
                 }),
                 None,
+                |_| true,
             )
             .is_err());
         assert!(editor
@@ -704,6 +671,7 @@ mod tests {
                     count: None,
                 }),
                 None,
+                |_| true,
             )
             .is_err());
         let original_buffer_id = editor.buffer().id();
@@ -748,8 +716,10 @@ mod tests {
         let displayed = editor.buffer().rope().to_string();
         assert!(displayed.contains("-old one"));
         assert!(displayed.contains("+new one"));
-        assert!(!displayed.contains("old two"));
-        assert!(!displayed.contains("new two"));
+        assert!(!displayed.contains("-old two"));
+        assert!(displayed.contains(" old two"));
+        assert!(!displayed.contains("+new two"));
+        assert!(displayed.contains(" new two"));
         assert!(editor.buffer().is_read_only());
         assert!(editor.move_code_explanation(true));
         assert!(matches!(
@@ -803,6 +773,101 @@ mod tests {
             assert_eq!(editor.buffer().rope().to_string(), displayed);
             assert!(editor.finish_code_explanation(false));
             assert_eq!(editor.buffer().id(), original_buffer_id);
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn href_walkthrough_keeps_frozen_context_visible_and_replays_after_source_deletion() {
+        let repository = tempfile::tempdir().unwrap();
+        let storage = tempfile::tempdir().unwrap();
+        let repo = Repository::init(repository.path()).unwrap();
+        let path = repository.path().join("nav.html");
+        let before = (1..=20)
+            .map(|line| format!("<!-- navigation {line} -->\n"))
+            .collect::<String>()
+            + "<nav>\n  <a href=\"/old\">Home</a>\n</nav>\n";
+        fs::write(&path, &before).unwrap();
+        commit(&repo);
+        fs::write(&path, before.replace("/old", "/home")).unwrap();
+        let layout = RunStorageLayout::new(storage.path().join("runs"));
+        let mut editor = editor(&path, &layout);
+        editor.set_viewport_height(32);
+        editor.set_last_layout(
+            crate::Rect {
+                x: 0,
+                y: 0,
+                width: 80,
+                height: 32,
+            },
+            4,
+            76,
+            0,
+        );
+        let ToolResult::Success(result) = editor.execute_read_diff_tool(&json!({})) else {
+            panic!("could not capture navigation diff")
+        };
+        let captured: Value = serde_json::from_str(&result).unwrap();
+        let block = |kind| {
+            captured["blocks"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|block| block["kind"] == kind)
+                .unwrap()["block_id"]
+                .clone()
+        };
+        let call = ToolCallInfo {
+            id: "href-with-context".into(),
+            name: "explain_with_codebase".into(),
+            arguments: json!({"steps": [{
+                "type": "diff", "snapshot_id": captured["snapshot_id"],
+                "title": "Home navigation", "comment": "Home now opens the new route.",
+                "old": {"block_id": block("removed")},
+                "new": {"block_id": block("added")}
+            }]}),
+        };
+        fs::write(&path, "disk changed after capture\n").unwrap();
+        editor
+            .buffer_mut()
+            .replace_content("unsaved buffer changed after capture\n");
+        editor
+            .begin_code_explanation(call.clone(), None)
+            .unwrap_or_else(|(error, _)| panic!("walkthrough failed: {error:?}"));
+        let displayed = editor.buffer().rope().to_string();
+        assert!(displayed.contains(
+            " <nav>\n-  <a href=\"/old\">Home</a>\n+  <a href=\"/home\">Home</a>\n </nav>\n"
+        ));
+        assert!(displayed.contains("<!-- navigation 20 -->"));
+        assert!(!displayed.contains("changed after capture"));
+        assert!(editor.ai_state.active_selection.is_none());
+        assert_eq!(
+            editor.scroll_offset(),
+            0,
+            "all context and source headers fit"
+        );
+        assert!(editor
+            .buffer()
+            .line_text(editor.buffer().cursor().line())
+            .unwrap()
+            .starts_with('-'));
+        editor.position_code_explanation(6);
+        let cursor = editor.buffer().cursor().line();
+        assert!(cursor >= editor.scroll_offset() && cursor + 1 < editor.scroll_offset() + 6);
+        editor.position_code_explanation(22);
+        assert_eq!(editor.scroll_offset(), 0);
+        assert!(editor.finish_code_explanation(false));
+        fs::remove_file(&path).unwrap();
+        for cached in [true, false] {
+            if !cached {
+                let chat = editor.ai_state.chat.as_mut().unwrap();
+                chat.code_explanation_cache.clear();
+                chat.code_explanation_cache_bytes = 0;
+            }
+            editor
+                .begin_code_explanation(call.clone(), None)
+                .unwrap_or_else(|(error, _)| panic!("frozen replay failed: {error:?}"));
+            assert_eq!(editor.buffer().rope().to_string(), displayed);
+            assert!(editor.finish_code_explanation(false));
         }
     }
 
