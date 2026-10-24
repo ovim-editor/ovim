@@ -6,6 +6,6 @@
     "test": "node --test ../../ovim-core/src/ai/claude/*.test.mjs *.test.mjs"
   },
   "devDependencies": {
-    "@modelcontextprotocol/sdk": "1.30.0"
+    "@modelcontextprotocol/sdk": "1.32.1"
   }
 }
