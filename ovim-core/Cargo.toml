@@ -16,7 +16,7 @@ flate2 = "1"
 open = "5"
 # lsp_init/auto_install (GitHub release archives)
 tar = "0.4"
-zip = "2"
+zip = "9.1.3"
 
 # mode/ - no extra deps
 # unicode/
