@@ -82,6 +82,9 @@ impl Editor {
     /// Resolve the pending LSP install consent dialog
     pub fn resolve_pending_lsp_install(&mut self, consent: super::LspInstallConsent) {
         let pending = self.lsp.pending_install.take();
+        if let Some(p) = &pending {
+            self.lsp.answered_installs.insert(p.server_command.clone());
+        }
         match consent {
             super::LspInstallConsent::Yes => {
                 if let Some(p) = &pending {
@@ -101,7 +104,7 @@ impl Editor {
             super::LspInstallConsent::No => {
                 if let Some(p) = &pending {
                     self.set_lsp_status(format!(
-                        "LSP: {} skipped. Use :set autoinstall=prompt to re-enable.",
+                        "LSP: {} skipped for this session.",
                         p.server_command
                     ));
                 }

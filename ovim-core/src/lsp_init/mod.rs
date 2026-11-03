@@ -718,7 +718,10 @@ fn find_companion_command(companion: &CompanionLspConfig) -> Option<String> {
         }
     }
 
-    None
+    // Companions auto-install into ovim's sandbox, which is not on PATH.
+    // Without this, every file reopened after a successful install offers
+    // the install again.
+    crate::language_config::find_in_well_known_locations(&companion.command)
 }
 
 /// The language id servers of `language` are started and addressed under.

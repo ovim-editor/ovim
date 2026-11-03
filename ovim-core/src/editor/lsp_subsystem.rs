@@ -18,4 +18,8 @@ pub(crate) struct LspSubsystem {
     pub(crate) pending_install: Option<PendingLspInstall>,
     /// Approved LSP install ready to be picked up by the event loop
     pub(crate) approved_install: Option<PendingLspInstall>,
+    /// Server commands the user already answered an install prompt for this
+    /// session. Each file of a language would otherwise ask again, including
+    /// while an approved install is still running.
+    pub(crate) answered_installs: std::collections::HashSet<String>,
 }

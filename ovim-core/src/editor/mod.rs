@@ -918,6 +918,9 @@ impl Editor {
 
     /// Set a pending LSP install awaiting user consent.
     pub fn set_pending_lsp_install(&mut self, install: PendingLspInstall) {
+        if self.lsp.answered_installs.contains(&install.server_command) {
+            return;
+        }
         self.lsp.pending_install = Some(install);
     }
 

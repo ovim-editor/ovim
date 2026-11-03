@@ -889,3 +889,22 @@ async fn accepting_a_method_snippet_requests_signature_help() {
         "the cursor is after `size()`, not inside a call"
     );
 }
+
+#[test]
+fn an_answered_install_prompt_is_not_asked_again_for_other_files() {
+    use crate::editor::{LspInstallConsent, PendingLspInstall};
+    let prompt = |file: &str| PendingLspInstall {
+        language_name: "Tailwind CSS".to_string(),
+        server_command: "tailwindcss-language-server".to_string(),
+        method_description: "npm install @tailwindcss/language-server".to_string(),
+        file_path: file.to_string(),
+        companion_id: Some("tailwindcss".to_string()),
+    };
+    for consent in [LspInstallConsent::Yes, LspInstallConsent::No] {
+        let mut editor = Editor::new();
+        editor.set_pending_lsp_install(prompt("/project/a.tsx"));
+        editor.resolve_pending_lsp_install(consent);
+        editor.set_pending_lsp_install(prompt("/project/b.tsx"));
+        assert!(!editor.has_pending_lsp_install(), "{consent:?}");
+    }
+}
