@@ -5,6 +5,7 @@
 //! removals can never leave a tab with a stale title or a repointed buffer
 //! (OV-00310, OV-00311).
 
+use super::tabpage::TabView;
 use super::{Buffer, Editor, TabPageManager};
 
 impl Editor {
@@ -125,12 +126,46 @@ impl Editor {
             .unwrap_or_else(|| "[No Name]".to_string())
     }
 
-    /// Points the current tab at the editor's current buffer
+    /// Points the current tab at the editor's current buffer and records the
+    /// tab's cursor/scroll in it
     pub fn sync_current_tab_buffer(&mut self) {
-        let id = self.buffer().id();
+        let view = TabView {
+            buffer_id: self.buffer().id(),
+            cursor: *self.buffer().cursor(),
+            scroll_offset: self.scroll_offset(),
+            scroll_subrow: self.scroll_subrow(),
+        };
         let current_tab_idx = self.tab_page_manager.current_tab_index();
         if let Some(tab) = self.tab_page_manager.tab_mut(current_tab_idx) {
-            tab.set_buffer_id(id);
+            tab.set_buffer_id(view.buffer_id);
+            tab.view = Some(view);
+        }
+    }
+
+    /// Puts back the cursor and scroll position the current tab last had, so
+    /// tabs sharing a buffer don't drag each other around.
+    fn restore_current_tab_view(&mut self) {
+        let Some(view) = self.tab_page_manager.current_tab().view else {
+            return;
+        };
+        if view.buffer_id != self.buffer().id() {
+            return;
+        }
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(view.cursor.line(), view.cursor.col());
+        self.buffer_mut().validate_cursor_position();
+        self.viewport.scroll_offset = view.scroll_offset;
+        self.viewport.scroll_subrow = view.scroll_subrow;
+        if let Some(window) = self
+            .window_manager
+            .as_mut()
+            .and_then(|wm| wm.focused_window_mut())
+        {
+            window.set_scroll_position(view.scroll_offset, view.scroll_subrow);
+            window
+                .cursor_mut()
+                .set_position(view.cursor.line(), view.cursor.col());
         }
     }
 
@@ -146,7 +181,10 @@ impl Editor {
             .and_then(|id| self.find_buffer_index_by_id(id));
 
         match target {
-            Some(index) => self.switch_to_buffer(index),
+            Some(index) => {
+                self.switch_to_buffer(index);
+                self.restore_current_tab_view();
+            }
             None => self.sync_current_tab_buffer(),
         }
     }
@@ -386,5 +424,37 @@ mod tests {
             editor.get_tab_title(editor.current_tab_index()),
             "[Diff abc123]"
         );
+    }
+
+    /// Two tabs showing the same file keep independent cursors, as each vim
+    /// tab page has its own window (`:tabnew` + `:e same.txt`, move, `gt`:
+    /// the first tab's cursor is unchanged; verified in `nvim --clean`).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn tabs_sharing_a_buffer_keep_independent_cursors() {
+        use crate::unicode::GraphemeCol;
+        let dir = tempfile::tempdir().expect("tempdir");
+        let a = write_file(&dir, "a.rs", "one\ntwo\nthree\nfour\nfive\n");
+
+        let mut editor = Editor::default();
+        editor.load_file(&a).expect("open a.rs");
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(1, GraphemeCol(1));
+
+        editor.new_tab();
+        editor.load_file(&a).expect("open a.rs in tab 2");
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(4, GraphemeCol(2));
+
+        editor.goto_tab(0);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        assert_eq!(editor.buffer().cursor().col(), GraphemeCol(1));
+
+        editor.goto_tab(1);
+        assert_eq!(editor.buffer().cursor().line(), 4);
+        assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2));
     }
 }
