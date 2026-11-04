@@ -1,3 +1,10 @@
+/** Authoritative draft after a composer edit/action. Revision precedes publication. */
+export interface GuiChatInputState {
+    input: string;
+    cursor: number;
+    revision: number;
+}
+
 export interface GuiKeyInput {
     key: string;
     shift: boolean;

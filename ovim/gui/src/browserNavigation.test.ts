@@ -21,6 +21,7 @@ const fakeWorkbench = (
     setState: (state: BrowserState) => void,
 ) => {
     const close = vi.fn(async (sessionId: string) => {
+        const remainedSelected = state().activeSessionId === sessionId;
         setState({
             ...state(),
             sessions: state().sessions.filter(
@@ -28,6 +29,7 @@ const fakeWorkbench = (
             ),
             activeSessionId: undefined,
         });
+        return remainedSelected;
     });
     return {
         state,
@@ -106,6 +108,63 @@ describe("browser navigation controller", () => {
                 });
             }),
         );
+    });
+
+    it("preserves a newer tab selection while a close is pending", async () => {
+        let finishClose!: () => void;
+        let dispose!: () => void;
+        const fixture = createRoot((cleanup) => {
+            dispose = cleanup;
+            const [state, setState] = createSignal<BrowserState>({
+                revision: 1,
+                sessions: [session],
+                activeSessionId: session.sessionId,
+                maxSessions: 8,
+            });
+            const workbench = fakeWorkbench(state, setState);
+            vi.mocked(workbench.close).mockImplementation(
+                () =>
+                    new Promise((resolve) => {
+                        finishClose = () => resolve(false);
+                    }),
+            );
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "browser",
+                sessionId: session.sessionId,
+            });
+            const selectReference = vi.fn();
+            const tabs: WorkbenchTabReference[] = [
+                { id: "source:1", kind: "source", index: 0, tabId: 1 },
+                {
+                    id: "browser:browser-1",
+                    kind: "browser",
+                    sessionId: session.sessionId,
+                },
+                { id: "source:2", kind: "source", index: 1, tabId: 2 },
+            ];
+            return {
+                setSelection,
+                selectReference,
+                navigation: createBrowserNavigation({
+                    workbench,
+                    tabs: () => tabs,
+                    selection,
+                    selectTab: vi.fn(() => true),
+                    selectReference,
+                    focusSource: vi.fn(),
+                    setError: vi.fn(),
+                }),
+            };
+        });
+        try {
+            const closing = fixture.navigation.closeTab(session.sessionId);
+            fixture.setSelection({ kind: "source", tabId: 1 });
+            finishClose();
+            await closing;
+            expect(fixture.selectReference).not.toHaveBeenCalled();
+        } finally {
+            dispose();
+        }
     });
 
     it("owns command focus and tab selection state", async () => {

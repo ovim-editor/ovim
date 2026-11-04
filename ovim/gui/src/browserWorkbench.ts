@@ -45,7 +45,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     let latestPresentationRevision = 0;
     let latestStateRevision = -1;
     let latestActivationRequest = 0;
-    const closing = new Set<string>();
+    const closing = new Map<string, { selection?: WorkbenchSelection }>();
 
     const activeSessionId = () => {
         const selection = options.selection();
@@ -115,6 +115,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 revision: projection.acknowledgeRevision,
             }).catch((reason) => options.setError(String(reason)));
 
+        const priorSelection = options.selection();
         const selection = projection.selection;
         if (
             selection.kind === "browser" &&
@@ -123,6 +124,21 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         )
             present(selection.sessionId);
         else options.setSelection(selection);
+        for (const [sessionId, request] of closing) {
+            if (
+                request.selection === priorSelection &&
+                priorSelection.kind === "browser" &&
+                priorSelection.sessionId === sessionId &&
+                !next.sessions.some(
+                    (session) => session.sessionId === sessionId,
+                ) &&
+                selection.kind !== "browser"
+            ) {
+                // Stream delivery may project the automatic fallback before the
+                // close response. Keep ownership through that projection only.
+                request.selection = options.selection();
+            }
+        }
     };
     const open = async (url?: string, placement?: WorkbenchTabPlacement) => {
         const current = state();
@@ -160,15 +176,26 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
         position = state().sessions.length,
     ) => {
         if (!options.native || closing.has(sessionId) || !hasSession(sessionId))
-            return;
+            return false;
         const closingSession = state().sessions.find(
             (session) => session.sessionId === sessionId,
         );
-        closing.add(sessionId);
+        const request = {
+            selection:
+                activeSessionId() === sessionId
+                    ? options.selection()
+                    : undefined,
+        };
+        closing.set(sessionId, request);
         try {
-            accept(
-                await invoke<BrowserState>("gui_browser_close", { sessionId }),
-            );
+            const next = await invoke<BrowserState>("gui_browser_close", {
+                sessionId,
+            });
+            // Capture ownership before projection replaces a closed selection.
+            const remainedSelected =
+                request.selection !== undefined &&
+                request.selection === options.selection();
+            accept(next);
             if (closingSession)
                 setClosedTabs((previous) =>
                     [
@@ -180,6 +207,7 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                         ...previous,
                     ].slice(0, MAX_CLOSED_BROWSER_TABS),
                 );
+            return remainedSelected;
         } finally {
             closing.delete(sessionId);
         }

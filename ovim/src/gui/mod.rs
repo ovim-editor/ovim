@@ -1033,7 +1033,7 @@ enum GuiRequest {
         input: String,
         cursor: usize,
         action: Option<GuiKeyInput>,
-        reply: oneshot::Sender<Result<(), String>>,
+        reply: oneshot::Sender<Result<GuiChatInputState, String>>,
     },
     SetChatInputCursor {
         offset: usize,
@@ -1174,6 +1174,16 @@ enum GuiRequest {
 pub struct GuiVectorSource {
     pub source: String,
     pub file_name: String,
+}
+
+/// Draft owned by the editor after an atomic composer edit and optional action.
+/// `revision` is the last published snapshot; newer snapshots include this action.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiChatInputState {
+    pub input: String,
+    pub cursor: usize,
+    pub revision: u64,
 }
 
 /// Send-side handle stored as Tauri application state.
@@ -1345,7 +1355,7 @@ impl GuiBridge {
         input: String,
         cursor: usize,
         action: Option<GuiKeyInput>,
-    ) -> Result<(), String> {
+    ) -> Result<GuiChatInputState, String> {
         self.request(|reply| GuiRequest::UpdateChatInput {
             expected_input,
             expected_cursor,
@@ -1556,10 +1566,10 @@ impl GuiBridge {
         let _ = self.requests.send(GuiRequest::Shutdown);
     }
 
-    async fn request(
+    async fn request<T>(
         &self,
-        request: impl FnOnce(oneshot::Sender<Result<(), String>>) -> GuiRequest,
-    ) -> Result<(), String> {
+        request: impl FnOnce(oneshot::Sender<Result<T, String>>) -> GuiRequest,
+    ) -> Result<T, String> {
         let (reply_tx, reply_rx) = oneshot::channel();
         self.requests
             .send(request(reply_tx))
@@ -1976,7 +1986,15 @@ async fn handle_request(
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
             }
-            (reply, result)
+            let result = result
+                .map(|()| GuiChatInputState {
+                    input: editor.ai_chat_input().to_string(),
+                    cursor: editor.ai_chat_input_cursor(),
+                    revision: *revision,
+                })
+                .map_err(|error| error.to_string());
+            let _ = reply.send(result);
+            return;
         }
         GuiRequest::ManageQueuedChatInput { id, action, reply } => {
             let changed = match action.as_str() {
@@ -5061,6 +5079,62 @@ mod tests {
         assert_eq!(editor.mode(), Mode::Normal);
         assert_eq!(editor.buffer().cursor().line(), 1);
         assert_eq!(editor.buffer().cursor().col().0, 1);
+    }
+
+    #[tokio::test]
+    async fn gui_chat_input_response_preserves_rejected_and_noop_action_drafts() {
+        let mut editor = Editor::with_content("");
+        editor
+            .open_ai_chat(ovim_core::ai::chat_types::ChatOpts::default())
+            .unwrap();
+        let mut revision = 7;
+        for (draft, expected) in [
+            ("/unknown", "/unknown"),
+            ("/unknown", "/unknown"),
+            ("", ""),
+            ("/yolo on", ""),
+        ] {
+            let previous = editor.ai_chat_input().to_string();
+            let previous_cursor = editor.ai_chat_input_cursor();
+            let (reply, response) = oneshot::channel();
+            handle_request(
+                GuiRequest::UpdateChatInput {
+                    expected_input: previous,
+                    expected_cursor: previous_cursor,
+                    input: draft.to_string(),
+                    cursor: draft.len(),
+                    action: Some(GuiKeyInput {
+                        key: "Enter".into(),
+                        shift: false,
+                        control: false,
+                        alt: false,
+                        meta: false,
+                    }),
+                    reply,
+                },
+                &mut editor,
+                &mut (100, 30),
+                &mut revision,
+                &mut GuiProjectionCache::default(),
+            )
+            .await;
+            assert_eq!(
+                response.await.unwrap().unwrap(),
+                GuiChatInputState {
+                    input: expected.to_string(),
+                    cursor: expected.len(),
+                    revision: 7,
+                }
+            );
+            assert_eq!(editor.ai_chat_input(), expected);
+            assert!(editor
+                .ai_state
+                .chat
+                .as_ref()
+                .unwrap()
+                .runtime_turn
+                .is_none());
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]

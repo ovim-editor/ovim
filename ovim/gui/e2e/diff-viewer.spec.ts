@@ -1332,7 +1332,11 @@ test("one-line diff context controls fit the gutter without overlapping", async 
     expect(up.y + up.height).toBeLessThanOrEqual(down.y);
     expect(up.x + up.width).toBeLessThanOrEqual(code.x);
     expect(down.x + down.width).toBeLessThanOrEqual(code.x);
-    await page.locator(".flow-diff").press("s");
+    // This case measures layout. Use the visible control and synchronize its
+    // state; keyboard navigation is exercised in the dedicated shortcut cases.
+    const unified = page.getByRole("button", { name: "Unified", exact: true });
+    await unified.click();
+    await expect(unified).toHaveAttribute("aria-pressed", "true");
     const heading = (await page.locator(".flow-unified-heading").boundingBox())!;
     const unifiedUp = (await page.locator(".flow-unified-scroll").getByRole("button", { name: "Show more context above" }).boundingBox())!;
     expect(unifiedUp.y).toBeGreaterThanOrEqual(heading.y + heading.height);

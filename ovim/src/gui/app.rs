@@ -1,7 +1,7 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
 use super::browser::BrowserHost;
-use super::{GuiBridge, GuiKeyInput, GuiSnapshot, GuiVectorSource};
+use super::{GuiBridge, GuiChatInputState, GuiKeyInput, GuiSnapshot, GuiVectorSource};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -411,7 +411,7 @@ async fn gui_update_chat_input(
     input: String,
     cursor: usize,
     action: Option<GuiKeyInput>,
-) -> Result<(), String> {
+) -> Result<GuiChatInputState, String> {
     bridge
         .update_chat_input(expected_input, expected_cursor, input, cursor, action)
         .await

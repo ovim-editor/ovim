@@ -70,11 +70,16 @@ export const createBrowserNavigation = (options: BrowserNavigationOptions) => {
             position >= 0
                 ? (tabs[position + 1] ?? tabs[position - 1])
                 : undefined;
-        await options.workbench.close(
+        const remainedSelected = await options.workbench.close(
             sessionId,
             position >= 0 ? position : tabs.length,
         );
-        if (closingSelected && fallback) options.selectReference(fallback);
+        if (closingSelected && remainedSelected && fallback) {
+            const currentFallback = options
+                .tabs()
+                .find((tab) => tab.id === fallback.id);
+            if (currentFallback) options.selectReference(currentFallback);
+        }
     };
 
     const openCommand = (sessionId = options.workbench.activeSessionId()) => {

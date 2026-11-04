@@ -9,7 +9,7 @@ import {
 import { guiKeyInput } from "./guiInput";
 import { Icon, IconButton } from "./Icon";
 import { utf16OffsetFromUtf8, utf8OffsetFromTextArea } from "./textEncoding";
-import type { GuiAiChat, GuiKeyInput } from "./types";
+import type { GuiAiChat, GuiChatInputState, GuiKeyInput } from "./types";
 
 const FALLBACK_CELL_WIDTH = 8.15;
 
@@ -46,7 +46,7 @@ export default function ChatComposer(props: {
     chat: GuiAiChat;
     revision?: number;
     bindInput?: (input: HTMLTextAreaElement | undefined) => void;
-    onUpdate?: (update: ChatInputUpdate) => Promise<void>;
+    onUpdate?: (update: ChatInputUpdate) => Promise<GuiChatInputState>;
     onWidth?: (columns: number) => void;
     onRemoveDiffComments?: () => void;
     onRemoveImage?: (index: number) => void;
@@ -57,15 +57,15 @@ export default function ChatComposer(props: {
     let optimisticCursor = props.chat.inputCursor;
     let awaiting:
         | {
-              base: string;
               action: boolean;
-              responseDone: boolean;
-              revision: number;
+              response?: GuiChatInputState;
           }
         | undefined;
     let syncedInput: string | undefined;
     let syncedCursor: number | undefined;
     let mutations = Promise.resolve();
+    let queuedMutations = 0;
+    let previousResponse: GuiChatInputState | undefined;
     const hasActiveRun = () =>
         !props.chat.externalQuestion &&
         (props.chat.waiting || props.chat.activity !== "idle");
@@ -107,12 +107,16 @@ export default function ChatComposer(props: {
             const matchesOptimistic =
                 remoteInput === optimisticInput &&
                 remoteCursor === optimisticCursor;
-            const actionChangedInput =
-                awaiting.action &&
-                awaiting.responseDone &&
-                (props.revision ?? 0) > awaiting.revision &&
-                remoteInput !== awaiting.base;
-            if (!matchesOptimistic && !actionChangedInput) return;
+            const response = awaiting.response;
+            const postResponseSnapshot =
+                response && (props.revision ?? 0) > response.revision;
+            // An action can preserve its draft, and a snapshot can precede its
+            // reply. Only this action's response acknowledges its outcome.
+            if (
+                (awaiting.action && !response) ||
+                (!matchesOptimistic && !postResponseSnapshot)
+            )
+                return;
             acknowledgedLocal = matchesOptimistic;
             awaiting = undefined;
         }
@@ -158,27 +162,58 @@ export default function ChatComposer(props: {
             cursor: nextCursor,
             action,
         };
-        const base = optimisticInput;
         optimisticInput = action?.key === "Enter" ? "" : nextInput;
         optimisticCursor = action?.key === "Enter" ? 0 : nextCursor;
         if (action?.key === "Enter") setDraft("");
-        awaiting = {
-            base,
+        const pending: NonNullable<typeof awaiting> = {
             action: Boolean(action),
-            responseDone: false,
-            revision: props.revision ?? 0,
         };
+        awaiting = pending;
+        const rebaseFromPrevious = queuedMutations > 0;
+        queuedMutations += 1;
         mutations = mutations
-            .then(() => props.onUpdate?.(update))
             .then(() => {
-                if (awaiting) awaiting.responseDone = true;
+                // A preceding action may have kept its draft (authentication,
+                // invalid command, or save failure). Rebase queued native edits
+                // against that actual result, retaining CAS against other edits.
+                if (rebaseFromPrevious && previousResponse) {
+                    update.expectedInput = previousResponse.input;
+                    update.expectedCursor = previousResponse.cursor;
+                }
+                return props.onUpdate?.(update);
+            })
+            .then((response) => {
+                previousResponse = response;
+                if (awaiting !== pending || !response) return;
+                pending.response = response;
+                const changed =
+                    optimisticInput !== response.input ||
+                    optimisticCursor !== response.cursor;
+                optimisticInput = response.input;
+                optimisticCursor = response.cursor;
+                setDraft(response.input);
+                if (changed)
+                    queueMicrotask(() => {
+                        if (!input) return;
+                        const cursor = utf16OffsetFromUtf8(
+                            response.input,
+                            response.cursor,
+                        );
+                        input.setSelectionRange(cursor, cursor);
+                        resize();
+                    });
                 applyRemote();
             })
             .catch(() => {
+                previousResponse = undefined;
+                if (awaiting !== pending) return;
                 awaiting = undefined;
                 optimisticInput = props.chat.input;
                 optimisticCursor = props.chat.inputCursor;
                 setDraft(props.chat.input);
+            })
+            .finally(() => {
+                queuedMutations -= 1;
             });
         return mutations;
     };

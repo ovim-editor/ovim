@@ -740,7 +740,15 @@ describe("Ovim Solid workbench", () => {
     it("keeps a native word selection while chat snapshots arrive", async () => {
         let finishUpdate!: () => void;
         const onUpdate = vi.fn(
-            () => new Promise<void>((resolve) => (finishUpdate = resolve)),
+            () =>
+                new Promise<import("./types").GuiChatInputState>((resolve) => {
+                    finishUpdate = () =>
+                        resolve({
+                            input: "one two three",
+                            cursor: 8,
+                            revision: 0,
+                        });
+                }),
         );
         const [chat, setChat] = createSignal<GuiAiChat>({
             ...mockSnapshot.aiChat!,

@@ -54,6 +54,7 @@ import {
 } from "./workbench";
 import type {
     GuiAiChat,
+    GuiChatInputState,
     GuiCodeExplanation,
     GuiKeyInput,
     GuiLayoutNode,
@@ -977,7 +978,7 @@ export const ChatPanel = (props: {
     revision?: number;
     focusInput: () => void;
     bindInput?: (input: HTMLTextAreaElement | undefined) => void;
-    onInputUpdate?: (update: ChatInputUpdate) => Promise<void>;
+    onInputUpdate?: (update: ChatInputUpdate) => Promise<GuiChatInputState>;
     onSetupKey?: (key: string) => void;
     onInputWidth?: (columns: number) => void;
     onRemoveDiffComments?: () => void;
@@ -1714,6 +1715,25 @@ function App() {
         if (!native) return;
         try {
             await invoke(command, args);
+        } catch (reason) {
+            setError(String(reason));
+            throw reason;
+        }
+    };
+
+    const updateChatInput = async (
+        update: ChatInputUpdate,
+    ): Promise<GuiChatInputState> => {
+        if (!native)
+            return {
+                input: update.input,
+                cursor: update.cursor,
+                revision: view().revision,
+            };
+        try {
+            return await invoke<GuiChatInputState>("gui_update_chat_input", {
+                ...update,
+            });
         } catch (reason) {
             setError(String(reason));
             throw reason;
@@ -2542,11 +2562,7 @@ function App() {
                             bindInput={(input) => {
                                 chatInput = input;
                             }}
-                            onUpdate={(update) =>
-                                mutateStrict("gui_update_chat_input", {
-                                    ...update,
-                                })
-                            }
+                            onUpdate={updateChatInput}
                             onWidth={(columns) =>
                                 void mutate("gui_set_chat_input_width", {
                                     columns,
@@ -3021,9 +3037,7 @@ function App() {
                             meta: false,
                         }).finally(() => focusChatInput())
                     }
-                    onInputUpdate={(update) =>
-                        mutateStrict("gui_update_chat_input", { ...update })
-                    }
+                    onInputUpdate={updateChatInput}
                     onInputWidth={(columns) =>
                         void mutate("gui_set_chat_input_width", { columns })
                     }
