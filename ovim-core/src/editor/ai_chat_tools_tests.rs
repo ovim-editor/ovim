@@ -781,7 +781,11 @@ async fn new_file_through_outside_symlink_requires_approval_before_preparing_buf
     let project = tempfile::tempdir().unwrap();
     let outside = tempfile::tempdir().unwrap();
     std::os::unix::fs::symlink(outside.path(), project.path().join("linked")).unwrap();
+    git2::Repository::init(project.path()).unwrap();
+    let anchor = project.path().join("main.txt");
+    fs::write(&anchor, "project anchor\n").unwrap();
     let mut editor = Editor::default();
+    editor.open_file(&anchor).unwrap();
     editor
         .open_ai_chat(ChatOpts {
             allow_edits: true,
@@ -800,10 +804,11 @@ async fn new_file_through_outside_symlink_requires_approval_before_preparing_buf
             name: name.into(),
             arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "approved\n", "expected_revision": 0, "create": true}),
         };
-        let ToolDispatchOutcome::ApprovalRequired(request) =
-            editor.dispatch_tool_call_with_approval(&call, None)
-        else {
-            panic!("{name} must ask before creating a file outside the project");
+        let request = match editor.dispatch_tool_call_with_approval(&call, None) {
+            ToolDispatchOutcome::ApprovalRequired(request) => request,
+            ToolDispatchOutcome::Completed(result) => {
+                panic!("{name} must ask before creating outside: {result:?}")
+            }
         };
         assert_eq!(
             request.requested_path,
@@ -843,7 +848,11 @@ async fn new_file_through_inside_symlink_stays_in_project() {
     let project = tempfile::tempdir().unwrap();
     fs::create_dir(project.path().join("real")).unwrap();
     std::os::unix::fs::symlink(project.path().join("real"), project.path().join("linked")).unwrap();
+    git2::Repository::init(project.path()).unwrap();
+    let anchor = project.path().join("main.txt");
+    fs::write(&anchor, "project anchor\n").unwrap();
     let mut editor = Editor::default();
+    editor.open_file(&anchor).unwrap();
     editor
         .open_ai_chat(ChatOpts {
             allow_edits: true,
@@ -858,10 +867,13 @@ async fn new_file_through_inside_symlink_stays_in_project() {
         name: "create_file".into(),
         arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "inside\n", "expected_revision": 0}),
     };
-    assert!(matches!(
-        editor.dispatch_tool_call_with_approval(&call, None),
-        ToolDispatchOutcome::Completed(ToolResult::Success(_))
-    ));
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(_)) => {}
+        ToolDispatchOutcome::Completed(result) => panic!("inside symlink write failed: {result:?}"),
+        ToolDispatchOutcome::ApprovalRequired(req) => {
+            panic!("unexpected approval: {}", req.message)
+        }
+    }
     assert_eq!(
         fs::read_to_string(project.path().join("real/nested/new.txt")).unwrap(),
         "inside\n"
