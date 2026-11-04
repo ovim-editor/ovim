@@ -266,22 +266,34 @@ fn decompress_gzip_binary(bytes: &[u8]) -> Result<Vec<u8>, String> {
 }
 
 async fn write_executable(path: &Path, bytes: &[u8]) -> Result<(), String> {
-    if let Some(parent) = path
+    let parent = path
         .parent()
         .filter(|parent| !parent.as_os_str().is_empty())
-    {
-        tokio::fs::create_dir_all(parent).await.map_err(|error| {
-            format!(
-                "failed to create install directory '{}': {error}",
-                parent.display()
-            )
-        })?;
-    }
+        .unwrap_or_else(|| Path::new("."));
+    tokio::fs::create_dir_all(parent).await.map_err(|error| {
+        format!(
+            "failed to create install directory '{}': {error}",
+            parent.display()
+        )
+    })?;
 
-    tokio::fs::write(path, bytes)
+    // Publish only the complete executable, with its final permissions. A
+    // same-directory rename also replaces a running binary without truncating
+    // its inode, and never follows a destination symlink into another file.
+    let staged = tempfile::NamedTempFile::new_in(parent)
+        .map_err(|error| format!("failed to stage binary for '{}': {error}", path.display()))?;
+    tokio::fs::write(staged.path(), bytes)
         .await
         .map_err(|error| format!("failed to write binary to '{}': {error}", path.display()))?;
-    set_executable_permissions(path).await
+    set_executable_permissions(staged.path()).await?;
+    staged
+        .as_file()
+        .sync_all()
+        .map_err(|error| format!("failed to sync binary for '{}': {error}", path.display()))?;
+    staged
+        .persist(path)
+        .map_err(|error| format!("failed to publish binary to '{}': {error}", path.display()))?;
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -617,6 +629,88 @@ mod tests {
 
         assert!(error.contains("gzip decompression failed"));
         assert!(!install_dir.join("rust-analyzer").exists());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[tokio::test]
+    async fn replacing_a_running_executable_does_not_truncate_its_inode() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let binary = directory.path().join("server");
+        let sleep = which::which("sleep").expect("sleep fixture executable");
+        std::fs::copy(sleep, &binary).expect("copy fixture executable");
+        let mut running = Command::new(&binary)
+            .arg("60")
+            .spawn()
+            .expect("run fixture");
+
+        let result = write_executable(&binary, b"replacement executable").await;
+        let still_running = running
+            .try_wait()
+            .expect("inspect running fixture")
+            .is_none();
+        let _ = running.kill();
+        running.wait().expect("reap fixture process");
+
+        result.expect("publish replacement while old executable is running");
+        assert!(
+            still_running,
+            "publishing must leave the old process running"
+        );
+        assert_eq!(
+            std::fs::read(binary).expect("read replacement"),
+            b"replacement executable"
+        );
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn executable_publication_replaces_a_symlink_without_overwriting_its_target() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let protected = directory.path().join("other-file");
+        std::fs::write(&protected, b"preserve this file").expect("write target fixture");
+        let binary = directory.path().join("server");
+        std::os::unix::fs::symlink(&protected, &binary).expect("symlink fixture");
+
+        write_executable(&binary, b"replacement executable")
+            .await
+            .expect("publish executable");
+
+        assert_eq!(
+            std::fs::read(protected).expect("read target"),
+            b"preserve this file"
+        );
+        assert!(!std::fs::symlink_metadata(&binary)
+            .expect("published metadata")
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read(binary).expect("read replacement"),
+            b"replacement executable"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_publication_preserves_the_destination_and_cleans_staging() {
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let destination = directory.path().join("existing-directory");
+        std::fs::create_dir(&destination).expect("destination directory");
+        std::fs::write(destination.join("preserved"), b"keep this").expect("existing contents");
+
+        let error = write_executable(&destination, b"replacement executable")
+            .await
+            .expect_err("a non-empty directory cannot be replaced by a binary");
+
+        assert!(error.contains("failed to publish binary"));
+        assert_eq!(
+            std::fs::read(destination.join("preserved")).expect("preserved contents"),
+            b"keep this"
+        );
+        assert_eq!(
+            std::fs::read_dir(directory.path())
+                .expect("install directory")
+                .count(),
+            1
+        );
     }
 
     #[tokio::test]
