@@ -85,6 +85,7 @@ pub async fn attempt_auto_install(
                 asset_pattern,
                 install_path,
                 binary_name.as_deref(),
+                package_name,
             )
             .await
         }

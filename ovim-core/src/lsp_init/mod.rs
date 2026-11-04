@@ -702,26 +702,11 @@ fn has_activation_marker(file_path: &Path, markers: &[String]) -> bool {
 
 /// Find companion server command (primary + fallbacks)
 fn find_companion_command(companion: &CompanionLspConfig) -> Option<String> {
-    // Try primary command in PATH
-    if which::which(&companion.command).is_ok() {
-        return Some(companion.command.clone());
-    }
-
-    // Try fallback commands
-    for fallback in &companion.fallback_commands {
-        let expanded = shellexpand::tilde(fallback).to_string();
-        if std::path::Path::new(&expanded).exists() {
-            return Some(expanded);
-        }
-        if which::which(&expanded).is_ok() {
-            return Some(expanded);
-        }
-    }
-
-    // Companions auto-install into ovim's sandbox, which is not on PATH.
-    // Without this, every file reopened after a successful install offers
-    // the install again.
-    crate::language_config::find_in_well_known_locations(&companion.command)
+    crate::language_config::find_configured_command(
+        &companion.command,
+        &companion.fallback_commands,
+        companion.auto_install.as_ref(),
+    )
 }
 
 /// The language id servers of `language` are started and addressed under.

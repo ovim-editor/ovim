@@ -568,7 +568,7 @@ root_markers = ["build.zig", "build.zig.zon"]
 install_hint = "Download from: https://github.com/zigtools/zls/releases"
 
 [language.lsp.auto_install]
-method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}-{os}*", install_path = "~/.local/bin/zls", binary_name = "zls" }
+method = { type = "github", repo = "zigtools/zls", asset_pattern = "zls-*-{arch}-{os}*", install_path = "~/.local/share/ovim/lsp/zls/bin", binary_name = "zls" }
 
 # ============================================================================
 # Lua
@@ -709,7 +709,7 @@ root_markers = [".terraform", "main.tf", "terraform.tf", ".git"]
 install_hint = "Download from: https://releases.hashicorp.com/terraform-ls/ or brew install hashicorp/tap/terraform-ls"
 
 [language.lsp.auto_install]
-method = { type = "github", repo = "hashicorp/terraform-ls", asset_pattern = "terraform-ls_*_{os}_{arch}.zip", install_path = "~/.local/bin/terraform-ls", binary_name = "terraform-ls" }
+method = { type = "github", repo = "hashicorp/terraform-ls", asset_pattern = "terraform-ls_*_{os}_{arch}.zip", install_path = "~/.local/share/ovim/lsp/terraform-ls/bin", binary_name = "terraform-ls" }
 
 # ============================================================================
 # HCL (HashiCorp Configuration Language)

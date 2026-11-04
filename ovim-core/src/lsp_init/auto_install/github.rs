@@ -11,6 +11,7 @@ pub(super) async fn install_via_github(
     asset_pattern: &str,
     install_path: &str,
     binary_name: Option<&str>,
+    default_binary_name: &str,
 ) -> InstallResult {
     #[derive(Debug, Deserialize)]
     struct GitHubRelease {
@@ -130,7 +131,7 @@ pub(super) async fn install_via_github(
         &asset.name,
         &expand_install_path(install_path),
         binary_name,
-        language_name,
+        default_binary_name,
     )
     .await
     {
@@ -558,6 +559,48 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archive_default_launcher_uses_the_server_command_and_is_rediscovered() {
+        let temp = tempfile::tempdir().unwrap();
+        let name = platform_executable_name("ovim-fixture-lsp-command");
+        let bytes = b"#!/bin/sh\nexit 0\n";
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        let mut header = tar::Header::new_gnu();
+        header.set_size(bytes.len() as u64);
+        header.set_mode(0o755);
+        header.set_cksum();
+        archive
+            .append_data(&mut header, &name, bytes.as_slice())
+            .unwrap();
+        let compressed = archive.into_inner().unwrap().finish().unwrap();
+        let installed = install_downloaded_asset(
+            &compressed,
+            "fixture.tar.gz",
+            temp.path(),
+            None,
+            "ovim-fixture-lsp-command",
+        )
+        .await
+        .unwrap();
+        assert_eq!(installed, temp.path().join(name));
+        let config = serde_json::from_value(serde_json::json!({
+            "method": {
+                "type": "github", "repo": "example/server", "asset_pattern": "fixture.tar.gz",
+                "install_path": temp.path()
+            }
+        }))
+        .unwrap();
+        assert_eq!(
+            crate::language_config::find_configured_command(
+                "ovim-fixture-lsp-command",
+                &[],
+                Some(&config)
+            ),
+            Some(installed.to_string_lossy().into_owned())
+        );
+    }
+
+    #[tokio::test]
     async fn invalid_gzip_does_not_create_a_binary() {
         let temp_dir = tempfile::tempdir().expect("temporary directory");
         let install_dir = temp_dir.path().join("rust-analyzer/bin");
@@ -586,6 +629,7 @@ mod tests {
             "rust-analyzer-{arch}-*{os}*.{ext}",
             temp_dir.path().to_str().expect("UTF-8 temporary path"),
             Some("rust-analyzer"),
+            "rust-analyzer",
         )
         .await;
         let InstallResult::Success(binary) = result else {

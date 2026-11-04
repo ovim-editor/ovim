@@ -660,35 +660,55 @@ impl LanguageRegistry {
 /// - Option communicates "this might not exist, handle it gracefully"
 /// - Result is for programmer mistakes (invalid state)
 pub fn find_lsp_command(config: &LspConfig) -> Option<String> {
-    // Try primary command in PATH
-    if which::which(&config.command).is_ok() {
-        return Some(config.command.clone());
+    find_configured_command(
+        &config.command,
+        &config.fallback_commands,
+        config.auto_install.as_ref(),
+    )
+}
+
+/// Resolve a server using its own installation contract. In particular,
+/// GitHub archives can contain a launcher whose name differs from the
+/// command (Elixir's `language_server.sh`), so guessing locations from the
+/// command alone cannot rediscover an installation on the next launch.
+pub(crate) fn find_configured_command(
+    command: &str,
+    fallbacks: &[String],
+    auto_install: Option<&AutoInstallConfig>,
+) -> Option<String> {
+    if which::which(command).is_ok() {
+        return Some(command.to_string());
     }
-
-    // Try fallback commands
-    for fallback in &config.fallback_commands {
-        // Expand ~ to home directory
-        let expanded = shellexpand::tilde(fallback).to_string();
-
-        // Check if path exists
-        if std::path::Path::new(&expanded).exists() {
-            return Some(expanded);
+    for fallback in fallbacks {
+        let expanded = shellexpand::tilde(fallback);
+        if let Ok(path) = which::which(expanded.as_ref()) {
+            return Some(path.to_string_lossy().into_owned());
         }
-
-        // Check if in PATH
-        if which::which(&expanded).is_ok() {
-            return Some(expanded);
+    }
+    if let Some(AutoInstallConfig {
+        method:
+            InstallMethod::Github {
+                install_path,
+                binary_name,
+                ..
+            },
+        ..
+    }) = auto_install
+    {
+        let install_path = PathBuf::from(shellexpand::tilde(install_path).as_ref());
+        // Uncompressed downloads use install_path itself; archives and
+        // gzip binaries put binary_name inside that directory.
+        let binary_path = binary_name
+            .as_ref()
+            .map(|name| install_path.join(name))
+            .unwrap_or_else(|| install_path.join(command));
+        for candidate in [install_path, binary_path] {
+            if let Ok(path) = which::which(candidate) {
+                return Some(path.to_string_lossy().into_owned());
+            }
         }
     }
-
-    // Try well-known install locations that may not be in PATH.
-    // This makes ovim work out of the box even when the user's shell
-    // config doesn't include these directories in PATH.
-    if let Some(path) = find_in_well_known_locations(&config.command) {
-        return Some(path);
-    }
-
-    None
+    find_in_well_known_locations(command)
 }
 
 /// Check well-known package manager install directories for a binary.
@@ -720,8 +740,8 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
             if let Ok(entries) = std::fs::read_dir(root.join(manager)) {
                 for entry in entries.flatten() {
                     let candidate = entry.path().join(bin_subpath).join(binary);
-                    if candidate.exists() {
-                        return Some(candidate.to_string_lossy().to_string());
+                    if let Ok(path) = which::which(candidate) {
+                        return Some(path.to_string_lossy().into_owned());
                     }
                 }
             }
@@ -762,8 +782,8 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
     ];
 
     for candidate in candidates.into_iter().flatten() {
-        if candidate.exists() {
-            return Some(candidate.to_string_lossy().to_string());
+        if let Ok(path) = which::which(candidate) {
+            return Some(path.to_string_lossy().into_owned());
         }
     }
 
@@ -773,8 +793,8 @@ pub fn find_in_well_known_locations(binary: &str) -> Option<String> {
         if let Ok(entries) = std::fs::read_dir(&gem_base) {
             for entry in entries.flatten() {
                 let candidate = entry.path().join("bin").join(binary);
-                if candidate.exists() {
-                    return Some(candidate.to_string_lossy().to_string());
+                if let Ok(path) = which::which(candidate) {
+                    return Some(path.to_string_lossy().into_owned());
                 }
             }
         }
@@ -822,25 +842,7 @@ pub fn managed_lsp_package_dir(manager: &str, package: &str) -> Option<std::path
 ///
 /// Same strategy as `find_lsp_command`.
 pub fn find_dap_command(config: &DapConfig) -> Option<String> {
-    if which::which(&config.command).is_ok() {
-        return Some(config.command.clone());
-    }
-
-    for fallback in &config.fallback_commands {
-        let expanded = shellexpand::tilde(fallback).to_string();
-        if std::path::Path::new(&expanded).exists() {
-            return Some(expanded);
-        }
-        if which::which(&expanded).is_ok() {
-            return Some(expanded);
-        }
-    }
-
-    if let Some(path) = find_in_well_known_locations(&config.command) {
-        return Some(path);
-    }
-
-    None
+    find_configured_command(&config.command, &config.fallback_commands, None)
 }
 
 // ============================================================================
@@ -850,6 +852,59 @@ pub fn find_dap_command(config: &DapConfig) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn server_resolution_rejects_a_directory_as_a_fallback() {
+        let directory = tempfile::tempdir().unwrap();
+        assert!(find_configured_command(
+            "ovim-nonexistent-server-for-resolution-test",
+            &[directory.path().to_string_lossy().into_owned()],
+            None,
+        )
+        .is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn configured_github_launcher_is_rediscovered_and_executable() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let launcher = directory.path().join("bin/language_server.sh");
+        std::fs::create_dir_all(launcher.parent().unwrap()).unwrap();
+        std::fs::write(&launcher, "#!/bin/sh\nprintf 'ready'\n").unwrap();
+        let config: AutoInstallConfig = serde_json::from_value(serde_json::json!({
+            "method": {
+                "type": "github",
+                "repo": "example/server",
+                "asset_pattern": "server-*.zip",
+                "install_path": directory.path(),
+                "binary_name": "bin/language_server.sh"
+            }
+        }))
+        .unwrap();
+        let command = "ovim-nonexistent-server-for-resolution-test";
+        assert!(
+            find_configured_command(command, &[], Some(&config)).is_none(),
+            "a nonexecutable file must not suppress the install prompt"
+        );
+        std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let resolved = find_configured_command(command, &[], Some(&config)).unwrap();
+        assert_eq!(Path::new(&resolved), launcher);
+        let output = std::process::Command::new(&resolved).output().unwrap();
+        assert!(output.status.success());
+        assert_eq!(output.stdout, b"ready");
+
+        // Raw downloads use install_path itself even when binary_name is set.
+        let mut raw = config.clone();
+        let InstallMethod::Github { install_path, .. } = &mut raw.method else {
+            unreachable!()
+        };
+        *install_path = launcher.to_string_lossy().into_owned();
+        assert_eq!(
+            find_configured_command(command, &[], Some(&raw)),
+            Some(resolved)
+        );
+    }
 
     #[test]
     fn test_parse_sample_config() {
