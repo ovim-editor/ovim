@@ -1003,7 +1003,7 @@ mod tests {
         let kill = std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default());
         let task_kill = kill.clone();
         let workdir = dir.path().to_path_buf();
-        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::channel(64);
         let worker = std::thread::spawn(move || {
             super::super::ai_tool_execution::run_bash_program(
                 "trap 'exit 130' INT; echo ready; while :; do sleep 1; done",

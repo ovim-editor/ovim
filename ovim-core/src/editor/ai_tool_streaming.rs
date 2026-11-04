@@ -1002,7 +1002,7 @@ mod tests {
             arguments: serde_json::json!({ "command": "sleep 60" }),
         };
         let (_result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let (_progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (_progress_tx, progress_rx) = tokio::sync::mpsc::channel(64);
         let kill = Arc::new(ShellKillHandle::default());
         let task = tokio::spawn(async {});
 

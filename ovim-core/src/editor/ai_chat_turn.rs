@@ -835,7 +835,9 @@ impl Editor {
         artifact_store: crate::run_log::ArtifactStore,
     ) {
         let (result_tx, result_rx) = tokio::sync::oneshot::channel();
-        let (progress_tx, progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Backpressure bounds queued output even while the frontend is busy.
+        // Readers run on blocking threads and resume as each UI tick drains.
+        let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(64);
         let kill = std::sync::Arc::new(super::ai_chat_state::ShellKillHandle::default());
         let kill_for_task = kill.clone();
         let task_command = command.clone();
@@ -859,7 +861,7 @@ impl Editor {
                         Some(progress_tx.clone()),
                     );
                     let _ = progress_tx
-                        .send(super::ai_chat_state::ShellProgressEvent::CapturingChanges);
+                        .blocking_send(super::ai_chat_state::ShellProgressEvent::CapturingChanges);
                     match crate::run_log::capture_workspace(
                         &task_workdir,
                         &artifact_store,
@@ -925,10 +927,23 @@ impl Editor {
                 return false;
             };
             let tool_call_id = pending.tool_call.id.clone();
-            // Drain progress before the result: every event the task sent
-            // ahead of its result is then applied before the result is.
-            let events: Vec<_> = std::iter::from_fn(|| pending.progress.try_recv().ok()).collect();
+            // Bound each tick even if a noisy producer keeps refilling the
+            // queue. Result readiness is the completion fence: normal readers
+            // have joined; cancellation may have abandoned a reader whose
+            // descendant still holds a pipe, so sender lifetime is not a fence.
+            let mut events: Vec<_> = std::iter::from_fn(|| pending.progress.try_recv().ok())
+                .take(64)
+                .collect();
             let result = pending.receiver.try_recv();
+            if !matches!(
+                result,
+                Err(tokio::sync::oneshot::error::TryRecvError::Empty)
+            ) {
+                pending.progress.close();
+                // No new events can enter after completion. Preserve the
+                // remaining bounded queue before applying the final result.
+                events.extend(std::iter::from_fn(|| pending.progress.try_recv().ok()).take(64));
+            }
             let progress_changed = !events.is_empty();
             if let Some(transcript) = chat.shell_transcripts.get_mut(&tool_call_id) {
                 for event in events {

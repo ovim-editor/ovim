@@ -147,7 +147,7 @@ fn shell(
     continuation: ToolExecutionContinuation,
 ) -> (PendingShellExecution, Arc<ShellKillHandle>) {
     let (_result_tx, receiver) = oneshot::channel();
-    let (_progress_tx, progress) = tokio::sync::mpsc::unbounded_channel();
+    let (_progress_tx, progress) = tokio::sync::mpsc::channel(64);
     let kill = Arc::new(ShellKillHandle::default());
     let (task, _) = parked_task();
     let mut transcript =

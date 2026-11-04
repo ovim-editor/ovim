@@ -16,7 +16,7 @@ fn read_capped_output(
     mut reader: impl Read,
     limit: usize,
     progress: Option<(
-        tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>,
+        tokio::sync::mpsc::Sender<super::ai_chat_state::ShellProgressEvent>,
         super::ai_chat_state::ShellOutputStream,
     )>,
 ) -> (Vec<u8>, bool) {
@@ -29,7 +29,7 @@ fn read_capped_output(
             Ok(count) => count,
         };
         if let Some((sender, stream)) = progress.as_ref() {
-            let _ = sender.send(super::ai_chat_state::ShellProgressEvent::Output {
+            let _ = sender.blocking_send(super::ai_chat_state::ShellProgressEvent::Output {
                 stream: *stream,
                 bytes: buffer[..count].to_vec(),
             });
@@ -118,7 +118,7 @@ pub(super) fn run_bash_program(
     workdir: &Path,
     scrubbed_env: &[String],
     kill: Option<&super::ai_chat_state::ShellKillHandle>,
-    progress: Option<tokio::sync::mpsc::UnboundedSender<super::ai_chat_state::ShellProgressEvent>>,
+    progress: Option<tokio::sync::mpsc::Sender<super::ai_chat_state::ShellProgressEvent>>,
 ) -> ToolResult {
     if kill.is_some_and(super::ai_chat_state::ShellKillHandle::is_interrupted) {
         return ToolResult::Error("Execution cancelled".into());
@@ -162,7 +162,8 @@ pub(super) fn run_bash_program(
         }
     }
     if let Some(sender) = progress.as_ref() {
-        let _ = sender.send(super::ai_chat_state::ShellProgressEvent::Spawned { pid: child.id() });
+        let _ = sender
+            .blocking_send(super::ai_chat_state::ShellProgressEvent::Spawned { pid: child.id() });
     }
     let stdout = child.stdout.take().expect("piped stdout");
     let stderr = child.stderr.take().expect("piped stderr");
@@ -1012,5 +1013,38 @@ fn handle_lsp_goto_definition(
         }
         Ok(None) => ToolResult::Success("No definition found at this position.".to_string()),
         Err(e) => ToolResult::Error(format!("LSP goto_definition failed: {e}")),
+    }
+}
+
+#[cfg(test)]
+mod output_backpressure_tests {
+    use super::*;
+
+    #[test]
+    fn bounded_progress_preserves_output_while_capping_retained_tool_result() {
+        let expected = vec![b'x'; 2 * 1024 * 1024];
+        let input = expected.clone();
+        let (sender, mut receiver) = tokio::sync::mpsc::channel(2);
+        let worker = std::thread::spawn(move || {
+            read_capped_output(
+                std::io::Cursor::new(input),
+                48 * 1024,
+                Some((
+                    sender,
+                    super::super::ai_chat_state::ShellOutputStream::Stdout,
+                )),
+            )
+        });
+        let mut output = Vec::new();
+        while let Some(event) = receiver.blocking_recv() {
+            assert!(receiver.len() <= 2, "progress must remain bounded");
+            if let super::super::ai_chat_state::ShellProgressEvent::Output { bytes, .. } = event {
+                output.extend(bytes);
+            }
+        }
+        let (retained, truncated) = worker.join().unwrap();
+        assert_eq!(output, expected, "backpressure must not discard output");
+        assert_eq!(retained, expected[..48 * 1024]);
+        assert!(truncated);
     }
 }

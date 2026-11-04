@@ -775,6 +775,107 @@ fn write_file_at_path_creates_missing_file() {
     });
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn new_file_through_outside_symlink_requires_approval_before_preparing_buffer() {
+    let project = tempfile::tempdir().unwrap();
+    let outside = tempfile::tempdir().unwrap();
+    std::os::unix::fs::symlink(outside.path(), project.path().join("linked")).unwrap();
+    let mut editor = Editor::default();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    set_active_profile_project_scope(&mut editor);
+    editor.ai_state.no_repo_session_allowed_root = Some(project.path().to_path_buf());
+    editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+    let original_buffers = editor.buffers.len();
+    let original_target = editor.ai_state.chat.as_ref().unwrap().active_buffer_id;
+
+    for name in ["create_file", "write_file_at_path", "open_file"] {
+        let call = ToolCallInfo {
+            id: format!("symlink-{name}"),
+            name: name.into(),
+            arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "approved\n", "expected_revision": 0, "create": true}),
+        };
+        let ToolDispatchOutcome::ApprovalRequired(request) =
+            editor.dispatch_tool_call_with_approval(&call, None)
+        else {
+            panic!("{name} must ask before creating a file outside the project");
+        };
+        assert_eq!(
+            request.requested_path,
+            outside
+                .path()
+                .canonicalize()
+                .unwrap()
+                .join("nested/new.txt")
+        );
+        assert_eq!(editor.buffers.len(), original_buffers);
+        assert_eq!(
+            editor.ai_state.chat.as_ref().unwrap().active_buffer_id,
+            original_target
+        );
+        assert!(!outside.path().join("nested").exists());
+    }
+
+    let call = ToolCallInfo {
+        id: "approved-symlink-create".into(),
+        name: "create_file".into(),
+        arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "approved\n", "expected_revision": 0}),
+    };
+    assert!(matches!(
+        editor
+            .dispatch_tool_call_with_approval(&call, Some(&outside.path().canonicalize().unwrap())),
+        ToolDispatchOutcome::Completed(ToolResult::Success(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(outside.path().join("nested/new.txt")).unwrap(),
+        "approved\n"
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn new_file_through_inside_symlink_stays_in_project() {
+    let project = tempfile::tempdir().unwrap();
+    fs::create_dir(project.path().join("real")).unwrap();
+    std::os::unix::fs::symlink(project.path().join("real"), project.path().join("linked")).unwrap();
+    let mut editor = Editor::default();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    set_active_profile_project_scope(&mut editor);
+    editor.ai_state.no_repo_session_allowed_root = Some(project.path().to_path_buf());
+    editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+    let call = ToolCallInfo {
+        id: "inside-symlink-create".into(),
+        name: "create_file".into(),
+        arguments: serde_json::json!({"path": "linked/nested/new.txt", "content": "inside\n", "expected_revision": 0}),
+    };
+    assert!(matches!(
+        editor.dispatch_tool_call_with_approval(&call, None),
+        ToolDispatchOutcome::Completed(ToolResult::Success(_))
+    ));
+    assert_eq!(
+        fs::read_to_string(project.path().join("real/nested/new.txt")).unwrap(),
+        "inside\n"
+    );
+    assert_eq!(
+        editor.active_chat_target_absolute_path().unwrap(),
+        project
+            .path()
+            .canonicalize()
+            .unwrap()
+            .join("real/nested/new.txt")
+    );
+}
+
 #[test]
 fn session_created_temp_file_can_be_rewritten_and_executed_without_more_approval() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");
@@ -2041,8 +2142,25 @@ async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
     let (result_tx, result_rx) =
         tokio::sync::oneshot::channel::<super::super::ai_chat_state::ShellExecutionObservation>();
     drop(result_tx);
+    // An abandoned output reader may retain its sender after cancellation.
+    // Completion follows the result channel, and must still retain queued tail output.
+    let (progress_tx, progress_rx) = tokio::sync::mpsc::channel(64);
+    progress_tx
+        .try_send(super::super::ai_chat_state::ShellProgressEvent::Output {
+            stream: super::super::ai_chat_state::ShellOutputStream::Stdout,
+            bytes: b"tail output".to_vec(),
+        })
+        .unwrap();
     let task = tokio::spawn(async {});
     if let Some(chat) = editor.ai_state.chat.as_mut() {
+        chat.shell_transcripts.insert(
+            shell_call.id.clone(),
+            super::super::ai_chat_state::ShellTranscript::new(
+                shell_call.clone(),
+                "interrupted".into(),
+                std::path::PathBuf::from("."),
+            ),
+        );
         assert!(chat
             .park(super::super::ai_chat_state::PendingShellExecution {
                 tool_call: shell_call,
@@ -2053,7 +2171,7 @@ async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
                     model_name: "test".into(),
                 },
                 receiver: result_rx,
-                progress: tokio::sync::mpsc::unbounded_channel().1,
+                progress: progress_rx,
                 task,
                 kill: std::sync::Arc::new(super::super::ai_chat_state::ShellKillHandle::default()),
             })
@@ -2062,8 +2180,16 @@ async fn batch_shell_unknown_outcome_clears_waiting_and_closes_tool_calls() {
     }
 
     assert!(editor.poll_pending_ai_chat_job());
+    assert!(
+        progress_tx.is_closed(),
+        "completion must release abandoned readers"
+    );
 
     let chat = editor.ai_state.chat.as_ref().unwrap();
+    assert_eq!(
+        chat.shell_transcripts["shell-1"].retained_bytes,
+        b"tail output".len()
+    );
     assert!(
         !chat.waiting,
         "unknown batch shell outcome must not re-arm the waiting spinner"

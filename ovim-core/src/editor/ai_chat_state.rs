@@ -140,7 +140,7 @@ pub struct PendingShellExecution {
     pub tool_call: ToolCallInfo,
     pub continuation: ToolExecutionContinuation,
     pub receiver: tokio::sync::oneshot::Receiver<ShellExecutionObservation>,
-    pub progress: tokio::sync::mpsc::UnboundedReceiver<ShellProgressEvent>,
+    pub progress: tokio::sync::mpsc::Receiver<ShellProgressEvent>,
     pub task: tokio::task::JoinHandle<()>,
     /// Kills the spawned command itself: aborting a started `spawn_blocking`
     /// task never stops the closure, so cancellation must reach the child.
