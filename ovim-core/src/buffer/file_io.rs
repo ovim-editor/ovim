@@ -18,6 +18,15 @@ fn normalize_decoded_content(content: String) -> String {
     }
 }
 
+/// Decode before inspecting line endings: UTF-16 code units may contain CR/LF
+/// bytes that are not line breaks, and its real CRLF pairs have intervening NULs.
+fn decode_file_content(bytes: &[u8]) -> Result<(String, FileEncoding, LineEnding)> {
+    let (encoding, bom_offset) = FileEncoding::detect(bytes);
+    let content = encoding.decode(bytes, bom_offset)?;
+    let line_ending = LineEnding::detect(content.as_bytes());
+    Ok((normalize_decoded_content(content), encoding, line_ending))
+}
+
 /// Normalizes a path to an absolute, canonical form.
 ///
 /// CRITICAL: This function MUST be deterministic and stable across the file lifecycle.
@@ -78,32 +87,12 @@ impl Buffer {
             .await
             .context(format!("Failed to read file: {}", path_str))?;
 
-        // Detect encoding (checks BOM first, then uses chardetng)
-        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
-
-        // Detect line ending style (on decoded bytes, after BOM)
-        let line_ending = LineEnding::detect(&bytes[bom_offset..]);
-
-        // Decode file content using detected encoding
-        let content = encoding.decode(&bytes, bom_offset).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to decode file '{}' as {:?}: {}\n\
-                 This file may be a binary file or corrupted.",
-                path_str,
-                encoding,
-                e
+        let (content, encoding, line_ending) = decode_file_content(&bytes).with_context(|| {
+            format!(
+                "Failed to decode file '{}'. This file may be binary or corrupted",
+                path_str
             )
         })?;
-
-        // Note: File encoding is handled transparently - don't print to stderr
-        // This avoids interrupting user output
-        let _ = encoding; // Suppress unused variable warning if not used below
-
-        // Normalize all CR variants to LF for internal representation.
-        // The save path converts back for CRLF/CR files. Mixed files are
-        // saved as LF-only because their per-line style cannot be represented
-        // once normalized into the rope.
-        let content = normalize_decoded_content(content);
 
         let buffer = Self {
             id: super::next_buffer_id(),
@@ -305,7 +294,19 @@ impl Buffer {
             "Failed to open file for writing: {}",
             path.display()
         ))?;
-        file.write_all(&bytes)
+        // The encoder includes the file's BOM. It belongs only at byte zero,
+        // never between an existing document and the appended lines.
+        let bytes = if append && file.metadata()?.len() > 0 {
+            let bom_len = match self.encoding {
+                FileEncoding::Utf8Bom => 3,
+                FileEncoding::Utf16Le | FileEncoding::Utf16Be => 2,
+                _ => 0,
+            };
+            &bytes[bom_len..]
+        } else {
+            &bytes
+        };
+        file.write_all(bytes)
             .context("Failed to write file content")?;
         file.sync_all().context("Failed to sync file to disk")?;
         Ok(chars)
@@ -487,28 +488,18 @@ impl Buffer {
             .await
             .context(format!("Failed to read file: {}", file_path))?;
 
-        // Update mtime
-        self.file_mtime = tokio::fs::metadata(&file_path)
+        let file_mtime = tokio::fs::metadata(&file_path)
             .await
             .ok()
             .and_then(|m| m.modified().ok());
+        let (content, encoding, line_ending) = decode_file_content(&bytes)
+            .with_context(|| format!("Failed to decode file '{}'", file_path))?;
 
-        // Re-detect encoding and line ending
-        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
+        // Commit metadata only after the new text is valid. A failed reload
+        // must preserve the old encoding and remain detectable on the next poll.
+        self.file_mtime = file_mtime;
         self.encoding = encoding;
-        self.line_ending = LineEnding::detect(&bytes[bom_offset..]);
-
-        // Decode using detected encoding (not hardcoded UTF-8)
-        let content = self.encoding.decode(&bytes, bom_offset).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to decode file '{}' as {:?}: {}",
-                file_path,
-                self.encoding,
-                e
-            )
-        })?;
-
-        let content = normalize_decoded_content(content);
+        self.line_ending = line_ending;
 
         // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
@@ -540,27 +531,15 @@ impl Buffer {
         let bytes =
             std::fs::read(&file_path).context(format!("Failed to read file: {}", file_path))?;
 
-        // Update mtime
-        self.file_mtime = std::fs::metadata(&file_path)
+        let file_mtime = std::fs::metadata(&file_path)
             .ok()
             .and_then(|m| m.modified().ok());
+        let (content, encoding, line_ending) = decode_file_content(&bytes)
+            .with_context(|| format!("Failed to decode file '{}'", file_path))?;
 
-        // Re-detect encoding and line ending
-        let (encoding, bom_offset) = FileEncoding::detect(&bytes);
+        self.file_mtime = file_mtime;
         self.encoding = encoding;
-        self.line_ending = LineEnding::detect(&bytes[bom_offset..]);
-
-        // Decode using detected encoding (not hardcoded UTF-8)
-        let content = self.encoding.decode(&bytes, bom_offset).map_err(|e| {
-            anyhow::anyhow!(
-                "Failed to decode file '{}' as {:?}: {}",
-                file_path,
-                self.encoding,
-                e
-            )
-        })?;
-
-        let content = normalize_decoded_content(content);
+        self.line_ending = line_ending;
 
         // Update rope and reset all derived state
         self.rope = Rope::from_str(&content);
@@ -597,5 +576,121 @@ mod external_change_tests {
         let buffer = Buffer::load_file(&path).unwrap();
         std::fs::remove_file(&path).unwrap();
         assert!(buffer.check_external_modification().unwrap());
+    }
+}
+
+#[cfg(test)]
+mod encoding_roundtrip_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn utf16_load_and_save_preserve_real_line_endings() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("encoded.txt");
+        for encoding in [FileEncoding::Utf16Le, FileEncoding::Utf16Be] {
+            for (text, ending) in [
+                ("one\r\ntwo\r\n", LineEnding::Crlf),
+                ("one\rtwo\r", LineEnding::Cr),
+                ("one\ntwo\n", LineEnding::Lf),
+                // These code units contain CR/LF bytes but are not line breaks.
+                ("Ċč", LineEnding::Lf),
+            ] {
+                let bytes = encoding.encode(text).unwrap();
+                std::fs::write(&path, &bytes).unwrap();
+                let mut buffer = Buffer::load_file_async(&path).await.unwrap();
+                assert_eq!(buffer.encoding(), encoding);
+                assert_eq!(buffer.line_ending(), ending);
+                buffer.save_async().await.unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn both_reload_paths_decode_line_endings_before_normalization() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reload.txt");
+        for encoding in [FileEncoding::Utf16Le, FileEncoding::Utf16Be] {
+            for asynchronous in [false, true] {
+                std::fs::write(&path, "original\n").unwrap();
+                let mut buffer = Buffer::load_file_async(&path).await.unwrap();
+                let bytes = encoding.encode("café\r\n🦀\r\n").unwrap();
+                std::fs::write(&path, &bytes).unwrap();
+                buffer.set_file_mtime(Some(std::time::UNIX_EPOCH));
+                if asynchronous {
+                    assert!(buffer.reload_if_changed().await.unwrap());
+                } else {
+                    buffer.reload_from_disk().unwrap();
+                }
+                assert_eq!(buffer.rope().to_string(), "café\n🦀\n");
+                assert_eq!(buffer.line_ending(), LineEnding::Crlf);
+                assert_eq!(buffer.encoding(), encoding);
+                buffer.save_async().await.unwrap();
+                assert_eq!(std::fs::read(&path).unwrap(), bytes);
+            }
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn failed_reloads_preserve_the_entire_old_buffer_and_remain_retryable() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("invalid.txt");
+        for asynchronous in [false, true] {
+            std::fs::write(&path, "original\r\n").unwrap();
+            let mut buffer = Buffer::load_file_async(&path).await.unwrap();
+            buffer.insert_text_at(0, crate::unicode::CharCol::ZERO, "unsaved ");
+            buffer.set_file_mtime(Some(std::time::UNIX_EPOCH));
+            let version = buffer.version();
+            // UTF-16LE BOM followed by an unpaired high surrogate.
+            std::fs::write(&path, [0xff, 0xfe, 0x00, 0xd8]).unwrap();
+            if asynchronous {
+                assert!(buffer.reload_if_changed().await.is_err());
+            } else {
+                assert!(buffer.reload_from_disk().is_err());
+            }
+            assert_eq!(buffer.rope().to_string(), "unsaved original\n");
+            assert_eq!(buffer.encoding(), FileEncoding::Utf8);
+            assert_eq!(buffer.line_ending(), LineEnding::Crlf);
+            assert_eq!(buffer.file_mtime(), Some(std::time::UNIX_EPOCH));
+            assert_eq!(buffer.version(), version);
+            assert!(buffer.is_modified());
+            assert!(buffer.check_external_modification().unwrap());
+            std::fs::write(&path, "fixed\n").unwrap();
+            assert!(buffer.reload_if_changed().await.unwrap());
+            assert_eq!(buffer.rope().to_string(), "fixed\n");
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn appending_encoded_lines_writes_a_bom_only_at_the_start_of_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let source = dir.path().join("source.txt");
+        let target = dir.path().join("target.txt");
+        for encoding in [
+            FileEncoding::Utf8Bom,
+            FileEncoding::Utf16Le,
+            FileEncoding::Utf16Be,
+        ] {
+            std::fs::write(&source, encoding.encode("next\r\n").unwrap()).unwrap();
+            let buffer = Buffer::load_file_async(&source).await.unwrap();
+            for existing in ["", "first\r\n"] {
+                std::fs::write(&target, encoding.encode(existing).unwrap()).unwrap();
+                buffer.write_lines(&target, 0, 0, true).unwrap();
+                buffer.write_lines(&target, 0, 0, true).unwrap();
+                assert_eq!(
+                    std::fs::read(&target).unwrap(),
+                    encoding
+                        .encode(&format!("{existing}next\r\nnext\r\n"))
+                        .unwrap()
+                );
+            }
+            // An empty destination also needs its initial BOM.
+            std::fs::write(&target, []).unwrap();
+            buffer.write_lines(&target, 0, 0, true).unwrap();
+            assert_eq!(
+                std::fs::read(&target).unwrap(),
+                encoding.encode("next\r\n").unwrap()
+            );
+        }
     }
 }

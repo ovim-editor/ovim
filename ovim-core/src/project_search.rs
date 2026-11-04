@@ -15,13 +15,17 @@ use regex::{Regex, RegexBuilder};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 /// Stop collecting after this many matches to keep the review list usable.
 pub const MAX_MATCHES: usize = 20_000;
 /// Files larger than this are skipped (generated bundles, dumps, ...).
 const MAX_FILE_BYTES: u64 = 4 * 1024 * 1024;
+/// Full matching context is shared per line, but minified files can still
+/// retain megabytes for one match. Bound it across the entire review.
+const MAX_REVIEW_SOURCE_BYTES: usize = 16 * 1024 * 1024;
 /// Stored line text is capped so a minified one-line file stays cheap.
-const MAX_LINE_CHARS: usize = 2_000;
+const MAX_LINE_BYTES: usize = 2_000;
 
 /// What to look for and where.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -80,6 +84,15 @@ pub struct LineMatch {
     pub end_byte: usize,
     /// The whole line (no line terminator), capped for display.
     pub line_text: String,
+    /// Complete matching context, shared by matches on the same line. Display
+    /// truncation must never change regex semantics or stale-edit validation.
+    source_line: Arc<str>,
+}
+
+impl LineMatch {
+    pub fn source_line(&self) -> &str {
+        &self.source_line
+    }
 }
 
 /// All matches in one file.
@@ -94,7 +107,7 @@ pub struct FileMatches {
 #[derive(Debug, Clone, Default)]
 pub struct SearchOutcome {
     pub files: Vec<FileMatches>,
-    /// The match cap was hit; more matches exist.
+    /// The match-count or retained-source limit was hit; results were omitted.
     pub truncated: bool,
     /// The search was cancelled before it finished.
     pub cancelled: bool,
@@ -155,6 +168,7 @@ pub fn search_project(
 
     let mut outcome = SearchOutcome::default();
     let mut total = 0usize;
+    let mut retained_source_bytes = 0usize;
 
     for entry in walker.build() {
         if cancel.load(Ordering::Relaxed) {
@@ -188,7 +202,22 @@ pub fn search_project(
         if content.contains('\0') {
             continue;
         }
-        let matches = match_content(&regex, &content, &mut total);
+        let mut matches = match_content(&regex, &content, &mut total);
+        let mut kept = 0;
+        let mut last_line = None;
+        for found in &matches {
+            if last_line != Some(found.line) {
+                let bytes = found.source_line.len();
+                if bytes > MAX_REVIEW_SOURCE_BYTES.saturating_sub(retained_source_bytes) {
+                    outcome.truncated = true;
+                    break;
+                }
+                retained_source_bytes += bytes;
+                last_line = Some(found.line);
+            }
+            kept += 1;
+        }
+        matches.truncate(kept);
         if !matches.is_empty() {
             let rel = path
                 .strip_prefix(root)
@@ -197,7 +226,7 @@ pub fn search_project(
                 .to_string();
             outcome.files.push(FileMatches { path, rel, matches });
         }
-        if total >= MAX_MATCHES {
+        if total >= MAX_MATCHES || outcome.truncated {
             outcome.truncated = true;
             break;
         }
@@ -217,9 +246,14 @@ pub fn match_content(regex: &Regex, content: &str, total: &mut usize) -> Vec<Lin
         if line.is_empty() {
             continue;
         }
-        // Cap absurdly long lines; matches past the cap are not offered.
+        // Bound the preview, while matching against the complete line so '$'
+        // and word boundaries never treat the preview cutoff as end of text.
         let line_capped = cap_line(line);
-        for found in regex.find_iter(line_capped) {
+        let mut source_line: Option<Arc<str>> = None;
+        for found in regex.find_iter(line) {
+            if found.end() > line_capped.len() {
+                break;
+            }
             if found.start() == found.end() {
                 continue;
             }
@@ -230,6 +264,7 @@ pub fn match_content(regex: &Regex, content: &str, total: &mut usize) -> Vec<Lin
                 start_byte: found.start(),
                 end_byte: found.end(),
                 line_text: line_capped.to_string(),
+                source_line: source_line.get_or_insert_with(|| Arc::from(line)).clone(),
             });
             *total += 1;
             if *total >= MAX_MATCHES {
@@ -241,10 +276,10 @@ pub fn match_content(regex: &Regex, content: &str, total: &mut usize) -> Vec<Lin
 }
 
 fn cap_line(line: &str) -> &str {
-    if line.len() <= MAX_LINE_CHARS {
+    if line.len() <= MAX_LINE_BYTES {
         return line;
     }
-    let mut end = MAX_LINE_CHARS;
+    let mut end = MAX_LINE_BYTES;
     while !line.is_char_boundary(end) {
         end -= 1;
     }
@@ -266,7 +301,7 @@ pub fn expand_replacement(
     }
     // Re-run the regex anchored at the match start so capture groups line up
     // with the original match (lookups on the stored line, not the buffer).
-    let line = &found.line_text;
+    let line = found.source_line();
     if let Some(caps) = regex.captures_at(line, found.start_byte) {
         if caps.get(0).map(|m| m.start()) == Some(found.start_byte) {
             let mut out = String::new();
@@ -466,5 +501,63 @@ mod tests {
             .matches
             .iter()
             .all(|m| !m.line_text.ends_with('\r')));
+    }
+    #[test]
+    fn preview_cutoff_does_not_create_false_end_anchor_or_word_boundary_matches() {
+        let line = format!("{}fooX", "a".repeat(MAX_LINE_BYTES - 3));
+        for pattern in [r"foo$", r"foo\b", r"^a+foo$"] {
+            let regex = Regex::new(pattern).unwrap();
+            assert!(match_content(&regex, &line, &mut 0).is_empty(), "{pattern}");
+        }
+        assert!(match_content(
+            &Regex::new(r"^a+$").unwrap(),
+            &format!("{}b", "a".repeat(MAX_LINE_BYTES)),
+            &mut 0
+        )
+        .is_empty());
+    }
+
+    #[test]
+    fn long_line_matches_share_full_context_for_capture_expansion() {
+        let line = format!("{}afooX", "é".repeat((MAX_LINE_BYTES - 4) / 2));
+        let options = SearchOptions {
+            pattern: "(foo$)|(foo)".into(),
+            regex: true,
+            ..SearchOptions::default()
+        };
+        let regex = options.build_regex().unwrap();
+        let matches = match_content(&regex, &line, &mut 0);
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].source_line(), line);
+        assert!(matches[0].line_text.len() <= MAX_LINE_BYTES);
+        assert!(matches[0].line_text.len() < matches[0].source_line().len());
+        assert_eq!(
+            expand_replacement(&regex, &options, &matches[0], "${1}x${2}"),
+            "xfoo"
+        );
+
+        let matches = match_content(&Regex::new("é").unwrap(), &line, &mut 0);
+        assert!(Arc::ptr_eq(
+            &matches[0].source_line,
+            &matches[1].source_line
+        ));
+    }
+    #[test]
+    fn large_line_context_is_bounded_across_the_review() {
+        let dir = tempfile::tempdir().unwrap();
+        let line = format!("needle{}", "x".repeat(MAX_FILE_BYTES as usize - 6));
+        for index in 0..6 {
+            fs::write(dir.path().join(format!("{index}.txt")), &line).unwrap();
+        }
+        let outcome = run(dir.path(), &opts("needle"));
+        assert!(outcome.truncated);
+        assert_eq!(outcome.match_count(), 4);
+        let source_bytes: usize = outcome
+            .files
+            .iter()
+            .flat_map(|file| &file.matches)
+            .map(|found| found.source_line.len())
+            .sum();
+        assert_eq!(source_bytes, MAX_REVIEW_SOURCE_BYTES);
     }
 }

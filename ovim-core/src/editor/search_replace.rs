@@ -593,6 +593,11 @@ impl Editor {
         if let Some(error) = &panel.error {
             return Err(format!("Cannot replace: {error}"));
         }
+        if panel.is_pending() || !panel.searched || panel.options != panel.current_options() {
+            return Err(
+                "Wait for the current search to finish before applying replacements".to_string(),
+            );
+        }
         if panel.checked_matches() == 0 {
             return Err("No matches are checked".to_string());
         }
@@ -639,6 +644,20 @@ impl Editor {
                 continue;
             };
 
+            // A loaded buffer can lag the disk while the review is open.
+            // Refresh clean buffers; preserve unsaved work when both changed,
+            // and do not overwrite an external edit with the old buffer text.
+            match self.buffers[index].check_external_modification() {
+                Ok(false) => {}
+                Ok(true)
+                    if !self.buffer_index_is_modified(index)
+                        && self.reload_buffer_from_disk(index) => {}
+                _ => {
+                    report.stale += file.edits.len();
+                    continue;
+                }
+            }
+
             // Re-verify against the live buffer text: only edit lines that
             // still read exactly what the reviewer saw.
             let mut edits = Vec::new();
@@ -646,8 +665,7 @@ impl Editor {
                 let live = self.buffers[index].line_text(found.line);
                 let fresh = live
                     .as_deref()
-                    .map(|text| text.trim_end_matches(['\n', '\r']))
-                    .is_some_and(|text| text.starts_with(found.line_text.as_str()));
+                    .is_some_and(|text| text == found.source_line());
                 if !fresh {
                     report.stale += 1;
                     continue;
@@ -815,5 +833,114 @@ mod tests {
             std::thread::sleep(Duration::from_millis(5));
         }
         assert!(editor.search_replace_panel().unwrap().total_matches() > 0);
+    }
+    fn review_for(text: &str, pattern: &str) -> (Editor, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::create_dir(dir.path().join(".git")).unwrap();
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, text).unwrap();
+        let mut editor = Editor::default();
+        editor.load_file(&path).unwrap();
+        editor.open_search_replace(Some(pattern.to_string()));
+        editor.run_search_replace_now();
+        editor.search_replace_panel_mut().unwrap().replace = SingleLineInput::new("replacement");
+        (editor, dir)
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn changed_query_cannot_apply_previous_results_during_debounce_or_search() {
+        let (mut editor, dir) = review_for("foo bar\n", "foo");
+        let panel = editor.search_replace_panel_mut().unwrap();
+        panel.find = SingleLineInput::new("bar");
+        panel.mark_dirty();
+        assert!(editor.apply_search_replace().unwrap_err().contains("Wait"));
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "foo bar\n"
+        );
+        editor.search_replace_panel_mut().unwrap().mark_dirty_now();
+        editor.poll_search_replace();
+        assert!(editor.apply_search_replace().is_err());
+        editor.run_search_replace_now();
+        let report = editor.apply_search_replace().unwrap();
+        assert_eq!(report.replaced, 1);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "foo replacement\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn suffix_changes_in_the_buffer_make_reviewed_matches_stale() {
+        let (mut editor, dir) = review_for("foo\n", "foo$");
+        editor.search_replace_panel_mut().unwrap().regex = true;
+        editor.run_search_replace_now();
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(3), "bar");
+        let report = editor.apply_search_replace().unwrap();
+        assert_eq!((report.replaced, report.stale), (0, 1));
+        assert_eq!(editor.buffer().rope().to_string(), "foobar\n");
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            "foo\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn external_changes_are_read_before_applying_and_never_overwritten() {
+        let (mut editor, dir) = review_for("foo\nkeep\n", "foo");
+        let path = dir.path().join("a.txt");
+        std::fs::write(&path, "foo appended\nexternal change\n").unwrap();
+        editor
+            .buffer_mut()
+            .set_file_mtime(Some(std::time::UNIX_EPOCH));
+        let report = editor.apply_search_replace().unwrap();
+        assert_eq!((report.replaced, report.stale), (0, 1));
+        assert_eq!(
+            editor.buffer().rope().to_string(),
+            "foo appended\nexternal change\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(path).unwrap(),
+            "foo appended\nexternal change\n"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn unsaved_buffer_and_external_edit_conflicts_preserve_both_versions() {
+        let (mut editor, dir) = review_for("foo\n", "foo");
+        let path = dir.path().join("a.txt");
+        editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol::ZERO, "unsaved ");
+        editor.run_search_replace_now();
+        std::fs::write(&path, "external\n").unwrap();
+        editor
+            .buffer_mut()
+            .set_file_mtime(Some(std::time::UNIX_EPOCH));
+        let report = editor.apply_search_replace().unwrap();
+        assert_eq!((report.replaced, report.stale), (0, 1));
+        assert_eq!(editor.buffer().rope().to_string(), "unsaved foo\n");
+        assert!(editor.buffer().is_modified());
+        assert_eq!(std::fs::read_to_string(path).unwrap(), "external\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn replacing_a_long_line_keeps_the_untruncated_suffix_and_capture_context() {
+        let text = format!("{}fooX\n", "a".repeat(1997));
+        let (mut editor, dir) = review_for(&text, "(foo$)|(foo)");
+        let panel = editor.search_replace_panel_mut().unwrap();
+        panel.regex = true;
+        panel.replace = SingleLineInput::new("${1}x${2}");
+        editor.run_search_replace_now();
+        let report = editor.apply_search_replace().unwrap();
+        assert_eq!((report.replaced, report.stale), (1, 0));
+        let expected = format!("{}xfooX\n", "a".repeat(1997));
+        assert_eq!(editor.buffer().rope().to_string(), expected);
+        assert_eq!(
+            std::fs::read_to_string(dir.path().join("a.txt")).unwrap(),
+            expected
+        );
     }
 }

@@ -73,7 +73,14 @@ impl FileEncoding {
 
     /// Decodes bytes to UTF-8 string using this encoding
     pub fn decode(&self, bytes: &[u8], bom_offset: usize) -> Result<String> {
-        let bytes = &bytes[bom_offset..];
+        let bytes = bytes
+            .get(bom_offset..)
+            .ok_or_else(|| anyhow::anyhow!("BOM offset exceeds file length"))?;
+        if matches!(self, FileEncoding::Utf16Le | FileEncoding::Utf16Be)
+            && !bytes.len().is_multiple_of(2)
+        {
+            return Err(anyhow::anyhow!("Incomplete UTF-16 code unit in {:?}", self));
+        }
 
         match self {
             FileEncoding::Utf8 | FileEncoding::Utf8Bom => String::from_utf8(bytes.to_vec())
@@ -178,5 +185,25 @@ impl FileEncoding {
             FileEncoding::Big5 => "Big5",
             FileEncoding::EucKr => "EUC-KR",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::FileEncoding;
+
+    #[test]
+    fn utf16_rejects_incomplete_code_units() {
+        for encoding in [FileEncoding::Utf16Le, FileEncoding::Utf16Be] {
+            let mut bytes = encoding.encode("hello 🦀").unwrap();
+            assert_eq!(encoding.decode(&bytes, 2).unwrap(), "hello 🦀");
+            bytes.push(0x12);
+            assert!(encoding.decode(&bytes, 2).is_err());
+        }
+    }
+
+    #[test]
+    fn invalid_bom_offset_is_an_error() {
+        assert!(FileEncoding::Utf8.decode(b"x", 2).is_err());
     }
 }

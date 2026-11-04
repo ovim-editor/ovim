@@ -155,6 +155,7 @@ impl Editor {
             .cursor_mut()
             .set_position(view.cursor.line(), view.cursor.col());
         self.buffer_mut().validate_cursor_position();
+        let cursor = *self.buffer().cursor();
         self.viewport.scroll_offset = view.scroll_offset;
         self.viewport.scroll_subrow = view.scroll_subrow;
         if let Some(window) = self
@@ -165,7 +166,7 @@ impl Editor {
             window.set_scroll_position(view.scroll_offset, view.scroll_subrow);
             window
                 .cursor_mut()
-                .set_position(view.cursor.line(), view.cursor.col());
+                .set_position(cursor.line(), cursor.col());
         }
     }
 
@@ -456,5 +457,34 @@ mod tests {
         editor.goto_tab(1);
         assert_eq!(editor.buffer().cursor().line(), 4);
         assert_eq!(editor.buffer().cursor().col(), GraphemeCol(2));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn restoring_a_tab_after_shared_buffer_shrinks_clamps_both_cursor_copies() {
+        use crate::unicode::GraphemeCol;
+        let dir = tempfile::tempdir().unwrap();
+        let path = write_file(&dir, "shrinks.txt", "one\ntwo\nthree\nfour\n");
+        let mut editor = Editor::default();
+        editor.load_file(&path).unwrap();
+        editor.init_window_manager(80, 24);
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(3, GraphemeCol(3));
+        editor.new_tab();
+        editor.load_file(&path).unwrap();
+        editor.buffer_mut().replace_all("x\n");
+        editor.goto_tab(0);
+        let cursor = editor.buffer().cursor();
+        assert_eq!(cursor.line(), 0);
+        assert!(cursor.col().0 <= 1);
+        let window_cursor = editor
+            .window_manager()
+            .unwrap()
+            .focused_window()
+            .unwrap()
+            .cursor();
+        assert_eq!(window_cursor.line(), cursor.line());
+        assert_eq!(window_cursor.col(), cursor.col());
     }
 }
