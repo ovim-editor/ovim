@@ -89,6 +89,7 @@ impl Editor {
                     question_count: pending
                         .visible_exchange
                         .map_or(exchanges.len(), |index| index + 1),
+                    exchange_total: exchanges.len(),
                     latest_question: latest.map(|exchange| exchange.question.clone()),
                     latest_answer: latest.map(|exchange| exchange.answer.clone()),
                     latest_failed: latest.is_some_and(|exchange| exchange.failed),
@@ -1904,7 +1905,7 @@ mod tests {
         key(&mut editor, crate::KeyCode::Char('['));
         assert!(
             matches!(editor.ai_code_explanation_view().unwrap().discussion,
-            CodeExplanationDiscussionView::Navigating { latest_question: Some(ref question), question_count: 1, .. } if question == "Earlier?")
+            CodeExplanationDiscussionView::Navigating { latest_question: Some(ref question), question_count: 1, exchange_total: 2, .. } if question == "Earlier?")
         );
         key(&mut editor, crate::KeyCode::Char(']'));
         key(&mut editor, crate::KeyCode::Right);
@@ -2055,6 +2056,7 @@ mod tests {
             view.discussion,
             CodeExplanationDiscussionView::Navigating {
                 question_count: 1,
+                exchange_total: 1,
                 latest_question: Some(ref question),
                 latest_answer: Some(ref answer),
                 latest_failed: false,
@@ -2127,6 +2129,7 @@ mod tests {
             editor.ai_code_explanation_view().unwrap().discussion,
             CodeExplanationDiscussionView::Navigating {
                 question_count: 2,
+                exchange_total: 2,
                 latest_question: Some(ref question),
                 latest_answer: Some(ref answer),
                 latest_failed: false,

@@ -70,6 +70,19 @@ export default function ChatComposer(props: {
         !props.chat.externalQuestion &&
         (props.chat.waiting || props.chat.activity !== "idle");
 
+    const hasSubmission = () =>
+        Boolean(draft().trim()) || props.chat.pendingImages.length > 0;
+    const sendKey = (key: "Enter" | "Escape") => {
+        void publish(input.value, selectionFocus(), {
+            key,
+            shift: false,
+            control: false,
+            alt: false,
+            meta: false,
+        });
+        queueMicrotask(() => input.focus());
+    };
+
     const resize = () => {
         if (!input) return;
         // Measuring the live input at its default height temporarily expands the
@@ -348,11 +361,22 @@ export default function ChatComposer(props: {
                         : props.chat.externalQuestion
                           ? "Enter to answer · Esc to cancel"
                           : hasActiveRun()
-                            ? "working"
+                            ? "Enter queues · Esc stops"
                             : "Enter to send · drop images to attach · Esc to return"}
                 </span>
                 <span class="chat-composer-actions">
                     <b>{props.chat.reasoningEffort}</b>
+                    <Show when={hasActiveRun() && hasSubmission()}>
+                        <IconButton
+                            class="chat-submit"
+                            icon="send"
+                            size={16}
+                            label="Queue message"
+                            shortcut="Enter"
+                            disabled={Boolean(props.chat.approval)}
+                            onClick={() => sendKey("Enter")}
+                        />
+                    </Show>
                     <IconButton
                         class="chat-submit"
                         icon={hasActiveRun() ? "stop" : "send"}
@@ -360,23 +384,14 @@ export default function ChatComposer(props: {
                         label={
                             hasActiveRun() ? "Stop generation" : "Send message"
                         }
+                        shortcut={hasActiveRun() ? "Esc" : undefined}
                         disabled={
                             Boolean(props.chat.approval) ||
-                            (!hasActiveRun() &&
-                                !draft().trim() &&
-                                props.chat.pendingImages.length === 0)
+                            (!hasActiveRun() && !hasSubmission())
                         }
-                        onClick={() => {
-                            const key = hasActiveRun() ? "Escape" : "Enter";
-                            void publish(input.value, selectionFocus(), {
-                                key,
-                                shift: false,
-                                control: false,
-                                alt: false,
-                                meta: false,
-                            });
-                            queueMicrotask(() => input.focus());
-                        }}
+                        onClick={() =>
+                            sendKey(hasActiveRun() ? "Escape" : "Enter")
+                        }
                     />
                 </span>
             </footer>

@@ -19,6 +19,7 @@ import App, {
     isNearChatBottom,
     retainTranscriptItems,
     reconcileWorkbenchTabs,
+    scrollWalkthroughWithKey,
     requestedBrowserPresentation,
     toolResultSummary,
 } from "./App";
@@ -44,7 +45,7 @@ it("Claude chat presents permission choices and hides Ovim agent policies", () =
     expect(screen.getByText(/Run the project tests/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Allow once" }));
     fireEvent.click(screen.getByRole("button", { name: "Deny" }));
-    expect(onApproval.mock.calls).toEqual([[true], [false]]);
+    expect(onApproval.mock.calls).toEqual([["allow"], ["deny"]]);
 });
 
 it("Claude questions keep an answer action in the composer while the agent waits", () => {
@@ -203,6 +204,7 @@ describe("Ovim Solid workbench", () => {
             discussion: {
                 state: "navigating",
                 questionCount: 0,
+                exchangeTotal: 0,
                 latestFailed: false,
             },
         };
@@ -235,6 +237,7 @@ describe("Ovim Solid workbench", () => {
             discussion: {
                 state: "navigating",
                 questionCount: 2,
+                exchangeTotal: 2,
                 latestFailed: false,
             },
         };
@@ -2381,5 +2384,287 @@ describe("Ovim Solid workbench", () => {
             }),
         ).toBeNull();
         result.unmount();
+    });
+});
+
+const idleChat: GuiAiChat = {
+    profile: "codex",
+    profiles: [],
+    reasoningEffort: "medium",
+    reasoningEffortSelection: "default",
+    reasoningEfforts: ["default"],
+    yoloMode: false,
+    comprehensionPolicy: "off",
+    activity: "idle",
+    waiting: false,
+    input: "",
+    inputCursor: 0,
+    queuedInputs: [],
+    pendingImages: [],
+    messages: [],
+    thinkingLive: false,
+    focus: "textInput",
+    agents: [],
+    agentCursor: 0,
+};
+
+describe("chat approvals", () => {
+    const approvalChat = (patch: Partial<GuiAiChat>): GuiAiChat => ({
+        ...idleChat,
+        ...patch,
+    });
+
+    it("offers Allow and remember only where core supports remembering", () => {
+        const onApproval = vi.fn();
+        const chat = createSignal(
+            approvalChat({
+                approval: "Tool: bash",
+                approvalCanRemember: false,
+            }),
+        );
+        render(() => (
+            <ChatPanel
+                chat={chat[0]()}
+                focusInput={() => {}}
+                onApproval={onApproval}
+            />
+        ));
+        expect(
+            screen.queryByRole("button", { name: "Allow and remember" }),
+        ).toBeNull();
+        chat[1](
+            approvalChat({ approval: "Tool: bash", approvalCanRemember: true }),
+        );
+        fireEvent.click(
+            screen.getByRole("button", { name: "Allow and remember" }),
+        );
+        expect(onApproval).toHaveBeenCalledWith("remember");
+    });
+
+    it("renders the oldest delegated-child approval and resolves that exact request", () => {
+        const onAgentApproval = vi.fn();
+        const onApproval = vi.fn();
+        render(() => (
+            <ChatPanel
+                chat={approvalChat({
+                    agentApproval: {
+                        requestId: "evt_42",
+                        agentId: "agent_7",
+                        agentName: "scout",
+                        summary: "Child: scout (agent_7)\nTool: bash",
+                    },
+                })}
+                focusInput={() => {}}
+                onApproval={onApproval}
+                onAgentApproval={onAgentApproval}
+            />
+        ));
+        const card = document.querySelector(".agent-approval-card")!;
+        expect(card.textContent).toContain("scout");
+        expect(card.textContent).toContain("Tool: bash");
+        const buttons = card.querySelectorAll("button");
+        fireEvent.click(buttons[0]);
+        fireEvent.click(buttons[1]);
+        expect(onAgentApproval.mock.calls).toEqual([
+            ["evt_42", true],
+            ["evt_42", false],
+        ]);
+        expect(onApproval).not.toHaveBeenCalled();
+    });
+});
+
+describe("composer during a run", () => {
+    it("queues a typed follow-up next to Stop and hints both keys", async () => {
+        const onUpdate = vi.fn().mockResolvedValue({
+            input: "",
+            cursor: 0,
+            revision: 1,
+        });
+        const base: GuiAiChat = {
+            ...idleChat,
+            activity: "streaming",
+            waiting: true,
+            input: "also check the tests",
+            inputCursor: 20,
+        };
+        const result = render(() => (
+            <ChatComposer chat={base} onUpdate={onUpdate} />
+        ));
+        expect(screen.getByText("Enter queues · Esc stops")).toBeTruthy();
+        expect(
+            screen.getByRole("button", { name: "Stop generation" }),
+        ).toBeTruthy();
+        fireEvent.click(screen.getByRole("button", { name: "Queue message" }));
+        await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+        expect(onUpdate).toHaveBeenLastCalledWith(
+            expect.objectContaining({
+                input: "also check the tests",
+                action: expect.objectContaining({ key: "Enter" }),
+            }),
+        );
+        result.unmount();
+
+        render(() => (
+            <ChatComposer
+                chat={{ ...base, input: "", inputCursor: 0 }}
+                onUpdate={onUpdate}
+            />
+        ));
+        expect(
+            screen.queryByRole("button", { name: "Queue message" }),
+        ).toBeNull();
+        expect(
+            screen.getByRole("button", { name: "Stop generation" }),
+        ).toBeTruthy();
+    });
+});
+
+describe("tool results", () => {
+    const expand = async (container: HTMLElement) => {
+        const details = container.querySelector<HTMLDetailsElement>("details")!;
+        details.open = true;
+        fireEvent(details, new Event("toggle"));
+        await Promise.resolve();
+    };
+
+    it("render as preformatted text instead of Markdown", async () => {
+        const output =
+            "# not a heading\nfn first<T>(items: &[T]) -> &T\n- not a list";
+        const result = render(() => (
+            <ChatMessageView
+                message={{
+                    id: "1:9",
+                    index: 8,
+                    selected: false,
+                    role: "tool",
+                    content: output,
+                    toolName: "read_file",
+                    tools: [],
+                }}
+            />
+        ));
+        await expand(result.container);
+        const pre = result.container.querySelector("pre.tool-result-output")!;
+        expect(pre.textContent).toBe(output);
+        expect(result.container.querySelector("h1, ul, .markdown")).toBeNull();
+    });
+
+    it("keep tool entries inside an activity group preformatted", async () => {
+        const output = "# heading-looking\n<T>";
+        const result = render(() => (
+            <ChatActivityGroup
+                item={{
+                    kind: "activity",
+                    id: "activity:1",
+                    live: false,
+                    entries: [
+                        {
+                            id: "1:1",
+                            index: 0,
+                            selected: false,
+                            role: "tool",
+                            content: output,
+                            toolName: "bash",
+                            tools: [],
+                        },
+                    ],
+                }}
+            />
+        ));
+        await expand(result.container);
+        expect(
+            result.container.querySelector("pre.tool-result-output")
+                ?.textContent,
+        ).toBe(output);
+        expect(result.container.querySelector("h1")).toBeNull();
+    });
+});
+
+describe("walkthrough reading and navigation", () => {
+    const walkthrough = (
+        discussion: GuiCodeExplanation["discussion"],
+    ): GuiCodeExplanation => ({
+        answerInProgress: false,
+        current: 1,
+        total: 2,
+        page: { kind: "concept", title: "Step", body: "Teaching." },
+        discussion,
+    });
+    const navigating = (position: number) =>
+        walkthrough({
+            state: "navigating",
+            questionCount: position,
+            exchangeTotal: 3,
+            latestQuestion: `Question text ${position}`,
+            latestAnswer: "Answer.",
+            latestFailed: false,
+        });
+
+    it("bounds Earlier and Later question and shows the exchange total", () => {
+        const [state, setState] = createSignal<GuiCodeExplanation>(
+            navigating(1),
+        );
+        render(() => (
+            <CodeWalkthrough walkthrough={state()} onKey={() => {}} />
+        ));
+        const disabled = (name: string) =>
+            screen.getByRole("button", { name }).hasAttribute("disabled");
+        expect(screen.getByText(/Question 1 of 3/)).toBeTruthy();
+        expect(disabled("Earlier question")).toBe(true);
+        expect(disabled("Later question")).toBe(false);
+        setState(navigating(2));
+        expect(screen.getByText(/Question 2 of 3/)).toBeTruthy();
+        expect(disabled("Earlier question")).toBe(false);
+        expect(disabled("Later question")).toBe(false);
+        setState(navigating(3));
+        expect(disabled("Earlier question")).toBe(false);
+        expect(disabled("Later question")).toBe(true);
+    });
+
+    it("scrolls long teaching text and replies locally and consumes only navigation keys", () => {
+        const card = document.createElement("section");
+        card.innerHTML =
+            '<div class="walkthrough-teaching"></div><div class="walkthrough-answer"></div>';
+        document.body.append(card);
+        const teaching = card.querySelector<HTMLElement>(
+            ".walkthrough-teaching",
+        )!;
+        const answer = card.querySelector<HTMLElement>(".walkthrough-answer")!;
+        const size = (el: HTMLElement, scroll: number, client: number) => {
+            Object.defineProperty(el, "scrollHeight", {
+                value: scroll,
+                configurable: true,
+            });
+            Object.defineProperty(el, "clientHeight", {
+                value: client,
+                configurable: true,
+            });
+        };
+        const press = (key: string, ctrlKey = false) =>
+            scrollWalkthroughWithKey(card, {
+                key,
+                ctrlKey,
+                metaKey: false,
+                altKey: false,
+            });
+        size(teaching, 1000, 200);
+        size(answer, 100, 100);
+        expect(press("ArrowDown")).toBe(true);
+        const afterLine = teaching.scrollTop;
+        expect(afterLine).toBeGreaterThan(0);
+        expect(press("PageDown")).toBe(true);
+        expect(teaching.scrollTop).toBeGreaterThan(afterLine + 100);
+        expect(press("k")).toBe(true);
+        expect(press("ArrowUp")).toBe(true);
+        // A scrollable reply takes the keys before the teaching text.
+        size(answer, 600, 100);
+        const before = teaching.scrollTop;
+        expect(press("j")).toBe(true);
+        expect(answer.scrollTop).toBeGreaterThan(0);
+        expect(teaching.scrollTop).toBe(before);
+        // Other keys, and modified navigation keys, are not swallowed.
+        expect(press("Enter")).toBe(false);
+        expect(press("Escape")).toBe(false);
+        expect(press("ArrowDown", true)).toBe(false);
     });
 });

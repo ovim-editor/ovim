@@ -1935,6 +1935,21 @@ button:focus-visible {
     max-height: 320px;
     overflow: auto;
 }
+/* Tool output is data, not prose: file contents and command output must not be
+   interpreted as Markdown (`#` headings, `<T>` vanishing as HTML). */
+.tool-result-output {
+    margin: 0;
+    padding: 9px 11px 11px;
+    max-height: 320px;
+    overflow: auto;
+    color: var(--text-primary);
+    font: 11px/1.45 var(--editor-font);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+}
+.chat-activity-entry > .tool-result-output {
+    padding: 0;
+}
 .chat-activity {
     border-block: 1px solid color-mix(in srgb, var(--border) 80%, transparent);
 }
@@ -3420,6 +3435,7 @@ kbd {
 }
 .walkthrough-card button {
     min-height: 29px;
+    white-space: nowrap;
     padding: 0 10px;
     border: 1px solid var(--border);
     border-radius: var(--radius-2);
@@ -3529,13 +3545,19 @@ kbd {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
+    flex-wrap: wrap;
+    gap: 8px 12px;
     border-top: 1px solid var(--border);
 }
 .walkthrough-pages,
 .walkthrough-actions {
     display: flex;
+    flex-wrap: wrap;
     gap: 7px;
+}
+.walkthrough-actions {
+    margin-left: auto;
+    justify-content: flex-end;
 }
 .walkthrough-card button.primary {
     color: var(--accent-foreground);

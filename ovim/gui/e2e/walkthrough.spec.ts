@@ -33,6 +33,7 @@ for (const kind of ["code", "diff"] as const) {
                     discussion: {
                         state: "navigating",
                         questionCount: 0,
+                        exchangeTotal: 0,
                         latestFailed: false,
                     },
                 })};
@@ -179,6 +180,47 @@ for (const kind of ["code", "diff"] as const) {
                                 ).length,
                         ),
                     ).toBe(calls);
+                }
+                // The footer wraps instead of squeezing or clipping buttons.
+                const cardBox = (await card.boundingBox())!;
+                for (const button of await page
+                    .locator(".walkthrough-card footer button")
+                    .all()) {
+                    const box = (await button.boundingBox())!;
+                    expect(box.x).toBeGreaterThanOrEqual(cardBox.x - 1);
+                    expect(box.x + box.width).toBeLessThanOrEqual(
+                        cardBox.x + cardBox.width + 1,
+                    );
+                    expect(
+                        await button.evaluate(
+                            (el) => el.scrollWidth <= el.clientWidth + 1,
+                        ),
+                    ).toBe(true);
+                }
+                if (long) {
+                    // After Tab leaves focus on a footer button, Esc and the
+                    // reading keys still belong to the walkthrough.
+                    const keysSent = () =>
+                        page.evaluate(() =>
+                            (window as any).walkthroughCalls
+                                .filter((c: any) => c.command === "gui_key")
+                                .map((c: any) => c.data.input.key),
+                        );
+                    const teaching = page.locator(".walkthrough-teaching");
+                    await page
+                        .locator(".walkthrough-card footer button.primary")
+                        .focus();
+                    await page.keyboard.press("Escape");
+                    await expect.poll(keysSent).toContain("Escape");
+                    const sent = (await keysSent()).length;
+                    await teaching.evaluate((el) => (el.scrollTop = 0));
+                    await page.keyboard.press("PageDown");
+                    await expect
+                        .poll(() => teaching.evaluate((el) => el.scrollTop))
+                        .toBeGreaterThan(0);
+                    await page.keyboard.press("ArrowUp");
+                    await page.keyboard.press("j");
+                    expect((await keysSent()).length).toBe(sent);
                 }
                 await page.screenshot({
                     path: testInfo.outputPath("walkthrough.png"),

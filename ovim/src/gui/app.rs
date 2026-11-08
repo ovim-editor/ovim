@@ -473,8 +473,12 @@ async fn gui_select_permission_mode(
 }
 
 #[tauri::command]
-async fn gui_ai_policy(bridge: State<'_, GuiBridge>, action: String) -> Result<(), String> {
-    bridge.ai_policy(action).await
+async fn gui_ai_policy(
+    bridge: State<'_, GuiBridge>,
+    action: String,
+    target: Option<String>,
+) -> Result<(), String> {
+    bridge.ai_policy(action, target).await
 }
 
 #[tauri::command]

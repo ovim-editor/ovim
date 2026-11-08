@@ -281,7 +281,16 @@ export const ChatActivityGroup = (props: {
                                     onReplay={props.onReplay}
                                 />
                                 <Show when={entry.content}>
-                                    <Markdown text={entry.content} />
+                                    <Show
+                                        when={entry.role === "tool"}
+                                        fallback={
+                                            <Markdown text={entry.content} />
+                                        }
+                                    >
+                                        <pre class="tool-result-output">
+                                            {entry.content}
+                                        </pre>
+                                    </Show>
                                 </Show>
                                 <ToolCallList tools={entry.tools} />
                             </section>
@@ -291,6 +300,50 @@ export const ChatActivityGroup = (props: {
             </Show>
         </details>
     );
+};
+
+const WALKTHROUGH_SCROLL_KEYS = new Set([
+    "ArrowUp",
+    "ArrowDown",
+    "j",
+    "k",
+    "PageUp",
+    "PageDown",
+]);
+
+/**
+ * Scroll long teaching text or a long reply inside the card. Core's own scroll
+ * is bounded by a TUI-only render cache, so in the GUI these keys would do
+ * nothing. Returns whether the key was consumed.
+ */
+export const scrollWalkthroughWithKey = (
+    card: ParentNode,
+    event: Pick<KeyboardEvent, "key" | "ctrlKey" | "metaKey" | "altKey">,
+) => {
+    if (
+        !WALKTHROUGH_SCROLL_KEYS.has(event.key) ||
+        event.ctrlKey ||
+        event.metaKey ||
+        event.altKey
+    )
+        return false;
+    const scrollable = [".walkthrough-answer", ".walkthrough-teaching"]
+        .map((selector) => card.querySelector<HTMLElement>(selector))
+        .find(
+            (element) => element && element.scrollHeight > element.clientHeight,
+        );
+    if (scrollable) {
+        const page = Math.max(LINE_HEIGHT, scrollable.clientHeight * 0.9);
+        scrollable.scrollTop +=
+            event.key === "ArrowUp" || event.key === "k"
+                ? -LINE_HEIGHT
+                : event.key === "ArrowDown" || event.key === "j"
+                  ? LINE_HEIGHT
+                  : event.key === "PageUp"
+                    ? -page
+                    : page;
+    }
+    return true;
 };
 
 const WalkthroughDiscussion = (props: {
@@ -394,7 +447,11 @@ const WalkthroughDiscussion = (props: {
                             <small>
                                 {active().latestFailed
                                     ? "Answer failed"
-                                    : `Question ${active().questionCount}`}
+                                    : `Question ${active().questionCount}${
+                                          active().exchangeTotal > 0
+                                              ? ` of ${active().exchangeTotal}`
+                                              : ""
+                                      }`}
                                 : {active().latestQuestion}
                             </small>
                             <div class="walkthrough-answer">
@@ -489,6 +546,21 @@ export const CodeWalkthrough = (props: {
             discussion.state === "answering" ||
             (discussion.state === "navigating" &&
                 Boolean(discussion.latestQuestion))
+        );
+    };
+    // Only a navigating thread has a visible exchange to step away from;
+    // while answering, the streaming exchange is always the latest one.
+    const hasEarlierQuestion = () => {
+        const discussion = props.walkthrough.discussion;
+        return (
+            discussion.state === "navigating" && discussion.questionCount > 1
+        );
+    };
+    const hasLaterQuestion = () => {
+        const discussion = props.walkthrough.discussion;
+        return (
+            discussion.state === "navigating" &&
+            discussion.questionCount < discussion.exchangeTotal
         );
     };
     return (
@@ -592,6 +664,7 @@ export const CodeWalkthrough = (props: {
                             >
                                 <button
                                     type="button"
+                                    disabled={!hasEarlierQuestion()}
                                     onClick={() => dispatch("[")}
                                     title="["
                                 >
@@ -599,6 +672,7 @@ export const CodeWalkthrough = (props: {
                                 </button>
                                 <button
                                     type="button"
+                                    disabled={!hasLaterQuestion()}
                                     onClick={() => dispatch("]")}
                                     title="]"
                                 >
@@ -1032,7 +1106,9 @@ export const ChatMessageView = (props: {
                         <em>Details</em>
                     </summary>
                     <Show when={expanded()}>
-                        <Markdown text={props.message.content} />
+                        <pre class="tool-result-output">
+                            {props.message.content}
+                        </pre>
                     </Show>
                 </details>
             </Show>
@@ -1069,10 +1145,11 @@ export const ChatPanel = (props: {
     onInputWidth?: (columns: number) => void;
     onRemoveDiffComments?: () => void;
     onRemoveImage?: (index: number) => void;
-    onProfile?: (profile: string, model?: string) => void;
-    onReasoningEffort?: (effort: string) => void;
-    onPermissionMode?: (mode: string) => void;
-    onApproval?: (allow: boolean) => void;
+    onProfile?: (profile: string, model?: string) => unknown;
+    onReasoningEffort?: (effort: string) => unknown;
+    onPermissionMode?: (mode: string) => unknown;
+    onApproval?: (decision: "allow" | "remember" | "deny") => void;
+    onAgentApproval?: (requestId: string, allow: boolean) => void;
     onYolo?: () => void;
     onComprehension?: () => void;
     onMessage?: (index: number) => void;
@@ -1138,6 +1215,7 @@ export const ChatPanel = (props: {
             queued.length,
             queued.at(-1)?.content.length ?? 0,
             props.chat.approval?.length ?? 0,
+            props.chat.agentApproval?.requestId ?? "",
         ];
         if (messages.length > messageCount && latest?.role === "user")
             setFollowing(true);
@@ -1174,6 +1252,7 @@ export const ChatPanel = (props: {
                         permissionMode={props.chat.permissionMode}
                         permissionModes={props.chat.permissionModes ?? []}
                         onPermissionMode={props.onPermissionMode}
+                        turnActive={props.chat.activity !== "idle"}
                         focusInput={props.focusInput}
                     />
                 </div>
@@ -1423,7 +1502,54 @@ export const ChatPanel = (props: {
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        props.onApproval?.(true);
+                                        props.onApproval?.("allow");
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    Allow once
+                                </button>
+                                <Show when={props.chat.approvalCanRemember}>
+                                    <button
+                                        type="button"
+                                        title="Allow this and similar calls without asking again"
+                                        onClick={() => {
+                                            props.onApproval?.("remember");
+                                            queueMicrotask(props.focusInput);
+                                        }}
+                                    >
+                                        Allow and remember
+                                    </button>
+                                </Show>
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.onApproval?.("deny");
+                                        queueMicrotask(props.focusInput);
+                                    }}
+                                >
+                                    Deny
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </Show>
+                <Show when={props.chat.agentApproval}>
+                    {(approval) => (
+                        <div
+                            class="approval-card agent-approval-card"
+                            role="status"
+                            aria-live="polite"
+                        >
+                            <b>Agent approval · {approval().agentName}</b>
+                            <span>{approval().summary}</span>
+                            <div class="approval-actions">
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        props.onAgentApproval?.(
+                                            approval().requestId,
+                                            true,
+                                        );
                                         queueMicrotask(props.focusInput);
                                     }}
                                 >
@@ -1432,7 +1558,10 @@ export const ChatPanel = (props: {
                                 <button
                                     type="button"
                                     onClick={() => {
-                                        props.onApproval?.(false);
+                                        props.onAgentApproval?.(
+                                            approval().requestId,
+                                            false,
+                                        );
                                         queueMicrotask(props.focusInput);
                                     }}
                                 >
@@ -1852,11 +1981,17 @@ function App() {
         }
     };
 
-    const mutate = async (command: string, args: Record<string, unknown>) => {
+    /** Resolves to whether core accepted the mutation. */
+    const mutate = async (
+        command: string,
+        args: Record<string, unknown>,
+    ): Promise<boolean> => {
         try {
             await mutateStrict(command, args);
+            return true;
         } catch {
             // `mutateStrict` has already projected the failure into the GUI status.
+            return false;
         }
     };
 
@@ -2361,7 +2496,30 @@ function App() {
             if (key) void sendKey(key);
             return;
         }
-        if (nativeControl) return;
+        const walkthroughCard = walkthrough()
+            ? document.querySelector(".walkthrough-card")
+            : null;
+        if (
+            walkthroughCard &&
+            walkthrough()?.discussion.state !== "composing" &&
+            !target?.closest?.("input, textarea, select, [contenteditable]") &&
+            scrollWalkthroughWithKey(walkthroughCard, event)
+        ) {
+            event.preventDefault();
+            return;
+        }
+        const walkthroughButton =
+            walkthrough() && target?.closest?.(".walkthrough-card")
+                ? target.closest("button")
+                : null;
+        // Tab can leave focus on a footer button. Only the button's own
+        // activation keys stay native; Esc, arrows and typed text still
+        // belong to the walkthrough.
+        const forwardFromWalkthroughButton =
+            Boolean(walkthroughButton) &&
+            event.key !== "Enter" &&
+            event.key !== " ";
+        if (nativeControl && !forwardFromWalkthroughButton) return;
         const clipboardModifier = macos
             ? event.metaKey
             : event.ctrlKey && event.shiftKey;
@@ -3320,17 +3478,27 @@ function App() {
                         void mutate("gui_remove_chat_image", { index })
                     }
                     onProfile={(profile, model) =>
-                        void mutate("gui_select_ai_profile", { profile, model })
+                        mutate("gui_select_ai_profile", { profile, model })
                     }
                     onReasoningEffort={(effort) =>
-                        void mutate("gui_select_reasoning_effort", { effort })
+                        mutate("gui_select_reasoning_effort", { effort })
                     }
                     onPermissionMode={(mode) =>
-                        void mutate("gui_select_permission_mode", { mode })
+                        mutate("gui_select_permission_mode", { mode })
                     }
-                    onApproval={(allow) =>
+                    onApproval={(decision) =>
                         void mutate("gui_ai_policy", {
-                            action: allow ? "approve-tool" : "deny-tool",
+                            action: {
+                                allow: "approve-tool",
+                                remember: "approve-tool-remember",
+                                deny: "deny-tool",
+                            }[decision],
+                        })
+                    }
+                    onAgentApproval={(requestId, allow) =>
+                        void mutate("gui_ai_policy", {
+                            action: allow ? "approve-agent" : "deny-agent",
+                            target: requestId,
                         })
                     }
                     onYolo={() =>

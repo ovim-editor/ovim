@@ -6,6 +6,7 @@ pub use ansi::buffer_to_ansi;
 pub use ansi::render_editor_to_ansi;
 pub use ansi::strip_ansi;
 pub use ansi::AnsiRenderCache;
+pub(crate) use renderer::agent_tree::project_agent_approval_prompt;
 pub use renderer::CatAnimation;
 pub use renderer::Renderer;
 pub use renderer::MENU_ITEMS;

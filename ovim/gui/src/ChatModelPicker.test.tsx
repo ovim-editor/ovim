@@ -128,3 +128,76 @@ it("omits effort and permissions when the selected model does not support them",
     expect(screen.queryByLabelText("Reasoning effort")).toBeNull();
     expect(screen.queryByLabelText("Permission mode")).toBeNull();
 });
+
+const pickerProps = {
+    profiles,
+    reasoningEffort: "high",
+    reasoningEffortSelection: "high",
+    reasoningEfforts: ["default", "low", "high"],
+    permissionMode: "auto",
+    permissionModes: [
+        { id: "auto", label: "Auto", description: "Classify prompts" },
+        { id: "dontAsk", label: "Don't ask", description: "Deny prompts" },
+    ],
+    focusInput: () => {},
+};
+
+it("disables every run setting with an explanation while a turn is active", () => {
+    render(() => (
+        <ChatModelPicker
+            {...pickerProps}
+            profile="claude_code"
+            model="default"
+            turnActive
+        />
+    ));
+    fireEvent.click(
+        screen.getByTitle("Configure AI provider, model, and run settings"),
+    );
+    for (const label of [
+        "AI provider",
+        "AI model",
+        "Reasoning effort",
+        "Permission mode",
+    ]) {
+        const select = screen.getByLabelText(label) as HTMLSelectElement;
+        expect(select.disabled).toBe(true);
+        expect(select.title).toMatch(/stop the active turn/);
+    }
+});
+
+it("snaps controls back to the live snapshot when core rejects a change", async () => {
+    const reject = vi.fn().mockResolvedValue(false);
+    render(() => (
+        <ChatModelPicker
+            {...pickerProps}
+            profile="claude_code"
+            model="default"
+            onProfile={reject}
+            onReasoningEffort={reject}
+            onPermissionMode={reject}
+        />
+    ));
+    fireEvent.click(
+        screen.getByTitle("Configure AI provider, model, and run settings"),
+    );
+    const select = (label: string) =>
+        screen.getByLabelText(label) as HTMLSelectElement;
+    const original = select("AI model").value;
+    fireEvent.change(select("Reasoning effort"), { target: { value: "low" } });
+    fireEvent.change(select("Permission mode"), {
+        target: { value: "dontAsk" },
+    });
+    const model = select("AI model");
+    fireEvent.change(model, {
+        target: { value: model.options[model.options.length - 1].value },
+    });
+    fireEvent.change(select("AI provider"), { target: { value: "codex" } });
+    await vi.waitFor(() =>
+        expect(select("Reasoning effort").value).toBe("high"),
+    );
+    expect(select("Permission mode").value).toBe("auto");
+    expect(select("AI model").value).toBe(original);
+    expect(select("AI provider").value).toBe("claude_code");
+    expect(reject).toHaveBeenCalledTimes(4);
+});

@@ -1428,6 +1428,7 @@ fn walkthrough_discussion(
             latest_question: Some(question),
             latest_answer: Some(answer),
             latest_failed,
+            ..
         } => {
             let exchange = walkthrough_exchange_lines(
                 *question_count,
@@ -2158,6 +2159,7 @@ mod tests {
         };
         let completed = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count: 1,
+            exchange_total: 1,
             latest_question: Some("Why is k used here?".into()),
             latest_answer: Some(answer.into()),
             latest_failed: false,
@@ -2190,6 +2192,7 @@ mod tests {
     fn walkthrough_reply_uses_available_rows_and_scrolls_in_place() {
         let discussion = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count: 2,
+            exchange_total: 2,
             latest_question: Some("Can you give me the complete reasoning?".into()),
             latest_answer: Some(
                 (1..=80)
@@ -2276,6 +2279,7 @@ mod tests {
         let question = "one two three four five six seven eight nine ten eleven twelve\nlast part";
         let discussion = ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count: 1,
+            exchange_total: 1,
             latest_question: Some(question.into()),
             latest_answer: Some("A short answer".into()),
             latest_failed: false,
