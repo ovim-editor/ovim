@@ -129,3 +129,85 @@ mockSnapshot.lines.splice(0, mockSnapshot.lines.length, ...[0, 6, 20, -1].map((c
         });
     });
 }
+
+// Wide graphemes (CJK, emoji) must each be their own cell-sized segment so a
+// fallback font's real advance cannot push later glyphs off the grid.
+test("CJK and emoji segments pin every following glyph to the cell grid", async ({
+    page,
+}) => {
+    await page.route("**/src/mock.ts", async (route) => {
+        const response = await route.fetch();
+        await route.fulfill({
+            response,
+            body:
+                (await response.text()) +
+                `\n
+const runs = [["ab", 2], ["日", 2], ["本", 2], ["語", 2], ["cd", 2], ["😀", 2], ["e", 1], ["é", 1], ["x", 1]];
+mockSnapshot.mode = "NORMAL";
+mockSnapshot.lines.splice(0, mockSnapshot.lines.length, ...[-1, 5].map((cursor, row) => ({
+    number: row + 1, continuation: false, displayStart: 0, current: cursor >= 0,
+    segments: runs.map(([text, cells], index) => ({
+        text, cells, token: undefined, cursor: index === cursor, selected: false, searchMatch: false,
+    })),
+})));`,
+        });
+    });
+    await page.goto("/");
+    await expect(page.locator(".code-line")).toHaveCount(2);
+    await page.evaluate(() => document.fonts.ready);
+    const geometry = await page
+        .locator(".line-content")
+        .evaluateAll((lines) => {
+            const probe = document.createElement("span");
+            probe.textContent = "0123456789";
+            probe.style.cssText = "position:absolute;white-space:pre;left:0";
+            lines[0].append(probe);
+            const cell = probe.getBoundingClientRect().width / 10;
+            probe.remove();
+            return lines.map((line) => {
+                const origin = line.getBoundingClientRect().left;
+                let column = 0;
+                return Array.from(
+                    line.querySelectorAll<HTMLElement>(".code-segment"),
+                ).map((segment) => {
+                    const box = segment.getBoundingClientRect();
+                    const range = document.createRange();
+                    range.selectNodeContents(segment);
+                    const glyph = range.getBoundingClientRect();
+                    const cells = Math.round(box.width / cell);
+                    const result = {
+                        text: segment.textContent,
+                        left: box.left - origin,
+                        expectedLeft: column * cell,
+                        cells,
+                        glyphCenter: glyph.left + glyph.width / 2 - origin,
+                        cell,
+                    };
+                    column += cells;
+                    return result;
+                });
+            });
+        });
+    for (const line of geometry) {
+        expect(line.map((segment) => segment.cells)).toEqual([
+            2, 2, 2, 2, 2, 2, 1, 1, 1,
+        ]);
+        for (const segment of line)
+            expect(
+                Math.abs(segment.left - segment.expectedLeft),
+            ).toBeLessThan(0.15);
+        // Narrow glyphs after a wide one sit at their own cell's center (the
+        // wide glyph itself may come from a fallback font with another
+        // advance).
+        for (const segment of line.filter((entry) => entry.cells === 1))
+            expect(
+                Math.abs(
+                    segment.glyphCenter - (segment.left + segment.cell / 2),
+                ),
+            ).toBeLessThan(1);
+    }
+    // The cursor segment is exactly the wide glyph's own two cells.
+    const cursor = page.locator(".code-segment.cursor");
+    await expect(cursor).toHaveCount(1);
+    await expect(cursor).toHaveText("😀");
+});

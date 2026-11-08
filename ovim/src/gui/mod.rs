@@ -3624,10 +3624,21 @@ fn split_visual_rows(
     rows
 }
 
+/// A single grapheme that occupies more than one cell (CJK, emoji). The
+/// frontend sizes every segment to `cells * cell_width`, so a wide glyph merged
+/// into a run of narrow ones would drift off the cell grid whenever the font's
+/// real advance differs from two cells. Keeping each wide grapheme in its own
+/// segment pins every following glyph back onto the grid.
+fn is_wide_grapheme(segment: &GuiSegment) -> bool {
+    segment.cells >= 2 && segment.text.graphemes(true).count() == 1
+}
+
 fn coalesce_segments(segments: Vec<GuiSegment>) -> Vec<GuiSegment> {
     let mut merged: Vec<GuiSegment> = Vec::with_capacity(segments.len());
     for segment in segments {
         if let Some(previous) = merged.last_mut()
+            && !is_wide_grapheme(previous)
+            && !is_wide_grapheme(&segment)
             && previous.token == segment.token
             && previous.selected == segment.selected
             && previous.search_match == segment.search_match
@@ -5562,6 +5573,41 @@ mod tests {
         assert_eq!(
             rows[0].1.iter().map(|segment| segment.cells).sum::<usize>(),
             4
+        );
+    }
+
+    #[test]
+    fn wide_graphemes_are_never_merged_with_neighbouring_runs() {
+        // Unstyled text: every segment shares token/selection state, so only
+        // the wide-grapheme rule keeps these from collapsing into one run.
+        let (_, per_grapheme) = segments_for_line(
+            "ab日本cd😀e",
+            0,
+            1,
+            0,
+            Mode::Normal,
+            None,
+            &[],
+            &[],
+            4,
+            None,
+        );
+        let segments = coalesce_segments(per_grapheme);
+
+        let runs: Vec<(&str, usize)> = segments
+            .iter()
+            .map(|segment| (segment.text.as_str(), segment.cells))
+            .collect();
+        assert_eq!(
+            runs,
+            vec![
+                ("ab", 2),
+                ("日", 2),
+                ("本", 2),
+                ("cd", 2),
+                ("😀", 2),
+                ("e", 1)
+            ]
         );
     }
 
