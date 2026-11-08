@@ -141,6 +141,36 @@ pub struct GuiAgentOption {
 pub type GuiAiProfileOption = ovim_core::ai::AiChatModelOption;
 
 fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
+    if let Some(dialog) = editor.provider_choice_dialog() {
+        let mut actions: Vec<GuiChatSetupAction> = dialog
+            .options
+            .iter()
+            .enumerate()
+            .map(|(index, option)| GuiChatSetupAction {
+                label: option.label.clone(),
+                // Digits pick directly in core, so the button and the key agree.
+                key: (index + 1).to_string(),
+                detail: Some(option.detail.clone()),
+                recommended: option.recommended,
+            })
+            .collect();
+        actions.push(GuiChatSetupAction {
+            label: "Not now".to_string(),
+            key: "Escape".to_string(),
+            detail: None,
+            recommended: false,
+        });
+        return Some(GuiChatSetup {
+            kind: "providerChoice".to_string(),
+            title: "How should AI chat run?".to_string(),
+            detail: "Pick how Ovim runs inference. You can change it later from the model picker."
+                .to_string(),
+            masked_input: None,
+            input_cursor: None,
+            error: None,
+            actions,
+        });
+    }
     if let Some(summary) = editor.codex_auth_dialog_summary() {
         use ovim_core::editor::CodexAuthDialogPhase;
         let (title, detail, actions) = match summary.phase {
@@ -209,6 +239,7 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
                 .map(|(label, key)| GuiChatSetupAction {
                     label: label.to_string(),
                     key: key.to_string(),
+                    ..Default::default()
                 })
                 .collect(),
         });
@@ -233,10 +264,12 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
             GuiChatSetupAction {
                 label: "Save key".to_string(),
                 key: "Enter".to_string(),
+                ..Default::default()
             },
             GuiChatSetupAction {
                 label: "Not now".to_string(),
                 key: "Escape".to_string(),
+                ..Default::default()
             },
         ],
     })
@@ -254,11 +287,16 @@ pub struct GuiChatSetup {
     pub actions: Vec<GuiChatSetupAction>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiChatSetupAction {
     pub label: String,
     pub key: String,
+    /// Secondary line explaining the choice.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub detail: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub recommended: bool,
 }
 
 fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {

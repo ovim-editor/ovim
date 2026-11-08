@@ -121,6 +121,8 @@ pub struct AiState {
     pub(crate) claude_untrusted_noted: std::collections::HashSet<PathBuf>,
     /// Global because opening chat can require sign-in.
     pub(crate) codex_auth_dialog: Option<CodexAuthDialog>,
+    /// First-run "how should chat run inference?" chooser.
+    pub(crate) provider_choice_dialog: Option<super::ai_provider_choice::ProviderChoiceDialog>,
     pub(crate) pending_codex_auth: Option<PendingCodexAuth>,
     pub(crate) pending_external_url: Option<String>,
     pub active_profile: String,
@@ -201,6 +203,7 @@ impl AiState {
             active_selection: None,
             claude_untrusted_noted: std::collections::HashSet::new(),
             codex_auth_dialog: None,
+            provider_choice_dialog: None,
             pending_codex_auth: None,
             pending_external_url: None,
             active_profile: default_profile,

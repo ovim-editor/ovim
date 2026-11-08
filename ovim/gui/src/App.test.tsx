@@ -1966,6 +1966,44 @@ describe("Ovim Solid workbench", () => {
         expect(onKey).toHaveBeenCalledWith("Escape");
     });
 
+    it("renders the first-run provider choice with details and digit keys", () => {
+        const onKey = vi.fn();
+        render(() => (
+            <ChatSetupCard
+                setup={{
+                    kind: "providerChoice",
+                    title: "How should AI chat run?",
+                    detail: "Pick how Ovim runs inference.",
+                    maskedInput: null,
+                    actions: [
+                        {
+                            label: "Claude",
+                            key: "1",
+                            detail: "Claude Code with your Claude subscription.",
+                            recommended: true,
+                        },
+                        {
+                            label: "Codex",
+                            key: "2",
+                            detail: "OpenAI models with your ChatGPT plan.",
+                        },
+                        { label: "Not now", key: "Escape" },
+                    ],
+                }}
+                onKey={onKey}
+            />
+        ));
+        // No API-key field for a choice card.
+        expect(screen.queryByLabelText("Exa API key input")).toBeNull();
+        const claude = screen.getByRole("button", { name: /^Claude/ });
+        expect(claude.textContent).toContain("Recommended");
+        expect(claude.classList.contains("recommended")).toBe(true);
+        fireEvent.click(screen.getByRole("button", { name: /^Codex/ }));
+        expect(onKey).toHaveBeenLastCalledWith("2");
+        fireEvent.click(screen.getByRole("button", { name: "Not now" }));
+        expect(onKey).toHaveBeenLastCalledWith("Escape");
+    });
+
     it("recognizes a browser selection made inside the chat transcript", () => {
         const transcript = document.createElement("div");
         transcript.className = "chat-messages";

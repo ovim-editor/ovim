@@ -184,7 +184,7 @@ impl Editor {
         if text.is_empty() {
             return Ok(());
         }
-        if self.has_codex_auth_dialog() {
+        if self.has_codex_auth_dialog() || self.has_provider_choice_dialog() {
             return Ok(());
         }
         if self.mode() == Mode::AiChat && self.ai_chat_has_exa_setup_dialog() {

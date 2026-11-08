@@ -228,7 +228,12 @@ export interface GuiAiChat {
         maskedInput?: string | null;
         inputCursor?: number;
         error?: string;
-        actions: Array<{ label: string; key: string }>;
+        actions: Array<{
+            label: string;
+            key: string;
+            detail?: string;
+            recommended?: boolean;
+        }>;
     };
     messages: Array<{
         id: string;

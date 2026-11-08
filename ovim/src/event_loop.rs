@@ -296,7 +296,7 @@ fn process_input_events(editor: &mut Editor, events: Vec<Event>) -> Result<()> {
                 process_external_file_change(editor);
             }
             Event::Mouse(mouse_event) => {
-                if editor.has_codex_auth_dialog() {
+                if editor.has_codex_auth_dialog() || editor.has_provider_choice_dialog() {
                     continue;
                 }
                 if matches!(mouse_event.kind, crossterm::event::MouseEventKind::Moved) {

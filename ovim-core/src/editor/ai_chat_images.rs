@@ -136,7 +136,10 @@ impl Editor {
     /// a filesystem path. The synthetic path is stable for identical content
     /// and retains the extension used by provider and gallery projections.
     pub fn attach_ai_chat_image_data(&mut self, file_name: &str, data: Vec<u8>) -> Result<()> {
-        if self.has_codex_auth_dialog() || self.ai_chat_has_exa_setup_dialog() {
+        if self.has_codex_auth_dialog()
+            || self.has_provider_choice_dialog()
+            || self.ai_chat_has_exa_setup_dialog()
+        {
             bail!("Finish or dismiss AI setup before pasting an image");
         }
         let Some(chat) = self.ai_state.chat.as_ref() else {

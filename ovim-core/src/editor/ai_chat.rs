@@ -49,8 +49,8 @@ impl Editor {
             }
             self.attach_diff_comments_to_chat();
             self.set_mode(Mode::AiChat);
+            self.maybe_prompt_provider_choice_on_chat_open();
             self.maybe_prompt_codex_auth_on_chat_open();
-            self.maybe_prompt_exa_on_chat_open();
             self.mark_dirty();
             return Ok(());
         }
@@ -131,8 +131,8 @@ impl Editor {
         self.attach_diff_comments_to_chat();
         self.set_mode(Mode::AiChat);
         self.maybe_prompt_no_repo_session_folder_access_on_chat_open();
+        self.maybe_prompt_provider_choice_on_chat_open();
         self.maybe_prompt_codex_auth_on_chat_open();
-        self.maybe_prompt_exa_on_chat_open();
 
         if let Some(msg) = initial {
             if let Some(conv) = self.conversation() {

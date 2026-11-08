@@ -134,7 +134,9 @@ vim.ai.setup({
 
     contexts = {
         selection = "codex_terra",
-        chat = "codex_sol",
+        -- Claude Code uses the user's Claude subscription with no Ovim-side
+        -- setup. First chat open still asks (see ai_provider_choice.rs).
+        chat = "claude_code",
         query = "codex_terra",
     },
 

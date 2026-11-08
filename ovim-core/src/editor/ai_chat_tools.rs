@@ -924,7 +924,11 @@ impl Editor {
                     let outcome = crate::ai::exa::execute(&tc.name, &tc.arguments);
                     if outcome.credential_rejected {
                         self.note_exa_credential_rejected(outcome.environment_override);
-                    } else if let Some(error) = outcome.setup_error.clone() {
+                    } else if let Some(error) = outcome
+                        .setup_error
+                        .clone()
+                        .filter(|_| crate::ai::exa::should_offer_onboarding())
+                    {
                         self.open_exa_setup_dialog(Some(error));
                     }
                     outcome.result

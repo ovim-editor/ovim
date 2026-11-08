@@ -2077,9 +2077,44 @@ button:focus-visible {
     );
     font-size: var(--text-micro);
 }
-.chat-setup-card button:first-child {
+.chat-setup-card footer button:first-child {
     color: var(--accent);
     border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+}
+.chat-setup-choices {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+.chat-setup-choices button {
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    text-align: left;
+}
+.chat-setup-choices button.recommended {
+    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
+}
+.chat-setup-choices b {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: var(--text-control);
+}
+.chat-setup-choices em {
+    padding: 1px 5px;
+    color: var(--accent);
+    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
+    border-radius: var(--radius-1);
+    font-style: normal;
+    font-size: var(--text-micro);
+    font-weight: 550;
+}
+/* Detail text, not an error (the card's bare <small> is its error line). */
+.chat-setup-choices small {
+    color: var(--text-secondary);
+    font-weight: 400;
 }
 
 .inline-selection-composer {

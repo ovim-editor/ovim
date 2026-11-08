@@ -152,6 +152,10 @@ impl InputHandler {
             editor.handle_codex_auth_key(key_event);
             return Ok(());
         }
+        if editor.has_provider_choice_dialog() {
+            editor.handle_provider_choice_key(key_event);
+            return Ok(());
+        }
 
         code_explanation_mode::restore_owning_mode(editor);
 

@@ -322,6 +322,7 @@ fn render_overlays(
 fn has_blocking_modal(editor: &Editor) -> bool {
     editor.has_pending_lsp_install()
         || editor.has_codex_auth_dialog()
+        || editor.has_provider_choice_dialog()
         || editor.ai_chat_has_exa_setup_dialog()
         || editor.ai_chat_image_modal_path().is_some()
         || editor.ai_shell_inspector_is_open()
@@ -339,6 +340,8 @@ fn render_blocking_modals(frame: &mut Frame, editor: &mut Editor, theme: &Theme)
         render_lsp_install_dialog(frame, editor, theme);
     } else if editor.has_codex_auth_dialog() {
         super::overlays::render_codex_auth_dialog(frame, editor);
+    } else if editor.has_provider_choice_dialog() {
+        super::overlays::render_provider_choice_dialog(frame, editor);
     } else if editor.ai_chat_has_exa_setup_dialog() {
         render_ai_chat_exa_setup_dialog(frame, editor);
     } else if editor.ai_chat_image_modal_path().is_some() {

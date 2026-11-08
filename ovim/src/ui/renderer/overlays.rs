@@ -886,6 +886,47 @@ fn render_modal_dialog(frame: &mut Frame, title: &str, lines: &[(&str, char)]) {
     frame.render_widget(dialog, area);
 }
 
+/// First-run choice of how AI chat runs inference.
+pub fn render_provider_choice_dialog(frame: &mut Frame, editor: &Editor) {
+    let Some(dialog) = editor.provider_choice_dialog() else {
+        return;
+    };
+    let rows: Vec<(String, String)> = dialog
+        .options
+        .iter()
+        .enumerate()
+        .map(|(index, option)| {
+            let marker = if index == dialog.selected { "›" } else { " " };
+            let recommended = if option.recommended {
+                "  (recommended)"
+            } else {
+                ""
+            };
+            (
+                format!("{marker} {}. {}{recommended}", index + 1, option.label),
+                format!("     {}", option.detail),
+            )
+        })
+        .collect();
+    let mut lines: Vec<(&str, char)> = vec![
+        (
+            "Pick how Ovim runs AI chat. You can change it later from the model picker.",
+            's',
+        ),
+        (" ", 's'),
+    ];
+    for (index, (label, detail)) in rows.iter().enumerate() {
+        lines.push((
+            label.as_str(),
+            if index == dialog.selected { 'a' } else { 't' },
+        ));
+        lines.push((detail.as_str(), 's'));
+    }
+    lines.push((" ", 's'));
+    lines.push(("↑↓/1-9: choose   Enter: use   Esc: not now", 'a'));
+    render_modal_dialog(frame, " How should AI chat run? ", &lines);
+}
+
 /// Contextual ChatGPT sign-in for Ovim-owned direct Codex inference.
 pub fn render_codex_auth_dialog(frame: &mut Frame, editor: &Editor) {
     use ovim_core::editor::CodexAuthDialogPhase;

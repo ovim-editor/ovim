@@ -31,6 +31,7 @@ mod ai_durable_chat;
 mod ai_editor_mcp;
 mod ai_external_agent;
 pub(crate) mod ai_integration;
+mod ai_provider_choice;
 mod ai_run_events;
 mod ai_session_temp;
 mod ai_shell_process;
@@ -155,6 +156,7 @@ pub use ai_chat_state::{
     AiChatActivity, ChatModelPickerSection, CodeAttachment, ComprehensionPolicy, QueuedChatInput,
     QueuedChatInputKind,
 };
+pub use ai_provider_choice::{ProviderChoiceDialog, ProviderChoiceOption};
 pub use ai_shell_process::{ShellInspectorView, ShellProcessPhase};
 pub use ai_state::{CodexAuthDialogPhase, CodexAuthDialogSummary};
 pub use ai_subagents::PreparedHeadlessAgentControl;

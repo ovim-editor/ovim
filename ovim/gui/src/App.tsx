@@ -687,7 +687,11 @@ export const ChatSetupCard = (props: {
             <header>
                 <b>{props.setup.title}</b>
                 <span>
-                    {props.setup.kind === "exaKey" ? "optional" : "required"}
+                    {props.setup.kind === "exaKey"
+                        ? "optional"
+                        : props.setup.kind === "providerChoice"
+                          ? "first run"
+                          : "required"}
                 </span>
             </header>
             <p>{props.setup.detail}</p>
@@ -704,8 +708,37 @@ export const ChatSetupCard = (props: {
             <Show when={props.setup.error}>
                 <small role="alert">{props.setup.error}</small>
             </Show>
+            <Show when={props.setup.actions.some((action) => action.detail)}>
+                <div class="chat-setup-choices" role="group">
+                    <For
+                        each={props.setup.actions.filter(
+                            (action) => action.detail,
+                        )}
+                    >
+                        {(action) => (
+                            <button
+                                type="button"
+                                classList={{ recommended: action.recommended }}
+                                onClick={() => props.onKey?.(action.key)}
+                            >
+                                <b>
+                                    {action.label}
+                                    <Show when={action.recommended}>
+                                        <em>Recommended</em>
+                                    </Show>
+                                </b>
+                                <small>{action.detail}</small>
+                            </button>
+                        )}
+                    </For>
+                </div>
+            </Show>
             <footer>
-                <For each={props.setup.actions}>
+                <For
+                    each={props.setup.actions.filter(
+                        (action) => !action.detail,
+                    )}
+                >
                     {(action) => (
                         <button
                             type="button"

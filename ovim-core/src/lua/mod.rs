@@ -305,13 +305,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn claude_profile_is_available_without_changing_codex_defaults() {
+    fn claude_code_is_the_builtin_chat_default() {
         let context = LuaContext::new().unwrap();
         let bridge = EditorBridge::new();
         setup_vim_api(context.lua(), bridge.clone()).unwrap();
         context.load_builtin().unwrap();
         let snapshot = bridge.take_ai_config_if_dirty().unwrap();
-        assert_eq!(snapshot.0["chat"], "codex_sol");
+        assert_eq!(snapshot.0["chat"], "claude_code");
+        // Inline selection edits and queries keep Ovim's own harness.
+        assert_eq!(snapshot.0["query"], "codex_terra");
         let profile = snapshot.2["claude_code"]
             .clone()
             .into_profile_config("claude_code".into());
@@ -350,7 +352,7 @@ mod tests {
     }
 
     #[test]
-    fn builtin_chat_profile_enables_embedded_browser_scope() {
+    fn builtin_codex_chat_profile_enables_embedded_browser_scope() {
         let context = LuaContext::new().unwrap();
         let bridge = EditorBridge::new();
         setup_vim_api(context.lua(), bridge.clone()).unwrap();
@@ -359,9 +361,10 @@ mod tests {
         let snapshot = bridge
             .take_ai_config_if_dirty()
             .expect("built-in AI config");
-        let chat_profile = snapshot.0.get("chat").expect("chat context profile");
+        // Claude Code brings its own tools; the Codex chat profile is the one
+        // that runs Ovim's harness with hosted browser tools.
+        let chat_profile = &"codex_sol".to_string();
         let profile = snapshot.2.get(chat_profile).expect("chat profile");
-        assert_eq!(chat_profile, "codex_sol");
         assert!(
             profile.scope_network,
             "the built-in GUI chat profile should expose hosted browser tools"

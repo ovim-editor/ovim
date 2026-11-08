@@ -39,7 +39,15 @@ signed in separately, but it is not required for Ovim.
 Select `/model codex_astra` to use `gpt-6-astra` at medium reasoning effort.
 The profile supports low, medium, high, xhigh, and max effort.
 
-The built-in defaults use `gpt-6.1-sol` at medium effort for chat and
+The first time you open chat (`<Space><Space>`) without a remembered choice or
+a chat profile in your own configuration, Ovim asks how to run inference:
+**Claude** (Claude Agent on your Claude subscription, recommended), **Codex**
+(your ChatGPT plan, with Ovim as the agent harness), or another provider from
+the model picker. The choice is remembered; change it any time from the model
+picker. Dismissing the question keeps the built-in default for that session,
+which is the Claude Agent.
+
+The built-in Codex profiles use `gpt-6.1-sol` at medium effort for chat and
 `gpt-5.6-terra` at low effort for read-only queries. With
 the default `codex` provider, Ovim—not Codex app-server—is the agent harness.
 Ovim sends its own tool schemas, records tool intent, applies auto-mode policy,
@@ -59,16 +67,17 @@ identity and enables shell and mutation tools only within that folder. Denying
 or dismissing the prompt keeps those tools disabled. Read-only chats never gain
 shell or mutation access, even for an approved folder.
 
-On the first direct-Codex chat, Ovim offers to enable live web search through
-[Exa](https://dashboard.exa.ai/api-keys). Paste an Exa API key into the dialog,
-or click the link to sign in and create one. The dialog is dismissible and can
-always be reopened with `/exa`. Ovim stores the key beside `codex-auth.json` as
+Web search in Ovim's own harness uses [Exa](https://dashboard.exa.ai/api-keys).
+Nothing asks for it up front: the first time an agent calls `web_search` or
+`web_fetch` without a key, Ovim offers the Exa dialog. Paste an Exa API key, or
+click the link to sign in and create one. Dismissing it stops the offer; reopen
+it any time with `/exa`. Claude Agent chats use Claude's own web tools instead. Ovim stores the key beside `codex-auth.json` as
 `ovim/exa-auth.json` in the platform config directory, using an atomic,
 owner-only file on Unix. Set `EXA_API_KEY` to supply a key without storing it;
 the environment value takes precedence.
 
-The Ovim harness exposes `web_search` and `web_fetch` only while a usable key is
-configured. A rejected or revoked stored key reopens the setup dialog. Credit
+Profiles with network scope (such as `codex_sol`) expose `web_search` and
+`web_fetch`; without a key they answer with setup instructions. A rejected or revoked stored key reopens the setup dialog. Credit
 or budget exhaustion links to Exa's dashboard without discarding the key, and
 temporary rate limits and server failures receive one bounded retry. Web tools
 are read-only Ovim operations: they do not invoke a shell and do not require a

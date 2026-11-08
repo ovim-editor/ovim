@@ -1210,7 +1210,9 @@ impl Editor {
         {
             if credential_rejected {
                 self.note_exa_credential_rejected(environment_override);
-            } else if let Some(error) = setup_error {
+            } else if let Some(error) =
+                setup_error.filter(|_| crate::ai::exa::should_offer_onboarding())
+            {
                 self.open_exa_setup_dialog(Some(error));
             }
         }

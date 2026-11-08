@@ -144,7 +144,7 @@ vim.opt.scrolloff = 10
 -- agent harness: it owns context, tools, approvals, edits, and shell programs.
 -- On first use, press Enter in Ovim's sign-in dialog to authenticate in your
 -- browser. Ovim keeps and refreshes credentials independently from Codex CLI.
--- The first chat can optionally enable Exa web search; reopen setup with /exa.
+-- Exa web search is offered the first time an agent needs it; set it up with /exa.
 vim.ai.setup({
   default_profile = "codex_terra",
   contexts = {

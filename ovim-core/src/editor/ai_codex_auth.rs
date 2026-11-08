@@ -43,6 +43,10 @@ impl Editor {
     }
 
     pub(crate) fn maybe_prompt_codex_auth_on_chat_open(&mut self) {
+        // The provider may still change; sign in only once it is chosen.
+        if self.has_provider_choice_dialog() {
+            return;
+        }
         let profile_name = self.ai_chat_effective_profile();
         self.ensure_codex_auth_for_profile(&profile_name, CodexAuthResume::None);
     }
