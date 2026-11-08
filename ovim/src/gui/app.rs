@@ -1,7 +1,9 @@
 //! Tauri application shell shared by `ovim gui` and the `ovim-gui` desktop entry.
 
 use super::browser::BrowserHost;
-use super::{GuiBridge, GuiChatInputState, GuiKeyInput, GuiSnapshot, GuiVectorSource};
+use super::{
+    GuiBridge, GuiChatInputState, GuiKeyInput, GuiMouseKind, GuiSnapshot, GuiVectorSource,
+};
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
 use base64::Engine as _;
@@ -391,6 +393,21 @@ async fn gui_set_cursor(
 }
 
 #[tauri::command]
+async fn gui_mouse(
+    bridge: State<'_, GuiBridge>,
+    pane: usize,
+    line: usize,
+    display_column: usize,
+    kind: GuiMouseKind,
+    click_count: u8,
+    shift: bool,
+) -> Result<(), String> {
+    bridge
+        .mouse(pane, line, display_column, kind, click_count, shift)
+        .await
+}
+
+#[tauri::command]
 async fn gui_set_chat_input_cursor(
     bridge: State<'_, GuiBridge>,
     offset: usize,
@@ -668,6 +685,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_paste,
             gui_attach_image,
             gui_set_cursor,
+            gui_mouse,
             gui_position_walkthrough,
             gui_open_ai_chat,
             gui_set_chat_input_cursor,

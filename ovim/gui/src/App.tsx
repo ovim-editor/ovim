@@ -33,6 +33,12 @@ import SurfaceCommandLine from "./SurfaceCommandLine";
 import WorkbenchTabStrip from "./WorkbenchTabStrip";
 import { BROWSER_COMMAND_NAMES } from "./browserCommands";
 import { guiKeyInput } from "./guiInput";
+import {
+    createMouseChannel,
+    pointerCell,
+    trackSelectionDrag,
+    type PointerRow,
+} from "./editorPointer";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
@@ -2474,27 +2480,74 @@ function App() {
         });
     };
 
-    const setCursor = (
+    const mouseChannel = createMouseChannel((message) =>
+        mutateStrict("gui_mouse", { ...message }),
+    );
+
+    // Rendered rows of one pane, measured now: the DOM scrolls under a drag.
+    const paneRows = (paneIndex: number): PointerRow[] => {
+        const lines = view().panes.find(
+            (candidate) => candidate.index === paneIndex,
+        )?.lines;
+        const viewport = editorBody?.querySelector<HTMLElement>(
+            `.editor-pane[data-pane="${paneIndex}"] .code-viewport`,
+        );
+        if (!lines || !viewport) return [];
+        return Array.from(viewport.children)
+            .slice(0, lines.length)
+            .map((row, index) => {
+                const bounds = row.getBoundingClientRect();
+                const content = row.querySelector(".line-content") ?? row;
+                return {
+                    number: lines[index].number,
+                    displayStart: lines[index].displayStart,
+                    top: bounds.top,
+                    bottom: bounds.bottom,
+                    // The content element itself is translated by the horizontal
+                    // scroll offset, so its bounding box already starts at
+                    // display column zero (plus `displayStart`).
+                    contentLeft: content.getBoundingClientRect().left,
+                };
+            });
+    };
+
+    // Primary-button press on the text: places the cursor, and while the button
+    // is held drags a selection (double-click selects words, triple-click lines,
+    // shift extends). Ovim core owns the semantics; this reports cells.
+    const selectText = (
         event: MouseEvent,
         pane: number,
         line: number,
         displayStart: number,
     ) => {
+        // Right and middle clicks neither place the cursor nor select; the
+        // pane's own handler still focuses the pane.
+        if (event.button !== 0) return;
         event.stopPropagation();
+        event.preventDefault();
         focusEditorInput();
         const target = event.currentTarget as HTMLElement;
-        // The content element itself is translated by the horizontal scroll
-        // offset, so its bounding box already starts at display column zero.
-        const displayColumn =
-            displayStart +
-            Math.max(
-                0,
-                Math.floor(
-                    (event.clientX - target.getBoundingClientRect().left) /
-                        cellWidth(),
+        const start = {
+            line: line - 1,
+            displayColumn:
+                displayStart +
+                Math.max(
+                    0,
+                    Math.floor(
+                        (event.clientX - target.getBoundingClientRect().left) /
+                            cellWidth(),
+                    ),
                 ),
-            );
-        void mutate("gui_set_cursor", { pane, line: line - 1, displayColumn });
+            clickCount: Math.max(1, event.detail),
+            shift: event.shiftKey,
+        };
+        mouseChannel.send({ pane, kind: "down", ...start });
+        trackSelectionDrag({
+            pane,
+            start,
+            channel: mouseChannel,
+            cellAt: (x, y) => pointerCell(paneRows(pane), x, y, cellWidth()),
+        });
     };
 
     const pickerChars = (text: string, matched: number[]) => {
@@ -2835,7 +2888,7 @@ function App() {
                                                         transform: `translateX(-${Math.max(0, props.pane.horizontalOffset - line.displayStart) * cellWidth()}px)`,
                                                     }}
                                                     onMouseDown={(event) =>
-                                                        setCursor(
+                                                        selectText(
                                                             event,
                                                             props.pane.index,
                                                             line.number,

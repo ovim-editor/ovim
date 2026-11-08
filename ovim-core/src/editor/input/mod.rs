@@ -64,6 +64,9 @@ mod code_explanation_mode;
 /// Mouse event handler (click, drag, scroll)
 pub mod mouse;
 
+/// Pointer selection (press, drag, release, multi-click, shift-click) in buffer coordinates
+pub mod mouse_select;
+
 /// Insert mode handler
 mod insert_mode;
 

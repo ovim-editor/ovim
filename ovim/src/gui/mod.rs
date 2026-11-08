@@ -300,6 +300,32 @@ const MAX_GUI_SCROLL_LINES: i32 = 10_000;
 /// Gets out of the modes a click dismisses, the way Esc would. Insert mode is
 /// kept (the click only moves the cursor there); other modes without a text
 /// cursor fall back to a plain switch to Normal.
+/// A pointer gesture's phase on the editor text.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GuiMouseKind {
+    Down,
+    Drag,
+    Up,
+}
+
+/// The grapheme column of `line` under display column `display_column`
+/// (tabs and wide characters expanded); `line` clamps to the buffer.
+fn pointer_grapheme_column(editor: &Editor, line: usize, display_column: usize) -> usize {
+    let line = line.min(editor.buffer().line_count().saturating_sub(1));
+    let text = editor
+        .buffer()
+        .line_text(line)
+        .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
+        .unwrap_or_default();
+    let char_column = crate::display::display_col_to_char_col(
+        &text,
+        display_column,
+        editor.indent_options().tab_width,
+    );
+    crate::unicode::char_to_grapheme_col(&text, crate::unicode::CharCol(char_column)).0
+}
+
 fn leave_modal_mode_for_click(editor: &mut Editor) {
     use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
 
@@ -1163,6 +1189,16 @@ enum GuiRequest {
         display_column: usize,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Primary-button pointer gesture on the buffer text: press, drag, release.
+    Mouse {
+        pane: usize,
+        line: usize,
+        display_column: usize,
+        kind: GuiMouseKind,
+        click_count: u8,
+        shift: bool,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     SelectTab {
         index: usize,
         reply: oneshot::Sender<Result<(), String>>,
@@ -1466,6 +1502,28 @@ impl GuiBridge {
             pane,
             line,
             display_column,
+            reply,
+        })
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn mouse(
+        &self,
+        pane: usize,
+        line: usize,
+        display_column: usize,
+        kind: GuiMouseKind,
+        click_count: u8,
+        shift: bool,
+    ) -> Result<(), String> {
+        self.request(|reply| GuiRequest::Mouse {
+            pane,
+            line,
+            display_column,
+            kind,
+            click_count,
+            shift,
             reply,
         })
         .await
@@ -2202,19 +2260,42 @@ async fn handle_request(
                 return;
             }
             leave_modal_mode_for_click(editor);
-            let text = editor
-                .buffer()
-                .line_text(line)
-                .map(|line| line.trim_end_matches(['\r', '\n']).to_string())
-                .unwrap_or_default();
-            let char_column = crate::display::display_col_to_char_col(
-                &text,
-                display_column,
-                editor.indent_options().tab_width,
-            );
-            let grapheme_column =
-                crate::unicode::char_to_grapheme_col(&text, crate::unicode::CharCol(char_column));
-            editor.place_cursor_from_pointer(line, grapheme_column.0);
+            let column = pointer_grapheme_column(editor, line, display_column);
+            editor.place_cursor_from_pointer(line, column);
+            editor.update_scroll_offset();
+            refresh_after_input(editor);
+            (reply, Ok(()))
+        }
+        GuiRequest::Mouse {
+            pane,
+            line,
+            display_column,
+            kind,
+            click_count,
+            shift,
+            reply,
+        } => {
+            if !editor.focus_window(pane) {
+                let _ = reply.send(Err(format!("Unknown editor pane: {pane}")));
+                return;
+            }
+            let column = pointer_grapheme_column(editor, line, display_column);
+            match kind {
+                GuiMouseKind::Down => {
+                    // Shift-press extends a running selection; every other press
+                    // starts from Normal/Insert like a plain click does.
+                    if !(shift && editor.mode().is_visual()) {
+                        leave_modal_mode_for_click(editor);
+                    }
+                    editor.pointer_press(line, column, click_count, shift);
+                }
+                GuiMouseKind::Drag => editor.pointer_drag(line, column),
+                GuiMouseKind::Up => {
+                    // The release position is the last drag position.
+                    editor.pointer_drag(line, column);
+                    editor.pointer_release();
+                }
+            }
             editor.update_scroll_offset();
             refresh_after_input(editor);
             (reply, Ok(()))
@@ -5863,6 +5944,242 @@ mod tests {
         .unwrap();
         assert_eq!(editor.mode(), Mode::Normal);
         assert_eq!(editor.command_line(), "");
+    }
+
+    async fn mouse(
+        editor: &mut Editor,
+        kind: GuiMouseKind,
+        line: usize,
+        display_column: usize,
+        click_count: u8,
+        shift: bool,
+    ) -> Result<(), String> {
+        send_request(editor, |reply| GuiRequest::Mouse {
+            pane: 0,
+            line,
+            display_column,
+            kind,
+            click_count,
+            shift,
+            reply,
+        })
+        .await
+    }
+
+    fn selected_text(editor: &Editor) -> String {
+        editor.visual_selection_text().unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn mouse_drag_selects_charwise_and_projects_the_selection() {
+        // nvim --clean (mouse=a): press (1,3), drag, release (2,9) -> `v` v=[1,3] cur=[2,9].
+        let mut editor = Editor::with_content("foo bar baz\nhello world  x\nlast line\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        mouse(&mut editor, GuiMouseKind::Down, 0, 2, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        mouse(&mut editor, GuiMouseKind::Drag, 0, 5, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        mouse(&mut editor, GuiMouseKind::Up, 1, 8, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "o bar baz\nhello wor");
+        let view = snapshot(&editor, 1);
+        assert!(view.panes[0].lines[0]
+            .segments
+            .iter()
+            .any(|segment| segment.selected));
+        assert!(view.panes[0].lines[1]
+            .segments
+            .iter()
+            .any(|segment| segment.selected));
+        assert!(view.panes[0].lines[2]
+            .segments
+            .iter()
+            .all(|segment| !segment.selected));
+        // A later plain press leaves Visual and places the cursor (nvim: mode `n`).
+        mouse(&mut editor, GuiMouseKind::Down, 2, 3, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 2, 3, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 2);
+        assert_eq!(editor.buffer().cursor().col().0, 3);
+    }
+
+    #[tokio::test]
+    async fn mouse_multi_click_selects_word_then_line_and_drag_extends_them() {
+        // nvim: double-click `bar` -> `v` v=[1,5] cur=[1,7]; drag into `world` -> cur=[2,11].
+        let mut editor = Editor::with_content("foo bar baz\nhello world  x\nlast line\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for count in [1, 2] {
+            mouse(&mut editor, GuiMouseKind::Down, 0, 5, count, false)
+                .await
+                .unwrap();
+            if count == 1 {
+                mouse(&mut editor, GuiMouseKind::Up, 0, 5, 1, false)
+                    .await
+                    .unwrap();
+            }
+        }
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "bar");
+        mouse(&mut editor, GuiMouseKind::Drag, 1, 8, 2, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 8, 2, false)
+            .await
+            .unwrap();
+        assert_eq!(selected_text(&editor), "bar baz\nhello world");
+
+        // nvim: triple-click -> `V` on that line.
+        mouse(&mut editor, GuiMouseKind::Down, 2, 3, 3, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 2, 3, 3, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::VisualLine);
+        assert_eq!(selected_text(&editor), "last line");
+    }
+
+    #[tokio::test]
+    async fn mouse_shift_press_extends_from_the_cursor_or_the_far_end() {
+        // nvim: cursor (1,3), shift-click (2,6) -> `v` v=[1,3] cur=[2,6]; then
+        // shift-click (1,1) moves the end nearest the click -> v=[2,6] cur=[1,1].
+        let mut editor = Editor::with_content("foo bar baz\nhello world  x\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["l", "l"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        mouse(&mut editor, GuiMouseKind::Down, 1, 5, 1, true)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 5, 1, true)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "o bar baz\nhello ");
+        mouse(&mut editor, GuiMouseKind::Down, 0, 0, 1, true)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "foo bar baz\nhello ");
+    }
+
+    #[tokio::test]
+    async fn mouse_drag_from_insert_mode_ends_the_insert_session() {
+        // nvim: from Insert, a drag selects in Visual mode; the typed text is its
+        // own undo step (a click has always been one).
+        let mut editor = Editor::with_content("abcdef\nsecond\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["i", "X", "Y"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        mouse(&mut editor, GuiMouseKind::Down, 0, 4, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Insert);
+        mouse(&mut editor, GuiMouseKind::Drag, 1, 3, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 3, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert_eq!(selected_text(&editor), "cdef\nseco");
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecond\n");
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "abcdef\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn mouse_maps_display_columns_through_tabs_and_wide_characters() {
+        let mut editor = Editor::with_content("a\tb\n日本語x\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        // Tab width 4: `b` starts at display column 4; each CJK cell pair is one grapheme.
+        mouse(&mut editor, GuiMouseKind::Down, 0, 4, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Drag, 1, 3, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 1, 3, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(selected_text(&editor), "b\n日本");
+        // A line past the end of the buffer clamps to the last line.
+        mouse(&mut editor, GuiMouseKind::Down, 0, 0, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Drag, 50, 0, 1, false)
+            .await
+            .unwrap();
+        mouse(&mut editor, GuiMouseKind::Up, 50, 0, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Visual);
+        assert!(editor.buffer().cursor().line() >= 1);
+    }
+
+    #[tokio::test]
+    async fn mouse_leaves_command_mode_and_rejects_unknown_panes() {
+        let mut editor = Editor::with_content("abc\ndef\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input(":"),
+            reply,
+        })
+        .await
+        .unwrap();
+        mouse(&mut editor, GuiMouseKind::Down, 1, 1, 1, false)
+            .await
+            .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            GuiRequest::Mouse {
+                pane: 7,
+                line: 0,
+                display_column: 0,
+                kind: GuiMouseKind::Down,
+                click_count: 1,
+                shift: false,
+                reply,
+            },
+            &mut editor,
+            &mut (100, 30),
+            &mut 1,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        assert!(response.await.unwrap().is_err());
+    }
+
+    #[test]
+    fn mouse_kind_deserializes_from_the_frontend_strings() {
+        let kinds: Vec<GuiMouseKind> = serde_json::from_str(r#"["down","drag","up"]"#).unwrap();
+        assert_eq!(
+            kinds,
+            [GuiMouseKind::Down, GuiMouseKind::Drag, GuiMouseKind::Up]
+        );
     }
 
     #[tokio::test]
