@@ -32,7 +32,7 @@ import FlowDiff from "./FlowDiff";
 import SurfaceCommandLine from "./SurfaceCommandLine";
 import WorkbenchTabStrip from "./WorkbenchTabStrip";
 import { BROWSER_COMMAND_NAMES } from "./browserCommands";
-import { guiKeyInput } from "./guiInput";
+import { chordKey, guiKeyInput } from "./guiInput";
 import { Icon, IconButton, type IconTone } from "./Icon";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
@@ -2205,18 +2205,20 @@ function App() {
         }
         const target = event.target as Element | null;
         const primaryModifier = macos ? event.metaKey : event.ctrlKey;
+        // Layout-independent key for chords (Ctrl+W on a Russian layout).
+        const chordLower = chordKey(event).toLowerCase();
         if (
             primaryModifier &&
             !event.altKey &&
             event.shiftKey &&
-            event.key.toLowerCase() === "t"
+            chordLower === "t"
         ) {
             event.preventDefault();
             toggleTerminal();
             return;
         }
         if (target?.closest?.(".terminal-panel")) return;
-        if (primaryModifier && event.key.toLowerCase() === "s") {
+        if (primaryModifier && chordLower === "s") {
             event.preventDefault();
             performMenuAction(event.altKey ? "file.save-all" : "file.save");
             return;
@@ -2225,7 +2227,7 @@ function App() {
         // navigator.platform. Keep Ctrl+Q platform-specific so macOS Vim input
         // is not stolen from the editor.
         const quitModifier = event.metaKey || primaryModifier;
-        if (quitModifier && event.key.toLowerCase() === "q") {
+        if (quitModifier && chordLower === "q") {
             event.preventDefault();
             requestExit("quit");
             return;
@@ -2253,7 +2255,7 @@ function App() {
         }
         if (
             primaryModifier &&
-            event.key.toLowerCase() === "f" &&
+            chordLower === "f" &&
             target?.closest?.(".flow-diff")
         ) {
             event.preventDefault();
@@ -2261,7 +2263,7 @@ function App() {
             return;
         }
         if (primaryModifier && !nativeControl) {
-            const key = event.key.toLowerCase();
+            const key = chordLower;
             // Off macOS, Ctrl-A (increment) and Ctrl-F (page down) are Vim's.
             if (key === "z" || (macos && (key === "a" || key === "f"))) {
                 event.preventDefault();
@@ -2296,7 +2298,7 @@ function App() {
             : event.ctrlKey && event.shiftKey;
         if (
             clipboardModifier &&
-            ["c", "v", "x"].includes(event.key.toLowerCase())
+            ["c", "v", "x"].includes(chordLower)
         )
             return;
         const input = guiKeyInput(event);
