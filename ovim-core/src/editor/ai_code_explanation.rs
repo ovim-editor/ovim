@@ -2056,6 +2056,7 @@ mod tests {
             view.discussion,
             CodeExplanationDiscussionView::Navigating {
                 question_count: 1,
+                exchange_total: 1,
                 latest_question: Some(ref question),
                 latest_answer: Some(ref answer),
                 latest_failed: false,
@@ -2128,6 +2129,7 @@ mod tests {
             editor.ai_code_explanation_view().unwrap().discussion,
             CodeExplanationDiscussionView::Navigating {
                 question_count: 2,
+                exchange_total: 2,
                 latest_question: Some(ref question),
                 latest_answer: Some(ref answer),
                 latest_failed: false,
