@@ -55,9 +55,9 @@ impl Editor {
         let mut options = Vec::new();
         if let Some(profile) = self.first_profile_with(AiProviderKind::ClaudeCode, "claude_code") {
             let detail = if on_path("node") && on_path("claude") {
-                "Claude Code with your Claude subscription. Uses your existing `claude` login."
+                "Claude Code with your Claude subscription. Uses your existing Claude Code login."
             } else {
-                "Claude Code with your Claude subscription. Needs Node.js and Claude Code; run `claude auth login` once."
+                "Claude Code with your Claude subscription. Needs Node.js and Claude Code; sign in once with: claude auth login"
             };
             options.push(ProviderChoiceOption {
                 profile: Some(profile),

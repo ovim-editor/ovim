@@ -9,6 +9,23 @@ type TerminalEvent =
     | { type: "exit"; id: number; code?: number }
     | { type: "error"; id: number; message: string };
 
+/**
+ * xterm.js does not parse `rgb()` strings (it silently falls back to black),
+ * so computed CSS colours are converted to hex before reaching its theme.
+ */
+export const cssColorToHex = (color: string): string | undefined => {
+    const match = color.match(
+        /^rgba?\(\s*(\d+)[\s,]+(\d+)[\s,]+(\d+)(?:[\s,/]+([\d.]+%?))?\s*\)$/,
+    );
+    if (!match) return color.startsWith("#") ? color : undefined;
+    const alpha = match[4];
+    if (alpha !== undefined && parseFloat(alpha) === 0) return undefined;
+    return `#${match
+        .slice(1, 4)
+        .map((part) => Number(part).toString(16).padStart(2, "0"))
+        .join("")}`;
+};
+
 export default function TerminalPanel(props: {
     native: boolean;
     active: boolean;
@@ -29,7 +46,10 @@ export default function TerminalPanel(props: {
 
     const surfaceTheme = () => {
         const style = getComputedStyle(surface);
-        return { background: style.backgroundColor, foreground: style.color };
+        return {
+            background: cssColorToHex(style.backgroundColor),
+            foreground: cssColorToHex(style.color),
+        };
     };
 
     createEffect(() => {

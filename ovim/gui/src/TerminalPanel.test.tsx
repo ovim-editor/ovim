@@ -9,7 +9,7 @@ import {
 } from "@solidjs/testing-library";
 import { Channel, invoke } from "@tauri-apps/api/core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import TerminalPanel from "./TerminalPanel";
+import TerminalPanel, { cssColorToHex } from "./TerminalPanel";
 
 const terminal = vi.hoisted(() => ({
     writes: [] as Uint8Array[],
@@ -220,5 +220,17 @@ describe("TerminalPanel", () => {
             }),
         );
         expect(terminal.disposed).toBe(1);
+    });
+});
+
+describe("cssColorToHex", () => {
+    it("converts computed colours to the hex xterm.js understands", () => {
+        expect(cssColorToHex("rgb(26, 27, 38)")).toBe("#1a1b26");
+        expect(cssColorToHex("rgba(251, 241, 199, 1)")).toBe("#fbf1c7");
+        expect(cssColorToHex("rgb(60 56 54 / 0.5)")).toBe("#3c3836");
+        expect(cssColorToHex("#123456")).toBe("#123456");
+        // Transparent or unknown values keep xterm's own default.
+        expect(cssColorToHex("rgba(0, 0, 0, 0)")).toBeUndefined();
+        expect(cssColorToHex("canvastext")).toBeUndefined();
     });
 });
