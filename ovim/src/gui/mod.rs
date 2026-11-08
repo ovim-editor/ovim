@@ -710,7 +710,11 @@ pub struct GuiCodeExplanation {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "kind", rename_all = "camelCase")]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GuiCodeExplanationPage {
     Concept {
         title: String,
@@ -731,7 +735,11 @@ pub enum GuiCodeExplanationPage {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[serde(tag = "state", rename_all = "camelCase")]
+#[serde(
+    tag = "state",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase"
+)]
 pub enum GuiCodeExplanationDiscussion {
     Navigating {
         question_count: usize,
@@ -4536,6 +4544,44 @@ fn indexed_rgb(index: u8) -> (u8, u8, u8) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The walkthrough card reads `startLine`, `questionCount`, ... in camelCase.
+    /// Tagged enums need `rename_all_fields`; `rename_all` alone only renames
+    /// the variant tags, which rendered titles like `src/main.rs:undefined`.
+    #[test]
+    fn walkthrough_variant_fields_serialize_in_camel_case() {
+        let page = serde_json::to_value(GuiCodeExplanationPage::Code {
+            path: "src/main.rs".into(),
+            start_line: 4,
+            end_line: 9,
+            comment: String::new(),
+        })
+        .unwrap();
+        assert_eq!(page["kind"], "code");
+        assert_eq!(page["startLine"], 4);
+        assert_eq!(page["endLine"], 9);
+        let diff = serde_json::to_value(GuiCodeExplanationPage::Diff {
+            title: "t".into(),
+            old_path: Some("a".into()),
+            new_path: Some("b".into()),
+            comment: String::new(),
+        })
+        .unwrap();
+        assert_eq!(diff["oldPath"], "a");
+        assert_eq!(diff["newPath"], "b");
+        let discussion = serde_json::to_value(GuiCodeExplanationDiscussion::Navigating {
+            question_count: 2,
+            latest_question: Some("why?".into()),
+            latest_answer: Some("because".into()),
+            latest_failed: false,
+        })
+        .unwrap();
+        assert_eq!(discussion["state"], "navigating");
+        assert_eq!(discussion["questionCount"], 2);
+        assert_eq!(discussion["latestQuestion"], "why?");
+        assert_eq!(discussion["latestAnswer"], "because");
+        assert_eq!(discussion["latestFailed"], false);
+    }
 
     /// OV-00473: the GUI gets one fold mark per line (innermost fold), and a
     /// click on a header toggles it through the same core command as `za`.
