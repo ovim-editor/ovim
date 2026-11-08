@@ -5,6 +5,20 @@ import { Icon } from "./Icon";
 import type { GuiSnapshot } from "./types";
 import type { WorkbenchSelection, WorkbenchTabReference } from "./workbench";
 
+type SourceTab = GuiSnapshot["tabs"][number];
+
+/** Middle click closes a tab like in a browser; stop the autoscroll cursor. */
+const middleClose = (close: () => void) => ({
+    onMouseDown: (event: MouseEvent) => {
+        if (event.button === 1) event.preventDefault();
+    },
+    onAuxClick: (event: MouseEvent) => {
+        if (event.button !== 1) return;
+        event.preventDefault();
+        close();
+    },
+});
+
 interface WorkbenchTabStripProps {
     native: boolean;
     sourceTabs: GuiSnapshot["tabs"];
@@ -15,6 +29,8 @@ interface WorkbenchTabStripProps {
     canRestoreBrowser: boolean;
     onSelect: (position: number) => void;
     onSourceFocus: () => void;
+    onCloseSource: (tab: SourceTab) => void;
+    onCloseBrowser: (sessionId: string) => void;
     onNewBrowser: () => void;
     onRestoreBrowser: () => void;
     onNavigate: (event: KeyboardEvent, position: number) => void;
@@ -42,6 +58,23 @@ export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
         }
     };
 
+    const closeButton = (label: string, close: () => void) => (
+        <button
+            type="button"
+            class="tab-close"
+            // The tab itself is the keyboard stop; Ctrl+W / :q close from the keyboard.
+            tabIndex={-1}
+            aria-label={`Close ${label}`}
+            title="Close"
+            onClick={(event) => {
+                event.stopPropagation();
+                close();
+            }}
+        >
+            <Icon name="close" size={16} />
+        </button>
+    );
+
     const renderTab = (
         reference: WorkbenchTabReference,
         position: Accessor<number>,
@@ -58,69 +91,93 @@ export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
                     props.sourceTabs.find((tab) => tab.id === reference.tabId);
                 return (
                     <Show when={source()}>
-                        {(tab) => (
-                            <button
-                                {...common}
-                                type="button"
-                                aria-selected={active()}
-                                tabIndex={active() ? 0 : -1}
-                                data-tab-index={tab().index}
-                                data-workbench-tab-index={position()}
-                                class="tab"
-                                classList={{ active: active() }}
-                                aria-label={
-                                    tab().title +
-                                    (tab().modified ? ", modified" : "")
-                                }
-                                title={
-                                    tab().title +
-                                    (tab().modified ? " · modified" : "")
-                                }
-                                onClick={() => {
-                                    props.onSelect(position());
-                                    props.onSourceFocus();
-                                }}
-                                onKeyDown={(event) =>
-                                    props.onNavigate(event, position())
-                                }
-                            >
-                                <Icon
-                                    name="file"
-                                    size={16}
-                                    tone={active() ? "accent" : "muted"}
-                                />
-                                <span>{tab().title}</span>
-                                <Show when={tab().modified}>
-                                    <span class="modified-dot" />
-                                </Show>
-                            </button>
-                        )}
+                        {(tab) => {
+                            const close = () => props.onCloseSource(tab());
+                            // The editor refuses to close its only source tab.
+                            const closable = () => props.sourceTabs.length > 1;
+                            return (
+                                <div
+                                    class="tab-item"
+                                    classList={{
+                                        active: active(),
+                                        closable: closable(),
+                                    }}
+                                    role="presentation"
+                                >
+                                    <button
+                                        {...common}
+                                        {...(closable()
+                                            ? middleClose(close)
+                                            : {})}
+                                        type="button"
+                                        aria-selected={active()}
+                                        tabIndex={active() ? 0 : -1}
+                                        data-tab-index={tab().index}
+                                        data-workbench-tab-index={position()}
+                                        class="tab"
+                                        classList={{ active: active() }}
+                                        aria-label={
+                                            tab().title +
+                                            (tab().modified ? ", modified" : "")
+                                        }
+                                        title={
+                                            tab().title +
+                                            (tab().modified
+                                                ? " · modified"
+                                                : "")
+                                        }
+                                        onClick={() => {
+                                            props.onSelect(position());
+                                            props.onSourceFocus();
+                                        }}
+                                        onKeyDown={(event) =>
+                                            props.onNavigate(event, position())
+                                        }
+                                    >
+                                        <Icon
+                                            name="file"
+                                            size={16}
+                                            tone={active() ? "accent" : "muted"}
+                                        />
+                                        <span>{tab().title}</span>
+                                        <Show when={tab().modified}>
+                                            <span class="modified-dot" />
+                                        </Show>
+                                    </button>
+                                    <Show when={closable()}>
+                                        {closeButton(tab().title, close)}
+                                    </Show>
+                                </div>
+                            );
+                        }}
                     </Show>
                 );
             }
             case "vector":
                 return (
-                    <button
-                        {...common}
-                        type="button"
-                        aria-selected={active()}
-                        tabIndex={active() ? 0 : -1}
-                        data-workbench-tab-index={position()}
-                        class="tab vector-tab"
-                        classList={{ active: active() }}
-                        title="Live Strøk render and review"
-                        onClick={() => props.onSelect(position())}
-                        onKeyDown={(event) =>
-                            props.onNavigate(event, position())
-                        }
-                    >
-                        <Icon
-                            name="ai-spark"
-                            size={16}
-                            tone={active() ? "accent" : "muted"}
-                        />
-                        <span>Vector</span>
-                    </button>
+                    <div class="tab-item" role="presentation">
+                        <button
+                            {...common}
+                            type="button"
+                            aria-selected={active()}
+                            tabIndex={active() ? 0 : -1}
+                            data-workbench-tab-index={position()}
+                            class="tab vector-tab"
+                            classList={{ active: active() }}
+                            title="Live Strøk render and review"
+                            onClick={() => props.onSelect(position())}
+                            onKeyDown={(event) =>
+                                props.onNavigate(event, position())
+                            }
+                        >
+                            <Icon
+                                name="ai-spark"
+                                size={16}
+                                tone={active() ? "accent" : "muted"}
+                            />
+                            <span>Vector</span>
+                        </button>
+                    </div>
                 );
             case "browser": {
                 const session = () =>
@@ -132,40 +189,54 @@ export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
                     session() ? browserTabTitle(session()!) : "Browser";
                 return (
                     <Show when={session()}>
-                        {(current) => (
-                            <button
-                                {...common}
-                                type="button"
-                                aria-selected={active()}
-                                aria-label={`Browser: ${title()}`}
-                                tabIndex={active() ? 0 : -1}
-                                data-workbench-tab-index={position()}
-                                class="tab browser-tab"
-                                classList={{ active: active() }}
-                                title={
-                                    current().url
-                                        ? `${title()} · ${current().url}`
-                                        : title()
-                                }
-                                onClick={() => props.onSelect(position())}
-                                onKeyDown={(event) =>
-                                    props.onNavigate(event, position())
-                                }
-                            >
-                                <Icon
-                                    name="search"
-                                    size={16}
-                                    tone={active() ? "accent" : "muted"}
-                                />
-                                <span>{title()}</span>
-                                <Show when={current().loading}>
-                                    <span
-                                        class="browser-tab-loading"
-                                        aria-label="Loading"
-                                    />
-                                </Show>
-                            </button>
-                        )}
+                        {(current) => {
+                            const close = () =>
+                                props.onCloseBrowser(reference.sessionId);
+                            return (
+                                <div
+                                    class="tab-item closable"
+                                    classList={{ active: active() }}
+                                    role="presentation"
+                                >
+                                    <button
+                                        {...common}
+                                        {...middleClose(close)}
+                                        type="button"
+                                        aria-selected={active()}
+                                        aria-label={`Browser: ${title()}`}
+                                        tabIndex={active() ? 0 : -1}
+                                        data-workbench-tab-index={position()}
+                                        class="tab browser-tab"
+                                        classList={{ active: active() }}
+                                        title={
+                                            current().url
+                                                ? `${title()} · ${current().url}`
+                                                : title()
+                                        }
+                                        onClick={() =>
+                                            props.onSelect(position())
+                                        }
+                                        onKeyDown={(event) =>
+                                            props.onNavigate(event, position())
+                                        }
+                                    >
+                                        <Icon
+                                            name="search"
+                                            size={16}
+                                            tone={active() ? "accent" : "muted"}
+                                        />
+                                        <span>{title()}</span>
+                                        <Show when={current().loading}>
+                                            <span
+                                                class="browser-tab-loading"
+                                                aria-label="Loading"
+                                            />
+                                        </Show>
+                                    </button>
+                                    {closeButton(title(), close)}
+                                </div>
+                            );
+                        }}
                     </Show>
                 );
             }
@@ -173,8 +244,10 @@ export default function WorkbenchTabStrip(props: WorkbenchTabStripProps) {
     };
 
     return (
-        <div class="tabs" role="tablist" aria-label="Open tabs">
-            <For each={props.tabs}>{renderTab}</For>
+        <div class="tabs">
+            <div class="tab-list" role="tablist" aria-label="Open tabs">
+                <For each={props.tabs}>{renderTab}</For>
+            </div>
             <Show when={props.canRestoreBrowser}>
                 <button
                     type="button"

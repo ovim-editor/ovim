@@ -16,6 +16,7 @@ import {
     type Reconstruction,
 } from "./FlowDiffModel";
 import type { Side } from "./FlowDiffCode";
+import { sectionPairing } from "./FlowDiffPairing";
 
 export type DiffExportView = "files" | "guided";
 
@@ -190,9 +191,12 @@ function codeCells(
 function pairedRows(
     left: FlowDiffLine | undefined,
     right: FlowDiffLine | undefined,
+    // Word highlights follow similarity pairing, not row alignment.
+    counterparts?: [FlowDiffLine | undefined, FlowDiffLine | undefined],
 ): ExportRow[] {
-    const leftCells = codeCells(left, "old", right);
-    const rightCells = codeCells(right, "new", left);
+    const [leftCounterpart, rightCounterpart] = counterparts ?? [right, left];
+    const leftCells = codeCells(left, "old", leftCounterpart);
+    const rightCells = codeCells(right, "new", rightCounterpart);
     return Array.from(
         { length: Math.max(leftCells.length, rightCells.length) },
         (_, index) => ({
@@ -526,8 +530,18 @@ function fileBlock(
             continue;
         }
         const count = Math.max(section.left.length, section.right.length);
+        const pairing =
+            section.kind === "change"
+                ? sectionPairing(section.left, section.right)
+                : undefined;
         for (let index = 0; index < count; index++)
-            rows.push(...pairedRows(section.left[index], section.right[index]));
+            rows.push(
+                ...pairedRows(
+                    section.left[index],
+                    section.right[index],
+                    pairing && [pairing.left[index], pairing.right[index]],
+                ),
+            );
     }
     return { file, header, rows };
 }

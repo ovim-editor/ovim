@@ -92,9 +92,9 @@ describe("captured diff context", () => {
         await fireEvent.click(
             view.getAllByRole("button", { name: "Show more context above" })[0],
         );
-        expect(expand).toHaveBeenLastCalledWith("section:pair", true);
+        expect(expand).toHaveBeenLastCalledWith("section:pair", true, false);
         await fireEvent.keyDown(root, { key: "J" });
-        expect(expand).toHaveBeenLastCalledWith("section:pair", false);
+        expect(expand).toHaveBeenLastCalledWith("section:pair", false, false);
         expect(view.container.querySelectorAll(".flow-code-line")).toHaveLength(
             rows,
         );
@@ -127,5 +127,81 @@ describe("captured diff context", () => {
         expect(
             view.queryByRole("button", { name: "Show more context above" }),
         ).toBeNull();
+    });
+    describe("unchanged-lines gap", () => {
+        const gapped = (secondStart: number, canExpandUp = true) => {
+            const review = document();
+            review.custom = false;
+            review.files[0].status = "modified";
+            review.files[0].oldPath = undefined;
+            const [first] = review.files[0].hunks;
+            first.oldStart = 1;
+            first.newStart = 1;
+            first.lines = [
+                { kind: "removed", oldLine: 1, text: "first_old();" },
+                { kind: "added", newLine: 1, text: "first_new();" },
+            ];
+            review.files[0].hunks.push({
+                ...structuredClone(first),
+                header: "Second",
+                oldStart: secondStart,
+                newStart: secondStart,
+                lines: [
+                    { kind: "removed", oldLine: secondStart, text: "b_old();" },
+                    { kind: "added", newLine: secondStart, text: "b_new();" },
+                ],
+                context: {
+                    id: "hunk:second",
+                    before: { old: [], new: [] },
+                    after: { old: [], new: [] },
+                    canExpandUp,
+                    canExpandDown: false,
+                },
+            });
+            return review;
+        };
+        it("opens a small gap in one click", async () => {
+            const expand = vi.fn();
+            const view = render(() => (
+                <FlowDiff review={gapped(21)} onExpandContext={expand} />
+            ));
+            const buttons = view.getAllByRole("button", {
+                name: "Expand 19 unchanged lines",
+            });
+            expect(buttons[0].textContent).toBe("19 unchanged lines");
+            expect(
+                view.queryByRole("button", { name: /Expand all/ }),
+            ).toBeNull();
+            await fireEvent.click(buttons[0]);
+            expect(expand).toHaveBeenLastCalledWith("hunk:second", true, true);
+        });
+        it("offers expand all for a large gap and keeps its label as text", async () => {
+            const expand = vi.fn();
+            const view = render(() => (
+                <FlowDiff review={gapped(300)} onExpandContext={expand} />
+            ));
+            expect(
+                view.queryByRole("button", { name: /^Expand \d+ unchanged/ }),
+            ).toBeNull();
+            const buttons = view.getAllByRole("button", {
+                name: "Expand all 298 unchanged lines",
+            });
+            await fireEvent.click(buttons[0]);
+            expect(expand).toHaveBeenLastCalledWith("hunk:second", true, true);
+        });
+        it("is plain text when the source is not captured", () => {
+            const view = render(() => (
+                <FlowDiff
+                    review={gapped(21, false)}
+                    onExpandContext={vi.fn()}
+                />
+            ));
+            expect(
+                view.queryByRole("button", { name: /unchanged lines/ }),
+            ).toBeNull();
+            expect(
+                view.getAllByText(/19 unchanged lines/).length,
+            ).toBeGreaterThan(0);
+        });
     });
 });

@@ -125,7 +125,7 @@ full content fingerprints of the compared files. This needs no chat resume.
 Changed or unverifiable comparisons keep the saved review separate; use
 **View saved review** (`O` in the terminal) to inspect or export that frozen version.
 
-In a managed diff, use `K` / `J` to reveal ten more source lines above / below
+In a managed diff, use `K` / `J` to reveal twenty more source lines above / below
 the current block. The GUI also has small gutter arrows at the block edges;
 they do not add spacer rows. Context comes from the captured comparison, stays
 with its own file on each side, and stops at a neighboring block or the end of

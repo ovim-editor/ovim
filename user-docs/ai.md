@@ -949,7 +949,7 @@ remain in their original order. This changes the review presentation only.
 Use **Open diff** on the chat entry to reopen the saved review. In the terminal,
 select the tool result in chat history and press Enter, or click its open action.
 Use `K` / `J` in either frontend to reveal surrounding captured code above /
-below the current diff block, ten lines at a time. The GUI also provides gutter
+below the current diff block, twenty lines at a time. The GUI also provides gutter
 arrows without extra control rows. Expansion preserves the saved pairings and
 change counts; older reviews without captured source cannot expand.
 

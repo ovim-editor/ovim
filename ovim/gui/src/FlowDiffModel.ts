@@ -13,11 +13,16 @@ export function moveLocation(endpoint: FlowDiffMove["old"]): string {
     return `${endpoint.path}:${endpoint.startLine}${end > endpoint.startLine ? `–${end}` : ""}`;
 }
 
+/** A gap this small opens with a single click on its label. */
+export const GAP_EXPAND_ALL_MAX = 40;
+
 export type FlowSection = {
     id: string;
     kind: "context" | "change" | "gap";
     hunkIndex: number;
     label?: string;
+    /** Hidden source lines of an expandable gap between two hunks. */
+    gapLines?: number;
     left: FlowDiffLine[];
     right: FlowDiffLine[];
     move?: FlowDiffMove;
@@ -106,6 +111,7 @@ export function sectionsForFile(file: FlowDiffFile): FlowSection[] {
                 id: `gap-${hunkIndex}`,
                 kind: "gap",
                 hunkIndex,
+                gapLines: Math.max(skippedOld, skippedNew),
                 label: `${Math.max(skippedOld, skippedNew)} unchanged ${Math.max(skippedOld, skippedNew) === 1 ? "line" : "lines"}`,
                 left: [],
                 right: [],

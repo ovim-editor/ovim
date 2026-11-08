@@ -14,6 +14,7 @@ import {
 } from "solid-js";
 import type { JSX } from "solid-js";
 import {
+    GAP_EXPAND_ALL_MAX,
     mappedScrollTop,
     hideEqualChanges,
     isEqualOnly,
@@ -29,6 +30,7 @@ import {
 } from "./FlowDiffModel";
 import { FileLine, type Side } from "./FlowDiffCode";
 import { MoveOverlay, pairedMoveLine } from "./FlowDiffMove";
+import { sectionPairing } from "./FlowDiffPairing";
 import {
     buildDiffExportImage,
     rasterizeDiffExportImage,
@@ -62,7 +64,7 @@ export type FlowDiffProps = {
             | "open_saved_overlay"
             | "return_to_live_diff",
     ) => void;
-    onExpandContext?: (id: string, up: boolean) => void;
+    onExpandContext?: (id: string, up: boolean, all?: boolean) => void;
     onCoreKey?: (key: ":" | " ") => void;
 };
 
@@ -368,11 +370,21 @@ export default function FlowDiff(props: FlowDiffProps) {
             scroller.querySelectorAll<HTMLElement>(
                 ".flow-file-heading, .flow-file-metadata, .flow-section, .flow-empty",
             ),
-        ).map((element) => ({
-            top: elementTop(element, scroller),
-            height: element.offsetHeight || 1,
-            viewportTop: elementTop(element, scroller) - scroller.scrollTop,
-        }));
+        ).map((element) => {
+            // A stuck heading reports its pinned position; its place in the
+            // content is where its group starts.
+            const top = elementTop(
+                element.matches(".flow-file-heading")
+                    ? (element.parentElement ?? element)
+                    : element,
+                scroller,
+            );
+            return {
+                top,
+                height: element.offsetHeight || 1,
+                viewportTop: top - scroller.scrollTop,
+            };
+        });
     }
 
     function sectionBoxes(side: Side) {
@@ -396,6 +408,14 @@ export default function FlowDiff(props: FlowDiffProps) {
         if (!elementRect.top && !scrollerRect.top && element.offsetTop)
             return element.offsetTop;
         return elementRect.top - scrollerRect.top + scroller.scrollTop;
+    }
+
+    /** Room the pinned file heading takes at the top of a scroller. */
+    function stickyInset(scroller: HTMLElement) {
+        return (
+            scroller.querySelector<HTMLElement>(".flow-file-heading")
+                ?.offsetHeight ?? 0
+        );
     }
 
     function setScrollTop(scroller: HTMLElement, top: number) {
@@ -463,7 +483,9 @@ export default function FlowDiff(props: FlowDiffProps) {
             [...entries].reverse().find(({ file: item, section }) => {
                 const element = elements.get(sectionKey(item.id, section.id));
                 return (
-                    element && elementTop(element, from) <= from.scrollTop + 8
+                    element &&
+                    elementTop(element, from) <=
+                        from.scrollTop + 8 + stickyInset(from)
                 );
             }) ?? entries[0];
         if (visible) {
@@ -504,17 +526,32 @@ export default function FlowDiff(props: FlowDiffProps) {
         if (leftScroller && left)
             setScrollTop(
                 leftScroller,
-                Math.max(0, elementTop(left, leftScroller) - 8),
+                Math.max(
+                    0,
+                    elementTop(left, leftScroller) -
+                        8 -
+                        stickyInset(leftScroller),
+                ),
             );
         if (rightScroller && right)
             setScrollTop(
                 rightScroller,
-                Math.max(0, elementTop(right, rightScroller) - 8),
+                Math.max(
+                    0,
+                    elementTop(right, rightScroller) -
+                        8 -
+                        stickyInset(rightScroller),
+                ),
             );
         if (unifiedScroller && unified)
             setScrollTop(
                 unifiedScroller,
-                Math.max(0, elementTop(unified, unifiedScroller) - 8),
+                Math.max(
+                    0,
+                    elementTop(unified, unifiedScroller) -
+                        8 -
+                        stickyInset(unifiedScroller),
+                ),
             );
         measure();
         const reviewLine = [...section.left, ...section.right].find(
@@ -598,7 +635,8 @@ export default function FlowDiff(props: FlowDiffProps) {
 
     function updateUnifiedActive() {
         if (!unifiedScroller || consumeExpectedScroll(unifiedScroller)) return;
-        const threshold = unifiedScroller.scrollTop + 8;
+        const threshold =
+            unifiedScroller.scrollTop + 8 + stickyInset(unifiedScroller);
         const visible = [...allSections()]
             .reverse()
             .filter(({ section }) => section.kind === "change")
@@ -630,6 +668,7 @@ export default function FlowDiff(props: FlowDiffProps) {
         item: FlowDiffFile,
         section: FlowSection,
         up: boolean,
+        all = false,
     ) {
         const context = item.hunks[section.hunkIndex]?.context;
         if (
@@ -669,7 +708,7 @@ export default function FlowDiff(props: FlowDiffProps) {
                     top: (source ?? element).getBoundingClientRect().top,
                 });
         }
-        props.onExpandContext(context.id, up);
+        props.onExpandContext(context.id, up, all);
     }
     createEffect(() => {
         props.review;
@@ -730,7 +769,7 @@ export default function FlowDiff(props: FlowDiffProps) {
                             // Mouse affordance: the keyboard has K / J.
                             tabIndex={-1}
                             aria-label={`Show more context ${up ? "above" : "below"}`}
-                            title={`Show 10 more lines ${up ? "above (K)" : "below (J)"}`}
+                            title={`Show 20 more lines ${up ? "above (K)" : "below (J)"}`}
                             onClick={(event) => {
                                 event.stopPropagation();
                                 expandContext(item, section, up);
@@ -744,13 +783,63 @@ export default function FlowDiff(props: FlowDiffProps) {
         );
     };
 
+    /** The unchanged-lines label opens the gap: whole when small, on request when large. */
+    const gapView = (item: FlowDiffFile, section: FlowSection) => {
+        const canExpand = () =>
+            Boolean(
+                props.onExpandContext &&
+                section.gapLines !== undefined &&
+                item.hunks[section.hunkIndex]?.context?.canExpandUp,
+            );
+        const small = () => (section.gapLines ?? 0) <= GAP_EXPAND_ALL_MAX;
+        const expandAll = (event: MouseEvent) => {
+            event.stopPropagation();
+            expandContext(item, section, true, true);
+        };
+        return (
+            <div class="flow-gap">
+                <span>···</span>
+                <Show
+                    when={canExpand() && small()}
+                    fallback={
+                        <>
+                            {section.label}
+                            <Show when={canExpand()}>
+                                <button
+                                    type="button"
+                                    class="flow-gap-expand"
+                                    tabIndex={-1}
+                                    aria-label={`Expand all ${section.label}`}
+                                    onClick={expandAll}
+                                >
+                                    Expand all
+                                </button>
+                            </Show>
+                        </>
+                    }
+                >
+                    <button
+                        type="button"
+                        class="flow-gap-expand"
+                        tabIndex={-1}
+                        aria-label={`Expand ${section.label}`}
+                        title="Show these lines"
+                        onClick={expandAll}
+                    >
+                        {section.label}
+                    </button>
+                </Show>
+            </div>
+        );
+    };
+
     const sectionView = (
         section: FlowSection,
         side: Side,
         item: FlowDiffFile,
     ) => {
         const lines = side === "old" ? section.left : section.right;
-        const other = side === "old" ? section.right : section.left;
+        const pairing = () => sectionPairing(section.left, section.right);
         return (
             <div
                 class={`flow-section ${section.kind}${section.move && side !== reconstruction() ? " flow-move-anchor" : ""}`}
@@ -768,10 +857,7 @@ export default function FlowDiff(props: FlowDiffProps) {
             >
                 {contextControls(item, section)}
                 <Show when={section.kind === "gap"}>
-                    <div class="flow-gap">
-                        <span>···</span>
-                        {section.label}
-                    </div>
+                    {gapView(item, section)}
                 </Show>
                 <For each={lines}>
                     {(line, index) => (
@@ -783,7 +869,9 @@ export default function FlowDiff(props: FlowDiffProps) {
                                 section.move && side !== reconstruction()
                                     ? pairedMoveLine(section.move, line, side)
                                     : section.kind === "change"
-                                      ? other[index()]
+                                      ? pairing()[
+                                            side === "old" ? "left" : "right"
+                                        ][index()]
                                       : undefined
                             }
                             side={side}
@@ -1760,14 +1848,10 @@ export default function FlowDiff(props: FlowDiffProps) {
                                                                     "gap"
                                                                 }
                                                             >
-                                                                <div class="flow-gap">
-                                                                    <span>
-                                                                        ···
-                                                                    </span>
-                                                                    {
-                                                                        section.label
-                                                                    }
-                                                                </div>
+                                                                {gapView(
+                                                                    item,
+                                                                    section,
+                                                                )}
                                                             </Show>
                                                             <Show
                                                                 when={
@@ -1810,8 +1894,11 @@ export default function FlowDiff(props: FlowDiffProps) {
                                                                                   line,
                                                                                   "old",
                                                                               )
-                                                                            : section
-                                                                                  .right[
+                                                                            : sectionPairing(
+                                                                                  section.left,
+                                                                                  section.right,
+                                                                              )
+                                                                                  .left[
                                                                                   index()
                                                                               ],
                                                                     )
@@ -1838,8 +1925,11 @@ export default function FlowDiff(props: FlowDiffProps) {
                                                                                   line,
                                                                                   "new",
                                                                               )
-                                                                            : section
-                                                                                  .left[
+                                                                            : sectionPairing(
+                                                                                  section.left,
+                                                                                  section.right,
+                                                                              )
+                                                                                  .right[
                                                                                   index()
                                                                               ],
                                                                     )
