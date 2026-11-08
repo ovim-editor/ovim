@@ -32,11 +32,25 @@ type Props = {
     reasoningEfforts: string[];
     permissionMode?: string;
     permissionModes: PermissionMode[];
-    onProfile?: (profile: string, model?: string) => void;
-    onReasoningEffort?: (effort: string) => void;
-    onPermissionMode?: (mode: string) => void;
+    /** True while a turn is running; core rejects run-setting changes then. */
+    turnActive?: boolean;
+    /** A handler may return a promise resolving to `false` when core rejected
+     * the change, so the control can snap back to the live snapshot. */
+    onProfile?: (profile: string, model?: string) => unknown;
+    onReasoningEffort?: (effort: string) => unknown;
+    onPermissionMode?: (mode: string) => unknown;
     focusInput: () => void;
 };
+
+const TURN_ACTIVE_TITLE =
+    "Wait for or stop the active turn before changing run settings";
+
+/** Run `revert` when a change handler reports that core rejected it. */
+function revertIfRejected(result: unknown, revert: () => void) {
+    void Promise.resolve(result).then((accepted) => {
+        if (accepted === false) revert();
+    });
+}
 
 function effortLabel(effort: string): string {
     return effort === "default"
@@ -186,6 +200,12 @@ export default function ChatModelPicker(props: Props) {
                             <select
                                 ref={firstSelect!}
                                 aria-label="AI provider"
+                                disabled={props.turnActive}
+                                title={
+                                    props.turnActive
+                                        ? TURN_ACTIVE_TITLE
+                                        : undefined
+                                }
                                 value={activeProvider()?.id ?? ""}
                                 onChange={(event) => {
                                     const provider = providers().find(
@@ -196,9 +216,17 @@ export default function ChatModelPicker(props: Props) {
                                     const choice = provider?.models[0];
                                     if (!provider || !choice) return;
                                     setDraftProvider(provider.id);
-                                    props.onProfile?.(
-                                        choice.profileId,
-                                        choice.model,
+                                    revertIfRejected(
+                                        props.onProfile?.(
+                                            choice.profileId,
+                                            choice.model,
+                                        ),
+                                        () =>
+                                            setDraftProvider(
+                                                selectedProvider()?.id ??
+                                                    providers()[0]?.id ??
+                                                    "",
+                                            ),
                                     );
                                 }}
                             >
@@ -219,8 +247,15 @@ export default function ChatModelPicker(props: Props) {
                             </span>
                             <select
                                 aria-label="AI model"
+                                disabled={props.turnActive}
+                                title={
+                                    props.turnActive
+                                        ? TURN_ACTIVE_TITLE
+                                        : undefined
+                                }
                                 value={activeModel()?.key ?? ""}
                                 onChange={(event) => {
+                                    const select = event.currentTarget;
                                     const choice =
                                         activeProvider()?.models.find(
                                             (candidate) =>
@@ -228,9 +263,15 @@ export default function ChatModelPicker(props: Props) {
                                                 event.currentTarget.value,
                                         );
                                     if (!choice) return;
-                                    props.onProfile?.(
-                                        choice.profileId,
-                                        choice.model,
+                                    revertIfRejected(
+                                        props.onProfile?.(
+                                            choice.profileId,
+                                            choice.model,
+                                        ),
+                                        () => {
+                                            select.value =
+                                                activeModel()?.key ?? "";
+                                        },
                                     );
                                 }}
                             >
@@ -259,12 +300,25 @@ export default function ChatModelPicker(props: Props) {
                                 </span>
                                 <select
                                     aria-label="Reasoning effort"
-                                    value={props.reasoningEffortSelection}
-                                    onChange={(event) =>
-                                        props.onReasoningEffort?.(
-                                            event.currentTarget.value,
-                                        )
+                                    disabled={props.turnActive}
+                                    title={
+                                        props.turnActive
+                                            ? TURN_ACTIVE_TITLE
+                                            : undefined
                                     }
+                                    value={props.reasoningEffortSelection}
+                                    onChange={(event) => {
+                                        const select = event.currentTarget;
+                                        revertIfRejected(
+                                            props.onReasoningEffort?.(
+                                                select.value,
+                                            ),
+                                            () => {
+                                                select.value =
+                                                    props.reasoningEffortSelection;
+                                            },
+                                        );
+                                    }}
                                 >
                                     <For each={props.reasoningEfforts}>
                                         {(effort) => (
@@ -288,12 +342,25 @@ export default function ChatModelPicker(props: Props) {
                                 </span>
                                 <select
                                     aria-label="Permission mode"
-                                    value={props.permissionMode}
-                                    onChange={(event) =>
-                                        props.onPermissionMode?.(
-                                            event.currentTarget.value,
-                                        )
+                                    disabled={props.turnActive}
+                                    title={
+                                        props.turnActive
+                                            ? TURN_ACTIVE_TITLE
+                                            : undefined
                                     }
+                                    value={props.permissionMode}
+                                    onChange={(event) => {
+                                        const select = event.currentTarget;
+                                        revertIfRejected(
+                                            props.onPermissionMode?.(
+                                                select.value,
+                                            ),
+                                            () => {
+                                                select.value =
+                                                    props.permissionMode ?? "";
+                                            },
+                                        );
+                                    }}
                                 >
                                     <For each={props.permissionModes}>
                                         {(option) => (
@@ -309,8 +376,9 @@ export default function ChatModelPicker(props: Props) {
 
                     <footer class="chat-run-popover-footer">
                         <small>
-                            Profile and permissions are remembered; effort is
-                            per chat.
+                            {props.turnActive
+                                ? TURN_ACTIVE_TITLE
+                                : "Profile and permissions are remembered; effort is per chat."}
                         </small>
                         <button type="button" onClick={() => close(true)}>
                             Done

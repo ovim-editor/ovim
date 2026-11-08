@@ -6,17 +6,18 @@
 
 use crate::agent_runtime::{
     builtin_subagent_model_metadata, AgentApprovalBroker, AgentApprovalKey, AgentApprovalResponse,
-    AgentApprovalResponseDecision, AgentCapability, AgentControlPlaneSnapshot, AgentDispatchRecord,
-    AgentFuture, AgentKindName, AgentLoopBudget, AgentLoopInputFactory, AgentProviderAdapter,
-    AgentRoleTemplate, AgentSupervisor, AgentSupervisorConfig, AgentToolCall, AgentToolError,
-    AgentToolExtension, AgentToolResult, AgentWorkspaceManager, CapturedSnapshotDiagnostics,
-    CapturedSnapshotSymbolIndex, CompletionContract, DelegatedAgentKind, DelegatedAgentPolicy,
-    DelegationContextMode, DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity,
-    DispatchRequest, FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider,
-    ReasoningEffort, RequestedModelRoute, ScopedTool, SendAgentMessageRequest,
-    SnapshotAgentLoopInputFactory, SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog,
-    WorkspaceAssignment, WorkspacePolicy, WorkspaceStrategy, MAX_HANDOFF_ATTACHMENTS,
-    MAX_HANDOFF_ATTACHMENT_BYTES, MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES,
+    AgentApprovalResponseDecision, AgentApprovalSnapshot, AgentCapability,
+    AgentControlPlaneSnapshot, AgentDispatchRecord, AgentFuture, AgentKindName, AgentLoopBudget,
+    AgentLoopInputFactory, AgentProviderAdapter, AgentRoleTemplate, AgentSnapshot, AgentSupervisor,
+    AgentSupervisorConfig, AgentToolCall, AgentToolError, AgentToolExtension, AgentToolResult,
+    AgentWorkspaceManager, CapturedSnapshotDiagnostics, CapturedSnapshotSymbolIndex,
+    CompletionContract, DelegatedAgentKind, DelegatedAgentPolicy, DelegationContextMode,
+    DelegationEnvelope, DelegationExpectedOutput, DelegationIdentity, DispatchRequest,
+    FollowupAgentRequest, ModelFallbackPolicy, ProfileAgentProvider, ReasoningEffort,
+    RequestedModelRoute, ScopedTool, SendAgentMessageRequest, SnapshotAgentLoopInputFactory,
+    SnapshotDiagnostic, SnapshotSymbol, SubagentModelCatalog, WorkspaceAssignment, WorkspacePolicy,
+    WorkspaceStrategy, MAX_HANDOFF_ATTACHMENTS, MAX_HANDOFF_ATTACHMENT_BYTES,
+    MAX_HANDOFF_ATTACHMENT_TOTAL_BYTES,
 };
 use crate::ai::chat_types::ToolCallInfo;
 use crate::ai::tools::subagents::{
@@ -1452,6 +1453,44 @@ impl Editor {
             .and_then(|id| snapshot.oldest_pending_approval_for(id))
             .or_else(|| snapshot.oldest_pending_approval())
             .ok_or_else(|| "there is no pending delegated-agent approval".to_string())?;
+        self.respond_agent_approval(&snapshot, agent, approval, allow)
+    }
+
+    /// Resolve one specific pending child approval, identified by the request
+    /// event the frontend displayed. Unlike the oldest-pending shortcuts this
+    /// never retargets: if that request was already resolved (or a different
+    /// one became oldest in the meantime) the call fails instead of answering
+    /// an approval the user has not seen.
+    pub fn ai_agent_resolve_approval_request(
+        &mut self,
+        request_event_id: &str,
+        allow: bool,
+    ) -> Result<(), String> {
+        let snapshot = self
+            .ai_agent_current_snapshot()?
+            .ok_or_else(|| "there is no delegated-agent run for this chat".to_string())?;
+        let (agent, approval) = snapshot
+            .agents
+            .iter()
+            .flat_map(|agent| {
+                agent
+                    .approvals
+                    .iter()
+                    .filter(|approval| approval.state == "pending")
+                    .map(move |approval| (agent, approval))
+            })
+            .find(|(_, approval)| approval.request_event_id.as_str() == request_event_id)
+            .ok_or_else(|| "that delegated-agent approval is no longer pending".to_string())?;
+        self.respond_agent_approval(&snapshot, agent, approval, allow)
+    }
+
+    fn respond_agent_approval(
+        &mut self,
+        snapshot: &AgentControlPlaneSnapshot,
+        agent: &AgentSnapshot,
+        approval: &AgentApprovalSnapshot,
+        allow: bool,
+    ) -> Result<(), String> {
         self.ai_agent_respond_approval(
             &snapshot.run_id,
             &agent.agent_id,

@@ -97,6 +97,7 @@ test("Claude walkthrough uses the existing interactive reader", async ({
             discussion: {
                 state: "navigating",
                 questionCount: 0,
+                exchangeTotal: 0,
                 latestFailed: false,
             },
         };

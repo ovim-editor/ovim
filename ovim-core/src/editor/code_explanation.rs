@@ -85,7 +85,12 @@ pub enum CodeExplanationPageView {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CodeExplanationDiscussionView {
     Navigating {
+        /// 1-based position of the visible exchange (or the thread length
+        /// when no exchange is open).
         question_count: usize,
+        /// Number of exchanges on the current step, so frontends can bound
+        /// earlier/later navigation and show "Question N of M".
+        exchange_total: usize,
         latest_question: Option<String>,
         latest_answer: Option<String>,
         latest_failed: bool,

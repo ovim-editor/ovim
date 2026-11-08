@@ -719,7 +719,23 @@ pub struct GuiAiChat {
     pub followed_agent_id: Option<String>,
     pub agent_cursor: usize,
     pub approval: Option<String>,
+    /// Whether the pending approval can be remembered (core only supports it
+    /// for a parked tool approval).
+    pub approval_can_remember: bool,
+    /// Oldest pending approval of a delegated child agent, if any.
+    pub agent_approval: Option<GuiAgentApproval>,
     pub code_explanation: Option<GuiCodeExplanation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiAgentApproval {
+    /// Request event the decision targets; sent back so a decision can never
+    /// retarget to a different child that became oldest in the meantime.
+    pub request_id: String,
+    pub agent_id: String,
+    pub agent_name: String,
+    pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -789,6 +805,7 @@ pub enum GuiCodeExplanationPage {
 pub enum GuiCodeExplanationDiscussion {
     Navigating {
         question_count: usize,
+        exchange_total: usize,
         latest_question: Option<String>,
         latest_answer: Option<String>,
         latest_failed: bool,
@@ -1129,6 +1146,7 @@ enum GuiRequest {
     },
     AiPolicy {
         action: String,
+        target: Option<String>,
         reply: oneshot::Sender<Result<(), String>>,
     },
     EditorCommand {
@@ -1612,9 +1630,13 @@ impl GuiBridge {
             .await
     }
 
-    pub async fn ai_policy(&self, action: String) -> Result<(), String> {
-        self.request(|reply| GuiRequest::AiPolicy { action, reply })
-            .await
+    pub async fn ai_policy(&self, action: String, target: Option<String>) -> Result<(), String> {
+        self.request(|reply| GuiRequest::AiPolicy {
+            action,
+            target,
+            reply,
+        })
+        .await
     }
 
     pub async fn editor_command(&self, command: String) -> Result<(), String> {
@@ -2080,14 +2102,42 @@ async fn handle_request(
             }
             (reply, result)
         }
-        GuiRequest::AiPolicy { action, reply } => {
+        GuiRequest::AiPolicy {
+            action,
+            target,
+            reply,
+        } => {
             let changed = match action.as_str() {
-                "approve-tool" | "deny-tool" => {
-                    let allow = action == "approve-tool";
+                "approve-tool" | "deny-tool" | "approve-tool-remember" => {
+                    let allow = action != "deny-tool";
                     if editor.ai_chat_has_pending_no_repo_folder_approval() {
                         editor.ai_chat_resolve_pending_no_repo_folder_approval(allow)
+                    } else if action == "approve-tool-remember"
+                        && !editor.ai_chat_pending_tool_approval_can_remember()
+                    {
+                        false
                     } else {
-                        editor.ai_chat_resolve_pending_tool_approval(allow, false)
+                        editor.ai_chat_resolve_pending_tool_approval(
+                            allow,
+                            action == "approve-tool-remember",
+                        )
+                    }
+                }
+                "approve-agent" | "deny-agent" => {
+                    match target.as_deref().filter(|target| !target.is_empty()) {
+                        Some(request_id) => {
+                            match editor.ai_agent_resolve_approval_request(
+                                request_id,
+                                action == "approve-agent",
+                            ) {
+                                Ok(()) => true,
+                                Err(error) => {
+                                    let _ = reply.send(Err(error));
+                                    return;
+                                }
+                            }
+                        }
+                        None => false,
                     }
                 }
                 "toggle-yolo" => editor.set_ai_chat_yolo_mode(!editor.ai_chat_yolo_mode()),
@@ -3999,8 +4049,22 @@ fn ai_chat(editor: &Editor) -> Option<GuiAiChat> {
             approval: editor
                 .ai_chat_pending_tool_approval_summary()
                 .or_else(|| editor.ai_chat_pending_no_repo_folder_approval_summary()),
+            approval_can_remember: editor.ai_chat_pending_tool_approval_can_remember(),
+            agent_approval: agent_approval(editor),
             code_explanation: code_explanation(editor),
         }
+    })
+}
+
+fn agent_approval(editor: &Editor) -> Option<GuiAgentApproval> {
+    let snapshot = editor.ai_agent_current_snapshot().ok().flatten()?;
+    let (agent, approval) = snapshot.oldest_pending_approval()?;
+    let prompt = crate::ui::project_agent_approval_prompt(&snapshot)?;
+    Some(GuiAgentApproval {
+        request_id: approval.request_event_id.as_str().to_string(),
+        agent_id: agent.agent_id.to_string(),
+        agent_name: agent.task_name.clone(),
+        summary: prompt.summary,
     })
 }
 
@@ -4055,11 +4119,13 @@ fn code_explanation(editor: &Editor) -> Option<GuiCodeExplanation> {
     let discussion = match view.discussion {
         ovim_core::editor::CodeExplanationDiscussionView::Navigating {
             question_count,
+            exchange_total,
             latest_question,
             latest_answer,
             latest_failed,
         } => GuiCodeExplanationDiscussion::Navigating {
             question_count,
+            exchange_total,
             latest_question,
             latest_answer,
             latest_failed,
@@ -4650,6 +4716,7 @@ mod tests {
         assert_eq!(diff["newPath"], "b");
         let discussion = serde_json::to_value(GuiCodeExplanationDiscussion::Navigating {
             question_count: 2,
+            exchange_total: 3,
             latest_question: Some("why?".into()),
             latest_answer: Some("because".into()),
             latest_failed: false,
@@ -4657,6 +4724,7 @@ mod tests {
         .unwrap();
         assert_eq!(discussion["state"], "navigating");
         assert_eq!(discussion["questionCount"], 2);
+        assert_eq!(discussion["exchangeTotal"], 3);
         assert_eq!(discussion["latestQuestion"], "why?");
         assert_eq!(discussion["latestAnswer"], "because");
         assert_eq!(discussion["latestFailed"], false);
@@ -5443,6 +5511,43 @@ mod tests {
             35,
             "stale page geometry must not undo manual scrolling"
         );
+    }
+
+    /// The chat card only offers "Allow and remember" and child-agent
+    /// decisions when core can honor them; a stale click must fail loudly
+    /// instead of answering some other approval.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn gui_policy_rejects_unavailable_remember_and_child_approvals() {
+        let mut editor = Editor::default();
+        activate_gui_ai_chat(&mut editor).unwrap();
+        let chat = snapshot(&editor, 1).ai_chat.unwrap();
+        assert!(chat.approval.is_none());
+        assert!(!chat.approval_can_remember);
+        assert!(chat.agent_approval.is_none());
+        for (action, target) in [
+            ("approve-tool-remember", None),
+            ("approve-agent", Some("evt_missing")),
+            ("deny-agent", Some("evt_missing")),
+            ("approve-agent", None),
+        ] {
+            let (reply, response) = oneshot::channel();
+            handle_request(
+                GuiRequest::AiPolicy {
+                    action: action.into(),
+                    target: target.map(str::to_string),
+                    reply,
+                },
+                &mut editor,
+                &mut (100, 30),
+                &mut 2,
+                &mut GuiProjectionCache::default(),
+            )
+            .await;
+            assert!(
+                response.await.unwrap().is_err(),
+                "{action} must fail without a matching pending approval"
+            );
+        }
     }
 
     #[test]

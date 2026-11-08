@@ -259,7 +259,18 @@ export interface GuiAiChat {
     followedAgentId?: string;
     agentCursor: number;
     approval?: string;
+    /** Core only supports "allow and remember" for a parked tool approval. */
+    approvalCanRemember?: boolean;
+    /** Oldest pending approval of a delegated child agent. */
+    agentApproval?: GuiAgentApproval;
     codeExplanation?: GuiCodeExplanation;
+}
+
+export interface GuiAgentApproval {
+    requestId: string;
+    agentId: string;
+    agentName: string;
+    summary: string;
 }
 
 export interface GuiCodeExplanation {
@@ -286,6 +297,7 @@ export interface GuiCodeExplanation {
         | {
               state: "navigating";
               questionCount: number;
+              exchangeTotal: number;
               latestQuestion?: string;
               latestAnswer?: string;
               latestFailed: boolean;

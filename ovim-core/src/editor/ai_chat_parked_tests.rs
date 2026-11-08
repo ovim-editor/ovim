@@ -333,6 +333,33 @@ async fn activity_reports_tool_approval_over_the_live_provider_turn() {
     assert_cancelled_to_idle(&mut editor);
 }
 
+/// "Allow and remember" is only valid for a parked tool approval; the GUI
+/// hides the button otherwise (no-repo folder approvals have no remember).
+#[tokio::test(flavor = "current_thread")]
+async fn remembering_is_offered_only_for_a_parked_tool_approval() {
+    let mut editor = chat_editor();
+    assert!(!editor.ai_chat_pending_tool_approval_can_remember());
+    let tool_call = call("approve", "bash");
+    let (turn, tool, response, _receiver) = dynamic_call(&mut editor, &tool_call);
+    park(
+        &mut editor,
+        ParkedTurn::Approval(approval(
+            tool_call,
+            Vec::new(),
+            Some((turn, tool, response)),
+        )),
+    );
+    assert!(editor.ai_chat_pending_tool_approval_can_remember());
+    editor
+        .ai_state
+        .chat
+        .as_mut()
+        .unwrap()
+        .pending_no_repo_folder_approval = Some(PathBuf::from("/tmp"));
+    assert!(!editor.ai_chat_pending_tool_approval_can_remember());
+    assert_cancelled_to_idle(&mut editor);
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn activity_reports_auto_mode_classification() {
     let mut editor = chat_editor();

@@ -395,6 +395,22 @@ impl Editor {
             .unwrap_or(false)
     }
 
+    /// Whether the pending approval can be remembered ("allow and remember").
+    /// Only a parked tool approval supports it; external-agent permissions and
+    /// the no-repo folder approval resolve without a remember option.
+    pub fn ai_chat_pending_tool_approval_can_remember(&self) -> bool {
+        if self.ai_chat_has_pending_no_repo_folder_approval()
+            || (self.external_permission_summary().is_some()
+                && !self.ai_chat_has_external_question())
+        {
+            return false;
+        }
+        self.ai_state.chat.as_ref().is_some_and(|c| {
+            c.parked_as::<super::ai_chat_state::PendingToolApproval>()
+                .is_some()
+        })
+    }
+
     /// Whether chat is waiting for first-time no-repo folder approval.
     pub fn ai_chat_has_pending_no_repo_folder_approval(&self) -> bool {
         self.ai_state
