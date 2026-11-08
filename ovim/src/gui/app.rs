@@ -501,6 +501,11 @@ async fn gui_select_tab(bridge: State<'_, GuiBridge>, index: usize) -> Result<()
 }
 
 #[tauri::command]
+async fn gui_scroll(bridge: State<'_, GuiBridge>, pane: usize, lines: i32) -> Result<(), String> {
+    bridge.scroll(pane, lines).await
+}
+
+#[tauri::command]
 async fn gui_focus_pane(bridge: State<'_, GuiBridge>, index: usize) -> Result<(), String> {
     bridge.focus_pane(index).await
 }
@@ -680,6 +685,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_select_chat_agent,
             gui_select_tab,
             gui_focus_pane,
+            gui_scroll,
             gui_select_picker,
             gui_select_completion,
             gui_select_file_tree,

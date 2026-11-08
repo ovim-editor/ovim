@@ -10,6 +10,38 @@ use crate::unicode::{char_to_grapheme_col, grapheme_count, GraphemeCol};
 
 use super::code_explanation_mode;
 
+impl Editor {
+    /// Moves the cursor to a clicked buffer position (`col` is a grapheme column).
+    ///
+    /// In Insert mode the click keeps Insert mode, but like any cursor movement
+    /// there (vim's `start_arrow`) it ends the current insert session: the typed
+    /// text becomes its own undo step and dot-repeat unit, a new one starts at
+    /// the new position, and the completion/signature popups are dismissed.
+    pub fn place_cursor_from_pointer(&mut self, line: usize, col: usize) {
+        let was_insert = self.mode() == Mode::Insert;
+        if was_insert {
+            self.dismiss_completion();
+            // Same finalization as Ctrl-O: no cursor step-back, no `count` repeat.
+            super::insert_mode::finish_insert_mode(self, true);
+        }
+        let line = line.min(self.buffer().line_count().saturating_sub(1));
+        let len = self.buffer().line_grapheme_count(line);
+        // Insert mode may sit just past the last character, Normal mode may not.
+        let max_col = if was_insert {
+            len
+        } else {
+            len.saturating_sub(1)
+        };
+        self.buffer_mut()
+            .cursor_mut()
+            .set_position(line, GraphemeCol(col.min(max_col)));
+        if was_insert {
+            self.start_change_building(self.cursor_position());
+            self.set_mode(Mode::Insert);
+        }
+    }
+}
+
 /// Top-level mouse event dispatcher.
 /// Returns `Ok(Some(url))` when a concealed markdown link was clicked and should be opened.
 pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Option<String>> {
@@ -705,10 +737,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         if editor.diff_review_click(line, char_col) {
             return Ok(None);
         }
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line, GraphemeCol(char_col));
+        editor.place_cursor_from_pointer(line, char_col);
         editor.render_cache.mouse_state.is_dragging = true;
         editor.render_cache.mouse_state.drag_origin = Some((line, char_col));
     }

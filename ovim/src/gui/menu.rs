@@ -15,6 +15,9 @@ use tauri::{App, State, Wry};
 pub enum GuiMenuSurface {
     Source,
     Browser,
+    /// The integrated terminal has keyboard focus: every Ctrl chord belongs
+    /// to the shell on non-macOS hosts.
+    Terminal,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -28,6 +31,15 @@ struct GuiMenuPolicy {
     new_tab_accelerator: Option<&'static str>,
     close_accelerator: Option<&'static str>,
     browser_navigation_enabled: bool,
+    /// Save, Save All and Quit.
+    file_accelerators: bool,
+    /// Undo and Redo: Vim's own on the source surface, the page's or the
+    /// shell's elsewhere.
+    history_accelerators: bool,
+    /// Select All: Vim Ctrl-A increments; pages and shells handle it natively.
+    select_all_accelerator: bool,
+    /// Find: Vim Ctrl-F pages down; the browser forwards it to the page.
+    find_accelerator: bool,
 }
 
 impl GuiMenuPolicy {
@@ -40,6 +52,10 @@ impl GuiMenuPolicy {
             close_accelerator: (browser_active || conventional_macos_shortcuts)
                 .then_some("CmdOrCtrl+W"),
             browser_navigation_enabled: browser_active,
+            file_accelerators: conventional_macos_shortcuts || surface != GuiMenuSurface::Terminal,
+            history_accelerators: conventional_macos_shortcuts || surface == GuiMenuSurface::Source,
+            select_all_accelerator: conventional_macos_shortcuts,
+            find_accelerator: conventional_macos_shortcuts || browser_active,
         }
     }
 }
@@ -50,6 +66,10 @@ pub struct GuiMenuState {
     restore_browser_tab: MenuItem<Wry>,
     close: MenuItem<Wry>,
     browser_navigation: Vec<(MenuItem<Wry>, &'static str)>,
+    file_items: Vec<(MenuItem<Wry>, &'static str)>,
+    history_items: Vec<(MenuItem<Wry>, &'static str)>,
+    select_all: MenuItem<Wry>,
+    find: MenuItem<Wry>,
 }
 
 impl GuiMenuState {
@@ -68,6 +88,18 @@ impl GuiMenuState {
             item.set_enabled(policy.browser_navigation_enabled)?;
             item.set_accelerator(policy.browser_navigation_enabled.then_some(*accelerator))?;
         }
+        for (items, owned) in [
+            (&self.file_items, policy.file_accelerators),
+            (&self.history_items, policy.history_accelerators),
+        ] {
+            for (item, accelerator) in items {
+                item.set_accelerator(owned.then_some(*accelerator))?;
+            }
+        }
+        self.select_all
+            .set_accelerator(policy.select_all_accelerator.then_some("CmdOrCtrl+A"))?;
+        self.find
+            .set_accelerator(policy.find_accelerator.then_some("CmdOrCtrl+F"))?;
         Ok(())
     }
 }
@@ -97,26 +129,14 @@ pub fn install(app: &App) -> Result<GuiMenuState> {
         false,
         None::<&str>,
     )?;
-    let save = MenuItem::with_id(app, "file.save", "Save", true, Some("CmdOrCtrl+S"))?;
-    let save_all = MenuItem::with_id(
-        app,
-        "file.save-all",
-        "Save All",
-        true,
-        Some("CmdOrCtrl+Alt+S"),
-    )?;
+    let save = MenuItem::with_id(app, "file.save", "Save", true, None::<&str>)?;
+    let save_all = MenuItem::with_id(app, "file.save-all", "Save All", true, None::<&str>)?;
     let close = MenuItem::with_id(app, "file.close", "Close", true, None::<&str>)?;
-    let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, Some("CmdOrCtrl+Q"))?;
-    let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, Some("CmdOrCtrl+Z"))?;
-    let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, Some("CmdOrCtrl+Shift+Z"))?;
-    let select_all = MenuItem::with_id(
-        app,
-        "edit.select-all",
-        "Select All",
-        true,
-        Some("CmdOrCtrl+A"),
-    )?;
-    let find = MenuItem::with_id(app, "edit.find", "Find", true, Some("CmdOrCtrl+F"))?;
+    let quit = MenuItem::with_id(app, "app.quit", "Quit Ovim", true, None::<&str>)?;
+    let undo = MenuItem::with_id(app, "edit.undo", "Undo", true, None::<&str>)?;
+    let redo = MenuItem::with_id(app, "edit.redo", "Redo", true, None::<&str>)?;
+    let select_all = MenuItem::with_id(app, "edit.select-all", "Select All", true, None::<&str>)?;
+    let find = MenuItem::with_id(app, "edit.find", "Find", true, None::<&str>)?;
     let focus_address = MenuItem::with_id(
         app,
         "browser.focus-address",
@@ -217,6 +237,14 @@ pub fn install(app: &App) -> Result<GuiMenuState> {
             (previous_tab, "CmdOrCtrl+Shift+["),
             (next_tab, "CmdOrCtrl+Shift+]"),
         ],
+        file_items: vec![
+            (save, "CmdOrCtrl+S"),
+            (save_all, "CmdOrCtrl+Alt+S"),
+            (quit, "CmdOrCtrl+Q"),
+        ],
+        history_items: vec![(undo, "CmdOrCtrl+Z"), (redo, "CmdOrCtrl+Shift+Z")],
+        select_all,
+        find,
     };
     state.apply(GuiMenuSurface::Source, false)?;
     Ok(state)
@@ -232,6 +260,31 @@ mod tests {
         assert_eq!(policy.new_tab_accelerator, None);
         assert_eq!(policy.close_accelerator, None);
         assert!(!policy.browser_navigation_enabled);
+        // Ctrl-A increments and Ctrl-F pages down in Vim.
+        assert!(!policy.select_all_accelerator);
+        assert!(!policy.find_accelerator);
+        assert!(policy.file_accelerators);
+        assert!(policy.history_accelerators);
+    }
+
+    #[test]
+    fn non_macos_terminal_surface_releases_every_control_chord() {
+        let policy = GuiMenuPolicy::for_surface(GuiMenuSurface::Terminal, GuiMenuPlatform::Other);
+        assert!(!policy.file_accelerators);
+        assert!(!policy.history_accelerators);
+        assert!(!policy.select_all_accelerator);
+        assert!(!policy.find_accelerator);
+        assert_eq!(policy.new_tab_accelerator, None);
+        assert!(!policy.browser_navigation_enabled);
+    }
+
+    #[test]
+    fn macos_terminal_keeps_command_shortcuts() {
+        let policy = GuiMenuPolicy::for_surface(GuiMenuSurface::Terminal, GuiMenuPlatform::Macos);
+        assert!(policy.file_accelerators);
+        assert!(policy.history_accelerators);
+        assert!(policy.select_all_accelerator);
+        assert!(policy.find_accelerator);
     }
 
     #[test]
@@ -241,7 +294,12 @@ mod tests {
             assert_eq!(policy.new_tab_accelerator, Some("CmdOrCtrl+T"));
             assert_eq!(policy.close_accelerator, Some("CmdOrCtrl+W"));
             assert!(policy.browser_navigation_enabled);
+            assert!(policy.find_accelerator);
         }
+        // Pages handle their own undo and select-all off macOS.
+        let policy = GuiMenuPolicy::for_surface(GuiMenuSurface::Browser, GuiMenuPlatform::Other);
+        assert!(!policy.history_accelerators);
+        assert!(!policy.select_all_accelerator);
     }
 
     #[test]

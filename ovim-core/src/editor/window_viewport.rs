@@ -469,6 +469,52 @@ impl Editor {
         }
     }
 
+    /// Scrolls window `index` by `delta_down` rows exactly as Ctrl-E (positive)
+    /// or Ctrl-Y (negative) would, without dispatching keys and without leaving
+    /// the window focused: the cursor of the scrolled window stays inside its
+    /// viewport by the usual rules, and focus (plus the focused cursor) is put
+    /// back afterwards. Returns `false` for an unknown window.
+    pub fn scroll_window_viewport(&mut self, index: usize, delta_down: isize) -> bool {
+        if self.window_manager.is_none() {
+            self.init_window_manager(80, 24);
+        }
+        let Some((original, count)) = self
+            .window_manager
+            .as_ref()
+            .map(|wm| (wm.focused_window_index(), wm.window_count()))
+        else {
+            return false;
+        };
+        if index >= count {
+            return false;
+        }
+        let original_cursor = *self.buffer().cursor();
+        if index != original {
+            self.focus_window(index);
+        }
+        if delta_down >= 0 {
+            self.scroll_viewport_down(delta_down as usize);
+        } else {
+            self.scroll_viewport_up(delta_down.unsigned_abs());
+        }
+        // The explicit scroll must not make the *next* key skip its scroll update.
+        self.viewport.take_preserve_after_input();
+        if index != original {
+            self.focus_window(original);
+            *self.buffer_mut().cursor_mut() = original_cursor;
+            let scroll = self
+                .window_manager
+                .as_ref()
+                .and_then(|wm| wm.focused_window())
+                .map(|window| (window.scroll_offset(), window.scroll_subrow()));
+            if let Some((offset, subrow)) = scroll {
+                self.viewport.scroll_offset = offset;
+                self.viewport.scroll_subrow = subrow;
+            }
+        }
+        true
+    }
+
     /// Centers cursor in viewport (zz).
     pub fn center_cursor_in_viewport(&mut self) {
         if self.window_manager.is_none() {

@@ -191,6 +191,13 @@ impl Editor {
             self.insert_exa_setup_text(text);
             return Ok(());
         }
+        // A walkthrough question being composed owns paste, even though the
+        // chat draft underneath is hidden.
+        if self.has_code_explanation_question_draft() {
+            let normalized = crate::buffer::normalize_for_buffer(text);
+            self.insert_code_explanation_question_text(normalized.as_ref());
+            return Ok(());
+        }
         if self.mode() == Mode::AiChat && self.try_attach_dropped_chat_images(text)? {
             return Ok(());
         }

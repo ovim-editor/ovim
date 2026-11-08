@@ -68,7 +68,7 @@ fn exit_insert_mode(editor: &mut Editor) {
 /// Close the current recording before a temporary normal command can mutate
 /// the buffer. Ctrl-O keeps the insertion position and starts a fresh undo
 /// unit when the normal command completes.
-fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
+pub(super) fn finish_insert_mode(editor: &mut Editor, temporary: bool) {
     editor.end_snippet_session();
     editor.clear_signature_help();
     // Save last insert position BEFORE moving cursor (this is where we can continue inserting)
@@ -852,6 +852,63 @@ mod tests {
         ] {
             assert!(!text_ends_inside_call(outside), "{outside:?}");
         }
+    }
+
+    /// A click in Insert mode keeps Insert mode but ends the insert session like
+    /// any cursor movement does.
+    // vim: real mouse click (nvim --clean, mouse=a): "abcdef"/"second", `iXY`,
+    // click on row 2 col 4, `ZZ<Esc>` -> "XYabcdef"/"secZZond"; `u` removes only
+    // "ZZ" (XY stays) and `.` repeats only "ZZ".
+    #[test]
+    fn pointer_click_in_insert_mode_starts_a_new_undo_and_repeat_unit() {
+        let mut editor = Editor::with_content("abcdef\nsecond");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        type_key(&mut editor, KeyCode::Char('X'));
+        type_key(&mut editor, KeyCode::Char('Y'));
+        editor.lsp.state.signature_help = Some(Box::new(crate::editor::SignatureHelpState {
+            label: "f(int a)".into(),
+            active_param: None,
+            active_param_index: None,
+            signature_index: 0,
+            signature_count: 1,
+            documentation: None,
+            parameter_documentation: None,
+            anchor: (0, 2),
+        }));
+
+        editor.place_cursor_from_pointer(1, 3);
+        assert_eq!(editor.mode(), Mode::Insert, "a click keeps Insert mode");
+        assert!(editor.signature_help().is_none(), "popups are dismissed");
+        type_key(&mut editor, KeyCode::Char('Z'));
+        type_key(&mut editor, KeyCode::Char('Z'));
+        exit_insert_mode(&mut editor);
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecZZond\n");
+
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecond\n");
+
+        editor
+            .buffer_mut()
+            .cursor_mut()
+            .set_position(0, GraphemeCol(3));
+        editor.repeat_last_change();
+        assert_eq!(editor.buffer().rope().to_string(), "XYaZZbcdef\nsecond\n");
+    }
+
+    /// Insert mode may click just past the last character; Normal mode may not.
+    #[test]
+    fn pointer_click_clamps_to_the_mode() {
+        let mut editor = Editor::with_content("abc");
+        editor.place_cursor_from_pointer(0, 99);
+        assert_eq!(editor.buffer().cursor().col().0, 2);
+
+        let mut editor = Editor::with_content("abc");
+        editor.start_change_building(editor.cursor_position());
+        editor.set_mode(Mode::Insert);
+        editor.place_cursor_from_pointer(0, 99);
+        assert_eq!(editor.mode(), Mode::Insert);
+        assert_eq!(editor.buffer().cursor().col().0, 3);
     }
 
     #[test]

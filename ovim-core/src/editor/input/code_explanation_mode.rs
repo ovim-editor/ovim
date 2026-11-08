@@ -64,6 +64,15 @@ pub(super) fn handle_key(editor: &mut Editor, key_event: KeyEvent) -> bool {
             KeyCode::Backspace => {
                 editor.backspace_code_explanation_question();
             }
+            KeyCode::Delete => {
+                editor.delete_code_explanation_question_forward();
+            }
+            KeyCode::Home => {
+                editor.move_code_explanation_question_cursor_to_line_edge(false);
+            }
+            KeyCode::End => {
+                editor.move_code_explanation_question_cursor_to_line_edge(true);
+            }
             KeyCode::Left => {
                 editor.move_code_explanation_question_cursor(false);
             }

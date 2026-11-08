@@ -294,8 +294,43 @@ fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Resu
     Ok(())
 }
 
+/// Upper bound on one `gui_scroll` request, so a runaway wheel delta cannot stall the editor.
+const MAX_GUI_SCROLL_LINES: i32 = 10_000;
+
+/// Gets out of the modes a click dismisses, the way Esc would. Insert mode is
+/// kept (the click only moves the cursor there); other modes without a text
+/// cursor fall back to a plain switch to Normal.
+fn leave_modal_mode_for_click(editor: &mut Editor) {
+    use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
+
+    // Esc from a visual search prompt returns to Visual, so it may take two.
+    for _ in 0..3 {
+        if !matches!(
+            editor.mode(),
+            Mode::Visual
+                | Mode::VisualLine
+                | Mode::VisualBlock
+                | Mode::Command
+                | Mode::Search
+                | Mode::Replace
+        ) {
+            break;
+        }
+        let esc = KeyEvent::new(KeyCode::Esc, Modifiers::NONE);
+        if InputHandler::handle_key_event_no_dirty(editor, esc).is_err() {
+            break;
+        }
+    }
+    if !matches!(editor.mode(), Mode::Normal | Mode::Insert) {
+        editor.set_mode(Mode::Normal);
+    }
+}
+
 impl GuiKeyInput {
-    fn into_core(self) -> Result<ovim_core::key::KeyEvent> {
+    /// Converts the browser key to a core key event. `Ok(None)` means the key
+    /// has no editor meaning (CapsLock, AltGraph, Dead, Insert, bare modifiers...)
+    /// and must be dropped without dispatching or reporting an error.
+    fn into_core(self) -> Result<Option<ovim_core::key::KeyEvent>> {
         use ovim_core::key::{KeyCode, KeyEvent, Modifiers};
 
         let code = match self.key.as_str() {
@@ -313,16 +348,24 @@ impl GuiKeyInput {
             "End" => KeyCode::End,
             "PageUp" => KeyCode::PageUp,
             "PageDown" => KeyCode::PageDown,
-            key if key.len() > 1 && key.starts_with('F') => key[1..]
-                .parse::<u8>()
-                .ok()
-                .filter(|number| (1..=24).contains(number))
-                .map(KeyCode::F)
-                .unwrap_or(KeyCode::Null),
+            key if key.len() > 1
+                && key[1..].bytes().all(|byte| byte.is_ascii_digit())
+                && key.starts_with('F') =>
+            {
+                key[1..]
+                    .parse::<u8>()
+                    .ok()
+                    .filter(|number| (1..=24).contains(number))
+                    .map(KeyCode::F)
+                    .unwrap_or(KeyCode::Null)
+            }
             key => {
                 let mut chars = key.chars();
                 match (chars.next(), chars.next()) {
                     (Some(ch), None) => KeyCode::Char(ch),
+                    // Named keys with no editor meaning (CapsLock, AltGraph, Dead,
+                    // Insert, Unidentified, Fn, ...) are not errors.
+                    _ if key.bytes().all(|byte| byte.is_ascii_alphanumeric()) => return Ok(None),
                     _ => anyhow::bail!("Unsupported GUI key: {key}"),
                 }
             }
@@ -341,7 +384,7 @@ impl GuiKeyInput {
         if self.meta {
             modifiers |= Modifiers::SUPER;
         }
-        Ok(KeyEvent::new(code, modifiers))
+        Ok(Some(KeyEvent::new(code, modifiers)))
     }
 }
 
@@ -375,6 +418,9 @@ pub struct GuiSnapshot {
     pub panes: Vec<GuiPane>,
     pub tabs: Vec<GuiTab>,
     pub git_branch: Option<String>,
+    /// Register of the macro being recorded (`q` for `qq`), if any.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub recording: Option<String>,
     /// Enclosing symbols of the cursor (class, method), outermost first.
     pub symbol_breadcrumbs: Vec<GuiBreadcrumb>,
     pub git_changes: GuiGitChanges,
@@ -1121,6 +1167,12 @@ enum GuiRequest {
         index: usize,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Scrolls one pane's viewport (positive `lines` = down) without keys or focus changes.
+    Scroll {
+        pane: usize,
+        lines: i32,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     FocusPane {
         index: usize,
         reply: oneshot::Sender<Result<(), String>>,
@@ -1421,6 +1473,11 @@ impl GuiBridge {
 
     pub async fn select_tab(&self, index: usize) -> Result<(), String> {
         self.request(|reply| GuiRequest::SelectTab { index, reply })
+            .await
+    }
+
+    pub async fn scroll(&self, pane: usize, lines: i32) -> Result<(), String> {
+        self.request(|reply| GuiRequest::Scroll { pane, lines, reply })
             .await
     }
 
@@ -1956,9 +2013,10 @@ async fn handle_request(
             (reply, result)
         }
         GuiRequest::Key { input, reply } => {
-            let result = input
-                .into_core()
-                .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+            let result = input.into_core().and_then(|event| match event {
+                Some(event) => InputHandler::handle_key_event_no_dirty(editor, event),
+                None => Ok(()),
+            });
             if result.is_ok() {
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
@@ -1987,9 +2045,10 @@ async fn handle_request(
                 .ok_or_else(|| anyhow::anyhow!("Chat draft changed before the GUI edit arrived"));
             if result.is_ok() {
                 if let Some(action) = action {
-                    result = action
-                        .into_core()
-                        .and_then(|event| InputHandler::handle_key_event_no_dirty(editor, event));
+                    result = action.into_core().and_then(|event| match event {
+                        Some(event) => InputHandler::handle_key_event_no_dirty(editor, event),
+                        None => Ok(()),
+                    });
                 }
                 refresh_after_input(editor);
                 editor.dispatch_pending_intents().await;
@@ -2142,7 +2201,7 @@ async fn handle_request(
                 let _ = reply.send(Err(format!("Unknown editor pane: {pane}")));
                 return;
             }
-            editor.set_mode(Mode::Normal);
+            leave_modal_mode_for_click(editor);
             let text = editor
                 .buffer()
                 .line_text(line)
@@ -2155,11 +2214,7 @@ async fn handle_request(
             );
             let grapheme_column =
                 crate::unicode::char_to_grapheme_col(&text, crate::unicode::CharCol(char_column));
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(line, grapheme_column);
-            editor.buffer_mut().validate_cursor_position();
+            editor.place_cursor_from_pointer(line, grapheme_column.0);
             editor.update_scroll_offset();
             refresh_after_input(editor);
             (reply, Ok(()))
@@ -2245,6 +2300,20 @@ async fn handle_request(
             editor.goto_tab(index);
             refresh_after_input(editor);
             (reply, Ok(()))
+        }
+        GuiRequest::Scroll { pane, lines, reply } => {
+            // Direct viewport scroll: no key dispatch, so it works in any mode and
+            // never touches pending operators, macros, completions or focus.
+            let delta = isize::try_from(lines.clamp(-MAX_GUI_SCROLL_LINES, MAX_GUI_SCROLL_LINES))
+                .unwrap_or_default();
+            let result = editor
+                .scroll_window_viewport(pane, delta)
+                .then_some(())
+                .ok_or_else(|| anyhow::anyhow!("Unknown editor pane: {pane}"));
+            if result.is_ok() {
+                refresh_after_input(editor);
+            }
+            (reply, result)
         }
         GuiRequest::FocusPane { index, reply } => {
             let result = editor
@@ -2629,6 +2698,12 @@ fn snapshot_with_cache(
             })
             .collect(),
         git_branch: editor.git_branch().map(str::to_string),
+        recording: editor.is_recording_macro().then(|| {
+            editor
+                .recording_register()
+                .map(String::from)
+                .unwrap_or_default()
+        }),
         symbol_breadcrumbs: editor
             .breadcrumbs()
             .into_iter()
@@ -2976,12 +3051,16 @@ fn project_lines(
         for (visual_index, display_start, mut segments) in visual_rows {
             let continuation = visual_index > 0;
             if segments.is_empty() {
+                // An empty line has no cell of its own, so its placeholder
+                // carries the selection (vim highlights the line break).
                 segments.push(GuiSegment {
                     text: " ".to_string(),
                     cells: 1,
                     token: None,
                     cursor: line_index == cursor_line && cursor_column == 0,
-                    selected: false,
+                    selected: !continuation
+                        && selection
+                            .is_some_and(|range| selected_at(line_index, 0, selection_mode, range)),
                     search_match: false,
                 });
             }
@@ -5558,6 +5637,301 @@ mod tests {
         assert!(!segments[3].search_match);
         assert!(segments[4].search_match);
         assert!(segments[5].search_match);
+    }
+
+    async fn send_request(
+        editor: &mut Editor,
+        build: impl FnOnce(oneshot::Sender<Result<(), String>>) -> GuiRequest,
+    ) -> Result<(), String> {
+        let (reply, response) = oneshot::channel();
+        handle_request(
+            build(reply),
+            editor,
+            &mut (100, 30),
+            &mut 1,
+            &mut GuiProjectionCache::default(),
+        )
+        .await;
+        response.await.unwrap()
+    }
+
+    fn focused_pane(editor: &Editor) -> Option<usize> {
+        snapshot(editor, 1)
+            .panes
+            .iter()
+            .position(|pane| pane.focused)
+    }
+
+    fn key_input(key: &str) -> GuiKeyInput {
+        GuiKeyInput {
+            key: key.into(),
+            control: false,
+            shift: false,
+            alt: false,
+            meta: false,
+        }
+    }
+
+    #[test]
+    fn keys_without_editor_meaning_are_ignored_not_errors() {
+        for key in [
+            "CapsLock",
+            "AltGraph",
+            "NumLock",
+            "ContextMenu",
+            "Pause",
+            "PrintScreen",
+            "ScrollLock",
+            "Unidentified",
+            "Dead",
+            "Process",
+            "OS",
+            "Super",
+            "Hyper",
+            "Fn",
+            "FnLock",
+            "Insert",
+            "Shift",
+        ] {
+            assert!(
+                matches!(key_input(key).into_core(), Ok(None)),
+                "{key} should be dropped silently"
+            );
+        }
+        assert!(matches!(key_input("F5").into_core(), Ok(Some(_))));
+        assert!(matches!(key_input("a").into_core(), Ok(Some(_))));
+        assert!(
+            key_input("a b").into_core().is_err(),
+            "text is still validated"
+        );
+    }
+
+    #[tokio::test]
+    async fn ignored_key_leaves_status_and_pending_operator_alone() {
+        let mut editor = Editor::with_content("one two\n");
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input("d"),
+            reply,
+        })
+        .await
+        .unwrap();
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input("CapsLock"),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert!(editor.status_message().is_empty());
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input("w"),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.buffer().rope().to_string(), "two\n");
+    }
+
+    #[test]
+    fn snapshot_reports_the_macro_register_being_recorded() {
+        let mut editor = Editor::with_content("one\n");
+        assert_eq!(snapshot(&editor, 1).recording, None);
+        let json = serde_json::to_value(snapshot(&editor, 1)).unwrap();
+        assert!(json.get("recording").is_none());
+        let press = |editor: &mut Editor, key: char| {
+            crate::editor::InputHandler::handle_key_event(
+                editor,
+                ovim_core::KeyEvent::new(ovim_core::KeyCode::Char(key), ovim_core::Modifiers::NONE),
+            )
+            .unwrap();
+        };
+        press(&mut editor, 'q');
+        press(&mut editor, 'q');
+        assert_eq!(snapshot(&editor, 2).recording.as_deref(), Some("q"));
+        let json = serde_json::to_value(snapshot(&editor, 2)).unwrap();
+        assert_eq!(json["recording"], "q");
+        press(&mut editor, 'q');
+        assert_eq!(snapshot(&editor, 3).recording, None);
+    }
+
+    /// vim: `vjj` from "a" over an empty line to "b" highlights the empty line
+    /// like the others (nvim --clean, checked with screenattr).
+    #[test]
+    fn visual_selection_highlights_empty_lines_with_and_without_wrap() {
+        for wrap in [false, true] {
+            let mut editor = Editor::with_content("a\n\nb\n");
+            editor.options.wrap = wrap;
+            handle_viewport_resize(&mut editor, 100, 30);
+            editor.set_visual_start(0, 0);
+            editor.set_mode(Mode::Visual);
+            editor
+                .buffer_mut()
+                .cursor_mut()
+                .set_position(2, ovim_core::unicode::GraphemeCol(0));
+            let view = snapshot(&editor, 1);
+            let lines = &view.panes[0].lines;
+            let selected =
+                |line: usize| lines[line].segments.iter().any(|segment| segment.selected);
+            assert!(selected(0) && selected(1) && selected(2), "wrap={wrap}");
+
+            // Outside the selection the placeholder stays plain.
+            editor.set_mode(Mode::Normal);
+            let view = snapshot(&editor, 2);
+            assert!(
+                view.panes[0].lines[1]
+                    .segments
+                    .iter()
+                    .all(|segment| !segment.selected),
+                "wrap={wrap}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn click_in_insert_mode_keeps_insert_and_breaks_the_undo_group() {
+        let mut editor = Editor::with_content("abcdef\nsecond\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["i", "X", "Y"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        send_request(&mut editor, |reply| GuiRequest::SetCursor {
+            pane: 0,
+            line: 1,
+            display_column: 3,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Insert);
+        for key in ["Z", "Z", "Escape"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        // vim (nvim --clean, mouse click mid-insert): `u` removes only "ZZ".
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecZZond\n");
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "XYabcdef\nsecond\n");
+    }
+
+    #[tokio::test]
+    async fn click_leaves_visual_and_command_modes_through_escape() {
+        let mut editor = Editor::with_content("abc\ndef\n");
+        handle_viewport_resize(&mut editor, 100, 30);
+        for key in ["v", "l"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        assert_eq!(editor.mode(), Mode::Visual);
+        send_request(&mut editor, |reply| GuiRequest::SetCursor {
+            pane: 0,
+            line: 1,
+            display_column: 1,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.buffer().cursor().line(), 1);
+        assert_eq!(editor.buffer().cursor().col().0, 1);
+
+        send_request(&mut editor, |reply| GuiRequest::Key {
+            input: key_input(":"),
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Command);
+        send_request(&mut editor, |reply| GuiRequest::SetCursor {
+            pane: 0,
+            line: 0,
+            display_column: 0,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(editor.mode(), Mode::Normal);
+        assert_eq!(editor.command_line(), "");
+    }
+
+    #[tokio::test]
+    async fn scroll_moves_one_pane_without_keys_focus_or_pending_state() {
+        let content: String = (0..200).map(|line| format!("line {line}\n")).collect();
+        let mut editor = Editor::with_content(&content);
+        editor.init_window_manager(100, 30);
+        editor.split_window_vertical();
+        handle_viewport_resize(&mut editor, 100, 30);
+        assert!(editor.focus_window(1));
+        assert_eq!(focused_pane(&editor), Some(1));
+        let first_line = |editor: &Editor, pane: usize| snapshot(editor, 1).panes[pane].first_line;
+        assert_eq!(first_line(&editor, 0), 0);
+
+        // A pending operator and a macro recording both survive the scroll.
+        for key in ["q", "q", "d"] {
+            send_request(&mut editor, |reply| GuiRequest::Key {
+                input: key_input(key),
+                reply,
+            })
+            .await
+            .unwrap();
+        }
+        let recorded_before = editor.buffer().cursor().line();
+        send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 0,
+            lines: 5,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_line(&editor, 0), 5, "the other pane scrolled");
+        assert_eq!(focused_pane(&editor), Some(1), "focus is untouched");
+        assert!(editor.is_recording_macro());
+        assert!(!editor.input_state().is_normal(), "operator still pending");
+        assert_eq!(editor.buffer().cursor().line(), recorded_before);
+
+        // Up again, in a mode that would not take Ctrl-Y (Insert).
+        editor.set_mode(Mode::Insert);
+        send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 0,
+            lines: -3,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_line(&editor, 0), 2);
+        assert_eq!(editor.mode(), Mode::Insert);
+
+        // The focused pane keeps the cursor inside its viewport, like Ctrl-E.
+        editor.set_mode(Mode::Normal);
+        editor.reset_input_state();
+        send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 1,
+            lines: 10,
+            reply,
+        })
+        .await
+        .unwrap();
+        assert_eq!(first_line(&editor, 1), 10);
+        assert!(editor.buffer().cursor().line() >= 10);
+
+        let missing = send_request(&mut editor, |reply| GuiRequest::Scroll {
+            pane: 9,
+            lines: 1,
+            reply,
+        })
+        .await;
+        assert!(missing.is_err());
     }
 
     #[test]

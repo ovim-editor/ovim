@@ -493,6 +493,76 @@ impl Editor {
         true
     }
 
+    /// Whether a walkthrough question is currently being composed.
+    pub fn has_code_explanation_question_draft(&self) -> bool {
+        self.ai_state
+            .chat
+            .as_ref()
+            .and_then(|chat| chat.pending_code_explanation.as_ref())
+            .is_some_and(|pending| {
+                matches!(
+                    pending.interaction,
+                    CodeExplanationInteraction::Composing { .. }
+                )
+            })
+    }
+
+    /// Inserts pasted text into the walkthrough question at its cursor.
+    /// Returns `false` when no walkthrough question is being composed.
+    pub fn insert_code_explanation_question_text(&mut self, text: &str) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        input.insert_str(*cursor, text);
+        *cursor += text.len();
+        true
+    }
+
+    /// Deletes the character after the cursor of the walkthrough question.
+    pub fn delete_code_explanation_question_forward(&mut self) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        if let Some(next) = input[*cursor..].chars().next() {
+            input.drain(*cursor..*cursor + next.len_utf8());
+        }
+        true
+    }
+
+    /// Moves the walkthrough question cursor to the start (`Home`) or end
+    /// (`End`) of the line it is on.
+    pub fn move_code_explanation_question_cursor_to_line_edge(&mut self, end: bool) -> bool {
+        let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
+            .ai_state
+            .chat
+            .as_mut()
+            .and_then(|chat| chat.pending_code_explanation.as_mut())
+            .map(|pending| &mut pending.interaction)
+        else {
+            return false;
+        };
+        *cursor = if end {
+            input[*cursor..]
+                .find('\n')
+                .map_or(input.len(), |offset| *cursor + offset)
+        } else {
+            input[..*cursor].rfind('\n').map_or(0, |index| index + 1)
+        };
+        true
+    }
+
     pub fn backspace_code_explanation_question(&mut self) -> bool {
         let Some(CodeExplanationInteraction::Composing { input, cursor }) = self
             .ai_state

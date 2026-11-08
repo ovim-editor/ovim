@@ -671,6 +671,47 @@ mod tests {
             .contains("Because."));
     }
     #[tokio::test]
+    async fn walkthrough_question_takes_paste_and_delete_home_end() {
+        use crate::editor::{CodeExplanationDiscussionView, InputHandler};
+        use crate::{KeyCode, KeyEvent, Modifiers};
+
+        let mut editor = editor();
+        let _tx = attach(&mut editor);
+        let _answer = request(
+            &mut editor,
+            "walk",
+            "tools/call",
+            json!({"name":"explain_with_codebase", "arguments":{"steps":[{"type":"concept", "title":"Overview", "body":"One idea."}]}}),
+        );
+        assert!(editor.begin_code_explanation_question());
+        let key = |editor: &mut Editor, code| {
+            InputHandler::handle_key_event(editor, KeyEvent::new(code, Modifiers::NONE)).unwrap();
+        };
+        let question = |editor: &Editor| match editor.ai_code_explanation_view().unwrap().discussion
+        {
+            CodeExplanationDiscussionView::Composing { input, cursor, .. } => (input, cursor),
+            other => panic!("not composing: {other:?}"),
+        };
+        key(&mut editor, KeyCode::Char('a'));
+        key(&mut editor, KeyCode::Char('b'));
+        key(&mut editor, KeyCode::Left);
+
+        // Paste goes into the question at its cursor, not the hidden chat draft.
+        editor.handle_paste_event("X\r\nY").unwrap();
+        assert_eq!(question(&editor), ("aX\nYb".to_string(), 4));
+        assert_eq!(editor.ai_chat_input(), "");
+
+        key(&mut editor, KeyCode::Home);
+        assert_eq!(question(&editor).1, 3, "Home: start of the current line");
+        key(&mut editor, KeyCode::Delete);
+        assert_eq!(question(&editor), ("aX\nb".to_string(), 3));
+        key(&mut editor, KeyCode::End);
+        assert_eq!(question(&editor).1, 4, "End: end of the current line");
+        key(&mut editor, KeyCode::Delete);
+        assert_eq!(question(&editor).0, "aX\nb", "Delete at the end is a no-op");
+    }
+
+    #[tokio::test]
     async fn mcp_walkthrough_stream_preserves_native_history_and_replay() {
         let mut editor = editor();
         let stream = attach(&mut editor);
