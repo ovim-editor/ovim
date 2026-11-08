@@ -737,9 +737,7 @@ fn handle_left_click(editor: &mut Editor, col: u16, row: u16) -> Result<Option<S
         if editor.diff_review_click(line, char_col) {
             return Ok(None);
         }
-        editor.place_cursor_from_pointer(line, char_col);
-        editor.render_cache.mouse_state.is_dragging = true;
-        editor.render_cache.mouse_state.drag_origin = Some((line, char_col));
+        editor.pointer_press(line, char_col, 1, false);
     }
 
     Ok(None)
@@ -835,21 +833,7 @@ fn handle_left_drag(editor: &mut Editor, col: u16, row: u16) -> Result<()> {
     }
 
     if let Some((line, char_col)) = screen_to_buffer(editor, col, row) {
-        // Enter visual mode on first drag movement (if not already visual)
-        if !matches!(mode, Mode::Visual | Mode::VisualLine | Mode::VisualBlock) {
-            if let Some((origin_line, origin_col)) = editor.render_cache.mouse_state.drag_origin {
-                editor.set_visual_start(origin_line, origin_col);
-            }
-            // If we started from a gutter click, stay in VisualLine
-            if editor.mode() != Mode::VisualLine {
-                editor.set_mode(Mode::Visual);
-            }
-        }
-
-        editor
-            .buffer_mut()
-            .cursor_mut()
-            .set_position(line, GraphemeCol(char_col));
+        editor.pointer_drag(line, char_col);
     }
 
     Ok(())
@@ -890,7 +874,7 @@ fn handle_left_release(editor: &mut Editor, col: u16, row: u16) -> Result<Option
         }
         return Ok(None);
     }
-    editor.render_cache.mouse_state.is_dragging = false;
+    editor.pointer_release();
     Ok(None)
 }
 

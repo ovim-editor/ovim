@@ -561,6 +561,20 @@ pub struct MouseState {
     pub is_dragging: bool,
     /// Buffer position where the drag started (line, col)
     pub drag_origin: Option<(usize, usize)>,
+    /// What a drag extends the selection by (set by the press that started it).
+    pub granularity: PointerGranularity,
+    /// The word a double-click selected (line, first and last grapheme column).
+    pub word_origin: Option<(usize, usize, usize)>,
+}
+
+/// Unit by which a pointer drag grows its selection: characters after a plain
+/// press, whole words after a double-click, whole lines after a triple-click.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PointerGranularity {
+    #[default]
+    Char,
+    Word,
+    Line,
 }
 
 /// State for tracking Replace mode for dot-repeat
