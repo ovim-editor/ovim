@@ -243,9 +243,18 @@
     border-bottom: 1px solid var(--border);
 }
 
+/* The heading of the file being read stays visible inside its group; the next
+ * file's heading pushes it out. `100cqw` keeps it viewport-wide when wide code
+ * scrolls sideways. */
 .flow-file-group > .flow-file-heading {
-    position: relative;
+    position: sticky;
+    top: 0;
+    left: 0;
+    z-index: 5;
+    box-sizing: border-box;
+    width: 100cqw;
     min-height: 42px;
+    background: color-mix(in srgb, var(--surface-1) 34%, var(--canvas));
 }
 
 .flow-file-group > .flow-empty.compact {
@@ -603,6 +612,22 @@
 .flow-gap span {
     color: var(--accent);
     font-size: 14px;
+}
+.flow-gap-expand {
+    padding: 0 6px;
+    border: 0;
+    border-radius: var(--radius-2);
+    background: transparent;
+    color: inherit;
+    font: inherit;
+    line-height: 18px;
+    cursor: pointer;
+    user-select: none;
+}
+.flow-gap-expand:hover,
+.flow-gap-expand:focus-visible {
+    background: var(--surface-selected);
+    color: var(--accent);
 }
 .flow-absence {
     justify-content: center;

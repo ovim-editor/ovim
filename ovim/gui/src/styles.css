@@ -310,9 +310,29 @@ button:focus-visible {
 .tabs::-webkit-scrollbar {
     display: none;
 }
-.tab {
+/* Only the tabs scroll; the restore and + buttons sit outside the tablist. */
+.tab-list {
+    display: flex;
+    flex: 0 1 auto;
+    align-items: stretch;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+}
+.tab-list::-webkit-scrollbar {
+    display: none;
+}
+.tab-item {
+    position: relative;
+    display: flex;
+    flex: 0 1 210px;
     min-width: 128px;
     max-width: 210px;
+}
+.tab {
+    flex: 1 1 auto;
+    min-width: 0;
     padding: 0 13px;
     border: 0;
     border-right: 1px solid var(--border);
@@ -323,7 +343,9 @@ button:focus-visible {
     color: color-mix(in srgb, var(--text-primary) 66%, var(--text-secondary));
     font-size: 11.5px;
     position: relative;
-    flex: 0 1 210px;
+}
+.tab-item.closable .tab {
+    padding-right: 30px;
 }
 .tab > span:not(.modified-dot):not(.browser-tab-loading) {
     min-width: 0;
@@ -341,6 +363,34 @@ button:focus-visible {
     inset: 0 0 auto;
     height: 1px;
     background: var(--accent);
+}
+.tab-close {
+    position: absolute;
+    top: 50%;
+    right: 6px;
+    z-index: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 20px;
+    height: 20px;
+    padding: 0;
+    border: 0;
+    border-radius: var(--radius-2);
+    background: transparent;
+    color: var(--text-secondary);
+    opacity: 0;
+    transform: translateY(-50%);
+}
+.tab-item:hover > .tab-close,
+.tab-item:focus-within > .tab-close,
+.tab-item.active > .tab-close {
+    opacity: 1;
+}
+.tab-close:hover,
+.tab-close:focus-visible {
+    background: var(--surface-selected);
+    color: var(--text-primary);
 }
 .modified-dot {
     margin-left: auto;

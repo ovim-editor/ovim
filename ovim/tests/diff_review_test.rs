@@ -1884,7 +1884,7 @@ async fn entirely_equal_terminal_review_has_no_phantom_navigation_and_can_be_res
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
 async fn captured_context_expands_in_both_layouts_without_duplicates_or_moving_the_cursor() {
-    use ovim_core::native_diff::context::DiffContext;
+    use ovim_core::native_diff::context::{DiffContext, CONTEXT_STEP};
     let dir = tempfile::tempdir().unwrap();
     let root = fs::canonicalize(dir.path()).unwrap();
     let repo = Repository::init(&root).unwrap();
@@ -1900,11 +1900,11 @@ async fn captured_context_expands_in_both_layouts_without_duplicates_or_moving_t
     let mut context = DiffContext::new(&snapshot, None);
     let ids: Vec<_> = context.regions(false).map(|r| r.id.clone()).collect();
     assert_eq!(ids.len(), 2);
-    assert!(context.expand(&snapshot, &ids[0], false));
-    assert!(context.expand(&snapshot, &ids[1], true));
+    assert!(context.expand(&snapshot, &ids[0], false, CONTEXT_STEP));
+    assert!(context.expand(&snapshot, &ids[1], true, CONTEXT_STEP));
     for _ in 0..20 {
-        context.expand(&snapshot, &ids[0], false);
-        context.expand(&snapshot, &ids[1], true);
+        context.expand(&snapshot, &ids[0], false, CONTEXT_STEP);
+        context.expand(&snapshot, &ids[1], true, CONTEXT_STEP);
     }
     let first = context.view(&snapshot, &ids[0]).unwrap();
     let second = context.view(&snapshot, &ids[1]).unwrap();
@@ -2088,7 +2088,7 @@ async fn paired_context_stays_with_each_file_and_stops_at_capture_gaps() {
         }];
     }
     let mut context = DiffContext::new(&partial, Some(&custom));
-    assert!(context.expand(&partial, &id, true));
+    assert!(context.expand(&partial, &id, true, 20));
     let view = context.view(&partial, &id).unwrap();
     assert_eq!(
         view.before.old.iter().map(|l| l.number).collect::<Vec<_>>(),
@@ -2096,7 +2096,7 @@ async fn paired_context_stays_with_each_file_and_stops_at_capture_gaps() {
     );
     assert!(view.before.new.is_empty());
     assert!(!view.can_expand_up);
-    assert!(!context.expand(&partial, "not-a-region", true));
+    assert!(!context.expand(&partial, "not-a-region", true, 20));
 
     for split in [false, true] {
         let mut test = EditorTest::new("");
@@ -2599,4 +2599,45 @@ async fn diff_comment_unicode_paste_cancel_delete_and_resize_preserve_source_nav
     test.press_key(KeyCode::Enter);
     assert!(test.editor.buffer().file_path().unwrap().ends_with("a.rs"));
     assert_eq!(current_line(&test), "    let x = 42;");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn captured_context_step_is_twenty_and_expand_all_fills_the_gap_exactly() {
+    use ovim_core::native_diff::context::{DiffContext, CONTEXT_STEP};
+    assert_eq!(CONTEXT_STEP, 20);
+    let dir = tempfile::tempdir().unwrap();
+    let root = fs::canonicalize(dir.path()).unwrap();
+    let repo = Repository::init(&root).unwrap();
+    repo.set_head("refs/heads/main").unwrap();
+    let original: Vec<_> = (1..=100).map(|i| format!("source_{i:03}();")).collect();
+    fs::write(root.join("code.rs"), original.join("\n") + "\n").unwrap();
+    commit_all(&repo, "base");
+    let mut changed = original.clone();
+    changed[29] = "changed_030();".into();
+    changed[79] = "changed_080();".into();
+    fs::write(root.join("code.rs"), changed.join("\n") + "\n").unwrap();
+    let snapshot = review_snapshot(&root, &ReviewBase::explicit("HEAD")).unwrap();
+    let mut context = DiffContext::new(&snapshot, None);
+    let ids: Vec<_> = context.regions(false).map(|r| r.id.clone()).collect();
+    assert_eq!(ids.len(), 2);
+
+    // One step reveals twenty lines per side.
+    assert!(context.expand(&snapshot, &ids[1], true, CONTEXT_STEP));
+    let second = context.view(&snapshot, &ids[1]).unwrap();
+    assert_eq!(second.before.new.len(), 20);
+    assert_eq!(second.before.new[0].number, 57);
+
+    // Expand-all stops exactly where the previous hunk's displayed lines begin.
+    assert!(context.expand(&snapshot, &ids[1], true, usize::MAX));
+    let second = context.view(&snapshot, &ids[1]).unwrap();
+    assert_eq!(second.before.new[0].number, 34);
+    assert!(!second.can_expand_up);
+    assert!(!context.expand(&snapshot, &ids[0], false, usize::MAX));
+    // The first hunk cannot grow into lines the second one owns.
+    assert!(context
+        .view(&snapshot, &ids[0])
+        .unwrap()
+        .after
+        .new
+        .is_empty());
 }

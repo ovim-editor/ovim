@@ -34,6 +34,10 @@ interface ClosedBrowserTab {
 
 const MAX_CLOSED_BROWSER_TABS = 20;
 
+/** A tab still on the new-tab page: restoring it would only reopen a blank tab. */
+export const isBlankSession = (session: { url: string }) =>
+    !session.url.trim() || session.url === "about:blank";
+
 export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
     const [state, setState] = createSignal<BrowserState>({
         revision: 0,
@@ -196,7 +200,8 @@ export const createBrowserWorkbench = (options: BrowserWorkbenchOptions) => {
                 request.selection !== undefined &&
                 request.selection === options.selection();
             accept(next);
-            if (closingSession)
+            // A tab that never left the new-tab page has nothing to restore.
+            if (closingSession && !isBlankSession(closingSession))
                 setClosedTabs((previous) =>
                     [
                         {

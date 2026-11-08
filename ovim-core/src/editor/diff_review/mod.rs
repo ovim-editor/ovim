@@ -851,8 +851,17 @@ impl Editor {
         Ok(())
     }
 
-    /// Reveal ten captured source lines at the selected region's edge.
+    /// Reveal one step of captured source lines at the selected region's edge.
     pub fn expand_diff_context(&mut self, id: &str, up: bool) -> bool {
+        self.expand_diff_context_by(id, up, crate::native_diff::context::CONTEXT_STEP)
+    }
+
+    /// Reveal every remaining captured line up to the neighbouring region or file edge.
+    pub fn expand_diff_context_all(&mut self, id: &str, up: bool) -> bool {
+        self.expand_diff_context_by(id, up, usize::MAX)
+    }
+
+    fn expand_diff_context_by(&mut self, id: &str, up: bool, count: usize) -> bool {
         let Some(index) = self.review_buffer_index() else {
             return false;
         };
@@ -871,7 +880,7 @@ impl Editor {
             .line()
             .saturating_sub(self.scroll_offset());
         let state = self.ui_panels.diff_review.as_mut().expect("review state");
-        if !state.context.expand(&state.context_snapshot, id, up) {
+        if !state.context.expand(&state.context_snapshot, id, up, count) {
             return false;
         }
         self.rerender_diff_review(anchor);

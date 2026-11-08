@@ -375,6 +375,60 @@ describe("browser workbench controller", () => {
         disposeRoot();
     });
 
+    it("does not put a closed blank tab on the restore stack", async () => {
+        const blank = {
+            sessionId: "browser-1",
+            url: "",
+            title: "",
+            visible: true,
+            loading: false,
+            documentId: 1,
+            vimKeysEnabled: true,
+            keyMode: "normal" as const,
+        };
+        const loaded = {
+            ...blank,
+            sessionId: "browser-2",
+            url: "https://example.com/",
+        };
+        invoke.mockImplementation((command: string) =>
+            command === "gui_browser_close"
+                ? Promise.resolve({ revision: 2, sessions: [], maxSessions: 8 })
+                : Promise.resolve(),
+        );
+        await createRoot(async (dispose) => {
+            const [selection, setSelection] = createSignal<WorkbenchSelection>({
+                kind: "browser",
+                sessionId: blank.sessionId,
+            });
+            const controller = createBrowserWorkbench({
+                native: true,
+                sourceTabs: () => sourceTabs,
+                includeVector: () => false,
+                selection,
+                setSelection,
+                setError: vi.fn(),
+            });
+            controller.accept({
+                revision: 1,
+                sessions: [blank, loaded],
+                activeSessionId: blank.sessionId,
+                maxSessions: 8,
+            });
+            await controller.close(blank.sessionId, 1);
+            expect(controller.canRestore()).toBe(false);
+            controller.accept({
+                revision: 3,
+                sessions: [loaded],
+                activeSessionId: loaded.sessionId,
+                maxSessions: 8,
+            });
+            await controller.close(loaded.sessionId, 1);
+            expect(controller.canRestore()).toBe(true);
+            dispose();
+        });
+    });
+
     it("projects a durable agent presentation and falls back after close", () =>
         createRoot((dispose) => {
             const [selection, setSelection] = createSignal<WorkbenchSelection>({

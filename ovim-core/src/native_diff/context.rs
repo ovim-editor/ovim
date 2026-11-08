@@ -16,6 +16,9 @@ pub struct ContextEdge {
     pub new: Vec<ContextLine>,
 }
 
+/// Source lines revealed per incremental expansion click or keypress.
+pub const CONTEXT_STEP: usize = 20;
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffContextView {
@@ -190,13 +193,14 @@ impl DiffContext {
         })
     }
 
-    pub fn expand(&mut self, snapshot: &ReviewSnapshot, id: &str, up: bool) -> bool {
+    /// Reveal up to `count` source lines per side at one edge of the region.
+    pub fn expand(&mut self, snapshot: &ReviewSnapshot, id: &str, up: bool, count: usize) -> bool {
         let Some(index) = self.regions.iter().position(|region| region.id == id) else {
             return false;
         };
         let mut changed = false;
         for old in [true, false] {
-            for _ in 0..10 {
+            for _ in 0..count {
                 let Some(line) = self.next(snapshot, index, old, up) else {
                     break;
                 };

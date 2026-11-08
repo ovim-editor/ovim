@@ -2180,6 +2180,35 @@ function App() {
         return true;
     }
 
+    /** Close one source tab with the editor's own commands. A clean tab goes
+     *  through `:tabclose`; a modified one through `:bd`, which refuses with
+     *  E37 so unsaved work is never discarded by a stray click. */
+    const closeSourceTab = async (tab: GuiSnapshot["tabs"][number]) => {
+        const tabs = view().tabs;
+        if (tabs.length < 2) return;
+        const active = tabs.find((candidate) => candidate.active);
+        const restore = async () => {
+            if (!active || active.id === tab.id) return;
+            // Tabs after the closed one shift down by one.
+            await mutateStrict("gui_select_tab", {
+                index:
+                    active.index > tab.index ? active.index - 1 : active.index,
+            });
+        };
+        try {
+            await mutateStrict("gui_select_tab", { index: tab.index });
+            await editorCommand(tab.modified ? "bd" : "tabclose");
+            await restore();
+        } catch {
+            // The status line carries the editor's refusal; return to where
+            // the reviewer was.
+            if (active)
+                await mutateStrict("gui_select_tab", {
+                    index: active.index,
+                }).catch(() => {});
+        }
+    };
+
     const handleTabNavigation = (event: KeyboardEvent, position: number) => {
         const tabCount = workbenchTabs().length;
         if (tabCount < 2) return;
@@ -3136,11 +3165,11 @@ function App() {
                         }
                         onExpandContext={
                             review().managed
-                                ? (id, up) => {
+                                ? (id, up, all) => {
                                       void mutate("gui_diff_action", {
                                           pane: props.pane.index,
                                           bufferId: props.pane.bufferId,
-                                          action: `${up ? "expand_up" : "expand_down"}:${id}`,
+                                          action: `${up ? "expand_up" : "expand_down"}${all ? "_all" : ""}:${id}`,
                                       });
                                   }
                                 : undefined
@@ -4651,6 +4680,12 @@ function App() {
                         canRestoreBrowser={browserWorkbench.canRestore()}
                         onSelect={selectWorkbenchTab}
                         onSourceFocus={() => queueMicrotask(focusEditorInput)}
+                        onCloseSource={(tab) => void closeSourceTab(tab)}
+                        onCloseBrowser={(sessionId) =>
+                            void closeBrowserSession(sessionId).catch(
+                                (reason) => setError(String(reason)),
+                            )
+                        }
                         onNewBrowser={() => void openBrowserSession()}
                         onRestoreBrowser={() =>
                             performBrowserKey({ intent: "restore_tab" })

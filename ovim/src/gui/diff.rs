@@ -818,7 +818,14 @@ pub fn perform_diff_action(
             .map_err(|error| format!("{error:#}"))?,
         action
             if managed
-                && (action.starts_with("expand_up:") || action.starts_with("expand_down:")) =>
+                && [
+                    "expand_up:",
+                    "expand_down:",
+                    "expand_up_all:",
+                    "expand_down_all:",
+                ]
+                .iter()
+                .any(|prefix| action.starts_with(prefix)) =>
         {
             let (direction, id) = action.split_once(':').expect("context action");
             if editor
@@ -828,7 +835,12 @@ pub fn perform_diff_action(
             {
                 return Err("Unknown diff context region".to_string());
             }
-            editor.expand_diff_context(id, direction == "expand_up");
+            let up = direction.starts_with("expand_up");
+            if direction.ends_with("_all") {
+                editor.expand_diff_context_all(id, up);
+            } else {
+                editor.expand_diff_context(id, up);
+            }
         }
         "close" if managed => editor.close_diff_review(),
         "close" => editor.close_current_tab(),
@@ -1150,9 +1162,16 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         let context = hunk.context.as_ref().unwrap();
-        assert_eq!(context.before.old.len(), 10);
-        assert_eq!(context.before.old[0].number, 17);
-        assert_eq!(context.before.old[0].text, "source_017();");
+        assert_eq!(context.before.old.len(), 20);
+        assert_eq!(context.before.old[0].number, 7);
+        assert_eq!(context.before.old[0].text, "source_007();");
+        let all = format!("expand_up_all:{}", context.id);
+        perform_diff_action(&mut editor, 0, buffer_id, &all).unwrap();
+        let projected = project_diff(&editor, editor.buffer()).unwrap();
+        let context = projected.files[0].hunks[0].context.as_ref().unwrap();
+        assert_eq!(context.before.old.len(), 26);
+        assert_eq!(context.before.old[0].number, 1);
+        assert!(!context.can_expand_up);
         open_diff_source(&mut editor, 0, buffer_id, "source.rs", 17, "new").unwrap();
         assert!(editor.buffer().rope().to_string().contains("source_017();"));
         assert!(!editor
