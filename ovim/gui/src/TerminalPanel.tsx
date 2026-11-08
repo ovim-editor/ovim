@@ -12,6 +12,8 @@ type TerminalEvent =
 export default function TerminalPanel(props: {
     native: boolean;
     active: boolean;
+    /** Changes whenever the editor theme changes; colours are re-read then. */
+    theme?: unknown;
 }) {
     let surface!: HTMLDivElement;
     let terminal: Terminal | undefined;
@@ -24,6 +26,20 @@ export default function TerminalPanel(props: {
         "starting" | "running" | "exited" | "error" | "unavailable"
     >(props.native ? "starting" : "unavailable");
     const [message, setMessage] = createSignal("");
+
+    const surfaceTheme = () => {
+        const style = getComputedStyle(surface);
+        return { background: style.backgroundColor, foreground: style.color };
+    };
+
+    createEffect(() => {
+        props.theme;
+        // Theme variables land on the app root in the same render pass; read
+        // the computed colours once the DOM reflects them.
+        queueMicrotask(() => {
+            if (terminal?.options) terminal.options.theme = surfaceTheme();
+        });
+    });
 
     const resize = () => {
         if (
@@ -144,10 +160,7 @@ export default function TerminalPanel(props: {
                     .trim() || "monospace",
             fontSize: 12,
             scrollback: 5000,
-            theme: {
-                background: getComputedStyle(surface).backgroundColor,
-                foreground: getComputedStyle(surface).color,
-            },
+            theme: surfaceTheme(),
         });
         fit = new FitAddon();
         terminal.loadAddon(fit);

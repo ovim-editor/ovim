@@ -327,6 +327,13 @@ export default function ChatComposer(props: {
                     if (!coreAction) return;
                     event.preventDefault();
                     const target = event.currentTarget;
+                    // Core resolves a parked approval with Enter (allow) and
+                    // Esc (deny). Typing a follow-up must never approve a
+                    // tool call: the card's buttons are the only resolvers.
+                    if (props.chat.approval && event.key !== "Tab") {
+                        void publish(target.value, selectionFocus());
+                        return;
+                    }
                     void publish(
                         target.value,
                         selectionFocus(),
@@ -336,11 +343,13 @@ export default function ChatComposer(props: {
             />
             <footer>
                 <span>
-                    {props.chat.externalQuestion
-                        ? "Enter to answer · Esc to cancel"
-                        : hasActiveRun()
-                          ? "working"
-                          : "Enter to send · drop images to attach · Esc to return"}
+                    {props.chat.approval
+                        ? "Approval pending · choose Allow or Deny above"
+                        : props.chat.externalQuestion
+                          ? "Enter to answer · Esc to cancel"
+                          : hasActiveRun()
+                            ? "working"
+                            : "Enter to send · drop images to attach · Esc to return"}
                 </span>
                 <span class="chat-composer-actions">
                     <b>{props.chat.reasoningEffort}</b>
@@ -352,9 +361,10 @@ export default function ChatComposer(props: {
                             hasActiveRun() ? "Stop generation" : "Send message"
                         }
                         disabled={
-                            !hasActiveRun() &&
-                            !draft().trim() &&
-                            props.chat.pendingImages.length === 0
+                            Boolean(props.chat.approval) ||
+                            (!hasActiveRun() &&
+                                !draft().trim() &&
+                                props.chat.pendingImages.length === 0)
                         }
                         onClick={() => {
                             const key = hasActiveRun() ? "Escape" : "Enter";

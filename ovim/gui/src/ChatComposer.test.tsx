@@ -152,3 +152,37 @@ describe("composer action acknowledgements", () => {
         expect(input().value).toBe("next draft");
     });
 });
+
+describe("pending approvals", () => {
+    it("never forwards Enter, Esc or Send while an approval card is shown", async () => {
+        const onUpdate = vi.fn(async (update: ChatInputUpdate) => ({
+            input: update.input,
+            cursor: update.cursor,
+            revision: 3,
+        }));
+        render(() => (
+            <ChatComposer
+                chat={{
+                    ...mockSnapshot.aiChat!,
+                    input: "",
+                    inputCursor: 0,
+                    approval: "Run `rm -rf build`?",
+                }}
+                revision={3}
+                onUpdate={onUpdate}
+            />
+        ));
+        edit("and then also");
+        fireEvent.keyDown(input(), { key: "Enter" });
+        fireEvent.keyDown(input(), { key: "Escape" });
+        await waitFor(() => expect(onUpdate).toHaveBeenCalled());
+        // Core resolves approvals from Enter/Esc; the draft must stay text.
+        for (const [update] of onUpdate.mock.calls)
+            expect(update.action).toBeUndefined();
+        expect(input().value).toBe("and then also");
+        expect(
+            document.querySelector<HTMLButtonElement>(".chat-submit")!.disabled,
+        ).toBe(true);
+        expect(screen.getByText(/Approval pending/)).toBeTruthy();
+    });
+});

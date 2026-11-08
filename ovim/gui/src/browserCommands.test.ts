@@ -18,6 +18,16 @@ describe("browser commands", () => {
         expect(normalizeBrowserAddress("example.com:8443/docs")).toBe(
             "https://example.com:8443/docs",
         );
+        for (const local of [
+            "127.0.0.1:5173",
+            "192.168.1.20:3000/app",
+            "10.0.0.4",
+            "[::1]:8080",
+            "dev.local:3000",
+            "app.localhost:4000",
+        ])
+            expect(normalizeBrowserAddress(local)).toBe(`http://${local}`);
+        expect(normalizeBrowserAddress("8.8.8.8")).toBe("https://8.8.8.8");
         expect(normalizeBrowserAddress("vim keyboard browsing")).toBe(
             "https://duckduckgo.com/?q=vim+keyboard+browsing",
         );

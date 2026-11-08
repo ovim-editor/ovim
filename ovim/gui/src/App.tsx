@@ -127,7 +127,13 @@ export const Markdown = (props: {
                 breaks: true,
                 gfm: true,
             }) as string,
-            { USE_PROFILES: { html: true } },
+            {
+                USE_PROFILES: { html: true },
+                // Model output must not restyle the app or fetch remote
+                // resources (an <img> can exfiltrate via its URL).
+                FORBID_TAGS: ["style", "form", "button", "iframe", "img"],
+                FORBID_ATTR: ["style", "id", "name"],
+            },
         ),
     );
 
@@ -312,9 +318,12 @@ const WalkthroughDiscussion = (props: {
                             <pre class="walkthrough-question">
                                 <span>{parts()[0]}</span>
                                 <i class="chat-caret" aria-hidden="true" />
-                                <span>
-                                    {parts()[1] || "Type your question…"}
-                                </span>
+                                <span>{parts()[1]}</span>
+                                <Show when={!active().input}>
+                                    <span class="placeholder">
+                                        Type your question…
+                                    </span>
+                                </Show>
                             </pre>
                         </>
                     );
@@ -327,18 +336,42 @@ const WalkthroughDiscussion = (props: {
                         : undefined
                 }
             >
-                {(active) => (
-                    <>
-                        <small>Answering “{active().question}”</small>
-                        <div class="walkthrough-answer">
-                            <span
-                                class="walkthrough-spinner"
-                                aria-label="Answering"
-                            />
-                            <Markdown text={active().answer || "Thinking…"} />
-                        </div>
-                    </>
-                )}
+                {(active) => {
+                    let answer!: HTMLDivElement;
+                    let following = true;
+                    // Follow the stream unless the reader scrolled up.
+                    createEffect(() => {
+                        active().answer;
+                        if (following)
+                            queueMicrotask(() => {
+                                answer.scrollTop = answer.scrollHeight;
+                            });
+                    });
+                    return (
+                        <>
+                            <small>Answering “{active().question}”</small>
+                            <div
+                                ref={answer}
+                                class="walkthrough-answer"
+                                onScroll={() => {
+                                    following =
+                                        answer.scrollHeight -
+                                            answer.scrollTop -
+                                            answer.clientHeight <
+                                        24;
+                                }}
+                            >
+                                <span
+                                    class="walkthrough-spinner"
+                                    aria-label="Answering"
+                                />
+                                <Markdown
+                                    text={active().answer || "Thinking…"}
+                                />
+                            </div>
+                        </>
+                    );
+                }}
             </Show>
             <Show
                 when={
@@ -578,7 +611,12 @@ export const CodeWalkthrough = (props: {
                         <button
                             type="button"
                             class="primary"
-                            disabled={answering()}
+                            disabled={
+                                answering() ||
+                                (props.walkthrough.discussion.state ===
+                                    "composing" &&
+                                    !props.walkthrough.discussion.input.trim())
+                            }
                             onClick={() => dispatch("Enter")}
                         >
                             {composing()
@@ -593,6 +631,14 @@ export const CodeWalkthrough = (props: {
             </section>
         </div>
     );
+};
+
+/** Mirrors ovim-core `test_panel::format_duration`. */
+export const formatElapsed = (ms: number) => {
+    const seconds = Math.max(0, ms) / 1000;
+    if (seconds < 60) return `${seconds.toFixed(1)}s`;
+    const whole = Math.floor(seconds);
+    return `${Math.floor(whole / 60)}m ${String(whole % 60).padStart(2, "0")}s`;
 };
 
 export const imageExtension = (mimeType: string) =>
@@ -645,7 +691,7 @@ export const ChatSetupCard = (props: {
                 </span>
             </header>
             <p>{props.setup.detail}</p>
-            <Show when={props.setup.maskedInput !== undefined}>
+            <Show when={props.setup.maskedInput != null}>
                 <pre aria-label="Exa API key input">
                     <span>{maskedParts()[0]}</span>
                     <i class="chat-caret" aria-hidden="true" />
@@ -1417,6 +1463,22 @@ function App() {
         "ai" | "tests" | "debug" | "run" | "terminal"
     >("ai");
     const [terminalDockOpen, setTerminalDockOpen] = createSignal(false);
+    // Native menu accelerators fire before the webview sees a key, so the
+    // menu must know when the shell owns Ctrl chords (see gui/menu.rs).
+    const [terminalFocused, setTerminalFocused] = createSignal(false);
+    {
+        const track = () =>
+            setTerminalFocused(
+                Boolean(document.activeElement?.closest(".terminal-panel")),
+            );
+        const settle = () => queueMicrotask(track);
+        document.addEventListener("focusin", track);
+        document.addEventListener("focusout", settle);
+        onCleanup(() => {
+            document.removeEventListener("focusin", track);
+            document.removeEventListener("focusout", settle);
+        });
+    }
     let editorBody!: HTMLDivElement;
     let inputSink!: HTMLTextAreaElement;
     let chatInput: HTMLTextAreaElement | undefined;
@@ -1485,7 +1547,12 @@ function App() {
 
     createEffect(() => {
         if (!native) return;
-        const surface = workbenchView() === "browser" ? "browser" : "source";
+        const surface =
+            workbenchView() === "browser"
+                ? "browser"
+                : terminalFocused()
+                  ? "terminal"
+                  : "source";
         void invoke("gui_set_menu_surface", {
             surface,
             canRestoreBrowser: browserWorkbench.canRestore(),
@@ -1581,7 +1648,12 @@ function App() {
         if (!preference) return;
         setActiveDock(preference.activeDock);
         setActiveContextPanel(preference.activeContextPanel);
-        if (preference.activeContextPanel === "terminal")
+        // Reopening the terminal makes the context dock appear, which would
+        // override a saved Explorer focus and spawn a shell nobody asked for.
+        if (
+            preference.activeContextPanel === "terminal" &&
+            preference.activeDock === "context"
+        )
             setTerminalDockOpen(true);
     });
 
@@ -1857,7 +1929,9 @@ function App() {
         void editorCommand("qa!");
     };
 
-    const selectAllEditorText = async () => {
+    /** Send Normal-mode keys from a GUI control. Leave Insert/Visual/pending
+     *  states first so a button never types its shortcut into the buffer. */
+    const sendNormalKeys = async (keys: string) => {
         focusEditorInput();
         await sendKey({
             key: "Escape",
@@ -1866,8 +1940,10 @@ function App() {
             alt: false,
             meta: false,
         });
-        await sendLiteral("ggVG");
+        await sendLiteral(keys);
     };
+
+    const selectAllEditorText = () => sendNormalKeys("ggVG");
 
     const performMenuAction = (action: string) => {
         const active = document.activeElement;
@@ -1876,6 +1952,14 @@ function App() {
             return;
         }
         if (active?.closest(".terminal-panel") && action.startsWith("edit."))
+            return;
+        // A browser tab hides the source buffer: never undo or select there.
+        if (
+            workbenchView() === "browser" &&
+            (action === "edit.undo" ||
+                action === "edit.redo" ||
+                action === "edit.select-all")
+        )
             return;
         const nativeEditor =
             active instanceof HTMLTextAreaElement && active !== inputSink;
@@ -1987,8 +2071,7 @@ function App() {
             return;
         }
         setActiveDock("explorer");
-        focusEditorInput();
-        void sendLiteral("-");
+        void sendNormalKeys("-");
     };
 
     const activateAiChat = () => {
@@ -2018,10 +2101,7 @@ function App() {
         setActiveDock("context");
     };
 
-    const runEditorShortcut = async (keys: string) => {
-        focusEditorInput();
-        await sendLiteral(keys);
-    };
+    const runEditorShortcut = (keys: string) => sendNormalKeys(keys);
 
     const addVectorFeedbackToChat = async () => {
         const feedback = vectorFeedback().trim();
@@ -2182,7 +2262,8 @@ function App() {
         }
         if (primaryModifier && !nativeControl) {
             const key = event.key.toLowerCase();
-            if (key === "z" || key === "a" || key === "f") {
+            // Off macOS, Ctrl-A (increment) and Ctrl-F (page down) are Vim's.
+            if (key === "z" || (macos && (key === "a" || key === "f"))) {
                 event.preventDefault();
                 performMenuAction(
                     key === "z"
@@ -2372,28 +2453,25 @@ function App() {
                 : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
                   ? editorBody.clientHeight
                   : 1;
-        wheelRemainder += event.deltaY * scale;
-        const count = Math.min(
-            8,
-            Math.floor(Math.abs(wheelRemainder) / LINE_HEIGHT),
-        );
+        const delta = event.deltaY * scale;
+        // A reversal starts fresh instead of first paying off old travel.
+        if (Math.sign(delta) !== Math.sign(wheelRemainder)) wheelRemainder = 0;
+        wheelRemainder += delta;
+        const count = Math.floor(Math.abs(wheelRemainder) / LINE_HEIGHT);
         if (count === 0) return;
         const direction = Math.sign(wheelRemainder);
-        wheelRemainder -= direction * count * LINE_HEIGHT;
+        // Keep sub-line travel for smooth trackpads, but drop the excess of a
+        // capped flick rather than carrying a backlog into later events.
+        wheelRemainder =
+            count > 8 ? 0 : wheelRemainder - direction * count * LINE_HEIGHT;
         const paneIndex = Number(pane.dataset.pane);
-        if (Number.isFinite(paneIndex) && !pane.classList.contains("focused")) {
-            await mutate("gui_focus_pane", { index: paneIndex });
-        }
-        const key = direction > 0 ? "e" : "y";
-        for (let index = 0; index < count; index += 1) {
-            await sendKey({
-                key,
-                shift: false,
-                control: true,
-                alt: false,
-                meta: false,
-            });
-        }
+        if (!Number.isFinite(paneIndex)) return;
+        // Scroll the viewport directly: sending ^E/^Y as keys would accept a
+        // completion in Insert mode, edit prompts and land in macros.
+        await mutate("gui_scroll", {
+            pane: paneIndex,
+            lines: direction * Math.min(8, count),
+        });
     };
 
     const setCursor = (
@@ -3105,13 +3183,13 @@ function App() {
                             <b>{test().scope} tests</b>
                             <small>{test().directory}</small>
                         </div>
-                        <span
-                            class={`run-status ${test().status}`}
-                            role="status"
-                            aria-live="polite"
-                        >
-                            {test().status} ·{" "}
-                            {(test().elapsedMs / 1000).toFixed(1)}s
+                        <span class={`run-status ${test().status}`}>
+                            {/* Announce status changes only, not the
+                                ticking timer. */}
+                            <span role="status" aria-live="polite">
+                                {test().status}
+                            </span>{" "}
+                            · {formatElapsed(test().elapsedMs)}
                         </span>
                     </header>
                     <div class="run-command">$ {test().command}</div>
@@ -3246,7 +3324,7 @@ function App() {
                         </pre>
                         <footer class="panel-summary">
                             <span>
-                                {run().exitCode === undefined
+                                {run().exitCode == null
                                     ? "Output updates live"
                                     : `exit code ${run().exitCode}`}
                             </span>
@@ -3602,6 +3680,7 @@ function App() {
     const TerminalSurface = () => (
         <TerminalPanel
             native={native}
+            theme={view().theme}
             active={
                 activeDock() === "context" &&
                 activeContextPanel() === "terminal" &&
@@ -3687,7 +3766,10 @@ function App() {
                 >
                     <header>
                         <b>{problems().title || problems().kind}</b>
-                        <span>{problems().total} items</span>
+                        <span>
+                            {problems().total}{" "}
+                            {problems().total === 1 ? "item" : "items"}
+                        </span>
                     </header>
                     <div role="listbox" aria-label="Problem entries">
                         <For
@@ -3750,7 +3832,11 @@ function App() {
                                     })()}
                                     <strong>{item.message}</strong>
                                     <small>
-                                        {item.file}:{item.line}:{item.column}
+                                        {item.file}
+                                        {item.line > 0 ? `:${item.line}` : ""}
+                                        {item.line > 0 && item.column > 0
+                                            ? `:${item.column}`
+                                            : ""}
                                     </small>
                                 </button>
                             )}
@@ -5043,7 +5129,10 @@ function App() {
                                         </div>
                                         <footer>
                                             <span>
-                                                {picker().total} results
+                                                {picker().total}{" "}
+                                                {picker().total === 1
+                                                    ? "result"
+                                                    : "results"}
                                             </span>
                                             <span>
                                                 <kbd>↑↓</kbd> navigate{" "}
@@ -5078,13 +5167,23 @@ function App() {
                                 </span>
                             }
                         >
-                            {(prompt) => (
-                                <div class="prompt">
-                                    <b>{prompt().prefix}</b>
-                                    <span>{prompt().text}</span>
-                                    <i />
-                                </div>
-                            )}
+                            {(prompt) => {
+                                // `cursor` is a UTF-8 byte offset from core.
+                                const parts = createMemo(() =>
+                                    splitAtUtf8Offset(
+                                        prompt().text,
+                                        prompt().cursor,
+                                    ),
+                                );
+                                return (
+                                    <div class="prompt">
+                                        <b>{prompt().prefix}</b>
+                                        <span>{parts()[0]}</span>
+                                        <i />
+                                        <span>{parts()[1]}</span>
+                                    </div>
+                                );
+                            }}
                         </Show>
                         <Show when={!connected()}>
                             <span
@@ -5107,6 +5206,17 @@ function App() {
                                     ? "VECTOR"
                                     : view().mode}
                         </div>
+                        <Show when={view().recording}>
+                            {(register) => (
+                                <div
+                                    class="recording-chip"
+                                    role="status"
+                                    title={`Recording macro into register ${register()} (press q to stop)`}
+                                >
+                                    recording @{register()}
+                                </div>
+                            )}
+                        </Show>
                         <div class="status-left">
                             <Show when={view().gitBranch}>
                                 <span>

@@ -1760,6 +1760,49 @@ button:focus-visible {
 .markdown a {
     color: var(--accent);
 }
+.markdown h1,
+.markdown h2,
+.markdown h3,
+.markdown h4,
+.markdown h5,
+.markdown h6 {
+    margin: 12px 0 5px;
+    color: var(--text-primary);
+    font-size: 1em;
+    font-weight: 650;
+    line-height: 1.35;
+}
+.markdown h1 {
+    font-size: 1.25em;
+}
+.markdown h2 {
+    font-size: 1.12em;
+}
+.markdown hr {
+    margin: 10px 0;
+    border: 0;
+    border-top: 1px solid var(--border);
+}
+/* GFM tables: scroll horizontally instead of squeezing cells. */
+.markdown table {
+    display: block;
+    max-width: 100%;
+    margin: 7px 0;
+    overflow-x: auto;
+    border-collapse: collapse;
+    overflow-wrap: normal;
+}
+.markdown th,
+.markdown td {
+    padding: 3px 8px;
+    border: 1px solid var(--border);
+    text-align: left;
+    vertical-align: top;
+}
+.markdown th {
+    background: color-mix(in srgb, var(--canvas) 60%, transparent);
+    font-weight: 600;
+}
 .tool-call-list {
     margin-top: 8px;
     color: var(--text-secondary);
@@ -2744,15 +2787,24 @@ button:focus-visible {
 .prompt {
     display: flex;
     align-items: center;
-    gap: 3px;
     min-width: 0;
 }
 .prompt b {
+    margin-right: 3px;
     color: var(--accent);
+}
+.prompt span {
+    white-space: pre;
+}
+.prompt span:last-child {
+    min-width: 0;
+    overflow: hidden;
 }
 .prompt i {
     display: block;
-    width: 6px;
+    flex: none;
+    width: 2px;
+    margin: 0 1px;
     height: 14px;
     background: var(--accent);
     animation: cursor-blink 1.15s steps(1) infinite;
@@ -2774,6 +2826,15 @@ button:focus-visible {
     color: var(--accent-foreground);
     font: 750 10px/1 var(--editor-font);
     letter-spacing: 0.055em;
+}
+.recording-chip {
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    color: var(--warning);
+    border-right: 1px solid var(--border);
+    font: 650 10px/1 var(--editor-font);
+    white-space: nowrap;
 }
 .status-left,
 .status-right {
@@ -3347,9 +3408,18 @@ kbd {
     border-radius: var(--radius-2);
     font: 12px/1.5 var(--editor-font);
 }
-.walkthrough-question span:last-child:only-child,
-.walkthrough-question span:last-child {
-    color: color-mix(in srgb, var(--text-primary) 82%, var(--text-secondary));
+.walkthrough-question .placeholder {
+    color: var(--text-secondary);
+}
+/* Text caret for the core-owned inputs (walkthrough question, setup key). */
+.chat-caret {
+    display: inline-block;
+    width: 1.5px;
+    height: 1.15em;
+    margin: 0 -1.5px 0 0;
+    vertical-align: -0.18em;
+    background: var(--accent);
+    animation: cursor-blink 1.15s steps(1) infinite;
 }
 .walkthrough-answer {
     max-height: 180px;

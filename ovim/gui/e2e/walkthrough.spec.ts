@@ -135,9 +135,8 @@ for (const kind of ["code", "diff"] as const) {
                             () =>
                                 (window as any).walkthroughCalls.filter(
                                     (c: any) =>
-                                        c.command === "gui_key" &&
-                                        c.data.input.control &&
-                                        c.data.input.key === "e",
+                                        c.command === "gui_scroll" &&
+                                        c.data.lines > 0,
                                 ).length,
                         ),
                     )
@@ -149,9 +148,8 @@ for (const kind of ["code", "diff"] as const) {
                             () =>
                                 (window as any).walkthroughCalls.filter(
                                     (c: any) =>
-                                        c.command === "gui_key" &&
-                                        c.data.input.control &&
-                                        c.data.input.key === "y",
+                                        c.command === "gui_scroll" &&
+                                        c.data.lines < 0,
                                 ).length,
                         ),
                     )
@@ -161,7 +159,9 @@ for (const kind of ["code", "diff"] as const) {
                     const calls = await page.evaluate(
                         () =>
                             (window as any).walkthroughCalls.filter(
-                                (c: any) => c.command === "gui_key",
+                                (c: any) =>
+                                    c.command === "gui_key" ||
+                                    c.command === "gui_scroll",
                             ).length,
                     );
                     await teaching.hover();
@@ -173,7 +173,9 @@ for (const kind of ["code", "diff"] as const) {
                         await page.evaluate(
                             () =>
                                 (window as any).walkthroughCalls.filter(
-                                    (c: any) => c.command === "gui_key",
+                                    (c: any) =>
+                                        c.command === "gui_key" ||
+                                        c.command === "gui_scroll",
                                 ).length,
                         ),
                     ).toBe(calls);

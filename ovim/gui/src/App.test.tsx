@@ -256,6 +256,42 @@ describe("Ovim Solid workbench", () => {
         expect(screen.getByText("The original explanation.")).toBeTruthy();
     });
 
+    it("shows the question placeholder only while the question is empty", () => {
+        const [walkthrough, setWalkthrough] = createSignal<GuiCodeExplanation>({
+            answerInProgress: false,
+            current: 1,
+            total: 1,
+            page: { kind: "concept", title: "Step", body: "Body" },
+            discussion: {
+                state: "composing",
+                input: "",
+                cursor: 0,
+                questionCount: 0,
+            },
+        });
+        render(() => (
+            <CodeWalkthrough walkthrough={walkthrough()} onKey={() => {}} />
+        ));
+        const send = () =>
+            screen.getByRole("button", { name: "Send question" });
+        expect(screen.getByText("Type your question…")).toBeTruthy();
+        expect(send().hasAttribute("disabled")).toBe(true);
+        setWalkthrough((current) => ({
+            ...current,
+            discussion: {
+                state: "composing",
+                input: "why",
+                cursor: 3,
+                questionCount: 0,
+            },
+        }));
+        expect(screen.queryByText("Type your question…")).toBeNull();
+        expect(
+            document.querySelector(".walkthrough-question")!.textContent,
+        ).toBe("why");
+        expect(send().hasAttribute("disabled")).toBe(false);
+    });
+
     it("renders code location and live answer state", () => {
         const walkthrough: GuiCodeExplanation = {
             answerInProgress: true,
@@ -632,14 +668,19 @@ describe("Ovim Solid workbench", () => {
     it("sanitizes rendered AI markdown", () => {
         const result = render(() => (
             <Markdown
-                text={'**safe**<img src="x" onerror="window.__unsafe = true">'}
+                text={
+                    '**safe**<img src="x" onerror="window.__unsafe = true">' +
+                    '<style>.app{display:none}</style><p style="color:red">x</p>'
+                }
             />
         ));
 
         expect(screen.getByText("safe").tagName).toBe("STRONG");
-        expect(
-            result.container.querySelector("img")?.hasAttribute("onerror"),
-        ).toBe(false);
+        // Remote images would fetch (and leak) on render; styles could
+        // restyle the whole app.
+        expect(result.container.querySelector("img")).toBeNull();
+        expect(result.container.querySelector("style")).toBeNull();
+        expect(result.container.querySelector("[style]")).toBeNull();
         expect(result.container.querySelector("script")).toBeNull();
     });
 

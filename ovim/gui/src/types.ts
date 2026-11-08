@@ -225,7 +225,7 @@ export interface GuiAiChat {
         kind: string;
         title: string;
         detail: string;
-        maskedInput?: string;
+        maskedInput?: string | null;
         inputCursor?: number;
         error?: string;
         actions: Array<{ label: string; key: string }>;
@@ -426,7 +426,7 @@ export interface GuiRunConsole {
     statusText: string;
     active: boolean;
     command: string;
-    exitCode?: number;
+    exitCode?: number | null;
     elapsedMs: number;
     runIndex: number;
     runCount: number;
@@ -462,6 +462,8 @@ export interface GuiTheme {
 export interface GuiSnapshot {
     revision: number;
     mode: string;
+    /** Register of the macro being recorded (`q` → "q"). */
+    recording?: string;
     dashboard: boolean;
     filePath?: string;
     fileName: string;
