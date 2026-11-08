@@ -327,9 +327,25 @@ it("exports only visible reviewed items and labels hidden accounting", () => {
     };
     const hidden = buildDiffExportImage(document, options).svg;
     expect(hidden).not.toContain("checked.rs");
-    expect(hidden).toContain("1 reviewed items hidden");
+    expect(hidden).toContain("1 reviewed item hidden");
     expect(hidden).toContain("All visible changes reviewed");
     expect(
         buildDiffExportImage({ ...document, showChecked: true }, options).svg,
     ).toContain("checked.rs");
+});
+
+it("pluralizes the coverage footer and omits an empty moved-code count", () => {
+    const options = {
+        view: "files" as const,
+        layout: "unified" as const,
+        reconstruction: "old" as const,
+    };
+    const one = buildDiffExportImage(review([file("a.rs")]), options).svg;
+    expect(one).toContain("1 file · +0 −0");
+    expect(one).not.toContain("moved-code");
+    const many = buildDiffExportImage(
+        review([file("a.rs"), file("b.rs")]),
+        options,
+    ).svg;
+    expect(many).toContain("2 files · +0 −0");
 });

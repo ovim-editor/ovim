@@ -1,4 +1,8 @@
-import { createDiffComments, type CommentInput } from "./FlowDiffComments";
+import {
+    createDiffComments,
+    type CommentInput,
+    type CommentTarget,
+} from "./FlowDiffComments";
 import {
     For,
     Show,
@@ -146,8 +150,19 @@ export default function FlowDiff(props: FlowDiffProps) {
             props.review.guidedFiles?.some((item) => item.message) === true,
     );
 
+    let exportMessageTimer: ReturnType<typeof setTimeout> | undefined;
+    onCleanup(() => clearTimeout(exportMessageTimer));
+    const announceExport = (message: string) => {
+        clearTimeout(exportMessageTimer);
+        setExportMessage(message);
+        // Success confirmations are transient; failures stay until dismissed
+        // by the next export attempt.
+        exportMessageTimer = setTimeout(() => setExportMessage(""), 5000);
+    };
+
     async function exportImages() {
         if (exporting()) return;
+        clearTimeout(exportMessageTimer);
         const review = props.review;
         const options = {
             view: effectiveView(),
@@ -166,10 +181,10 @@ export default function FlowDiff(props: FlowDiffProps) {
             const file = await rasterizeDiffExportImage(image);
             if (props.onExport) {
                 if (await props.onExport(file))
-                    setExportMessage(`Saved ${file.filename}`);
+                    announceExport(`Saved ${file.filename}`);
             } else {
                 downloadDiffImages(file);
-                setExportMessage(`Download started · ${file.filename}`);
+                announceExport(`Download started · ${file.filename}`);
             }
         } catch (error) {
             setExportFailed(true);
@@ -257,9 +272,16 @@ export default function FlowDiff(props: FlowDiffProps) {
         (props.review.comments ?? []).filter(
             (comment) =>
                 !visibleFiles().some((item) =>
-                    fileSections(item).some((section) =>
+                    // Place against what the current layout actually renders:
+                    // unified shows shared context once (on the new side).
+                    (layout() === "unified"
+                        ? combineUnifiedSections(fileSections(item))
+                        : fileSections(item)
+                    ).some((section) =>
                         (comment.side === "old"
-                            ? section.left
+                            ? layout() === "unified"
+                                ? unifiedLeftLines(item, section)
+                                : section.left
                             : section.right
                         ).some(
                             (line) =>
@@ -468,6 +490,9 @@ export default function FlowDiff(props: FlowDiffProps) {
         );
         if (!entry) return;
         const section = entry.section;
+        // Explicit navigation moves the reviewer on: a line clicked or
+        // commented earlier must not steal the next `o`.
+        if (navigate) comments.select(undefined);
         setSelectedId(entry.file.id);
         setActiveHunk(section.hunkIndex);
         if (section.kind === "change") setActiveSectionId(section.id);
@@ -497,6 +522,13 @@ export default function FlowDiff(props: FlowDiffProps) {
         )?.reviewLine;
         if (navigate && reviewLine !== undefined)
             props.onNavigateReviewLine?.(reviewLine);
+    }
+
+    function switchLayout(next: "split" | "unified") {
+        setLayout(next);
+        props.onLayoutChange?.(next);
+        // Keep the reviewer's place: re-scroll the new layout to the active change.
+        queueMicrotask(() => goToSection(activeSectionId(), false, file()?.id));
     }
 
     function goToFile(id: string) {
@@ -531,6 +563,7 @@ export default function FlowDiff(props: FlowDiffProps) {
         setSelectedId(next.fileId);
         setActiveHunk(next.hunkIndex);
         setActiveSectionId(next.sectionId);
+        comments.select(undefined);
         queueMicrotask(() => goToSection(next.sectionId, true, next.fileId));
     }
 
@@ -694,6 +727,8 @@ export default function FlowDiff(props: FlowDiffProps) {
                         <button
                             type="button"
                             class={`flow-expand-context ${up ? "up" : "down"}`}
+                            // Mouse affordance: the keyboard has K / J.
+                            tabIndex={-1}
                             aria-label={`Show more context ${up ? "above" : "below"}`}
                             title={`Show 10 more lines ${up ? "above (K)" : "below (J)"}`}
                             onClick={(event) => {
@@ -884,20 +919,59 @@ export default function FlowDiff(props: FlowDiffProps) {
     });
 
     createEffect(() => {
-        const query = searchText().toLocaleLowerCase();
-        allSections();
-        layout();
+        // A closed search bar has no query: drop highlights and match stepping.
+        const query = searchOpen() ? searchText().toLocaleLowerCase() : "";
+        const order = new Map(
+            allSections().map(({ file: item, section }, index) => [
+                sectionKey(item.id, section.id),
+                index,
+            ]),
+        );
+        const split = layout() === "split";
         reconstruction();
         queueMicrotask(() => {
-            const lines = [
+            const everyLine = [
                 ...(panel?.querySelectorAll<HTMLElement>(".flow-code-line") ??
                     []),
             ];
-            for (const line of lines)
+            for (const line of everyLine)
                 line.classList.remove(
                     "flow-search-match",
                     "flow-search-current",
                 );
+            let lines = everyLine;
+            if (split) {
+                // Context lines render in both panes: search the After pane plus
+                // the Before pane's removed lines so each source line matches
+                // once, in document order (removed before added per section).
+                const rank = (line: HTMLElement) => {
+                    const section = line.closest<HTMLElement>("[data-section]");
+                    return (
+                        order.get(
+                            sectionKey(
+                                section?.dataset.fileId ?? "",
+                                section?.dataset.section ?? "",
+                            ),
+                        ) ?? 0
+                    );
+                };
+                const inOld = (line: HTMLElement) =>
+                    line.closest(".flow-scroll.old") !== null &&
+                    line.closest(".flow-move-overlay") === null;
+                lines = lines
+                    .filter(
+                        (line) =>
+                            !inOld(line) || line.classList.contains("removed"),
+                    )
+                    .map((line, index) => ({ line, index }))
+                    .sort(
+                        (a, b) =>
+                            rank(a.line) - rank(b.line) ||
+                            Number(!inOld(a.line)) - Number(!inOld(b.line)) ||
+                            a.index - b.index,
+                    )
+                    .map(({ line }) => line);
+            }
             searchMatches = query
                 ? lines.filter((line) =>
                       line
@@ -937,6 +1011,56 @@ export default function FlowDiff(props: FlowDiffProps) {
                 number,
                 side,
             );
+    };
+
+    /** Where `o`/`O` comments: the clicked line if it is inside the active
+     * change, otherwise that change's first added line (as openCurrentChange). */
+    const defaultCommentTarget = (): CommentTarget | undefined => {
+        const currentFile = file();
+        const section = sections().find(
+            (item) => item.id === activeSectionId(),
+        );
+        if (currentFile && section) {
+            const pathFor = (side: Side) =>
+                side === "old"
+                    ? currentFile.oldPath || currentFile.path
+                    : currentFile.path;
+            const chosen = comments.selected();
+            if (
+                chosen &&
+                chosen.path === pathFor(chosen.side) &&
+                (chosen.side === "old" ? section.left : section.right).some(
+                    (line) =>
+                        (chosen.side === "old"
+                            ? line.oldLine
+                            : line.newLine) === chosen.line,
+                )
+            )
+                return chosen;
+            const line =
+                section.right.find((item) => item.kind === "added") ??
+                section.left.find((item) => item.kind === "removed") ??
+                section.right[0] ??
+                section.left[0];
+            if (line) {
+                const side: Side = line.kind === "removed" ? "old" : "new";
+                const number = side === "old" ? line.oldLine : line.newLine;
+                if (number !== undefined)
+                    return { path: pathFor(side), line: number, side };
+            }
+        }
+        if (!section && comments.selected()) return comments.selected();
+        const row =
+            panel?.querySelector<HTMLElement>(
+                "[data-active=true] [data-source-line]",
+            ) || panel?.querySelector<HTMLElement>("[data-source-line]");
+        return row
+            ? {
+                  path: row.dataset.sourcePath!,
+                  line: Number(row.dataset.sourceLine),
+                  side: row.dataset.sourceSide as Side,
+              }
+            : undefined;
     };
 
     const [navigationMessage, setNavigationMessage] = createSignal("");
@@ -995,15 +1119,22 @@ export default function FlowDiff(props: FlowDiffProps) {
             panel?.focus();
             return;
         }
-        if ((event.key === "n" || event.key === "N") && searchText()) {
+        if (
+            (event.key === "n" || event.key === "N") &&
+            searchOpen() &&
+            searchText()
+        ) {
             event.preventDefault();
             stepSearch(event.key === "N" ? -1 : 1);
             return;
         }
         if (event.target instanceof HTMLSelectElement) return;
+        // Native controls (including the unplaced-comments <summary>) own
+        // Enter/Space: activating them must not be swallowed by review keys.
         if (
-            event.target instanceof HTMLButtonElement &&
-            (event.key === "Enter" || event.key === " ")
+            (event.key === "Enter" || event.key === " ") &&
+            event.target instanceof Element &&
+            event.target.closest("summary, button, a[href], [role='button']")
         )
             return;
         if (event.metaKey || event.ctrlKey || event.altKey) return;
@@ -1028,19 +1159,7 @@ export default function FlowDiff(props: FlowDiffProps) {
         }
         if ((event.key === "o" || event.key === "O") && props.onComment) {
             event.preventDefault();
-            const row =
-                panel?.querySelector<HTMLElement>(
-                    "[data-active=true] [data-source-line]",
-                ) || panel?.querySelector<HTMLElement>("[data-source-line]");
-            const target =
-                comments.selected() ||
-                (row
-                    ? {
-                          path: row.dataset.sourcePath!,
-                          line: Number(row.dataset.sourceLine),
-                          side: row.dataset.sourceSide as Side,
-                      }
-                    : undefined);
+            const target = defaultCommentTarget();
             if (target) comments.begin(target, event.key === "O");
             return;
         }
@@ -1128,9 +1247,7 @@ export default function FlowDiff(props: FlowDiffProps) {
         }
         if (event.key === "s") {
             event.preventDefault();
-            const next = layout() === "split" ? "unified" : "split";
-            setLayout(next);
-            props.onLayoutChange?.(next);
+            switchLayout(layout() === "split" ? "unified" : "split");
             return;
         }
         if ((event.key === "q" || event.key === "r") && props.onAction) {
@@ -1319,34 +1436,14 @@ export default function FlowDiff(props: FlowDiffProps) {
                         <button
                             type="button"
                             aria-pressed={layout() === "split"}
-                            onClick={() => {
-                                setLayout("split");
-                                props.onLayoutChange?.("split");
-                                queueMicrotask(() =>
-                                    goToSection(
-                                        activeSectionId(),
-                                        false,
-                                        file()?.id,
-                                    ),
-                                );
-                            }}
+                            onClick={() => switchLayout("split")}
                         >
                             Side by side
                         </button>
                         <button
                             type="button"
                             aria-pressed={layout() === "unified"}
-                            onClick={() => {
-                                setLayout("unified");
-                                props.onLayoutChange?.("unified");
-                                queueMicrotask(() =>
-                                    goToSection(
-                                        activeSectionId(),
-                                        false,
-                                        file()?.id,
-                                    ),
-                                );
-                            }}
+                            onClick={() => switchLayout("unified")}
                         >
                             Unified
                         </button>

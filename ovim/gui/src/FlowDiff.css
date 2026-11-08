@@ -872,6 +872,10 @@
 }
 .flow-user-comment,
 .flow-comment-editor {
+    box-sizing: border-box;
+    /* Sections are min-width: max-content, so an uncapped comment would widen
+       the whole column. Cap to the scroller like .flow-move-overlay does. */
+    width: min(720px, calc(100cqi - 42px));
     margin: 5px 8px 5px 34px;
     padding: 10px 12px;
     border-left: 3px solid var(--accent);
@@ -880,6 +884,12 @@
     color: var(--text-primary);
     font: 13px/1.5 var(--ui-font);
     white-space: normal;
+    overflow-wrap: anywhere;
+}
+/* The move overlay is already width-capped and scrolls its own content. */
+.flow-move-overlay .flow-user-comment,
+.flow-move-overlay .flow-comment-editor {
+    width: auto;
 }
 .flow-user-comment p {
     margin: 6px 0;
@@ -907,6 +917,7 @@
 }
 .flow-comment-actions {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     gap: 8px;

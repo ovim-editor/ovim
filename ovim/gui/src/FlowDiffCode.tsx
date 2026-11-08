@@ -124,6 +124,8 @@ export function FileLine(props: {
                 <button
                     type="button"
                     class="flow-line-number"
+                    // Mouse affordance: the keyboard has Enter/gf to open source.
+                    tabIndex={-1}
                     aria-label={`${props.side === "old" ? "Before" : "After"} line ${number() ?? "unavailable"}${canOpen() ? ", open source" : ""}`}
                     disabled={
                         !canOpen() &&

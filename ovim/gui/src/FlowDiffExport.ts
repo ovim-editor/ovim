@@ -730,7 +730,21 @@ export function buildDiffExportImage(
         0,
     );
     const moveCount = review.moves?.length ?? 0;
-    const coverage = `${hiddenReviewed ? `${hiddenReviewed} reviewed items hidden · ` : ""}${options.hideEqual ? "Equal paired changes hidden · original patch: " : ""}${review.files.length} files · ${moveCount} possible moved-code matches · +${additions} −${deletions}`;
+    const plural = (count: number, one: string, many = `${one}s`) =>
+        `${count} ${count === 1 ? one : many}`;
+    const coverage = `${hiddenReviewed ? `${plural(hiddenReviewed, "reviewed item")} hidden · ` : ""}${options.hideEqual ? "Equal paired changes hidden · original patch: " : ""}${[
+        plural(review.files.length, "file"),
+        moveCount
+            ? plural(
+                  moveCount,
+                  "possible moved-code match",
+                  "possible moved-code matches",
+              )
+            : "",
+        `+${additions} −${deletions}`,
+    ]
+        .filter(Boolean)
+        .join(" · ")}`;
     const scope = options.view === "guided" ? "Guided sections" : "Files";
     const stem = safeStem(review.title);
 

@@ -1015,3 +1015,44 @@ it("renders saved user comments separately from agent notes and clears explicitl
     fireEvent.click(ui.getByRole("button", { name: "Clear comments (1)" }));
     expect(action).toHaveBeenCalledWith("clear_comments");
 });
+
+it("edits a saved comment without sending display-only fields", async () => {
+    const save = vi.fn().mockResolvedValue(undefined);
+    const ui = render(() => (
+        <FlowDiff
+            review={{
+                ...review,
+                managed: true,
+                comments: [
+                    {
+                        id: 7,
+                        path: "src/uneven.ts",
+                        line: 5,
+                        side: "new",
+                        before: false,
+                        text: "Check the boundary",
+                        excerpt: "short version",
+                    },
+                ],
+            }}
+            onComment={save}
+        />
+    ));
+    fireEvent.click(ui.getByRole("button", { name: "Edit" }));
+    const input = ui.getByRole("textbox", {
+        name: "Diff comment",
+    }) as HTMLTextAreaElement;
+    expect(input.value).toBe("Check the boundary");
+    fireEvent.input(input, { target: { value: "Check both boundaries" } });
+    fireEvent.click(ui.getByRole("button", { name: "Save comment" }));
+    await waitFor(() => expect(save).toHaveBeenCalled());
+    // The native command denies unknown fields, so `excerpt` must not leak.
+    expect(save).toHaveBeenLastCalledWith({
+        path: "src/uneven.ts",
+        line: 5,
+        side: "new",
+        before: false,
+        text: "Check both boundaries",
+        id: 7,
+    });
+});

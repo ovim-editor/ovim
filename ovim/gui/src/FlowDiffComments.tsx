@@ -22,10 +22,16 @@ export function createDiffComments(options: {
         comment?: GuiDiffComment,
     ) => {
         if (draft() || !options.save) return;
-        select(target);
+        // Pick the target fields explicitly: an edited comment is itself the
+        // target and carries display-only fields (excerpt) that the native
+        // command rejects as unknown.
+        const { path, line, side } = target;
+        select({ path, line, side });
         setError("");
         setDraft({
-            ...target,
+            path,
+            line,
+            side,
             before,
             text: comment?.text ?? "",
             id: comment?.id,
@@ -228,6 +234,8 @@ export function CommentedLine(props: {
                     <button
                         type="button"
                         class="flow-add-comment"
+                        // Mouse affordance: the keyboard has o / O.
+                        tabIndex={-1}
                         aria-label={`Comment on ${target()!.side} line ${target()!.line}`}
                         title="Add comment below (o) · above (O)"
                         onClick={(e) => {
