@@ -1,3 +1,4 @@
+import { chordKey } from "./guiInput";
 import {
     adjacentWorkbenchTab,
     type WorkbenchSelection,
@@ -39,11 +40,20 @@ export type BrowserShortcutAction =
     | "browser.next-tab";
 
 export const browserShortcutAction = (
-    event: Pick<KeyboardEvent, "key" | "code" | "shiftKey">,
+    event: Pick<KeyboardEvent, "key" | "code" | "shiftKey"> &
+        Partial<Pick<KeyboardEvent, "ctrlKey" | "altKey" | "metaKey">>,
     browserActive: boolean,
     macos: boolean,
 ): BrowserShortcutAction | undefined => {
-    const key = event.key.toLowerCase();
+    // Callers only reach here with the primary modifier held.
+    const key = chordKey({
+        key: event.key,
+        code: event.code,
+        shiftKey: event.shiftKey,
+        ctrlKey: event.ctrlKey ?? !macos,
+        metaKey: event.metaKey ?? macos,
+        altKey: event.altKey ?? false,
+    }).toLowerCase();
     if (key === "w" && (browserActive || macos)) return "file.close";
     if (key === "t" && !event.shiftKey && (browserActive || macos))
         return "browser.new-tab";

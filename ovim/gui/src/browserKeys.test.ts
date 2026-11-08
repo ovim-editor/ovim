@@ -30,6 +30,30 @@ const setup = () => {
 };
 
 describe("browser key router", () => {
+    it("recognises shortcuts on non-Latin layouts through the physical key", () => {
+        expect(
+            browserShortcutAction(
+                { key: "ц", code: "KeyW", shiftKey: false, ctrlKey: true },
+                true,
+                false,
+            ),
+        ).toBe("file.close");
+        expect(
+            browserShortcutAction(
+                { key: "д", code: "KeyL", shiftKey: false, ctrlKey: true },
+                true,
+                false,
+            ),
+        ).toBe("browser.focus-address");
+        expect(
+            browserShortcutAction(
+                { key: "ц", code: "KeyW", shiftKey: false },
+                false,
+                false,
+            ),
+        ).toBeUndefined();
+    });
+
     it("releases Vim control keys outside the browser on non-macOS hosts", () => {
         expect(
             browserShortcutAction(
