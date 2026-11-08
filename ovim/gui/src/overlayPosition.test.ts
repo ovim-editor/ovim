@@ -28,6 +28,20 @@ describe("anchored overlay placement", () => {
         ).toEqual({ left: 462, top: 316, width: 430, height: 250 });
     });
 
+    it("flips above the anchor line's top so the cursor line stays visible", () => {
+        expect(
+            anchoredOverlayPosition({
+                anchorX: 100,
+                anchorY: 570,
+                aboveY: 548,
+                containerWidth: 900,
+                containerHeight: 600,
+                preferredWidth: 430,
+                preferredHeight: 250,
+            }),
+        ).toEqual({ left: 100, top: 294, width: 430, height: 250 });
+    });
+
     it("shrinks safely when the editor is smaller than the surface", () => {
         expect(
             anchoredOverlayPosition({

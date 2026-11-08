@@ -193,9 +193,9 @@ mockSnapshot.lines.splice(0, mockSnapshot.lines.length, ...[-1, 5].map((cursor, 
             2, 2, 2, 2, 2, 2, 1, 1, 1,
         ]);
         for (const segment of line)
-            expect(
-                Math.abs(segment.left - segment.expectedLeft),
-            ).toBeLessThan(0.15);
+            expect(Math.abs(segment.left - segment.expectedLeft)).toBeLessThan(
+                0.15,
+            );
         // Narrow glyphs after a wide one sit at their own cell's center (the
         // wide glyph itself may come from a fallback font with another
         // advance).

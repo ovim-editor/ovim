@@ -2884,8 +2884,6 @@ button:focus-visible {
     color: var(--error);
 }
 
-.completion-popover,
-.hover-popover,
 .fold-marker {
     margin-left: 10px;
     padding: 0 8px;
@@ -2897,6 +2895,8 @@ button:focus-visible {
     display: inline-block;
     vertical-align: middle;
 }
+.completion-popover,
+.hover-popover,
 .signature-popover {
     position: absolute;
     z-index: var(--layer-inline);

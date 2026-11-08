@@ -8,6 +8,7 @@ import {
     on,
     onCleanup,
     onMount,
+    untrack,
 } from "solid-js";
 import { Channel, invoke, isTauri } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -2296,11 +2297,7 @@ function App() {
         const clipboardModifier = macos
             ? event.metaKey
             : event.ctrlKey && event.shiftKey;
-        if (
-            clipboardModifier &&
-            ["c", "v", "x"].includes(chordLower)
-        )
-            return;
+        if (clipboardModifier && ["c", "v", "x"].includes(chordLower)) return;
         const input = guiKeyInput(event);
         if (!input) return;
         event.preventDefault();
@@ -2531,18 +2528,92 @@ function App() {
         return { name: "status-info", tone: "information" };
     };
 
+    /**
+     * Where the rendered cursor cell actually is, relative to `.editor-body`.
+     * Computing it from line/column numbers breaks as soon as lines wrap (one
+     * GuiLine per visual row), panes are split, or a pane title is shown, so
+     * overlays and the IME anchor measure the cursor element instead.
+     */
+    const [cursorAnchor, setCursorAnchor] = createSignal<
+        { left: number; top: number; bottom: number } | undefined
+    >();
+    const measureCursorAnchor = () => {
+        const body = editorBody;
+        const cursor = body?.querySelector<HTMLElement>(
+            ".editor-pane.focused .code-segment.cursor",
+        );
+        const rect = cursor?.getBoundingClientRect();
+        // An unlaid-out (zero-size) element cannot anchor anything.
+        if (!body || !rect || (rect.width === 0 && rect.height === 0)) {
+            setCursorAnchor(undefined);
+            return;
+        }
+        const origin = body.getBoundingClientRect();
+        const next = {
+            left: rect.left - origin.left - body.clientLeft + body.scrollLeft,
+            top: rect.top - origin.top - body.clientTop + body.scrollTop,
+            bottom: rect.bottom - origin.top - body.clientTop + body.scrollTop,
+        };
+        const previous = cursorAnchor();
+        if (
+            previous &&
+            Math.abs(previous.left - next.left) < 0.01 &&
+            Math.abs(previous.top - next.top) < 0.01 &&
+            Math.abs(previous.bottom - next.bottom) < 0.01
+        )
+            return;
+        setCursorAnchor(next);
+    };
+    // Re-measure after every snapshot (scroll, wrap, split and mode changes
+    // all arrive as one) and whenever the cell width changes.
+    createEffect(() => {
+        view();
+        cellWidth();
+        untrack(measureCursorAnchor);
+    });
+
+    /** Measured anchor for something sitting on the cursor's own line. */
+    const anchorOnCursorLine = (line: number, displayColumn: number) => {
+        const anchor = cursorAnchor();
+        if (!anchor || line !== view().cursor.line) return undefined;
+        return {
+            left:
+                anchor.left +
+                (displayColumn - view().cursor.displayColumn) * cellWidth(),
+            top: anchor.top,
+            bottom: anchor.bottom,
+        };
+    };
+
+    /** Top-left of the cursor cell for the IME sink and composition preview. */
+    const cursorCellStyle = () => {
+        const anchor = cursorAnchor();
+        if (anchor) return { top: `${anchor.top}px`, left: `${anchor.left}px` };
+        return {
+            top: `${Math.max(0, view().cursor.line - view().firstLine) * LINE_HEIGHT + 8}px`,
+            left: `${Math.max(0, view().cursor.displayColumn - view().horizontalOffset) * cellWidth() + 66}px`,
+        };
+    };
+
     const inlineOverlayStyle = (
         line: number,
         displayColumn: number,
         width: number,
         height: number,
     ) => {
+        const measured = anchorOnCursorLine(line, displayColumn);
         const position = anchoredOverlayPosition({
             anchorX:
+                measured?.left ??
                 Math.max(0, displayColumn - view().horizontalOffset) *
                     cellWidth() +
-                66,
-            anchorY: Math.max(0, line - view().firstLine + 1) * LINE_HEIGHT + 6,
+                    66,
+            anchorY:
+                measured?.bottom ??
+                Math.max(0, line - view().firstLine + 1) * LINE_HEIGHT + 6,
+            aboveY:
+                measured?.top ??
+                Math.max(0, line - view().firstLine) * LINE_HEIGHT + 6,
             containerWidth: editorBody?.clientWidth || 960,
             containerHeight: editorBody?.clientHeight || 600,
             preferredWidth: width,
@@ -2563,14 +2634,18 @@ function App() {
         rows: number,
     ) => {
         const height = rows * LINE_HEIGHT + 14;
-        const lineTop = Math.max(0, line - view().firstLine) * LINE_HEIGHT + 6;
-        const top =
-            lineTop >= height ? lineTop - height : lineTop + LINE_HEIGHT;
+        const measured = anchorOnCursorLine(line, displayColumn);
+        const lineTop =
+            measured?.top ??
+            Math.max(0, line - view().firstLine) * LINE_HEIGHT + 6;
+        const lineBottom = measured?.bottom ?? lineTop + LINE_HEIGHT;
+        const top = lineTop >= height ? lineTop - height : lineBottom;
         const containerWidth = editorBody?.clientWidth || 960;
         const width = Math.min(560, containerWidth - 24);
         const anchorX =
+            measured?.left ??
             Math.max(0, displayColumn - view().horizontalOffset) * cellWidth() +
-            66;
+                66;
         return {
             left: `${Math.max(8, Math.min(anchorX, containerWidth - width - 8))}px`,
             top: `${top}px`,
@@ -4348,8 +4423,14 @@ function App() {
             setCompactDocks(event.matches);
         compactDockQuery?.addEventListener("change", updateCompactDocks);
         editorBody.addEventListener("wheel", handleWheel, { passive: false });
-        const observer = new ResizeObserver(syncDimensions);
+        const observer = new ResizeObserver(() => {
+            syncDimensions();
+            measureCursorAnchor();
+        });
         observer.observe(editorBody);
+        // Docks opening or closing reflow the panes without resizing the body.
+        const paneTree = editorBody.querySelector(".pane-tree");
+        if (paneTree) observer.observe(paneTree);
         let unlistenMenu: (() => void) | undefined;
         let unlistenClose: (() => void) | undefined;
         let unlistenBrowserKey: (() => void) | undefined;
@@ -4737,10 +4818,7 @@ function App() {
                         <textarea
                             ref={inputSink!}
                             class="input-sink"
-                            style={{
-                                top: `${Math.max(0, view().cursor.line - view().firstLine) * LINE_HEIGHT + 8}px`,
-                                left: `${Math.max(0, view().cursor.displayColumn - view().horizontalOffset) * cellWidth() + 66}px`,
-                            }}
+                            style={cursorCellStyle()}
                             aria-label="Ovim editor input"
                             aria-multiline="true"
                             autocomplete="off"
@@ -4755,10 +4833,7 @@ function App() {
                             {(text) => (
                                 <span
                                     class="ime-preview"
-                                    style={{
-                                        top: `${Math.max(0, view().cursor.line - view().firstLine) * LINE_HEIGHT + 8}px`,
-                                        left: `${Math.max(0, view().cursor.displayColumn - view().horizontalOffset) * cellWidth() + 66}px`,
-                                    }}
+                                    style={cursorCellStyle()}
                                 >
                                     {text()}
                                 </span>
