@@ -23,6 +23,56 @@ impl Editor {
         self.buffer_mut().change_manager_mut().set_entry_mode(mode);
     }
 
+    /// Finalizes an Insert recording that was left open on a buffer other than
+    /// the current one, and returns whether there was one.
+    ///
+    /// Some paths switch buffers without leaving Insert mode (a tab click in
+    /// the GUI), so the recording stays on the buffer typed into before. The
+    /// typing there becomes its own undo step.
+    pub(super) fn finalize_recording_left_on_other_buffer(&mut self) -> bool {
+        let Some(index) = (0..self.buffers.len()).find(|&index| {
+            index != self.current_buffer_index && self.buffers[index].is_recording()
+        }) else {
+            return false;
+        };
+        let current = std::mem::replace(&mut self.current_buffer_index, index);
+        self.finalize_change_building();
+        self.current_buffer_index = current;
+        true
+    }
+
+    /// Runs `edit` between two Insert-mode undo steps, as `<C-g>u` does in Vim.
+    ///
+    /// Use it for an edit that does not come from typing (an AI tool, an LSP
+    /// result, an API request), because such an edit can arrive while Insert
+    /// mode is recording the current buffer. The text typed so far becomes
+    /// its own undo step, `edit` runs and records its own, and Insert mode
+    /// starts a new recording at the cursor. Outside Insert mode, `edit` just
+    /// runs.
+    ///
+    /// The open recording cannot simply stay open around `edit`: its edits
+    /// are stored at char offsets that no longer match the text once `edit`
+    /// lands, so undoing them would corrupt the buffer.
+    pub fn with_insert_undo_break<R>(&mut self, edit: impl FnOnce(&mut Self) -> R) -> R {
+        if !self.buffer().is_recording() {
+            return edit(self);
+        }
+        let mode = self.mode();
+        let entry_mode = self
+            .buffer()
+            .change_manager()
+            .current_builder
+            .as_ref()
+            .map(|builder| builder.entry_mode().clone());
+        self.finalize_change_building();
+        let result = edit(self);
+        if let Some(entry_mode) = entry_mode.filter(|_| self.mode() == mode) {
+            self.start_change_building(self.cursor_position());
+            self.set_change_entry_mode(entry_mode);
+        }
+        result
+    }
+
     /// Finalizes the current insert-session change.
     ///
     /// Closes the stateful recording session and, if it produced edits,
@@ -35,6 +85,9 @@ impl Editor {
     /// Returns the token of the pushed undo entry, for flows that merge the
     /// session with a preceding delete or replicate it (c, visual-block I/A).
     pub fn finalize_change_building(&mut self) -> Option<crate::change::ChangeToken> {
+        if !self.buffer().is_recording() {
+            self.finalize_recording_left_on_other_buffer();
+        }
         let cursor_after =
             CursorPos::new(self.buffer().cursor().line(), self.buffer().cursor().col());
 

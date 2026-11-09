@@ -276,6 +276,11 @@ pub enum InstallMethod {
         /// For an uncompressed binary asset, this is ignored.
         #[serde(default)]
         binary_name: Option<String>,
+        /// Leading folders to drop from every path in an archive, as with
+        /// `tar --strip-components`. cargo-dist puts each Unix archive's files
+        /// in one `<app>-<target>/` folder, so its archives need 1.
+        #[serde(default)]
+        strip_components: usize,
     },
 
     /// Install via npm
@@ -534,7 +539,7 @@ impl LanguageRegistry {
     /// - User config overrides embedded config (by language ID)
     /// - User can add new languages not in embedded config
     /// - Companion LSP configs are merged by ID (user overrides embedded)
-    fn parse_configs(
+    pub(crate) fn parse_configs(
         embedded: &str,
         user: Option<String>,
     ) -> Result<(Vec<LanguageConfig>, Vec<CompanionLspConfig>), String> {
@@ -840,9 +845,14 @@ pub fn managed_lsp_package_dir(manager: &str, package: &str) -> Option<std::path
 
 /// Find the DAP server command, trying primary then fallbacks.
 ///
-/// Same strategy as `find_lsp_command`.
-pub fn find_dap_command(config: &DapConfig) -> Option<String> {
-    find_configured_command(&config.command, &config.fallback_commands, None)
+/// Same strategy as `find_lsp_command`. When the debug adapter runs from the
+/// language server's own binary (`hyperion-lsp dap`), the server's install
+/// also finds the adapter.
+pub fn find_dap_command(config: &DapConfig, lsp: Option<&LspConfig>) -> Option<String> {
+    let server_install = lsp
+        .filter(|lsp| lsp.command == config.command)
+        .and_then(|lsp| lsp.auto_install.as_ref());
+    find_configured_command(&config.command, &config.fallback_commands, server_install)
 }
 
 // ============================================================================
@@ -904,6 +914,46 @@ mod tests {
             find_configured_command(command, &[], Some(&raw)),
             Some(resolved)
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn debug_adapter_in_the_language_server_binary_is_found_through_its_install() {
+        use std::os::unix::fs::PermissionsExt;
+        let directory = tempfile::tempdir().unwrap();
+        let command = "ovim-fixture-server-with-debug-adapter";
+        let binary = directory.path().join(command);
+        std::fs::write(&binary, "#!/bin/sh\n").unwrap();
+        std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let lsp: LspConfig = serde_json::from_value(serde_json::json!({
+            "command": command,
+            "auto_install": { "method": {
+                "type": "github",
+                "repo": "example/server",
+                "asset_pattern": "server-*.tar.xz",
+                "install_path": directory.path(),
+                "binary_name": command,
+                "strip_components": 1
+            }}
+        }))
+        .unwrap();
+        let dap: DapConfig = serde_json::from_value(serde_json::json!({
+            "command": command,
+            "args": ["dap"]
+        }))
+        .unwrap();
+
+        assert_eq!(
+            find_dap_command(&dap, Some(&lsp)).map(PathBuf::from),
+            Some(binary)
+        );
+
+        // A separate adapter binary is not the server's to install.
+        let other: DapConfig = serde_json::from_value(serde_json::json!({
+            "command": "ovim-fixture-separate-debug-adapter"
+        }))
+        .unwrap();
+        assert_eq!(find_dap_command(&other, Some(&lsp)), None);
     }
 
     #[test]
@@ -1017,10 +1067,10 @@ mod tests {
         assert!(registry.detect("unknown.xyz").is_none());
     }
 
-    /// OV-00407: hyperion-lsp is only looked up on PATH; the config must not
-    /// promise a download, and JVM projects need the multi-module root rule.
+    /// hyperion-lsp installs from its GitHub releases, and JVM projects need
+    /// the multi-module root rule.
     #[test]
-    fn hyperion_languages_are_honest_about_installation_and_find_gradle_roots() {
+    fn hyperion_languages_install_from_github_and_find_gradle_roots() {
         let (languages, _) =
             LanguageRegistry::parse_configs(include_str!("../languages.toml"), None).unwrap();
         let mut seen = 0;
@@ -1032,16 +1082,18 @@ mod tests {
             let lsp = language.lsp.as_ref().unwrap();
             let hint = lsp.install_hint.as_deref().unwrap_or_default();
             assert!(
-                hint.contains("not found in PATH"),
+                hint.contains("https://github.com/hyperion-lsp/hyperion-lsp/releases"),
                 "{}: {hint}",
                 language.id
             );
             assert!(
-                !hint.to_lowercase().contains("automatic"),
-                "{}: must not claim an automatic download: {hint}",
+                matches!(
+                    lsp.auto_install.as_ref().map(|config| &config.method),
+                    Some(InstallMethod::Github { repo, .. }) if repo == "hyperion-lsp/hyperion-lsp"
+                ),
+                "{}",
                 language.id
             );
-            assert!(lsp.auto_install.is_none(), "{}", language.id);
             assert!(
                 lsp.outermost_root_markers
                     .iter()
@@ -1254,6 +1306,7 @@ mod tests {
                 asset_pattern,
                 install_path,
                 binary_name: Some(binary_name),
+                strip_components: 0,
             } if repo == "rust-lang/rust-analyzer"
                 && asset_pattern == "rust-analyzer-{arch}-*{os}*.{ext}"
                 && install_path == "~/.local/share/ovim/lsp/rust-analyzer/bin"

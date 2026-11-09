@@ -28,17 +28,20 @@ impl Editor {
     /// [`Editor::apply_text_edits_to_buffer`], the single implementation of
     /// the LSP `TextEdit[]` application rules (OV-00332).
     pub(in crate::editor) fn apply_lsp_edits(&mut self, edits: Vec<lsp_types::TextEdit>) {
-        let cursor_before = self.cursor_position();
-        let (_all_applied, recorded_edits) = self.buffer_mut().record(|buf| {
-            let applied = Self::apply_text_edits_to_buffer(buf, &edits);
-            buf.clamp_cursor_to_content();
-            applied
+        // A format result can arrive after the user is back in Insert mode.
+        self.with_insert_undo_break(|editor| {
+            let cursor_before = editor.cursor_position();
+            let past_end = editor.mode().types_text();
+            let (_all_applied, recorded_edits) = editor.buffer_mut().record(|buf| {
+                let applied = Self::apply_text_edits_to_buffer(buf, &edits);
+                buf.clamp_cursor_to_content(past_end);
+                applied
+            });
+            if !recorded_edits.is_empty() {
+                let cursor_after = editor.cursor_position();
+                editor.push_recorded_undo(recorded_edits, cursor_before, cursor_after);
+            }
         });
-
-        if !recorded_edits.is_empty() {
-            let cursor_after = self.cursor_position();
-            self.push_recorded_undo(recorded_edits, cursor_before, cursor_after);
-        }
 
         // LSP-applied edits are still edits: ensure we sync back to the server so
         // diagnostics and other LSP features refresh.
@@ -72,7 +75,15 @@ impl Editor {
                 failed_change: Some(index),
             };
         }
+        // A server can send `workspace/applyEdit` while the user types.
+        self.with_insert_undo_break(|editor| editor.apply_current_workspace_edit(edit))
+    }
 
+    /// Applies a workspace edit whose document versions are current.
+    fn apply_current_workspace_edit(
+        &mut self,
+        edit: lsp_types::WorkspaceEdit,
+    ) -> lsp_types::ApplyWorkspaceEditResponse {
         let mut failure: Option<(u32, String)> = None;
         let mut modified_files = Vec::new();
 

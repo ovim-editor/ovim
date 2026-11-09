@@ -80,4 +80,9 @@ impl Mode {
     pub fn is_visual(&self) -> bool {
         matches!(self, Mode::Visual | Mode::VisualLine | Mode::VisualBlock)
     }
+
+    /// Returns whether keys type into the buffer (Insert and Replace mode).
+    pub fn types_text(&self) -> bool {
+        matches!(self, Mode::Insert | Mode::Replace)
+    }
 }

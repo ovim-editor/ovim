@@ -584,7 +584,45 @@ impl Editor {
         if let Some(chat) = self.ai_state.chat.as_mut() {
             chat.last_save_outcome = None;
         }
-        let mut result = match name {
+        // The agent can run a tool while the user types in Insert mode. Every
+        // tool here but `snapshot_file` changes the buffer.
+        let mut result = if name == "snapshot_file" {
+            self.dispatch_mutation_tool(name, args)
+        } else {
+            self.with_insert_undo_break(|editor| editor.dispatch_mutation_tool(name, args))
+        };
+
+        if let ToolResult::Success(message) = &mut result {
+            let revision_after = self.buffer().version();
+            let content_after = self.buffer().rope().to_string();
+            let diffstat = mutation_diffstat(&content_before, &content_after);
+            let save_outcome = self
+                .ai_state
+                .chat
+                .as_ref()
+                .and_then(|chat| chat.last_save_outcome.as_deref());
+            append_mutation_envelope(
+                message,
+                name,
+                &file_label,
+                revision_before,
+                revision_after,
+                &diffstat,
+                save_outcome,
+            );
+        }
+
+        // Only restore if active_buffer_id didn't change during the mutation
+        // (e.g., open_file could have changed it)
+        let current_active = self.ai_state.chat.as_ref().map(|c| c.active_buffer_id);
+        if current_active == Some(target_buffer_id) {
+            self.current_buffer_index = original;
+        }
+        result
+    }
+
+    fn dispatch_mutation_tool(&mut self, name: &str, args: &serde_json::Value) -> ToolResult {
+        match name {
             "edit_range" => match parse_args(args) {
                 Ok(a) => self.handle_edit_range(a),
                 Err(e) => e,
@@ -618,35 +656,7 @@ impl Editor {
                 Err(e) => e,
             },
             _ => ToolResult::Error(format!("unknown mutation tool: {name}")),
-        };
-
-        if let ToolResult::Success(message) = &mut result {
-            let revision_after = self.buffer().version();
-            let content_after = self.buffer().rope().to_string();
-            let diffstat = mutation_diffstat(&content_before, &content_after);
-            let save_outcome = self
-                .ai_state
-                .chat
-                .as_ref()
-                .and_then(|chat| chat.last_save_outcome.as_deref());
-            append_mutation_envelope(
-                message,
-                name,
-                &file_label,
-                revision_before,
-                revision_after,
-                &diffstat,
-                save_outcome,
-            );
         }
-
-        // Only restore if active_buffer_id didn't change during the mutation
-        // (e.g., open_file could have changed it)
-        let current_active = self.ai_state.chat.as_ref().map(|c| c.active_buffer_id);
-        if current_active == Some(target_buffer_id) {
-            self.current_buffer_index = original;
-        }
-        result
     }
 
     /// Shared post-mutation refresh: rehighlight, diagnostics, mark dirty.

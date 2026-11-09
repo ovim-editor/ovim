@@ -206,7 +206,9 @@ pub fn execute_and_show(editor: &mut Editor, line: &str) {
 /// and the GUI): a queued `:!cmd` runs with captured output and a queued
 /// `:terminal` is refused.
 pub fn execute_command_api(editor: &mut Editor, line: &str) -> CommandResult {
-    let result = execute_command(editor, line);
+    // The GUI (Cmd-Z, Cmd-S) and the API run commands without leaving Insert
+    // mode, like `<C-o>:` in Vim.
+    let result = editor.with_insert_undo_break(|editor| execute_command(editor, line));
     if let Some(shell) = editor.take_pending_shell_command() {
         if let CommandResult::Error(_) = result {
             return result;

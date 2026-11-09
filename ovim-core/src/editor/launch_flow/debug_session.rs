@@ -59,13 +59,14 @@ impl Editor {
             .unwrap_or_else(|| "java".to_string());
         let registry = crate::language_config::LanguageRegistry::try_get()
             .ok_or("language registry unavailable")?;
-        let config = registry
-            .get_by_id(&language)
+        let language_config = registry.get_by_id(&language);
+        let config = language_config
             .and_then(|l| l.dap.as_ref())
             .ok_or_else(|| {
                 format!("No debug adapter is configured for {language}. Use :debug start <command> [args...]")
             })?;
-        match crate::language_config::find_dap_command(config) {
+        let lsp = language_config.and_then(|l| l.lsp.as_ref());
+        match crate::language_config::find_dap_command(config, lsp) {
             Some(command) => Ok((command, config.args.clone())),
             None => Err(format!(
                 "Debug adapter '{}' not found. {}",

@@ -581,6 +581,7 @@ impl Editor {
             return false;
         }
 
+        let past_end = buffer_index == self.current_buffer_index && self.mode().types_text();
         let (all_applied, recorded_edits, cursor_before, cursor_after, file_path) = {
             let buffer = &mut self.buffers[buffer_index];
             let cursor_before =
@@ -588,7 +589,7 @@ impl Editor {
 
             let (all_applied, recorded_edits) = buffer.record(|buf| {
                 let applied = Self::apply_text_edits_to_buffer(buf, &edits);
-                buf.clamp_cursor_to_content();
+                buf.clamp_cursor_to_content(past_end);
                 applied
             });
 

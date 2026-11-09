@@ -11,6 +11,7 @@ pub(super) async fn install_via_github(
     asset_pattern: &str,
     install_path: &str,
     binary_name: Option<&str>,
+    strip_components: usize,
     default_binary_name: &str,
 ) -> InstallResult {
     #[derive(Debug, Deserialize)]
@@ -69,13 +70,13 @@ pub(super) async fn install_via_github(
         }
     };
 
-    let expanded_patterns = expand_platform_patterns(asset_pattern);
-    let asset = expanded_patterns.iter().find_map(|pattern| {
-        release
-            .assets
-            .iter()
-            .find(|asset| asset_matches_pattern(&asset.name, pattern))
-    });
+    let asset = select_asset(
+        &release.assets,
+        |asset| &asset.name,
+        asset_pattern,
+        std::env::consts::OS,
+        std::env::consts::ARCH,
+    );
 
     let Some(asset) = asset else {
         return InstallResult::Failed(format!(
@@ -131,6 +132,7 @@ pub(super) async fn install_via_github(
         &asset.name,
         &expand_install_path(install_path),
         binary_name,
+        strip_components,
         default_binary_name,
     )
     .await
@@ -148,10 +150,22 @@ fn expand_install_path(raw: &str) -> PathBuf {
     PathBuf::from(expanded)
 }
 
-/// Expand `{os}`, `{arch}`, and `{ext}` placeholders in asset patterns.
-/// Returns multiple candidates to handle naming inconsistencies across projects.
-fn expand_platform_patterns(pattern: &str) -> Vec<String> {
-    expand_platform_patterns_for(pattern, std::env::consts::OS, std::env::consts::ARCH)
+/// Pick the release asset for one platform. The expanded patterns are tried
+/// in order, so the first spelling of the platform that matches wins.
+fn select_asset<'a, T>(
+    assets: &'a [T],
+    name: impl Fn(&T) -> &str,
+    pattern: &str,
+    os: &str,
+    arch: &str,
+) -> Option<&'a T> {
+    expand_platform_patterns_for(pattern, os, arch)
+        .iter()
+        .find_map(|pattern| {
+            assets
+                .iter()
+                .find(|asset| asset_matches_pattern(name(asset), pattern))
+        })
 }
 
 fn expand_platform_patterns_for(pattern: &str, os: &str, arch: &str) -> Vec<String> {
@@ -197,6 +211,7 @@ async fn install_downloaded_asset(
     asset_name: &str,
     install_path: &Path,
     binary_name: Option<&str>,
+    strip_components: usize,
     default_binary_name: &str,
 ) -> Result<PathBuf, String> {
     match asset_kind(asset_name) {
@@ -206,6 +221,7 @@ async fn install_downloaded_asset(
                 asset_name,
                 install_path,
                 binary_name,
+                strip_components,
                 default_binary_name,
             )
             .await
@@ -230,6 +246,7 @@ async fn install_archive(
     asset_name: &str,
     target_dir: &Path,
     binary_name: Option<&str>,
+    strip_components: usize,
     default_binary_name: &str,
 ) -> Result<PathBuf, String> {
     tokio::fs::create_dir_all(target_dir)
@@ -241,7 +258,11 @@ async fn install_archive(
             )
         })?;
 
-    extract_archive(bytes, asset_name, target_dir)?;
+    if strip_components == 0 {
+        extract_archive(bytes, asset_name, target_dir)?;
+    } else {
+        extract_archive_stripped(bytes, asset_name, target_dir, strip_components)?;
+    }
 
     let binary_name = binary_name.unwrap_or(default_binary_name);
     let binary_path = target_dir.join(platform_executable_name(binary_name));
@@ -361,6 +382,57 @@ fn extract_archive(
     } else {
         Err(format!("Unsupported archive format: {asset_name}"))
     }
+}
+
+/// Extract into a staging folder inside `target_dir`, then move the contents
+/// of the folder `strip_components` levels down into `target_dir`.
+fn extract_archive_stripped(
+    bytes: &[u8],
+    asset_name: &str,
+    target_dir: &Path,
+    strip_components: usize,
+) -> Result<(), String> {
+    let staging = tempfile::tempdir_in(target_dir)
+        .map_err(|error| format!("failed to create a staging folder: {error}"))?;
+    extract_archive(bytes, asset_name, staging.path())?;
+
+    let mut root = staging.path().to_path_buf();
+    for _ in 0..strip_components {
+        root = only_folder_in(&root).ok_or_else(|| {
+            format!("cannot strip a folder from '{asset_name}': it needs one top-level folder")
+        })?;
+    }
+
+    let entries = std::fs::read_dir(&root)
+        .map_err(|error| format!("failed to read '{}': {error}", root.display()))?;
+    for entry in entries {
+        let entry =
+            entry.map_err(|error| format!("failed to read '{}': {error}", root.display()))?;
+        let destination = target_dir.join(entry.file_name());
+        // A rename replaces a file, but not a folder that has contents.
+        if std::fs::symlink_metadata(&destination).is_ok_and(|meta| meta.is_dir()) {
+            std::fs::remove_dir_all(&destination).map_err(|error| {
+                format!("failed to replace '{}': {error}", destination.display())
+            })?;
+        }
+        std::fs::rename(entry.path(), &destination).map_err(|error| {
+            format!(
+                "failed to move '{}' into place: {error}",
+                destination.display()
+            )
+        })?;
+    }
+    Ok(())
+}
+
+/// The path of the single entry in `dir`, if that entry is a folder.
+fn only_folder_in(dir: &Path) -> Option<PathBuf> {
+    let mut entries = std::fs::read_dir(dir).ok()?;
+    let only = entries.next()?.ok()?;
+    if entries.next().is_some() || !only.file_type().ok()?.is_dir() {
+        return None;
+    }
+    Some(only.path())
 }
 
 fn extract_tar_gz(bytes: &[u8], target_dir: &std::path::Path) -> Result<(), String> {
@@ -520,6 +592,251 @@ mod tests {
         }
     }
 
+    /// Release assets of hyperion-lsp, from the `dist plan` manifest of its
+    /// release workflow (cargo-dist 0.34). cargo-dist also uploads the
+    /// manifest itself as `dist-manifest.json`.
+    const HYPERION_RELEASE_ASSETS: &[&str] = &[
+        "dist-manifest.json",
+        "hyperion-lsp-aarch64-apple-darwin.tar.xz",
+        "hyperion-lsp-aarch64-apple-darwin.tar.xz.sha256",
+        "hyperion-lsp-aarch64-unknown-linux-gnu.tar.xz",
+        "hyperion-lsp-aarch64-unknown-linux-gnu.tar.xz.sha256",
+        "hyperion-lsp-installer.sh",
+        "hyperion-lsp-x86_64-apple-darwin.tar.xz",
+        "hyperion-lsp-x86_64-apple-darwin.tar.xz.sha256",
+        "hyperion-lsp-x86_64-unknown-linux-gnu.tar.xz",
+        "hyperion-lsp-x86_64-unknown-linux-gnu.tar.xz.sha256",
+        "hyperion-lsp.rb",
+        "sha256.sum",
+        "source.tar.gz",
+        "source.tar.gz.sha256",
+    ];
+
+    /// The GitHub install shared by every language that runs hyperion-lsp.
+    fn embedded_hyperion_install() -> crate::language_config::InstallMethod {
+        let (languages, _) = crate::language_config::LanguageRegistry::parse_configs(
+            include_str!("../../../languages.toml"),
+            None,
+        )
+        .unwrap();
+        let methods: Vec<_> = languages
+            .iter()
+            .filter_map(|language| language.lsp.as_ref())
+            .filter(|lsp| lsp.command == "hyperion-lsp")
+            .map(|lsp| {
+                lsp.auto_install
+                    .as_ref()
+                    .expect("every hyperion-lsp language has an auto-install")
+                    .method
+                    .clone()
+            })
+            .collect();
+        assert!(methods.len() >= 4, "java, kotlin, groovy and scala");
+        let first = serde_json::to_value(&methods[0]).unwrap();
+        for method in &methods {
+            assert_eq!(serde_json::to_value(method).unwrap(), first);
+        }
+        methods[0].clone()
+    }
+
+    #[test]
+    fn hyperion_pattern_picks_the_one_archive_for_each_platform() {
+        let crate::language_config::InstallMethod::Github { asset_pattern, .. } =
+            embedded_hyperion_install()
+        else {
+            panic!("hyperion-lsp installs from GitHub");
+        };
+        for (os, arch, archive) in [
+            (
+                "macos",
+                "aarch64",
+                "hyperion-lsp-aarch64-apple-darwin.tar.xz",
+            ),
+            ("macos", "x86_64", "hyperion-lsp-x86_64-apple-darwin.tar.xz"),
+            (
+                "linux",
+                "aarch64",
+                "hyperion-lsp-aarch64-unknown-linux-gnu.tar.xz",
+            ),
+            (
+                "linux",
+                "x86_64",
+                "hyperion-lsp-x86_64-unknown-linux-gnu.tar.xz",
+            ),
+        ] {
+            assert_eq!(
+                select_asset(
+                    HYPERION_RELEASE_ASSETS,
+                    |name| name,
+                    &asset_pattern,
+                    os,
+                    arch
+                ),
+                Some(&archive),
+                "{os}/{arch}"
+            );
+            let patterns = expand_platform_patterns_for(&asset_pattern, os, arch);
+            let matching: Vec<_> = HYPERION_RELEASE_ASSETS
+                .iter()
+                .filter(|name| patterns.iter().any(|p| asset_matches_pattern(name, p)))
+                .collect();
+            assert_eq!(matching, [&archive], "{os}/{arch}");
+        }
+        // hyperion-lsp has no Windows build.
+        assert_eq!(
+            select_asset(
+                HYPERION_RELEASE_ASSETS,
+                |name| name,
+                &asset_pattern,
+                "windows",
+                "x86_64"
+            ),
+            None
+        );
+    }
+
+    /// Pack `files` under one top-level folder, like a cargo-dist Unix archive.
+    #[cfg(unix)]
+    fn cargo_dist_tar_xz(folder: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+        let source = tempfile::tempdir().unwrap();
+        std::fs::create_dir(source.path().join(folder)).unwrap();
+        for (name, contents) in files {
+            std::fs::write(source.path().join(folder).join(name), contents).unwrap();
+        }
+        let archive = source.path().join("archive.tar.xz");
+        let status = Command::new("tar")
+            .arg("-cJf")
+            .arg(&archive)
+            .arg("-C")
+            .arg(source.path())
+            .arg(folder)
+            .status()
+            .expect("run tar");
+        assert!(status.success(), "tar -cJf failed");
+        std::fs::read(archive).unwrap()
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn hyperion_archive_installs_its_binary_where_ovim_finds_it_again() {
+        let crate::language_config::InstallMethod::Github {
+            binary_name,
+            strip_components,
+            ..
+        } = embedded_hyperion_install()
+        else {
+            panic!("hyperion-lsp installs from GitHub");
+        };
+        let install_dir = tempfile::tempdir().unwrap();
+        let folder = "hyperion-lsp-aarch64-apple-darwin";
+        let asset = format!("{folder}.tar.xz");
+        let install = |server: &'static [u8]| {
+            let bytes = cargo_dist_tar_xz(
+                folder,
+                &[
+                    ("hyperion-lsp", server),
+                    ("LICENSE", b"license"),
+                    ("README.md", b"readme"),
+                    ("NOTICE", b"notice"),
+                    ("THIRD_PARTY_LICENSES", b"third party"),
+                ],
+            );
+            let asset = asset.clone();
+            let binary_name = binary_name.clone();
+            let install_dir = install_dir.path().to_path_buf();
+            async move {
+                install_downloaded_asset(
+                    &bytes,
+                    &asset,
+                    &install_dir,
+                    binary_name.as_deref(),
+                    strip_components,
+                    "hyperion-lsp",
+                )
+                .await
+            }
+        };
+
+        let installed = install(b"#!/bin/sh\necho 0.1.0\n").await.unwrap();
+        assert_eq!(installed, install_dir.path().join("hyperion-lsp"));
+
+        // An update replaces the binary and leaves no staging folder behind.
+        let updated = install(b"#!/bin/sh\necho 0.2.0\n").await.unwrap();
+        assert_eq!(updated, installed);
+        assert_eq!(
+            std::fs::read(&installed).unwrap(),
+            b"#!/bin/sh\necho 0.2.0\n"
+        );
+        let mut entries: Vec<_> = std::fs::read_dir(install_dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect();
+        entries.sort();
+        assert_eq!(
+            entries,
+            [
+                "LICENSE",
+                "NOTICE",
+                "README.md",
+                "THIRD_PARTY_LICENSES",
+                "hyperion-lsp"
+            ]
+        );
+
+        // After a restart, the install contract finds the binary again. The
+        // command is one that is not on PATH, so only the contract can find it.
+        let mut method = embedded_hyperion_install();
+        let crate::language_config::InstallMethod::Github { install_path, .. } = &mut method else {
+            unreachable!()
+        };
+        *install_path = install_dir.path().to_string_lossy().into_owned();
+        let config = crate::language_config::AutoInstallConfig {
+            method,
+            version: None,
+            policy: Default::default(),
+            allow_headless: false,
+        };
+        assert_eq!(
+            crate::language_config::find_configured_command(
+                "ovim-fixture-command-not-on-path",
+                &[],
+                Some(&config)
+            ),
+            Some(installed.to_string_lossy().into_owned())
+        );
+    }
+
+    #[tokio::test]
+    async fn stripping_a_folder_needs_exactly_one_top_level_folder() {
+        let temp = tempfile::tempdir().unwrap();
+        let encoder = GzEncoder::new(Vec::new(), Compression::default());
+        let mut archive = tar::Builder::new(encoder);
+        for name in ["server", "README.md"] {
+            let mut header = tar::Header::new_gnu();
+            header.set_size(1);
+            header.set_mode(0o755);
+            header.set_cksum();
+            archive
+                .append_data(&mut header, name, b"x".as_slice())
+                .unwrap();
+        }
+        let compressed = archive.into_inner().unwrap().finish().unwrap();
+
+        let error = install_downloaded_asset(
+            &compressed,
+            "flat.tar.gz",
+            temp.path(),
+            Some("server"),
+            1,
+            "server",
+        )
+        .await
+        .expect_err("a flat archive has no folder to strip");
+
+        assert!(error.contains("one top-level folder"), "{error}");
+        assert_eq!(std::fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+
     #[test]
     fn distinguishes_gzip_binaries_from_tar_archives() {
         assert_eq!(
@@ -549,6 +866,7 @@ mod tests {
             "rust-analyzer-x86_64-unknown-linux-gnu.gz",
             &install_dir,
             Some("rust-analyzer"),
+            0,
             "Rust",
         )
         .await
@@ -590,6 +908,7 @@ mod tests {
             "fixture.tar.gz",
             temp.path(),
             None,
+            0,
             "ovim-fixture-lsp-command",
         )
         .await
@@ -622,6 +941,7 @@ mod tests {
             "rust-analyzer-x86_64-unknown-linux-gnu.gz",
             &install_dir,
             Some("rust-analyzer"),
+            0,
             "Rust",
         )
         .await
@@ -723,6 +1043,7 @@ mod tests {
             "rust-analyzer-{arch}-*{os}*.{ext}",
             temp_dir.path().to_str().expect("UTF-8 temporary path"),
             Some("rust-analyzer"),
+            0,
             "rust-analyzer",
         )
         .await;
