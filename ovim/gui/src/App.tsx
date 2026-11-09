@@ -41,6 +41,7 @@ import {
     type PointerRow,
 } from "./editorPointer";
 import { Icon, IconButton, type IconTone } from "./Icon";
+import { createSerialQueue } from "./serialQueue";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { isGuiNativeControl, trapDialogFocus } from "./focus";
@@ -1943,13 +1944,18 @@ function App() {
         if (snapshot.shouldQuit && native) void windowAction("close-approved");
     };
 
+    // Tauri runs each async command as its own task on a multi-threaded
+    // runtime, so two calls in flight can reach the editor in either order.
+    // One call at a time keeps keys, clicks and pastes in the order typed.
+    const inOrder = createSerialQueue();
+
     const mutateStrict = async (
         command: string,
         args: Record<string, unknown>,
     ) => {
         if (!native) return;
         try {
-            await invoke(command, args);
+            await inOrder(() => invoke(command, args));
         } catch (reason) {
             setError(String(reason));
             throw reason;
@@ -1966,9 +1972,11 @@ function App() {
                 revision: view().revision,
             };
         try {
-            return await invoke<GuiChatInputState>("gui_update_chat_input", {
-                ...update,
-            });
+            return await inOrder(() =>
+                invoke<GuiChatInputState>("gui_update_chat_input", {
+                    ...update,
+                }),
+            );
         } catch (reason) {
             setError(String(reason));
             throw reason;
