@@ -4031,14 +4031,100 @@ mod tests {
         assert_eq!(payload["agent_ids"][0], agent_id);
     }
 
+    /// Fake provider whose session waits inside its second `next_event` call
+    /// until the test releases it. While it waits, the child is live and has
+    /// one more provider call ahead, so a message queued then must be delivered
+    /// at that call.
+    struct PausingFakeProvider {
+        inner: FakeProviderAdapter,
+        paused: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::agent_runtime::AgentProviderAdapter for PausingFakeProvider {
+        fn start(
+            &self,
+            request: crate::agent_runtime::AgentProviderStart,
+        ) -> crate::agent_runtime::AgentFuture<
+            '_,
+            Result<
+                Box<dyn crate::agent_runtime::AgentProviderSession>,
+                crate::agent_runtime::AgentProviderError,
+            >,
+        > {
+            Box::pin(async move {
+                let inner = self.inner.start(request).await?;
+                Ok(Box::new(PausingFakeSession {
+                    inner,
+                    calls: 0,
+                    paused: self.paused.clone(),
+                    release: self.release.clone(),
+                })
+                    as Box<dyn crate::agent_runtime::AgentProviderSession>)
+            })
+        }
+    }
+
+    struct PausingFakeSession {
+        inner: Box<dyn crate::agent_runtime::AgentProviderSession>,
+        calls: usize,
+        paused: Arc<tokio::sync::Notify>,
+        release: Arc<tokio::sync::Notify>,
+    }
+
+    impl crate::agent_runtime::AgentProviderSession for PausingFakeSession {
+        fn binding(&self) -> &crate::agent_runtime::ProviderBinding {
+            self.inner.binding()
+        }
+
+        fn next_event(
+            &mut self,
+        ) -> crate::agent_runtime::AgentFuture<
+            '_,
+            Result<
+                crate::agent_runtime::AgentProviderEvent,
+                crate::agent_runtime::AgentProviderError,
+            >,
+        > {
+            Box::pin(async move {
+                self.calls += 1;
+                if self.calls == 2 {
+                    self.paused.notify_one();
+                    self.release.notified().await;
+                }
+                self.inner.next_event().await
+            })
+        }
+
+        fn deliver_message(
+            &mut self,
+            message_event_id: &EventId,
+            content: &str,
+        ) -> crate::agent_runtime::AgentFuture<
+            '_,
+            Result<(), crate::agent_runtime::AgentProviderError>,
+        > {
+            self.inner.deliver_message(message_event_id, content)
+        }
+    }
+
     #[tokio::test(flavor = "multi_thread")]
     async fn send_message_queues_to_live_child_and_projects_delivery() {
         let (_repository, _storage, mut editor) = enabled_editor();
         let mut service = AiSubagentService::new(&editor.ai_state.config);
-        service.provider = Arc::new(
-            FakeProviderAdapter::new("restart")
-                .with_tick_duration(std::time::Duration::from_millis(100)),
-        );
+        // In the "restart" script the child's provider calls return started,
+        // checkpoint, then handoff. A message is delivered only at the start of
+        // a call, so the child pauses inside the checkpoint call until the
+        // message is queued. Without the pause, a busy machine can let the
+        // child reach the handoff call first, and the message is then
+        // rightly rejected at the terminal boundary.
+        let paused = Arc::new(tokio::sync::Notify::new());
+        let release = Arc::new(tokio::sync::Notify::new());
+        service.provider = Arc::new(PausingFakeProvider {
+            inner: FakeProviderAdapter::new("restart"),
+            paused: paused.clone(),
+            release: release.clone(),
+        });
         *editor.ai_state.subagents = service;
         attach_root_turn(&mut editor);
         let ToolResult::Success(spawned) =
@@ -4059,18 +4145,13 @@ mod tests {
             .unwrap()
             .clone();
         let agent = AgentId::parse(agent_id.clone()).unwrap();
-        loop {
-            if matches!(
-                run.supervisor.state(&agent).unwrap(),
-                Some(
-                    crate::agent_runtime::DispatchState::Starting
-                        | crate::agent_runtime::DispatchState::Running
-                )
-            ) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
+        tokio::time::timeout(std::time::Duration::from_secs(2), paused.notified())
+            .await
+            .expect("child should reach its checkpoint call");
+        assert_eq!(
+            run.supervisor.state(&agent).unwrap(),
+            Some(crate::agent_runtime::DispatchState::Running)
+        );
         let ToolResult::Success(queued) = editor.execute_ai_subagent_control_tool(&ToolCallInfo {
             id: "tool-message".into(),
             name: SEND_MESSAGE_TOOL.into(),
@@ -4085,6 +4166,7 @@ mod tests {
             serde_json::from_str::<serde_json::Value>(&queued).unwrap()["outcome"],
             "queued"
         );
+        release.notify_one();
         assert!(run
             .supervisor
             .wait_for_idle(std::time::Duration::from_secs(2))
@@ -4098,7 +4180,11 @@ mod tests {
             panic!("list should include message delivery")
         };
         let listed: serde_json::Value = serde_json::from_str(&listed).unwrap();
-        assert_eq!(listed["messages"][0]["state"], "delivered");
+        assert_eq!(
+            listed["messages"][0]["state"], "delivered",
+            "{}",
+            listed["messages"][0]
+        );
         assert_eq!(listed["messages"][0]["consumed"], true);
     }
 
