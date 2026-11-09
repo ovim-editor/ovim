@@ -221,6 +221,19 @@ for (const kind of ["code", "diff"] as const) {
                     await page.keyboard.press("ArrowUp");
                     await page.keyboard.press("j");
                     expect((await keysSent()).length).toBe(sent);
+                    // j and k scroll the reading text like the arrow keys.
+                    await teaching.evaluate((el) => (el.scrollTop = 0));
+                    await page.keyboard.press("j");
+                    await expect
+                        .poll(() => teaching.evaluate((el) => el.scrollTop))
+                        .toBeGreaterThan(0);
+                    const scrolled = await teaching.evaluate(
+                        (el) => el.scrollTop,
+                    );
+                    await page.keyboard.press("k");
+                    await expect
+                        .poll(() => teaching.evaluate((el) => el.scrollTop))
+                        .toBeLessThan(scrolled);
                 }
                 await page.screenshot({
                     path: testInfo.outputPath("walkthrough.png"),

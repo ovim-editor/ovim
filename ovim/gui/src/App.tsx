@@ -1849,11 +1849,14 @@ function App() {
     });
 
     createEffect(() => {
+        // A walkthrough hides every panel but the terminal; each one becomes
+        // available again, and so selectable, when the walkthrough ends.
+        const listed = !walkthrough();
         const next = {
-            ai: Boolean(view().aiChat),
-            tests: Boolean(view().testPanel),
-            debug: Boolean(view().debug),
-            run: Boolean(view().runConsole),
+            ai: listed && Boolean(view().aiChat),
+            tests: listed && Boolean(view().testPanel),
+            debug: listed && Boolean(view().debug),
+            run: listed && Boolean(view().runConsole),
             terminal: terminalDockOpen(),
         };
         if (next.ai && !previousContextAvailability.ai)
