@@ -659,6 +659,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     std::hint::black_box(tauri::utils::platform::bundle_type());
     crate::lsp_init::set_headless_mode(false);
     let _ = crate::lsp::init_lsp_logging();
+    #[cfg(target_os = "macos")]
+    super::mac_text_input::disable_text_substitutions();
 
     let (browser_client, browser_requests) = ovim_core::browser::browser_channel();
     let browser_host = BrowserHost::new(browser_requests);
