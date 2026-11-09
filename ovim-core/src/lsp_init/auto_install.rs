@@ -78,6 +78,7 @@ pub async fn attempt_auto_install(
             asset_pattern,
             install_path,
             binary_name,
+            strip_components,
         } => {
             install_via_github(
                 language_name,
@@ -85,6 +86,7 @@ pub async fn attempt_auto_install(
                 asset_pattern,
                 install_path,
                 binary_name.as_deref(),
+                *strip_components,
                 package_name,
             )
             .await

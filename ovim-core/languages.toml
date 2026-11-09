@@ -177,7 +177,11 @@ fallback_commands = [
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
@@ -207,7 +211,11 @@ fallback_commands = [
 ]
 root_markers = ["settings.gradle.kts", "settings.gradle", "pom.xml", "build.gradle.kts", "build.gradle"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
@@ -235,7 +243,11 @@ fallback_commands = [
 ]
 root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"
@@ -263,7 +275,11 @@ fallback_commands = [
 ]
 root_markers = ["build.sbt", "settings.gradle", "settings.gradle.kts", "pom.xml", "build.gradle", "build.gradle.kts"]
 outermost_root_markers = ["settings.gradle", "settings.gradle.kts", "pom.xml"]
-install_hint = "hyperion-lsp not found in PATH. It is not yet publicly available, so ovim cannot install it; if you have a build, put the hyperion-lsp binary on PATH"
+install_hint = "hyperion-lsp not found in PATH. Download it from https://github.com/hyperion-lsp/hyperion-lsp/releases. There are builds for macOS and Linux."
+
+# cargo-dist archive: one hyperion-lsp-<target>/ folder holding the binary.
+[language.lsp.auto_install]
+method = { type = "github", repo = "hyperion-lsp/hyperion-lsp", asset_pattern = "hyperion-lsp-{arch}-*{os}*.tar.xz", install_path = "~/.local/share/ovim/lsp/hyperion-lsp", binary_name = "hyperion-lsp", strip_components = 1 }
 
 [language.dap]
 command = "hyperion-lsp"

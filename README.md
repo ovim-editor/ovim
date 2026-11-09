@@ -99,7 +99,7 @@ file toggles; and an in-panel `?` key reference.
 
 ## Language Support
 
-20 languages with LSP auto-install, 8 more with manual LSP setup, plus syntax-only languages.
+24 languages with LSP auto-install, 4 more with manual LSP setup, plus syntax-only languages.
 
 When you open a file and its language server isn't installed, ovim asks once:
 
@@ -114,7 +114,7 @@ When you open a file and its language server isn't installed, ovim asks once:
 | Astro | astro-ls |
 | Python | pyright |
 | Go | gopls |
-| Java, Kotlin, Scala, Groovy | hyperion-lsp (manual install; not yet publicly available) |
+| Java, Kotlin, Scala, Groovy | hyperion-lsp (macOS and Linux) |
 | C# | csharp-ls |
 | C / C++ | clangd (manual install) |
 | XML | lemminx (manual install) |

@@ -30,24 +30,22 @@ These languages have full LSP support and will auto-install the language server 
 | Lua | `.lua` | lua-language-server | GitHub release |
 | Terraform | `.tf`, `.tfvars` | terraform-ls | GitHub release |
 | Elixir | `.ex`, `.exs` | elixir-ls | GitHub release |
+| Java | `.java` | hyperion-lsp | GitHub release (macOS and Linux) |
+| Kotlin | `.kt`, `.kts` | hyperion-lsp | GitHub release (macOS and Linux) |
+| Scala | `.scala`, `.sc` | hyperion-lsp | GitHub release (macOS and Linux) |
+| Groovy | `.groovy`, `.gradle` | hyperion-lsp | GitHub release (macOS and Linux) |
+
+For Java, Kotlin, Scala and Groovy, `hyperion-lsp` gives both the language server and the debugger (`hyperion-lsp dap`).
+When ovim installs it, it goes to `~/.local/share/ovim/lsp/hyperion-lsp`, and the debugger uses the same binary.
+A `hyperion-lsp` on `PATH` takes precedence.
 
 ### Languages with LSP (Manual Install Required)
-
-Java, Kotlin, Scala and Groovy language and debug support use `hyperion-lsp`, which is not yet publicly available.
-
-ovim never downloads `hyperion-lsp`: it only looks for it on `PATH` (`which hyperion-lsp`).
-If it is missing, opening a Java/Kotlin/Scala/Groovy file shows an install hint in the status line.
-
 
 | Language | Extensions | LSP Server | Install Command |
 |----------|------------|------------|-----------------|
 | C | `.c`, `.h` | clangd | `brew install llvm` / `pacman -S clang` |
 | C++ | `.cpp`, `.hpp` | clangd | `brew install llvm` / `pacman -S clang` |
 | XML | `.xml`, `.xsd`, `.xsl`, `.xslt`, `.svg`, `.plist` | Eclipse LemMinX | Install `lemminx` on `PATH` |
-| Java | `.java` | hyperion-lsp | Not yet publicly available; put a `hyperion-lsp` binary on `PATH` |
-| Kotlin | `.kt`, `.kts` | hyperion-lsp | same as Java |
-| Scala | `.scala`, `.sc` | hyperion-lsp | same as Java |
-| Groovy | `.groovy`, `.gradle` | hyperion-lsp | same as Java |
 | Ghostty | `ghostty/config` | ghostty-lsp | `cargo install --git https://github.com/matthewmturner/ghostty-lsp` |
 
 Syntax highlighting uses a dedicated tree-sitter grammar for each of these: Kotlin (`.kt`, `.kts`, `build.gradle.kts`) uses the
