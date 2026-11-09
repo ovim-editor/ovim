@@ -485,12 +485,24 @@ impl Buffer {
     /// Pulls the cursor back inside the text after edits that did not move it
     /// (LSP edits, external reloads). A cursor on a line that no longer exists
     /// panics in scroll/render code, so this must follow any such edit.
-    pub fn clamp_cursor_to_content(&mut self) {
+    ///
+    /// With `past_end`, as in Insert mode, the cursor may stay just after the
+    /// last character of its line. Otherwise it stays on the last character.
+    pub fn clamp_cursor_to_content(&mut self, past_end: bool) {
         let last_line = self.line_count().saturating_sub(1);
         if self.cursor().line() > last_line {
             self.cursor_mut().set_line(last_line);
         }
-        self.clamp_cursor_col();
+        if !past_end {
+            self.clamp_cursor_col();
+            return;
+        }
+        let line_len = self
+            .line_text(self.cursor().line())
+            .map_or(0, |text| grapheme_count(&text));
+        if self.cursor().col().0 > line_len {
+            self.cursor_mut().set_col(GraphemeCol(line_len));
+        }
     }
 
     /// Clamp cursor column to valid range for current line (normal mode: last char).

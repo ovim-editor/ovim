@@ -8,7 +8,7 @@
 
 use super::completion::CompletionAnchor;
 use super::snippet_session::SnippetSession;
-use super::{CursorPos, Editor, InsertEntryMode};
+use super::{CursorPos, Editor};
 use crate::snippet::{standard_variable, Snippet};
 use crate::unicode::{CharCol, GraphemeCol};
 use lsp_types::{CompletionItem, CompletionTextEdit, InsertTextFormat, InsertTextMode};
@@ -313,9 +313,9 @@ impl Editor {
     /// `foobar baz` again - verified in `nvim --clean`). Several edits (a
     /// completion with auto-imports elsewhere in the file) cannot join it: the
     /// recorded edits of a session replay at offsets relative to its origin,
-    /// and an edit far away would land somewhere else on repeat. They close
-    /// the session first and restart it afterwards, so each batch is its own
-    /// `Recorded` entry at offsets that match the rope it was captured in.
+    /// and an edit far away would land somewhere else on repeat. They go
+    /// through [`Editor::with_insert_undo_break`] instead, so the typing
+    /// before them, the edits and the typing after them are three undo steps.
     pub(super) fn apply_offset_edits_as_one_undo(
         &mut self,
         mut edits: Vec<PlannedEdit>,
@@ -325,30 +325,14 @@ impl Editor {
             self.apply_offset_edit_in_session(edits.remove(0), cursor);
             return;
         }
+        self.with_insert_undo_break(|editor| editor.apply_offset_edits_as_own_undo(edits, cursor));
+    }
+
+    fn apply_offset_edits_as_own_undo(&mut self, mut edits: Vec<PlannedEdit>, cursor: usize) {
         let cursor_before = CursorPos::new(
             self.buffer().cursor().line(),
             GraphemeCol(self.buffer().cursor().col().0),
         );
-
-        // Break the insert-mode undo here, Vim-style: finalize whatever the
-        // user typed before accepting completion as its own `Recorded` entry,
-        // then restart the session after completion edits land. Pause/resume
-        // would retain pre-completion edits whose absolute char offsets no
-        // longer match the rope once the completion text is inserted, and
-        // concatenating them with post-completion edits in a single Recorded
-        // corrupts the buffer on undo (and again on redo).
-        let restart_entry_mode: Option<InsertEntryMode> = if self.buffer().is_recording() {
-            let entry_mode = self
-                .buffer()
-                .change_manager()
-                .current_builder
-                .as_ref()
-                .map(|b| b.entry_mode().clone());
-            self.finalize_change_building();
-            entry_mode
-        } else {
-            None
-        };
 
         // Bottom-to-top so earlier offsets stay valid.
         edits.sort_by(|a, b| b.start.cmp(&a.start).then(b.end.cmp(&a.end)));
@@ -375,14 +359,6 @@ impl Editor {
         if !recorded.is_empty() {
             let cursor_after = self.cursor_position();
             self.push_recorded_undo(recorded, cursor_before, cursor_after);
-        }
-
-        // Restart the insert-mode session so any further typing forms a fresh
-        // Recorded entry at post-edit offsets.
-        if let Some(entry_mode) = restart_entry_mode {
-            let cursor_after = self.cursor_position();
-            self.start_change_building(cursor_after);
-            self.set_change_entry_mode(entry_mode);
         }
     }
 

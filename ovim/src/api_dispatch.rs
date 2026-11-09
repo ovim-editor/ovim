@@ -162,7 +162,7 @@ pub(crate) async fn handle_api_request(
             let _ = tx.send(ApiResponse::Buffer(buffer_info));
         }
         ApiRequest::SetBuffer(content, tx) => {
-            editor.buffer_mut().replace_all(&content);
+            editor.with_insert_undo_break(|editor| editor.buffer_mut().replace_all(&content));
             refresh_after_api_mutation(editor, true);
             let line_count = editor.buffer().rope().len_lines();
 
@@ -207,10 +207,11 @@ pub(crate) async fn handle_api_request(
                 }
             };
 
+            // Insert and Replace mode record what is typed as one undo step.
             let old_mode = editor.mode();
-            if old_mode == Mode::Insert && new_mode != Mode::Insert {
+            if old_mode.types_text() && !new_mode.types_text() {
                 editor.finalize_change_building();
-            } else if old_mode != Mode::Insert && new_mode == Mode::Insert {
+            } else if !old_mode.types_text() && new_mode.types_text() {
                 editor.start_change_building(editor.cursor_position());
             }
             editor.set_mode(new_mode);
@@ -458,7 +459,8 @@ pub(crate) async fn handle_api_request(
             let _ = tx.send(ApiResponse::ContextWindow(context_info));
         }
         ApiRequest::EditLine { line, old, new, tx } => {
-            let response = handle_edit_line(editor, line, &old, &new);
+            let response =
+                editor.with_insert_undo_break(|editor| handle_edit_line(editor, line, &old, &new));
             if matches!(&response, ApiResponse::Success(_)) {
                 refresh_after_api_mutation(editor, false);
             }
@@ -470,14 +472,16 @@ pub(crate) async fn handle_api_request(
             text,
             tx,
         } => {
-            let response = handle_insert_lines(editor, line, before, &text);
+            let response = editor
+                .with_insert_undo_break(|editor| handle_insert_lines(editor, line, before, &text));
             if matches!(&response, ApiResponse::Success(_)) {
                 refresh_after_api_mutation(editor, false);
             }
             let _ = tx.send(response);
         }
         ApiRequest::DeleteLines { from, to, tx } => {
-            let response = handle_delete_lines(editor, from, to);
+            let response =
+                editor.with_insert_undo_break(|editor| handle_delete_lines(editor, from, to));
             if matches!(&response, ApiResponse::Success(_)) {
                 refresh_after_api_mutation(editor, false);
             }

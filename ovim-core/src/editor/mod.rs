@@ -60,6 +60,8 @@ mod debug_results;
 pub mod decoration;
 mod diff_review;
 mod editing_state;
+#[cfg(test)]
+mod edits_during_insert_tests;
 mod execution;
 #[cfg(test)]
 mod execution_tests;

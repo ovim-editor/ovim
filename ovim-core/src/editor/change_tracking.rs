@@ -53,6 +53,10 @@ impl Editor {
     /// the buffer version changed, which this function propagates to the
     /// caller so they can early-return on no-op.
     ///
+    /// When Insert mode moved to another buffer without leaving Insert mode
+    /// (a GUI tab click), the recording moves along: the old buffer's typing
+    /// becomes its own undo step and a new recording starts here.
+    ///
     /// # Panics (debug)
     ///
     /// Panics in debug builds if called outside an active recording session.
@@ -62,6 +66,9 @@ impl Editor {
     where
         F: FnOnce(&mut crate::buffer::Buffer) -> bool,
     {
+        if !self.buffer().is_recording() && self.finalize_recording_left_on_other_buffer() {
+            self.start_change_building(self.cursor_position());
+        }
         debug_assert!(
             self.buffer().is_recording(),
             "record_session_edit called without an active recording session; \
