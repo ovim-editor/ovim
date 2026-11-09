@@ -2198,10 +2198,7 @@ function App() {
                 else void editorCommand("redo");
                 break;
             case "edit.select-all":
-                if (
-                    active instanceof HTMLInputElement ||
-                    active instanceof HTMLTextAreaElement
-                )
+                if (active instanceof HTMLInputElement || nativeEditor)
                     active.select();
                 else void selectAllEditorText();
                 break;
