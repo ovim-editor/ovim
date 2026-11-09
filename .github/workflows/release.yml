@@ -53,11 +53,11 @@ jobs:
       matrix:
         include:
           - target: aarch64-apple-darwin
-            os: macos-14
+            os: macos-15
             arch_pattern: "arm64"
           # Cross-compiled from the arm64 runner; macos-13 (Intel) queues are unusable
           - target: x86_64-apple-darwin
-            os: macos-14
+            os: macos-15
             arch_pattern: "x86_64"
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-22.04
