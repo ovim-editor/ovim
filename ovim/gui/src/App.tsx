@@ -799,15 +799,9 @@ export const ChatSetupCard = (props: {
                         {(action) => (
                             <button
                                 type="button"
-                                classList={{ recommended: action.recommended }}
                                 onClick={() => props.onKey?.(action.key)}
                             >
-                                <b>
-                                    {action.label}
-                                    <Show when={action.recommended}>
-                                        <em>Recommended</em>
-                                    </Show>
-                                </b>
+                                <b>{action.label}</b>
                                 <small>{action.detail}</small>
                             </button>
                         )}

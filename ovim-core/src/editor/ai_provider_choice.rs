@@ -16,7 +16,6 @@ pub struct ProviderChoiceOption {
     pub profile: Option<String>,
     pub label: String,
     pub detail: String,
-    pub recommended: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -63,7 +62,6 @@ impl Editor {
                 profile: Some(profile),
                 label: "Claude".into(),
                 detail: detail.into(),
-                recommended: true,
             });
         }
         // Prefer the profile the built-in configuration routes chat to.
@@ -88,7 +86,6 @@ impl Editor {
                     "OpenAI models with your ChatGPT plan, in Ovim's own agent harness. Sign in once with your ChatGPT account."
                 }
                 .into(),
-                recommended: false,
             });
         }
         options.push(ProviderChoiceOption {
@@ -96,7 +93,6 @@ impl Editor {
             label: "Other provider".into(),
             detail: "Local Ollama, or API keys for OpenAI or Anthropic. Opens the model picker."
                 .into(),
-            recommended: false,
         });
         options
     }
@@ -244,14 +240,13 @@ mod tests {
     }
 
     #[test]
-    fn first_chat_open_asks_with_claude_recommended_first() {
+    fn first_chat_open_asks_with_claude_first() {
         let dir = tempfile::tempdir().unwrap();
         let mut editor = editor(&dir);
         open_chat(&mut editor);
         let dialog = editor.provider_choice_dialog().expect("chooser");
         let labels: Vec<_> = dialog.options.iter().map(|o| o.label.as_str()).collect();
         assert_eq!(labels, ["Claude", "Codex", "Other provider"]);
-        assert!(dialog.options[0].recommended);
         assert_eq!(dialog.selected, 0);
         // The chooser replaces the old unconditional Exa prompt.
         assert!(!editor.ai_chat_has_exa_setup_dialog());

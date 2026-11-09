@@ -232,7 +232,6 @@ export interface GuiAiChat {
             label: string;
             key: string;
             detail?: string;
-            recommended?: boolean;
         }>;
     };
     messages: Array<{

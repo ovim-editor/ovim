@@ -153,14 +153,12 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
                 // Digits pick directly in core, so the button and the key agree.
                 key: (index + 1).to_string(),
                 detail: Some(option.detail.clone()),
-                recommended: option.recommended,
             })
             .collect();
         actions.push(GuiChatSetupAction {
             label: "Not now".to_string(),
             key: "Escape".to_string(),
             detail: None,
-            recommended: false,
         });
         return Some(GuiChatSetup {
             kind: "providerChoice".to_string(),
@@ -297,8 +295,6 @@ pub struct GuiChatSetupAction {
     /// Secondary line explaining the choice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub recommended: bool,
 }
 
 fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {
