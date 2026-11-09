@@ -693,6 +693,7 @@ impl Editor {
         state.last_flushed_content = None;
         state.force_full_resend = true;
         state.mark_saved();
+        self.refresh_git_state_after_reload(index);
         true
     }
 

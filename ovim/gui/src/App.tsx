@@ -41,6 +41,7 @@ import {
     type PointerRow,
 } from "./editorPointer";
 import { Icon, IconButton, type IconTone } from "./Icon";
+import { createSerialQueue } from "./serialQueue";
 import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { isGuiNativeControl, trapDialogFocus } from "./focus";
@@ -799,15 +800,9 @@ export const ChatSetupCard = (props: {
                         {(action) => (
                             <button
                                 type="button"
-                                classList={{ recommended: action.recommended }}
                                 onClick={() => props.onKey?.(action.key)}
                             >
-                                <b>
-                                    {action.label}
-                                    <Show when={action.recommended}>
-                                        <em>Recommended</em>
-                                    </Show>
-                                </b>
+                                <b>{action.label}</b>
                                 <small>{action.detail}</small>
                             </button>
                         )}
@@ -1854,11 +1849,14 @@ function App() {
     });
 
     createEffect(() => {
+        // A walkthrough hides every panel but the terminal; each one becomes
+        // available again, and so selectable, when the walkthrough ends.
+        const listed = !walkthrough();
         const next = {
-            ai: Boolean(view().aiChat),
-            tests: Boolean(view().testPanel),
-            debug: Boolean(view().debug),
-            run: Boolean(view().runConsole),
+            ai: listed && Boolean(view().aiChat),
+            tests: listed && Boolean(view().testPanel),
+            debug: listed && Boolean(view().debug),
+            run: listed && Boolean(view().runConsole),
             terminal: terminalDockOpen(),
         };
         if (next.ai && !previousContextAvailability.ai)
@@ -1949,13 +1947,18 @@ function App() {
         if (snapshot.shouldQuit && native) void windowAction("close-approved");
     };
 
+    // Tauri runs each async command as its own task on a multi-threaded
+    // runtime, so two calls in flight can reach the editor in either order.
+    // One call at a time keeps keys, clicks and pastes in the order typed.
+    const inOrder = createSerialQueue();
+
     const mutateStrict = async (
         command: string,
         args: Record<string, unknown>,
     ) => {
         if (!native) return;
         try {
-            await invoke(command, args);
+            await inOrder(() => invoke(command, args));
         } catch (reason) {
             setError(String(reason));
             throw reason;
@@ -1972,9 +1975,11 @@ function App() {
                 revision: view().revision,
             };
         try {
-            return await invoke<GuiChatInputState>("gui_update_chat_input", {
-                ...update,
-            });
+            return await inOrder(() =>
+                invoke<GuiChatInputState>("gui_update_chat_input", {
+                    ...update,
+                }),
+            );
         } catch (reason) {
             setError(String(reason));
             throw reason;
@@ -2196,10 +2201,7 @@ function App() {
                 else void editorCommand("redo");
                 break;
             case "edit.select-all":
-                if (
-                    active instanceof HTMLInputElement ||
-                    active instanceof HTMLTextAreaElement
-                )
+                if (active instanceof HTMLInputElement || nativeEditor)
                     active.select();
                 else void selectAllEditorText();
                 break;

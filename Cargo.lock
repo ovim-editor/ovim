@@ -4404,6 +4404,7 @@ dependencies = [
  "nix 0.29.0",
  "objc2",
  "objc2-app-kit",
+ "objc2-foundation",
  "open",
  "ovim-core",
  "portable-pty",

@@ -1983,7 +1983,6 @@ describe("Ovim Solid workbench", () => {
                             label: "Claude",
                             key: "1",
                             detail: "Claude Code with your Claude subscription.",
-                            recommended: true,
                         },
                         {
                             label: "Codex",
@@ -1998,9 +1997,6 @@ describe("Ovim Solid workbench", () => {
         ));
         // No API-key field for a choice card.
         expect(screen.queryByLabelText("Exa API key input")).toBeNull();
-        const claude = screen.getByRole("button", { name: /^Claude/ });
-        expect(claude.textContent).toContain("Recommended");
-        expect(claude.classList.contains("recommended")).toBe(true);
         fireEvent.click(screen.getByRole("button", { name: /^Codex/ }));
         expect(onKey).toHaveBeenLastCalledWith("2");
         fireEvent.click(screen.getByRole("button", { name: "Not now" }));

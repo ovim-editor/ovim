@@ -134,14 +134,19 @@ test("a drag that leaves the window keeps following the pointer and releases out
     await page.mouse.down();
     await page.mouse.move(start.x, 4, { steps: 6 });
     await page.mouse.move(start.x + 20, 1, { steps: 2 });
+    // While the button is held outside, the selection follows the pointer.
+    // Above the first row the cell clamps to row 0.
+    await expect
+        .poll(async () =>
+            (await commands(page, "gui_mouse"))
+                .filter((m: any) => m.kind === "drag")
+                .map((m: any) => m.line),
+        )
+        .toContain(0);
     await page.mouse.up();
     await expect
-        .poll(async () => (await commands(page, "gui_mouse")).at(-1)?.kind)
-        .toBe("up");
-    const sent = await commands(page, "gui_mouse");
-    // Above the first row the cell clamps to row 0 and keeps extending upward.
-    expect(Math.min(...sent.map((m: any) => m.line))).toBe(0);
-    expect(sent.some((m: any) => m.kind === "drag")).toBe(true);
+        .poll(async () => (await commands(page, "gui_mouse")).at(-1))
+        .toMatchObject({ kind: "up", line: 0 });
 });
 
 test("right and middle buttons do not move the cursor or select", async ({

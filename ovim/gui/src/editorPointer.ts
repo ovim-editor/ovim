@@ -183,6 +183,12 @@ export function trackSelectionDrag(options: SelectionDragOptions): () => void {
     };
     const finish = (cell: PointerCell | undefined) => {
         if (ended) return;
+        // Past the rows the release lands on the last delivered cell, so a
+        // move still waiting for its frame is delivered first.
+        if (frame !== undefined && (!cell || cell.outside)) {
+            cancelFrame(frame);
+            flush();
+        }
         ended = true;
         if (frame !== undefined) cancelFrame(frame);
         stopRepeat();

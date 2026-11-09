@@ -68,6 +68,8 @@ mod file_rename;
 mod filetree;
 mod folding;
 pub mod fuzzy;
+#[cfg(test)]
+mod git_signs_tests;
 pub mod git_tools;
 pub mod grep;
 #[cfg(test)]

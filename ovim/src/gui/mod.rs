@@ -13,6 +13,8 @@ pub mod browser;
 mod diff;
 #[cfg(all(feature = "gui", target_os = "macos"))]
 mod mac_arrow_keys;
+#[cfg(all(feature = "gui", target_os = "macos"))]
+mod mac_text_input;
 #[cfg(feature = "gui")]
 mod menu;
 #[cfg(feature = "gui")]
@@ -151,14 +153,12 @@ fn chat_setup(editor: &Editor) -> Option<GuiChatSetup> {
                 // Digits pick directly in core, so the button and the key agree.
                 key: (index + 1).to_string(),
                 detail: Some(option.detail.clone()),
-                recommended: option.recommended,
             })
             .collect();
         actions.push(GuiChatSetupAction {
             label: "Not now".to_string(),
             key: "Escape".to_string(),
             detail: None,
-            recommended: false,
         });
         return Some(GuiChatSetup {
             kind: "providerChoice".to_string(),
@@ -295,8 +295,6 @@ pub struct GuiChatSetupAction {
     /// Secondary line explaining the choice.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub recommended: bool,
 }
 
 fn attach_chat_images(editor: &mut Editor, paths: &[std::path::PathBuf]) -> Result<()> {
@@ -3314,15 +3312,10 @@ fn project_panes(
         .filter_map(|index| {
             let window = manager.get_window(index)?;
             let focused = index == focused_index;
-            // The focused editor buffer is authoritative after Ex commands
-            // open a generated view; the window may still name its old buffer.
-            let buffer = if focused {
-                editor.buffer()
-            } else {
-                editor
-                    .get_buffer(window.buffer_id())
-                    .unwrap_or_else(|| editor.buffer())
-            };
+            // Every window views the editor's current buffer, as in the
+            // terminal UI. Focusing a window keeps the current buffer, so
+            // `Window::buffer_id` does not say what the pane shows.
+            let buffer = editor.buffer();
             let cursor = if focused {
                 editor.buffer().cursor()
             } else {
@@ -5220,7 +5213,7 @@ mod tests {
     }
 
     #[test]
-    fn markdown_pseudo_snapshot_carries_document_only_for_its_pane() {
+    fn markdown_pseudo_snapshot_carries_document_for_every_pane_of_its_buffer() {
         let mut editor = Editor::with_content("# Hello\n\n**world**\n");
         editor.set_file_path("/example/readme.md".into());
         editor.split_window_vertical();
@@ -5229,13 +5222,10 @@ mod tests {
         let focused = view.panes.iter().find(|pane| pane.focused).unwrap();
         assert_eq!(focused.buffer_id, editor.buffer().id());
         assert_eq!(focused.file_name, "Pseudocode: readme.md");
-        assert_eq!(
-            view.panes
-                .iter()
-                .filter(|pane| pane.markdown.is_some())
-                .count(),
-            1
-        );
+        assert!(view
+            .panes
+            .iter()
+            .all(|pane| pane.markdown.is_some() && pane.file_name == "Pseudocode: readme.md"));
         let document = focused.markdown.as_ref().unwrap();
         assert_eq!(document.text, "# Hello\n\n**world**\n");
         assert_eq!(document.view_lines, vec![0, 1, 2]);
@@ -6460,6 +6450,57 @@ mod tests {
                 ..
             } if direction == "vertical" && matches!(*second, GuiLayoutNode::Split { ref direction, .. } if direction == "horizontal")
         ));
+    }
+
+    /// Windows share the editor's current buffer, as in the terminal UI. An
+    /// unfocused pane must show what the user gets after focusing it.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn every_split_pane_shows_the_current_buffer_after_buffer_switches() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = std::fs::canonicalize(directory.path()).unwrap();
+        std::fs::write(root.join("main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(root.join("util.rs"), "pub fn util() {}\n").unwrap();
+        std::fs::write(root.join("long.txt"), "long\n").unwrap();
+        let mut editor = Editor::default();
+        editor.init_window_manager(100, 30);
+        editor.open_file(root.join("main.rs")).unwrap();
+        editor.open_file(root.join("util.rs")).unwrap();
+        editor.open_file(root.join("main.rs")).unwrap();
+
+        let pane_files = |editor: &Editor| -> Vec<(String, String)> {
+            snapshot(editor, 1)
+                .panes
+                .iter()
+                .map(|pane| {
+                    let text = pane.lines[0]
+                        .segments
+                        .iter()
+                        .map(|segment| segment.text.as_str())
+                        .collect();
+                    (pane.file_name.clone(), text)
+                })
+                .collect()
+        };
+        let main = ("main.rs".to_string(), "fn main() {}".to_string());
+
+        editor.split_window_vertical();
+        assert_eq!(pane_files(&editor), vec![main.clone(), main.clone()]);
+
+        editor.focus_next_window();
+        assert_eq!(pane_files(&editor), vec![main.clone(), main.clone()]);
+
+        editor.focus_prev_window();
+        editor.open_file(root.join("long.txt")).unwrap();
+        let long = ("long.txt".to_string(), "long".to_string());
+        assert_eq!(pane_files(&editor), vec![long.clone(), long.clone()]);
+
+        editor.focus_next_window();
+        assert_eq!(pane_files(&editor), vec![long.clone(), long]);
+        let view = snapshot(&editor, 1);
+        assert!(view
+            .panes
+            .iter()
+            .all(|pane| pane.buffer_id == editor.buffer().id()));
     }
 
     #[test]

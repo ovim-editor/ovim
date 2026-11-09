@@ -209,6 +209,21 @@ describe("trackSelectionDrag", () => {
         expect(t.sent).toHaveLength(1);
     });
 
+    it("releases past the rows at a move that was still waiting for its frame", () => {
+        const t = setup((x, y) =>
+            y < 0
+                ? { line: 0, displayColumn: x, outside: "above" }
+                : { line: y, displayColumn: x },
+        );
+        t.target.emit("mousemove", { buttons: 1, clientX: 3, clientY: -5 });
+        t.target.emit("mouseup", { button: 0, clientX: 3, clientY: -9 });
+        expect(t.sent.map((m) => [m.kind, m.line])).toEqual([
+            ["drag", 0],
+            ["up", 0],
+        ]);
+        expect(t.repeating()).toBe(false);
+    });
+
     it("ignores other buttons' releases and ends when the button was lost", () => {
         const t = setup((x, y) => ({ line: y, displayColumn: x }));
         t.target.emit("mouseup", { button: 2, clientX: 1, clientY: 1 });

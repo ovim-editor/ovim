@@ -897,13 +897,8 @@ pub fn render_provider_choice_dialog(frame: &mut Frame, editor: &Editor) {
         .enumerate()
         .map(|(index, option)| {
             let marker = if index == dialog.selected { "›" } else { " " };
-            let recommended = if option.recommended {
-                "  (recommended)"
-            } else {
-                ""
-            };
             (
-                format!("{marker} {}. {}{recommended}", index + 1, option.label),
+                format!("{marker} {}. {}", index + 1, option.label),
                 format!("     {}", option.detail),
             )
         })

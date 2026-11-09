@@ -223,6 +223,20 @@ impl Editor {
         }
     }
 
+    /// Requests gutter signs, and blame when it is shown, for the buffer at
+    /// `index` after its text was read from disk again. The reload clears
+    /// both because they refer to lines of the old text.
+    pub(crate) fn refresh_git_state_after_reload(&mut self, index: usize) {
+        let Some(path) = self.buffers.get(index).and_then(|b| b.file_path()) else {
+            return;
+        };
+        if super::buffer_manager::is_scratch_path(path) {
+            return;
+        }
+        let path = path.to_string();
+        self.spawn_git_refresh(&path, self.options.blame);
+    }
+
     /// True while a background git refresh has not been drained yet.
     pub fn git_refresh_pending(&self) -> bool {
         self.git_refresh_in_flight > 0

@@ -2158,23 +2158,11 @@ button:focus-visible {
     gap: 3px;
     text-align: left;
 }
-.chat-setup-choices button.recommended {
-    border-color: color-mix(in srgb, var(--accent) 55%, var(--border));
-}
 .chat-setup-choices b {
     display: flex;
     align-items: center;
     gap: 6px;
     font-size: var(--text-control);
-}
-.chat-setup-choices em {
-    padding: 1px 5px;
-    color: var(--accent);
-    border: 1px solid color-mix(in srgb, var(--accent) 40%, var(--border));
-    border-radius: var(--radius-1);
-    font-style: normal;
-    font-size: var(--text-micro);
-    font-weight: 550;
 }
 /* Detail text, not an error (the card's bare <small> is its error line). */
 .chat-setup-choices small {

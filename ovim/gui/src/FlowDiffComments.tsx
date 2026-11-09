@@ -1,6 +1,11 @@
 import { createSignal, For, Show, type JSX } from "solid-js";
 import type { GuiDiffComment } from "./types";
 
+// macOS turns Ctrl+Enter into its context-menu shortcut, so it names Command.
+const saveShortcut = /Mac|iPhone|iPad/.test(navigator.platform)
+    ? "Cmd+Enter"
+    : "Ctrl+Enter";
+
 export type CommentTarget = { path: string; line: number; side: "old" | "new" };
 export type CommentInput = CommentTarget & {
     before: boolean;
@@ -11,6 +16,8 @@ export function createDiffComments(options: {
     comments: () => GuiDiffComment[];
     save?: (comment: CommentInput) => Promise<void>;
     remove?: (id: number) => void;
+    /** A line the reviewer clicked. */
+    onPick?: (target: CommentTarget) => void;
 }) {
     const [selected, select] = createSignal<CommentTarget>();
     const [draft, setDraft] = createSignal<CommentInput>();
@@ -68,6 +75,10 @@ export function createDiffComments(options: {
             setSaving(false);
         }
     };
+    const pick = (target: CommentTarget) => {
+        select(target);
+        options.onPick?.(target);
+    };
     const matches = (a: CommentTarget | undefined, b: CommentTarget) =>
         a?.path === b.path && a.line === b.line && a.side === b.side;
     return {
@@ -75,6 +86,7 @@ export function createDiffComments(options: {
         enabled: () => Boolean(options.save),
         selected,
         select,
+        pick,
         draft,
         setDraft,
         saving,
@@ -152,7 +164,7 @@ export function CommentedLine(props: {
                     <p role="alert">{context!.error()}</p>
                 </Show>
                 <div class="flow-comment-actions">
-                    <span>Esc or Ctrl+Enter saves · Enter adds a line</span>
+                    <span>Esc or {saveShortcut} saves · Enter adds a line</span>
                     <button
                         type="button"
                         disabled={context!.saving()}
@@ -224,7 +236,7 @@ export function CommentedLine(props: {
                 ),
             }}
             onClick={() => {
-                if (target()) context?.select(target()!);
+                if (target()) context?.pick(target()!);
             }}
         >
             {annotations(true)}

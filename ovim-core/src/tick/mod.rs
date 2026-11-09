@@ -217,6 +217,7 @@ pub fn process_external_file_change(editor: &mut Editor) {
                 // their full diagnostics for the reloaded text. (OV-00324)
                 editor.mark_buffer_saved();
                 editor.request_diagnostics_refresh();
+                editor.refresh_git_state_after_reload(editor.current_buffer_index());
                 if editor.buffer().needs_rehighlight() {
                     editor.process_viewport_rehighlight();
                 }
