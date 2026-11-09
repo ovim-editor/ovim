@@ -117,6 +117,7 @@ export default function FlowDiff(props: FlowDiffProps) {
         comments: () => props.review.comments ?? [],
         save: props.onComment,
         remove: (id) => props.onAction?.(`remove_comment:${id}`),
+        onPick: (target) => activateLine(target),
     });
     const [hideEqual, setHideEqual] = createSignal(false);
     const [showNotes, setShowNotes] = createSignal(true);
@@ -503,6 +504,26 @@ export default function FlowDiff(props: FlowDiffProps) {
             ),
         );
         measure();
+    }
+
+    // A clicked change line becomes the active change, so `o` comments on it.
+    function activateLine(target: CommentTarget) {
+        const entry = allSections().find(
+            ({ file: item, section }) =>
+                (target.side === "old"
+                    ? item.oldPath || item.path
+                    : item.path) === target.path &&
+                (target.side === "old" ? section.left : section.right).some(
+                    (line) =>
+                        (target.side === "old"
+                            ? line.oldLine
+                            : line.newLine) === target.line,
+                ),
+        );
+        if (entry?.section.kind !== "change") return;
+        setSelectedId(entry.file.id);
+        setActiveHunk(entry.section.hunkIndex);
+        setActiveSectionId(entry.section.id);
     }
 
     function goToSection(id: string, navigate = true, fileId = file()?.id) {

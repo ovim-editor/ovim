@@ -108,6 +108,21 @@ describe("diff comment target (o / O)", () => {
         ui.unmount();
     });
 
+    it("comments on a changed line clicked in another change", () => {
+        const ui = render(() => (
+            <FlowDiff review={review} onComment={vi.fn()} />
+        ));
+        // The first change is active; line 30 belongs to the second change.
+        fireEvent.click(
+            ui.container.querySelector(
+                '.flow-scroll.old [data-source-side="old"][data-source-line="30"]',
+            )!,
+        );
+        fireEvent.keyDown(panelOf(ui), { key: "o" });
+        expect(editorLabel(ui)).toBe("Comment below src/a.ts:30");
+        ui.unmount();
+    });
+
     it("ignores a selection outside the active change but honors one inside it", () => {
         const ui = render(() => (
             <FlowDiff review={review} onComment={vi.fn()} />
