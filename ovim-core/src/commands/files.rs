@@ -316,6 +316,7 @@ fn reload_buffer(editor: &mut Editor, force: bool) -> CommandResult {
         Ok(_) => {
             editor.mark_saved();
             editor.mark_buffer_modified_force_send();
+            editor.refresh_git_state_after_reload(editor.current_buffer_index());
             let line_count = editor.buffer().line_count();
             ok(format!("\"{}\" {}L reloaded", path, line_count))
         }
@@ -362,6 +363,7 @@ pub(super) fn checktime(editor: &mut Editor, _ex: &Ex) -> CommandResult {
         Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
             Ok(true) => {
                 editor.mark_buffer_modified_force_send();
+                editor.refresh_git_state_after_reload(editor.current_buffer_index());
                 ok("File reloaded from disk (external changes detected)")
             }
             Ok(false) => ok("No external changes detected"),
