@@ -35,6 +35,9 @@ const MAX_PENDING: usize = 10_000;
 /// Most directories watched at once. Each is an inotify watch, a limited
 /// per-user resource shared with every other program.
 const MAX_WATCHED_DIRS: usize = 20_000;
+/// Most paths remembered as reported to the servers. Past this, the memory is
+/// cleared and the event kinds alone decide between created and changed.
+const MAX_REPORTED: usize = 100_000;
 
 /// Directory names that are never watched, wherever they appear.
 const SKIP_DIRS: &[&str] = &[
@@ -187,6 +190,10 @@ pub struct WorkspaceWatcher {
     watched: WatchedSet,
     roots: BTreeSet<PathBuf>,
     pending: HashMap<PathBuf, Seen>,
+    /// Paths reported as created or changed, and not deleted since. macOS
+    /// sends a create event again when a file created seconds ago is written,
+    /// so a create for a path in this set is reported as a change.
+    reported: HashSet<PathBuf>,
     first_event: Option<Instant>,
     last_event: Option<Instant>,
     /// More paths are pending than one batch should hold: release it now.
@@ -214,6 +221,7 @@ impl WorkspaceWatcher {
             watched: WatchedSet::default(),
             roots: BTreeSet::new(),
             pending: HashMap::new(),
+            reported: HashSet::new(),
             first_event: None,
             last_event: None,
             release_now: false,
@@ -367,6 +375,9 @@ impl WorkspaceWatcher {
         self.first_event = None;
         self.last_event = None;
         self.release_now = false;
+        if self.reported.len() > MAX_REPORTED {
+            self.reported.clear();
+        }
         let mut events: Vec<WatchedFileEvent> = std::mem::take(&mut self.pending)
             .into_iter()
             .filter_map(|(path, seen)| {
@@ -375,11 +386,15 @@ impl WorkspaceWatcher {
                     return None;
                 }
                 let change = if !exists {
+                    self.reported.remove(&path);
                     WatchedChange::Deleted
-                } else if seen.created && !seen.removed {
-                    WatchedChange::Created
                 } else {
-                    WatchedChange::Changed
+                    let first_report = self.reported.insert(path.clone());
+                    if first_report && seen.created && !seen.removed {
+                        WatchedChange::Created
+                    } else {
+                        WatchedChange::Changed
+                    }
                 };
                 Some(WatchedFileEvent { path, change })
             })
@@ -583,5 +598,38 @@ mod tests {
         }
         assert!(events.iter().any(|e| e.path.ends_with("a.rs")));
         assert!(events.iter().all(|e| !e.path.ends_with("a.txt")));
+    }
+
+    #[test]
+    fn a_create_event_for_a_file_already_reported_is_a_change() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("a.rs");
+        let mut watcher = WorkspaceWatcher::default();
+        let mut now = Instant::now();
+        let mut batch = |watcher: &mut WorkspaceWatcher, kind: EventKind| {
+            watcher.record(
+                notify::Event::new(kind).add_path(path.clone()),
+                now,
+                &|_| true,
+            );
+            now += Duration::from_secs(2);
+            let events = watcher.poll(now, &|_| true).expect("a batch");
+            assert_eq!(events.len(), 1);
+            events[0].change
+        };
+        let create = || EventKind::Create(notify::event::CreateKind::File);
+
+        std::fs::write(&path, "one").unwrap();
+        assert_eq!(batch(&mut watcher, create()), WatchedChange::Created);
+        // macOS sends a create event again when a file created seconds ago
+        // is written.
+        std::fs::write(&path, "two").unwrap();
+        assert_eq!(batch(&mut watcher, create()), WatchedChange::Changed);
+
+        std::fs::remove_file(&path).unwrap();
+        let remove = EventKind::Remove(notify::event::RemoveKind::File);
+        assert_eq!(batch(&mut watcher, remove), WatchedChange::Deleted);
+        std::fs::write(&path, "three").unwrap();
+        assert_eq!(batch(&mut watcher, create()), WatchedChange::Created);
     }
 }
