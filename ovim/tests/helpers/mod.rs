@@ -80,6 +80,10 @@ impl EditorTest {
         // semantics, not clipboard integration, and the system clipboard
         // is shared global state that causes flaky cross-test contamination.
         editor.options.clipboard = String::new();
+        // A test that opens a file whose language server is not installed
+        // must not download one. With the default consent dialog, the dialog
+        // would also take the test's next keys as its answer.
+        editor.options.lsp_auto_install = ovim::editor::AutoInstallMode::Off;
         Self { editor }
     }
 
