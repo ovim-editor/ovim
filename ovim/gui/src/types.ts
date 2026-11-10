@@ -22,12 +22,22 @@ export interface GuiSegment {
     searchMatch: boolean;
 }
 
+export interface GuiCodeLens {
+    index: number;
+    generation: number;
+    title: string;
+    mode: "run" | "debug";
+    filePath: string;
+    version: number;
+}
+
 export interface GuiLine {
     number: number;
     continuation: boolean;
     displayStart: number;
     current: boolean;
     segments: GuiSegment[];
+    codeLenses?: GuiCodeLens[];
     git?: "added" | "modified" | "removed";
     diagnostic?: "error" | "warning" | "information" | "hint";
     diff?: "header" | "hunk" | "added" | "removed" | "context";

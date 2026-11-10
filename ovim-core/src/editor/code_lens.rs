@@ -54,6 +54,8 @@ pub(crate) struct CodeLensState {
     /// File the current lenses belong to.
     file_path: Option<String>,
     lenses: Vec<LensEntry>,
+    version: Option<usize>,
+    generation: u64,
     /// (file, buffer version) of the last request sent.
     requested: Option<(String, usize)>,
     /// (file, version, first seen) waiting out the debounce.
@@ -65,14 +67,19 @@ pub(crate) struct CodeLensState {
 impl Editor {
     /// Lenses currently shown for the buffer.
     pub fn code_lenses(&self) -> &[LensEntry] {
-        &self.launch.code_lens.lenses
+        let state = &self.launch.code_lens;
+        if state.file_path.as_deref() == self.buffer().file_path()
+            && state.version == Some(self.buffer().version())
+        {
+            &state.lenses
+        } else {
+            &[]
+        }
     }
 
     /// Lenses on a 0-based line.
     pub fn code_lenses_on_line(&self, line: usize) -> Vec<&LensEntry> {
-        self.launch
-            .code_lens
-            .lenses
+        self.code_lenses()
             .iter()
             .filter(|l| l.line == line)
             .collect()
@@ -81,7 +88,9 @@ impl Editor {
     fn clear_code_lens_state(&mut self) {
         let had = !self.launch.code_lens.lenses.is_empty();
         let st = &mut self.launch.code_lens;
+        st.generation = st.generation.wrapping_add(1);
         st.lenses.clear();
+        st.version = None;
         st.requested = None;
         st.settling = None;
         st.inflight = None;
@@ -203,13 +212,17 @@ impl Editor {
                 })
             })
             .collect();
-        if entries == self.launch.code_lens.lenses {
+        if entries == self.launch.code_lens.lenses
+            && self.launch.code_lens.version == Some(inflight.version)
+        {
             return false;
         }
         let rope = self.buffer().rope().clone();
         let decorations = lens_decorations(&entries, &rope, inflight.version as u64);
         self.decorations
             .replace_source(DecorationSource::CodeLens, decorations, &rope);
+        self.launch.code_lens.generation = self.launch.code_lens.generation.wrapping_add(1);
+        self.launch.code_lens.version = Some(inflight.version);
         self.launch.code_lens.lenses = entries;
         self.mark_dirty();
         true
@@ -228,10 +241,53 @@ impl Editor {
             .iter()
             .find(|l| l.command == RUN_LENS_COMMAND)
             .or_else(|| lenses.first())
+            .cloned()
         else {
             self.set_status_message("No code lens on this line");
             return;
         };
+        self.execute_code_lens(lens, mode);
+    }
+
+    /// Activate exactly the lens displayed by a frontend. Reject stale frames
+    /// after edits or file switches rather than running a different command.
+    pub fn activate_code_lens(
+        &mut self,
+        file_path: &str,
+        version: usize,
+        index: usize,
+        generation: u64,
+        mode: LaunchMode,
+    ) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            self.buffer().file_path() == Some(file_path)
+                && self.buffer().version() == version
+                && self.launch.code_lens.generation == generation,
+            "Code lens changed; wait for it to refresh"
+        );
+        let lens = self
+            .code_lenses()
+            .get(index)
+            .cloned()
+            .ok_or_else(|| anyhow::anyhow!("Code lens is no longer available"))?;
+        anyhow::ensure!(
+            mode == LaunchMode::Run || lens.command == RUN_LENS_COMMAND,
+            "This code lens has no Debug action"
+        );
+        self.execute_code_lens(lens, mode);
+        Ok(())
+    }
+
+    pub fn code_lens_generation(&self) -> u64 {
+        self.launch.code_lens.generation
+    }
+
+    /// Individual actions, including the real-JVM Debug action for Hyperion.
+    pub fn code_lens_actions(&self, line: usize) -> Vec<CodeLensAction> {
+        lens_actions(self.code_lenses(), line)
+    }
+
+    fn execute_code_lens(&mut self, lens: LensEntry, mode: LaunchMode) {
         if lens.command == RUN_LENS_COMMAND {
             // Not Hyperion's bytecode VM: resolve the target at the lens and
             // run it on a real JVM through the launch flow.
@@ -259,16 +315,53 @@ impl Editor {
     }
 }
 
+/// A single clickable label within a code-lens decoration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CodeLensAction {
+    pub index: usize,
+    pub title: String,
+    pub mode: LaunchMode,
+}
+
+fn lens_actions(entries: &[LensEntry], line: usize) -> Vec<CodeLensAction> {
+    let mut actions = Vec::new();
+    for (index, lens) in entries
+        .iter()
+        .enumerate()
+        .filter(|(_, lens)| lens.line == line)
+    {
+        actions.push(CodeLensAction {
+            index,
+            title: lens.title.replace(['\t', '\n', '\r'], " "),
+            mode: LaunchMode::Run,
+        });
+        if lens.command == RUN_LENS_COMMAND {
+            actions.push(CodeLensAction {
+                index,
+                title: "▶ Debug".into(),
+                mode: LaunchMode::Debug,
+            });
+        }
+    }
+    actions
+}
+
 /// End-of-line decorations, one per line with lenses (`▶ Run | ▶ Debug`).
 fn lens_decorations(entries: &[LensEntry], rope: &ropey::Rope, version: u64) -> Vec<Decoration> {
     use std::collections::BTreeMap;
     let mut by_line: BTreeMap<usize, Vec<String>> = BTreeMap::new();
-    for lens in entries {
-        let parts = by_line.entry(lens.line).or_default();
-        parts.push(lens.title.replace('\t', " "));
-        if lens.command == RUN_LENS_COMMAND {
-            parts.push("▶ Debug".to_string());
-        }
+    for line in entries
+        .iter()
+        .map(|lens| lens.line)
+        .collect::<std::collections::BTreeSet<_>>()
+    {
+        by_line.insert(
+            line,
+            lens_actions(entries, line)
+                .into_iter()
+                .map(|action| action.title)
+                .collect(),
+        );
     }
     by_line
         .into_iter()

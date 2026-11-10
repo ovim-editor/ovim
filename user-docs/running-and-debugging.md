@@ -173,8 +173,10 @@ reported in the console instead of being skipped silently.
 
 Servers that provide `textDocument/codeLens` (Hyperion shows `▶ Run` on `main`
 methods) get their lenses drawn at the end of the line as `▶ Run │ ▶ Debug`,
-refreshed once edits settle and on `workspace/codeLens/refresh`. `Space c l`
-on that line runs it. A `hyperion.run` lens goes through the same flow as
+refreshed once edits settle and on `workspace/codeLens/refresh`. Click an
+individual label to activate it in the terminal or native GUI. Labels highlight
+on hover; GUI buttons also support keyboard focus. `Space c l` / `Space c L`
+on that line run / debug it. A `hyperion.run` lens goes through the same flow as
 `Space r r` (a real JVM), not through Hyperion's built-in interpreter.
 
 ## Debug panel

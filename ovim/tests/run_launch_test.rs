@@ -1639,6 +1639,194 @@ async fn running_a_hyperion_run_lens_goes_through_resolve_launch_at_the_lens_not
     s.stop_lsp().await;
 }
 
+/// Terminal hit regions and the GUI projection identify individual actions.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn code_lens_pointer_targets_hover_activate_exact_commands_and_reject_stale_frames() {
+    use ovim_core::editor::handle_mouse_event;
+    use ovim_core::launch::LaunchMode;
+    use ovim_core::{MouseButton, MouseEvent, MouseEventKind};
+
+    let mut s = Session::with_capabilities(
+        &["example.first", "example.second"],
+        json!({"codeLensProvider": {"resolveProvider": false}}),
+    )
+    .await;
+    s.test.set_buffer_content(
+        "class Main {\n\tvoid main(String[] args) { /* 界: real display columns */ }\n}\n",
+    );
+    let mut second = run_lens(1);
+    second["command"] =
+        json!({"title": "Second action...", "command": "example.second", "arguments": [42]});
+    std::fs::write(
+        s.root.join("response-textDocument_codeLens.json"),
+        json!({"result": [run_lens(1), second]}).to_string(),
+    )
+    .unwrap();
+    s.until("lenses", |s| s.test.editor.code_lenses().len() == 2)
+        .await;
+
+    #[cfg(feature = "gui")]
+    {
+        let gui = ovim::gui::snapshot(&s.test.editor, 1);
+        let labels = &gui.panes[0]
+            .lines
+            .iter()
+            .find(|line| line.number == 2)
+            .unwrap()
+            .code_lenses;
+        assert_eq!(
+            labels
+                .iter()
+                .map(|label| (label.index, label.mode.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(0, "run"), (0, "debug"), (1, "run")]
+        );
+    }
+
+    ovim::ui::render_editor_to_ansi(&mut s.test.editor, 120, 30).unwrap();
+    let targets = s
+        .test
+        .editor
+        .render_cache
+        .code_lens_targets
+        .borrow()
+        .clone();
+    assert_eq!(targets.len(), 3, "separately clickable labels: {targets:?}");
+    assert_eq!(targets[1].mode, LaunchMode::Debug);
+    let target = &targets[2];
+    let cursor = s.test.editor.cursor_position();
+    let event = |kind| MouseEvent {
+        kind,
+        column: target.area.x,
+        row: target.area.y,
+    };
+    handle_mouse_event(&mut s.test.editor, event(MouseEventKind::Moved)).unwrap();
+    assert_eq!(
+        s.test.editor.render_cache.hovered_code_lens,
+        Some(target.area)
+    );
+    let backend = ratatui::backend::TestBackend::new(120, 30);
+    let mut terminal = ratatui::Terminal::new(backend).unwrap();
+    let mut cache = Default::default();
+    terminal
+        .draw(|frame| ovim::ui::Renderer::render_to_frame(frame, &mut s.test.editor, &mut cache))
+        .unwrap();
+    assert!(
+        terminal.backend().buffer()[(target.area.x, target.area.y)]
+            .modifier
+            .contains(ratatui::style::Modifier::UNDERLINED),
+        "hover underlines the label"
+    );
+    handle_mouse_event(
+        &mut s.test.editor,
+        event(MouseEventKind::Down(MouseButton::Left)),
+    )
+    .unwrap();
+    assert_eq!(
+        s.test.editor.cursor_position(),
+        cursor,
+        "lens clicks do not move the cursor"
+    );
+    s.wait_for_event("workspace/executeCommand").await;
+    let commands = s.lsp_events("workspace/executeCommand");
+    assert_eq!(commands[0]["params"]["command"], "example.second");
+    assert_eq!(commands[0]["params"]["arguments"], json!([42]));
+
+    for wrap in [false, true] {
+        s.test.editor.options.wrap = wrap;
+        for width in [32, 58, 120] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, 30)).unwrap();
+            let mut cache = Default::default();
+            terminal
+                .draw(|frame| {
+                    ovim::ui::Renderer::render_to_frame(frame, &mut s.test.editor, &mut cache)
+                })
+                .unwrap();
+            for target in s.test.editor.render_cache.code_lens_targets.borrow().iter() {
+                let text: String = (target.area.x..target.area.x + target.area.width)
+                    .map(|x| terminal.backend().buffer()[(x, target.area.y)].symbol())
+                    .collect();
+                let action = s
+                    .test
+                    .editor
+                    .code_lens_actions(1)
+                    .into_iter()
+                    .find(|action| action.index == target.index && action.mode == target.mode)
+                    .unwrap();
+                assert_eq!(
+                    text, action.title,
+                    "only complete visible labels are clickable at width {width}, wrap={wrap}"
+                );
+            }
+        }
+    }
+
+    // A server refresh can replace/reorder lenses without a buffer edit.
+    std::fs::write(
+        s.root.join("response-textDocument_codeLens.json"),
+        json!({"result": [run_lens(1)]}).to_string(),
+    )
+    .unwrap();
+    std::fs::write(
+        s.root.join("push-after-workspace_executeCommand.json"),
+        json!([{"id": 778, "method": "workspace/codeLens/refresh"}]).to_string(),
+    )
+    .unwrap();
+    s.test
+        .editor
+        .activate_code_lens(
+            &target.file_path,
+            target.version,
+            target.index,
+            target.generation,
+            target.mode,
+        )
+        .unwrap();
+    s.until("refreshed lenses", |s| {
+        s.test.editor.code_lenses().len() == 1
+    })
+    .await;
+    assert!(
+        s.test
+            .editor
+            .activate_code_lens(
+                &target.file_path,
+                target.version,
+                0,
+                target.generation,
+                LaunchMode::Run
+            )
+            .is_err(),
+        "old generations cannot activate a replaced lens"
+    );
+
+    s.test.keys("A // edit<Esc>");
+    assert!(s
+        .test
+        .editor
+        .activate_code_lens(
+            &target.file_path,
+            target.version,
+            target.index,
+            target.generation,
+            target.mode
+        )
+        .is_err());
+    assert!(s.test.editor.code_lenses().is_empty());
+    ovim::ui::render_editor_to_ansi(&mut s.test.editor, 120, 30).unwrap();
+    assert!(
+        s.test
+            .editor
+            .render_cache
+            .code_lens_targets
+            .borrow()
+            .is_empty(),
+        "old frame targets are cleared"
+    );
+    s.stop_lsp().await;
+}
+
 // ---------------------------------------------------------------------------
 // Java tests through the normal test-runner keys (<Space>tn, :TestFile, ...)
 // ---------------------------------------------------------------------------

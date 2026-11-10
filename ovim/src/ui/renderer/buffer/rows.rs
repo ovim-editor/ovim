@@ -11,6 +11,7 @@ use unicode_segmentation::UnicodeSegmentation;
 /// Rows emitted so far: text rows, their gutter rows, and the visual-row budget.
 #[derive(Default)]
 pub(super) struct RowOutput {
+    pub(super) logical_lines: Vec<Option<usize>>,
     pub(super) lines: Vec<Line<'static>>,
     pub(super) gutter_lines: Vec<Line<'static>>,
     pub(super) visual_rows_used: usize,
@@ -34,12 +35,14 @@ impl RowOutput {
             self.gutter_lines
                 .push(ctx.gutter_row(line_idx, is_continuation, line_diagnostics));
         }
+        self.logical_lines.push(Some(line_idx));
         self.lines.push(row);
         self.visual_rows_used += 1;
     }
 
     /// Appends a blank text row with no gutter row.
     pub(super) fn push_blank(&mut self, ctx: &BufferRenderContext<'_>) {
+        self.logical_lines.push(None);
         self.lines.push(ctx.blank_row());
         self.visual_rows_used += 1;
     }
