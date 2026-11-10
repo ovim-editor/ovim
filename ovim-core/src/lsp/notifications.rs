@@ -2154,6 +2154,16 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    /// Polls `future` once. `None` means it would have waited.
+    fn poll_once<F: std::future::Future>(future: F) -> Option<F::Output> {
+        let mut future = std::pin::pin!(future);
+        let mut cx = std::task::Context::from_waker(std::task::Waker::noop());
+        match future.as_mut().poll(&mut cx) {
+            std::task::Poll::Ready(output) => Some(output),
+            std::task::Poll::Pending => None,
+        }
+    }
+
     /// OV-00333: a wedged-but-alive server (not reading stdin) must make
     /// notifications fail fast instead of parking the caller. Before the
     /// fix, `:w`/open/close on a stopped server froze the editor tick for
@@ -2172,22 +2182,12 @@ mod tests {
 
         // Fill the OS pipe buffer so the writer task blocks, then keep
         // queueing until the outgoing queue reaches its limit. Every call
-        // must return promptly, full queue or not.
+        // must finish on its first poll, full queue or not.
         let big = serde_json::json!({ "pad": "x".repeat(1024 * 1024) });
         let mut refused = None;
         for _ in 0..200 {
-            let started = std::time::Instant::now();
-            let result = tokio::time::timeout(
-                Duration::from_millis(500),
-                server.notify("test/pad", big.clone()),
-            )
-            .await
-            .expect("notify must never wait for the writer task");
-            assert!(
-                started.elapsed() < Duration::from_millis(500),
-                "notify took {:?}",
-                started.elapsed()
-            );
+            let result = poll_once(server.notify("test/pad", big.clone()))
+                .expect("notify must never wait for the writer task");
             if let Err(e) = result {
                 refused = Some(e);
                 break;
@@ -2200,19 +2200,13 @@ mod tests {
         );
 
         // Lifecycle notifications go through the same fast path.
-        let started = std::time::Instant::now();
-        let result = notify_with_deadline(
+        let result = poll_once(notify_with_deadline(
             &server,
             "textDocument/didSave",
             serde_json::json!({}),
             Duration::from_millis(100),
-        )
-        .await;
-        assert!(
-            started.elapsed() < Duration::from_millis(100),
-            "didSave took {:?}",
-            started.elapsed()
-        );
+        ))
+        .expect("didSave must never wait for the writer task");
         assert!(
             result.is_err(),
             "wedged server must produce an error, not a silent success"
