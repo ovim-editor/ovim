@@ -153,9 +153,12 @@ fn nested_normal_still_works_a_few_levels_deep() {
     assert_eq!(test.buffer_content(), "bc\n");
 }
 
+/// Writes a.txt and b.txt. The editor stores resolved paths, and on macOS the
+/// temp folder is behind the /var symlink, so these paths are resolved too.
 fn write_pair(dir: &tempfile::TempDir) -> (std::path::PathBuf, std::path::PathBuf) {
-    let first = dir.path().join("a.txt");
-    let second = dir.path().join("b.txt");
+    let root = dir.path().canonicalize().unwrap();
+    let first = root.join("a.txt");
+    let second = root.join("b.txt");
     std::fs::write(&first, "one\n").unwrap();
     std::fs::write(&second, "two\n").unwrap();
     (first, second)
@@ -249,8 +252,9 @@ async fn edit_hash_opens_the_alternate_file() {
 async fn edit_percent_head_is_relative_to_the_current_file() {
     let dir = tempfile::tempdir().unwrap();
     let (first, _) = write_pair(&dir);
-    std::fs::create_dir(dir.path().join("sub")).unwrap();
-    let nested = dir.path().join("sub").join("x.txt");
+    let sub = first.parent().unwrap().join("sub");
+    std::fs::create_dir(&sub).unwrap();
+    let nested = sub.join("x.txt");
     std::fs::write(&nested, "in sub\n").unwrap();
     let mut test = EditorTest::new("");
     test.load_file(first.to_str().unwrap());
