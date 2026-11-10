@@ -775,6 +775,7 @@ impl Renderer {
             .ai_chat_interactions
             .comprehension_toggle = None;
         editor.render_cache.test_panel_area = None;
+        editor.render_cache.code_lens_targets.borrow_mut().clear();
         init_frame(frame, editor);
 
         let areas = match compute_frame_layout(frame, editor) {

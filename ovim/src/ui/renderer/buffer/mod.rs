@@ -9,6 +9,7 @@ mod decorations;
 mod gutter;
 mod indexed;
 mod legacy;
+mod lenses;
 mod overlays;
 mod rows;
 #[cfg(test)]
@@ -124,6 +125,8 @@ pub fn render_buffer(
         state.out.push_blank(&ctx);
     }
 
+    let lens_targets = lenses::visible_targets(editor, &state.out, text_area);
+
     // Render gutter
     if let Some(gutter_area) = gutter_area {
         let gutter_paragraph = Paragraph::new(state.out.gutter_lines);
@@ -134,6 +137,22 @@ pub fn render_buffer(
         .block(Block::default().borders(Borders::NONE))
         .style(Style::default().bg(Color::Reset));
     frame.render_widget(paragraph, text_area);
+    for target in &lens_targets {
+        if editor.render_cache.hovered_code_lens == Some(target.area) {
+            for x in target.area.x..target.area.x + target.area.width {
+                frame.buffer_mut()[(x, target.area.y)].set_style(
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(ratatui::style::Modifier::UNDERLINED),
+                );
+            }
+        }
+    }
+    editor
+        .render_cache
+        .code_lens_targets
+        .borrow_mut()
+        .extend(lens_targets);
     if let Some(rail) = layout.scrollbar_area {
         let (total, top) = ctx.scrollbar_extent();
         render_diff_scrollbar(frame, rail, total, top, theme);

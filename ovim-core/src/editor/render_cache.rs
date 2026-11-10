@@ -58,12 +58,26 @@ pub struct ChatTextAutoscroll {
     pub last_tick: u128,
 }
 
+/// An action's visible cells in the latest terminal frame.
+#[derive(Debug, Clone)]
+pub struct CodeLensHitTarget {
+    pub area: crate::Rect,
+    pub file_path: String,
+    pub version: usize,
+    pub index: usize,
+    pub generation: u64,
+    pub mode: crate::launch::LaunchMode,
+}
+
 /// Cached rendering state used by the UI layer and mouse input.
 ///
 /// Groups fields that bridge between the renderer and input handling:
 /// mouse drag state and cached layout geometry from the last render pass.
 #[derive(Default)]
 pub struct RenderCache {
+    /// Renderers borrow the editor immutably while producing text rows.
+    pub code_lens_targets: std::cell::RefCell<Vec<CodeLensHitTarget>>,
+    pub hovered_code_lens: Option<crate::Rect>,
     /// Mouse interaction state (dragging, drag origin)
     pub mouse_state: super::MouseState,
     /// Latest test panel geometry and active separator drag (column, width offset).

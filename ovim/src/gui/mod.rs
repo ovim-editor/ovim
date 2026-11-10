@@ -523,6 +523,7 @@ pub struct GuiLine {
     pub display_start: usize,
     pub current: bool,
     pub segments: Vec<GuiSegment>,
+    pub code_lenses: Vec<GuiCodeLens>,
     pub git: Option<String>,
     pub diagnostic: Option<String>,
     pub diff: Option<String>,
@@ -535,6 +536,18 @@ pub struct GuiLine {
     /// Fold gutter mark of the innermost fold around the line: `open` and
     /// `closed` on its header, `inside` on the lines below it.
     pub fold: Option<String>,
+}
+
+/// A lens label and the exact document revision it was rendered for.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiCodeLens {
+    pub index: usize,
+    pub generation: u64,
+    pub title: String,
+    pub mode: String,
+    pub file_path: String,
+    pub version: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
@@ -1117,6 +1130,15 @@ pub struct GuiTheme {
 }
 
 enum GuiRequest {
+    CodeLens {
+        pane: usize,
+        file_path: String,
+        version: usize,
+        index: usize,
+        generation: u64,
+        mode: String,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
     Snapshot {
         columns: u16,
         rows: u16,
@@ -1556,6 +1578,27 @@ impl GuiBridge {
             pane,
             line,
             display_column,
+            reply,
+        })
+        .await
+    }
+
+    pub async fn code_lens(
+        &self,
+        pane: usize,
+        file_path: String,
+        version: usize,
+        index: usize,
+        generation: u64,
+        mode: String,
+    ) -> Result<(), String> {
+        self.request(|reply| GuiRequest::CodeLens {
+            pane,
+            file_path,
+            version,
+            index,
+            generation,
+            mode,
             reply,
         })
         .await
@@ -2351,6 +2394,30 @@ async fn handle_request(
             editor.update_scroll_offset();
             refresh_after_input(editor);
             (reply, Ok(()))
+        }
+        GuiRequest::CodeLens {
+            pane,
+            file_path,
+            version,
+            index,
+            generation,
+            mode,
+            reply,
+        } => {
+            let result = if !editor.focus_window(pane) {
+                Err(anyhow::anyhow!("Unknown editor pane: {pane}"))
+            } else {
+                let mode = match mode.as_str() {
+                    "run" => Ok(ovim_core::launch::LaunchMode::Run),
+                    "debug" => Ok(ovim_core::launch::LaunchMode::Debug),
+                    _ => Err(anyhow::anyhow!("Unknown code lens action: {mode}")),
+                };
+                mode.and_then(|mode| {
+                    editor.activate_code_lens(&file_path, version, index, generation, mode)
+                })
+            };
+            refresh_after_input(editor);
+            (reply, result)
         }
         GuiRequest::Mouse {
             pane,
@@ -3237,6 +3304,26 @@ fn project_lines(
                 display_start,
                 current: cursor_line == line_index,
                 segments,
+                code_lenses: if focused && !continuation {
+                    editor
+                        .code_lens_actions(line_index)
+                        .into_iter()
+                        .map(|action| GuiCodeLens {
+                            index: action.index,
+                            generation: editor.code_lens_generation(),
+                            title: action.title,
+                            mode: match action.mode {
+                                ovim_core::launch::LaunchMode::Run => "run",
+                                ovim_core::launch::LaunchMode::Debug => "debug",
+                            }
+                            .into(),
+                            file_path: buffer.file_path().unwrap_or_default().into(),
+                            version: buffer.version(),
+                        })
+                        .collect()
+                } else {
+                    Vec::new()
+                },
                 git: (!continuation).then(|| git.clone()).flatten(),
                 diagnostic: (!continuation).then(|| diagnostic.clone()).flatten(),
                 diff: (!continuation).then(|| diff.clone()).flatten(),

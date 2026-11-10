@@ -393,6 +393,21 @@ async fn gui_set_cursor(
 }
 
 #[tauri::command]
+async fn gui_code_lens(
+    bridge: State<'_, GuiBridge>,
+    pane: usize,
+    file_path: String,
+    version: usize,
+    index: usize,
+    generation: u64,
+    mode: String,
+) -> Result<(), String> {
+    bridge
+        .code_lens(pane, file_path, version, index, generation, mode)
+        .await
+}
+
+#[tauri::command]
 async fn gui_mouse(
     bridge: State<'_, GuiBridge>,
     pane: usize,
@@ -692,6 +707,7 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_attach_image,
             gui_set_cursor,
             gui_mouse,
+            gui_code_lens,
             gui_position_walkthrough,
             gui_open_ai_chat,
             gui_set_chat_input_cursor,

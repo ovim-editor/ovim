@@ -169,7 +169,7 @@ pub use code_explanation::{
     CodeExplanationCardLayout, CodeExplanationDiscussionView, CodeExplanationPageView,
     CodeExplanationView, ConceptExplanationCardLayout,
 };
-pub use code_lens::LensEntry;
+pub use code_lens::{CodeLensAction, LensEntry};
 pub use command_context::CommandContext;
 pub use completion::{
     completion_documentation_markdown, completion_item_is_deprecated, completion_kind_style,
@@ -212,7 +212,7 @@ pub use picker::{
 pub use picker_state::PickerState;
 pub use quickfix::{LocationList, QuickfixEntry, QuickfixEntryType, QuickfixList};
 pub use register::{RegisterManager, RegisterType};
-pub use render_cache::{ChatLink, RenderCache};
+pub use render_cache::{ChatLink, CodeLensHitTarget, RenderCache};
 pub use search::Search;
 pub use search_context::{SearchContext, VisualSearchState};
 pub use services::EditorServices;

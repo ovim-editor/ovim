@@ -3226,6 +3226,42 @@ function App() {
                                                             </span>
                                                         )}
                                                     </For>
+                                                    <span class="code-lenses">
+                                                        <For
+                                                            each={
+                                                                line.codeLenses
+                                                            }
+                                                        >
+                                                            {(lens) => (
+                                                                <button
+                                                                    class="code-lens"
+                                                                    title={`${lens.title} (line ${line.number})`}
+                                                                    onMouseDown={(
+                                                                        event,
+                                                                    ) =>
+                                                                        event.stopPropagation()
+                                                                    }
+                                                                    onClick={(
+                                                                        event,
+                                                                    ) => {
+                                                                        event.stopPropagation();
+                                                                        void mutate(
+                                                                            "gui_code_lens",
+                                                                            {
+                                                                                pane: props
+                                                                                    .pane
+                                                                                    .index,
+                                                                                ...lens,
+                                                                            },
+                                                                        );
+                                                                        focusEditorInput();
+                                                                    }}
+                                                                >
+                                                                    {lens.title}
+                                                                </button>
+                                                            )}
+                                                        </For>
+                                                    </span>
                                                     <Show when={line.folded}>
                                                         {(count) => (
                                                             <span

@@ -4211,3 +4211,32 @@ kbd {
     overflow-wrap: anywhere;
     font: inherit;
 }
+
+.code-lenses {
+    display: inline-flex;
+    gap: 0.75ch;
+    margin-left: 2ch;
+    vertical-align: baseline;
+}
+.code-lenses:empty {
+    display: none;
+}
+.code-lens {
+    border: 0;
+    border-radius: 3px;
+    padding: 0 0.25ch;
+    background: transparent;
+    color: var(--text-secondary);
+    font: inherit;
+    cursor: pointer;
+}
+.code-lens:hover,
+.code-lens:focus-visible {
+    background: var(--surface-selected);
+    color: var(--accent);
+    text-decoration: underline;
+}
+.code-lens:focus-visible {
+    outline: 1px solid var(--accent);
+    outline-offset: 1px;
+}

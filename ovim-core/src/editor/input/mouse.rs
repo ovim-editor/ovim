@@ -57,6 +57,42 @@ pub fn handle_mouse_event(editor: &mut Editor, event: MouseEvent) -> Result<Opti
         return Ok(None);
     }
 
+    let lens_target = if matches!(editor.mode(), Mode::Normal | Mode::Insert) {
+        editor
+            .render_cache
+            .code_lens_targets
+            .borrow()
+            .iter()
+            .find(|target| target.area.contains(event.column, event.row))
+            .cloned()
+    } else {
+        None
+    };
+    if event.kind == MouseEventKind::Moved {
+        let hovered = lens_target.as_ref().map(|target| target.area);
+        if editor.render_cache.hovered_code_lens != hovered {
+            editor.render_cache.hovered_code_lens = hovered;
+            editor.mark_dirty();
+        }
+        if hovered.is_some() {
+            editor.dismiss_blame_mouse_hover();
+            return Ok(None);
+        }
+    } else if event.kind == MouseEventKind::Down(MouseButton::Left) {
+        if let Some(target) = lens_target {
+            if let Err(error) = editor.activate_code_lens(
+                &target.file_path,
+                target.version,
+                target.index,
+                target.generation,
+                target.mode,
+            ) {
+                editor.set_status_message(error.to_string());
+            }
+            return Ok(None);
+        }
+    }
+
     if event.kind != MouseEventKind::Moved {
         editor.dismiss_blame_mouse_hover();
     }
