@@ -210,6 +210,7 @@ impl Editor {
         if events.is_empty() {
             return;
         }
+        self.request_code_lens_refresh();
         for event in events {
             self.set_lsp_status(event);
         }

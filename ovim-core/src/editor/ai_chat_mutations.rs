@@ -676,6 +676,17 @@ impl Editor {
         outcome
     }
 
+    fn ensure_current_buffer_unchanged_on_disk(&self) -> Result<(), String> {
+        match self.buffer().check_external_modification() {
+            Ok(false) => Ok(()),
+            Ok(true) => Err(
+                "file changed on disk; edits remain in the buffer. Review and resolve the conflict before saving"
+                    .to_string(),
+            ),
+            Err(error) => Err(format!("could not check file before saving: {error}")),
+        }
+    }
+
     fn auto_save_current_buffer_if_configured(&mut self) -> String {
         if self.buffer().file_path().is_none() {
             return self.record_ai_chat_save_outcome(
@@ -692,6 +703,10 @@ impl Editor {
             return self.record_ai_chat_save_outcome(
                 "not auto-saved (policy only_if_clean_at_start)".to_string(),
             );
+        }
+
+        if let Err(reason) = self.ensure_current_buffer_unchanged_on_disk() {
+            return self.record_ai_chat_save_outcome(format!("not auto-saved ({reason})"));
         }
 
         match self.buffer_mut().save() {
@@ -715,6 +730,12 @@ impl Editor {
                 "cannot save '{path_hint}': target buffer has no file path"
             )));
         };
+        if let Err(reason) = self.ensure_current_buffer_unchanged_on_disk() {
+            self.record_ai_chat_save_outcome(format!("save failed: {reason}"));
+            return Err(ToolResult::Error(format!(
+                "cannot save '{path_hint}': {reason}"
+            )));
+        }
         if let Some(parent) = target_path.parent() {
             if let Err(e) = std::fs::create_dir_all(parent) {
                 self.record_ai_chat_save_outcome(format!("save failed: {e}"));

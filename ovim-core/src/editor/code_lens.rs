@@ -22,6 +22,8 @@ use crate::launch::LaunchMode;
 
 /// Edits must be quiet for this long before lenses are re-requested.
 const DEBOUNCE: Duration = Duration::from_millis(350);
+/// Avoid repeating a failed server request on every editor tick.
+const RETRY_DELAY: Duration = Duration::from_secs(2);
 
 /// The command Hyperion attaches to its main-method lens.
 pub const RUN_LENS_COMMAND: &str = "hyperion.run";
@@ -58,10 +60,31 @@ pub(crate) struct CodeLensState {
     generation: u64,
     /// (file, buffer version) of the last request sent.
     requested: Option<(String, usize)>,
+    /// A failed request may be retried once this file/version reaches the deadline.
+    retry_after: Option<(String, usize, Instant)>,
     /// (file, version, first seen) waiting out the debounce.
     settling: Option<(String, usize, Instant)>,
     inflight: Option<Inflight>,
     force: bool,
+}
+
+impl CodeLensState {
+    fn should_request(&self, path: &str, version: usize, now: Instant) -> bool {
+        if self.force {
+            return true;
+        }
+        if self
+            .requested
+            .as_ref()
+            .is_some_and(|(file, v)| file == path && *v == version)
+        {
+            return false;
+        }
+        !self
+            .retry_after
+            .as_ref()
+            .is_some_and(|(file, v, at)| file == path && *v == version && now < *at)
+    }
 }
 
 impl Editor {
@@ -92,6 +115,7 @@ impl Editor {
         st.lenses.clear();
         st.version = None;
         st.requested = None;
+        st.retry_after = None;
         st.settling = None;
         st.inflight = None;
         if had {
@@ -121,11 +145,19 @@ impl Editor {
         let Some(language_id) = self.language_id_for_path(&path) else {
             return;
         };
+        // The LSP manager exists before its servers finish starting. An empty
+        // response here must not be cached as the lenses for this version.
+        if manager
+            .servers_for_document(&language_id, std::path::Path::new(&path))
+            .is_empty()
+        {
+            return;
+        }
         let version = self.buffer().version();
         let st = &mut self.launch.code_lens;
         st.force |= forced;
         let key = (path.clone(), version);
-        if !st.force && st.requested.as_ref() == Some(&key) {
+        if !st.should_request(&path, version, Instant::now()) {
             return;
         }
         if st
@@ -155,6 +187,7 @@ impl Editor {
         self.ensure_lsp_document_synced().await;
         let st = &mut self.launch.code_lens;
         st.force = false;
+        st.retry_after = None;
         st.requested = Some(key);
         let (tx, rx) = oneshot::channel();
         let file = std::path::PathBuf::from(&path);
@@ -181,7 +214,10 @@ impl Editor {
                 self.launch.code_lens.inflight = Some(inflight);
                 return false;
             }
-            Err(oneshot::error::TryRecvError::Closed) => return false,
+            Err(oneshot::error::TryRecvError::Closed) => {
+                self.defer_code_lens_retry(&inflight);
+                return false;
+            }
         };
         let current = self.buffer().file_path().map(str::to_string);
         if current.as_deref() != Some(inflight.file_path.as_str())
@@ -195,6 +231,7 @@ impl Editor {
             Ok(lenses) => lenses,
             Err(e) => {
                 crate::lsp_debug!("LSP-CODELENS", "codeLens request failed: {e}");
+                self.defer_code_lens_retry(&inflight);
                 return false;
             }
         };
@@ -226,6 +263,23 @@ impl Editor {
         self.launch.code_lens.lenses = entries;
         self.mark_dirty();
         true
+    }
+
+    fn defer_code_lens_retry(&mut self, inflight: &Inflight) {
+        let st = &mut self.launch.code_lens;
+        st.requested = None;
+        st.retry_after = Some((
+            inflight.file_path.clone(),
+            inflight.version,
+            Instant::now() + RETRY_DELAY,
+        ));
+    }
+
+    /// A server joined or restarted. Its lenses may differ from the cached
+    /// answer, including an earlier empty answer from another server.
+    pub(crate) fn request_code_lens_refresh(&mut self) {
+        self.launch.code_lens.force = true;
+        self.launch.code_lens.retry_after = None;
     }
 
     /// `<Space>cl` (Run) / `<Space>cL` (Debug): execute the lens on the
@@ -421,5 +475,65 @@ mod tests {
             decorations[0].placement,
             DecorationPlacement::EndOfLine { char_offset: 10 }
         );
+    }
+
+    #[tokio::test]
+    async fn an_unstarted_server_does_not_cache_empty_lenses() {
+        let mut editor = Editor::with_content("class A {}\n");
+        editor.set_file_path("/tmp/A.java".to_string());
+        editor.enable_lsp();
+        editor.request_code_lens_if_needed().await;
+        editor.launch.code_lens.settling = Some((
+            editor.buffer().file_path().unwrap().to_string(),
+            editor.buffer().version(),
+            Instant::now() - DEBOUNCE,
+        ));
+        editor.request_code_lens_if_needed().await;
+
+        let state = &editor.launch.code_lens;
+        assert!(state.requested.is_none());
+        assert!(state.inflight.is_none());
+        assert!(state.version.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_failed_request_waits_before_retrying_and_server_readiness_wakes_it() {
+        let mut editor = Editor::with_content("class A {}\n");
+        editor.set_file_path("/tmp/A.java".to_string());
+        let path = editor.buffer().file_path().unwrap().to_string();
+        let version = editor.buffer().version();
+        let (tx, rx) = oneshot::channel();
+        let task = tokio::spawn(async {});
+        editor.launch.code_lens.file_path = Some(path.clone());
+        editor.launch.code_lens.requested = Some((path.clone(), version));
+        editor.launch.code_lens.inflight = Some(Inflight {
+            _task: task,
+            rx,
+            file_path: path.clone(),
+            version,
+        });
+        tx.send(Err(anyhow::anyhow!("temporary failure"))).unwrap();
+
+        assert!(!editor.poll_code_lens());
+        let state = &editor.launch.code_lens;
+        assert!(
+            state.requested.is_none(),
+            "the failed request must not be cached"
+        );
+        assert!(state.retry_after.as_ref().is_some_and(|(file, v, at)| {
+            file == &path && *v == version && *at > Instant::now()
+        }));
+        assert!(!state.should_request(&path, version, Instant::now()));
+        assert!(state.should_request(&path, version + 1, Instant::now()));
+        let retry_at = state.retry_after.as_ref().unwrap().2;
+        assert!(state.should_request(&path, version, retry_at));
+
+        editor.request_code_lens_refresh();
+        assert!(editor.launch.code_lens.force);
+        assert!(editor.launch.code_lens.retry_after.is_none());
+        assert!(editor
+            .launch
+            .code_lens
+            .should_request(&path, version, Instant::now()));
     }
 }

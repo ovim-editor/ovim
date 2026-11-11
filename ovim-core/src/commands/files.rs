@@ -73,10 +73,16 @@ pub(super) fn save_buffer(editor: &mut Editor, opts: SaveOpts<'_>) -> CommandRes
         .as_deref()
         .is_some_and(|current| same_file(current, &resolved));
     if !opts.force
-        && targets_current_file
-        && editor.buffer().file_mtime().is_some()
+        && opts.path.is_some()
+        && !targets_current_file
         && std::path::Path::new(&resolved).exists()
     {
+        return err("E13: File exists (add ! to override)");
+    }
+    if !opts.force && targets_current_file && std::path::Path::new(&resolved).exists() {
+        if editor.buffer().file_mtime().is_none() {
+            return err("E13: File exists (add ! to override)");
+        }
         match editor.buffer().check_external_modification() {
             Ok(true) => return err("E211: File changed since editing started (add ! to override)"),
             Ok(false) => {}
@@ -360,6 +366,9 @@ pub(super) fn open_file(editor: &mut Editor, filename: &str) -> CommandResult {
 /// `:checkt[ime]`: reload the file if another process changed it.
 pub(super) fn checktime(editor: &mut Editor, _ex: &Ex) -> CommandResult {
     match editor.buffer().check_external_modification() {
+        Ok(true) if editor.is_modified() => err(
+            "W12: File changed on disk; local changes were kept (use :e! to reload or :w! to overwrite)",
+        ),
         Ok(true) => match editor.buffer_mut().reload_if_changed_sync() {
             Ok(true) => {
                 editor.mark_buffer_modified_force_send();
@@ -429,5 +438,186 @@ pub(super) fn cd(_editor: &mut Editor, ex: &Ex) -> CommandResult {
             "E344: Can't find directory \"{}\" ({})",
             ex.args, e
         )),
+    }
+}
+
+#[cfg(test)]
+mod data_safety_tests {
+    use super::*;
+    use crate::command_result::CommandResult;
+
+    fn error_message(result: CommandResult) -> String {
+        match result {
+            CommandResult::Error(error) => error.error,
+            other => panic!("expected a command error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn checktime_keeps_local_edits_and_undo_when_the_file_changed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&path).unwrap();
+        assert!(matches!(
+            crate::commands::execute_command(&mut editor, "s/original/LOCAL/"),
+            CommandResult::Success(_)
+        ));
+        assert!(editor.is_modified());
+        assert_eq!(editor.buffer().change_manager().undo_stack.len(), 1);
+
+        std::fs::write(&path, "external content\n").unwrap();
+        editor
+            .buffer_mut()
+            .set_file_mtime(Some(std::time::UNIX_EPOCH));
+
+        let message = error_message(crate::commands::execute_command(&mut editor, "checktime"));
+        assert!(message.contains("File changed on disk"), "{message}");
+        assert!(message.contains(":e!"), "{message}");
+        assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+        assert!(editor.is_modified());
+        assert_eq!(editor.buffer().change_manager().undo_stack.len(), 1);
+
+        editor.undo();
+        assert_eq!(editor.buffer().rope().to_string(), "original\n");
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn checktime_reloads_a_clean_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("source.txt");
+        std::fs::write(&path, "original\n").unwrap();
+
+        let mut editor = Editor::default();
+        editor.open_file(&path).unwrap();
+        std::fs::write(&path, "external content\n").unwrap();
+        editor
+            .buffer_mut()
+            .set_file_mtime(Some(std::time::UNIX_EPOCH));
+
+        let result = crate::commands::execute_command(&mut editor, "checktime");
+        assert!(matches!(&result, CommandResult::Success(_)), "{result:?}");
+        assert_eq!(editor.buffer().rope().to_string(), "external content\n");
+        assert!(!editor.is_modified());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn write_and_quit_commands_refuse_an_existing_other_file_without_bang() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+
+        for command in ["wq", "x"] {
+            let source = dir.path().join(format!("source-{command}.txt"));
+            std::fs::write(&source, "SOURCE\n").unwrap();
+            std::fs::write(&target, "KEEP ME\n").unwrap();
+
+            let mut editor = Editor::default();
+            editor.open_file(&source).unwrap();
+            crate::commands::execute_command(&mut editor, "s/SOURCE/EDITED/");
+
+            let result = crate::commands::execute_command(
+                &mut editor,
+                &format!("{command} {}", target.display()),
+            );
+            assert_eq!(
+                error_message(result),
+                "E13: File exists (add ! to override)"
+            );
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "KEEP ME\n");
+            let canonical_source = std::fs::canonicalize(&source).unwrap();
+            assert_eq!(editor.buffer().file_path(), canonical_source.to_str());
+            assert!(editor.is_modified());
+            assert!(!editor.should_quit());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn write_and_quit_allows_the_same_file_or_explicit_force() {
+        let dir = tempfile::tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+
+        for command in ["wq", "x"] {
+            let source = dir.path().join(format!("source-{command}.txt"));
+            std::fs::write(&source, "SOURCE\n").unwrap();
+            std::fs::write(&target, "OLD TARGET\n").unwrap();
+
+            let mut same_file = Editor::default();
+            same_file.open_file(&source).unwrap();
+            crate::commands::execute_command(&mut same_file, "s/SOURCE/EDITED/");
+            let result = crate::commands::execute_command(
+                &mut same_file,
+                &format!("{command} {}", source.display()),
+            );
+            assert!(matches!(&result, CommandResult::Success(_)), "{result:?}");
+            assert_eq!(std::fs::read_to_string(&source).unwrap(), "EDITED\n");
+            assert!(!same_file.is_modified());
+            assert!(same_file.should_quit());
+
+            let mut forced = Editor::default();
+            forced.open_file(&source).unwrap();
+            let result = crate::commands::execute_command(
+                &mut forced,
+                &format!("{command}! {}", target.display()),
+            );
+            assert!(matches!(&result, CommandResult::Success(_)), "{result:?}");
+            assert_eq!(std::fs::read_to_string(&target).unwrap(), "EDITED\n");
+            assert!(!forced.is_modified());
+            assert!(forced.should_quit());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn ordinary_writes_preserve_a_file_created_after_opening_a_new_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        for command in ["w", "wq", "x", "up", "wa"] {
+            let path = dir.path().join(format!("{command}.txt"));
+            let mut editor = Editor::default();
+            let opened =
+                crate::commands::execute_command(&mut editor, &format!("e {}", path.display()));
+            assert!(matches!(opened, CommandResult::Success(_)), "{opened:?}");
+            editor
+                .buffer_mut()
+                .insert_text_at(0, crate::unicode::CharCol(0), "LOCAL");
+            assert!(editor.is_modified());
+            assert!(editor.buffer().file_mtime().is_none());
+            std::fs::write(&path, "EXTERNAL\n").unwrap();
+
+            let message = error_message(crate::commands::execute_command(&mut editor, command));
+            assert!(message.contains("E13: File exists"), "{command}: {message}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), "EXTERNAL\n");
+            assert!(editor.is_modified());
+            assert!(!editor.should_quit());
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+    async fn forced_first_save_overwrites_and_deleted_loaded_file_is_recreated() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_path = dir.path().join("new.txt");
+        let mut new_editor = Editor::default();
+        crate::commands::execute_command(&mut new_editor, &format!("e {}", new_path.display()));
+        new_editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "LOCAL");
+        std::fs::write(&new_path, "EXTERNAL\n").unwrap();
+        let saved = crate::commands::execute_command(&mut new_editor, "w!");
+        assert!(matches!(saved, CommandResult::Success(_)), "{saved:?}");
+        assert!(std::fs::read_to_string(&new_path)
+            .unwrap()
+            .starts_with("LOCAL"));
+
+        let old_path = dir.path().join("old.txt");
+        std::fs::write(&old_path, "OLD\n").unwrap();
+        let mut loaded_editor = Editor::default();
+        loaded_editor.open_file(&old_path).unwrap();
+        loaded_editor
+            .buffer_mut()
+            .insert_text_at(0, crate::unicode::CharCol(0), "LOCAL ");
+        std::fs::remove_file(&old_path).unwrap();
+        let saved = crate::commands::execute_command(&mut loaded_editor, "w");
+        assert!(matches!(saved, CommandResult::Success(_)), "{saved:?}");
+        assert_eq!(std::fs::read_to_string(&old_path).unwrap(), "LOCAL OLD\n");
     }
 }

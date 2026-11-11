@@ -224,6 +224,7 @@ impl LspStartup {
                     }
                     editor.set_lsp_status(format!("LSP: {language_id} ready"));
                     editor.request_diagnostics_refresh();
+                    editor.request_code_lens_refresh();
                 }
             }
             editor.mark_dirty();

@@ -516,6 +516,108 @@ async fn same_revision_mutations_conflict_deterministically() {
     }
     assert!(editor.buffer().rope().to_string().starts_with("first\n"));
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ai_edit_keeps_external_file_content_when_auto_save_conflicts() {
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("main.rs");
+    fs::write(&file, "original\n").unwrap();
+
+    let mut editor = Editor::default();
+    editor.open_file(&file).unwrap();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(
+        editor
+            .ai_state
+            .chat
+            .as_ref()
+            .unwrap()
+            .buffer_was_clean_at_chat_start
+    );
+    crate::commands::execute_command(&mut editor, "s/original/LOCAL/");
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+
+    fs::write(&file, "external change\n").unwrap();
+    editor
+        .buffer_mut()
+        .set_file_mtime(Some(std::time::UNIX_EPOCH));
+    let call = ToolCallInfo {
+        id: "conflicting-auto-save".into(),
+        name: "edit_range".into(),
+        arguments: serde_json::json!({
+            "start_line": 1,
+            "end_line": 1,
+            "new_text": "AGENT",
+            "expected_revision": editor.buffer().version(),
+        }),
+    };
+
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Success(output)) => {
+            assert!(output.contains("not auto-saved"), "{output}");
+            assert!(output.contains("file changed on disk"), "{output}");
+        }
+        _ => panic!("expected an in-memory edit with refused auto-save"),
+    }
+    assert_eq!(fs::read_to_string(&file).unwrap(), "external change\n");
+    assert_eq!(editor.buffer().rope().to_string(), "AGENT\n");
+    assert!(editor.is_modified());
+    editor.undo();
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 1)]
+async fn ai_write_file_reports_external_change_without_overwriting_it() {
+    let dir = tempfile::tempdir().unwrap();
+    git2::Repository::init(dir.path()).unwrap();
+    let file = dir.path().join("main.rs");
+    fs::write(&file, "original\n").unwrap();
+
+    let mut editor = Editor::default();
+    editor.open_file(&file).unwrap();
+    editor
+        .open_ai_chat(ChatOpts {
+            allow_edits: true,
+            ..Default::default()
+        })
+        .unwrap();
+    set_active_profile_project_scope(&mut editor);
+    editor.ai_state.config.tool_approval_mode = ToolApprovalMode::Auto;
+    crate::commands::execute_command(&mut editor, "s/original/LOCAL/");
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+
+    fs::write(&file, "external change\n").unwrap();
+    editor
+        .buffer_mut()
+        .set_file_mtime(Some(std::time::UNIX_EPOCH));
+    let call = ToolCallInfo {
+        id: "conflicting-write".into(),
+        name: "write_file_at_path".into(),
+        arguments: serde_json::json!({
+            "path": file,
+            "content": "AGENT\n",
+            "expected_revision": editor.buffer().version(),
+        }),
+    };
+
+    match editor.dispatch_tool_call_with_approval(&call, None) {
+        ToolDispatchOutcome::Completed(ToolResult::Error(error)) => {
+            assert!(error.contains("file changed on disk"), "{error}");
+        }
+        _ => panic!("expected a save conflict"),
+    }
+    assert_eq!(fs::read_to_string(&file).unwrap(), "external change\n");
+    assert_eq!(editor.buffer().rope().to_string(), "AGENT\n");
+    assert!(editor.is_modified());
+    editor.undo();
+    assert_eq!(editor.buffer().rope().to_string(), "LOCAL\n");
+}
+
 #[test]
 fn edit_range_with_other_path_requires_approval_in_sensitive_mode() {
     let runtime = tokio::runtime::Runtime::new().expect("runtime");

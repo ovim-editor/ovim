@@ -290,7 +290,9 @@ impl WorkspaceWatcher {
     fn record(&mut self, event: notify::Event, now: Instant, wanted: &dyn Fn(&Path) -> bool) {
         let created_dirs: Vec<PathBuf> = match event.kind {
             EventKind::Create(_)
-            | EventKind::Modify(ModifyKind::Name(RenameMode::To | RenameMode::Both)) => event
+            | EventKind::Modify(ModifyKind::Name(
+                RenameMode::Any | RenameMode::To | RenameMode::Both,
+            )) => event
                 .paths
                 .iter()
                 .filter(|p| !self.is_ignored(p) && p.is_dir())
@@ -631,5 +633,57 @@ mod tests {
         assert_eq!(batch(&mut watcher, remove), WatchedChange::Deleted);
         std::fs::write(&path, "three").unwrap();
         assert_eq!(batch(&mut watcher, create()), WatchedChange::Created);
+    }
+
+    #[test]
+    fn renamed_directories_are_watched_for_all_destination_modes_but_files_are_not() {
+        let dir = tempfile::tempdir().unwrap();
+        let root = dir.path().join("workspace");
+        let staging = dir.path().join("staging");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(staging.join("note.rs"), "fn note() {}").unwrap();
+
+        let mut watcher = WorkspaceWatcher::default();
+        watcher.sync_roots(std::slice::from_ref(&root));
+        wait_until(|| watcher.watched_dirs().contains(&root));
+
+        let modes = [
+            ("ambiguous", RenameMode::Any),
+            ("destination", RenameMode::To),
+            ("paired", RenameMode::Both),
+        ];
+        for (name, mode) in modes {
+            let from = staging.join(name);
+            let to = root.join(name);
+            std::fs::create_dir_all(from.join("nested")).unwrap();
+            std::fs::rename(&from, &to).unwrap();
+            let mut event = notify::Event::new(EventKind::Modify(ModifyKind::Name(mode)));
+            if matches!(mode, RenameMode::Both) {
+                event = event.add_path(from);
+            }
+            watcher.record(event.add_path(to), Instant::now(), &|_| true);
+        }
+
+        let note = root.join("note.rs");
+        std::fs::rename(staging.join("note.rs"), &note).unwrap();
+        watcher.record(
+            notify::Event::new(EventKind::Modify(ModifyKind::Name(RenameMode::Any)))
+                .add_path(note.clone()),
+            Instant::now(),
+            &|_| true,
+        );
+
+        wait_until(|| {
+            let watched = watcher.watched_dirs();
+            ["ambiguous", "destination", "paired"]
+                .iter()
+                .all(|name| watched.contains(&root.join(name).join("nested")))
+        });
+        let watched = watcher.watched_dirs();
+        assert!(
+            !watched.contains(&note),
+            "files must not get directory watches"
+        );
     }
 }

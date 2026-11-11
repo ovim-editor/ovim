@@ -410,9 +410,9 @@ impl GuiKeyInput {
             "End" => KeyCode::End,
             "PageUp" => KeyCode::PageUp,
             "PageDown" => KeyCode::PageDown,
-            key if key.len() > 1
-                && key[1..].bytes().all(|byte| byte.is_ascii_digit())
-                && key.starts_with('F') =>
+            key if key.starts_with('F')
+                && key.len() > 1
+                && key[1..].bytes().all(|byte| byte.is_ascii_digit()) =>
             {
                 key[1..]
                     .parse::<u8>()
@@ -6045,12 +6045,32 @@ mod tests {
                 "{key} should be dropped silently"
             );
         }
-        assert!(matches!(key_input("F5").into_core(), Ok(Some(_))));
+        for (key, number) in [("F1", 1), ("F24", 24)] {
+            assert_eq!(
+                key_input(key).into_core().unwrap().unwrap().code,
+                ovim_core::KeyCode::F(number),
+            );
+        }
+        assert_eq!(
+            key_input("F25").into_core().unwrap().unwrap().code,
+            ovim_core::KeyCode::Null,
+        );
         assert!(matches!(key_input("a").into_core(), Ok(Some(_))));
         assert!(
             key_input("a b").into_core().is_err(),
             "text is still validated"
         );
+    }
+
+    #[test]
+    fn unicode_gui_keys_are_dispatched_as_characters() {
+        for (key, character) in [("é", 'é'), ("中", '中'), ("🦀", '🦀')] {
+            assert_eq!(
+                key_input(key).into_core().unwrap().unwrap().code,
+                ovim_core::KeyCode::Char(character),
+                "{key} must not be parsed as a function key",
+            );
+        }
     }
 
     #[tokio::test]

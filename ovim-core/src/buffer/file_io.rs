@@ -470,7 +470,9 @@ impl Buffer {
 
         match self.file_mtime {
             Some(stored_mtime) => Ok(current_mtime != stored_mtime),
-            None => Ok(false), // No stored mtime means this is a new buffer
+            // A file appeared after this buffer was given its name. Treat it
+            // as an external change so an ordinary save cannot overwrite it.
+            None => Ok(true),
         }
     }
 
@@ -566,6 +568,18 @@ mod external_change_tests {
         let mut buffer = Buffer::new_from_str("info");
         buffer.set_file_path("/nonexistent-dir-ovim/[LspInfo]".to_string());
         assert!(!buffer.check_external_modification().unwrap());
+    }
+
+    #[test]
+    fn a_new_named_buffer_detects_a_file_created_before_its_first_save() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("new.txt");
+        let mut buffer = Buffer::new_from_str("local\n");
+        buffer.set_file_path(path.to_string_lossy().into_owned());
+
+        assert!(!buffer.check_external_modification().unwrap());
+        std::fs::write(&path, "external\n").unwrap();
+        assert!(buffer.check_external_modification().unwrap());
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 1)]

@@ -766,9 +766,7 @@ impl Editor {
         if buffer.is_read_only() {
             return false;
         }
-        if buffer.file_mtime().is_some()
-            && !matches!(buffer.check_external_modification(), Ok(false))
-        {
+        if !matches!(buffer.check_external_modification(), Ok(false)) {
             return false;
         }
 
@@ -853,7 +851,11 @@ impl Editor {
                 continue;
             }
             // Mirror the :w guard against clobbering external changes.
-            if !force && buffer.file_mtime().is_some() {
+            if !force && std::path::Path::new(&path).exists() {
+                if buffer.file_mtime().is_none() {
+                    errors.push(format!("E13: File exists (add ! to override): {}", path));
+                    continue;
+                }
                 match buffer.check_external_modification() {
                     Ok(true) => {
                         errors.push(format!(
