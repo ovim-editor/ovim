@@ -444,7 +444,7 @@ describe("Ovim Solid workbench", () => {
     });
 
     it.each(["MacIntel", "Linux x86_64"])(
-        "toggles the terminal with the platform shortcut on %s while keeping its dock mounted",
+        "toggles the terminal with the platform shortcut on %s and disposes its dock when closed",
         (platform) => {
             vi.spyOn(navigator, "platform", "get").mockReturnValue(platform);
             const result = render(() => <App />);
@@ -457,7 +457,7 @@ describe("Ovim Solid workbench", () => {
             };
 
             fireEvent.keyDown(document.body, shortcut);
-            const panel = screen.getByRole("tabpanel", { name: "Terminal" });
+            const panel = screen.getByRole("region", { name: "Terminal" });
             expect(
                 screen.getByText("Terminal is available in the desktop app."),
             ).toBeTruthy();
@@ -465,16 +465,16 @@ describe("Ovim Solid workbench", () => {
             fireEvent.keyDown(document.body, shortcut);
             expect(
                 result.container.querySelector(".workbench")?.classList,
-            ).toContain("terminal-collapsed");
-            expect(result.container.querySelector(".context-panel")).toBe(
-                panel,
-            );
+            ).toContain("context-collapsed");
+            expect(
+                result.container.querySelector("#context-panel-terminal"),
+            ).toBeNull();
 
             fireEvent.keyDown(document.body, shortcut);
             expect(
                 result.container.querySelector(".workbench")?.classList,
-            ).not.toContain("terminal-collapsed");
-            expect(screen.getByRole("tabpanel", { name: "Terminal" })).toBe(
+            ).not.toContain("context-collapsed");
+            expect(screen.getByRole("region", { name: "Terminal" })).not.toBe(
                 panel,
             );
         },
@@ -495,7 +495,7 @@ describe("Ovim Solid workbench", () => {
             fireEvent.click(button);
             expect(
                 result.container.querySelector(".workbench")?.classList,
-            ).toContain("terminal-collapsed");
+            ).toContain("context-collapsed");
             fireEvent.keyDown(document.body, {
                 key: "T",
                 code: "KeyT",
@@ -504,7 +504,7 @@ describe("Ovim Solid workbench", () => {
             });
             expect(
                 result.container.querySelector(".workbench")?.classList,
-            ).not.toContain("terminal-collapsed");
+            ).not.toContain("context-collapsed");
         } finally {
             mockSnapshot.dashboard = previousDashboard;
             mockSnapshot.fileTree = previousTree;

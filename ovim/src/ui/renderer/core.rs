@@ -965,8 +965,11 @@ impl Renderer {
         Ok(())
     }
 
-    /// Clears the terminal
+    /// Clear the screen and invalidate terminal-owned presentation state.
+    /// A child process may have changed the cursor style or window title.
     pub fn clear(&mut self) -> Result<()> {
+        self.last_cursor_style = None;
+        self.last_title.clear();
         self.terminal.clear()?;
         Ok(())
     }

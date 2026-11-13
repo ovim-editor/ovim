@@ -3,14 +3,24 @@
 ## Native GUI
 
 Click the Terminal icon in the left activity bar, choose **View → Terminal**, or
-press **Cmd+Shift+T** on macOS or **Ctrl+Shift+T** elsewhere to show or hide the
+press **Cmd+Shift+T** on macOS or **Ctrl+Shift+T** elsewhere to open or close the
 integrated terminal. The terminal opens an interactive shell in the current
 workspace directory. Typing, paste, and terminal shortcuts go directly to the
 shell while it has focus.
 
-Hiding the panel preserves the running shell and its scrollback. Exit the shell
-normally, then use **Restart terminal** to start a fresh session. Closing Ovim
-closes the terminal session.
+Use `:term`, `:terminal`, or `:shell` to open the same terminal. A bare command
+reveals an existing session; `:term <command>` starts a fresh session running that
+command (including shell pipelines).
+
+The Terminal action and shortcut close the terminal when it is selected. The
+**Close terminal** button also ends the shell and removes its panel. Exiting the
+shell (`exit` or Ctrl-D on Unix) closes the panel automatically. Opening it again
+starts a fresh shell.
+
+Switching to AI chat or another context tab preserves a running shell and its
+scrollback. Closing chat returns focus to the editor without revealing the
+terminal; select Terminal explicitly to return to it. Closing Ovim ends the
+terminal session.
 
 The integrated terminal is available in the native GUI; the browser development
 preview does not start local processes.
@@ -41,9 +51,8 @@ shows that output and waits for Enter before returning.
 
 ## Command scope
 
-Terminal sessions temporarily use the terminal that launched Ovim. They are not
-PTY-backed Ovim buffers, so there is no terminal scrollback buffer, split-window
+In the TUI, terminal sessions temporarily use the terminal that launched Ovim.
+They are not PTY-backed Ovim buffers, so there is no terminal scrollback buffer, split-window
 terminal, or terminal-mode keymap yet. The TUI event loop is paused until the
-child exits. The `:terminal` and `:shell` commands still belong to the terminal
-frontend; use the Terminal icon or Cmd/Ctrl+Shift+T in the GUI. The headless
-command API rejects interactive sessions.
+child exits. The GUI handles the same commands through its integrated PTY panel.
+The headless command API rejects interactive sessions.

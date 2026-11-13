@@ -3,6 +3,12 @@ import { FitAddon } from "@xterm/addon-fit";
 import { Terminal } from "@xterm/xterm";
 import { createEffect, createSignal, onCleanup, onMount, Show } from "solid-js";
 import "@xterm/xterm/css/xterm.css";
+import { createSerialQueue } from "./serialQueue";
+import { IconButton } from "./Icon";
+
+// A remounted surface must finish closing its predecessor before opening the
+// single native PTY. Keep late open responses inside the same lifecycle queue.
+const lifecycle = createSerialQueue();
 
 type TerminalEvent =
     | { type: "data"; id: number; data: number[] }
@@ -29,6 +35,8 @@ export const cssColorToHex = (color: string): string | undefined => {
 export default function TerminalPanel(props: {
     native: boolean;
     active: boolean;
+    command?: string;
+    onClose: () => void;
     /** Changes whenever the editor theme changes; colours are re-read then. */
     theme?: unknown;
 }) {
@@ -40,7 +48,7 @@ export default function TerminalPanel(props: {
     let lastSize: { columns: number; rows: number } | undefined;
     let pendingWrite = Promise.resolve();
     const [status, setStatus] = createSignal<
-        "starting" | "running" | "exited" | "error" | "unavailable"
+        "starting" | "running" | "error" | "unavailable"
     >(props.native ? "starting" : "unavailable");
     const [message, setMessage] = createSignal("");
 
@@ -96,7 +104,9 @@ export default function TerminalPanel(props: {
         if (session === undefined) return;
         const id = session;
         session = undefined;
-        await invoke("gui_terminal_close", { id }).catch(() => {});
+        await lifecycle(() => invoke("gui_terminal_close", { id })).catch(
+            () => {},
+        );
     };
 
     const start = async () => {
@@ -113,7 +123,7 @@ export default function TerminalPanel(props: {
         let ended = false;
         const onEvent = new Channel<TerminalEvent>();
         onEvent.onmessage = (event) => {
-            if (current !== generation) return;
+            if (current !== generation || ended) return;
             switch (event.type) {
                 case "data":
                     terminal?.write(new Uint8Array(event.data), () => {
@@ -130,11 +140,8 @@ export default function TerminalPanel(props: {
                     break;
                 case "exit":
                     ended = true;
-                    setStatus("exited");
-                    setMessage(
-                        `Process exited${event.code === undefined ? "" : ` with code ${event.code}`}.`,
-                    );
                     session = undefined;
+                    props.onClose();
                     break;
                 case "error":
                     ended = true;
@@ -145,23 +152,27 @@ export default function TerminalPanel(props: {
             }
         };
         try {
-            const id = await invoke<number>("gui_terminal_open", {
-                columns: terminal.cols,
-                rows: terminal.rows,
-                onEvent,
+            await lifecycle(async () => {
+                if (current !== generation || !terminal) return;
+                const id = await invoke<number>("gui_terminal_open", {
+                    columns: terminal.cols,
+                    rows: terminal.rows,
+                    onEvent,
+                    command: props.command,
+                });
+                if (current !== generation) {
+                    await invoke("gui_terminal_close", { id }).catch(() => {});
+                    return;
+                }
+                if (ended) {
+                    await invoke("gui_terminal_close", { id }).catch(() => {});
+                    return;
+                }
+                session = id;
+                setStatus("running");
+                resize();
+                if (props.active) terminal.focus();
             });
-            if (current !== generation) {
-                void invoke("gui_terminal_close", { id }).catch(() => {});
-                return;
-            }
-            if (ended) {
-                void invoke("gui_terminal_close", { id }).catch(() => {});
-                return;
-            }
-            session = id;
-            setStatus("running");
-            resize();
-            if (props.active) terminal.focus();
         } catch (reason) {
             if (current !== generation) return;
             setStatus("error");
@@ -225,6 +236,8 @@ export default function TerminalPanel(props: {
             observer.disconnect();
             input.dispose();
             terminal?.dispose();
+            terminal = undefined;
+            fit = undefined;
         });
     });
 
@@ -252,6 +265,12 @@ export default function TerminalPanel(props: {
                 <span classList={{ working: status() === "running" }}>
                     {status()}
                 </span>
+                <IconButton
+                    class="terminal-close"
+                    icon="close"
+                    label="Close terminal"
+                    onClick={props.onClose}
+                />
             </header>
             <Show when={!props.native}>
                 <p class="terminal-notice">
@@ -263,12 +282,7 @@ export default function TerminalPanel(props: {
                 ref={surface!}
                 hidden={!props.native}
             />
-            <Show
-                when={
-                    props.native &&
-                    (status() === "exited" || status() === "error")
-                }
-            >
+            <Show when={props.native && status() === "error"}>
                 <div class="terminal-notice" role="status">
                     <span>{message()}</span>
                     <button type="button" onClick={() => void start()}>

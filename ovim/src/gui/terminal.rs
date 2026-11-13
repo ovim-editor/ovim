@@ -119,10 +119,15 @@ impl TerminalHost {
         columns: u16,
         rows: u16,
         on_event: Channel<TerminalEvent>,
+        command: Option<&str>,
     ) -> Result<u64, String> {
-        self.open_with_sink(directory, columns, rows, shell_command(), move |event| {
-            on_event.send(event).is_ok()
-        })
+        self.open_with_sink(
+            directory,
+            columns,
+            rows,
+            shell_command(command),
+            move |event| on_event.send(event).is_ok(),
+        )
     }
 
     fn open_with_sink(
@@ -337,12 +342,20 @@ fn terminal_size(columns: u16, rows: u16) -> Result<PtySize, String> {
     })
 }
 
-fn shell_command() -> CommandBuilder {
+fn shell_command(command: Option<&str>) -> CommandBuilder {
     #[cfg(windows)]
-    let shell = std::env::var_os("COMSPEC").unwrap_or_else(|| "cmd.exe".into());
+    let shell = std::env::var_os("COMSPEC")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "cmd.exe".into());
     #[cfg(not(windows))]
-    let shell = std::env::var_os("SHELL").unwrap_or_else(|| "/bin/sh".into());
-    CommandBuilder::new(shell)
+    let shell = std::env::var_os("SHELL")
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| "/bin/sh".into());
+    let mut builder = CommandBuilder::new(shell);
+    if let Some(command) = command {
+        builder.args([if cfg!(windows) { "/C" } else { "-c" }, command]);
+    }
+    builder
 }
 
 fn write_input(
@@ -450,9 +463,10 @@ pub async fn gui_terminal_open(
     columns: u16,
     rows: u16,
     on_event: Channel<TerminalEvent>,
+    command: Option<String>,
 ) -> Result<u64, String> {
     let directory = bridge.workspace_directory().await?;
-    host.open(&directory, columns, rows, on_event)
+    host.open(&directory, columns, rows, on_event, command.as_deref())
 }
 
 #[tauri::command]
@@ -594,6 +608,43 @@ mod tests {
         assert!(text.contains("\r\nterminal-ready\r\n"), "{text}");
         assert_eq!(exit, Some(7));
         assert!(host.write(id, "stale".into()).await.is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn requested_command_preserves_quotes_pipelines_directory_and_exit_status() {
+        let host = TerminalHost::new();
+        let directory = tempfile::tempdir().unwrap();
+        std::fs::write(directory.path().join("input file"), "hello world\n").unwrap();
+        let (tx, rx) = mpsc::channel();
+        let id = host
+            .open_with_sink(
+                directory.path(),
+                80,
+                24,
+                shell_command(Some("cat 'input file' | tr a-z A-Z; exit 7")),
+                move |event| tx.send(event).is_ok(),
+            )
+            .unwrap();
+        let mut output = Vec::new();
+        loop {
+            match rx
+                .recv_timeout(Duration::from_secs(5))
+                .expect("terminal command timed out")
+            {
+                TerminalEvent::Data { data, .. } => {
+                    host.acknowledge(id, data.len()).unwrap();
+                    output.extend(data);
+                }
+                TerminalEvent::Exit { code, .. } => {
+                    assert_eq!(code, 7);
+                    break;
+                }
+                TerminalEvent::Error { message, .. } => panic!("{message}"),
+            }
+        }
+        assert!(String::from_utf8_lossy(&output).contains("HELLO WORLD"));
+        assert!(host.resize(id, 80, 24).is_err());
     }
 
     #[cfg(unix)]

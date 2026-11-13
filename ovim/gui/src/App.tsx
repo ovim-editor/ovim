@@ -1626,7 +1626,11 @@ function App() {
     const [activeContextPanel, setActiveContextPanel] = createSignal<
         "ai" | "tests" | "debug" | "run" | "terminal"
     >("ai");
-    const [terminalDockOpen, setTerminalDockOpen] = createSignal(false);
+    const [terminalLaunch, setTerminalLaunch] = createSignal<{
+        command?: string;
+    }>();
+    const terminalDockOpen = () => Boolean(terminalLaunch());
+    const [contextDockHidden, setContextDockHidden] = createSignal(false);
     // Native menu accelerators fire before the webview sees a key, so the
     // menu must know when the shell owns Ctrl chords (see gui/menu.rs).
     const [terminalFocused, setTerminalFocused] = createSignal(false);
@@ -1665,13 +1669,14 @@ function App() {
         ),
     );
     let hadContextDock = hasContextDock();
-    let previousContextAvailability = {
-        ai: Boolean(view().aiChat),
-        tests: Boolean(view().testPanel),
-        debug: Boolean(view().debug),
-        run: Boolean(view().runConsole),
+    const contextAvailability = (snapshot: GuiSnapshot) => ({
+        ai: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.aiChat),
+        tests: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.testPanel),
+        debug: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.debug),
+        run: !snapshot.aiChat?.codeExplanation && Boolean(snapshot.runConsole),
         terminal: terminalDockOpen(),
-    };
+    });
+    let previousContextAvailability = contextAvailability(view());
     let layoutWorkspace = "";
     let vectorFilePath: string | undefined;
     const activeStrokPath = createMemo(() => {
@@ -1818,7 +1823,7 @@ function App() {
             preference.activeContextPanel === "terminal" &&
             preference.activeDock === "context"
         )
-            setTerminalDockOpen(true);
+            setTerminalLaunch({});
     });
 
     createEffect(() => {
@@ -1842,7 +1847,7 @@ function App() {
             hasContext &&
             !hasExplorer &&
             activeDock() === "explorer" &&
-            !(terminalDockOpen() && activeContextPanel() === "terminal")
+            !contextDockHidden()
         )
             setActiveDock("context");
         hadContextDock = hasContext;
@@ -1851,14 +1856,16 @@ function App() {
     createEffect(() => {
         // A walkthrough hides every panel but the terminal; each one becomes
         // available again, and so selectable, when the walkthrough ends.
-        const listed = !walkthrough();
-        const next = {
-            ai: listed && Boolean(view().aiChat),
-            tests: listed && Boolean(view().testPanel),
-            debug: listed && Boolean(view().debug),
-            run: listed && Boolean(view().runConsole),
-            terminal: terminalDockOpen(),
-        };
+        const next = contextAvailability(view());
+        if (
+            Object.keys(next).some((id) => {
+                const panel = id as keyof typeof next;
+                return next[panel] && !previousContextAvailability[panel];
+            })
+        ) {
+            setContextDockHidden(false);
+            setActiveDock("context");
+        }
         if (next.ai && !previousContextAvailability.ai)
             setActiveContextPanel("ai");
         if (next.tests && !previousContextAvailability.tests)
@@ -1936,6 +1943,16 @@ function App() {
             !snapshot.picker &&
             !snapshot.lspManager &&
             !snapshot.searchReplace;
+        // Decide dismissal before publishing the snapshot: ContextDock selects
+        // a fallback as soon as its active tab disappears.
+        const selected = activeContextPanel();
+        if (
+            contextAvailability(view())[selected] &&
+            !contextAvailability(snapshot)[selected]
+        ) {
+            setContextDockHidden(true);
+            setActiveDock("explorer");
+        }
         setView((previous) => retainProjection(previous, snapshot));
         if (treeRevealed) setActiveDock("explorer");
         setConnected(true);
@@ -2252,6 +2269,7 @@ function App() {
     };
 
     const activateAiChat = () => {
+        setContextDockHidden(false);
         setActiveContextPanel("ai");
         if (compactDocks() && view().aiChat && activeDock() === "explorer") {
             setActiveDock("context");
@@ -2263,19 +2281,35 @@ function App() {
         void mutate("gui_open_ai_chat", {});
     };
 
-    const toggleTerminal = () => {
-        const wasActive =
-            terminalDockOpen() &&
-            activeDock() === "context" &&
-            activeContextPanel() === "terminal";
-        setTerminalDockOpen(true);
-        setActiveContextPanel("terminal");
-        if (wasActive) {
+    const closeTerminal = () => {
+        if (activeContextPanel() === "terminal") {
+            setContextDockHidden(true);
             setActiveDock("explorer");
             queueMicrotask(focusEditorInput);
-            return;
         }
+        setTerminalLaunch(undefined);
+    };
+
+    const openTerminal = (command?: string) => {
+        // An explicit command starts a fresh session; bare :term reveals the
+        // existing shell without interrupting its work.
+        if (command !== undefined || !terminalDockOpen()) {
+            setTerminalLaunch({ command });
+        }
+        setActiveContextPanel("terminal");
+        setContextDockHidden(false);
         setActiveDock("context");
+    };
+
+    const toggleTerminal = () => {
+        if (
+            terminalDockOpen() &&
+            !contextDockHidden() &&
+            activeDock() === "context" &&
+            activeContextPanel() === "terminal"
+        )
+            closeTerminal();
+        else openTerminal();
     };
 
     const runEditorShortcut = (keys: string) => sendNormalKeys(keys);
@@ -4076,15 +4110,22 @@ function App() {
     );
 
     const TerminalSurface = () => (
-        <TerminalPanel
-            native={native}
-            theme={view().theme}
-            active={
-                activeDock() === "context" &&
-                activeContextPanel() === "terminal" &&
-                !walkthrough()
-            }
-        />
+        <Show when={terminalLaunch()} keyed>
+            {(launch) => (
+                <TerminalPanel
+                    native={native}
+                    command={launch.command}
+                    onClose={closeTerminal}
+                    theme={view().theme}
+                    active={
+                        activeDock() === "context" &&
+                        activeContextPanel() === "terminal" &&
+                        !contextDockHidden() &&
+                        !walkthrough()
+                    }
+                />
+            )}
+        </Show>
     );
 
     const contextPanels = createMemo<ContextPanelDefinition[]>(
@@ -4777,9 +4818,13 @@ function App() {
             const snapshots = new Channel<GuiSnapshot>();
             snapshots.onmessage = accept;
             lastDimensions = dimensions();
+            const terminals = new Channel<{ command: string | null }>();
+            terminals.onmessage = (request) =>
+                openTerminal(request.command ?? undefined);
             void invoke("gui_subscribe", {
                 ...lastDimensions,
                 onEvent: snapshots,
+                onTerminalRequest: terminals,
             }).catch((reason) => setError(String(reason)));
         }
         restoreInputFocus();
@@ -4856,9 +4901,7 @@ function App() {
                 classList={{
                     "active-explorer-dock": activeDock() === "explorer",
                     "active-context-dock": activeDock() === "context",
-                    "terminal-collapsed":
-                        activeDock() === "explorer" &&
-                        activeContextPanel() === "terminal",
+                    "context-collapsed": contextDockHidden(),
                 }}
             >
                 <nav class="activity-bar" aria-label="Primary navigation">

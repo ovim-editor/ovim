@@ -110,6 +110,8 @@ pub(crate) fn workspace_settings_for_root(
 }
 
 fn builtin_workspace_settings(language: &str, root: &std::path::Path) -> Option<serde_json::Value> {
+    #[cfg(not(feature = "lua"))]
+    let _ = root;
     match language {
         // The `vim` and `ovim` host tables (and the embedded Lua 5.4
         // runtime they live in) exist only inside ovim's own config and
@@ -117,6 +119,7 @@ fn builtin_workspace_settings(language: &str, root: &std::path::Path) -> Option<
         // there. Other Lua projects keep lua_ls defaults, and the
         // declaration stays narrow so LuaLS still catches misspelled
         // globals.
+        #[cfg(feature = "lua")]
         "lua" if crate::lua::is_ovim_config_root(root) => Some(json!({
             "Lua": {
                 "runtime": { "version": "Lua 5.4" },

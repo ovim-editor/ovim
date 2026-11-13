@@ -33,6 +33,21 @@ cargo test --test delete_operations_test
 cargo test --test lsp_operations_test
 ```
 
+### Real terminal lifecycle
+
+On Unix, the shell command suite includes a real PTY scenario. It requires
+`python3`, Git, and `/bin/sh`, and uses an isolated temporary workspace without
+submitting an AI request:
+
+```sh
+cargo test -p ovim --test shell_commands_test tui_terminal_handoff
+```
+
+It exercises interactive `:term`, quoted command pipelines, nonzero exits,
+`:!` acknowledgement, complete screen repaint, and chat dismissal followed by
+editing and saving. On failure it preserves the PTY transcript and workspace at
+the path printed by the test.
+
 ### Run Specific Test
 
 ```bash

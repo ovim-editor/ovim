@@ -119,8 +119,11 @@ the control and security boundary.
 The activity bar's Terminal action (also **View → Terminal**, **Cmd+Shift+T** on
 macOS, or **Ctrl+Shift+T** elsewhere) opens a persistent workspace shell.
 `TerminalPanel` owns xterm rendering and focus; the native `TerminalHost` owns the pseudoterminal, shell process, and
-session lifecycle. Hiding the panel retains the shell and scrollback, while
-closing the application tears down the session. The browser development preview
+session lifecycle. Switching context tabs retains the shell and scrollback.
+Closing the terminal or exiting its shell removes the panel and releases the
+session; closing another panel never automatically reveals it. `:term`,
+`:terminal`, and `:shell` use the same panel, with an optional command tail.
+Closing the application tears down the session. The browser development preview
 shows an unavailable state because it has no local PTY bridge.
 
 Exact soft-wrap/multi-split layout parity remains follow-up work; the GUI does

@@ -202,10 +202,19 @@ pub fn execute_and_show(editor: &mut Editor, line: &str) {
     }
 }
 
-/// Execute a command line for callers without a terminal (the headless API
-/// and the GUI): a queued `:!cmd` runs with captured output and a queued
-/// `:terminal` is refused.
+/// Execute a command line for callers without a terminal (the headless API).
+/// A queued `:!cmd` runs with captured output; `:terminal` is refused.
 pub fn execute_command_api(editor: &mut Editor, line: &str) -> CommandResult {
+    let result = execute_command_captured(editor, line);
+    if editor.take_pending_terminal_session().is_some() {
+        return err("Interactive terminal sessions require a GUI or TUI frontend");
+    }
+    result
+}
+
+/// Execute with captured `:!` output, leaving interactive terminal requests for
+/// the caller's frontend. Native GUI commands and headless API share this path.
+pub fn execute_command_captured(editor: &mut Editor, line: &str) -> CommandResult {
     // The GUI (Cmd-Z, Cmd-S) and the API run commands without leaving Insert
     // mode, like `<C-o>:` in Vim.
     let result = editor.with_insert_undo_break(|editor| execute_command(editor, line));
@@ -214,9 +223,6 @@ pub fn execute_command_api(editor: &mut Editor, line: &str) -> CommandResult {
             return result;
         }
         return shell::run_captured(editor, &shell.command);
-    }
-    if editor.take_pending_terminal_session().is_some() {
-        return err("Interactive terminal sessions require the TUI frontend");
     }
     result
 }

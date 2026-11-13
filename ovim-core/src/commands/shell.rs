@@ -3,8 +3,8 @@
 //!
 //! `:!cmd` and `:terminal` need the user's terminal, so the core only queues
 //! them ([`crate::tick::TerminalRequest`]) and the frontend decides: the TUI
-//! runs them, the GUI and a headless session decline, and the API entry
-//! point ([`super::execute_command_api`]) runs `:!cmd` with captured output.
+//! runs them, the GUI opens PTY sessions, and a headless session declines.
+//! The API entry point ([`super::execute_command_api`]) captures `:!cmd` output.
 //! Filters, `:r !` and `:w !` exchange text with the buffer and run here.
 
 use std::io::Write;

@@ -262,6 +262,7 @@ impl AiSubagentService {
     /// Built-in Lua profiles load after legacy `ai.toml`; without this refresh
     /// the service fingerprint and child catalog describe the pre-Lua config,
     /// which makes parent controls fail closed in every real editor startup.
+    #[cfg(any(feature = "lua", test))]
     pub(crate) fn reconfigure_if_idle(&mut self, config: &AiConfig) -> Result<(), String> {
         if self.ensure_compatible(config).is_ok() {
             return Ok(());

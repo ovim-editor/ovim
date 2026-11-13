@@ -102,6 +102,7 @@ impl ChatPreference {
         }
     }
 
+    #[cfg(feature = "lua")]
     pub fn reload(&mut self) {
         if let Some(path) = self.path.clone() {
             *self = Self::load(path);

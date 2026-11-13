@@ -23,7 +23,9 @@ mod terminal;
 use crate::cli::FileArg;
 use crate::color::Color;
 use crate::editor::{Editor, EditorServices, InputHandler};
-use crate::frontend::{compute_text_width, handle_viewport_resize, refresh_after_input, TickState};
+use crate::frontend::{
+    compute_text_width, handle_viewport_resize, refresh_after_input, TerminalRequest, TickState,
+};
 use crate::git::LineStatus;
 use crate::mode::Mode;
 use crate::syntax::{HighlightGroup, UiGroup};
@@ -1363,12 +1365,23 @@ pub struct GuiChatInputState {
 pub struct GuiBridge {
     requests: mpsc::UnboundedSender<GuiRequest>,
     updates: watch::Sender<Option<GuiSnapshot>>,
+    terminal_requests: watch::Sender<Option<GuiTerminalRequest>>,
+}
+
+/// A frontend-owned terminal launch. Kept separate from snapshots so rendering
+/// or reconnecting the snapshot stream never replays a process launch.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiTerminalRequest {
+    pub command: Option<String>,
 }
 
 impl GuiBridge {
     pub fn spawn(file: Option<FileArg>, resume: bool, services: EditorServices) -> Result<Self> {
         let (request_tx, request_rx) = mpsc::unbounded_channel();
         let (update_tx, _) = watch::channel(None);
+        let (terminal_tx, _) = watch::channel(None);
+        let terminal_requests = terminal_tx.clone();
         let (ready_tx, ready_rx) = std_mpsc::sync_channel(1);
         let editor_updates = update_tx.clone();
 
@@ -1389,6 +1402,7 @@ impl GuiBridge {
                     services,
                     request_rx,
                     editor_updates,
+                    terminal_tx,
                     ready_tx,
                 ));
             })
@@ -1398,6 +1412,7 @@ impl GuiBridge {
             Ok(Ok(())) => Ok(Self {
                 requests: request_tx,
                 updates: update_tx,
+                terminal_requests,
             }),
             Ok(Err(error)) => anyhow::bail!(error),
             Err(error) => anyhow::bail!("GUI editor initialization timed out: {error}"),
@@ -1410,6 +1425,10 @@ impl GuiBridge {
     /// retain the newest snapshot instead of building an unbounded queue.
     pub fn subscribe(&self) -> watch::Receiver<Option<GuiSnapshot>> {
         self.updates.subscribe()
+    }
+
+    pub fn subscribe_terminal_requests(&self) -> watch::Receiver<Option<GuiTerminalRequest>> {
+        self.terminal_requests.subscribe()
     }
 
     pub async fn snapshot(&self, columns: u16, rows: u16) -> Result<GuiSnapshot, String> {
@@ -1862,6 +1881,7 @@ async fn run_editor(
     services: EditorServices,
     mut requests: mpsc::UnboundedReceiver<GuiRequest>,
     updates: watch::Sender<Option<GuiSnapshot>>,
+    terminal_requests: watch::Sender<Option<GuiTerminalRequest>>,
     ready: std_mpsc::SyncSender<Result<(), String>>,
 ) {
     let mut editor = Editor::new().with_services(services);
@@ -1894,10 +1914,8 @@ async fn run_editor(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                if editor.tick(&mut tick_state).await.terminal_request.is_some() {
-                    // The GUI has its own PTY terminal panel; `:!`/`:terminal`
-                    // would need the terminal the GUI process was started from.
-                    editor.set_status_message("Use the Terminal icon or Cmd/Ctrl+Shift+T to run shell commands in the GUI".to_string());
+                if let Some(request) = editor.tick(&mut tick_state).await.terminal_request {
+                    dispatch_terminal_request(&mut editor, request, &terminal_requests);
                 }
                 update_diff_review_geometry(&mut editor);
                 publish_if_changed(
@@ -1935,6 +1953,28 @@ async fn run_editor(
     }
 
     editor.close_current_file_lsp().await;
+}
+
+fn dispatch_terminal_request(
+    editor: &mut Editor,
+    request: TerminalRequest,
+    terminal_requests: &watch::Sender<Option<GuiTerminalRequest>>,
+) {
+    match request {
+        TerminalRequest::Session(session) => {
+            if terminal_requests
+                .send(Some(GuiTerminalRequest {
+                    command: session.command,
+                }))
+                .is_err()
+            {
+                editor.set_status_message("Terminal frontend is not connected".to_string());
+            }
+        }
+        TerminalRequest::Shell(_) => editor.set_status_message(
+            "Use :term <command> to run shell commands in the GUI terminal".to_string(),
+        ),
+    }
 }
 
 fn publish_if_changed(
@@ -2294,7 +2334,7 @@ async fn handle_request(
             (reply, result)
         }
         GuiRequest::EditorCommand { command, reply } => {
-            let result = match InputHandler::execute_command_api(editor, &command) {
+            let result = match ovim_core::commands::execute_command_captured(editor, &command) {
                 ovim_core::CommandResult::Success(success) => {
                     if let Some(message) = success.message {
                         editor.set_status_message(message.into_owned());
@@ -6059,6 +6099,79 @@ mod tests {
         assert!(
             key_input("a b").into_core().is_err(),
             "text is still validated"
+        );
+    }
+
+    #[tokio::test]
+    async fn terminal_commands_reach_the_gui_from_keys_and_command_actions() {
+        for (typed, command) in [
+            (true, "term"),
+            (true, "term printf x | cat"),
+            (false, "terminal"),
+            (false, "shell printf x | cat"),
+        ] {
+            let mut editor = Editor::with_content("keep this buffer\n");
+            if typed {
+                for character in format!(":{command}").chars() {
+                    send_request(&mut editor, |reply| GuiRequest::Key {
+                        input: key_input(&character.to_string()),
+                        reply,
+                    })
+                    .await
+                    .unwrap();
+                }
+                send_request(&mut editor, |reply| GuiRequest::Key {
+                    input: key_input("Enter"),
+                    reply,
+                })
+                .await
+                .unwrap();
+            } else {
+                send_request(&mut editor, |reply| GuiRequest::EditorCommand {
+                    command: command.to_string(),
+                    reply,
+                })
+                .await
+                .unwrap();
+            }
+            let request = editor
+                .tick(&mut TickState::new())
+                .await
+                .terminal_request
+                .unwrap();
+            let (sender, mut receiver) = watch::channel(None);
+            dispatch_terminal_request(&mut editor, request, &sender);
+            receiver.changed().await.unwrap();
+            assert_eq!(
+                receiver
+                    .borrow_and_update()
+                    .as_ref()
+                    .unwrap()
+                    .command
+                    .as_deref(),
+                command.contains(' ').then_some("printf x | cat")
+            );
+            assert_eq!(editor.buffer().rope().to_string(), "keep this buffer\n");
+            assert!(editor
+                .tick(&mut TickState::new())
+                .await
+                .terminal_request
+                .is_none());
+        }
+    }
+
+    #[test]
+    fn terminal_request_reports_a_disconnected_frontend() {
+        let (sender, _) = watch::channel(None);
+        let mut editor = Editor::new();
+        dispatch_terminal_request(
+            &mut editor,
+            TerminalRequest::Session(ovim_core::editor::PendingTerminalSession { command: None }),
+            &sender,
+        );
+        assert_eq!(
+            editor.status_message(),
+            "Terminal frontend is not connected"
         );
     }
 

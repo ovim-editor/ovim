@@ -697,13 +697,13 @@ fn cases() -> Vec<Case> {
         case("2,3w !cat").is("2 lines written: b2\n  a3"),
         case("write !true").is("4 lines written"),
         case("terminal")
-            .fails("Interactive terminal sessions require the TUI frontend")
+            .fails("Interactive terminal sessions require a GUI or TUI frontend")
             .interactive(Out::Silent),
         case("term ls")
-            .fails("Interactive terminal sessions require the TUI frontend")
+            .fails("Interactive terminal sessions require a GUI or TUI frontend")
             .interactive(Out::Silent),
         case("shell")
-            .fails("Interactive terminal sessions require the TUI frontend")
+            .fails("Interactive terminal sessions require a GUI or TUI frontend")
             .interactive(Out::Silent),
         case("terminally").unknown(),
         // Used to be "Error reading file" reported as success.

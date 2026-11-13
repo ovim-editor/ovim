@@ -33,6 +33,14 @@ impl UI {
         Ok(Self { terminal, renderer })
     }
 
+    /// Restore the editor after a child used the terminal. Entering the
+    /// alternate screen invalidates Ratatui's cached cells even when the
+    /// editor state is unchanged, so the next frame must paint every cell.
+    pub fn resume(&mut self) -> Result<()> {
+        self.terminal.resume()?;
+        self.renderer.clear()
+    }
+
     /// Gets a reference to the terminal
     pub fn terminal(&self) -> &Terminal {
         &self.terminal

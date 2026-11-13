@@ -2,7 +2,8 @@
 
 use super::browser::BrowserHost;
 use super::{
-    GuiBridge, GuiChatInputState, GuiKeyInput, GuiMouseKind, GuiSnapshot, GuiVectorSource,
+    GuiBridge, GuiChatInputState, GuiKeyInput, GuiMouseKind, GuiSnapshot, GuiTerminalRequest,
+    GuiVectorSource,
 };
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
@@ -323,7 +324,9 @@ async fn gui_subscribe(
     columns: u16,
     rows: u16,
     on_event: Channel<GuiSnapshot>,
+    on_terminal_request: Channel<GuiTerminalRequest>,
 ) -> Result<(), String> {
+    let mut terminals = bridge.subscribe_terminal_requests();
     bridge.snapshot(columns, rows).await?;
     let mut updates = bridge.subscribe();
     if let Some(snapshot) = updates.borrow_and_update().clone() {
@@ -331,11 +334,20 @@ async fn gui_subscribe(
     }
 
     tauri::async_runtime::spawn(async move {
-        while updates.changed().await.is_ok() {
-            let update = updates.borrow_and_update().clone();
-            let Some(snapshot) = update else { continue };
-            if on_event.send(snapshot).is_err() {
-                break;
+        loop {
+            tokio::select! {
+                changed = updates.changed() => {
+                    if changed.is_err() { break; }
+                    let update = updates.borrow_and_update().clone();
+                    let Some(snapshot) = update else { continue };
+                    if on_event.send(snapshot).is_err() { break; }
+                }
+                changed = terminals.changed() => {
+                    if changed.is_err() { break; }
+                    let request = terminals.borrow_and_update().clone();
+                    let Some(request) = request else { continue };
+                    if on_terminal_request.send(request).is_err() { break; }
+                }
             }
         }
     });

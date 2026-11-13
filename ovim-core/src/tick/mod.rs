@@ -8,10 +8,10 @@
 //! fails when a public `poll_*` on the core is not.
 //!
 //! Frontends keep only what is theirs: rendering, input, their own timer
-//! and what to do with [`TickReport::terminal_request`] (only the TUI owns a
-//! real terminal). Deliberately frontend-only today: the TUI's terminal bell
-//! for new AI attention (`ai_chat_attention_generation`; the GUI and the
-//! headless API project the same generation into their snapshots) and the
+//! and what to do with [`TickReport::terminal_request`] (the TUI suspends the
+//! editor; the GUI opens its PTY panel). Deliberately frontend-only today:
+//! the TUI's terminal bell for new AI attention (`ai_chat_attention_generation`;
+//! the GUI and headless API project the same generation into snapshots) and the
 //! GUI's diff-review geometry.
 
 mod dap;
@@ -68,8 +68,9 @@ impl TerminalRequest {
 #[must_use = "a terminal request must be run or declined by the frontend"]
 pub struct TickReport {
     /// A queued `:!`/`:terminal` command, taken off the editor. The TUI runs
-    /// it with the real terminal; the GUI and headless frontends decline it
-    /// with a status message. At most one per tick, shell commands first.
+    /// it with the real terminal; the GUI opens interactive PTY sessions and
+    /// headless frontends decline them with a status message. At most one
+    /// per tick, shell commands first.
     pub terminal_request: Option<TerminalRequest>,
 }
 
@@ -131,6 +132,7 @@ impl Editor {
         tick_transient_ui(editor);
 
         // === Lua ===
+        #[cfg(feature = "lua")]
         let _ = editor.process_lua_commands();
 
         // === LSP installs ===

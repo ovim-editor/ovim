@@ -1162,7 +1162,7 @@ button:focus-visible {
 .side-dock:has(.resize-divider.dragging) {
     user-select: none;
 }
-.workbench.terminal-collapsed .side-dock {
+.workbench.context-collapsed .side-dock {
     display: none;
 }
 .walkthrough-open .side-dock {
@@ -1278,6 +1278,21 @@ button:focus-visible {
 .terminal-panel {
     grid-template-rows: auto minmax(0, 1fr) auto;
     background: var(--canvas);
+}
+.terminal-close {
+    display: grid;
+    place-items: center;
+    width: 24px;
+    height: 24px;
+    padding: 0;
+    border: 0;
+    border-radius: 4px;
+    background: transparent;
+    color: var(--text-secondary);
+}
+.terminal-close:hover {
+    background: var(--surface-2);
+    color: var(--text);
 }
 .terminal-surface {
     min-width: 0;

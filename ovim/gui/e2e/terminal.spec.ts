@@ -20,7 +20,7 @@ test("the activity bar and shortcut toggle the terminal", async ({
     });
 
     await page.keyboard.press(shortcut);
-    await expect(page.locator(".workbench")).toHaveClass(/terminal-collapsed/);
+    await expect(page.locator(".workbench")).toHaveClass(/context-collapsed/);
     await page.keyboard.press(shortcut);
     await expect(
         page.getByText("Terminal is available in the desktop app."),

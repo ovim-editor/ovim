@@ -481,3 +481,29 @@ fn test_edit_force_reload() {
     // Clean up
     std::fs::remove_file(temp_file).ok();
 }
+
+/// Run through the real crossterm event loop and a child shell, since editor
+/// unit tests cannot detect a stale physical screen or competing stdin readers.
+#[cfg(unix)]
+#[test]
+fn tui_terminal_handoff_repaints_and_chat_closes_back_to_source() {
+    let directory = tempfile::tempdir().unwrap();
+    let result = std::process::Command::new("python3")
+        .arg(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/helpers/terminal_lifecycle.py"
+        ))
+        .arg(env!("CARGO_BIN_EXE_ovim"))
+        .arg(directory.path())
+        .output()
+        .expect("the real TUI regression requires python3");
+    if !result.status.success() {
+        let evidence = directory.keep();
+        panic!(
+            "TUI lifecycle failed; evidence: {}\n{}\n{}",
+            evidence.display(),
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}

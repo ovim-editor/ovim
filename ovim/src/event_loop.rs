@@ -80,7 +80,7 @@ fn execute_terminal_session(ui: &mut UI, editor: &mut Editor, command: Option<&s
         .stderr(Stdio::inherit())
         .status();
 
-    if let Err(e) = ui.terminal_mut().resume() {
+    if let Err(e) = ui.resume() {
         #[allow(clippy::print_stderr)]
         {
             eprintln!("Failed to resume terminal: {e}");
@@ -246,7 +246,7 @@ fn execute_shell_command(ui: &mut UI, editor: &mut Editor, command: &str) {
     let _ = std::io::stdin().read_line(&mut String::new());
 
     // Restore the TUI
-    if let Err(e) = ui.terminal_mut().resume() {
+    if let Err(e) = ui.resume() {
         // If resume fails, the Drop impl will try to clean up
         #[allow(clippy::print_stderr)]
         {
@@ -340,17 +340,28 @@ fn api_session_info(editor: &Editor) -> SessionInfo {
 /// input faster than the loop consumes it would otherwise never let the tick
 /// branch run, and results would pile up undelivered. The input branch calls
 /// this too once a frame has elapsed, which makes the tick unstarvable.
-async fn run_tick_work(ui: &mut UI, editor: &mut Editor, tick_state: &mut TickState) {
+async fn run_tick_work(
+    ui: &mut UI,
+    editor: &mut Editor,
+    tick_state: &mut TickState,
+    event_stream: &mut Option<EventStream>,
+) {
     let tick_start = Instant::now();
     let report = editor.tick(tick_state).await;
     warn_if_slow("editor tick", tick_start);
-    match report.terminal_request {
-        Some(TerminalRequest::Shell(shell)) => execute_shell_command(ui, editor, &shell.command),
-        Some(TerminalRequest::Session(session)) => {
+    let Some(request) = report.terminal_request else {
+        return;
+    };
+    // A pending EventStream poll has a background reader. Stop it before
+    // handing stdin to a child (or the :! acknowledgement prompt).
+    drop(event_stream.take());
+    match request {
+        TerminalRequest::Shell(shell) => execute_shell_command(ui, editor, &shell.command),
+        TerminalRequest::Session(session) => {
             execute_terminal_session(ui, editor, session.command.as_deref())
         }
-        None => {}
     }
+    *event_stream = Some(EventStream::new());
 }
 
 /// TUI event loop (optionally with API).
@@ -364,7 +375,7 @@ pub async fn run_event_loop(
     let mut last_input_time: Option<Instant> = None;
     let mut tick_state = TickState::new();
 
-    let mut event_stream = EventStream::new();
+    let mut event_stream = Some(EventStream::new());
     let mut tick_interval = interval(Duration::from_millis(16));
     tick_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     // Reused across `GetRender` requests so identical-dimension polls
@@ -390,7 +401,7 @@ pub async fn run_event_loop(
             }
 
             // Terminal input (highest priority)
-            maybe_event = event_stream.next() => {
+            maybe_event = event_stream.as_mut().expect("TUI input is active between shell sessions").next() => {
                 if let Some(Ok(first_event)) = maybe_event {
                     last_input_time = Some(Instant::now());
 
@@ -434,7 +445,7 @@ pub async fn run_event_loop(
                     // but a bounded repaint of undelivered results still shows
                     // nothing: the drain happens here.
                     if last_tick.elapsed() >= tick_period {
-                        run_tick_work(ui, editor, &mut tick_state).await;
+                        run_tick_work(ui, editor, &mut tick_state, &mut event_stream).await;
                         last_tick = Instant::now();
                     }
 
@@ -471,7 +482,7 @@ pub async fn run_event_loop(
 
             // Tick timer — background work (LSP, picker, animations)
             _ = tick_interval.tick() => {
-                run_tick_work(ui, editor, &mut tick_state).await;
+                run_tick_work(ui, editor, &mut tick_state, &mut event_stream).await;
                 last_tick = Instant::now();
             }
         }
