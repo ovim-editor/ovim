@@ -5,9 +5,8 @@ impl Editor {
     /// Returns true when inlay hints need refreshing and the debounce
     /// window has elapsed. Delegates to `TrackedSlot::needs_refresh()`.
     pub fn inlay_hints_refresh_needed(&self) -> bool {
-        // Off-switch: when `:set noinlay_hints` is active (the default while
-        // OV-00257 / OV-00258 are open) we never request hints from the LSP
-        // and never trigger a refresh.
+        // Off-switch: with `:set noinlay_hints` we never request hints from
+        // the LSP and never trigger a refresh.
         if !self.options.inlay_hints {
             return false;
         }
@@ -63,6 +62,7 @@ impl Editor {
         let buffer_version = self.buffer().version();
         let start_line = 0;
         let end_line = self.buffer().line_count();
+        let range_end = self.document_end_position();
         let lsp_sent_version = self.lsp.state.current_file_lsp_sent_version;
 
         let file_path_for_task = file_path.clone();
@@ -74,10 +74,7 @@ impl Editor {
                     line: start_line as u32,
                     character: 0,
                 },
-                end: Position {
-                    line: end_line as u32,
-                    character: 0,
-                },
+                end: range_end,
             };
 
             let result = lsp
@@ -101,6 +98,23 @@ impl Editor {
 
         // Slot::fire() cancels any previously in-flight inlay hint request.
         self.lsp.slots.inlay_hints.fire(task, rx);
+    }
+
+    /// The LSP position of the end of the buffer: the end of its last line.
+    ///
+    /// "Line `line_count`, character 0" is one line past the end whenever the
+    /// text has no trailing newline. A server that validates positions then
+    /// rejects the request, and the file silently gets no hints.
+    fn document_end_position(&self) -> Position {
+        let last_line = self.buffer().line_count().saturating_sub(1);
+        let character = self
+            .buffer()
+            .line_text(last_line)
+            .map_or(0, |text| text.encode_utf16().count());
+        Position {
+            line: last_line as u32,
+            character: character as u32,
+        }
     }
 
     /// Mark the inlay-hints slot stale so the next event-loop tick re-requests
@@ -154,8 +168,6 @@ mod tests {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
-        // OV-00259: opt in to inlay hints for this test.
-        editor.options.inlay_hints = true;
 
         // No invalidation yet — not stale.
         assert!(!editor.lsp.slots.inlay_hints.is_stale());
@@ -219,24 +231,54 @@ mod tests {
     }
 
     // -------------------------------------------------------------------
-    // OV-00259: inlay hints opt-in.
+    // The `inlay_hints` option.
     // -------------------------------------------------------------------
 
     #[test]
-    fn refresh_gated_off_by_default() {
+    fn refresh_requested_by_default() {
         let mut editor = Editor::with_content("class Test {}\n");
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
 
-        // Default is `inlay_hints = false`. Even with a stale slot we must
-        // not request hints — that's the whole point of OV-00259.
+        editor.lsp.slots.inlay_hints.invalidate();
+        assert!(editor.options.inlay_hints, "inlay hints are on by default");
+        assert!(editor.inlay_hints_refresh_needed());
+    }
+
+    #[test]
+    fn refresh_gated_off_when_option_is_off() {
+        let mut editor = Editor::with_content("class Test {}\n");
+        editor.enable_lsp();
+        editor.set_file_path("/tmp/Test.java".to_string());
+        editor.options.inlay_hints = false;
+
+        // Even with a stale slot we must not request hints.
         editor.lsp.slots.inlay_hints.invalidate();
         assert!(editor.lsp.slots.inlay_hints.is_stale());
-        assert!(!editor.options.inlay_hints);
         assert!(
             !editor.inlay_hints_refresh_needed(),
-            "inlay hints disabled by default — must not request"
+            "inlay hints switched off — must not request"
         );
+    }
+
+    #[test]
+    fn requested_range_ends_inside_the_document() {
+        // (text, last line, UTF-16 length of the last line)
+        for (text, line, character) in [
+            ("class Test {}\n", 0, 13),
+            ("class Test {}", 0, 13),
+            ("a\nbc", 1, 2),
+            ("a\nbc\n", 1, 2),
+            ("a\n\u{1F600}b", 1, 3),
+            ("", 0, 0),
+        ] {
+            let editor = Editor::with_content(text);
+            assert_eq!(
+                editor.document_end_position(),
+                Position { line, character },
+                "{text:?}"
+            );
+        }
     }
 
     #[test]
@@ -304,9 +346,9 @@ mod tests {
         editor.enable_lsp();
         editor.set_file_path("/tmp/Test.java".to_string());
 
-        // Slot is clean; option starts off.
+        // Slot is clean; the option was switched off.
+        editor.options.inlay_hints = false;
         assert!(!editor.lsp.slots.inlay_hints.is_stale());
-        assert!(!editor.options.inlay_hints);
 
         // Toggle-on path: option flip + invalidate. After this, the next
         // event-loop tick sees `inlay_hints_refresh_needed() == true` and

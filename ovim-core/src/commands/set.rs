@@ -861,7 +861,7 @@ mod tests {
     #[test]
     fn set_inlay_hints_toggles_option_and_marks_slot_stale() {
         let mut ed = make_editor();
-        assert!(!ed.options.inlay_hints, "default is off (OV-00259)");
+        ed.options.inlay_hints = false;
         let result = handle_set_command(&mut ed, "inlay_hints");
         assert!(matches!(result, CommandResult::Success(_)));
         assert!(ed.options.inlay_hints);
@@ -892,15 +892,19 @@ mod tests {
     }
 
     #[test]
-    fn query_inlay_hints_default_is_no() {
+    fn query_inlay_hints_reports_the_current_value() {
         let mut ed = make_editor();
-        let result = handle_set_command(&mut ed, "inlay_hints?");
-        match result {
-            CommandResult::Success(s) => {
-                assert_eq!(s.message.as_deref(), Some("  noinlay_hints"));
-            }
+        let query = |ed: &mut Editor| match handle_set_command(ed, "inlay_hints?") {
+            CommandResult::Success(s) => s.message,
             _ => panic!("expected success"),
-        }
+        };
+        assert_eq!(
+            query(&mut ed).as_deref(),
+            Some("  inlay_hints"),
+            "on by default"
+        );
+        ed.options.inlay_hints = false;
+        assert_eq!(query(&mut ed).as_deref(), Some("  noinlay_hints"));
     }
 
     #[test]
@@ -941,7 +945,7 @@ mod tests {
     #[test]
     fn toggle_inlay_hints_runs_side_effects() {
         let mut ed = make_editor();
-        assert!(!ed.options.inlay_hints, "default off (OV-00259)");
+        ed.options.inlay_hints = false;
         // off -> on must mark the slot stale (same as `:set inlay_hints`).
         let result = handle_set_command(&mut ed, "inlay_hints!");
         assert!(matches!(result, CommandResult::Success(_)));

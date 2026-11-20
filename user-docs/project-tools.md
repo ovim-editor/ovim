@@ -121,6 +121,22 @@ placeholder.
 :set autocompletedelay=80  " milliseconds to wait for a pause in typing (default 40)
 ```
 
+## Inlay hints
+
+Hints the language server offers for the open file are drawn inline in a muted
+colour: parameter names at call sites (`label(name: "tea", quantity: 3)`) and
+the inferred type of `var`/`let`-style declarations. They are not part of the
+text, so motions, yanks and searches skip them. What is hinted is the server's
+choice: rust-analyzer adds types and chaining hints, Hyperion adds Java and
+Kotlin parameter names and `var` types.
+
+```vim
+:set noinlay_hints         " hide them (:set inlay_hints brings them back)
+:set inlay_hints!          " toggle
+```
+
+To keep them off, put `vim.opt.inlay_hints = false` in `init.lua`.
+
 ## Signature help and folding
 
 Typing `(` or `,` in a call shows the signature above the line with the active
