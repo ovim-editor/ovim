@@ -955,8 +955,12 @@ mod tests {
     #[tokio::test]
     async fn replacing_a_running_executable_does_not_truncate_its_inode() {
         let directory = tempfile::tempdir().expect("temporary directory");
-        let binary = directory.path().join("server");
         let sleep = which::which("sleep").expect("sleep fixture executable");
+        // Keep the name: where coreutils is one multi-call binary (uutils on
+        // Ubuntu 26.04), a copy named anything else does not know it is
+        // `sleep` and exits at once, so the "old process" is gone before the
+        // check, or not, depending on timing.
+        let binary = directory.path().join("sleep");
         std::fs::copy(sleep, &binary).expect("copy fixture executable");
         let mut running = Command::new(&binary)
             .arg("60")
