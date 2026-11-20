@@ -478,24 +478,14 @@ impl Editor {
                 // `awEmbedParam` and `s:boolean` injected into a `// SSR`
                 // comment).
                 //
-                // Why drop instead of project:
-                // - Option (2): tag decorations with `source_version =
-                //   result.buffer_version` and project forward via
-                //   `edit_log.edits_since(...)`. Requires either rope
-                //   snapshots at request boundaries or backward edit-log
-                //   replay to derive historical line→char mappings. Larger
-                //   lift; not justified while inlay hints are off-by-default
-                //   per OV-00259.
-                // - Option (3): project the LSP `Position`s through the
-                //   edit log before converting to char offsets. Same
-                //   complexity; same gating.
-                //
-                // Dropping is correct (zero mis-aligned placements) and
-                // cheap; the trailing `invalidate_inlay_hint_debounce()`
-                // ensures the next tick fires a fresh request against the
-                // current buffer. When OV-00257 is closed and inlay hints
-                // are re-enabled by default, revisit (2)/(3) as a quality
-                // bump.
+                // Why drop instead of project: placing these hints would
+                // need the line→char mapping of the buffer the server saw
+                // (rope snapshots at request boundaries, or replaying the edit
+                // log backwards). Dropping is always correct, and the hints
+                // already on screen stay put meanwhile: their decorations are
+                // projected through the edit log. The trailing
+                // `invalidate_inlay_hint_debounce()` fires a fresh request
+                // against the current buffer on the next tick.
                 if result.buffer_version != self.buffer().version() {
                     self.invalidate_inlay_hint_debounce();
                     return false;

@@ -320,9 +320,8 @@ pub struct EditorOptions {
     pub makeprg: String,
     /// LSP auto-install behavior: Prompt (default), Auto, or Off
     pub lsp_auto_install: AutoInstallMode,
-    /// Request and render LSP inlay hints (default: false).
-    /// Off by default while OV-00257 (wrap math) and OV-00258 (stale
-    /// placement) are open. Toggle on with `:set inlay_hints` to opt in.
+    /// Request and render LSP inlay hints (default: true).
+    /// `:set noinlay_hints` or `vim.opt.inlay_hints = false` turns them off.
     pub inlay_hints: bool,
     /// Open the completion menu automatically while typing in insert mode
     /// (identifier characters and server trigger characters). Ctrl-Space
@@ -374,7 +373,7 @@ impl Default for EditorOptions {
             margin_padding: 0,
             makeprg: "cargo build".to_string(),
             lsp_auto_install: AutoInstallMode::default(),
-            inlay_hints: false,
+            inlay_hints: true,
             autocomplete: true,
             autocomplete_min_chars: 2,
             autocomplete_delay_ms: 40,
