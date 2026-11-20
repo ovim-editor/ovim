@@ -32,6 +32,14 @@ impl Session {
     }
 
     async fn with_capabilities(commands: &[&str], extra: Value) -> Self {
+        Self::with_scripts(commands, extra, &[]).await
+    }
+
+    /// [`Self::with_capabilities`] with server script files (name, content)
+    /// in place before the server starts. The editor may send a request as
+    /// soon as the server is ready, which is before this returns; an answer
+    /// scripted afterwards can lose that race.
+    async fn with_scripts(commands: &[&str], extra: Value, scripts: &[(&str, Value)]) -> Self {
         let dir = tempfile::tempdir().unwrap();
         let root = dir.path().canonicalize().unwrap();
         let script = root.join("server.py");
@@ -75,6 +83,9 @@ impl Session {
             )
             .unwrap();
         std::fs::write(root.join("Main.controlled"), "class Main {}\n").unwrap();
+        for (name, content) in scripts {
+            std::fs::write(root.join(name), content.to_string()).unwrap();
+        }
         test.set_file_path(root.join("Main.controlled").display().to_string());
         test.editor.request_lsp_init();
         let mut session = Self {
@@ -1521,16 +1532,17 @@ fn lens_events(s: &Session) -> usize {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn code_lenses_are_shown_refreshed_after_edits_and_on_server_request() {
-    let mut s = Session::with_capabilities(
+    // The lenses are requested as soon as the server is ready, so the answer
+    // has to be scripted before the session starts.
+    let mut s = Session::with_scripts(
         &resolve_commands(),
         json!({"codeLensProvider": {"resolveProvider": false}}),
+        &[(
+            "response-textDocument_codeLens.json",
+            json!({"result": [run_lens(0)]}),
+        )],
     )
     .await;
-    std::fs::write(
-        s.root.join("response-textDocument_codeLens.json"),
-        json!({"result": [run_lens(0)]}).to_string(),
-    )
-    .unwrap();
 
     s.until("the lens to appear", |s| {
         !s.test.editor.code_lenses().is_empty()
