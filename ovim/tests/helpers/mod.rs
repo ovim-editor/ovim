@@ -412,9 +412,20 @@ impl EditorTest {
         self
     }
 
-    /// Set file path without loading
+    /// Attach the buffer to `path` without loading its content.
+    ///
+    /// If the file exists, the buffer also takes its modification time, as if
+    /// it had been read from that file. A buffer attached to an existing file
+    /// it never read is refused on `:w` (E13), which is right for a user and
+    /// not what a test that prepares the file and the buffer separately means.
     pub fn set_file_path(&mut self, path: String) -> &mut Self {
+        let mtime = std::fs::metadata(&path)
+            .and_then(|meta| meta.modified())
+            .ok();
         self.editor.set_file_path(path);
+        if mtime.is_some() {
+            self.editor.buffer_mut().set_file_mtime(mtime);
+        }
         self
     }
 }
