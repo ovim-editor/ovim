@@ -355,13 +355,13 @@ fn test_di_quote_dot_repeat() {
 fn test_da_quote_undo_redo() {
     let mut test = EditorTest::new("say \"hello\" here");
     test.keys("f\"da\"");
-    assert_eq!(test.buffer_content(), "say  here\n");
+    assert_eq!(test.buffer_content(), "say here\n");
 
     test.keys("u");
     assert_eq!(test.buffer_content(), "say \"hello\" here\n");
 
     test.keys("<C-r>");
-    assert_eq!(test.buffer_content(), "say  here\n");
+    assert_eq!(test.buffer_content(), "say here\n");
 }
 
 #[test]

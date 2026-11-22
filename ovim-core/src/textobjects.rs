@@ -413,12 +413,25 @@ impl TextObjects {
         let end_col = end_col?;
 
         if include_quotes {
-            // "around" - include the quotes
+            // "around": the quotes and the blanks after them, or, when there
+            // are none, the blanks before them (`:help a"`).
+            let blank = |index: usize| matches!(chars.get(index), Some(' ' | '\t'));
+            let mut from = start_col;
+            let mut to = end_col + 1;
+            if blank(to) {
+                while blank(to) {
+                    to += 1;
+                }
+            } else {
+                while from > 0 && blank(from - 1) {
+                    from -= 1;
+                }
+            }
             Some(TextObjectRange {
                 start_line: line_idx,
-                start_col: CharCol(start_col),
+                start_col: CharCol(from),
                 end_line: line_idx,
-                end_col: CharCol(end_col + 1),
+                end_col: CharCol(to),
             })
         } else {
             // "inner" - exclude the quotes

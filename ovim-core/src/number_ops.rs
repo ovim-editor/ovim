@@ -131,92 +131,10 @@ pub fn find_number_at_or_after(line: &str, col: CharCol) -> Option<(CharCol, Cha
         return Some((CharCol(start_col), CharCol(end_col), number_str));
     }
 
-    // Not on a digit — search forward only (matches Vim behavior)
-    let mut search_col = col;
-
-    while search_col < chars.len() {
-        let ch = chars[search_col];
-        if ch.is_ascii_digit()
-            || ch == '-'
-            || ch == '+'
-            || (search_col + 1 < chars.len()
-                && ch == '0'
-                && (chars[search_col + 1] == 'x'
-                    || chars[search_col + 1] == 'X'
-                    || chars[search_col + 1] == 'b'
-                    || chars[search_col + 1] == 'B'
-                    || chars[search_col + 1] == 'o'
-                    || chars[search_col + 1] == 'O'))
-        {
-            break;
-        }
-        search_col += 1;
-    }
-
-    if search_col >= chars.len() {
-        return None;
-    }
-
-    let mut start_col = search_col;
-
-    // Check if we're on a sign, and if so, verify there's a digit after it
-    if chars[start_col] == '-' || chars[start_col] == '+' {
-        if start_col + 1 < chars.len() && chars[start_col + 1].is_ascii_digit() {
-            // Keep the sign as part of the number
-        } else {
-            start_col += 1;
-            if start_col >= chars.len() {
-                return None;
-            }
-        }
-    }
-    let mut end_col = start_col;
-
-    // Check for hex (0x), binary (0b), or octal (0o) prefix
-    if chars[end_col] == '0' && end_col + 1 < chars.len() {
-        let next = chars[end_col + 1];
-        if next == 'x' || next == 'X' || next == 'b' || next == 'B' || next == 'o' || next == 'O' {
-            end_col += 2;
-
-            let is_hex = next == 'x' || next == 'X';
-            let is_binary = next == 'b' || next == 'B';
-
-            while end_col < chars.len() {
-                let ch = chars[end_col];
-                let valid_digit = (is_hex && ch.is_ascii_hexdigit())
-                    || (is_binary && (ch == '0' || ch == '1'))
-                    || (!is_hex && !is_binary && ch.is_ascii_digit());
-                if valid_digit {
-                    end_col += 1;
-                } else {
-                    break;
-                }
-            }
-
-            if end_col > start_col + 2 {
-                let number_str: String = chars[start_col..end_col].iter().collect();
-                return Some((CharCol(start_col), CharCol(end_col), number_str));
-            }
-        }
-    }
-
-    // Regular decimal number (may have sign)
-    end_col = start_col;
-
-    if end_col < chars.len() && (chars[end_col] == '-' || chars[end_col] == '+') {
-        end_col += 1;
-    }
-
-    while end_col < chars.len() && chars[end_col].is_ascii_digit() {
-        end_col += 1;
-    }
-
-    if end_col > start_col {
-        let number_str: String = chars[start_col..end_col].iter().collect();
-        Some((CharCol(start_col), CharCol(end_col), number_str))
-    } else {
-        None
-    }
+    // Not on a number: take the first one after the cursor. Starting again
+    // on its first digit finds its sign and its `0x` / `0b` / `0o` prefix.
+    let first_digit = (col..chars.len()).find(|&index| chars[index].is_ascii_digit())?;
+    find_number_at_or_after(line, CharCol(first_digit))
 }
 
 /// Parses a number string, detecting the base from prefix.

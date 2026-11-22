@@ -41,6 +41,106 @@ fn image_protocol_preference(value: Option<&str>) -> ImageProtocolPreference {
     }
 }
 
+/// How long a terminal gets to answer the probe below. A terminal that
+/// takes longer gets halfblock images instead of its graphics protocol.
+/// Keys typed in this window at startup are read by the probe and lost, so
+/// it is short: a local terminal answers in a few milliseconds.
+#[cfg(not(test))]
+const QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(250);
+
+/// Whether the terminal replies to a device status report (`CSI 5 n`).
+///
+/// `Picker::from_query_stdio` sends its capability queries and then reads
+/// stdin on a thread until the reply to a closing `CSI 5 n` arrives. A
+/// terminal that answers nothing (a detached tmux session, a bare pty)
+/// leaves that thread blocked in `read`, where it swallows the first keys
+/// the user types. Asking first, with a bounded `poll`, keeps the library
+/// away from a terminal that will not answer.
+#[cfg(all(unix, not(test)))]
+fn terminal_answers_queries(timeout: std::time::Duration) -> bool {
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode, is_raw_mode_enabled};
+    use std::io::Write;
+
+    // The reply must arrive unbuffered and unechoed.
+    let was_raw = is_raw_mode_enabled().unwrap_or(false);
+    if !was_raw && enable_raw_mode().is_err() {
+        return false;
+    }
+    let answered = (|| {
+        let mut stdout = std::io::stdout();
+        stdout.write_all(status_report_query().as_bytes()).ok()?;
+        stdout.flush().ok()?;
+        let deadline = std::time::Instant::now() + timeout;
+        let mut reply = Vec::new();
+        loop {
+            let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+            let mut stdin = libc::pollfd {
+                fd: libc::STDIN_FILENO,
+                events: libc::POLLIN,
+                revents: 0,
+            };
+            // SAFETY: `stdin` is one valid pollfd for the duration of the call.
+            let ready = unsafe { libc::poll(&mut stdin, 1, remaining.as_millis() as libc::c_int) };
+            if ready <= 0 {
+                return None;
+            }
+            let mut bytes = [0u8; 64];
+            // SAFETY: `bytes` is writable for `bytes.len()` bytes.
+            let read =
+                unsafe { libc::read(libc::STDIN_FILENO, bytes.as_mut_ptr().cast(), bytes.len()) };
+            if read <= 0 {
+                return None;
+            }
+            reply.extend_from_slice(&bytes[..read as usize]);
+            if is_status_report(&reply) {
+                return Some(());
+            }
+        }
+    })()
+    .is_some();
+    if !was_raw {
+        let _ = disable_raw_mode();
+    }
+    answered
+}
+
+/// The query, addressed as the library addresses its own: inside tmux they
+/// go to the outer terminal through a passthrough sequence, which only an
+/// attached client answers. tmux itself would answer a bare `CSI 5 n` even
+/// with nobody attached.
+#[cfg(all(unix, not(test)))]
+fn status_report_query() -> &'static str {
+    let var_is = |name: &str, test: fn(&str) -> bool| std::env::var(name).is_ok_and(|v| test(&v));
+    let in_tmux = var_is("TERM", |term| term.starts_with("tmux"))
+        || var_is("TERM_PROGRAM", |program| program == "tmux");
+    if !in_tmux {
+        return "\x1b[5n";
+    }
+    // As the library does before it queries.
+    let _ = std::process::Command::new("tmux")
+        .args(["set", "-p", "allow-passthrough", "on"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status();
+    "\x1bPtmux;\x1b\x1b[5n\x1b\\"
+}
+
+/// Other platforms have no bounded read here; they keep the library's probe.
+#[cfg(all(not(unix), not(test)))]
+fn terminal_answers_queries(_timeout: std::time::Duration) -> bool {
+    true
+}
+
+/// Whether `bytes` contain a device status report: `CSI 0 n` (ready) or
+/// `CSI 3 n` (malfunction).
+#[cfg_attr(not(any(unix, test)), allow(dead_code))]
+fn is_status_report(bytes: &[u8]) -> bool {
+    bytes
+        .windows(4)
+        .any(|window| matches!(window, [0x1b, b'[', b'0' | b'3', b'n']))
+}
+
 pub struct TerminalImageRenderer {
     picker: Option<Picker>,
     fallback_picker: Option<Picker>,
@@ -71,7 +171,11 @@ impl TerminalImageRenderer {
             // Prefer the advertised native graphics protocol. Halfblocks are a
             // terminal-independent fallback, so unsupported terminals still
             // get stable thumbnails instead of empty image boxes.
-            let mut picker = Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks());
+            let mut picker = if terminal_answers_queries(QUERY_TIMEOUT) {
+                Picker::from_query_stdio().unwrap_or_else(|_| Picker::halfblocks())
+            } else {
+                Picker::halfblocks()
+            };
             match image_protocol_preference(std::env::var("OVIM_IMAGE_PROTOCOL").ok().as_deref()) {
                 ImageProtocolPreference::Auto => {
                     // Ghostty's Kitty virtual placements can flicker under a
@@ -218,6 +322,18 @@ fn core_rect(area: ovim_core::Rect) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_status_report_is_found_among_other_replies() {
+        assert!(is_status_report(b"\x1b[0n"));
+        assert!(is_status_report(b"\x1b[3n"));
+        // Split across reads, or behind something else the terminal sent.
+        assert!(is_status_report(b"\x1b[?62;4c\x1b[0n"));
+        assert!(!is_status_report(b"\x1b[0"));
+        // A key the user typed, a cursor position report.
+        assert!(!is_status_report(b"ihello"));
+        assert!(!is_status_report(b"\x1b[12;40R"));
+    }
 
     fn renderer_for(protocol_type: ProtocolType) -> TerminalImageRenderer {
         let mut picker = Picker::halfblocks();

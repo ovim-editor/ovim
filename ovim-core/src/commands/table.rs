@@ -156,6 +156,16 @@ pub(crate) static COMMANDS: &[ExCommand] = &[
     ex(&["m[ove]"], edit::move_lines)
         .range(R::Line)
         .args(A::Text),
+    ex(&["pu[t]"], edit::put)
+        .bang()
+        .range(R::LineOrZero)
+        .args(A::Text),
+    ex(&[">"], |e, x| edit::shift(e, x, true))
+        .range(R::Line)
+        .args(A::Text),
+    ex(&["<"], |e, x| edit::shift(e, x, false))
+        .range(R::Line)
+        .args(A::Text),
     ex(&["p[rint]"], edit::print).range(R::Line),
     ex(&["u[ndo]"], edit::undo),
     ex(&["red[o]"], edit::redo),
@@ -888,7 +898,7 @@ mod tests {
             for spec in command
                 .names
                 .iter()
-                .filter(|spec| !matches!(**spec, "" | "!"))
+                .filter(|spec| !matches!(**spec, "" | "!" | ">" | "<"))
             {
                 assert!(names.contains(&full_name(spec)), "{spec} missing");
             }

@@ -788,10 +788,7 @@ pub fn paste_text_after(
             let block_lines: Vec<&str> = text.split('\n').collect();
             let paste_col = col + 1; // Paste after cursor
 
-            let (last_paste_info, edits) = editor.buffer_mut().record(|buf| {
-                let mut last_line = line_idx;
-                let mut last_text_len: usize = 0;
-
+            let ((), edits) = editor.buffer_mut().record(|buf| {
                 for (i, block_line) in block_lines.iter().enumerate() {
                     let target_line = line_idx + i;
                     if target_line >= buf.line_count() {
@@ -806,8 +803,6 @@ pub fn paste_text_after(
                             CharCol(last_len),
                             &format!("\n{}{}", padding, block_line),
                         );
-                        last_line = buf.line_count().saturating_sub(1);
-                        last_text_len = block_line.chars().count();
                         continue;
                     }
 
@@ -829,26 +824,15 @@ pub fn paste_text_after(
                             );
                             buf.insert_text_at(target_line, char_col, block_line);
                         }
-
-                        last_line = target_line;
-                        last_text_len = block_line.chars().count();
                     }
                 }
-
-                (last_line, last_text_len)
             });
 
-            let (last_pasted_line, last_text_char_count) = last_paste_info;
-            // Position cursor on last character of pasted text
-            let new_col = if last_text_char_count > 0 {
-                paste_col + last_text_char_count - 1
-            } else {
-                paste_col
-            };
+            // vim: the cursor goes to the top left corner of the block.
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(last_pasted_line, GraphemeCol(new_col));
+                .set_position(line_idx, GraphemeCol(paste_col));
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
@@ -1116,10 +1100,7 @@ pub fn paste_text_before(
             let block_lines: Vec<&str> = text.split('\n').collect();
             let paste_col = col;
 
-            let (last_paste_info, edits) = editor.buffer_mut().record(|buf| {
-                let mut last_line = line_idx;
-                let mut last_text_len: usize = 0;
-
+            let ((), edits) = editor.buffer_mut().record(|buf| {
                 for (i, block_line) in block_lines.iter().enumerate() {
                     let target_line = line_idx + i;
                     if target_line >= buf.line_count() {
@@ -1134,8 +1115,6 @@ pub fn paste_text_before(
                             CharCol(last_len),
                             &format!("\n{}{}", padding, block_line),
                         );
-                        last_line = buf.line_count().saturating_sub(1);
-                        last_text_len = block_line.chars().count();
                         continue;
                     }
 
@@ -1155,26 +1134,15 @@ pub fn paste_text_before(
                             );
                             buf.insert_text_at(target_line, char_col, block_line);
                         }
-
-                        last_line = target_line;
-                        last_text_len = block_line.chars().count();
                     }
                 }
-
-                (last_line, last_text_len)
             });
 
-            let (last_pasted_line, last_text_char_count) = last_paste_info;
-            // Position cursor on last character of pasted text
-            let new_col = if last_text_char_count > 0 {
-                paste_col + last_text_char_count - 1
-            } else {
-                paste_col
-            };
+            // vim: the cursor goes to the top left corner of the block.
             editor
                 .buffer_mut()
                 .cursor_mut()
-                .set_position(last_pasted_line, GraphemeCol(new_col));
+                .set_position(line_idx, GraphemeCol(paste_col));
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
@@ -1965,8 +1933,31 @@ pub enum PromptControl {
     Home,
     /// `CTRL-E`: cursor to the end.
     End,
+    /// `CTRL-R`: the next key names what to insert (see
+    /// [`take_prompt_register_text`]).
+    InsertRegister,
     /// Any other Ctrl chord: never inserted as a literal letter.
     Ignore,
+}
+
+/// After `CTRL-R` in a prompt: the text the next key stands for, as in vim's
+/// command line. `CTRL-W` is the word under the cursor, `CTRL-A` the WORD,
+/// any other character a register. Only the first line of a register is
+/// taken, since a prompt holds one line. `None` when `CTRL-R` is not pending.
+pub fn take_prompt_register_text(editor: &mut Editor, key: &crate::KeyEvent) -> Option<String> {
+    use crate::{KeyCode, Modifiers};
+    if !std::mem::take(&mut editor.editing.pending_register_insert) {
+        return None;
+    }
+    let control = key.modifiers.contains(Modifiers::CONTROL);
+    let text = match key.code {
+        KeyCode::Char('w') if control => super::normal::word_under_cursor(editor, false),
+        KeyCode::Char('a') if control => super::normal::word_under_cursor(editor, true),
+        KeyCode::Char(register) if !control => Some(editor.registers().get(Some(register))),
+        _ => None,
+    };
+    let first_line = text.unwrap_or_default();
+    Some(first_line.lines().next().unwrap_or_default().to_string())
 }
 
 /// Classifies `key` when it is a Ctrl+character chord; `None` for every other
@@ -1986,6 +1977,7 @@ pub fn prompt_control(key: &crate::KeyEvent) -> Option<PromptControl> {
         'w' => PromptControl::DeleteWord,
         'b' => PromptControl::Home,
         'e' => PromptControl::End,
+        'r' => PromptControl::InsertRegister,
         _ => PromptControl::Ignore,
     })
 }

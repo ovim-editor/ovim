@@ -456,7 +456,7 @@ fn search_word(editor: &mut Editor, forward: bool) {
 
 /// The keyword under the cursor, or the first one after it on the line, with
 /// the grapheme column it starts at.
-fn word_at_or_after_cursor(editor: &Editor) -> Option<(String, usize)> {
+pub(super) fn word_at_or_after_cursor(editor: &Editor) -> Option<(String, usize)> {
     let cursor = editor.buffer().cursor();
     let index = editor.buffer().line_index(cursor.line());
     let is_word = |grapheme: usize| {

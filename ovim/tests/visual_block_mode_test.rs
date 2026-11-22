@@ -51,9 +51,8 @@ fn test_ctrl_v_yank_paste_block() {
         test.buffer_content(),
         "hello world\ntest line\nfoo barhel\n       tes\n"
     );
-    // Cursor on last char of the final pasted row: "tes" padded to col 7,
-    // last char at col 9
-    test.assert_cursor(3, 9);
+    // nvim: the cursor goes to the top left corner of the pasted block.
+    test.assert_cursor(2, 7);
 }
 
 #[test]
@@ -354,7 +353,7 @@ fn test_ctrl_v_yank_uppercase() {
     // Second block line ("WOR") is appended as a new padded line, like vim
     // (OV-00291).
     assert_eq!(test.buffer_content(), "HELLO\nWORLD\nTHELEST\n WOR\n");
-    test.assert_cursor(3, 3); // Cursor on last char of final pasted row
+    test.assert_cursor(2, 1); // nvim: top left corner of the pasted block
 }
 
 #[test]
