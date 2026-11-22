@@ -27,8 +27,39 @@ use tokio::process::Command as TokioCommand;
 static INSTALL_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 mod github;
+mod update;
 
-use github::install_via_github;
+use github::{install_via_github, GithubInstall};
+pub(crate) use update::check_for_update;
+pub use update::{installed_release, update_server, InstalledRelease, UpdateResult};
+
+/// The GitHub install `method` describes, if it is one. `command` names the
+/// binary when the method does not.
+fn github_install<'a>(
+    language_name: &'a str,
+    command: &'a str,
+    method: &'a InstallMethod,
+) -> Option<GithubInstall<'a>> {
+    let InstallMethod::Github {
+        repo,
+        asset_pattern,
+        install_path,
+        binary_name,
+        strip_components,
+    } = method
+    else {
+        return None;
+    };
+    Some(GithubInstall {
+        language_name,
+        repo,
+        asset_pattern,
+        install_path,
+        binary_name: binary_name.as_deref(),
+        strip_components: *strip_components,
+        default_binary_name: command,
+    })
+}
 
 /// Result of an auto-install attempt
 #[derive(Debug)]
@@ -73,23 +104,10 @@ pub async fn attempt_auto_install(
             bin,
             features,
         } => install_via_cargo(language_name, package, bin.as_deref(), features).await,
-        InstallMethod::Github {
-            repo,
-            asset_pattern,
-            install_path,
-            binary_name,
-            strip_components,
-        } => {
-            install_via_github(
-                language_name,
-                repo,
-                asset_pattern,
-                install_path,
-                binary_name.as_deref(),
-                *strip_components,
-                package_name,
-            )
-            .await
+        InstallMethod::Github { .. } => {
+            let install = github_install(language_name, package_name, &config.method)
+                .expect("the method is a GitHub install");
+            install_via_github(&install).await
         }
         InstallMethod::Shell { command } => {
             install_via_shell(language_name, package_name, command).await

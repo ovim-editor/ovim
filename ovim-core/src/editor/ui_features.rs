@@ -522,12 +522,7 @@ impl Editor {
         let running = self.get_running_lsp_servers();
         self.lsp.ui.lsp_manager_panel = Some(super::LspManagerPanel::new(running));
         self.mode = Mode::LspManager;
-        // Ensure install channel exists
-        if self.lsp.ui.install_progress_tx.is_none() {
-            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-            self.lsp.ui.install_progress_tx = Some(tx);
-            self.lsp.ui.install_progress_rx = Some(rx);
-        }
+        self.ensure_install_channel();
     }
 
     pub fn close_lsp_manager(&mut self) {
@@ -535,34 +530,50 @@ impl Editor {
         self.mode = Mode::Normal;
     }
 
+    fn ensure_install_channel(&mut self) {
+        if self.lsp.ui.install_progress_tx.is_none() {
+            let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+            self.lsp.ui.install_progress_tx = Some(tx);
+            self.lsp.ui.install_progress_rx = Some(rx);
+        }
+    }
+
     /// Trigger LSP server install for a language.
     /// Enqueues a pending install request to be picked up by the event loop.
     pub fn request_lsp_install(&mut self, language_id: &str) {
+        if let Err(message) = self.queue_lsp_install(language_id, false) {
+            self.set_status_message(message);
+        }
+    }
+
+    /// Bring the server ovim installed for a language up to date. The outcome
+    /// arrives on the status bar.
+    pub fn request_lsp_update(&mut self, language_id: &str) -> Result<String, String> {
+        self.queue_lsp_install(language_id, true)
+    }
+
+    /// Queue an install or an update; returns the server command on success.
+    fn queue_lsp_install(&mut self, language_id: &str, update: bool) -> Result<String, String> {
         use super::lsp_manager_panel::{InstallStatus, PendingInstallRequest};
         use crate::language_config::LanguageRegistry;
 
         let Some(registry) = LanguageRegistry::try_get() else {
-            self.set_status_message("Language registry not initialized".to_string());
-            return;
+            return Err("Language registry not initialized".to_string());
         };
 
         let Some(lang) = registry.get_by_id(language_id) else {
-            self.set_status_message(format!("Unknown language: {language_id}"));
-            return;
+            return Err(format!("Unknown language: {language_id}"));
         };
 
         let Some(lsp) = &lang.lsp else {
-            self.set_status_message(format!("No LSP configured for {}", lang.name));
-            return;
+            return Err(format!("No LSP configured for {}", lang.name));
         };
 
         let Some(auto_install) = &lsp.auto_install else {
-            if let Some(hint) = &lsp.install_hint {
-                self.set_status_message(hint.clone());
-            } else {
-                self.set_status_message(format!("No install method for {}", lang.name));
-            }
-            return;
+            return Err(match &lsp.install_hint {
+                Some(hint) => hint.clone(),
+                None => format!("No install method for {}", lang.name),
+            });
         };
 
         // Set installing status in panel
@@ -574,12 +585,15 @@ impl Editor {
         }
 
         // Queue the request for the event loop to spawn
+        self.ensure_install_channel();
         self.lsp.ui.pending_installs.push(PendingInstallRequest {
             language_id: language_id.to_string(),
             language_name: lang.name.clone(),
             auto_install_config: auto_install.clone(),
             lsp_command: lsp.command.clone(),
+            update,
         });
+        Ok(lsp.command.clone())
     }
 
     /// Trigger LSP server uninstall for a language
@@ -636,7 +650,9 @@ impl Editor {
         };
 
         let mut updated = false;
+        let mut notes = Vec::new();
         while let Ok(progress) = rx.try_recv() {
+            notes.extend(progress.note.clone());
             if let Some(panel) = &mut self.lsp.ui.lsp_manager_panel {
                 panel
                     .active_installs
@@ -649,6 +665,9 @@ impl Editor {
                 }
             }
             updated = true;
+        }
+        if let Some(note) = notes.pop() {
+            self.set_lsp_status(note);
         }
         updated
     }

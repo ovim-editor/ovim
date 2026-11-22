@@ -61,6 +61,14 @@ impl InitRequest {
             .await;
     }
 
+    /// A way to report status for this file after the startup task is over.
+    pub fn status_reporter(&self) -> StatusReporter {
+        StatusReporter {
+            file_path: self.file_path.clone(),
+            updates: self.updates.clone(),
+        }
+    }
+
     pub async fn prompt(&self, prompt: PendingLspInstall) {
         let _ = self
             .updates
@@ -86,6 +94,21 @@ impl InitRequest {
                     primary,
                 },
             ))
+            .await;
+    }
+}
+
+/// Status lines for one file from work that outlives its startup task.
+pub(super) struct StatusReporter {
+    file_path: String,
+    updates: mpsc::Sender<(String, Update)>,
+}
+
+impl StatusReporter {
+    pub async fn status(&self, message: String) {
+        let _ = self
+            .updates
+            .send((self.file_path.clone(), Update::Status(message)))
             .await;
     }
 }

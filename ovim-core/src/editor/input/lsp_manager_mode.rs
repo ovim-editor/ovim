@@ -150,14 +150,15 @@ fn handle_uninstall(editor: &mut Editor) {
 }
 
 fn handle_update(editor: &mut Editor) {
-    // Update = reinstall
     let lang_id = editor
         .lsp_manager_panel()
         .and_then(|p| p.selected_entry())
         .map(|e| e.language_id.clone());
 
     if let Some(lang_id) = lang_id {
-        editor.request_lsp_install(&lang_id);
+        if let Err(message) = editor.request_lsp_update(&lang_id) {
+            editor.set_status_message(message);
+        }
     }
 }
 

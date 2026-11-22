@@ -221,6 +221,7 @@ async fn initialize_configured_lsp(request: &InitRequest, installed: Option<&Pat
                         .ready(&language_id, server_id, server_command.clone(), true)
                         .await;
                     initialize_companions(request, &language_id, abs_path).await;
+                    announce_server_update(request, &server_command);
                     break;
                 }
                 Err(e) => {
@@ -340,6 +341,43 @@ static HEADLESS_MODE: AtomicBool = AtomicBool::new(false);
 
 pub fn set_headless_mode(headless: bool) {
     HEADLESS_MODE.store(headless, Ordering::Relaxed);
+}
+
+/// Once the server is up, see whether the copy ovim installed is behind its
+/// latest release. This runs on its own task: a slow download must not keep
+/// the file's startup task alive, which would block starting its server again.
+fn announce_server_update(request: &InitRequest, server_command: &str) {
+    let Some(lsp_config) = request.language.lsp() else {
+        return;
+    };
+    let Some(config) = lsp_config.auto_install.clone() else {
+        return;
+    };
+    // The rules for installing a missing server also govern replacing one.
+    if !auto_install_on_missing_enabled(&config)
+        || !is_auto_install_allowed_for_current_mode(&config)
+    {
+        return;
+    }
+    let language_name = request.language.config.name.clone();
+    let command = lsp_config.command.clone();
+    let server_command = server_command.to_string();
+    let install_mode = request.install_mode;
+    let reporter = request.status_reporter();
+    tokio::spawn(async move {
+        let message = auto_install::check_for_update(
+            &language_name,
+            &command,
+            &server_command,
+            &config,
+            install_mode,
+        )
+        .await;
+        if let Some(message) = message {
+            crate::lsp_info!("LSP", "{}", message);
+            reporter.status(message).await;
+        }
+    });
 }
 
 fn auto_install_on_missing_enabled(config: &AutoInstallConfig) -> bool {
@@ -872,25 +910,37 @@ pub(crate) fn spawn_pending_installs(editor: &mut Editor) {
         let config = request.auto_install_config.clone();
         let command = request.lsp_command.clone();
 
+        let update = request.update;
+
         tokio::spawn(async move {
+            let verb = if update { "Updating" } else { "Installing" };
             let _ = tx.send(InstallProgress {
                 language_id: lang_id.clone(),
-                status: InstallStatus::Installing(format!("Installing {lang_name}...")),
+                status: InstallStatus::Installing(format!("{verb} {lang_name}...")),
+                note: None,
             });
 
-            let result = auto_install::attempt_auto_install(&lang_name, &command, &config).await;
-
-            let status = match result {
-                auto_install::InstallResult::Success(_) => InstallStatus::Success,
-                auto_install::InstallResult::Failed(msg) => InstallStatus::Failed(msg),
-                auto_install::InstallResult::PrerequisitesMissing(msg) => {
-                    InstallStatus::Failed(msg)
+            let (status, note) = if update {
+                let result = auto_install::update_server(&lang_name, &command, &config).await;
+                let note = Some(format!("LSP: {}", result.summary(&command)));
+                match result {
+                    auto_install::UpdateResult::Failed(msg) => (InstallStatus::Failed(msg), note),
+                    _ => (InstallStatus::Success, note),
+                }
+            } else {
+                match auto_install::attempt_auto_install(&lang_name, &command, &config).await {
+                    auto_install::InstallResult::Success(_) => (InstallStatus::Success, None),
+                    auto_install::InstallResult::Failed(msg)
+                    | auto_install::InstallResult::PrerequisitesMissing(msg) => {
+                        (InstallStatus::Failed(msg), None)
+                    }
                 }
             };
 
             let _ = tx.send(InstallProgress {
                 language_id: lang_id,
                 status,
+                note,
             });
         });
     }

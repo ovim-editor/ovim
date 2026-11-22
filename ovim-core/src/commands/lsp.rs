@@ -1,6 +1,6 @@
 //! Language server commands: `:LspInfo`, `:LspStatus`, `:LspLog`,
-//! `:LspRestart`, `:LspExec`, `:LspReloadProject`, `:LspRename`,
-//! `:LspInstall` / `:LspManager` and `:format`.
+//! `:LspRestart`, `:LspUpdate`, `:LspExec`, `:LspReloadProject`,
+//! `:LspRename`, `:LspInstall` / `:LspManager` and `:format`.
 
 use super::Ex;
 use crate::command_result::{err, ok, ok_silent, CommandResult};
@@ -191,6 +191,28 @@ pub(super) fn restart(editor: &mut Editor, ex: &Ex) -> CommandResult {
             ok_silent()
         }
         Err(message) => err(message),
+    }
+}
+
+/// `:LspUpdate [language]`: install the latest release of the server ovim
+/// installed for a language (the current file's by default). The outcome
+/// arrives on the status bar; the running server keeps going until
+/// `:LspRestart`.
+pub(super) fn update(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let language_id = if ex.args.is_empty() {
+        let Some(path) = editor.buffer().file_path().map(str::to_string) else {
+            return err("LspUpdate: this buffer has no file; name a language");
+        };
+        match editor.language_catalog().detect(&path) {
+            Some(language) => language.config.id.clone(),
+            None => return err("LspUpdate: no language for this file; name one"),
+        }
+    } else {
+        ex.args.to_ascii_lowercase()
+    };
+    match editor.request_lsp_update(&language_id) {
+        Ok(command) => ok(format!("Checking for a newer {command}...")),
+        Err(message) => err(format!("LspUpdate: {message}")),
     }
 }
 

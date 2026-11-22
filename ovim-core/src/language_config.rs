@@ -690,7 +690,19 @@ pub(crate) fn find_configured_command(
             return Some(path.to_string_lossy().into_owned());
         }
     }
-    if let Some(AutoInstallConfig {
+    if let Some(path) = installed_github_binary(command, auto_install) {
+        return Some(path.to_string_lossy().into_owned());
+    }
+    find_in_well_known_locations(command)
+}
+
+/// The executable that a GitHub install of `command` put on disk, if it is
+/// there.
+pub(crate) fn installed_github_binary(
+    command: &str,
+    auto_install: Option<&AutoInstallConfig>,
+) -> Option<PathBuf> {
+    let AutoInstallConfig {
         method:
             InstallMethod::Github {
                 install_path,
@@ -698,22 +710,20 @@ pub(crate) fn find_configured_command(
                 ..
             },
         ..
-    }) = auto_install
-    {
-        let install_path = PathBuf::from(shellexpand::tilde(install_path).as_ref());
-        // Uncompressed downloads use install_path itself; archives and
-        // gzip binaries put binary_name inside that directory.
-        let binary_path = binary_name
-            .as_ref()
-            .map(|name| install_path.join(name))
-            .unwrap_or_else(|| install_path.join(command));
-        for candidate in [install_path, binary_path] {
-            if let Ok(path) = which::which(candidate) {
-                return Some(path.to_string_lossy().into_owned());
-            }
-        }
-    }
-    find_in_well_known_locations(command)
+    } = auto_install?
+    else {
+        return None;
+    };
+    let install_path = PathBuf::from(shellexpand::tilde(install_path).as_ref());
+    // Uncompressed downloads use install_path itself; archives and
+    // gzip binaries put binary_name inside that directory.
+    let binary_path = binary_name
+        .as_ref()
+        .map(|name| install_path.join(name))
+        .unwrap_or_else(|| install_path.join(command));
+    [install_path, binary_path]
+        .into_iter()
+        .find_map(|candidate| which::which(candidate).ok())
 }
 
 /// Check well-known package manager install directories for a binary.

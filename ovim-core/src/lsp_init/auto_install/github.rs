@@ -4,140 +4,201 @@ use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-/// Install via GitHub release (download binary or archive).
-pub(super) async fn install_via_github(
-    language_name: &str,
-    repo: &str,
-    asset_pattern: &str,
-    install_path: &str,
-    binary_name: Option<&str>,
-    strip_components: usize,
-    default_binary_name: &str,
-) -> InstallResult {
-    #[derive(Debug, Deserialize)]
-    struct GitHubRelease {
-        assets: Vec<GitHubAsset>,
+/// One server's GitHub install, as its language configures it.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct GithubInstall<'a> {
+    pub language_name: &'a str,
+    pub repo: &'a str,
+    pub asset_pattern: &'a str,
+    pub install_path: &'a str,
+    pub binary_name: Option<&'a str>,
+    pub strip_components: usize,
+    pub default_binary_name: &'a str,
+}
+
+impl GithubInstall<'_> {
+    /// Where the install lands, with `~` expanded.
+    pub fn target(&self) -> PathBuf {
+        expand_install_path(self.install_path)
+    }
+}
+
+/// A published release: its tag, when it was published, and its files.
+#[derive(Debug)]
+pub(super) struct Release {
+    pub tag: String,
+    pub published_at: Option<chrono::DateTime<chrono::Utc>>,
+    assets: Vec<Asset>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Asset {
+    name: String,
+    browser_download_url: String,
+}
+
+/// How long GitHub gets to answer a metadata request, to accept a connection,
+/// and to send the next piece of a download. A download has no overall limit:
+/// an archive can be large and the link slow, but it must keep moving.
+const RESPONSE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(20);
+
+/// The GitHub REST API, or a stand-in for it in tests.
+pub(super) struct GithubClient {
+    http: reqwest::Client,
+    api_base: String,
+}
+
+impl GithubClient {
+    pub fn new() -> Result<Self, String> {
+        Self::at("https://api.github.com")
     }
 
-    #[derive(Debug, Deserialize)]
-    struct GitHubAsset {
-        name: String,
-        browser_download_url: String,
+    pub fn at(api_base: &str) -> Result<Self, String> {
+        let http = reqwest::Client::builder()
+            .user_agent("ovim-auto-install")
+            .connect_timeout(RESPONSE_TIMEOUT)
+            .read_timeout(RESPONSE_TIMEOUT)
+            .build()
+            .map_err(|e| format!("Failed to initialize HTTP client: {e}"))?;
+        Ok(Self {
+            http,
+            api_base: api_base.trim_end_matches('/').to_string(),
+        })
     }
 
-    if repo.split('/').count() != 2 {
-        return InstallResult::Failed(format!(
-            "Invalid GitHub repo '{repo}'. Expected format: owner/repo"
-        ));
-    }
-
-    let release_url = format!("https://api.github.com/repos/{repo}/releases/latest");
-    let client = match reqwest::Client::builder()
-        .user_agent("ovim-auto-install")
-        .build()
-    {
-        Ok(client) => client,
-        Err(e) => {
-            return InstallResult::Failed(format!("Failed to initialize HTTP client: {e}"));
+    /// The release GitHub marks as latest for `repo` (never a draft or a
+    /// prerelease).
+    pub async fn latest_release(&self, repo: &str) -> Result<Release, String> {
+        #[derive(Deserialize)]
+        struct Wire {
+            tag_name: String,
+            #[serde(default)]
+            published_at: Option<String>,
+            assets: Vec<Asset>,
         }
-    };
 
-    let release_res = match client
-        .get(&release_url)
-        .header("Accept", "application/vnd.github+json")
-        .send()
-        .await
-    {
-        Ok(res) => res,
-        Err(e) => {
-            return InstallResult::Failed(format!(
-                "Failed to query GitHub releases for {repo}: {e}"
+        if repo.split('/').count() != 2 {
+            return Err(format!(
+                "Invalid GitHub repo '{repo}'. Expected format: owner/repo"
             ));
         }
-    };
 
-    if !release_res.status().is_success() {
-        return InstallResult::Failed(format!(
-            "GitHub API request failed for {repo}: HTTP {}",
-            release_res.status()
-        ));
+        let url = format!("{}/repos/{repo}/releases/latest", self.api_base);
+        let response = self
+            .http
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .timeout(RESPONSE_TIMEOUT)
+            .send()
+            .await
+            .map_err(|e| format!("Failed to query GitHub releases for {repo}: {e}"))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "GitHub API request failed for {repo}: HTTP {}",
+                response.status()
+            ));
+        }
+        let wire = response
+            .json::<Wire>()
+            .await
+            .map_err(|e| format!("Failed to parse GitHub release metadata: {e}"))?;
+        Ok(Release {
+            tag: wire.tag_name,
+            published_at: wire
+                .published_at
+                .as_deref()
+                .and_then(|at| chrono::DateTime::parse_from_rfc3339(at).ok())
+                .map(|at| at.with_timezone(&chrono::Utc)),
+            assets: wire.assets,
+        })
     }
 
-    let release = match release_res.json::<GitHubRelease>().await {
-        Ok(release) => release,
-        Err(e) => {
-            return InstallResult::Failed(format!("Failed to parse GitHub release metadata: {e}"));
+    async fn download(&self, asset: &Asset) -> Result<bytes::Bytes, String> {
+        let response = self
+            .http
+            .get(&asset.browser_download_url)
+            .header("Accept", "application/octet-stream")
+            .send()
+            .await
+            .map_err(|e| format!("Failed to download GitHub asset '{}': {e}", asset.name))?;
+        if !response.status().is_success() {
+            return Err(format!(
+                "GitHub asset download failed for '{}': HTTP {}",
+                asset.name,
+                response.status()
+            ));
         }
-    };
+        response
+            .bytes()
+            .await
+            .map_err(|e| format!("Failed to read downloaded bytes for '{}': {e}", asset.name))
+    }
+}
 
-    let asset = select_asset(
+/// Install the latest GitHub release (download binary or archive).
+pub(super) async fn install_via_github(install: &GithubInstall<'_>) -> InstallResult {
+    let client = match GithubClient::new() {
+        Ok(client) => client,
+        Err(error) => return InstallResult::Failed(error),
+    };
+    match client.latest_release(install.repo).await {
+        Ok(release) => install_release(&client, install, &release).await,
+        Err(error) => InstallResult::Failed(error),
+    }
+}
+
+/// Download `release`'s file for this platform, install it, and record which
+/// release is now on disk.
+pub(super) async fn install_release(
+    client: &GithubClient,
+    install: &GithubInstall<'_>,
+    release: &Release,
+) -> InstallResult {
+    let Some(asset) = select_asset(
         &release.assets,
         |asset| &asset.name,
-        asset_pattern,
+        install.asset_pattern,
         std::env::consts::OS,
         std::env::consts::ARCH,
-    );
-
-    let Some(asset) = asset else {
+    ) else {
         return InstallResult::Failed(format!(
-            "No release asset matched pattern '{asset_pattern}' (expanded for {}/{}) in {repo}",
+            "No release asset matched pattern '{}' (expanded for {}/{}) in {}",
+            install.asset_pattern,
             std::env::consts::OS,
             std::env::consts::ARCH,
+            install.repo,
         ));
     };
 
     crate::lsp_info!(
         "AutoInstall",
-        "Installing {} via GitHub release: {}/{}",
-        language_name,
-        repo,
+        "Installing {} via GitHub release {}: {}/{}",
+        install.language_name,
+        release.tag,
+        install.repo,
         asset.name
     );
 
-    let download_res = match client
-        .get(&asset.browser_download_url)
-        .header("Accept", "application/octet-stream")
-        .send()
-        .await
-    {
-        Ok(res) => res,
-        Err(e) => {
-            return InstallResult::Failed(format!(
-                "Failed to download GitHub asset '{}': {e}",
-                asset.name
-            ));
-        }
-    };
-
-    if !download_res.status().is_success() {
-        return InstallResult::Failed(format!(
-            "GitHub asset download failed for '{}': HTTP {}",
-            asset.name,
-            download_res.status()
-        ));
-    }
-
-    let bytes = match download_res.bytes().await {
+    let bytes = match client.download(asset).await {
         Ok(bytes) => bytes,
-        Err(e) => {
-            return InstallResult::Failed(format!(
-                "Failed to read downloaded bytes for '{}': {e}",
-                asset.name
-            ));
-        }
+        Err(error) => return InstallResult::Failed(error),
     };
 
+    let target = install.target();
     match install_downloaded_asset(
         &bytes,
         &asset.name,
-        &expand_install_path(install_path),
-        binary_name,
-        strip_components,
-        default_binary_name,
+        &target,
+        install.binary_name,
+        install.strip_components,
+        install.default_binary_name,
     )
     .await
     {
-        Ok(path) => InstallResult::Success(path),
+        Ok(path) => {
+            super::update::record_install(&target, install.repo, &release.tag);
+            InstallResult::Success(path)
+        }
         Err(error) => InstallResult::Failed(format!(
             "Failed to install GitHub asset '{}': {error}",
             asset.name
@@ -1041,15 +1102,15 @@ mod tests {
     #[ignore = "downloads the latest Rust Analyzer release from GitHub"]
     async fn installs_rust_analyzer_release() {
         let temp_dir = tempfile::tempdir().expect("temporary directory");
-        let result = install_via_github(
-            "Rust",
-            "rust-lang/rust-analyzer",
-            "rust-analyzer-{arch}-*{os}*.{ext}",
-            temp_dir.path().to_str().expect("UTF-8 temporary path"),
-            Some("rust-analyzer"),
-            0,
-            "rust-analyzer",
-        )
+        let result = install_via_github(&GithubInstall {
+            language_name: "Rust",
+            repo: "rust-lang/rust-analyzer",
+            asset_pattern: "rust-analyzer-{arch}-*{os}*.{ext}",
+            install_path: temp_dir.path().to_str().expect("UTF-8 temporary path"),
+            binary_name: Some("rust-analyzer"),
+            strip_components: 0,
+            default_binary_name: "rust-analyzer",
+        })
         .await;
         let InstallResult::Success(binary) = result else {
             panic!("Rust Analyzer install failed: {result:?}");

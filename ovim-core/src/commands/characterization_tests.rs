@@ -743,6 +743,8 @@ fn cases() -> Vec<Case> {
         // ---- LSP ----
         case("LspRestart").fails("LSP is not enabled"),
         case("LspRestart rust").fails("LSP is not enabled"),
+        case("LspUpdate").fails("LspUpdate: this buffer has no file; name a language"),
+        case("LspUpdate klingon").fails("LspUpdate: Unknown language: klingon"),
         case("LspExec").fails("Usage: LspExec <command> [json arguments...]"),
         case("LspExec foo {bad").err(Starts("LspExec: arguments must be JSON values")),
         case("LspRename x").is("Renaming to 'x'..."),
