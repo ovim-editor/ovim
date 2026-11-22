@@ -136,8 +136,7 @@ impl Motions {
             let first = boundary_at_or_above(buffer, first.saturating_sub(1));
             let target = stops_from(buffer, first, |stop| stop.0 >= cursor)
                 .into_iter()
-                .filter(|stop| stop.1 != StopKind::FirstEmptyLine && stop.0 < cursor)
-                .next_back()
+                .rfind(|stop| stop.1 != StopKind::FirstEmptyLine && stop.0 < cursor)
                 .map_or((0, 0), |stop| stop.0);
             buffer.set_cursor_char_col(target.0, CharCol(target.1));
         }
