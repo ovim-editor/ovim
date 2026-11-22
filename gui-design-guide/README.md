@@ -40,8 +40,6 @@ The result should be dense without being tiny, technical without being brittle, 
 - [Screen specifications](06-screen-specifications.md) defines the expected complete state of every major GUI surface.
 - [Icon source and exports](icons/README.md) explains how to review and regenerate the 26-icon reference set.
 
-The build sequence and file-level work are in [gui-design-plan](../gui-design-plan/README.md).
-
 ## Durable design rules
 
 **The Code Is the Light Rule.** Syntax, selection, cursor, and the user’s current action receive the strongest contrast. Chrome uses fewer colors and lower contrast, but never drops below accessible text thresholds.
