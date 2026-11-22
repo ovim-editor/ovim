@@ -27,6 +27,43 @@ use crate::editor::input_state::{CharMotion, InputState, TextObjectPrefix};
 /// Convert the half-open character range into inclusive grapheme endpoints.
 /// Subtract in rope space so an end at column zero selects the preceding
 /// newline, and a multi-codepoint final grapheme stays intact.
+/// The selection as a range when it runs forward over more than one
+/// character: a text object then extends it (`:help v_iw`).
+fn selection_to_extend(editor: &Editor) -> Option<TextObjectRange> {
+    let (start_line, start_col) = editor.visual_start()?;
+    let buffer = editor.buffer();
+    let cursor = (buffer.cursor().line(), buffer.cursor().col().0);
+    if (start_line, start_col) >= cursor || editor.mode() == Mode::VisualBlock {
+        return None;
+    }
+    let char_col = |line: usize, grapheme: usize| {
+        buffer
+            .line_index(line)
+            .grapheme_to_char(GraphemeCol(grapheme))
+    };
+    if editor.mode() == Mode::VisualLine {
+        // Whole lines: the next object starts on the line below.
+        let below = cursor.0 + 1;
+        let (end_line, end_col) = if below < buffer.line_count() {
+            (below, 0)
+        } else {
+            (cursor.0, buffer.line_len(cursor.0))
+        };
+        return Some(TextObjectRange {
+            start_line,
+            start_col: CharCol::ZERO,
+            end_line,
+            end_col: CharCol(end_col),
+        });
+    }
+    Some(TextObjectRange {
+        start_line,
+        start_col: char_col(start_line, start_col),
+        end_line: cursor.0,
+        end_col: CharCol(char_col(cursor.0, cursor.1).0 + 1),
+    })
+}
+
 fn apply_text_object(editor: &mut Editor, range: TextObjectRange, linewise: bool) {
     let rope = editor.buffer().rope();
     let start_offset = rope.line_to_char(range.start_line) + range.start_col.0;
@@ -251,7 +288,20 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
             }
             ('i' | 'a', key) if key != KeyCode::Esc => {
                 if let Some(object) = super::text_objects::from_key(editor, key, pending == 'i') {
-                    if let Some(range) = object.resolve(editor.buffer()) {
+                    let count = editor.effective_count();
+                    // With more than one character selected the object is
+                    // added after the selection instead of replacing it.
+                    let range = match selection_to_extend(editor) {
+                        Some(selected) => object
+                            .resolve_after(editor.buffer_mut(), selected, count)
+                            .map(|added| TextObjectRange {
+                                end_line: added.end_line,
+                                end_col: added.end_col,
+                                ..selected
+                            }),
+                        None => object.resolve_counted(editor.buffer_mut(), count),
+                    };
+                    if let Some(range) = range {
                         let linewise = matches!(object, TextObjectType::Paragraph { .. });
                         apply_text_object(editor, range, linewise);
                     }

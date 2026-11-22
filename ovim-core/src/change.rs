@@ -266,6 +266,30 @@ impl TextObjectType {
         }
     }
 
+    /// The next `count` objects after `selected`, for the objects that follow
+    /// one another (words, paragraphs, sentences): what repeating the object
+    /// in Visual mode adds to the selection (`vipip`, `vawaw`). The cursor is
+    /// left where it was.
+    pub(crate) fn resolve_after(
+        &self,
+        buffer: &mut Buffer,
+        selected: TextObjectRange,
+        count: usize,
+    ) -> Option<TextObjectRange> {
+        if !matches!(
+            self,
+            Self::Word { .. } | Self::Paragraph { .. } | Self::Sentence { .. }
+        ) {
+            return None;
+        }
+        let saved = *buffer.cursor();
+        let range = Self::move_past(buffer, selected)
+            .then(|| self.resolve_counted(buffer, count))
+            .flatten();
+        buffer.cursor_mut().set_position(saved.line(), saved.col());
+        range
+    }
+
     /// Puts the cursor on the first character after `range` (the start of the next
     /// line when the range ends at the end of its line, or is linewise). `false` at the
     /// buffer end.

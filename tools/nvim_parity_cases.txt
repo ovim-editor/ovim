@@ -144,3 +144,17 @@ F	fSvas<Esc>
 F	fSdas.
 B	5jdas
 B	6j$das
+#
+# visual_objects_extend_the_selection
+# In Visual mode a count, or the object again, extends the selection.
+A	wv2awd
+A	viwiwd
+A	wvawawawd
+A	v3iwd
+B	vipipd
+B	vapapd
+B	vipipipd
+B	v2apd
+F	fSvasasd
+F	fSvisisd
+A	vjawd

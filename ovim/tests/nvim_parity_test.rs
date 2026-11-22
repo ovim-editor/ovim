@@ -188,3 +188,21 @@ fn sentences() {
         (B, "6j$das", "fn main() {\n    let x = foo(bar, \"baz qux\");\n    if x { y(); }\n}\n\nlast paragraph here.\nSecond sentence.  Third one?\n", (6, 27)),
     ]);
 }
+
+#[test]
+fn visual_objects_extend_the_selection() {
+    assert_matches_nvim(&[
+        // In Visual mode a count, or the object again, extends the selection.
+        (A, "wv2awd", "one four five\nsecond (a, b) line\nthird\n", (0, 4)),
+        (A, "viwiwd", "two three four five\nsecond (a, b) line\nthird\n", (0, 0)),
+        (A, "wvawawawd", "one five\nsecond (a, b) line\nthird\n", (0, 4)),
+        (A, "v3iwd", " three four five\nsecond (a, b) line\nthird\n", (0, 0)),
+        (B, "vipipd", "last paragraph here.\nSecond sentence.  Third one? Yes.\n", (0, 0)),
+        (B, "vapapd", "\n", (0, 0)),
+        (B, "vipipipd", "\n", (0, 0)),
+        (B, "v2apd", "\n", (0, 0)),
+        (F, "fSvasasd", "First one. yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "fSvisisd", "First one. Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (A, "vjawd", "(a, b) line\nthird\n", (0, 0)),
+    ]);
+}
