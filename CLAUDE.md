@@ -141,7 +141,7 @@ ovim lsp check test.sql --verbose    # Check language detection
 ovim lsp languages                   # List all languages
 ```
 
-**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [notes/TESTING_VIM_SEMANTICS.md](notes/TESTING_VIM_SEMANTICS.md).
+**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [docs/testing-vim-semantics.md](docs/testing-vim-semantics.md).
 
 ## Language Support
 
@@ -211,10 +211,7 @@ curl http://127.0.0.1:PORT/v1/health | jq '.'
 
 ## Documentation
 
-- **notes/**: Internal design docs, implementation status, architecture decisions
-- **code-docs/**: Codebase structure documentation
 - **user-docs/**: User-facing documentation (language support, MCP, etc.)
-
-## User Instructions
-
-Check `PRIORITIES.md` for current priorities. Only check off tasks when done and verified.
+- **docs/**: Contributor documentation: `frontend-api.md`, `testing-vim-semantics.md`, `adr/`, release notes in `releases/`, dated reports in `engineering/`
+- **gui-design-guide/**: Desktop app design system and the icon source the GUI build reads
+- **ISSUE_TRACKER.md**: Open issues only. Delete a row in the change that closes it

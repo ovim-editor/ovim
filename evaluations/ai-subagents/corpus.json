@@ -218,7 +218,7 @@
       "category": "multi_perspective_review",
       "title": "Review tool schema-policy drift",
       "prompt": "Review the AI tool system for ways schema, provider exposure, approval policy, dispatch, and result formatting can drift. Recommend a smallest coherent boundary, but do not refactor it.",
-      "relevant_paths": ["ovim-core/src/ai/tools", "ovim-core/src/editor/ai_chat_tools.rs", "ovim-core/src/editor/ai_tool_execution.rs", "requested-changes.md"],
+      "relevant_paths": ["ovim-core/src/ai/tools", "ovim-core/src/editor/ai_chat_tools.rs", "ovim-core/src/editor/ai_tool_execution.rs", "docs/engineering/ai-harness-requests.md"],
       "success_criteria": ["Finds concrete duplicated tool knowledge", "Explains an observable failure mode for drift", "Proposes a bounded direction consistent with existing registry patterns"],
       "parallelizable": true,
       "negative_control": false,

@@ -2,7 +2,7 @@
 //! mouse sequences to a real terminal nvim over tmux, on
 //! `foo bar baz / hello world  x / last line`. Positions below are 0-based
 //! (line, grapheme column); nvim's 1-based `getpos('v')`/`getpos('.')` are
-//! quoted per test. See notes/TESTING_VIM_SEMANTICS.md.
+//! quoted per test. See docs/testing-vim-semantics.md.
 
 use super::*;
 use crate::key::{KeyCode, KeyEvent, Modifiers};

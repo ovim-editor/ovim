@@ -106,7 +106,4 @@ that talk to a running headless session over the network. The GUI does not
 talk to that API — `ovim/src/gui/mod.rs` owns the editor on a dedicated
 runtime thread, drives it through `ovim::frontend` and `InputHandler`, and
 projects bounded serializable snapshots into the Tauri webview. SSE/streaming
-support for the REST API is a separate,
-explicitly deferred concern (also listed in
-`planning/gui-frontend-prep/PLAN.md`'s non-goals) and is unrelated to
-whether a GUI can be built today.
+support for the REST API is a separate, explicitly deferred concern.
