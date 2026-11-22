@@ -853,7 +853,10 @@ pub fn paste_text_after(
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteAfter { count });
+                editor.set_repeat_action(RepeatAction::PasteAfter {
+                    count,
+                    past_text: false,
+                });
             }
         }
         RegisterType::Line => {
@@ -896,7 +899,10 @@ pub fn paste_text_after(
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
                     editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                    editor.set_repeat_action(RepeatAction::PasteAfter { count });
+                    editor.set_repeat_action(RepeatAction::PasteAfter {
+                        count,
+                        past_text: false,
+                    });
                 }
             } else {
                 // Line paste - insert after current line
@@ -938,7 +944,10 @@ pub fn paste_text_after(
                 if !edits.is_empty() {
                     let cursor_after = editor.cursor_position();
                     editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                    editor.set_repeat_action(RepeatAction::PasteAfter { count });
+                    editor.set_repeat_action(RepeatAction::PasteAfter {
+                        count,
+                        past_text: false,
+                    });
                 }
             }
         }
@@ -962,28 +971,111 @@ pub fn paste_text_after(
                 buf.insert_text_at(line_idx, paste_col, &text_clone);
             });
 
-            // Place cursor on the last grapheme of the pasted text: compute
-            // the char-space end, then convert against the post-insert line.
-            let end_pos = calculate_end_position(ApplyPos::new(line_idx, paste_col), &text);
-            let end_line_text = editor
-                .buffer()
-                .line_text(end_pos.line)
-                .unwrap_or_default()
-                .to_string();
-            let end_grapheme = crate::unicode::char_to_grapheme_col(&end_line_text, end_pos.col);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(end_pos.line, GraphemeCol(end_grapheme.0.saturating_sub(1)));
+            place_cursor_after_charwise_paste(editor, line_idx, paste_col, &text);
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteAfter { count });
+                editor.set_repeat_action(RepeatAction::PasteAfter {
+                    count,
+                    past_text: false,
+                });
             }
         }
     }
 
+    Ok(())
+}
+
+/// Where vim leaves the cursor after `p` / `P` of characterwise text: on the
+/// last character of text from one line, at the start of text that spans
+/// lines.
+fn place_cursor_after_charwise_paste(
+    editor: &mut Editor,
+    line: usize,
+    paste_col: CharCol,
+    text: &str,
+) {
+    if text.contains('\n') {
+        editor.buffer_mut().set_cursor_char_col(line, paste_col);
+        return;
+    }
+    let end = calculate_end_position(ApplyPos::new(line, paste_col), text);
+    let end_line = editor.buffer().line_text(end.line).unwrap_or_default();
+    let end_grapheme = crate::unicode::char_to_grapheme_col(&end_line, end.col);
+    editor
+        .buffer_mut()
+        .cursor_mut()
+        .set_position(end.line, GraphemeCol(end_grapheme.0.saturating_sub(1)));
+}
+
+/// `gp` / `gP`: put like `p` / `P`, then leave the cursor just after the
+/// text instead of on it.
+pub fn paste_moving_past(editor: &mut Editor, count: usize, after: bool) -> Result<()> {
+    let pending = editor.pending_register();
+    let (text, reg_type) = editor.get_from_register_with_type();
+    if let Some(register) = pending {
+        editor.set_pending_register(register);
+    }
+    if text.is_empty() {
+        return Ok(());
+    }
+    let line = editor.buffer().cursor().line();
+    let lines_before = editor.buffer().line_count();
+    let chars_before = editor.buffer().rope().len_chars();
+    // Characterwise text goes in after the cursor character for `p` (when
+    // there is one), at it for `P`.
+    let paste_offset = {
+        let buffer = editor.buffer();
+        let on_character = buffer.line_len(line) > 0;
+        buffer.rope().line_to_char(line)
+            + buffer.cursor_char_col().0
+            + usize::from(after && on_character)
+    };
+
+    if after {
+        paste_after(editor, count)?;
+    } else {
+        paste_before(editor, count)?;
+    }
+
+    let buffer = editor.buffer();
+    let inserted = buffer.rope().len_chars().saturating_sub(chars_before);
+    if inserted == 0 {
+        return Ok(());
+    }
+    match reg_type {
+        RegisterType::Line => {
+            let added = buffer.line_count() - lines_before;
+            let target = (line + usize::from(after) + added).min(buffer.line_count() - 1);
+            editor
+                .buffer_mut()
+                .set_cursor_char_col(target, CharCol::ZERO);
+        }
+        RegisterType::Character => {
+            let end = (paste_offset + inserted).min(buffer.rope().len_chars());
+            let end_line = buffer.rope().char_to_line(end);
+            let end_col = end - buffer.rope().line_to_char(end_line);
+            editor
+                .buffer_mut()
+                .set_cursor_char_col(end_line, CharCol(end_col));
+            editor.buffer_mut().clamp_cursor_col();
+        }
+        // A block is put as `p` puts it.
+        RegisterType::Block => return Ok(()),
+    }
+    let repeat = if after {
+        RepeatAction::PasteAfter {
+            count,
+            past_text: true,
+        }
+    } else {
+        RepeatAction::PasteBefore {
+            count,
+            past_text: true,
+        }
+    };
+    editor.set_repeat_action(repeat);
     Ok(())
 }
 
@@ -1087,7 +1179,10 @@ pub fn paste_text_before(
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteBefore { count });
+                editor.set_repeat_action(RepeatAction::PasteBefore {
+                    count,
+                    past_text: false,
+                });
             }
         }
         RegisterType::Line => {
@@ -1117,7 +1212,10 @@ pub fn paste_text_before(
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteBefore { count });
+                editor.set_repeat_action(RepeatAction::PasteBefore {
+                    count,
+                    past_text: false,
+                });
             }
         }
         RegisterType::Character => {
@@ -1135,24 +1233,15 @@ pub fn paste_text_before(
                 buf.insert_text_at(line_idx, paste_col, &text_clone);
             });
 
-            // Position cursor on the last grapheme of the pasted text
-            // (match paste_after behavior).
-            let end_pos = calculate_end_position(ApplyPos::new(line_idx, paste_col), &text);
-            let end_line_text = editor
-                .buffer()
-                .line_text(end_pos.line)
-                .unwrap_or_default()
-                .to_string();
-            let end_grapheme = crate::unicode::char_to_grapheme_col(&end_line_text, end_pos.col);
-            editor
-                .buffer_mut()
-                .cursor_mut()
-                .set_position(end_pos.line, GraphemeCol(end_grapheme.0.saturating_sub(1)));
+            place_cursor_after_charwise_paste(editor, line_idx, paste_col, &text);
 
             if !edits.is_empty() {
                 let cursor_after = editor.cursor_position();
                 editor.push_recorded_undo(edits, cursor_before, cursor_after);
-                editor.set_repeat_action(RepeatAction::PasteBefore { count });
+                editor.set_repeat_action(RepeatAction::PasteBefore {
+                    count,
+                    past_text: false,
+                });
             }
         }
     }

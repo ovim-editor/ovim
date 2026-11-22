@@ -196,16 +196,45 @@ impl Editor {
             .or(self.buffer().change_manager().last_repeat_register);
         // Paste repeat needs Editor-level access (registers), handle specially
         match &action {
-            RepeatAction::PasteAfter { count } | RepeatAction::PasteBefore { count } => {
+            RepeatAction::PasteAfter { count, past_text }
+            | RepeatAction::PasteBefore { count, past_text } => {
+                use crate::editor::input::helpers;
                 self.input.pending_register = register;
-                let count = *count;
-                let is_after = matches!(action, RepeatAction::PasteAfter { .. });
-                let _ = if is_after {
-                    crate::editor::input::helpers::paste_after(self, count)
-                } else {
-                    crate::editor::input::helpers::paste_before(self, count)
+                let after = matches!(action, RepeatAction::PasteAfter { .. });
+                let _ = match (*past_text, after) {
+                    (true, _) => helpers::paste_moving_past(self, *count, after),
+                    (false, true) => helpers::paste_after(self, *count),
+                    (false, false) => helpers::paste_before(self, *count),
                 };
                 return;
+            }
+            RepeatAction::OperatorMotion {
+                operator,
+                motion,
+                count,
+            } => {
+                self.input.pending_register = register;
+                let _ = crate::editor::input::repeat_operator_motion(
+                    self, *operator, *motion, *count, None,
+                );
+                return;
+            }
+            RepeatAction::Change {
+                delete,
+                inserted_text,
+                ..
+            } => {
+                if let RepeatAction::OperatorMotion { motion, count, .. } = **delete {
+                    self.input.pending_register = register;
+                    let _ = crate::editor::input::repeat_operator_motion(
+                        self,
+                        crate::editor::Operator::Change,
+                        motion,
+                        count,
+                        Some(inserted_text),
+                    );
+                    return;
+                }
             }
             _ => {}
         }

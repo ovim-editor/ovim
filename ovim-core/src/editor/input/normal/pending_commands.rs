@@ -67,6 +67,11 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.request_format_document();
             editor.clear_count();
         }
+        ('g', KeyCode::Char(key @ ('p' | 'P'))) => {
+            let count = editor.effective_count();
+            helpers::paste_moving_past(editor, count, key == 'p')?;
+            editor.clear_count();
+        }
         ('g', KeyCode::Char('J')) => {
             let count = editor.effective_count();
             helpers::join_lines_no_space(editor, count)?;

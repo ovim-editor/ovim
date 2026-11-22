@@ -78,6 +78,7 @@ mod text_objects;
 
 /// Normal mode handler (decomposed into submodules)
 mod normal;
+pub(in crate::editor) use normal::repeat_operator_motion;
 
 /// Handles input events for the editor
 pub struct InputHandler;

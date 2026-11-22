@@ -18,14 +18,14 @@ use crate::editor::{
     RegisterType, TextObjectPrefix,
 };
 use crate::mode::Mode;
-use crate::motion_range::{MotionRange, Wise};
 use crate::repeat_action::{CaseTarget, CaseTransform, RepeatAction};
 use crate::unicode::{CharCol, GraphemeCol};
 use crate::{KeyCode, KeyEvent};
 use anyhow::Result;
 
 use super::super::case;
-use super::operator_motion::{apply_lines, apply_motion_operator, Motion};
+use super::operator_motion::{apply_lines, apply_motion_operator};
+use crate::motion_range::Motion;
 
 /// The transformation behind `gu`, `gU` and `g~`.
 fn case_transform(operator: Operator) -> CaseTransform {
@@ -176,7 +176,8 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             handle_dw(editor, count)?;
             true
         }
-        (Operator::Delete, KeyCode::Char('$')) => {
+        // `d2$` reaches into the next line: the generic motion below.
+        (Operator::Delete, KeyCode::Char('$')) if count == 1 => {
             handle_d_dollar(editor)?;
             true
         }
@@ -194,10 +195,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Delete, KeyCode::Char('{')) => {
             handle_d_paragraph_backward(editor, count)?;
-            true
-        }
-        (Operator::Delete, KeyCode::Char('%')) => {
-            handle_d_percent(editor)?;
             true
         }
         (Operator::Delete, KeyCode::Char('b')) => {
@@ -262,10 +259,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             handle_y_paragraph_backward(editor, count)?;
             true
         }
-        (Operator::Yank, KeyCode::Char('%')) => {
-            handle_y_percent(editor)?;
-            true
-        }
 
         // =====================================================================
         // Change operations
@@ -278,7 +271,7 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             handle_cw(editor, count)?;
             true
         }
-        (Operator::Change, KeyCode::Char('$')) => {
+        (Operator::Change, KeyCode::Char('$')) if count == 1 => {
             handle_c_dollar(editor)?;
             true
         }
@@ -292,14 +285,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Change, KeyCode::Char('k')) => {
             handle_ck(editor, count)?;
-            true
-        }
-        (Operator::Change, KeyCode::Char('}')) => {
-            handle_c_paragraph_forward(editor, count)?;
-            true
-        }
-        (Operator::Change, KeyCode::Char('{')) => {
-            handle_c_paragraph_backward(editor, count)?;
             true
         }
         (Operator::Change, KeyCode::Char('b')) => {
@@ -332,10 +317,6 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
         }
         (Operator::Change, KeyCode::Char('W')) => {
             handle_c_big_w(editor, count)?;
-            true
-        }
-        (Operator::Change, KeyCode::Char('%')) => {
-            handle_c_percent(editor)?;
             true
         }
 
@@ -372,7 +353,9 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             editor.clear_count();
             true
         }
-        (Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase, KeyCode::Char('$')) => {
+        (Operator::Lowercase | Operator::Uppercase | Operator::ToggleCase, KeyCode::Char('$'))
+            if count == 1 =>
+        {
             case::change_case(editor, case_transform(operator), CaseTarget::ToEndOfLine)?;
             editor.clear_count();
             true
@@ -836,18 +819,6 @@ fn register_type_for_wise(wise: crate::motion_range::Wise) -> RegisterType {
     }
 }
 
-fn handle_d_percent(editor: &mut Editor) -> Result<()> {
-    let deleted = editor.record_operation(
-        |buf| buf.delete_to_matching_bracket(),
-        Some(RepeatAction::DeleteToMatchingBracket),
-    );
-    if !deleted.is_empty() {
-        editor.delete_to_register(deleted);
-    }
-    editor.clear_count();
-    Ok(())
-}
-
 fn handle_yj(editor: &mut Editor, count: usize) -> Result<()> {
     let count = editor.down_count_over_folds(count);
     let start_line = editor.buffer().cursor().line();
@@ -1007,10 +978,6 @@ pub(super) fn change_with(
     let register = editor.pending_register();
 
     let (deleted, edits) = editor.buffer_mut().record(delete);
-    if edits.is_empty() && matches!(delete_action, RepeatAction::ChangeToMatchingBracket) {
-        editor.clear_count();
-        return Ok(());
-    }
     let delete_token = if !edits.is_empty() {
         let cursor_after = editor.cursor_position();
         Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
@@ -1108,58 +1075,6 @@ fn handle_ck(editor: &mut Editor, count: usize) -> Result<()> {
         line + 1,
         RepeatAction::DeleteLineUp { count },
     )
-}
-
-fn handle_c_paragraph_forward(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let ((deleted, wise), edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.change_paragraph_forward(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    editor.delete_to_register_with_type(deleted, register_type_for_wise(wise));
-    editor.mark_buffer_modified();
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteParagraphForward { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
-}
-
-fn handle_c_paragraph_backward(editor: &mut Editor, count: usize) -> Result<()> {
-    let cursor_before = editor.cursor_position();
-
-    let ((deleted, wise), edits) = editor
-        .buffer_mut()
-        .record(|buf| buf.change_paragraph_backward(count));
-    let delete_token = if !edits.is_empty() {
-        let cursor_after = editor.cursor_position();
-        Some(editor.push_recorded_undo(edits, cursor_before, cursor_after))
-    } else {
-        None
-    };
-    editor.delete_to_register_with_type(deleted, register_type_for_wise(wise));
-    editor.mark_buffer_modified();
-
-    editor.set_pending_change_repeat(PendingChangeRepeat {
-        delete_action: RepeatAction::DeleteParagraphBackward { count },
-        linewise: false,
-        delete_token,
-    });
-    editor.start_change_building(editor.cursor_position());
-    editor.clear_count();
-    editor.set_mode(Mode::Insert);
-    Ok(())
 }
 
 fn handle_zf_percent(editor: &mut Editor) -> Result<()> {
@@ -1324,105 +1239,6 @@ fn handle_d_big_w(editor: &mut Editor, count: usize) -> Result<()> {
 // Yank handlers for new motions (yb, ye, yB, yE, yh, y0, y^, yW)
 // =====================================================================
 
-fn handle_y_percent(editor: &mut Editor) -> Result<()> {
-    use crate::editor::Motions;
-
-    let buf = editor.buffer();
-    let start_line = buf.cursor().line();
-    let start_col = buf.cursor().col().0;
-    let rope = buf.rope();
-
-    // Build absolute position
-    let mut abs_start = 0;
-    for i in 0..start_line {
-        if i < rope.len_lines() {
-            abs_start += rope.line(i).len_chars();
-        }
-    }
-    abs_start += start_col;
-
-    let text = rope.to_string();
-    let chars: Vec<char> = text.chars().collect();
-
-    if abs_start >= chars.len() {
-        editor.clear_count();
-        return Ok(());
-    }
-
-    let current_char = chars[abs_start];
-    let (is_opening, matching_char) = match current_char {
-        '(' => (true, ')'),
-        ')' => (false, '('),
-        '[' => (true, ']'),
-        ']' => (false, '['),
-        '{' => (true, '}'),
-        '}' => (false, '{'),
-        '<' => (true, '>'),
-        '>' => (false, '<'),
-        _ => {
-            editor.clear_count();
-            return Ok(());
-        }
-    };
-
-    let match_pos = if is_opening {
-        Motions::find_matching_bracket_forward(&chars, abs_start, current_char, matching_char)
-    } else {
-        Motions::find_matching_bracket_backward(&chars, abs_start, matching_char, current_char)
-    };
-
-    let Some(abs_end) = match_pos else {
-        editor.clear_count();
-        return Ok(());
-    };
-
-    // Convert absolute positions to (line, col)
-    let (lo, hi) = if abs_start < abs_end {
-        (abs_start, abs_end)
-    } else {
-        (abs_end, abs_start)
-    };
-
-    let lo_line = rope.char_to_line(lo);
-    let lo_col = lo - rope.line_to_char(lo_line);
-    let hi_line = rope.char_to_line(hi);
-    let hi_col = hi - rope.line_to_char(hi_line);
-    // Include the matching bracket character itself
-    let yanked = yank_range(
-        editor,
-        lo_line,
-        CharCol(lo_col),
-        hi_line,
-        CharCol(hi_col + 1),
-    );
-    if yanked.contains('\n') {
-        editor.yank_to_register_with_type(yanked, RegisterType::Line);
-    } else {
-        editor.yank_to_register(yanked);
-    }
-    editor.set_yank_flash_range(lo_line, GraphemeCol(lo_col), hi_line, GraphemeCol(hi_col));
-    editor.clear_count();
-    Ok(())
-}
-
-/// Helper to yank a range of text without modifying the buffer. Columns are
-/// char columns (not graphemes); line breaks inside the range are kept.
-fn yank_range(
-    editor: &Editor,
-    start_line: usize,
-    start_col: CharCol,
-    end_line: usize,
-    end_col: CharCol,
-) -> String {
-    let buf = editor.buffer();
-    let clamp = |line: usize, col: CharCol| CharCol(col.0.min(buf.line_len(line)));
-    buf.yank_motion_range(MotionRange {
-        start: (start_line, clamp(start_line, start_col)),
-        end: (end_line, clamp(end_line, end_col)),
-        wise: Wise::Charwise,
-    })
-}
-
 // =====================================================================
 // Change handlers for new motions (cb, ce, cB, cE, ch, c0, c^, cW)
 // =====================================================================
@@ -1468,12 +1284,6 @@ fn handle_c0(editor: &mut Editor) -> Result<()> {
 fn handle_c_caret(editor: &mut Editor) -> Result<()> {
     change_with(editor, RepeatAction::DeleteToFirstNonBlank, |buf| {
         buf.delete_to_first_non_blank()
-    })
-}
-
-fn handle_c_percent(editor: &mut Editor) -> Result<()> {
-    change_with(editor, RepeatAction::ChangeToMatchingBracket, |buf| {
-        buf.change_to_matching_bracket()
     })
 }
 

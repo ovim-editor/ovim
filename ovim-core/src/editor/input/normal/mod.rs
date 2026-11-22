@@ -16,6 +16,21 @@ mod text_objects;
 
 pub(super) use operator_motion::{apply_between, finish_operator_search, Reach};
 
+/// `.` for an operator over a motion. `inserted_text` is what a `c{motion}`
+/// typed, `None` for every other operator.
+pub(in crate::editor) fn repeat_operator_motion(
+    editor: &mut Editor,
+    operator: crate::editor::Operator,
+    motion: crate::motion_range::Motion,
+    count: usize,
+    inserted_text: Option<&str>,
+) -> Result<()> {
+    match inserted_text {
+        Some(text) => operator_motion::repeat_change(editor, motion, count, text),
+        None => operator_motion::apply_motion_operator(editor, operator, motion, count),
+    }
+}
+
 use crate::editor::Editor;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;

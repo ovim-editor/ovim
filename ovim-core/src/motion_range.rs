@@ -21,6 +21,49 @@
 use crate::buffer::Buffer;
 use crate::unicode::CharCol;
 
+/// A cursor motion usable as the target of an operator. What each one does
+/// is in `editor/input/normal/operator_motion.rs`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Motion {
+    Left,
+    Right,
+    Down,
+    Up,
+    WordForward {
+        big: bool,
+    },
+    WordBackward {
+        big: bool,
+    },
+    WordEnd {
+        big: bool,
+    },
+    WordEndBackward {
+        big: bool,
+    },
+    LineStart,
+    FirstNonBlank,
+    LineEnd,
+    /// `_`: the first non-blank `count - 1` lines down.
+    FirstNonBlankDown,
+    /// `+` / `-`: the first non-blank `count` lines down / up.
+    NextLine,
+    PreviousLine,
+    /// `|`: column `count`.
+    Column,
+    ParagraphForward,
+    ParagraphBackward,
+    SentenceForward,
+    SentenceBackward,
+    MatchingBracket,
+    SearchNext,
+    SearchPrevious,
+    /// `;` / `,`: repeat the last `f`/`t`/`F`/`T`.
+    FindRepeat {
+        reverse: bool,
+    },
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Wise {
     Charwise,

@@ -644,11 +644,12 @@ fn test_d_percent_no_match() {
 fn test_d_percent_angle_brackets() {
     let mut test = EditorTest::new("Vec<String>");
 
-    test.keys("3l") // Move to <
-        .keys("d%"); // Delete from < to >
+    // nvim --clean (without matchit): `<` is not in 'matchpairs' and no
+    // bracket follows it, so `d%` does nothing.
+    test.keys("3l").keys("d%");
 
-    assert_eq!(test.buffer_content(), "Vec\n");
-    test.assert_cursor(0, 2);
+    assert_eq!(test.buffer_content(), "Vec<String>\n");
+    test.assert_cursor(0, 3);
 }
 
 // ============================================================================

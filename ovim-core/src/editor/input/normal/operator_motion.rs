@@ -6,12 +6,12 @@
 //! a handler per operator.
 
 use crate::editor::input::char_motion::{
-    apply_charwise_operator, apply_linewise_operator, OperatorRange,
+    apply_charwise_operator, apply_linewise_operator, unrepeatable_delete, OperatorRange,
 };
 use crate::editor::input::{case, helpers};
 use crate::editor::{CursorPos, Editor, FindDirection, Motions, Operator};
-use crate::motion_range::{MotionRange, Wise};
-use crate::repeat_action::CaseTransform;
+use crate::motion_range::{Motion, MotionRange, Wise};
+use crate::repeat_action::{CaseTransform, RepeatAction};
 use crate::unicode::{CharCol, GraphemeCol};
 use crate::KeyCode;
 use anyhow::Result;
@@ -25,48 +25,6 @@ pub(in crate::editor::input) enum Reach {
     Inclusive,
     /// Whole lines from the cursor line to the target line.
     Linewise,
-}
-
-/// A cursor motion usable as the target of an operator.
-#[derive(Clone, Copy, Debug)]
-pub(super) enum Motion {
-    Left,
-    Right,
-    Down,
-    Up,
-    WordForward {
-        big: bool,
-    },
-    WordBackward {
-        big: bool,
-    },
-    WordEnd {
-        big: bool,
-    },
-    WordEndBackward {
-        big: bool,
-    },
-    LineStart,
-    FirstNonBlank,
-    LineEnd,
-    /// `_`: the first non-blank `count - 1` lines down.
-    FirstNonBlankDown,
-    /// `+` / `-`: the first non-blank `count` lines down / up.
-    NextLine,
-    PreviousLine,
-    /// `|`: column `count`.
-    Column,
-    ParagraphForward,
-    ParagraphBackward,
-    SentenceForward,
-    SentenceBackward,
-    MatchingBracket,
-    SearchNext,
-    SearchPrevious,
-    /// `;` / `,`: repeat the last `f`/`t`/`F`/`T`.
-    FindRepeat {
-        reverse: bool,
-    },
 }
 
 impl Motion {
@@ -198,6 +156,10 @@ impl Motion {
             Self::FirstNonBlank => Motions::first_non_blank(editor.buffer_mut()),
             Self::LineEnd => {
                 let last = editor.buffer().line_count().saturating_sub(1);
+                // `2$` on the last line: there is no line below to end on.
+                if count > 1 && before.line == last {
+                    return false;
+                }
                 let line = (before.line + count - 1).min(last);
                 let len = editor.buffer().line_index(line).grapheme_count();
                 editor
@@ -289,7 +251,49 @@ pub(super) fn apply_motion_operator(
     if !moved {
         return Ok(());
     }
-    apply_between(editor, operator, start, target, reach)
+    let version = editor.buffer().version();
+    apply_between(editor, operator, start, target, reach)?;
+
+    // `.` runs the same operator over the same motion from the new cursor.
+    let repeat = RepeatAction::OperatorMotion {
+        operator,
+        motion,
+        count,
+    };
+    match operator {
+        // Becomes `RepeatAction::Change` with the typed text when Insert ends.
+        Operator::Change => {
+            if let Some(pending) = editor.editing.pending_change_repeat.as_mut() {
+                pending.delete_action = repeat;
+            }
+        }
+        Operator::Yank | Operator::Fold => {}
+        _ if editor.buffer().version() != version => editor.set_repeat_action(repeat),
+        _ => {}
+    }
+    Ok(())
+}
+
+/// `.` after `c{motion}`: change over the motion again and type the same text.
+pub(super) fn repeat_change(
+    editor: &mut Editor,
+    motion: Motion,
+    count: usize,
+    inserted_text: &str,
+) -> Result<()> {
+    apply_motion_operator(editor, Operator::Change, motion, count)?;
+    if editor.mode() != crate::mode::Mode::Insert {
+        return Ok(());
+    }
+    if !inserted_text.is_empty() {
+        let line = editor.buffer().cursor().line();
+        let col = editor.buffer().cursor_char_col();
+        editor.record_session_edit(|buffer| {
+            buffer.insert_text_at_positioning_cursor(line, col, inserted_text)
+        });
+    }
+    crate::editor::input::insert_mode::finish_insert_mode(editor, false);
+    Ok(())
 }
 
 /// Applies `operator` to the range between two positions in `reach` terms.
@@ -330,13 +334,34 @@ pub(in crate::editor::input) fn apply_between(
         (from_line, char_col(from_line, from_col)),
         (to_line, char_col(to_line, to_col)),
     );
-    if range.wise == Wise::Linewise {
+    if range.wise == Wise::Linewise
+        || (operator == Operator::Delete && delete_takes_whole_lines(buffer, &range))
+    {
         return apply_lines(editor, operator, range.start.0, range.end.0, start);
     }
     let grapheme_col =
         |(line, col): (usize, CharCol)| (line, buffer.line_index(line).char_to_grapheme(col).0);
     let (from, to) = (grapheme_col(range.start), grapheme_col(range.end));
     apply_chars(editor, operator, from, to, start)
+}
+
+/// `:help d`: a delete over several lines that starts in the indent of its
+/// first line and leaves nothing but blanks on its last takes the lines
+/// whole, so no line of blanks stays behind.
+fn delete_takes_whole_lines(buffer: &crate::buffer::Buffer, range: &MotionRange) -> bool {
+    let ((first, from), (last, to)) = (range.start, range.end);
+    if first == last {
+        return false;
+    }
+    let blank = |line: usize, columns: std::ops::Range<usize>| {
+        buffer.line_text(line).is_some_and(|text| {
+            text.chars()
+                .skip(columns.start)
+                .take(columns.end.saturating_sub(columns.start))
+                .all(|c| c == ' ' || c == '\t')
+        })
+    };
+    blank(first, 0..from.0) && blank(last, to.0..usize::MAX)
 }
 
 fn apply_chars(
@@ -381,7 +406,15 @@ pub(super) fn apply_lines(
     cursor_before: CursorPos,
 ) -> Result<()> {
     match operator {
-        Operator::Delete | Operator::Change | Operator::Yank => {
+        // As `cj`: one undo step with the text typed after it. `.` repeats
+        // only what the caller then names (a motion); `c'a` names nothing.
+        Operator::Change => {
+            super::operators::change_lines(editor, first, last + 1, unrepeatable_delete())?;
+            if let Some(pending) = editor.editing.pending_change_repeat.as_mut() {
+                pending.linewise = false;
+            }
+        }
+        Operator::Delete | Operator::Yank => {
             apply_linewise_operator(editor, operator, first, last);
             if operator == Operator::Yank {
                 // A yank leaves the cursor on the first line of the range.
