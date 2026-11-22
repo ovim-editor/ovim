@@ -8,9 +8,8 @@ use helpers::EditorTest;
 #[test]
 fn test_backref_followed_by_word_char() {
     // \1 immediately followed by a word char must not swallow it into the group name.
-    // (ovim uses Rust-regex pattern syntax, so capture groups are `(a)`.)
     let mut test = EditorTest::new("abc");
-    test.command("s/(a)/\\1x/");
+    test.command("s/\\(a\\)/\\1x/");
     assert_eq!(
         test.buffer_content(),
         "axbc\n",
@@ -21,7 +20,7 @@ fn test_backref_followed_by_word_char() {
 #[test]
 fn test_backref_followed_by_underscore() {
     let mut test = EditorTest::new("foo");
-    test.command("s/(f)/\\1_/");
+    test.command("s/\\(f\\)/\\1_/");
     assert_eq!(test.buffer_content(), "f_oo\n");
 }
 

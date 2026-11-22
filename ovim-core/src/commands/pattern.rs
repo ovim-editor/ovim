@@ -1,6 +1,6 @@
 //! Pattern commands: `:s[ubstitute]`, `:g[lobal]`, `:v[global]`.
 //!
-//! Patterns are Rust regexes (as they always were here), not vim regexes.
+//! Patterns are vim patterns, compiled by [`crate::search_pattern`].
 
 use super::edit::cursor_to_first_non_blank;
 use super::marked_lines::MarkedLines;
@@ -104,7 +104,7 @@ fn parse_substitution(
         flags.contains('i').then_some(true)
     };
     let regex = search_pattern::compile(&pattern, CaseOptions::of(&editor.options), forced)
-        .map_err(|_| err(format!("Invalid regex pattern: {pattern}")))?;
+        .map_err(|error| err(search_pattern::error_message(&error, &pattern)))?;
     editor.set_last_search_pattern(&pattern);
     Ok((
         Substitution {
@@ -306,7 +306,7 @@ pub(super) fn global(editor: &mut Editor, ex: &Ex) -> CommandResult {
     };
     let regex = match search_pattern::compile(&pattern, CaseOptions::of(&editor.options), None) {
         Ok(regex) => regex,
-        Err(_) => return err(format!("Invalid regex pattern: {pattern}")),
+        Err(error) => return err(search_pattern::error_message(&error, &pattern)),
     };
     editor.set_last_search_pattern(&pattern);
     let range = ex.range.expect("line-range command");

@@ -15,6 +15,26 @@ Open a project directory to start in the file explorer:
 ovim path/to/project
 ```
 
+## Search and Substitute Patterns
+
+`/`, `?`, `:s`, `:g` and line ranges such as `:/pat/d` take Vim patterns:
+
+| Pattern | Meaning |
+|---------|---------|
+| `main(` | Punctuation is literal, so searching code needs no escaping |
+| `\(a\|b\)\+` | Groups, alternation and `\+`, `\=`, `\{2,3}`, `\{-}` take a backslash |
+| `\<word\>` | Whole word; `*` and `#` search this way |
+| `\v(a|b)+` | `\v` makes punctuation special without backslashes |
+| `\Va.b*` | `\V` makes everything literal |
+| `\cfoo`, `\Cfoo` | Ignore or match case, whatever `ignorecase` and `smartcase` say |
+
+Classes are Vim's: `\d`, `\w`, `\s`, `\a`, `\l`, `\u`, `\x`, `\h` and `[[:alpha:]]`.
+
+Not supported: look-around (`\@=`, `\@<!`), `\zs` and `\ze`, back-references inside
+the pattern (`\1`), and a pattern that matches across a line break. These report an
+error instead of matching something else. Project search (`:grep`, the picker) uses
+ripgrep's syntax, not this one.
+
 ## File Explorer
 
 Press `-` from a file to reveal it in the project tree. Press `Tab` to move

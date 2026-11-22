@@ -62,7 +62,7 @@ fn global_substitute_converts_backrefs() {
     // Use :g with substitute that has a capture group. Vim capture refs in the
     // replacement are `\1`/`\2` (a literal `$` is literal text, e.g. dollar
     // amounts), so use the Vim spelling here.
-    test.command(":g/[0-9]/s/([a-z]+)([0-9]+)/\\2\\1/");
+    test.command(":g/[0-9]/s/\\([a-z]\\+\\)\\([0-9]\\+\\)/\\2\\1/");
     assert_eq!(test.buffer_content(), "123foo\n456bar\n789baz\n");
 }
 
@@ -276,16 +276,15 @@ fn escaped_replacement_characters_are_literal() {
 }
 
 // nvim --clean: `\u` capitalizes the next character, `\U` ... `\E` shouts,
-// `\L` and `\l` lower; `\L\u&` capitalizes a lower-cased match. (The
-// patterns are Rust regexes: `\w+` where vim writes `\w\+`.)
+// `\L` and `\l` lower; `\L\u&` capitalizes a lower-cased match.
 #[test]
 fn case_changing_replacement_tokens() {
     for (text, command, expected) in [
-        ("hello world", "s/\\w+/\\u&/g", "Hello World\n"),
-        ("hello world", "s/\\w+/\\U&/g", "HELLO WORLD\n"),
-        ("HELLO WORLD", "s/\\w+/\\L&/", "hello WORLD\n"),
-        ("HELLO WORLD", "s/\\w+/\\l&/g", "hELLO wORLD\n"),
-        ("HELLO WORLD", "s/\\w+/\\L\\u&/g", "Hello World\n"),
+        ("hello world", "s/\\w\\+/\\u&/g", "Hello World\n"),
+        ("hello world", "s/\\w\\+/\\U&/g", "HELLO WORLD\n"),
+        ("HELLO WORLD", "s/\\w\\+/\\L&/", "hello WORLD\n"),
+        ("HELLO WORLD", "s/\\w\\+/\\l&/g", "hELLO wORLD\n"),
+        ("HELLO WORLD", "s/\\w\\+/\\L\\u&/g", "Hello World\n"),
         ("hello", "s/hello/\\Ufoo\\ebar/", "FOObar\n"),
         ("abc ab", "s/ab/\\U&x\\Ey/g", "ABXyc ABXy\n"),
     ] {
@@ -299,7 +298,7 @@ fn case_changing_replacement_tokens() {
 #[test]
 fn case_changing_tokens_apply_to_groups() {
     let mut test = EditorTest::new("hello world");
-    test.command("s/(\\w+) (\\w+)/\\U\\1\\E \\2/");
+    test.command("s/\\(\\w\\+\\) \\(\\w\\+\\)/\\U\\1\\E \\2/");
     assert_eq!(test.buffer_content(), "HELLO world\n");
 }
 

@@ -280,7 +280,7 @@ mod indexed_search_tests {
 
     #[test]
     fn immutable_line_cache_preserves_anchors_and_reuses_results() {
-        let search = Search::new("^a+$".into(), true);
+        let search = Search::new(r"^a\+$".into(), true);
         let line = LineIndex::from_text("aaaa");
         let first = search.find_all_in_index(&line);
         assert_eq!(*first, vec![(0, 4)]);

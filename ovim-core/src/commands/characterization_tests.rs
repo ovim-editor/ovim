@@ -607,8 +607,11 @@ fn cases() -> Vec<Case> {
         case("2,3s/./Z/").after("c1\nZ2\nZ a3\n  d4a\n"),
         case("%s/zz/y/").fails("E486: Pattern not found: zz"),
         case("%s/zz/y/e"),
-        // The API used to report this as success (no E-number).
-        case("s/(/x/").fails("Invalid regex pattern: ("),
+        // vim: a bare `(` is a parenthesis, `\(` opens a group.
+        case("s/(/x/").fails("E486: Pattern not found: ("),
+        case("s/\\(/x/").fails("E54: Unmatched \\("),
+        case("s/\\(b\\)\\(2\\)/\\2\\1/").after("c1\n2b\n  a3\n  d4a\n"),
+        case("s/\\vb(\\d)/\\1/").after("c1\n2\n  a3\n  d4a\n"),
         case("s//x/").fails("E35: No previous regular expression"),
         // vim: `:s/b` replaces with nothing (used to be E146).
         case("s/b").after("c1\n2\n  a3\n  d4a\n"),
@@ -638,14 +641,15 @@ fn cases() -> Vec<Case> {
         case("g/a/y")
             .is("Yanked 2 line(s)")
             .check(|editor| register_is(editor, "  a3\n  d4a\n")),
-        case("g/b|c/d")
+        case("g/b\\|c/d")
             .text("a\nb\nc")
             .is("Deleted 2 line(s)")
             .after("a\n"),
         // vim's messages; not errors.
         case("g/zz/d").is("Pattern not found: zz"),
         case("v/./d").is("Pattern found in every line: ."),
-        case("g/(/d").fails("Invalid regex pattern: ("),
+        case("g/(/d").is("Pattern not found: ("),
+        case("g/\\(/d").fails("E54: Unmatched \\("),
         case("g/a/normal Ax").after("c1\nb2\n  a3x\n  d4ax\n"),
         case("g/b/normal dd").text("a\nb\nb\nc").after("a\nc\n"),
         // vim: :g runs any ex command on each matching line; the marked
