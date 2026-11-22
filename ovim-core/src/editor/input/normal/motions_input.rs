@@ -431,7 +431,7 @@ fn search_word(editor: &mut Editor, forward: bool) {
     let Some((word, start)) = word_at_or_after_cursor(editor) else {
         return;
     };
-    let pattern = format!(r"\b{}\b", regex::escape(&word));
+    let pattern = crate::search_pattern::whole_word(&word);
     let mut search = Search::new_with_options(
         pattern,
         forward,

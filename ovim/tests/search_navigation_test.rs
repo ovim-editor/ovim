@@ -70,7 +70,7 @@ fn test_forward_search_not_found() {
 fn test_forward_search_regex() {
     let mut test = EditorTest::new("test123 hello test456");
 
-    test.press('/').type_text("test[0-9]+").press_enter();
+    test.press('/').type_text("test[0-9]\\+").press_enter();
 
     assert_eq!(test.buffer_content(), "test123 hello test456\n");
     // nvim --clean: a forward search starts after the cursor, so the match under it

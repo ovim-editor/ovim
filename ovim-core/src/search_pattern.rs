@@ -3,8 +3,12 @@
 //!
 //! A pattern ignores case when it says so (`\c`; `\C` forbids it), else when
 //! a `:s` flag says so (`i` / `I`), else when 'ignorecase' is set and either
-//! 'smartcase' is off or the pattern has no upper-case letter. The patterns
-//! are still Rust regexes, not vim regexes; only the case escapes are vim's.
+//! 'smartcase' is off or the pattern has no upper-case letter.
+//!
+//! Patterns are vim patterns: [`vim_regex`] translates them for the `regex`
+//! crate and lists what it cannot translate.
+
+mod vim_regex;
 
 use regex::{Regex, RegexBuilder};
 
@@ -39,9 +43,35 @@ pub fn compile(
     let ignore_case = escaped
         .or(forced)
         .unwrap_or(options.ignorecase && !(options.smartcase && has_uppercase(&source)));
-    RegexBuilder::new(&source)
+    let translated = vim_regex::to_rust_regex(&source).map_err(regex::Error::Syntax)?;
+    RegexBuilder::new(&translated)
         .case_insensitive(ignore_case)
         .build()
+}
+
+/// The message for a pattern that did not compile: vim's own where the
+/// translation refused it.
+pub fn error_message(error: &regex::Error, pattern: &str) -> String {
+    match error {
+        regex::Error::Syntax(message) if message.starts_with('E') => message.clone(),
+        _ => format!("E383: Invalid search string: {pattern}"),
+    }
+}
+
+/// A pattern that matches `text` literally, for searches the editor starts
+/// itself (`*` on a selection).
+pub fn literal(text: &str) -> String {
+    format!(r"\V{}", text.replace('\\', r"\\"))
+}
+
+/// A pattern that matches `word` as a whole word, as `*` and `#` search.
+pub fn whole_word(word: &str) -> String {
+    if word.chars().all(|c| c.is_alphanumeric() || c == '_') {
+        // What vim puts in the search register, and nothing to escape.
+        format!(r"\<{word}\>")
+    } else {
+        format!(r"\V\<{}\>", word.replace('\\', r"\\"))
+    }
 }
 
 /// Remove `\c` and `\C` from `pattern` (a regex has no such escapes) and

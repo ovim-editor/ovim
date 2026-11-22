@@ -1598,8 +1598,7 @@ fn extract_word_at_cursor(editor: &Editor) -> Option<String> {
 /// Sets up and executes a search for the given text
 /// Returns true if a match was found, false otherwise
 fn setup_and_execute_search(editor: &mut Editor, text: &str, forward: bool) -> bool {
-    // Escape regex special characters for literal search
-    let escaped = regex::escape(text);
+    let escaped = crate::search_pattern::literal(text);
 
     // Create and execute the search
     editor.clear_search_buffer();

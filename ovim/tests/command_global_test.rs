@@ -99,7 +99,7 @@ fn test_command_global_percent_pattern_with_pipe_is_not_command_chain() {
     let mut test = EditorTest::new("keep\nfoo\nbar\nbaz\n");
 
     // If '|' were treated as command chaining, this would split and fail.
-    InputHandler::execute_command_string(&mut test.editor, "%g/foo|bar/d").unwrap();
+    InputHandler::execute_command_string(&mut test.editor, "%g/foo\\|bar/d").unwrap();
 
     assert_eq!(test.buffer_content(), "keep\nbaz\n");
     assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
@@ -109,7 +109,7 @@ fn test_command_global_percent_pattern_with_pipe_is_not_command_chain() {
 fn test_command_global_percent_undo_restores_deleted_lines() {
     let mut test = EditorTest::new("keep\nfoo\nbar\nbaz\n");
 
-    InputHandler::execute_command_string(&mut test.editor, "%g/foo|bar/d").unwrap();
+    InputHandler::execute_command_string(&mut test.editor, "%g/foo\\|bar/d").unwrap();
     assert_eq!(test.buffer_content(), "keep\nbaz\n");
 
     test.keys("u");
@@ -120,7 +120,7 @@ fn test_command_global_percent_undo_restores_deleted_lines() {
 fn test_command_global_percent_delete_undo_redo_macro_flow() {
     editor_flow_test! {
         content "keep\nfoo\nbar\nbaz\n";
-        step ":%g/foo|bar/d<Enter>" => |test| {
+        step ":%g/foo\\|bar/d<Enter>" => |test| {
             assert_eq!(test.buffer_content(), "keep\nbaz\n");
             assert_eq!(test.editor.status_message(), "Deleted 2 line(s)");
         }

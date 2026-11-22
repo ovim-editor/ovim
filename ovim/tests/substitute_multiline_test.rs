@@ -27,7 +27,7 @@ fn backslash_t_inserts_tab() {
 fn backslash_r_with_backrefs() {
     // Swap around a line break: "key=value" -> "value\nkey".
     let mut test = EditorTest::new("key=value");
-    test.command("s/(\\w+)=(\\w+)/\\2\\r\\1/");
+    test.command("s/\\(\\w\\+\\)=\\(\\w\\+\\)/\\2\\r\\1/");
     assert_eq!(test.buffer_content(), "value\nkey\n");
 }
 
