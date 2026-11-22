@@ -9,6 +9,8 @@ use super::SingleLineInput;
 pub struct InstallProgress {
     pub language_id: String,
     pub status: InstallStatus,
+    /// A line for the status bar, shown whether or not the panel is open.
+    pub note: Option<String>,
 }
 
 /// A pending install request to be picked up by the event loop
@@ -18,6 +20,8 @@ pub struct PendingInstallRequest {
     pub language_name: String,
     pub auto_install_config: crate::language_config::AutoInstallConfig,
     pub lsp_command: String,
+    /// Bring an installed server up to date instead of installing one.
+    pub update: bool,
 }
 
 /// Section groupings in the LSP Manager panel
@@ -59,6 +63,8 @@ pub struct LspManagerEntry {
     pub server_state: Option<String>,
     pub has_auto_install: bool,
     pub install_hint: Option<String>,
+    /// The release on disk, for a server ovim installed from GitHub.
+    pub release: Option<crate::lsp_init::auto_install::InstalledRelease>,
     pub extensions: Vec<String>,
     pub root_markers: Vec<String>,
     pub capabilities: Vec<String>,
@@ -171,6 +177,16 @@ impl LspManagerPanel {
             .as_ref()
             .map(|lsp| lsp.auto_install.is_some())
             .unwrap_or(false);
+        let release = lang
+            .lsp
+            .as_ref()
+            .filter(|_| matches!(section, LspSection::Running | LspSection::Installed))
+            .and_then(|lsp| {
+                crate::lsp_init::auto_install::installed_release(
+                    &lsp.command,
+                    lsp.auto_install.as_ref()?,
+                )
+            });
         let extensions = lang.extensions.clone();
         let root_markers = lang
             .lsp
@@ -190,6 +206,7 @@ impl LspManagerPanel {
             },
             has_auto_install,
             install_hint,
+            release,
             extensions,
             root_markers,
             capabilities: Vec::new(),

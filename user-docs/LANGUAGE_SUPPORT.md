@@ -107,6 +107,37 @@ project-local `node_modules/.bin` before its own sandbox. To reclaim disk
 space, deleting `~/.local/share/ovim/lsp/` is always safe — ovim reinstalls
 on demand.
 
+### Updates
+
+Servers that ovim downloads from GitHub releases (rust-analyzer, hyperion-lsp
+for Java, Kotlin, Scala and Groovy, and the others whose install method is
+`github`) are kept current. ovim records which release it installed, and once a
+day, when such a server starts, asks GitHub for the latest one:
+
+| `autoinstall` | What happens when a newer release exists |
+| --- | --- |
+| `auto` | It is downloaded in the background. The running server keeps going; the new one starts with the next session or `:LspRestart`. |
+| `prompt` | The status bar says so, once per release. Nothing is installed. |
+| `off` | ovim never asks GitHub. |
+
+A release is only picked up this way once it is 3 days old, the same
+quarantine as for npm packages.
+
+To update right away, run `:LspUpdate` (the current file's language) or
+`:LspUpdate java`, or press `u` on the server in `:LspManager`. That installs
+the latest release whatever its age and whatever `autoinstall` says, and
+reports `already at v1.2.3, the latest release` when there is nothing to do.
+`:LspManager` shows the installed release in the details pane, and
+`v1.2.3 (v1.3.0 available)` when ovim has seen a newer one.
+
+For npm, cargo and shell installs there is no release to compare, so
+`:LspUpdate` runs the installer again and nothing is checked in the
+background.
+
+A server found on `PATH` is yours: ovim does not check it, and `:LspUpdate`
+tells you so. Update it with whatever installed it (`brew upgrade`, `rustup
+update`, ...).
+
 ### Configuring Auto-Install Behavior
 
 ```vim

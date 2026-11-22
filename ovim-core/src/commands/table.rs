@@ -391,6 +391,7 @@ pub(crate) static COMMANDS: &[ExCommand] = &[
     ex(&["LspStatus"], lsp::status),
     ex(&["LspLog"], lsp::log),
     ex(&["LspRestart"], lsp::restart).args(A::Text),
+    ex(&["LspUpdate"], lsp::update).args(A::Text),
     ex(&["LspExec"], lsp::exec).args(A::Rest),
     ex(&["LspRename"], lsp::rename).args(A::Text),
     ex(
