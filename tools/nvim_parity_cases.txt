@@ -1,0 +1,96 @@
+# The cases behind ovim/tests/nvim_parity_test.rs. After adding one, run
+#   tools/nvim_parity.py rows tools/nvim_parity_cases.txt
+# and paste the new rows into the test.
+#
+# operators_over_motions
+# A count on `$`, `D` and `C` reaches into the following lines.
+A	wd2$
+A	w2D
+A	w2CX<Esc>
+A	wc2$X<Esc>
+A	wg~2$
+D	8Gd4$
+# ... and fails on the last line, where there is no line below.
+A	Gd2$
+A	G2D
+A	w2Dj.
+# `%` after an operator looks for a bracket further along the line.
+A	jd%
+A	jc%X<Esc>
+A	jy%P
+E	$F1d%
+E	f(c%X<Esc>f{.
+# `.` repeats an operator over any motion.
+A	wdgej.
+A	d3|j.
+A	fod;.
+B	jwc}X<Esc>
+A	wcgeX<Esc>w.
+A	c3|X<Esc>j.
+A	w2CX<Esc>gg.
+# A delete over several lines that starts in the indent takes them whole.
+A	jd2$
+B	jd/y<CR>
+# `gp` and `gP` leave the cursor after the text.
+A	wyiwjgp
+A	yyjgp
+A	yyjgP
+A	ywgP
+A	yyGgp
+A	ywgp.
+A	yyjgp.
+# Characterwise text that spans lines: the cursor goes to its start.
+A	wy2$jp
+A	wy2$P
+A	vjyjp
+# `ge` in the first word goes to the start of the buffer.
+A	wlge
+A	wdge.
+#
+# visual_motions_puts_numbers_and_ex_commands
+# Visual mode takes the Normal-mode motions it used to ignore.
+A	wv^d
+B	jwwv^d
+A	vWd
+A	wwvBd
+A	v3Ed
+A	v5|d
+A	v+d
+B	vMd
+B	5jv)d
+# `M` is the middle of the lines shown.
+B	M
+D	GM
+# <C-a> and <C-x> use the first number after the cursor.
+C	5j<C-a>
+C	5j5<C-x>
+C	5jfx<C-a>
+C	5jf-<C-a>
+C	5j<C-a>.
+# Visual `<` and `=` leave the cursor on the first line.
+A	Vjj<
+B	jjVk>
+B	jvj=
+# A block is put with the cursor at its top left corner.
+A	<C-v>jly$p
+A	<C-v>jlyP
+A	<C-v>jlyp.
+# :put, :> and :<
+A	yy:pu<CR>
+A	yy:pu!<CR>
+A	yy:0pu<CR>
+A	yiw:$pu<CR>
+A	"ayiwj:pu a<CR>
+D	:2,4><CR>
+D	:2,4>>><CR>
+A	:>|><CR>
+# <C-r> in the command line and in a search.
+A	wyiw:s/<C-r>0/X/<CR>
+A	w:s/<C-r><C-w>/X/<CR>
+A	jf(:s/<C-r><C-a>/X/<CR>
+A	wyiwgg/<C-r>0<CR>
+# a" takes the blanks after the quotes, or else those before them.
+B	jf"da"
+E	jjda'
+E	jjf"da"
+E	jf"ca"X<Esc>
