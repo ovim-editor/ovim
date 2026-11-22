@@ -141,7 +141,7 @@ ovim lsp check test.sql --verbose    # Check language detection
 ovim lsp languages                   # List all languages
 ```
 
-**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [docs/testing-vim-semantics.md](docs/testing-vim-semantics.md).
+**Vim-semantics tests must be derived from actual vim behavior, not from the implementation** — verify in `nvim --clean` before writing the assertion, and cite the reference in a comment. See [docs/testing-vim-semantics.md](docs/testing-vim-semantics.md). `tools/nvim_parity.py` runs the same keys in nvim and ovim and prints the differences, or the rows for `ovim/tests/nvim_parity_test.rs`.
 
 ## Language Support
 

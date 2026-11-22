@@ -52,6 +52,28 @@ registers, text objects, counts, undo grouping, mode transitions):
    bug (as in the seven cases above) — or the new behavior may be. The
    reference decides, not whichever assertion is convenient.
 
+## Comparing with nvim mechanically
+
+`tools/nvim_parity.py` types the same keys into `nvim --clean` and into a
+headless ovim and compares the text, the cursor and the mode:
+
+```bash
+cargo build -p ovim
+printf 'A\twd2$\nB\tjf"da"\n' > /tmp/cases.txt
+tools/nvim_parity.py compare /tmp/cases.txt   # prints the cases that differ
+tools/nvim_parity.py rows /tmp/cases.txt      # prints rows for a Rust test
+```
+
+`ovim/tests/nvim_parity_test.rs` is built from such rows: each one is what
+nvim did, so the test can only pass when ovim does the same. Its cases are
+in `tools/nvim_parity_cases.txt`. `tools/nvim_parity_sweep.txt` is a wider
+sample of about 800 everyday commands for finding differences; the ones
+still open are listed in OV-00514.
+
+The script's header lists what a difference can mean other than a bug (nvim
+leaving Insert mode when the keys end, the `\e` / `\c` / `\n` escapes of
+`ovim send`, ovim's cursor position after undo).
+
 ## Where the reference matters most
 
 Priority areas, in order of past defect density:
