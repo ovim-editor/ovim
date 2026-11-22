@@ -1178,7 +1178,7 @@ fn test_gn_with_regex_pattern() {
 
     // Search for pattern matching "test" followed by digits
     test.press('/')
-        .type_text(r"test\d+")
+        .type_text(r"test\d\+")
         .press_enter()
         .keys("0gn"); // /test\d+ lands on test456; `0` goes back to test123
 

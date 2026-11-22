@@ -272,7 +272,7 @@ async fn substitute_chains_with_a_following_command_and_reports_e486() {
     test.command("s/foo/baz/ | s/1/2/");
     assert_eq!(test.buffer_content(), "baz 2\nbar\n");
     // A bar inside the pattern stays part of the pattern.
-    test.command("s/x|baz/q/");
+    test.command("s/x\\|baz/q/");
     assert_eq!(test.buffer_content(), "q 2\nbar\n");
     test.command("s/nomatch/x/");
     assert!(status(&test).starts_with("E486"), "{}", status(&test));
