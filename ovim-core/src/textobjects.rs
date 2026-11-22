@@ -908,111 +908,40 @@ impl TextObjects {
         Some(Self::whole_lines(buffer, start_line, end_line))
     }
 
-    /// Gets the range for "inner sentence" (is)
-    /// A sentence ends with '.', '!', or '?' followed by whitespace or end of line
+    /// `is`: the sentence under the cursor without the blanks after it, or,
+    /// with the cursor on those blanks, the blanks.
     pub fn inner_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
-        let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col().0;
-
-        if line_idx >= buffer.line_count() {
-            return None;
-        }
-
-        let line_text = crate::display::line_content(buffer.rope(), line_idx);
-        let chars: Vec<char> = line_text.chars().collect();
-
-        if chars.is_empty() {
-            return None;
-        }
-
-        let is_sentence_end = |c: char| c == '.' || c == '!' || c == '?';
-
-        // Find start of sentence (after previous sentence end + whitespace)
-        let mut start_col = 0;
-        for i in (0..col).rev() {
-            if is_sentence_end(chars[i]) {
-                // Skip whitespace after sentence end
-                start_col = i + 1;
-                while start_col < chars.len() && chars[start_col].is_whitespace() {
-                    start_col += 1;
-                }
-                break;
-            }
-        }
-
-        // Find end of sentence (next sentence end)
-        let mut end_col = col;
-        while end_col < chars.len() && !is_sentence_end(chars[end_col]) {
-            end_col += 1;
-        }
-
-        // For inner sentence, don't include the punctuation (exclusive end handles this)
-        // end_col now points to the punctuation or past the end
-        // With exclusive semantics, this is correct - we want up to but not including this position
-
-        Some(TextObjectRange {
-            start_line: line_idx,
-            start_col: CharCol(start_col),
-            end_line: line_idx,
-            end_col: CharCol(end_col),
-        })
+        let sentence = SentenceAtCursor::find(buffer)?;
+        let (start, end) = if sentence.cursor_on_blanks {
+            (sentence.text_end, sentence.next_start)
+        } else {
+            (sentence.start, sentence.text_end)
+        };
+        Some(sentence_range(start, end))
     }
 
-    /// Gets the range for "around sentence" (as)
-    /// Includes the sentence and trailing whitespace
+    /// `as`: the sentence and the blanks after it. Without blanks after it
+    /// (the last sentence of a line or paragraph) the blanks before it are
+    /// taken instead; with the cursor on the blanks, the blanks and the
+    /// sentence after them (`:help as`).
     pub fn around_sentence(buffer: &Buffer) -> Option<TextObjectRange> {
-        let line_idx = buffer.cursor().line();
-        let col = buffer.cursor_char_col().0;
-
-        if line_idx >= buffer.line_count() {
-            return None;
-        }
-
-        let line_text = crate::display::line_content(buffer.rope(), line_idx);
-        let chars: Vec<char> = line_text.chars().collect();
-
-        if chars.is_empty() {
-            return None;
-        }
-
-        let is_sentence_end = |c: char| c == '.' || c == '!' || c == '?';
-
-        // Find start of sentence
-        let mut start_col = 0;
-        for i in (0..col).rev() {
-            if is_sentence_end(chars[i]) {
-                start_col = i + 1;
-                while start_col < chars.len() && chars[start_col].is_whitespace() {
-                    start_col += 1;
-                }
-                break;
-            }
-        }
-
-        // Find end of sentence
-        let mut end_col = col;
-        while end_col < chars.len() && !is_sentence_end(chars[end_col]) {
-            end_col += 1;
-        }
-
-        // Include punctuation and trailing whitespace
-        if end_col < chars.len() {
-            end_col += 1; // Move past the punctuation
-            while end_col < chars.len() && chars[end_col].is_whitespace() {
-                end_col += 1;
-            }
-            // end_col is now exclusive - points one past the last character to include
+        let sentence = SentenceAtCursor::find(buffer)?;
+        let (start, end) = if sentence.cursor_on_blanks {
+            (
+                sentence.text_end,
+                sentence.following_text_end.unwrap_or(sentence.next_start),
+            )
+        } else if sentence.blanks_follow_on_the_line() {
+            (sentence.start, sentence.next_start)
         } else {
-            // At end of line - use chars.len() as exclusive end
-            end_col = chars.len();
-        }
-
-        Some(TextObjectRange {
-            start_line: line_idx,
-            start_col: CharCol(start_col),
-            end_line: line_idx,
-            end_col: CharCol(end_col),
-        })
+            let (line, mut col) = sentence.start;
+            let text: Vec<char> = buffer.line_text(line).unwrap_or_default().chars().collect();
+            while col > 0 && matches!(text[col - 1], ' ' | '\t') {
+                col -= 1;
+            }
+            ((line, col), sentence.text_end)
+        };
+        Some(sentence_range(start, end))
     }
 
     /// Gets the indentation level in visual columns.
@@ -1305,5 +1234,97 @@ impl TextObjects {
         }
 
         None
+    }
+}
+
+fn sentence_range(start: (usize, usize), end: (usize, usize)) -> TextObjectRange {
+    TextObjectRange {
+        start_line: start.0,
+        start_col: CharCol(start.1),
+        end_line: end.0,
+        end_col: CharCol(end.1),
+    }
+}
+
+/// The sentence the cursor is in, as `(line, char column)` positions. Ends
+/// are exclusive.
+struct SentenceAtCursor {
+    start: (usize, usize),
+    /// After the last non-blank of the sentence.
+    text_end: (usize, usize),
+    /// The start of the next sentence, or the end of the paragraph.
+    next_start: (usize, usize),
+    /// After the last non-blank of the next sentence, when there is one.
+    following_text_end: Option<(usize, usize)>,
+    /// The cursor is on the blanks between this sentence and the next.
+    cursor_on_blanks: bool,
+}
+
+impl SentenceAtCursor {
+    fn find(buffer: &Buffer) -> Option<Self> {
+        use crate::editor::motions::sentence::{boundary_at_or_above, stops_from, StopKind};
+
+        let cursor = (buffer.cursor().line(), buffer.cursor_char_col().0);
+        if buffer.line_len(cursor.0) == 0 {
+            return None;
+        }
+        // Sentence starts up to the second one after the cursor, or up to the
+        // empty line that ends the paragraph.
+        let mut after_cursor = 0;
+        let stops = stops_from(buffer, boundary_at_or_above(buffer, cursor.0), |stop| {
+            after_cursor += usize::from(stop.0 > cursor);
+            after_cursor >= 2 || (stop.0 > cursor && stop.1 != StopKind::Sentence)
+        });
+        let paragraph_end = stops
+            .iter()
+            .find(|stop| stop.1 == StopKind::FirstEmptyLine && stop.0 > cursor)
+            .map_or_else(
+                || {
+                    let last = buffer.line_count().saturating_sub(1);
+                    (last, buffer.line_len(last))
+                },
+                |stop| (stop.0 .0 - 1, buffer.line_len(stop.0 .0 - 1)),
+            );
+        let starts: Vec<(usize, usize)> = stops
+            .iter()
+            .filter(|stop| stop.1 == StopKind::Sentence && stop.0 <= paragraph_end)
+            .map(|stop| stop.0)
+            .collect();
+        let index = starts.iter().rposition(|start| *start <= cursor)?;
+        let start_of = |index: usize| starts.get(index).copied().unwrap_or(paragraph_end);
+        let text_end = text_end_before(buffer, start_of(index + 1));
+        Some(Self {
+            start: starts[index],
+            text_end,
+            next_start: start_of(index + 1),
+            following_text_end: (index + 1 < starts.len())
+                .then(|| text_end_before(buffer, start_of(index + 2))),
+            cursor_on_blanks: cursor >= text_end,
+        })
+    }
+
+    /// Blanks on the sentence's last line separate it from the next one. A
+    /// line break alone does not count: the last sentence of a line takes
+    /// the blanks before it.
+    fn blanks_follow_on_the_line(&self) -> bool {
+        self.text_end.0 == self.next_start.0 && self.text_end.1 < self.next_start.1
+    }
+}
+
+/// The position after the last non-blank before `position`, going back over
+/// blanks and line breaks.
+fn text_end_before(buffer: &Buffer, position: (usize, usize)) -> (usize, usize) {
+    let (mut line, mut col) = position;
+    loop {
+        let text: Vec<char> = buffer.line_text(line).unwrap_or_default().chars().collect();
+        col = col.min(text.len());
+        while col > 0 && text[col - 1].is_whitespace() {
+            col -= 1;
+        }
+        if col > 0 || line == 0 {
+            return (line, col);
+        }
+        line -= 1;
+        col = usize::MAX;
     }
 }

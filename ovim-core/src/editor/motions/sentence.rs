@@ -1,209 +1,237 @@
-//! Sentence motions: (, )
+//! Sentence motions `(` and `)`, and the sentence boundaries the `is` / `as`
+//! text objects share.
+//!
+//! `:help sentence`: a sentence ends at `.`, `!` or `?` followed by the end
+//! of the line, a space or a tab; any number of `)`, `]`, `"` and `'` may
+//! come between. The next sentence starts at the first non-blank after that.
+//! An empty line ends a sentence too and is a stop of its own: going forward
+//! the cursor stops on the first empty line of a run, going backward on the
+//! last. `x.y` and `e.g.` in the middle of a word end nothing.
 
 use super::Motions;
 use crate::buffer::Buffer;
-use crate::unicode::GraphemeCol;
+use crate::unicode::CharCol;
+
+/// What a place where `(` or `)` stops is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum StopKind {
+    /// The first character of a sentence.
+    Sentence,
+    /// The first line of a run of empty lines: where `)` stops.
+    FirstEmptyLine,
+    /// The last line of a run of empty lines: where `(` stops.
+    LastEmptyLine,
+}
+
+/// A stop at `(line, char column)`.
+pub(crate) type Stop = ((usize, usize), StopKind);
+
+fn is_empty_line(buffer: &Buffer, line: usize) -> bool {
+    buffer.line_len(line) == 0
+}
+
+/// The nearest line at or above `line` where a scan can start knowing that a
+/// sentence begins there: an empty line, or the first line.
+pub(crate) fn boundary_at_or_above(buffer: &Buffer, mut line: usize) -> usize {
+    while line > 0 && !is_empty_line(buffer, line) {
+        line -= 1;
+    }
+    line
+}
+
+/// The stops in lines `first..`, in order, until `enough` says so or the
+/// buffer ends. `first` must be a line from [`boundary_at_or_above`].
+pub(crate) fn stops_from(
+    buffer: &Buffer,
+    first: usize,
+    mut enough: impl FnMut(&Stop) -> bool,
+) -> Vec<Stop> {
+    let mut stops = Vec::new();
+    let mut expect_start = true;
+    let mut line = first;
+    let line_count = buffer.line_count();
+    while line < line_count {
+        if is_empty_line(buffer, line) {
+            let mut last = line;
+            while last + 1 < line_count && is_empty_line(buffer, last + 1) {
+                last += 1;
+            }
+            for stop in [
+                ((line, 0), StopKind::FirstEmptyLine),
+                ((last, 0), StopKind::LastEmptyLine),
+            ] {
+                stops.push(stop);
+                if enough(&stop) {
+                    return stops;
+                }
+            }
+            expect_start = true;
+            line = last + 1;
+            continue;
+        }
+        let text = buffer.line_text(line).unwrap_or_default();
+        let chars: Vec<char> = text.chars().collect();
+        let mut col = 0;
+        while col < chars.len() {
+            let c = chars[col];
+            if expect_start && !c.is_whitespace() {
+                expect_start = false;
+                let stop = ((line, col), StopKind::Sentence);
+                stops.push(stop);
+                if enough(&stop) {
+                    return stops;
+                }
+            }
+            col += 1;
+            if matches!(c, '.' | '!' | '?') {
+                let mut after = col;
+                while matches!(chars.get(after), Some(')' | ']' | '"' | '\'')) {
+                    after += 1;
+                }
+                if matches!(chars.get(after), None | Some(' ' | '\t')) {
+                    expect_start = true;
+                    col = after;
+                }
+            }
+        }
+        line += 1;
+    }
+    stops
+}
 
 impl Motions {
-    /// Move forward to start of next sentence (( and ) motions)
+    /// `)`: forward to the start of the `count`-th next sentence.
     pub fn sentence_forward(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {
-            Self::sentence_forward_once(buffer);
-        }
-    }
-
-    fn sentence_forward_once(buffer: &mut Buffer) {
-        // TODO (Bug 4): Sentence motion doesn't handle abbreviations like "Dr.", "e.g.", "i.e."
-        // Vim's sentence motion has some heuristics for this (e.g., two spaces after period)
-        // but implementing full abbreviation support would require a dictionary or more
-        // sophisticated pattern matching. Low priority since basic sentence navigation works.
-
-        let cursor = buffer.cursor();
-        let line_idx = cursor.line();
-        let grapheme_col = cursor.col();
-        let total_lines = buffer.line_count();
-
-        // Convert grapheme col to char col for char-based iteration
-        let char_col = if let Some(line_text) = buffer.line_text(line_idx) {
-            crate::unicode::grapheme_to_char_col(&line_text, grapheme_col).0
-        } else {
-            0
-        };
-
-        // Get text from current position onwards
-        let mut current_line = line_idx;
-        let mut current_col = char_col + 1;
-
-        // Look for sentence-ending punctuation (.!?) followed by space/newline
-        while current_line < total_lines {
-            if let Some(line) = buffer.line_text(current_line) {
-                let chars: Vec<char> = line.chars().collect();
-
-                while current_col < chars.len() {
-                    let ch = chars[current_col];
-                    if ch == '.' || ch == '!' || ch == '?' {
-                        // Check if followed by space or at end of line
-                        if current_col + 1 >= chars.len() || chars[current_col + 1].is_whitespace()
-                        {
-                            // Skip whitespace after punctuation
-                            current_col += 1;
-                            while current_col < chars.len() && chars[current_col].is_whitespace() {
-                                current_col += 1;
-                            }
-
-                            if current_col >= chars.len() {
-                                // Move to next line
-                                if current_line + 1 < total_lines {
-                                    buffer
-                                        .cursor_mut()
-                                        .set_position(current_line + 1, GraphemeCol::ZERO);
-                                } else {
-                                    let line_str: String = line.to_string();
-                                    let end_grapheme = crate::unicode::char_to_grapheme_col(
-                                        &line_str,
-                                        crate::unicode::CharCol(chars.len().saturating_sub(1)),
-                                    );
-                                    buffer.cursor_mut().set_position(current_line, end_grapheme);
-                                }
-                            } else {
-                                let line_str: String = line.to_string();
-                                let grapheme = crate::unicode::char_to_grapheme_col(
-                                    &line_str,
-                                    crate::unicode::CharCol(current_col),
-                                );
-                                buffer.cursor_mut().set_position(current_line, grapheme);
-                            }
-                            return;
-                        }
-                    }
-                    current_col += 1;
+            let cursor = (buffer.cursor().line(), buffer.cursor_char_col().0);
+            let ahead = |stop: &Stop| stop.1 != StopKind::LastEmptyLine && stop.0 > cursor;
+            let first = boundary_at_or_above(buffer, cursor.0);
+            let target = stops_from(buffer, first, ahead)
+                .into_iter()
+                .find(ahead)
+                .map(|stop| stop.0);
+            match target {
+                Some((line, col)) => buffer.set_cursor_char_col(line, CharCol(col)),
+                // No sentence follows: the last character of the buffer.
+                None => {
+                    let line = buffer.line_count().saturating_sub(1);
+                    let col = buffer.line_len(line).saturating_sub(1);
+                    buffer.set_cursor_char_col(line, CharCol(col));
+                    return;
                 }
             }
-
-            current_line += 1;
-            current_col = 0;
         }
-
-        // No sentence found, move to end of buffer
-        let last_line = buffer.line_count().saturating_sub(1);
-        buffer
-            .cursor_mut()
-            .set_position(last_line, GraphemeCol::ZERO);
     }
 
-    /// Move backward to start of previous sentence
+    /// `(`: backward to the start of the `count`-th previous sentence.
     pub fn sentence_backward(buffer: &mut Buffer, count: usize) {
         for _ in 0..count {
-            Self::sentence_backward_once(buffer);
+            let cursor = (buffer.cursor().line(), buffer.cursor_char_col().0);
+            // Start far enough up to see the stop before the cursor: past the
+            // empty lines the cursor may be on and the paragraph above them.
+            let mut first = boundary_at_or_above(buffer, cursor.0);
+            while first > 0 && is_empty_line(buffer, first - 1) {
+                first -= 1;
+            }
+            let first = boundary_at_or_above(buffer, first.saturating_sub(1));
+            let target = stops_from(buffer, first, |stop| stop.0 >= cursor)
+                .into_iter()
+                .filter(|stop| stop.1 != StopKind::FirstEmptyLine && stop.0 < cursor)
+                .next_back()
+                .map_or((0, 0), |stop| stop.0);
+            buffer.set_cursor_char_col(target.0, CharCol(target.1));
         }
     }
+}
 
-    fn sentence_backward_once(buffer: &mut Buffer) {
-        let cursor = buffer.cursor();
-        let mut line_idx = cursor.line();
-        let grapheme_col = cursor.col();
+#[cfg(test)]
+mod tests {
+    use super::*;
 
-        // Convert grapheme to char col for char-based iteration
-        let mut col = if let Some(line_text) = buffer.line_text(line_idx) {
-            crate::unicode::grapheme_to_char_col(&line_text, grapheme_col).0
-        } else {
-            0
+    // What nvim --clean does on the same text (tools/nvim_parity.py, fixture F).
+    const TEXT: &str = "First one. Second one!  Third (really?) yes.\nWraps onto\n\
+        the next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  \
+        indented. x.y is not\n";
+
+    fn cursor(buffer: &Buffer) -> (usize, usize) {
+        (buffer.cursor().line(), buffer.cursor_char_col().0)
+    }
+
+    #[test]
+    fn forward_stops_at_sentences_and_at_the_first_empty_line() {
+        let mut buffer = Buffer::new_from_str(TEXT);
+        let mut seen = Vec::new();
+        for _ in 0..11 {
+            Motions::sentence_forward(&mut buffer, 1);
+            seen.push(cursor(&buffer));
+        }
+        assert_eq!(
+            seen,
+            [
+                (0, 11),
+                (0, 24),
+                (0, 40),
+                (1, 0),
+                (2, 15),
+                (3, 0),
+                (5, 0),
+                (5, 16),
+                (5, 31),
+                (6, 12),
+                // Nothing follows: the last character.
+                (6, 21),
+            ]
+        );
+    }
+
+    #[test]
+    fn backward_stops_at_sentences_and_at_the_last_empty_line() {
+        let mut buffer = Buffer::new_from_str(TEXT);
+        buffer.set_cursor_char_col(6, CharCol(21));
+        let mut seen = Vec::new();
+        for _ in 0..11 {
+            Motions::sentence_backward(&mut buffer, 1);
+            seen.push(cursor(&buffer));
+        }
+        assert_eq!(
+            seen,
+            [
+                (6, 12),
+                (5, 31),
+                (5, 16),
+                (5, 0),
+                (4, 0),
+                (2, 15),
+                (1, 0),
+                (0, 40),
+                (0, 24),
+                (0, 11),
+                (0, 0),
+            ]
+        );
+    }
+
+    #[test]
+    fn counts_and_starting_points_inside_a_sentence() {
+        let at = |line: usize, col: usize, forward: bool, count: usize| {
+            let mut buffer = Buffer::new_from_str(TEXT);
+            buffer.set_cursor_char_col(line, CharCol(col));
+            if forward {
+                Motions::sentence_forward(&mut buffer, count);
+            } else {
+                Motions::sentence_backward(&mut buffer, count);
+            }
+            cursor(&buffer)
         };
-
-        if col == 0 && line_idx == 0 {
-            return;
-        }
-
-        // Move back one position
-        if col > 0 {
-            col -= 1;
-        } else if line_idx > 0 {
-            line_idx -= 1;
-            if let Some(line) = buffer.line_text(line_idx) {
-                col = line.chars().count().saturating_sub(1);
-            }
-        }
-
-        // If the step-back landed on the whitespace/terminator that ends the
-        // *previous* sentence — i.e. the cursor was sitting at the start of the
-        // current sentence — skip back over that boundary. Otherwise the scan
-        // below immediately re-finds this sentence's own terminator and returns
-        // where we already are, making `(` a no-op at a sentence start.
-        if let Some(line) = buffer.line_text(line_idx) {
-            let chars: Vec<char> = line.chars().collect();
-            if !chars.is_empty() {
-                col = col.min(chars.len() - 1);
-                while col > 0 && chars[col].is_whitespace() {
-                    col -= 1;
-                }
-                while col > 0 && matches!(chars[col], '.' | '!' | '?') {
-                    col -= 1;
-                }
-            }
-        }
-
-        // Look for sentence-ending punctuation (.!?) followed by space/newline
-        loop {
-            if let Some(line) = buffer.line_text(line_idx) {
-                let chars: Vec<char> = line.chars().collect();
-
-                if chars.is_empty() {
-                    // Empty line — skip to previous line
-                    if line_idx == 0 {
-                        buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
-                        return;
-                    }
-                    line_idx -= 1;
-                    if let Some(prev_line) = buffer.line_text(line_idx) {
-                        col = prev_line.chars().count().saturating_sub(1);
-                    }
-                    continue;
-                }
-
-                // Clamp col to valid range (cursor may exceed line length
-                // e.g. after $ then k to a shorter line)
-                col = col.min(chars.len().saturating_sub(1));
-
-                while col > 0 {
-                    let ch = chars[col];
-                    if ch == '.' || ch == '!' || ch == '?' {
-                        // Found sentence end, move past it
-                        col += 1;
-                        // Skip whitespace
-                        while col < chars.len() && chars[col].is_whitespace() {
-                            col += 1;
-                        }
-
-                        if col >= chars.len() && line_idx + 1 < buffer.line_count() {
-                            buffer
-                                .cursor_mut()
-                                .set_position(line_idx + 1, GraphemeCol::ZERO);
-                        } else {
-                            let clamped = col.min(chars.len().saturating_sub(1));
-                            let line_str: String = line.to_string();
-                            buffer.cursor_mut().set_position(
-                                line_idx,
-                                crate::unicode::char_to_grapheme_col(
-                                    &line_str,
-                                    crate::unicode::CharCol(clamped),
-                                ),
-                            );
-                        }
-                        return;
-                    }
-                    col = col.saturating_sub(1);
-                }
-            }
-
-            if line_idx == 0 {
-                buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
-                return;
-            }
-
-            line_idx -= 1;
-            if let Some(line) = buffer.line_text(line_idx) {
-                col = line.chars().count().saturating_sub(1);
-            }
-        }
+        assert_eq!(at(0, 0, true, 3), (0, 40));
+        // From the middle of a sentence `(` goes to its start.
+        assert_eq!(at(0, 14, false, 1), (0, 11));
+        // From between two empty lines.
+        assert_eq!(at(3, 0, true, 1), (5, 0));
+        assert_eq!(at(4, 0, false, 1), (2, 15));
+        assert_eq!(at(5, 0, false, 1), (4, 0));
+        // The indent of a continuation line starts nothing.
+        assert_eq!(at(6, 2, false, 1), (5, 31));
+        assert_eq!(at(6, 2, false, 3), (5, 0));
     }
 }

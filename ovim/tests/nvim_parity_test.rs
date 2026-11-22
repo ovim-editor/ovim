@@ -14,6 +14,8 @@ const C: &str = "alpha\n\n\nbeta gamma\n\tdelta  epsilon\nzeta-eta_theta 12 0x1f
 const D: &str = "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n";
 const E: &str = "foo.bar(baz[1], {k: v});\n<div class=\"x\">text</div>\n'single' `tick` \"dq\"\n";
 
+const F: &str = "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n";
+
 type Case = (&'static str, &'static str, &'static str, (usize, usize));
 
 fn assert_matches_nvim(cases: &[Case]) {
@@ -130,5 +132,59 @@ fn visual_motions_puts_numbers_and_ex_commands() {
         (E, "jjda'", "foo.bar(baz[1], {k: v});\n<div class=\"x\">text</div>\n`tick` \"dq\"\n", (2, 0)),
         (E, "jjf\"da\"", "foo.bar(baz[1], {k: v});\n<div class=\"x\">text</div>\n'single' `tick`\n", (2, 14)),
         (E, "jf\"ca\"X<Esc>", "foo.bar(baz[1], {k: v});\n<div class=X>text</div>\n'single' `tick` \"dq\"\n", (1, 11)),
+    ]);
+}
+
+#[test]
+fn sentences() {
+    assert_matches_nvim(&[
+        // Sentence motions: the stops of ( and ).
+        (F, ")", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "))))", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (1, 0)),
+        (F, ")))))", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (2, 15)),
+        (F, "))))))", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (3, 0)),
+        (F, ")))))))", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (5, 0)),
+        (F, "))))))))))", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (6, 12)),
+        (F, "3)", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 40)),
+        (F, "G$)", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (6, 21)),
+        (F, "G$(", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (6, 12)),
+        (F, "G$(((((", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (4, 0)),
+        (F, "G$((((((", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (2, 15)),
+        (F, "6G(", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (4, 0)),
+        (F, "5G)", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (5, 0)),
+        (F, "wwww(", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "f?l)", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 40)),
+        (F, "G3(", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (5, 0)),
+        (B, ")", "fn main() {\n    let x = foo(bar, \"baz qux\");\n    if x { y(); }\n}\n\nlast paragraph here.\nSecond sentence.  Third one? Yes.\n", (4, 0)),
+        (B, "G(", "fn main() {\n    let x = foo(bar, \"baz qux\");\n    if x { y(); }\n}\n\nlast paragraph here.\nSecond sentence.  Third one? Yes.\n", (5, 0)),
+        // Operators over sentence motions.
+        (F, "fSd)", "First one. Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "fSld(", "First one. econd one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "fSc)X<Esc>", "First one. XThird (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "jd)", "First one. Second one!  Third (really?) yes.\nEnd of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (1, 0)),
+        (F, "fSv)d", "First one. hird (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        // is: the sentence with its punctuation, or the blanks the cursor is on.
+        (F, "dis", " Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 0)),
+        (F, "f!dis", "First one.   Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "f!ldis", "First one. Second one!Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 22)),
+        (F, "$dis", "First one. Second one!  Third (really?) \nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 39)),
+        (F, "jdis", "First one. Second one!  Third (really?) yes.\n End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (1, 0)),
+        (F, "jj$dis", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. \n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (2, 14)),
+        (F, "6G$dis", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\"  x.y is not\n", (5, 31)),
+        (F, "fScisX<Esc>", "First one. X  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (F, "fSvis<Esc>", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 21)),
+        (B, "5jdis", "fn main() {\n    let x = foo(bar, \"baz qux\");\n    if x { y(); }\n}\n\nSecond sentence.  Third one? Yes.\n", (5, 0)),
+        // as: with the blanks after it, else the blanks before it.
+        (F, "das", "Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 0)),
+        (F, "f!ldas", "First one. Second one! yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 22)),
+        (F, "$das", "First one. Second one!  Third (really?)\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 38)),
+        (F, "jdas", "First one. Second one!  Third (really?) yes.\nEnd of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (1, 0)),
+        (F, "jj$das", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (2, 13)),
+        (F, "6GfLdas", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Done\n  indented. x.y is not\n", (5, 16)),
+        (F, "7G$das", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented.\n", (6, 10)),
+        (F, "fSvas<Esc>", "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 23)),
+        (F, "fSdas.", "First one. yes.\nWraps onto\nthe next line. End of para.\n\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n", (0, 11)),
+        (B, "5jdas", "fn main() {\n    let x = foo(bar, \"baz qux\");\n    if x { y(); }\n}\n\nSecond sentence.  Third one? Yes.\n", (5, 0)),
+        (B, "6j$das", "fn main() {\n    let x = foo(bar, \"baz qux\");\n    if x { y(); }\n}\n\nlast paragraph here.\nSecond sentence.  Third one?\n", (6, 27)),
     ]);
 }

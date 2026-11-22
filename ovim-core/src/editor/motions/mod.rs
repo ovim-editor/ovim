@@ -18,7 +18,7 @@ mod method;
 mod paragraph;
 mod screen;
 mod section;
-mod sentence;
+pub(crate) mod sentence;
 mod word;
 
 /// Character classification for word motions.
