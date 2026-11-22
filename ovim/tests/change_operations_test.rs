@@ -567,11 +567,11 @@ fn test_ca_double_quote() {
     let mut test = EditorTest::new(r#"hello "world" test"#);
 
     test.keys("f\"")
-        .keys("ca\"") // Change around quotes (includes quotes)
+        .keys("ca\"") // nvim: the quotes and the blank after them
         .type_text("'universe'")
         .press_esc();
 
-    assert_eq!(test.buffer_content(), "hello 'universe' test\n");
+    assert_eq!(test.buffer_content(), "hello 'universe'test\n");
     test.assert_cursor(0, 15);
 }
 

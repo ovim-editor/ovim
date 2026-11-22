@@ -9,6 +9,16 @@ use anyhow::Result;
 
 /// Handles input in Search mode
 pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    if let Some(text) = super::helpers::take_prompt_register_text(editor, &key_event) {
+        let mut changed = false;
+        for character in text.chars() {
+            changed |= editor.insert_search_char(character);
+        }
+        if changed {
+            editor.preview_search();
+        }
+        return Ok(());
+    }
     if let Some(control) = super::helpers::prompt_control(&key_event) {
         use super::helpers::PromptControl;
         match control {
@@ -36,6 +46,7 @@ pub fn handle_search_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()
             }
             PromptControl::Home => editor.move_search_cursor_home(),
             PromptControl::End => editor.move_search_cursor_end(),
+            PromptControl::InsertRegister => editor.editing.pending_register_insert = true,
             PromptControl::Ignore => {}
         }
         return Ok(());

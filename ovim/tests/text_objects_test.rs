@@ -188,9 +188,9 @@ fn test_di_double_quote() {
 fn test_da_double_quote() {
     let mut test = EditorTest::new(r#"hello "world" test"#);
 
-    test.keys("f\"").keys("da\""); // Delete including quotes
+    test.keys("f\"").keys("da\""); // nvim: the quotes and the blank after them
 
-    assert_eq!(test.buffer_content(), "hello  test\n");
+    assert_eq!(test.buffer_content(), "hello test\n");
     test.assert_cursor(0, 6);
 }
 
@@ -248,7 +248,7 @@ fn test_da_single_quote() {
 
     test.keys("f'").keys("da'");
 
-    assert_eq!(test.buffer_content(), "hello  test\n");
+    assert_eq!(test.buffer_content(), "hello test\n");
     test.assert_cursor(0, 6);
 }
 

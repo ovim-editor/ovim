@@ -27,7 +27,7 @@ pub fn handle_rename_input_mode(editor: &mut Editor, key_event: KeyEvent) -> Res
                 PromptControl::End => {
                     editor.rename_input_mut().move_end();
                 }
-                PromptControl::Ignore => {}
+                PromptControl::InsertRegister | PromptControl::Ignore => {}
             }
             return Ok(());
         }

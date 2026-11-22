@@ -888,6 +888,8 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                         .buffer_mut()
                         .cursor_mut()
                         .set_position(start_line, GraphemeCol(0));
+                } else {
+                    cursor_to_first_non_blank(editor, start_line);
                 }
             }
             helpers::exit_visual_mode_to_normal(editor);
@@ -904,6 +906,7 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                     // push_recorded_undo() calls mark_buffer_modified() internally
                     editor.push_recorded_undo(edits, cursor_before, cursor_after);
                 }
+                cursor_to_first_non_blank(editor, start_line);
             }
             helpers::exit_visual_mode_to_normal(editor);
         }
@@ -915,9 +918,23 @@ fn handle_visual_key(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
                 editor.append_count(digit);
             }
         }
+        // Motions that mean the same in Normal mode and need nothing extra
+        // here: the selection follows the cursor.
+        KeyCode::Char(
+            '^' | '_' | '|' | '+' | '-' | 'W' | 'B' | 'E' | 'H' | 'M' | 'L' | '(' | ')',
+        ) => {
+            editor.set_visual_block_dollar(false);
+            super::normal::handle_motion(editor, key_event)?;
+        }
         _ => {}
     }
     Ok(())
+}
+
+/// Where `<`, `>` and `=` leave the cursor: the first line they changed.
+fn cursor_to_first_non_blank(editor: &mut Editor, line: usize) {
+    let col = editor.buffer().first_non_blank_col(line);
+    editor.buffer_mut().set_cursor_char_col(line, col);
 }
 
 /// Visual-mode Ctrl chords. Vim's that this editor supports run here; every other

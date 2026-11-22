@@ -31,9 +31,11 @@ impl Motions {
         viewport_start: usize,
         viewport_height: usize,
     ) {
-        let middle_offset = viewport_height / 2;
-        let target_line =
-            (viewport_start + middle_offset).min(buffer.line_count().saturating_sub(1));
+        // The middle of the lines shown, which is less than the window when
+        // the buffer ends inside it.
+        let last_shown = (viewport_start + viewport_height.saturating_sub(1))
+            .min(buffer.line_count().saturating_sub(1));
+        let target_line = viewport_start + last_shown.saturating_sub(viewport_start) / 2;
 
         // Move to first non-blank character on the line
         if let Some(line_text) = buffer.line_text(target_line) {

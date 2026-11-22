@@ -16,6 +16,32 @@ mod text_objects;
 
 pub(super) use operator_motion::{apply_between, finish_operator_search, Reach};
 
+/// A cursor motion as Normal mode runs it, for the modes that share them.
+pub(super) fn handle_motion(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
+    motions_input::try_handle(editor, key_event)
+}
+
+/// The word (`big`: the WORD) under or after the cursor, as `*` picks it.
+pub(super) fn word_under_cursor(editor: &Editor, big: bool) -> Option<String> {
+    if big {
+        let cursor = editor.buffer().cursor();
+        let line = editor.buffer().line_text(cursor.line())?;
+        let graphemes: Vec<&str> =
+            unicode_segmentation::UnicodeSegmentation::graphemes(&*line, true).collect();
+        let blank = |index: usize| graphemes[index].chars().all(char::is_whitespace);
+        let on = (cursor.col().0..graphemes.len()).find(|&index| !blank(index))?;
+        let start = (0..on)
+            .rev()
+            .find(|&index| blank(index))
+            .map_or(0, |index| index + 1);
+        let end = (on..graphemes.len())
+            .find(|&index| blank(index))
+            .unwrap_or(graphemes.len());
+        return Some(graphemes[start..end].concat());
+    }
+    motions_input::word_at_or_after_cursor(editor).map(|(word, _)| word)
+}
+
 /// `.` for an operator over a motion. `inserted_text` is what a `c{motion}`
 /// typed, `None` for every other operator.
 pub(in crate::editor) fn repeat_operator_motion(

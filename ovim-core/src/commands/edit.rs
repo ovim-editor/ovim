@@ -146,6 +146,79 @@ pub(super) fn yank(editor: &mut Editor, ex: &Ex) -> CommandResult {
     ok_silent()
 }
 
+/// `:[line]pu[t][!] [x]`: put register `x` as lines below the line, or
+/// above it with `!`. The cursor goes to the last new line.
+pub(super) fn put(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    if !editor.buffer().is_modifiable() {
+        return unmodifiable();
+    }
+    let mut args = ex.args.trim().chars();
+    if let Some(register) = args.next() {
+        if args.next().is_some() {
+            return err(format!("E488: Trailing characters: {}", ex.args.trim()));
+        }
+        editor.set_pending_register(register);
+    }
+    let (mut text, _) = editor.get_from_register_with_type();
+    if text.is_empty() {
+        return err("E353: Nothing in register");
+    }
+    if !text.ends_with('\n') {
+        text.push('\n');
+    }
+    let line = ex.range.expect("line-range command").end;
+    let after = if ex.bang {
+        line.saturating_sub(1)
+    } else {
+        line
+    }
+    .min(range::last_line(editor));
+    let count = text.matches('\n').count();
+    editor.record_operation(
+        |buffer| {
+            insert_lines_below(buffer, after, &text);
+            buffer
+                .cursor_mut()
+                .set_position(after + count - 1, GraphemeCol::ZERO);
+            crate::editor::Motions::first_non_blank(buffer);
+        },
+        None,
+    );
+    ok_silent()
+}
+
+/// `:[range]>` and `:[range]<`: shift the lines by 'shiftwidth', once for
+/// each `>` or `<` (`:>>` shifts twice). The cursor goes to the last line.
+pub(super) fn shift(editor: &mut Editor, ex: &Ex, right: bool) -> CommandResult {
+    if !editor.buffer().is_modifiable() {
+        return unmodifiable();
+    }
+    let symbol = if right { '>' } else { '<' };
+    let extra = ex.args.trim();
+    if !extra.chars().all(|c| c == symbol) {
+        return err(format!("E488: Trailing characters: {extra}"));
+    }
+    let times = 1 + extra.len();
+    let (start, end) = ex.range.expect("line-range command").indexes();
+    let end = end.min(editor.buffer().line_count().saturating_sub(1));
+    let options = editor.indent_options();
+    editor.record_operation(
+        |buffer| {
+            for _ in 0..times {
+                if right {
+                    buffer.indent_lines_at(start, end + 1, options);
+                } else {
+                    buffer.dedent_lines_at(start, end + 1, options);
+                }
+            }
+            buffer.cursor_mut().set_position(end, GraphemeCol::ZERO);
+            crate::editor::Motions::first_non_blank(buffer);
+        },
+        None,
+    );
+    ok_silent()
+}
+
 /// `:[range]j[oin][!] [count]`: a one-line range joins that line with the
 /// next; `!` joins without adjusting white space (like `gJ`). A count joins
 /// that many lines from the last line of the range. As in vim, two equal

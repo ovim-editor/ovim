@@ -5,6 +5,11 @@ use anyhow::Result;
 
 /// Handles input in Command mode
 pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<()> {
+    if let Some(text) = super::helpers::take_prompt_register_text(editor, &key_event) {
+        editor.insert_into_command_line(&text);
+        update_path_completion(editor);
+        return Ok(());
+    }
     if let Some(control) = super::helpers::prompt_control(&key_event) {
         use super::helpers::PromptControl;
         match control {
@@ -30,6 +35,7 @@ pub fn handle_command_mode(editor: &mut Editor, key_event: KeyEvent) -> Result<(
             }
             PromptControl::Home => editor.move_command_cursor_home(),
             PromptControl::End => editor.move_command_cursor_end(),
+            PromptControl::InsertRegister => editor.editing.pending_register_insert = true,
             PromptControl::Ignore => {}
         }
         return Ok(());
