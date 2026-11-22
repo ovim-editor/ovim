@@ -329,13 +329,12 @@ fn test_ge_at_beginning() {
 fn test_ge_single_word() {
     let mut test = EditorTest::new("word");
 
-    test.keys("$")
-        .keys("ge") // Should move to start
-        .keys("ge"); // Try to move back more
+    // nvim --clean: with no word before it, `ge` goes to the start of the buffer.
+    test.keys("$").keys("ge").keys("ge");
 
     assert_eq!(test.buffer_content(), "word\n");
 
-    test.assert_cursor(0, 3);
+    test.assert_cursor(0, 0);
 }
 
 // ============================================================================

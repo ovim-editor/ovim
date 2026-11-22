@@ -158,8 +158,6 @@ pub enum RepeatAction {
     ChangeWordEnd { count: usize },
     /// cE delete phase — like DeleteWordEndBig but leaves the insert point un-clamped
     ChangeWordEndBig { count: usize },
-    /// c% delete phase — like DeleteToMatchingBracket but leaves the insert point un-clamped
-    ChangeToMatchingBracket,
     /// cgn/cgN delete phase — delete the next/previous search match
     DeleteSearchMatch {
         search_pattern: String,
@@ -193,16 +191,22 @@ pub enum RepeatAction {
     DeleteToLastLine { target_line: usize },
     /// dgg — delete to first line (or target line)
     DeleteToFirstLine { target_line: usize },
-    /// d% — delete to matching bracket
-    DeleteToMatchingBracket,
     /// r — replace character(s) at cursor
     ReplaceChar { ch: char, count: usize },
     /// R — replace mode replay
     ReplaceMode { replacements: String },
     /// p — paste after cursor
-    PasteAfter { count: usize },
+    PasteAfter {
+        count: usize,
+        /// `gp`: the cursor ends just after the text.
+        past_text: bool,
+    },
     /// P — paste before cursor
-    PasteBefore { count: usize },
+    PasteBefore {
+        count: usize,
+        /// `gP`: the cursor ends just after the text.
+        past_text: bool,
+    },
     /// o/O — open a line below/above, then replay inserted text
     OpenLine {
         above: bool,
@@ -228,6 +232,14 @@ pub enum RepeatAction {
         delete_width: usize,
         column: BlockColumn,
         inserted_text: String,
+    },
+    /// An operator over a motion (`dge`, `d2$`, `gU)`, `>}`): run again from
+    /// the cursor. As the `delete` of a [`RepeatAction::Change`] it stands
+    /// for `c{motion}`.
+    OperatorMotion {
+        operator: crate::editor::Operator,
+        motion: crate::motion_range::Motion,
+        count: usize,
     },
     /// Change operator — semantic delete + insert text (cc, C, s, S, cj, ck, etc.)
     Change {
@@ -279,9 +291,10 @@ impl RepeatAction {
             | Self::DeleteParagraphForward { count: n }
             | Self::DeleteParagraphBackward { count: n }
             | Self::ReplaceChar { count: n, .. }
-            | Self::PasteAfter { count: n }
-            | Self::PasteBefore { count: n }
+            | Self::PasteAfter { count: n, .. }
+            | Self::PasteBefore { count: n, .. }
             | Self::InsertSession { count: n, .. }
+            | Self::OperatorMotion { count: n, .. }
             | Self::IndentLines { line_count: n, .. }
             | Self::DedentLines { line_count: n, .. } => *n = count,
             Self::DeleteTextObject { count: n, .. } | Self::OpenLine { count: n, .. } => *n = count,
@@ -353,7 +366,6 @@ impl RepeatAction {
             | Self::DeleteWordChangeBig { .. }
             | Self::ChangeWordEnd { .. }
             | Self::ChangeWordEndBig { .. }
-            | Self::ChangeToMatchingBracket
             | Self::DeleteSearchMatch { .. }
             | Self::DeleteWordBackward { .. }
             | Self::DeleteWordEnd { .. }
@@ -363,7 +375,6 @@ impl RepeatAction {
             | Self::DeleteToStartOfLine
             | Self::DeleteToFirstNonBlank
             | Self::DeleteWordForwardBig { .. }
-            | Self::DeleteToMatchingBracket
             | Self::DeleteVisualChar { .. }
             | Self::DeleteTextObject { .. } => RegisterType::Character,
             _ => return None,
@@ -512,9 +523,6 @@ impl RepeatAction {
             Self::ChangeWordEndBig { count } => {
                 buffer.change_word_end_big(*count);
             }
-            Self::ChangeToMatchingBracket => {
-                buffer.change_to_matching_bracket();
-            }
             Self::DeleteSearchMatch {
                 search_pattern,
                 search_forward,
@@ -591,9 +599,6 @@ impl RepeatAction {
             Self::DeleteToFirstLine { target_line } => {
                 buffer.delete_to_first_line(*target_line);
             }
-            Self::DeleteToMatchingBracket => {
-                buffer.delete_to_matching_bracket();
-            }
             Self::ReplaceChar { ch, count } => {
                 buffer.replace_chars_at_cursor(*ch, *count);
             }
@@ -631,9 +636,10 @@ impl RepeatAction {
                     }
                 }
             }
-            Self::PasteAfter { .. } | Self::PasteBefore { .. } => {
-                // Intentional no-op: paste repeat is intercepted in repeat_last_change()
-                // before execute() is called, because it needs Editor-level register access.
+            Self::PasteAfter { .. } | Self::PasteBefore { .. } | Self::OperatorMotion { .. } => {
+                // Intentional no-op: these are intercepted in repeat_last_change()
+                // before execute() is called, because they need the Editor
+                // (registers, the last search, the last `f`).
             }
             Self::OpenLine {
                 above,
@@ -792,10 +798,7 @@ impl RepeatAction {
                         delete.execute(buffer);
                     }
                     if version == buffer.version()
-                        && matches!(
-                            delete.as_ref(),
-                            Self::ChangeToMatchingBracket | Self::DeleteSearchMatch { .. }
-                        )
+                        && matches!(delete.as_ref(), Self::DeleteSearchMatch { .. })
                     {
                         return;
                     }

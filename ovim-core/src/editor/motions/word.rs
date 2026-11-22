@@ -468,6 +468,8 @@ impl Motions {
 
         if col == 0 {
             if line_idx == 0 {
+                // In the first word: vim goes to the start of the buffer.
+                buffer.cursor_mut().set_position(0, GraphemeCol::ZERO);
                 return;
             }
             line_idx -= 1;

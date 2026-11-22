@@ -251,6 +251,7 @@ impl Editor {
                     self.push_recorded_undo(edits, cursor_before, cursor_after);
                     self.set_repeat_action(crate::repeat_action::RepeatAction::PasteAfter {
                         count: 1,
+                        past_text: false,
                     });
                 }
             }

@@ -4,12 +4,14 @@
 //! Includes: x, X, D, C, s, S, p, P, Y, J, ~, u, Ctrl-R, .
 
 use crate::editor::input::helpers;
-use crate::editor::{Editor, RegisterType};
+use crate::editor::{Editor, Operator, RegisterType};
+use crate::motion_range::Motion;
 use crate::repeat_action::RepeatAction;
 use crate::{KeyCode, KeyEvent, Modifiers};
 use anyhow::Result;
 
 use super::super::case;
+use super::operator_motion::apply_motion_operator;
 
 /// Try to handle an editing command.
 ///
@@ -36,6 +38,17 @@ pub fn try_handle(editor: &mut Editor, key_event: KeyEvent) -> Result<bool> {
             Ok(true)
         }
         // D - delete to end of line
+        // `2D` and `2C` reach into the next line: `d2$` and `c2$`.
+        KeyCode::Char(key @ ('D' | 'C')) if editor.effective_count() > 1 => {
+            let operator = if key == 'D' {
+                Operator::Delete
+            } else {
+                Operator::Change
+            };
+            let count = editor.effective_count();
+            apply_motion_operator(editor, operator, Motion::LineEnd, count)?;
+            Ok(true)
+        }
         KeyCode::Char('D') => {
             delete_to_end_of_line(editor)?;
             Ok(true)
