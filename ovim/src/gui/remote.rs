@@ -28,7 +28,7 @@
 
 use super::bridge::{GuiTransport, GuiTransportFuture, EDITOR_STOPPED};
 use super::protocol::{GuiCommand, GuiReply, GuiReplyKind, SNAPSHOT_EVENT};
-use super::reconnect::{supervise, Failure, GuiConnection, Link};
+use super::reconnect::{supervise, ConnectionLoss, Failure, GuiConnection, Link};
 use super::ssh::RemoteLaunch;
 use super::GuiSnapshot;
 use anyhow::{Context, Result};
@@ -172,8 +172,16 @@ impl RemoteEndpoint {
         format!("127.0.0.1:{}", self.session_port)
     }
 
-    fn client(&self) -> Result<reqwest::Client> {
+    fn client(&self, client_id: &str) -> Result<reqwest::Client> {
         let mut headers = HeaderMap::new();
+        headers.insert(
+            super::protocol::PROTOCOL_HEADER,
+            HeaderValue::from(super::protocol::GUI_PROTOCOL_VERSION),
+        );
+        headers.insert(
+            super::protocol::CLIENT_HEADER,
+            HeaderValue::from_str(client_id).context("The client id is not a usable header")?,
+        );
         let mut authorization =
             HeaderValue::from_str(&format!("Bearer {}", self.capability.expose_secret()))
                 .context("The session capability is not usable as an HTTP header")?;
@@ -224,15 +232,76 @@ pub(super) struct Wire {
     client: reqwest::Client,
     command_url: String,
     stream_url: String,
+    protocol_url: String,
 }
 
 impl Wire {
-    pub(super) fn new(endpoint: &RemoteEndpoint) -> Result<Self> {
+    pub(super) fn new(endpoint: &RemoteEndpoint, client_id: &str) -> Result<Self> {
         Ok(Self {
-            client: endpoint.client()?,
+            client: endpoint.client(client_id)?,
             command_url: endpoint.url("/gui/command"),
             stream_url: endpoint.url("/gui/stream"),
+            protocol_url: endpoint.url("/gui/protocol"),
         })
+    }
+}
+
+/// A fresh, opaque name for one window's conversation.
+fn new_client_id() -> String {
+    format!("{:016x}", rand::random::<u64>())
+}
+
+/// Compare protocol versions before anything else crosses the link.
+///
+/// Made on every attach, because a reconnect can land on a session that was
+/// replaced by a different build. A session that has no handshake route
+/// predates versioning and is refused the same way as a mismatch.
+pub(super) async fn check_protocol(wire: &Wire) -> Result<(), Failure> {
+    let response = match tokio::time::timeout(
+        HANDSHAKE_TIMEOUT,
+        wire.client.get(&wire.protocol_url).send(),
+    )
+    .await
+    {
+        Err(_) => {
+            return Err(Failure::retryable(format!(
+                "{EDITOR_UNREACHABLE}: it did not answer in time"
+            )))
+        }
+        Ok(Err(error)) => {
+            return Err(Failure::retryable(format!(
+                "{EDITOR_UNREACHABLE}: {}",
+                terse(&error)
+            )))
+        }
+        Ok(Ok(response)) => response,
+    };
+    let status = response.status();
+    if status == StatusCode::NOT_FOUND {
+        let ours = super::GuiProtocolInfo::current();
+        return Err(Failure::stop(
+            ConnectionLoss::Unusable,
+            format!(
+                "The remote Ovim session predates the GUI protocol handshake, and this window \
+                 speaks protocol {} (Ovim {}). Install the same Ovim release on both machines, \
+                 then start a new session with --fresh.",
+                ours.protocol, ours.ovim_version
+            ),
+        ));
+    }
+    let body = response.bytes().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(Failure::from_status(status, request_failure(status, &body)));
+    }
+    let theirs: super::GuiProtocolInfo = serde_json::from_slice(&body).map_err(|error| {
+        Failure::stop(
+            ConnectionLoss::Unusable,
+            format!("The remote Ovim session's protocol answer is unreadable: {error}"),
+        )
+    })?;
+    match super::GuiProtocolInfo::mismatch(&theirs) {
+        Some(refusal) => Err(Failure::stop(ConnectionLoss::Unusable, refusal)),
+        None => Ok(()),
     }
 }
 
@@ -342,7 +411,12 @@ impl RemoteTransport {
             .thread_name("ovim-gui-remote")
             .build()
             .context("Failed to create the remote GUI runtime")?;
-        let link = Arc::new(Link::new(Wire::new(&launch.endpoint)?, launch.link));
+        let client_id = new_client_id();
+        let link = Arc::new(Link::new(
+            Wire::new(&launch.endpoint, &client_id)?,
+            launch.link,
+            client_id,
+        ));
         let (ready_tx, ready_rx) = oneshot::channel();
         let supervisor = runtime.spawn(supervise(Arc::clone(&link), ready_tx));
         let (ordered, queue) = mpsc::unbounded_channel();
@@ -492,6 +566,10 @@ impl GuiTransport for RemoteTransport {
 
     fn request_reconnect(&self, allow_new_session: bool) -> Result<(), String> {
         RemoteTransport::request_reconnect(self, allow_new_session)
+    }
+
+    fn client_id(&self) -> Option<String> {
+        Some(self.link.client_id.clone())
     }
 
     fn is_remote(&self) -> bool {
@@ -786,6 +864,11 @@ mod tests {
         /// How long a diff query takes, standing in for the Git walk the real
         /// session runs on its blocking pool.
         query_delay: Mutex<Duration>,
+        /// What the handshake route answers; `None` serves no handshake at
+        /// all, like a session from before protocol versioning.
+        protocol: Mutex<Option<crate::gui::GuiProtocolInfo>>,
+        /// The protocol and client headers each command arrived with.
+        identities: Mutex<Vec<(String, String)>>,
     }
 
     impl StubSession {
@@ -898,11 +981,29 @@ mod tests {
         }
     }
 
+    async fn stub_protocol(State(stub): State<Arc<StubSession>>) -> Response {
+        match stub.protocol.lock().unwrap().clone() {
+            Some(info) => Json(info).into_response(),
+            None => AxumStatus::NOT_FOUND.into_response(),
+        }
+    }
+
     async fn stub_command(
         State(stub): State<Arc<StubSession>>,
         headers: HeaderMap,
         JsonExtractor(command): JsonExtractor<GuiCommand>,
     ) -> Response {
+        let header = |name: &str| {
+            headers
+                .get(name)
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_string()
+        };
+        stub.identities.lock().unwrap().push((
+            header(crate::gui::protocol::PROTOCOL_HEADER),
+            header(crate::gui::protocol::CLIENT_HEADER),
+        ));
         stub.hosts.lock().unwrap().push(
             headers
                 .get(HOST)
@@ -961,6 +1062,7 @@ mod tests {
             GuiReplyKind::Clipboard => Json(GuiReply::Clipboard(Ok(protocol::GuiClipboardText {
                 generation: 1,
                 text: "yanked".to_string(),
+                writer: None,
             })))
             .into_response(),
         }
@@ -1034,8 +1136,11 @@ mod tests {
             refuse_stream: Mutex::new(None),
             revision: Mutex::new(0),
             query_delay: Mutex::new(Duration::ZERO),
+            protocol: Mutex::new(Some(crate::gui::GuiProtocolInfo::current())),
+            identities: Mutex::new(Vec::new()),
         });
         let routes = Router::new()
+            .route("/gui/protocol", get(stub_protocol))
             .route("/gui/command", post(stub_command))
             .route("/gui/stream", get(stub_stream))
             .with_state(Arc::clone(&stub));
@@ -1793,5 +1898,67 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_session_that_speaks_another_protocol_is_refused_before_anything_crosses() {
+        let (stub, endpoint) = stub_session().await;
+        *stub.protocol.lock().unwrap() = Some(crate::gui::GuiProtocolInfo {
+            protocol: crate::gui::GUI_PROTOCOL_VERSION + 1,
+            ovim_version: "9.9.9".to_string(),
+        });
+
+        let error = RemoteTransport::open(endpoint)
+            .await
+            .err()
+            .expect("a mismatched protocol must refuse the connection")
+            .to_string();
+
+        assert!(error.contains("9.9.9"), "{error}");
+        assert!(
+            error.contains(&format!(
+                "protocol {}",
+                crate::gui::GUI_PROTOCOL_VERSION + 1
+            )),
+            "{error}"
+        );
+        assert_eq!(*stub.streams.lock().unwrap(), 0, "no stream was opened");
+    }
+
+    #[tokio::test]
+    async fn a_session_without_a_handshake_is_refused_as_predating_it() {
+        let (stub, endpoint) = stub_session().await;
+        *stub.protocol.lock().unwrap() = None;
+
+        let error = RemoteTransport::open(endpoint)
+            .await
+            .err()
+            .expect("a session without the handshake must be refused")
+            .to_string();
+
+        assert!(error.contains("predates"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn every_command_names_its_protocol_and_the_same_client() {
+        let (stub, endpoint) = stub_session().await;
+        let transport = RemoteTransport::open(endpoint).await.unwrap();
+        let client = transport
+            .client_id()
+            .expect("a remote transport names itself");
+
+        for index in 0..3 {
+            transport
+                .send(GuiCommand::SelectTab { index })
+                .await
+                .unwrap();
+        }
+
+        let identities = stub.identities.lock().unwrap().clone();
+        assert_eq!(identities.len(), 3);
+        for (protocol, named) in identities {
+            assert_eq!(protocol, crate::gui::GUI_PROTOCOL_VERSION.to_string());
+            assert_eq!(named, client);
+        }
     }
 }

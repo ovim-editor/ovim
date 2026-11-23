@@ -117,13 +117,19 @@ Ovim too. Run it by hand first.
 
 ### Version mismatch
 
-The GUI protocol is not versioned, so a mismatched pair fails as a missing
-field rather than as anything that names the cause. A patch difference warns and
-continues; a feature difference refuses. Upgrade whichever side is older, or
-pass `--allow-version-mismatch` when you know the two builds agree.
+The window and the session compare GUI protocol versions on every connect and
+reconnect. A mismatch refuses with a message naming both versions ("speaks GUI
+protocol 2 (Ovim 1.9.0), and this window speaks protocol 1 (Ovim 1.8.0)"), and
+a session from before protocol versioning is refused as one that "predates the
+GUI protocol handshake". Install the same release on both machines, then start
+a new session with `--fresh`; `--allow-version-mismatch` does not override this
+check.
 
-The same refusal appears as "did not report a version this Ovim could read"
-when the binary found on the remote host is not Ovim at all.
+Separately, `--remote` compares release versions of the `ovim` binary on the
+remote host and yours: a patch difference warns and continues, a feature
+difference refuses unless you pass `--allow-version-mismatch`. The same refusal
+appears as "did not report a version this Ovim could read" when the binary
+found on the remote host is not Ovim at all.
 
 ### The session is wedged
 
@@ -134,6 +140,12 @@ undo history and warm language servers the session exists to keep. Relaunch with
 ```bash
 ovim gui --remote user@host /path/to/project --fresh
 ```
+
+`--fresh` stops the old session only if the remote `ovim` confirms its process
+is still that session. If it cannot ("--fresh did not replace the session …
+Nothing was killed"), the message names the reason, typically a descriptor with
+no recorded start time or a process that is not Ovim. Stop the session by hand
+after looking at it, or launch without `--fresh`.
 
 To look before you leap, the session is an ordinary Ovim session on the remote
 host, named `gui-<basename>-<checksum>`:

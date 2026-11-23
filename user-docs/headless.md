@@ -211,11 +211,19 @@ the wire surface it rides on.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
+| `/v1/gui/protocol` | GET | The GUI protocol version this session speaks |
 | `/v1/gui/command` | POST | One GUI command in, its reply out |
 | `/v1/gui/stream` | GET | Server-sent stream of projected frames |
 
-Both are published only under `/v1`, and both sit behind the same bearer
+All three are published only under `/v1`, and all sit behind the same bearer
 capability and Host guard as everything else.
+
+A client that sends `x-ovim-gui-protocol: N` on a command or stream request is
+refused with `409` and a readable `error` when `N` is not the session's
+version; a request without the header (curl, a script) is served. A client may
+also send `x-ovim-gui-client: <id>`; a clipboard write its command causes is
+then attributed to that id in the frame's `clipboard.writer`, which is how a
+remote window copies only its own yanks.
 
 A command is a tagged JSON object — `command` names the variant and `payload`
 carries its fields:

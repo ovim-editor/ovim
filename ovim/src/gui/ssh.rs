@@ -78,6 +78,11 @@ const EXIT_NO_SESSION: i32 = 12;
 /// starting a replacement would silently throw away the undo history and the
 /// warm language servers the user is trying to get back to.
 const EXIT_SESSION_GONE: i32 = 13;
+/// `--fresh` found a live PID it could not verify as the session, and
+/// stopped without signalling it.
+const EXIT_UNVERIFIED: i32 = 14;
+/// `ovim session kill --verified`: the PID belongs to another process.
+const KILL_NOT_THIS_SESSION: i32 = crate::subcommands::KILL_NOT_THIS_SESSION;
 
 /// What to open, and where.
 #[derive(Clone, Debug)]
@@ -746,14 +751,20 @@ alive=0
 if [ -n "$pid" ] && kill -0 "$pid" 2>/dev/null; then alive=1; fi
 
 if [ "$alive" = 1 ] && [ "$fresh" = 1 ]; then
-  kill "$pid" 2>/dev/null
-  waited=0
-  while [ "$waited" -lt 5 ] && kill -0 "$pid" 2>/dev/null; do
-    sleep 1
-    waited=$((waited + 1))
-  done
-  kill -9 "$pid" 2>/dev/null
-  alive=0
+  # A PID read from a file can belong to any process by now. The session's own
+  # Ovim checks it is the session (start time and executable) before it sends
+  # a signal; this script never signals it itself.
+  verdict=0
+  why=$(OVIM_SESSION_DIR="$dir" "$bin" session kill --verified -s "$name" 2>&1 >/dev/null) || verdict=$?
+  case "$verdict" in
+    0) alive=0 ;;
+    {KILL_NOT_THIS_SESSION}) alive=0 ;;
+    *)
+      echo "$why" >&2
+      echo "refusing to stop process $pid for $name: it could not be verified as that session" >&2
+      exit {EXIT_UNVERIFIED}
+      ;;
+  esac
 fi
 
 if [ "$alive" = 1 ]; then
@@ -1206,6 +1217,13 @@ fn bootstrap_failure(target: &RemoteTarget, code: Option<i32>, stderr: &str) -> 
             target.path,
             target.path
         ),
+        Some(EXIT_UNVERIFIED) => anyhow::anyhow!(
+            "--fresh did not replace the session for '{}' on {destination}: {}\n\
+             Nothing was killed. Stop the old session by hand ('ssh {destination}', then \
+             'ovim session list' and 'ovim session kill -s NAME'), or launch without --fresh.",
+            target.path,
+            detail
+        ),
         Some(EXIT_SESSION_GONE) => anyhow::anyhow!(
             "The Ovim session for '{}' on {destination} has ended.\n\
              Its open buffers, undo history and language servers went with it. Reconnecting \
@@ -1314,7 +1332,9 @@ fn bootstrap_fault(code: Option<i32>, stderr: &str) -> LinkFailureKind {
         Some(EXIT_SESSION_GONE) => LinkFailureKind::SessionGone,
         // The remote host answered and said what is wrong with it. Waiting
         // cannot install an `ovim` or create a directory.
-        Some(EXIT_NO_BINARY) | Some(EXIT_NO_PATH) => LinkFailureKind::Unusable,
+        Some(EXIT_NO_BINARY) | Some(EXIT_NO_PATH) | Some(EXIT_UNVERIFIED) => {
+            LinkFailureKind::Unusable
+        }
         // The session was asked for and did not come up in time. It may on the
         // next attempt, on a host that is merely slow.
         Some(EXIT_NO_SESSION) => LinkFailureKind::Unreachable,
@@ -1511,7 +1531,11 @@ mod tests {
         let script = bootstrap_script("/srv/project", LaunchMode::Fresh, 30);
 
         assert!(script.contains("fresh=1"));
-        assert!(script.contains(r#"kill -9 "$pid""#));
+        // The replacement goes through Ovim's own verified kill; the script
+        // never signals a PID it read from a file.
+        assert!(script.contains("session kill --verified"));
+        assert!(!script.contains("kill -9"));
+        assert!(!script.contains(r#"kill "$pid""#));
     }
 
     #[cfg(unix)]
@@ -1857,6 +1881,11 @@ mod tests {
             &path,
             r#"#!/bin/sh
 if [ "$1" = "--version" ]; then echo "ovim VERSION"; exit 0; fi
+# `session kill --verified`: answer the way the test asked, and signal nothing.
+if [ "$1" = "session" ]; then
+  echo "${STUB_KILL_MESSAGE:-stub cannot verify}" >&2
+  exit "${STUB_KILL_STATUS:-4}"
+fi
 project=$1
 shift
 name=
@@ -1893,6 +1922,17 @@ exec sleep 60
     /// stdin, and nothing about it as an argument.
     #[cfg(unix)]
     fn run_script(script: &str, bin_directory: &Path, session_directory: &Path) -> CapturedOutput {
+        run_script_with(script, bin_directory, session_directory, &[])
+    }
+
+    /// [`run_script`] with extra environment for the stub.
+    #[cfg(unix)]
+    fn run_script_with(
+        script: &str,
+        bin_directory: &Path,
+        session_directory: &Path,
+        environment: &[(&str, &str)],
+    ) -> CapturedOutput {
         let path = format!(
             "{}:{}",
             bin_directory.display(),
@@ -1902,6 +1942,7 @@ exec sleep 60
             .arg("-s")
             .env("PATH", path)
             .env("OVIM_SESSION_DIR", session_directory)
+            .envs(environment.iter().copied())
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -1969,6 +2010,113 @@ exec sleep 60
         let _ = Command::new("kill")
             .arg(started.session.pid.to_string())
             .status();
+    }
+
+    /// A project with a session the stub started, for the `--fresh` tests.
+    #[cfg(unix)]
+    fn started_session() -> (
+        tempfile::TempDir,
+        PathBuf,
+        PathBuf,
+        PathBuf,
+        BootstrapReport,
+    ) {
+        let workspace = tempfile::tempdir().expect("a temporary directory should be creatable");
+        let sessions = workspace.path().join("sessions");
+        let binaries = workspace.path().join("bin");
+        let project = workspace.path().join("project");
+        std::fs::create_dir_all(&sessions).unwrap();
+        std::fs::create_dir_all(&binaries).unwrap();
+        std::fs::create_dir_all(&project).unwrap();
+        stub_ovim(&binaries);
+        let script = bootstrap_script(&project.to_string_lossy(), LaunchMode::Reattach, 20);
+        let started = parse_report(&run_script(&script, &binaries, &sessions).stdout)
+            .expect("the first launch should start a session");
+        (workspace, sessions, binaries, project, started)
+    }
+
+    #[cfg(unix)]
+    fn is_running(pid: u32) -> bool {
+        Command::new("kill")
+            .args(["-0", &pid.to_string()])
+            .status()
+            .is_ok_and(|status| status.success())
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fresh_launch_never_signals_a_pid_it_cannot_verify() {
+        // The stub's session is a `sleep` by the time this runs, which is
+        // exactly a live PID that is not an Ovim session. The old script
+        // sent it SIGTERM and then SIGKILL on the strength of a file.
+        let (_workspace, sessions, binaries, project, started) = started_session();
+        let pid = started.session.pid;
+        let script = bootstrap_script(&project.to_string_lossy(), LaunchMode::Fresh, 20);
+
+        let fresh = run_script_with(
+            &script,
+            &binaries,
+            &sessions,
+            &[
+                ("STUB_KILL_STATUS", "4"),
+                (
+                    "STUB_KILL_MESSAGE",
+                    "Refusing to kill process: it is running sleep",
+                ),
+            ],
+        );
+
+        let survived = is_running(pid);
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        assert_eq!(
+            fresh.status.code(),
+            Some(EXIT_UNVERIFIED),
+            "{}",
+            fresh.stderr
+        );
+        assert!(
+            fresh.stderr.contains("it is running sleep"),
+            "{}",
+            fresh.stderr
+        );
+        assert!(survived, "the unverified process must not be signalled");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_fresh_launch_over_a_reused_pid_starts_a_session_without_signalling_it() {
+        let (_workspace, sessions, binaries, project, started) = started_session();
+        let pid = started.session.pid;
+        let script = bootstrap_script(&project.to_string_lossy(), LaunchMode::Fresh, 20);
+
+        let fresh = run_script_with(&script, &binaries, &sessions, &[("STUB_KILL_STATUS", "3")]);
+
+        let survived = is_running(pid);
+        let _ = Command::new("kill").arg(pid.to_string()).status();
+        assert!(fresh.status.success(), "{}", fresh.stderr);
+        let replaced = parse_report(&fresh.stdout).expect("a report");
+        assert_eq!(replaced.origin, SessionOrigin::Started);
+        assert!(survived, "a PID that is another process is left alone");
+        let _ = Command::new("kill")
+            .arg(replaced.session.pid.to_string())
+            .status();
+    }
+
+    #[test]
+    fn an_unverifiable_fresh_launch_says_nothing_was_killed() {
+        let message = bootstrap_failure(
+            &target(),
+            Some(EXIT_UNVERIFIED),
+            "Refusing to kill process 4242 for session 'gui-x-1': it is running \"sleep\", not Ovim.",
+        )
+        .to_string();
+
+        assert!(message.contains("Nothing was killed"), "{message}");
+        assert!(message.contains("not Ovim"), "{message}");
+        assert_eq!(
+            bootstrap_fault(Some(EXIT_UNVERIFIED), ""),
+            LinkFailureKind::Unusable
+        );
     }
 
     #[cfg(unix)]

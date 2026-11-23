@@ -569,6 +569,13 @@ pub enum SessionCommand {
         /// Session name (required)
         #[arg(short, long)]
         session: String,
+
+        /// Kill only a process verifiably this session (same start time and an
+        /// Ovim executable); refuse otherwise. Exits 3 when the PID belongs to
+        /// another process (the stale descriptor is removed) and 4 when it
+        /// cannot be verified. Nothing is signalled in either case.
+        #[arg(long)]
+        verified: bool,
     },
 
     /// Check health of a session

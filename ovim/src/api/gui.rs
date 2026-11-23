@@ -9,11 +9,12 @@
 //! Both routes are mounted inside the router that [`super::security`] wraps, so
 //! they carry the same bearer capability and Host guard as every other route.
 
+use crate::gui::protocol::{CLIENT_HEADER, PROTOCOL_HEADER};
 use crate::gui::server::GuiChannel;
-use crate::gui::{GuiCommand, GuiSnapshot, SNAPSHOT_EVENT};
+use crate::gui::{GuiCommand, GuiProtocolInfo, GuiSnapshot, SNAPSHOT_EVENT};
 use axum::{
     extract::State,
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
         IntoResponse, Json, Response,
@@ -35,9 +36,55 @@ const KEEP_ALIVE_INTERVAL: Duration = Duration::from_secs(15);
 
 pub(super) fn router(gui: GuiChannel) -> Router {
     Router::new()
+        .route("/gui/protocol", get(gui_protocol))
         .route("/gui/command", post(gui_command))
         .route("/gui/stream", get(gui_stream))
         .with_state(gui)
+}
+
+/// Handler for GET /v1/gui/protocol: the handshake a client makes first.
+async fn gui_protocol() -> Json<GuiProtocolInfo> {
+    Json(GuiProtocolInfo::current())
+}
+
+/// Refuse a client that says it speaks another protocol version.
+///
+/// A client that names no version (curl, a script) is let through: the
+/// version exists to stop two Ovim builds misreading each other, and only an
+/// Ovim client sends the header.
+fn protocol_refusal(headers: &HeaderMap) -> Option<Response> {
+    let claimed = headers.get(PROTOCOL_HEADER)?;
+    let theirs = claimed
+        .to_str()
+        .ok()
+        .and_then(|value| value.trim().parse::<u32>().ok());
+    let ours = GuiProtocolInfo::current();
+    if theirs == Some(ours.protocol) {
+        return None;
+    }
+    let shown = claimed.to_str().unwrap_or("unreadable");
+    Some(
+        (
+            StatusCode::CONFLICT,
+            Json(serde_json::json!({
+                "error": format!(
+                    "This Ovim session (Ovim {}) speaks GUI protocol {}, and the client speaks \
+                     protocol {shown}. Use the same Ovim release on both machines.",
+                    ours.ovim_version, ours.protocol
+                )
+            })),
+        )
+            .into_response(),
+    )
+}
+
+/// The client a request names itself as, if any.
+fn client_of(headers: &HeaderMap) -> Option<String> {
+    headers
+        .get(CLIENT_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_string)
+        .filter(|client| !client.is_empty() && client.len() <= 64)
 }
 
 /// Handler for POST /v1/gui/command.
@@ -47,9 +94,13 @@ pub(super) fn router(gui: GuiChannel) -> Router {
 /// codes here describe the conversation, not the command.
 async fn gui_command(
     State(gui): State<GuiChannel>,
+    headers: HeaderMap,
     JsonExtractor(command): JsonExtractor<GuiCommand>,
 ) -> Response {
-    match gui.send(command).await {
+    if let Some(refusal) = protocol_refusal(&headers) {
+        return refusal;
+    }
+    match gui.send_from(command, client_of(&headers)).await {
         Ok(Some(reply)) => Json(reply).into_response(),
         // A fire-and-forget command is answered as soon as the editor has been
         // handed it. There is no reply to wait for, so waiting would hang.
@@ -63,11 +114,13 @@ async fn gui_command(
 }
 
 /// Handler for GET /v1/gui/stream.
-async fn gui_stream(
-    State(gui): State<GuiChannel>,
-) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
+async fn gui_stream(State(gui): State<GuiChannel>, headers: HeaderMap) -> Response {
+    if let Some(refusal) = protocol_refusal(&headers) {
+        return refusal;
+    }
     Sse::new(snapshot_stream(gui.subscribe()))
         .keep_alive(KeepAlive::new().interval(KEEP_ALIVE_INTERVAL))
+        .into_response()
 }
 
 /// Turn the coalescing update channel into a stream of snapshot events.
@@ -132,6 +185,13 @@ mod tests {
 
     const PORT: u16 = 4242;
 
+    // The channel the last `secured_app` on this thread built, so a test can
+    // hold a subscription the way a stream request would.
+    thread_local! {
+        static LAST_CHANNEL: std::cell::RefCell<Option<GuiChannel>> =
+            const { std::cell::RefCell::new(None) };
+    }
+
     /// The real router behind the real security layer, plus the editor end of
     /// the conversation for the test to drive.
     ///
@@ -141,6 +201,7 @@ mod tests {
     fn secured_app() -> (Router, SessionCapability, GuiServer) {
         let capability = SessionCapability::generate();
         let (channel, server) = gui_channel((80, 24));
+        LAST_CHANNEL.with(|last| *last.borrow_mut() = Some(channel.clone()));
         let (tx, _rx) = mpsc::channel(8);
         let app = security::secure_router(
             create_router(ApiState::new(tx), channel),
@@ -538,5 +599,137 @@ mod tests {
             second.revision,
             first.revision
         );
+    }
+
+    #[tokio::test]
+    async fn the_handshake_route_names_this_build_s_protocol() {
+        let (app, capability, _server) = secured_app();
+        let request = Request::builder()
+            .uri("/v1/gui/protocol")
+            .header("host", format!("127.0.0.1:{PORT}"))
+            .header(
+                "authorization",
+                format!("Bearer {}", capability.expose_secret()),
+            )
+            .body(Body::empty())
+            .unwrap();
+
+        let response = app.oneshot(request).await.unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), 4096).await.unwrap();
+        let info: GuiProtocolInfo = serde_json::from_slice(&body).unwrap();
+        assert_eq!(info, GuiProtocolInfo::current());
+    }
+
+    #[tokio::test]
+    async fn a_client_that_speaks_another_protocol_is_refused_with_the_reason() {
+        // Serde ignores fields it does not know, so without this check a
+        // client from another build would be served frames it misreads.
+        let (app, capability, _server) = secured_app();
+        let mut command = command_request(&capability, &GuiCommand::SelectTab { index: 0 });
+        command
+            .headers_mut()
+            .insert(PROTOCOL_HEADER, "999".parse().unwrap());
+        let mut stream = stream_request(&capability);
+        stream
+            .headers_mut()
+            .insert(PROTOCOL_HEADER, "999".parse().unwrap());
+
+        for request in [command, stream] {
+            // Bounded: a command that is let through waits for an editor
+            // this test never runs, and that has to read as a failure.
+            let response = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                app.clone().oneshot(request),
+            )
+            .await
+            .expect("a refused request is answered at once")
+            .unwrap();
+            assert_eq!(response.status(), StatusCode::CONFLICT);
+            let body = to_bytes(response.into_body(), 4096).await.unwrap();
+            let error = String::from_utf8_lossy(&body).to_string();
+            assert!(error.contains("protocol 999"), "{error}");
+            assert!(
+                error.contains(&format!("protocol {}", crate::gui::GUI_PROTOCOL_VERSION)),
+                "{error}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_clipboard_write_is_attributed_to_the_client_whose_command_made_it() {
+        // The session can only say which window yanked if each command names
+        // its sender; a remote window mirrors nothing it did not cause.
+        let (app, capability, mut server) = secured_app();
+        let mut editor = Editor::with_content("yank me\n");
+        editor.registers_mut().use_memory_clipboard();
+        let mut updates = server_updates(&app, &capability).await;
+
+        for key in ["y", "y"] {
+            let mut request = command_request(
+                &capability,
+                &GuiCommand::Key {
+                    input: crate::gui::GuiKeyInput {
+                        key: key.to_string(),
+                        shift: false,
+                        control: false,
+                        alt: false,
+                        meta: false,
+                    },
+                },
+            );
+            request
+                .headers_mut()
+                .insert(CLIENT_HEADER, "window-a".parse().unwrap());
+            let (response, _) = tokio::join!(
+                app.clone().oneshot(request),
+                serve_one(&mut server, &mut editor)
+            );
+            assert_eq!(response.unwrap().status(), StatusCode::OK);
+        }
+        let frame = updates.borrow_and_update().clone().expect("a frame");
+        assert_eq!(frame.clipboard.writer.as_deref(), Some("window-a"));
+
+        let (response, _) = tokio::join!(
+            app.clone()
+                .oneshot(command_request(&capability, &GuiCommand::ReadClipboard)),
+            serve_one(&mut server, &mut editor)
+        );
+        let body = to_bytes(response.unwrap().into_body(), 4096).await.unwrap();
+        let GuiReply::Clipboard(Ok(text)) = serde_json::from_slice(&body).unwrap() else {
+            panic!("ReadClipboard answers with the clipboard");
+        };
+        assert_eq!(text.text, "yank me\n");
+        assert_eq!(text.writer.as_deref(), Some("window-a"));
+
+        // A write nobody named -- here an automation caller without the
+        // header -- belongs to no window.
+        let (response, _) = tokio::join!(
+            app.clone().oneshot(command_request(
+                &capability,
+                &GuiCommand::WriteClipboard {
+                    text: "from a script".to_string()
+                }
+            )),
+            serve_one(&mut server, &mut editor)
+        );
+        assert_eq!(response.unwrap().status(), StatusCode::OK);
+        let frame = updates.borrow_and_update().clone().expect("a frame");
+        assert_eq!(frame.clipboard.writer, None);
+    }
+
+    /// Hold a subscription to the session's frames, so it projects them.
+    async fn server_updates(
+        _app: &Router,
+        _capability: &SessionCapability,
+    ) -> tokio::sync::watch::Receiver<Option<GuiSnapshot>> {
+        LAST_CHANNEL.with(|channel| {
+            channel
+                .borrow()
+                .as_ref()
+                .expect("secured_app records its channel")
+                .subscribe()
+        })
     }
 }

@@ -78,11 +78,19 @@ local buffer cannot survive a disconnect; a remote session can, and does.
   If `ovim` is not on that `PATH`, the bootstrap also looks in
   `~/.cargo/bin`, `~/.local/bin`, `/usr/local/bin` and `/opt/homebrew/bin`.
 
-- **A matching Ovim version.** The GUI protocol carries no version of its own,
-  so a mismatched pair fails in ways that do not name the cause. A patch
-  difference (`1.2.6` against `1.2.7`) warns and continues; a feature
-  difference (`1.2.x` against `1.3.x`) refuses. `--allow-version-mismatch`
-  overrides the refusal when you know the two builds agree.
+- **A matching Ovim version.** Two checks apply:
+  - **GUI protocol version.** On every connect and every reconnect the window
+    asks the session which GUI protocol it speaks, before anything else crosses
+    the link. If the two numbers differ, or the session is too old to answer,
+    the window refuses with both versions in the message. Nothing overrides
+    this, because frames from another protocol would be misread.
+  - **Release version (`--remote` only).** The bootstrap also compares the
+    release of the `ovim` binary it finds on the remote host with yours. A
+    patch difference (`1.2.6` against `1.2.7`) warns and continues; a feature
+    difference (`1.2.x` against `1.3.x`) refuses unless you pass
+    `--allow-version-mismatch`. This checks the binary on `PATH`, not the
+    running session, so on reattach the protocol check above is what catches a
+    session started by an older build.
 
 - **Its own toolchain and language servers.** rust-analyzer, pyright, gopls and
   the rest have to be installed on the host with the code, not on the laptop.
@@ -127,6 +135,13 @@ A session that is alive but wedged is never replaced automatically — that woul
 throw away exactly the state this design exists to keep. `--fresh` is the
 deliberate way out: it stops the old session and starts a new one in its place.
 Everything the old one held is gone with it.
+
+`--fresh` stops the old session only after the remote `ovim` confirms that the
+process ID in its descriptor still belongs to that session: the same process
+start time and an Ovim executable (`ovim session kill --verified`). If the
+process ID now belongs to some other process, nothing is signalled and a new
+session starts. If it cannot be confirmed either way, `--fresh` refuses and
+kills nothing, and the message says why.
 
 ## The connection indicator
 
@@ -188,32 +203,51 @@ for local ones, where it would trade a chance of being wrong for no gain.
 
 ## Clipboard
 
-Ovim bridges the two machines' clipboards in both directions, following the
-`clipboard` option rather than inventing a policy of its own (see
-[Options](options.md#clipboard)).
+Ovim bridges the two machines' clipboards. Both directions are decided by the
+window on your machine, from what you do in that window. Nothing the remote
+side sends can turn either direction on, and the remote `clipboard` option
+plays no part in it.
 
-- **Remote editor to your machine.** Whenever the remote editor writes its own
-  system clipboard — a yank or delete under the default
-  `clipboard=unnamedplus`, or an explicit `"+y` whatever the option says — the
-  text arrives on your laptop's clipboard, ready to paste into a browser. On a
-  headless remote there is usually no clipboard at all, so without the bridge
-  the yank would go nowhere.
-- **Your machine to the remote editor.** Gated on `clipboard` asking for system
-  integration. Your clipboard is handed over when the Ovim window is
-  activated — the one moment between "copied something in a browser" and
-  "pressed `p`" that Ovim can see. `set clipboard=` turns this direction off
-  entirely; the window's own paste gesture (`Cmd-V` on macOS, `Ctrl-Shift-V`
-  elsewhere) is explicit and keeps working either way.
+- **Your machine to the remote editor: only when you paste.** Your clipboard
+  is sent only as part of a paste you type in the Ovim window:
+  - a put from the clipboard registers in Normal or Visual mode: `"+p`, `"*p`,
+    `"+P`, `"+gp`, `"+]p` and the like, with or without a count;
+  - `Ctrl-R +` or `Ctrl-R *` in Insert mode or on the command line;
+  - `:put +` or `:put *` typed on the command line;
+  - the window's paste key (`Cmd-V` on macOS, `Ctrl-Shift-V` elsewhere) and
+    **Edit → Paste**, which carry the text themselves.
 
-Both directions cap at 1 MiB. An oversized yank is not bridged — the alternative
-is spending a minute of your uplink on text nobody is going to paste — and the
-refusal goes to the log rather than to the status line. The text is still
-sitting in the remote register, with `:w` and shell pipes as better ways to
-move it.
+  It is sent immediately ahead of that key, in the same ordered stream, so the
+  paste always reads what you copied. Nothing is sent when the window gains
+  focus, and nothing is sent for any other key.
 
-Because the hand-over happens on window activation, a copy made on your laptop
-*after* the Ovim window is already focused is not seen until you focus
-something else and come back.
+  A plain `p` does **not** send your clipboard, even under the default
+  `clipboard=unnamedplus`. It pastes the remote session's own unnamed
+  register, which holds the last thing yanked there or pasted from your
+  machine. Use `"+p` or the paste key to paste what you copied locally.
+
+  Which keys count is decided from the mode in the latest frame. If you type
+  `Ctrl-R +` faster than one round trip after entering Insert mode, the window
+  may not know yet that you are in Insert mode, and the paste uses the
+  session's register instead.
+
+- **Remote editor to your machine: only yanks made in this window.** When a
+  command you sent from this window makes the remote editor write its `+`
+  register (a yank or delete under `clipboard=unnamedplus`, or an explicit
+  `"+y`), the text is copied to your laptop's clipboard. The session records
+  which window's command made each write, and the window copies only its own,
+  and only if it has sent a command since the last one it copied. Connecting
+  and reconnecting never write your clipboard: whatever the session yanked
+  before the window attached stays on the session.
+
+A paste that carries your clipboard costs one extra command in the ordered
+lane, so it takes one more round trip than a paste of the session's register:
+PASTE_LATENCY.
+
+Both directions cap at 1 MiB, checked on both sides. An oversized yank is not
+copied and an oversized local clipboard is not sent; the refusal goes to the
+log rather than to the status line. The key itself is still delivered, so an
+oversized paste uses the session's register.
 
 ## What to expect from the link
 
@@ -287,8 +321,6 @@ Remote editing is complete enough for daily use, but these limits are real:
   its own `ovim gui --remote` instead.
 - **One host per window.** There is no mixed local/remote or multi-root
   workspace; a window talks to exactly one editor.
-- **The GUI protocol is unversioned**, which is why the version check above
-  exists.
 
 ## Driving a session behind a tunnel you already have
 

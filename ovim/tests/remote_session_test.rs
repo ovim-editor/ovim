@@ -437,9 +437,10 @@ async fn clipboard_reaches(local: &TestClipboard, wanted: impl Fn(&str) -> bool)
 #[tokio::test]
 #[ignore = "needs a running headless session and socat; see the module comment"]
 async fn a_yank_crosses_the_link_to_this_clipboard_and_this_clipboard_crosses_back() {
-    // The papercut this chunk exists for, end to end and through a real
-    // forward: yank on the session and the text is on this machine's
-    // clipboard; copy on this machine and `p` on the session pastes it.
+    // End to end through a real forward: attaching leaves this machine's
+    // clipboard alone, a yank this window makes arrives here, and a put from
+    // `"+` pastes what was copied here. With `OVIM_REMOTE_LATENCY_MS` set it
+    // also prints what carrying the clipboard costs a paste.
     let descriptor = PathBuf::from(
         std::env::var("OVIM_REMOTE_SESSION")
             .expect("OVIM_REMOTE_SESSION must name a session descriptor"),
@@ -458,6 +459,7 @@ async fn a_yank_crosses_the_link_to_this_clipboard_and_this_clipboard_crosses_ba
             "the session should accept the transport through the forwarder",
         )));
     let local = Arc::new(TestClipboard::default());
+    local.put("copied here before attaching");
     let (clipboard, follow) = ovim::gui::clipboard::start(&bridge, local.clone())
         .expect("a session on the far side of a transport needs the bridge");
     tokio::spawn(follow);
@@ -469,52 +471,77 @@ async fn a_yank_crosses_the_link_to_this_clipboard_and_this_clipboard_crosses_ba
         line_text(&first, 0),
         first.clipboard
     );
-    assert!(
-        first.clipboard.shared,
-        "this test assumes the session's default clipboard=unnamedplus"
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(
+        local.contents().as_deref(),
+        Some("copied here before attaching"),
+        "attaching must not write this machine's clipboard"
     );
 
-    // Session to laptop: yank the first line and watch it arrive here.
+    // Session to laptop: yank the first line from this window.
     for key in ["Escape", "g", "g", "y", "y"] {
-        bridge
+        clipboard
             .key(typed(key))
             .await
             .unwrap_or_else(|error| panic!("{key} should reach the session: {error}"));
     }
     let arrived = clipboard_reaches(&local, |held| held.contains("yank me")).await;
-    println!("the session's yank reached this machine: {arrived:?}");
+    println!("this window's yank reached this machine: {arrived:?}");
 
-    // Laptop to session: copy here, hand it over on activation, and paste.
-    local.put("pasted from the laptop");
-    clipboard.push_latest().await;
-    for key in ["G", "p"] {
-        bridge
+    // Laptop to session: copy here, then put from `"+`.
+    local.put("pasted from the laptop\n");
+    for key in ["G", "\"", "+"] {
+        clipboard
             .key(typed(key))
             .await
             .unwrap_or_else(|error| panic!("{key} should reach the session: {error}"));
     }
-    let mut pasted = next_frame(&mut updates).await;
+    let started = std::time::Instant::now();
+    clipboard
+        .key(typed("p"))
+        .await
+        .expect("p should reach the session");
+    let pasted_at = frame_showing(&mut updates, "pasted from the laptop").await;
+    let clipboard_put = started.elapsed();
+    println!("this machine's clipboard was pasted into the session");
+
+    // The same put without carrying a clipboard, for the comparison: `u`
+    // then a plain `p` of what the session's register now holds.
+    clipboard.key(typed("u")).await.expect("undo");
+    let _ = next_frame(&mut updates).await;
+    let started = std::time::Instant::now();
+    clipboard.key(typed("p")).await.expect("p");
+    let _ = frame_showing(&mut updates, "pasted from the laptop").await;
+    let plain_put = started.elapsed();
+    println!(
+        "keypress to pasted text: \"+p {:.1}ms, plain p {:.1}ms (revision {})",
+        clipboard_put.as_secs_f64() * 1000.0,
+        plain_put.as_secs_f64() * 1000.0,
+        pasted_at
+    );
+
+    // Put the buffer and the cursor back: these tests may share one session.
+    for key in ["u", "g", "g"] {
+        clipboard
+            .key(typed(key))
+            .await
+            .expect("the session should take the tidying up");
+    }
+}
+
+/// Wait for a frame with `text` on some line, returning its revision.
+async fn frame_showing(updates: &mut watch::Receiver<Option<GuiSnapshot>>, text: &str) -> u64 {
+    let mut frame = next_frame(updates).await;
     for _ in 0..40 {
-        if (0..pasted.lines.len())
-            .any(|index| line_text(&pasted, index).contains("pasted from the laptop"))
-        {
-            println!("this machine's clipboard was pasted into the session");
-            // Put the buffer and the cursor back: these tests may share one
-            // session, and one that edits has to leave what it found.
-            for key in ["u", "g", "g"] {
-                bridge
-                    .key(typed(key))
-                    .await
-                    .expect("the session should take the tidying up");
-            }
-            return;
+        if (0..frame.lines.len()).any(|index| line_text(&frame, index).contains(text)) {
+            return frame.revision;
         }
-        pasted = next_frame(&mut updates).await;
+        frame = next_frame(updates).await;
     }
     panic!(
-        "the session never pasted this machine's clipboard: {:?}",
-        (0..pasted.lines.len())
-            .map(|index| line_text(&pasted, index))
+        "no frame showed {text:?}: {:?}",
+        (0..frame.lines.len())
+            .map(|index| line_text(&frame, index))
             .collect::<Vec<_>>()
     );
 }

@@ -412,9 +412,22 @@ async fn gui_link_is_remote(bridge: State<'_, GuiBridge>) -> Result<bool, String
     Ok(bridge.is_remote())
 }
 
+/// The clipboard bridge of a window driving a remote editor; `None` for an
+/// editor in this process. See `gui::clipboard` for the policy.
+struct RemoteClipboard(Option<Arc<super::clipboard::ClipboardBridge>>);
+
 #[tauri::command]
-async fn gui_key(bridge: State<'_, GuiBridge>, input: GuiKeyInput) -> Result<(), String> {
-    bridge.key(input).await
+async fn gui_key(
+    bridge: State<'_, GuiBridge>,
+    clipboard: State<'_, RemoteClipboard>,
+    input: GuiKeyInput,
+) -> Result<(), String> {
+    // Over a remote link a key that pastes from the clipboard has to carry
+    // this machine's clipboard with it; the bridge decides which keys do.
+    match &clipboard.0 {
+        Some(clipboard) => clipboard.key(input).await,
+        None => bridge.key(input).await,
+    }
 }
 
 #[tauri::command]
@@ -776,11 +789,23 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
     // history -- so only an editor this process started is this process's to
     // stop on exit.
     let shutdown_bridge = editor_is_ours.then(|| bridge.clone());
+    // A yank this window makes in a remote editor reaches this machine's
+    // clipboard by following the frames; this machine's clipboard reaches the
+    // editor only with a key that pastes it.
+    let remote_clipboard = RemoteClipboard(
+        super::clipboard::start(&bridge, Arc::new(super::clipboard::SystemClipboard)).map(
+            |(handle, follow)| {
+                tauri::async_runtime::spawn(follow);
+                handle
+            },
+        ),
+    );
     let exit_gate = GuiExitGate::default();
     let setup_exit_gate = exit_gate.clone();
     let run_exit_gate = exit_gate.clone();
     let application = tauri::Builder::default()
         .manage(bridge)
+        .manage(remote_clipboard)
         .manage(browser_host)
         .manage(super::terminal::TerminalHost::new())
         .manage(exit_gate)
@@ -898,19 +923,6 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
                     .set_title("Ovim")
                     .context("Failed to set the GUI window title")?;
                 let drop_bridge = app.state::<GuiBridge>().inner().clone();
-                // A yank on the editor's host reaches this machine's clipboard
-                // by following the frames; this machine's clipboard reaches the
-                // editor when the window is activated, which is the one moment
-                // between "copied in a browser" and "pressed `p`" that this
-                // process gets to see. See `gui::clipboard` for the policy.
-                let focus_clipboard = super::clipboard::start(
-                    &drop_bridge,
-                    Arc::new(super::clipboard::SystemClipboard),
-                )
-                .map(|(handle, follow)| {
-                    tauri::async_runtime::spawn(follow);
-                    handle
-                });
                 let close_window = window.clone();
                 let close_gate = setup_exit_gate.clone();
                 window.on_window_event(move |event| match event {
@@ -926,13 +938,6 @@ pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) ->
                         tauri::async_runtime::spawn(async move {
                             let _ = bridge.attach_images(paths).await;
                         });
-                    }
-                    WindowEvent::Focused(true) => {
-                        if let Some(clipboard) = focus_clipboard.clone() {
-                            tauri::async_runtime::spawn(async move {
-                                clipboard.push_latest().await;
-                            });
-                        }
                     }
                     _ => {}
                 });

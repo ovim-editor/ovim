@@ -1062,6 +1062,13 @@ pub trait GuiTransport: Send + Sync {
     fn is_remote(&self) -> bool {
         false
     }
+
+    /// This window's name in the session's clipboard attribution; see
+    /// [`GuiClipboard::writer`](super::GuiClipboard::writer). Only a remote
+    /// transport has one.
+    fn client_id(&self) -> Option<String> {
+        None
+    }
 }
 
 /// The in-process transport: the editor runs on a thread in this process and
@@ -1233,6 +1240,14 @@ fn read_local_image(path: &std::path::Path) -> Result<(String, Vec<u8>), String>
     Ok((name, data))
 }
 
+/// Unwrap the answer to a command whose only reply is success or a message.
+fn unit_reply(reply: Option<GuiReply>) -> Result<(), String> {
+    match reply {
+        Some(GuiReply::Unit(result)) => result,
+        other => Err(mismatched_reply(GuiReplyKind::Unit, other.as_ref())),
+    }
+}
+
 /// Send-side handle stored as Tauri application state.
 ///
 /// Every method here is a typed name for one [`GuiCommand`]; the transport
@@ -1240,6 +1255,10 @@ fn read_local_image(path: &std::path::Path) -> Result<(String, Vec<u8>), String>
 #[derive(Clone)]
 pub struct GuiBridge {
     transport: Arc<dyn GuiTransport>,
+    /// How many state-changing commands this bridge has sent, shared by every
+    /// clone. The clipboard mirror accepts a write only after this window has
+    /// acted, which a remote cannot fake.
+    commands_sent: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl GuiBridge {
@@ -1252,7 +1271,54 @@ impl GuiBridge {
 
     /// Talk to an editor over an arbitrary transport.
     pub fn new(transport: Arc<dyn GuiTransport>) -> Self {
-        Self { transport }
+        Self {
+            transport,
+            commands_sent: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
+    }
+
+    /// Hand a command to the transport, counting it if it changes state.
+    ///
+    /// Not `async`: the transport takes the command's place in the sequence
+    /// when this is called, not when the result is first polled.
+    fn send(
+        &self,
+        command: GuiCommand,
+    ) -> GuiTransportFuture<'_, Result<Option<GuiReply>, String>> {
+        if command.must_keep_its_place() {
+            self.commands_sent
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        self.transport.send(command)
+    }
+
+    /// How many state-changing commands this window has sent.
+    pub fn commands_sent(&self) -> u64 {
+        self.commands_sent.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// This window's name in clipboard attribution, for a remote editor.
+    pub fn client_id(&self) -> Option<String> {
+        self.transport.client_id()
+    }
+
+    /// Put `text` in the editor's `+` register, then deliver `input`.
+    ///
+    /// Both commands take their places in the ordered lane before either is
+    /// awaited, so nothing the window sends meanwhile can land between them:
+    /// the key that pastes always reads the text sent for it.
+    pub fn clipboard_then_key(
+        &self,
+        text: String,
+        input: GuiKeyInput,
+    ) -> impl std::future::Future<Output = Result<(), String>> + '_ {
+        let write = self.send(GuiCommand::WriteClipboard { text });
+        let key = self.send(GuiCommand::Key { input });
+        async move {
+            let wrote = unit_reply(write.await?);
+            let typed = unit_reply(key.await?);
+            wrote.and(typed)
+        }
     }
 
     /// Subscribe to coalesced editor-state changes.
@@ -1296,7 +1362,7 @@ impl GuiBridge {
     }
 
     pub async fn vector_source(&self) -> Result<GuiVectorSource, String> {
-        match self.transport.send(GuiCommand::VectorSource).await? {
+        match self.send(GuiCommand::VectorSource).await? {
             Some(GuiReply::VectorSource(result)) => result,
             other => Err(mismatched_reply(GuiReplyKind::VectorSource, other.as_ref())),
         }
@@ -1309,7 +1375,7 @@ impl GuiBridge {
     /// The editor's workspace directory, which is a path on the editor's
     /// host: see [`GuiBridge::is_remote`] before using it locally.
     pub async fn workspace_directory(&self) -> Result<PathBuf, String> {
-        match self.transport.send(GuiCommand::WorkspaceDirectory).await? {
+        match self.send(GuiCommand::WorkspaceDirectory).await? {
             Some(GuiReply::WorkspaceDirectory(result)) => result,
             other => Err(mismatched_reply(
                 GuiReplyKind::WorkspaceDirectory,
@@ -1614,7 +1680,7 @@ impl GuiBridge {
     /// Only worth asking when [`GuiSnapshot::clipboard`]'s generation has
     /// moved; see [`crate::gui::clipboard`] for the policy around it.
     pub async fn read_clipboard(&self) -> Result<GuiClipboardText, String> {
-        match self.transport.send(GuiCommand::ReadClipboard).await? {
+        match self.send(GuiCommand::ReadClipboard).await? {
             Some(GuiReply::Clipboard(result)) => result,
             other => Err(mismatched_reply(GuiReplyKind::Clipboard, other.as_ref())),
         }
@@ -1635,10 +1701,7 @@ impl GuiBridge {
 
     /// Send a command whose only answer is success or a message.
     async fn unit(&self, command: GuiCommand) -> Result<(), String> {
-        match self.transport.send(command).await? {
-            Some(GuiReply::Unit(result)) => result,
-            other => Err(mismatched_reply(GuiReplyKind::Unit, other.as_ref())),
-        }
+        unit_reply(self.send(command).await?)
     }
 }
 
@@ -1764,6 +1827,7 @@ pub(crate) mod tests {
                         let _ = tx.send(Ok(GuiClipboardText {
                             generation: 1,
                             text: "yanked".to_string(),
+                            writer: None,
                         }));
                     }
                     GuiReplySender::ChatInputState(tx) => {
@@ -1862,6 +1926,7 @@ pub(crate) mod tests {
         #[allow(clippy::type_complexity)]
         scripted: Option<Box<dyn Fn(&GuiCommand) -> Option<GuiReply> + Send + Sync>>,
         remote: bool,
+        connection: watch::Sender<GuiConnection>,
     }
 
     impl RecordingTransport {
@@ -1873,6 +1938,7 @@ pub(crate) mod tests {
                 updates,
                 scripted: None,
                 remote: false,
+                connection: watch::channel(GuiConnection::Connected).0,
             })
         }
 
@@ -1887,11 +1953,22 @@ pub(crate) mod tests {
                 updates,
                 scripted: Some(Box::new(answer)),
                 remote: true,
+                connection: watch::channel(GuiConnection::Connected).0,
             }
         }
 
         pub(crate) fn received(&self) -> Vec<GuiCommand> {
             self.received.lock().unwrap().clone()
+        }
+
+        /// Publish `frame` as the latest one, the way a stream would.
+        pub(crate) fn show(&self, frame: GuiSnapshot) {
+            self.updates.send_replace(Some(frame));
+        }
+
+        /// Move the connection state, the way the supervisor would.
+        pub(crate) fn set_connection(&self, state: GuiConnection) {
+            self.connection.send_replace(state);
         }
     }
 
@@ -1932,6 +2009,7 @@ pub(crate) mod tests {
                         Some(GuiReply::Clipboard(Ok(protocol::GuiClipboardText {
                             generation: 1,
                             text: "yanked".to_string(),
+                            writer: None,
                         })))
                     }
                 })
@@ -1950,7 +2028,18 @@ pub(crate) mod tests {
         fn is_remote(&self) -> bool {
             self.remote
         }
+
+        fn connection(&self) -> watch::Receiver<GuiConnection> {
+            self.connection.subscribe()
+        }
+
+        fn client_id(&self) -> Option<String> {
+            self.remote.then(|| THIS_WINDOW.to_string())
+        }
     }
+
+    /// The client id a remote [`RecordingTransport`] reports.
+    pub(crate) const THIS_WINDOW: &str = "this-window";
 
     /// What [`exercise_every_helper`] should put on the wire, in order.
     ///

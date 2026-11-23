@@ -192,11 +192,12 @@ See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for installat
 | `/v1/keys` | POST | Send keystrokes |
 | `/v1/command` | POST | Execute ex command |
 | `/v1/mcp` | POST | MCP JSON-RPC 2.0 endpoint |
+| `/v1/gui/protocol` | GET | GUI protocol version (the remote handshake) |
 | `/v1/gui/command` | POST | One GUI command in, its reply out |
 | `/v1/gui/stream` | GET | SSE stream of projected `GuiSnapshot` frames |
 
 The same routes are also served unprefixed for backward compatibility, except
-the GUI pair, which exists only under `/v1`.
+the GUI routes, which exist only under `/v1`.
 
 For MCP protocol details, see [user-docs/MCP.md](user-docs/MCP.md).
 
@@ -228,6 +229,12 @@ For MCP protocol details, see [user-docs/MCP.md](user-docs/MCP.md).
   (`GuiCommand::must_keep_its_place`); only read-only queries may be overtaken.
 - Input is **dropped** while disconnected, never queued: a replayed key means
   something different against a buffer that moved.
+- **Protocol version**: `GUI_PROTOCOL_VERSION` in `gui/protocol.rs`. Bump it
+  whenever a `GuiCommand`, `GuiReply` or frame type changes shape; the client
+  checks it on every attach.
+- **Clipboard** (`gui/clipboard.rs`): the local clipboard is sent only ahead of
+  a key the user typed to paste from `+`/`*`; a remote write is copied locally
+  only if this window's command made it, never on attach.
 - Design record: `docs/engineering/remote-editing-2026-09/PLAN.md`. User docs:
   `user-docs/remote.md`.
 

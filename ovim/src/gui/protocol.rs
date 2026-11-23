@@ -23,17 +23,60 @@ use std::path::PathBuf;
 /// so a rename cannot leave one end silently ignoring the other.
 pub const SNAPSHOT_EVENT: &str = "snapshot";
 
-/// The editor's system-clipboard policy, as seen from a frame.
+/// The version of the conversation this build speaks.
+///
+/// Raised whenever a [`GuiCommand`], a [`GuiReply`] or any type inside a frame
+/// changes shape. Both ends compare it before anything else crosses the link:
+/// serde ignores fields it does not know and a frame that fails to decode is
+/// only logged, so without this a client and a session from different builds
+/// can stay "connected" while frames go missing or lose fields silently.
+pub const GUI_PROTOCOL_VERSION: u32 = 1;
+
+/// The header a client names its protocol version in.
+pub const PROTOCOL_HEADER: &str = "x-ovim-gui-protocol";
+
+/// The header a client names itself in, so the session can say which client a
+/// clipboard write came from. An opaque random value per window; it proves
+/// nothing and is only compared for equality.
+pub const CLIENT_HEADER: &str = "x-ovim-gui-client";
+
+/// What `GET /v1/gui/protocol` answers: the handshake a client makes before it
+/// subscribes, on every connect and every reconnect.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GuiProtocolInfo {
+    pub protocol: u32,
+    /// The Ovim release on that side, only for the error message.
+    pub ovim_version: String,
+}
+
+impl GuiProtocolInfo {
+    /// This build's side of the handshake.
+    pub fn current() -> Self {
+        Self {
+            protocol: GUI_PROTOCOL_VERSION,
+            ovim_version: env!("CARGO_PKG_VERSION").to_string(),
+        }
+    }
+
+    /// The refusal to show when `theirs` is not this build's protocol.
+    pub fn mismatch(theirs: &Self) -> Option<String> {
+        let ours = Self::current();
+        (theirs.protocol != ours.protocol).then(|| {
+            format!(
+                "The remote Ovim session speaks GUI protocol {} (Ovim {}), and this window speaks \
+                 protocol {} (Ovim {}). They cannot understand each other's frames. Install the \
+                 same Ovim release on both machines, then start a new session with --fresh.",
+                theirs.protocol, theirs.ovim_version, ours.protocol, ours.ovim_version
+            )
+        })
+    }
+}
+
+/// The editor's system clipboard, as seen from a frame.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiClipboard {
-    /// Whether `set clipboard=` asks for system-clipboard integration.
-    ///
-    /// False for `set clipboard=`, true for `unnamedplus` and `unnamed`. A
-    /// user who has not opted into clipboard integration must not acquire it
-    /// by moving the editor to another host, so this gates the direction that
-    /// sends the frontend's clipboard to the editor.
-    pub shared: bool,
     /// How many times the editor has written the system clipboard.
     ///
     /// Rises only for a write the editor made -- so a yank, or a delete under
@@ -42,6 +85,12 @@ pub struct GuiClipboard {
     /// changed, which is the difference between mirroring the editor and
     /// synchronising two machines' clipboards.
     pub generation: u64,
+    /// The client (its [`CLIENT_HEADER`] value) whose command made the write
+    /// counted by `generation`, or `None` when it came from anywhere else --
+    /// another API caller, a timer, or the editor itself. A frontend mirrors
+    /// only its own writes onto its machine's clipboard.
+    #[serde(default)]
+    pub writer: Option<String>,
 }
 
 /// The text the editor last put on its host's system clipboard.
@@ -52,6 +101,9 @@ pub struct GuiClipboardText {
     /// yank that lands between the frame and this answer is still noticed.
     pub generation: u64,
     pub text: String,
+    /// Who made this write; see [`GuiClipboard::writer`].
+    #[serde(default)]
+    pub writer: Option<String>,
 }
 
 /// A [`GuiRequest`](super::GuiRequest) payload with its reply channel removed.
@@ -246,9 +298,8 @@ pub enum GuiCommand {
     ReadClipboard,
     /// Put the frontend's system clipboard into the editor's `+` register.
     ///
-    /// The other half of the bridge: without it a `p` on a remote editor pastes
-    /// whatever the *editor's* host has on its clipboard, which on a headless
-    /// host is usually nothing at all.
+    /// Sent only immediately ahead of a key the user typed to paste from the
+    /// clipboard (see `gui::clipboard::PasteDetector`), never on its own.
     WriteClipboard {
         text: String,
     },
@@ -667,6 +718,7 @@ mod tests {
             GuiReply::Clipboard(Ok(GuiClipboardText {
                 generation: 7,
                 text: "yanked".to_string(),
+                writer: Some("0123456789abcdef".to_string()),
             })),
             GuiReply::Clipboard(Err("the yank is too large to bridge".to_string())),
         ] {

@@ -248,11 +248,15 @@ pub(super) struct Link {
     /// A manual retry request, and whether it may start a new session.
     retry: Notify,
     retry_fresh: AtomicBool,
+    /// This window's name in the session's clipboard attribution. Kept for
+    /// the life of the window, across every rebuilt wire.
+    pub(super) client_id: String,
 }
 
 impl Link {
-    pub(super) fn new(wire: Wire, source: Arc<dyn RemoteLink>) -> Self {
+    pub(super) fn new(wire: Wire, source: Arc<dyn RemoteLink>, client_id: String) -> Self {
         Self {
+            client_id,
             wire: RwLock::new(Arc::new(wire)),
             connection: watch::channel(GuiConnection::Connected).0,
             updates: watch::channel(None).0,
@@ -386,6 +390,9 @@ async fn attach(
     if !first {
         rebuild(link).await?;
     }
+    // The handshake comes first on every attach: a reconnect can land on a
+    // session a different build replaced the old one with.
+    super::remote::check_protocol(&link.wire()).await?;
     let response = connect_stream(&link.wire()).await?;
     if let Some(ready) = ready.take() {
         let _ = ready.send(Ok(()));
@@ -422,7 +429,7 @@ async fn rebuild(link: &Arc<Link>) -> Result<(), Failure> {
             )
         })?
         .map_err(|failure| Failure::from_link(failure.kind, failure.error.to_string()))?;
-    let wire = Wire::new(&endpoint)
+    let wire = Wire::new(&endpoint, &link.client_id)
         .map_err(|error| Failure::stop(ConnectionLoss::Unusable, error.to_string()))?;
     *link.wire.write().expect("the wire lock is never poisoned") = Arc::new(wire);
     Ok(())

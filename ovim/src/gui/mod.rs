@@ -39,7 +39,8 @@ pub use bridge::{
 };
 pub use diff::GuiDiffCommentInput;
 pub use protocol::{
-    GuiClipboard, GuiClipboardText, GuiCommand, GuiReply, GuiReplyKind, SNAPSHOT_EVENT,
+    GuiClipboard, GuiClipboardText, GuiCommand, GuiProtocolInfo, GuiReply, GuiReplyKind,
+    GUI_PROTOCOL_VERSION, SNAPSHOT_EVENT,
 };
 pub use reconnect::{ConnectionLoss, GuiConnection};
 pub use remote::{RemoteEndpoint, RemoteTransport};
@@ -2518,11 +2519,10 @@ pub(crate) fn snapshot_with_cache(
         predictable_insert: echo::predictable_insert(editor),
         input_epoch: inputs,
         clipboard: GuiClipboard {
-            // Read as a boolean rather than by value: nothing in the editor
-            // distinguishes `unnamedplus` from `unnamed`, so a frontend must
-            // not pretend to either.
-            shared: !editor.options.clipboard.is_empty(),
             generation: editor.registers().clipboard_generation(),
+            // Only a session serving remote clients knows who wrote it; see
+            // `gui::server`.
+            writer: None,
         },
         should_quit: editor.should_quit(),
     };

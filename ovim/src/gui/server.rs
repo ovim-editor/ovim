@@ -45,8 +45,17 @@ pub fn gui_channel(dimensions: (u16, u16)) -> (GuiChannel, GuiServer) {
             last_render_version: 0,
             frames_built: 0,
             projection_cache: GuiProjectionCache::default(),
+            clipboard_writer: None,
         },
     )
+}
+
+/// One command as the session received it, with the client that sent it.
+pub struct GuiIncoming {
+    request: GuiRequest,
+    /// The sender's [`CLIENT_HEADER`](super::protocol::CLIENT_HEADER), when
+    /// it named itself. Used only to attribute clipboard writes.
+    client: Option<String>,
 }
 
 /// The caller's end of a headless GUI conversation.
@@ -54,7 +63,7 @@ pub fn gui_channel(dimensions: (u16, u16)) -> (GuiChannel, GuiServer) {
 /// Held by the Axum handlers, which are the only things on this side.
 #[derive(Clone)]
 pub struct GuiChannel {
-    requests: mpsc::UnboundedSender<GuiRequest>,
+    requests: mpsc::UnboundedSender<GuiIncoming>,
     updates: Arc<watch::Sender<Option<GuiSnapshot>>>,
 }
 
@@ -67,10 +76,20 @@ impl GuiChannel {
     /// [`LocalTransport`](super::LocalTransport) so a remote frontend reads the
     /// same message as an in-process one.
     pub async fn send(&self, command: GuiCommand) -> Result<Option<GuiReply>, String> {
+        self.send_from(command, None).await
+    }
+
+    /// [`GuiChannel::send`] on behalf of a named client, so a clipboard write
+    /// the command makes is attributed to it.
+    pub async fn send_from(
+        &self,
+        command: GuiCommand,
+        client: Option<String>,
+    ) -> Result<Option<GuiReply>, String> {
         let (reply, receiver) = GuiReplySender::channel(command.reply_kind());
         let request = GuiRequest::from_parts(command, reply)?;
         self.requests
-            .send(request)
+            .send(GuiIncoming { request, client })
             .map_err(|_| EDITOR_STOPPED.to_string())?;
         receiver.recv().await
     }
@@ -90,7 +109,7 @@ impl GuiChannel {
 /// and a [`GuiServer::publish`] call after anything that could have changed the
 /// projection.
 pub struct GuiServer {
-    incoming: mpsc::UnboundedReceiver<GuiRequest>,
+    incoming: mpsc::UnboundedReceiver<GuiIncoming>,
     updates: Arc<watch::Sender<Option<GuiSnapshot>>>,
     dimensions: (u16, u16),
     revision: u64,
@@ -104,11 +123,15 @@ pub struct GuiServer {
     /// Line layouts and diff projections reused between frames, exactly as
     /// the desktop loop keeps them.
     projection_cache: GuiProjectionCache,
+    /// The clipboard generation the last attributed write produced, and the
+    /// client whose command made it. A generation that moved since was made
+    /// by something else and is attributed to nobody.
+    clipboard_writer: Option<(u64, String)>,
 }
 
 impl GuiServer {
     /// Await the next command, or `None` once every [`GuiChannel`] is gone.
-    pub async fn recv(&mut self) -> Option<GuiRequest> {
+    pub async fn recv(&mut self) -> Option<GuiIncoming> {
         self.incoming.recv().await
     }
 
@@ -117,10 +140,23 @@ impl GuiServer {
     /// `Shutdown` is the only command that stops it. A frontend closing its
     /// window must therefore not send one if it wants the session to survive
     /// for a later reconnect.
-    pub async fn handle(&mut self, request: GuiRequest, editor: &mut Editor) -> bool {
+    pub async fn handle(&mut self, incoming: GuiIncoming, editor: &mut Editor) -> bool {
+        let GuiIncoming { request, client } = incoming;
         if matches!(request, GuiRequest::Shutdown) {
             return false;
         }
+        if let GuiRequest::ReadClipboard { reply } = request {
+            // Answered here rather than by `handle_request`, because only the
+            // server knows who made the write being read.
+            self.inputs = self.inputs.wrapping_add(1);
+            let answer = super::clipboard_text(editor).map(|mut text| {
+                text.writer = self.writer_of(text.generation);
+                text
+            });
+            let _ = reply.send(answer);
+            return true;
+        }
+        let generation_before = editor.registers().clipboard_generation();
         super::handle_request(
             request,
             editor,
@@ -133,6 +169,10 @@ impl GuiServer {
         // A headless session paints no terminal, so nothing else records the
         // pane width the diff review lays itself out against.
         super::update_diff_review_geometry(editor);
+        let generation = editor.registers().clipboard_generation();
+        if generation != generation_before {
+            self.clipboard_writer = client.map(|client| (generation, client));
+        }
         true
     }
 
@@ -157,11 +197,13 @@ impl GuiServer {
         let render_version = editor.render_input_version();
         // Quitting is shell state rather than a render invalidation, but it
         // still has to reach the frontend (see `publish_if_changed`).
-        let quit_unchanged = self
-            .last_snapshot
-            .as_ref()
-            .is_some_and(|last| last.should_quit == editor.should_quit());
-        if quit_unchanged && render_version == self.last_render_version {
+        // A clipboard write changes nothing on screen either, and a remote
+        // window learns of its own yanks only from the frame.
+        let clipboard = editor.registers().clipboard_generation();
+        let unchanged = self.last_snapshot.as_ref().is_some_and(|last| {
+            last.should_quit == editor.should_quit() && last.clipboard.generation == clipboard
+        });
+        if unchanged && render_version == self.last_render_version {
             return;
         }
         self.last_render_version = render_version;
@@ -174,6 +216,7 @@ impl GuiServer {
             self.inputs,
             &mut self.projection_cache,
         );
+        next.clipboard.writer = self.writer_of(next.clipboard.generation);
         if self.last_snapshot.as_ref() == Some(&next) {
             return;
         }
@@ -181,6 +224,14 @@ impl GuiServer {
         next.revision = self.revision;
         self.last_snapshot = Some(next.clone());
         self.updates.send_replace(Some(next));
+    }
+
+    /// The client that made the write numbered `generation`, if one did.
+    fn writer_of(&self, generation: u64) -> Option<String> {
+        self.clipboard_writer
+            .as_ref()
+            .filter(|(written, _)| *written == generation)
+            .map(|(_, client)| client.clone())
     }
 
     /// How many frames this session has projected.
