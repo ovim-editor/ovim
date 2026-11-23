@@ -1038,7 +1038,7 @@ pub fn render_top_right_toasts(
         ));
     }
 
-    if !editor.diagnostic_badge_dismissed() {
+    if editor.diagnostic_badge_visible() {
         let (errors, warnings, _, _) = editor.cached_diagnostic_count();
         if errors > 0 || warnings > 0 {
             let counts = if errors > 0 && warnings > 0 {

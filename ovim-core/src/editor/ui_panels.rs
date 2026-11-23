@@ -31,9 +31,10 @@ pub struct UiPanels {
     pub dashboard_selected: usize,
     /// Dashboard animation state (concrete type lives in binary crate)
     pub cat_animation: Option<Box<dyn DashboardAnimation>>,
-    /// Whether the diagnostic badge overlay has been dismissed (double-Escape)
-    pub diagnostic_badge_dismissed: bool,
-    /// Last diagnostic count when badge state was set (for detecting changes)
+    /// The diagnostic badge overlay is shown until this instant. `None` when
+    /// it has expired, was dismissed (double-Escape) or was never raised.
+    pub diagnostic_badge_until: Option<std::time::Instant>,
+    /// Last (errors, warnings) count seen, for detecting what changed
     pub diagnostic_badge_last_count: (usize, usize),
     /// Last time Escape was pressed in normal mode (for double-Escape detection)
     pub last_escape_time: Option<std::time::Instant>,
