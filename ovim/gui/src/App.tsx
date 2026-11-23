@@ -46,7 +46,20 @@ import { themeVariables } from "./theme";
 import { splitAtUtf8Offset } from "./textEncoding";
 import { isGuiNativeControl, trapDialogFocus } from "./focus";
 import { anchoredOverlayPosition } from "./overlayPosition";
+import { projectWindowInvocation } from "./projectWindow";
 import { retainProjection, shouldAcceptRevision } from "./stateProjection";
+import { acceptsInput, connectionIndicator } from "./connection";
+import {
+    discard,
+    expire,
+    nextExpiry,
+    noPredictions,
+    recordSent,
+    reconcile,
+    withEcho,
+    type EchoOptions,
+    type EchoState,
+} from "./predictiveEcho";
 import {
     readWorkbenchLayout,
     workspaceLayoutIdentity,
@@ -64,6 +77,7 @@ import type {
     GuiAiChat,
     GuiChatInputState,
     GuiCodeExplanation,
+    GuiConnection,
     GuiKeyInput,
     GuiLayoutNode,
     GuiPane,
@@ -1597,6 +1611,12 @@ function App() {
     const [view, setView] = createSignal<GuiSnapshot>(mockSnapshot);
     const [error, setError] = createSignal("");
     const [connected, setConnected] = createSignal(!native);
+    // The link to the editor, on its own channel. A local editor never leaves
+    // "connected", so this costs nothing when there is no link to lose.
+    const [connection, setConnection] = createSignal<GuiConnection>({
+        state: "connected",
+    });
+    const linkStatus = () => connectionIndicator(connection());
     const [composition, setComposition] = createSignal("");
     const [pendingExit, setPendingExit] = createSignal<
         "close" | "quit" | undefined
@@ -1657,6 +1677,16 @@ function App() {
     let wheelRemainder = 0;
     let lastDimensions = { columns: 0, rows: 0 };
     let latestSnapshotRevision: number | undefined;
+    // The last frame the editor actually sent. `view()` is that frame with any
+    // outstanding predictive echo written into it, so everything that renders
+    // keeps reading one signal, and with nothing outstanding the two are the
+    // same object.
+    let authoritative: GuiSnapshot = mockSnapshot;
+    // Only a remote link speculates. Asked once, because a transport does not
+    // change under a running window.
+    let linkIsRemote = false;
+    let expiryTimer: ReturnType<typeof setTimeout> | undefined;
+    const [echo, setEcho] = createSignal<EchoState>(noPredictions);
     const walkthrough = createMemo(() => view().aiChat?.codeExplanation);
     const hasContextDock = createMemo(() =>
         Boolean(
@@ -1925,6 +1955,45 @@ function App() {
         queueMicrotask(syncDimensions);
     });
 
+    const echoOptions = (): EchoOptions => ({
+        remote: linkIsRemote,
+        connection: connection(),
+        now: performance.now(),
+    });
+
+    /** Re-arm the timer that clears speculation nobody ever answered. */
+    const scheduleExpiry = (state: EchoState) => {
+        if (expiryTimer !== undefined) clearTimeout(expiryTimer);
+        expiryTimer = undefined;
+        const deadline = nextExpiry(state);
+        if (deadline === undefined) return;
+        expiryTimer = setTimeout(
+            () => showEcho(expire(echo(), performance.now())),
+            Math.max(0, deadline - performance.now()),
+        );
+    };
+
+    /**
+     * Redraw the last real frame with the outstanding speculation in it.
+     *
+     * `retainProjection` still does the structural sharing, so a predicted
+     * character rerenders one line rather than the window -- and with nothing
+     * outstanding `withEcho` hands back the frame itself, so a local session
+     * takes the identical path it took before any of this existed.
+     */
+    const showEcho = (state: EchoState) => {
+        const drawnBefore = echo().run?.keys.length ?? 0;
+        setEcho(state);
+        // A key that could not be spoken for still moves the bookkeeping, and
+        // redrawing for it would be a viewport-sized diff per keystroke for no
+        // visible difference.
+        if (drawnBefore || state.run?.keys.length)
+            setView((previous) =>
+                retainProjection(previous, withEcho(authoritative, state)),
+            );
+        scheduleExpiry(state);
+    };
+
     const accept = (snapshot: GuiSnapshot) => {
         if (!shouldAcceptRevision(latestSnapshotRevision, snapshot.revision))
             return;
@@ -1953,7 +2022,16 @@ function App() {
             setContextDockHidden(true);
             setActiveDock("explorer");
         }
-        setView((previous) => retainProjection(previous, snapshot));
+        authoritative = snapshot;
+        // The authority is adopted first and the speculation re-derived on top
+        // of it, so a frame that contradicts what is on screen replaces it in
+        // the same paint rather than a frame later.
+        const settled = reconcile(echo(), snapshot, echoOptions()).state;
+        setEcho(settled);
+        setView((previous) =>
+            retainProjection(previous, withEcho(snapshot, settled)),
+        );
+        scheduleExpiry(settled);
         if (treeRevealed) setActiveDock("explorer");
         setConnected(true);
         setError("");
@@ -2079,7 +2157,19 @@ function App() {
         else focusEditorInput();
     };
 
-    const sendKey = (input: GuiKeyInput) => mutate("gui_key", { input });
+    const sendKey = (input: GuiKeyInput) => {
+        // Dropped rather than queued while the link is down. A key means
+        // whatever the editor's mode, pending operator and cursor position
+        // make it mean when it arrives, and the remote session keeps running
+        // while this window cannot see it -- so a key replayed on reconnect
+        // can edit the wrong place with nothing to show that it did.
+        if (!acceptsInput(connection())) return Promise.resolve();
+        // Recorded against the last authoritative frame, never against the
+        // echoed one: what is drawn ahead of the editor is measured from the
+        // last thing the editor actually said.
+        showEcho(recordSent(echo(), authoritative, input, echoOptions()).state);
+        return mutate("gui_key", { input });
+    };
     const sendLiteral = async (keys: string) => {
         for (const key of keys) {
             await sendKey({
@@ -2091,6 +2181,14 @@ function App() {
             });
         }
     };
+    // Ask for another attempt at the link, on the user's say-so.
+    const reconnect = (allowNewSession: boolean) => {
+        if (!native) return;
+        void invoke("gui_reconnect", { allowNewSession }).catch((reason) =>
+            setError(String(reason)),
+        );
+    };
+
     const windowAction = async (action: string) => {
         if (!native) return;
         try {
@@ -2161,6 +2259,18 @@ function App() {
         const nativeEditor =
             active instanceof HTMLTextAreaElement && active !== inputSink;
         switch (action) {
+            case "file.open-project":
+            case "file.new-window": {
+                const request = projectWindowInvocation(
+                    action,
+                    view().workspacePath,
+                );
+                if (request)
+                    void invoke(request.command, request.args).catch((reason) =>
+                        setError(String(reason)),
+                    );
+                break;
+            }
             case "file.save":
                 void editorCommand("w");
                 break;
@@ -3243,6 +3353,10 @@ function App() {
                                                                         segment.selected,
                                                                     "search-match":
                                                                         segment.searchMatch,
+                                                                    speculative:
+                                                                        Boolean(
+                                                                            segment.speculative,
+                                                                        ),
                                                                 }}
                                                                 style={{
                                                                     color: segment.token
@@ -4826,6 +4940,30 @@ function App() {
                 onEvent: snapshots,
                 onTerminalRequest: terminals,
             }).catch((reason) => setError(String(reason)));
+            const link = new Channel<GuiConnection>();
+            link.onmessage = (state) => {
+                setConnection(state);
+                if (state.state !== "connected") {
+                    // Input is dropped while the link is down rather than
+                    // queued, so a prediction made just before the outage is
+                    // speaking for a keystroke that will never be sent.
+                    showEcho(discard());
+                    return;
+                }
+                // A resize that happened while the link was down was recorded
+                // here and never delivered, so the sync that follows a
+                // reconnect must not be skipped as a no-op.
+                lastDimensions = { columns: 0, rows: 0 };
+                requestAnimationFrame(syncDimensions);
+            };
+            void invoke("gui_connection", { onEvent: link }).catch((reason) =>
+                setError(String(reason)),
+            );
+            void invoke<boolean>("gui_link_is_remote", {})
+                .then((remote) => {
+                    linkIsRemote = remote;
+                })
+                .catch((reason) => setError(String(reason)));
         }
         restoreInputFocus();
         onCleanup(() => {
@@ -4847,13 +4985,20 @@ function App() {
             unlistenMenu?.();
             unlistenClose?.();
             unlistenBrowserKey?.();
+            if (expiryTimer !== undefined) clearTimeout(expiryTimer);
         });
     });
 
     return (
         <main
             class="app"
-            classList={{ "walkthrough-open": Boolean(walkthrough()) }}
+            classList={{
+                "walkthrough-open": Boolean(walkthrough()),
+                // The editor underneath is a photograph of a moment that has
+                // passed. Dimming it says so without hiding it, which matters
+                // because reading is still useful while typing is not.
+                "link-down": Boolean(linkStatus()),
+            }}
             style={themeVars()}
         >
             <header
@@ -4895,6 +5040,49 @@ function App() {
                     />
                 </div>
             </header>
+
+            <Show when={linkStatus()}>
+                {(status) => (
+                    <div
+                        class={`link-banner link-${status().tone}`}
+                        // Politely while it is still trying, because the
+                        // attempt count changes and re-announcing every few
+                        // seconds helps nobody; assertively once it has
+                        // stopped, because then there is a decision to make.
+                        role={status().tone === "lost" ? "alert" : "status"}
+                        aria-live={
+                            status().tone === "lost" ? "assertive" : "polite"
+                        }
+                    >
+                        <span class="link-pulse" aria-hidden="true" />
+                        <div class="link-text">
+                            <strong>{status().headline}</strong>
+                            <span>{status().detail}</span>
+                        </div>
+                        <div class="link-actions">
+                            <For each={status().actions}>
+                                {(action) => (
+                                    <button
+                                        type="button"
+                                        class="link-action"
+                                        classList={{
+                                            destructive: Boolean(
+                                                action.warning,
+                                            ),
+                                        }}
+                                        title={action.warning}
+                                        onClick={() =>
+                                            reconnect(action.allowNewSession)
+                                        }
+                                    >
+                                        {action.label}
+                                    </button>
+                                )}
+                            </For>
+                        </div>
+                    </div>
+                )}
+            </Show>
 
             <section
                 class="workbench"
@@ -5632,14 +5820,29 @@ function App() {
                                 );
                             }}
                         </Show>
-                        <Show when={!connected()}>
-                            <span
-                                class="connecting"
-                                role="status"
-                                aria-live="polite"
-                            >
-                                connecting…
-                            </span>
+                        <Show
+                            when={linkStatus()}
+                            fallback={
+                                <Show when={!connected()}>
+                                    <span
+                                        class="connecting"
+                                        role="status"
+                                        aria-live="polite"
+                                    >
+                                        connecting…
+                                    </span>
+                                </Show>
+                            }
+                        >
+                            {(status) => (
+                                <span
+                                    class={`connecting link-${status().tone}-chip`}
+                                    role="status"
+                                    aria-live="polite"
+                                >
+                                    {status().label}
+                                </span>
+                            )}
                         </Show>
                     </div>
 

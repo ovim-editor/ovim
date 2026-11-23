@@ -209,6 +209,11 @@ pub fn execute_command_api(editor: &mut Editor, line: &str) -> CommandResult {
     if editor.take_pending_terminal_session().is_some() {
         return err("Interactive terminal sessions require a GUI or TUI frontend");
     }
+    // `:openwin` needs a window server; consume the request rather than
+    // leaving it for the next interactive frontend to pick up.
+    if editor.take_pending_window_open().is_some() {
+        return err(crate::editor::WINDOW_FRONTEND_REQUIRED);
+    }
     result
 }
 
@@ -383,6 +388,58 @@ mod tests {
             CommandResult::Error(ref error)
                 if error.error == "Could not open embedded browser: The embedded browser is unavailable in this frontend"
         ));
+    }
+
+    #[test]
+    fn openwin_queues_a_directory_picker_for_the_frontend() {
+        let mut editor = Editor::new();
+
+        assert!(matches!(
+            execute_command(&mut editor, "openwin"),
+            CommandResult::Success(_)
+        ));
+
+        let pending = editor.take_pending_window_open().expect("window request");
+        assert_eq!(pending.path, None);
+        assert!(editor.take_pending_window_open().is_none());
+    }
+
+    #[test]
+    fn openwin_forwards_an_explicit_project_directory() {
+        let mut editor = Editor::new();
+
+        assert!(matches!(
+            execute_command(&mut editor, "openwin  /srv/projects/ovim  "),
+            CommandResult::Success(_)
+        ));
+
+        // Validation belongs to the frontend that actually opens the window.
+        let pending = editor.take_pending_window_open().expect("window request");
+        assert_eq!(pending.path.as_deref(), Some("/srv/projects/ovim"));
+
+        // `:openwin` takes a file argument like `:e` and `:cd`, so `~` is
+        // expanded by the command table before the frontend sees it.
+        assert!(matches!(
+            execute_command(&mut editor, "openwin ~/projects/ovim"),
+            CommandResult::Success(_)
+        ));
+        let pending = editor.take_pending_window_open().expect("window request");
+        let path = pending.path.expect("an explicit directory");
+        assert!(!path.starts_with('~'), "{path}");
+        assert!(path.ends_with("/projects/ovim"), "{path}");
+    }
+
+    #[test]
+    fn openwin_with_a_blank_argument_falls_back_to_the_picker() {
+        let mut editor = Editor::new();
+
+        assert!(matches!(
+            execute_command(&mut editor, "openwin   "),
+            CommandResult::Success(_)
+        ));
+
+        let pending = editor.take_pending_window_open().expect("window request");
+        assert_eq!(pending.path, None);
     }
 
     /// OV-00331: `:qa` used to check only the CURRENT buffer, silently

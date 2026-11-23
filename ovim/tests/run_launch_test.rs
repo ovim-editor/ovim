@@ -1679,7 +1679,7 @@ async fn code_lens_pointer_targets_hover_activate_exact_commands_and_reject_stal
 
     #[cfg(feature = "gui")]
     {
-        let gui = ovim::gui::snapshot(&s.test.editor, 1);
+        let gui = ovim::gui::snapshot(&s.test.editor, 1, 0);
         let labels = &gui.panes[0]
             .lines
             .iter()

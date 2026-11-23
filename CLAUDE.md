@@ -1,6 +1,6 @@
 # ovim
 
-Oxidized Vim — a snappy, batteries-included terminal editor with Vim keybindings, LSP support, and seamless headless mode.
+Oxidized Vim — a snappy, batteries-included editor with Vim keybindings, LSP support, a native GUI, and seamless headless mode.
 
 ## Quick Reference
 
@@ -12,6 +12,10 @@ cargo build --release
 ./target/release/ovim file.txt
 ./target/release/ovim src/main.rs:42:10
 ./target/release/ovim file.rs --headless --session dev
+
+# Native GUI (Tauri + SolidJS)
+./target/release/ovim gui file.rs
+./target/release/ovim gui --remote user@host /path/to/project   # edit over SSH
 
 # File operations (stateless — no session needed)
 ovim edit src/main.rs --old "foo" --new "bar"
@@ -62,6 +66,15 @@ ovim-core/               # Shared library crate
 ovim/                    # Binary crate
 ├── src/
 │   ├── api/             # REST API (Axum) - /health, /lsp/status, /snapshot, etc.
+│   │   └── gui.rs       # /v1/gui/command + /v1/gui/stream (remote editing)
+│   ├── gui/             # Native GUI backend (Tauri host side)
+│   │   ├── mod.rs       # Snapshot projection + request handling
+│   │   ├── protocol.rs  # Serializable GuiCommand / GuiReply
+│   │   ├── bridge.rs    # GuiBridge + GuiTransport (the frontend's typed API)
+│   │   ├── remote.rs    # RemoteTransport (HTTP + SSE)
+│   │   ├── reconnect.rs # Connection state, backoff, reattach
+│   │   ├── ssh.rs       # `--remote` bootstrap, tunnel, version check
+│   │   └── clipboard.rs # Clipboard bridging across the link
 │   ├── frontend/        # Frontend-agnostic runtime plumbing (shared by TUI/headless/future GUI)
 │   ├── ui/              # Terminal UI (ratatui + crossterm)
 │   ├── cli.rs           # CLI argument parsing
@@ -99,15 +112,22 @@ ovim/                    # Binary crate
 3. Map to existing `ApiRequest` or add new one
 
 **Add new LSP feature:**
-1. Add method to `LspManager` in `lsp/mod.rs`
-2. Call from `Editor` LSP action methods
-3. Add to `pending_lsp_action` enum if async
-4. Process in `process_pending_lsp_actions()`
+1. Add method to `LspManager` in `ovim-core/src/lsp/mod.rs`
+2. Call from the `Editor` LSP action methods in `editor/lsp_integration.rs`
+3. If it must run asynchronously, add a flag to `LspIntents` (`editor/lsp_state.rs`)
+   and set it from the synchronous input path
+4. Fire it from `dispatch_pending_intents()`, which every frontend's tick calls
 
 **Add new operator:**
 1. Add function in `editor/operators.rs`
 2. Call from operator dispatch in `editor/input/`
 3. Add tests in `tests/`
+
+**Add new GUI command (Tauri ↔ editor):**
+1. Add the request to `GuiRequest` in `gui/bridge.rs` and a matching `GuiCommand` variant (and reply shape) in `gui/protocol.rs`; map both ways in `from_parts`/`into_parts`, and add the typed helper on `GuiBridge`
+2. Handle it in `handle_request()` in `gui/mod.rs`
+3. Add the `#[tauri::command]` wrapper in `gui/app.rs` and register it
+4. It works remotely for free — but decide `must_keep_its_place()`: ordering is the default, and only read-only queries may be overtaken
 
 **Add new language support:**
 1. Check tree-sitter grammar crate compatibility with `tree-sitter = "0.25"` on docs.rs
@@ -135,6 +155,12 @@ cargo test     # All tests
 cargo test syntax --lib              # Syntax highlighting tests
 cargo test buffer --lib              # Buffer tests
 cargo test -p ovim-core              # Core library tests only
+cargo test -p ovim gui:: --lib       # GUI bridge, projection, protocol
+
+# GUI frontend (SolidJS)
+npm test --prefix ovim/gui           # Solid DOM suite
+npm run check --prefix ovim/gui      # Type check
+npm run build --prefix ovim/gui      # Must pass before the Rust GUI build
 
 # Verify new language support
 ovim lsp check test.sql --verbose    # Check language detection
@@ -166,6 +192,12 @@ See [user-docs/LANGUAGE_SUPPORT.md](user-docs/LANGUAGE_SUPPORT.md) for installat
 | `/v1/keys` | POST | Send keystrokes |
 | `/v1/command` | POST | Execute ex command |
 | `/v1/mcp` | POST | MCP JSON-RPC 2.0 endpoint |
+| `/v1/gui/protocol` | GET | GUI protocol version (the remote handshake) |
+| `/v1/gui/command` | POST | One GUI command in, its reply out |
+| `/v1/gui/stream` | GET | SSE stream of projected `GuiSnapshot` frames |
+
+The same routes are also served unprefixed for backward compatibility, except
+the GUI routes, which exist only under `/v1`.
 
 For MCP protocol details, see [user-docs/MCP.md](user-docs/MCP.md).
 
@@ -181,6 +213,30 @@ For MCP protocol details, see [user-docs/MCP.md](user-docs/MCP.md).
 - `LanguageServer` handles individual server lifecycle
 - Debounced `didChange` notifications (150ms) to reduce traffic
 - Flush pending changes before hover/goto_definition to avoid stale data
+
+### Remote Editing (`ovim gui --remote user@host /path`)
+- The whole editor runs on the remote host; the local process is only the Tauri
+  shell. Remote editing is a **transport swap** under `GuiBridge`, not a second
+  editor — see `gui/remote.rs` and `gui/ssh.rs`.
+- The session is reattached, not restarted, so warm LSP, undo history and
+  in-flight AI survive a disconnect. `--fresh` is the deliberate replacement.
+- The capability arrives on the bootstrap's stdout inside the SSH channel and
+  never touches local disk.
+- **Host-header trap**: `ApiSecurity::host_is_allowed` compares against the
+  *server's own* port, which under `ssh -L` is not the port dialled. Any client
+  must pin `Host` explicitly or every request 403s.
+- State-changing commands are serialised one-per-round-trip
+  (`GuiCommand::must_keep_its_place`); only read-only queries may be overtaken.
+- Input is **dropped** while disconnected, never queued: a replayed key means
+  something different against a buffer that moved.
+- **Protocol version**: `GUI_PROTOCOL_VERSION` in `gui/protocol.rs`. Bump it
+  whenever a `GuiCommand`, `GuiReply` or frame type changes shape; the client
+  checks it on every attach.
+- **Clipboard** (`gui/clipboard.rs`): the local clipboard is sent only ahead of
+  a key the user typed to paste from `+`/`*`; a remote write is copied locally
+  only if this window's command made it, never on attach.
+- Design record: `docs/engineering/remote-editing-2026-09/PLAN.md`. User docs:
+  `user-docs/remote.md`.
 
 ### API Architecture
 - Axum server on random port (port 0 → OS assigns)

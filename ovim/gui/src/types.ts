@@ -20,6 +20,13 @@ export interface GuiSegment {
     cursor: boolean;
     selected: boolean;
     searchMatch: boolean;
+    /**
+     * Locally predicted text the editor has not confirmed yet.
+     *
+     * Never present on the wire: `predictiveEcho.ts` splices these in and the
+     * next authoritative frame removes them again.
+     */
+    speculative?: boolean;
 }
 
 export interface GuiCodeLens {
@@ -599,5 +606,49 @@ export interface GuiSnapshot {
     debug?: GuiDebugPanel;
     runConsole?: GuiRunConsole;
     theme: GuiTheme;
+    /**
+     * Whether a plain printable character typed now is certain to be inserted
+     * literally at the cursor.
+     *
+     * Computed by the editor, because every state that makes it false -- a
+     * pending `i_CTRL-R`, half a typed mapping, a modal consent dialog -- is
+     * invisible in the frame. It is what lets predictive local echo speak.
+     */
+    predictableInsert: boolean;
+    /**
+     * How many commands the editor has taken in over this conversation.
+     *
+     * Counting its own sent keys and subtracting tells a client which of them a
+     * frame does not yet account for -- mosh's acknowledged state number, and
+     * the only way a client can tell a frame that reflects its typing from one
+     * that predates it.
+     */
+    inputEpoch: number;
     shouldQuit: boolean;
 }
+
+// Why the automatic reconnection attempts stopped.
+export type ConnectionLoss =
+    "gaveUp" | "sessionGone" | "authentication" | "unusable";
+
+/**
+ * The state of the link to the editor.
+ *
+ * It arrives on its own IPC channel rather than as a field on `GuiSnapshot`,
+ * because a snapshot only arrives while the link works and the moment worth
+ * reporting is the one where none can.
+ */
+export type GuiConnection =
+    | { state: "connected" }
+    | {
+          state: "reconnecting";
+          attempt: number;
+          retryInMs: number;
+          detail: string;
+      }
+    | {
+          state: "lost";
+          reason: ConnectionLoss;
+          detail: string;
+          canStartASession: boolean;
+      };

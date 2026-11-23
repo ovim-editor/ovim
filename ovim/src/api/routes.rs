@@ -7,13 +7,14 @@ use super::handlers::{
 };
 use super::mcp_handler::handle_mcp;
 use super::state::ApiState;
+use crate::gui::server::GuiChannel;
 use axum::{
     routing::{get, post, put},
     Router,
 };
 
 /// Create the API router with all routes
-pub(crate) fn create_router(state: ApiState) -> Router {
+pub(crate) fn create_router(state: ApiState, gui: GuiChannel) -> Router {
     // V1 API routes (current stable API)
     let v1_routes = Router::new()
         .route("/health", get(get_health))
@@ -51,16 +52,18 @@ pub(crate) fn create_router(state: ApiState) -> Router {
         .route("/insert", post(insert_lines))
         .route("/delete-lines", post(delete_lines))
         .route("/lines", get(read_lines))
-        .route("/mcp", post(handle_mcp));
+        .route("/mcp", post(handle_mcp))
+        .with_state(state);
 
     // Root router with version namespaces
     Router::new()
-        // V1 API under /v1 prefix (recommended)
-        .nest("/v1", v1_routes.clone())
+        // V1 API under /v1 prefix (recommended). The GUI conversation is a new
+        // surface, so it is published only here and never on the deprecated
+        // unversioned paths below.
+        .nest("/v1", v1_routes.clone().merge(super::gui::router(gui)))
         // Legacy routes (no prefix) - for backward compatibility
         // These will be removed in ovim v1.0
         .merge(v1_routes)
-        .with_state(state)
 }
 
 #[cfg(test)]
@@ -77,6 +80,12 @@ mod tests {
     };
     use tokio::sync::mpsc;
     use tower::ServiceExt;
+
+    /// The router as `start_server` builds it, with the editor end of the GUI
+    /// conversation discarded because these tests exercise the API routes.
+    fn router(state: ApiState) -> Router {
+        create_router(state, crate::gui::server::gui_channel((120, 35)).0)
+    }
 
     #[tokio::test]
     async fn versioned_agent_list_route_preserves_snapshot_schema() {
@@ -102,7 +111,7 @@ mod tests {
             }))
             .unwrap();
         });
-        let response = create_router(ApiState::new(tx))
+        let response = router(ApiState::new(tx))
             .oneshot(
                 Request::builder()
                     .uri(format!("/v1/agents?run_id={run_id}"))
@@ -148,7 +157,7 @@ mod tests {
             }))
             .unwrap();
         });
-        let response = create_router(ApiState::new(tx))
+        let response = router(ApiState::new(tx))
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -173,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn malformed_and_stale_agent_controls_fail_with_distinct_statuses() {
         let (tx, _rx) = mpsc::channel(1);
-        let invalid = create_router(ApiState::new(tx))
+        let invalid = router(ApiState::new(tx))
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -204,7 +213,7 @@ mod tests {
             }))
             .unwrap();
         });
-        let stale = create_router(ApiState::new(tx))
+        let stale = router(ApiState::new(tx))
             .oneshot(
                 Request::builder()
                     .method("POST")
@@ -263,7 +272,7 @@ mod tests {
             }))
             .unwrap();
         });
-        let response = create_router(ApiState::new(tx))
+        let response = router(ApiState::new(tx))
             .oneshot(
                 Request::builder()
                     .method("POST")

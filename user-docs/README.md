@@ -17,6 +17,7 @@ ovim file.rs --headless --session dev       # Headless mode with named session
 - [Headless & Automation](headless.md) - Sessions, REST API, subcommands
 - [Project Tools](project-tools.md) - Replace in files, recent files, symbols, breadcrumbs, git staging/commit/history, conflicts, Problems
 - [Running and Debugging](running-and-debugging.md) - Run/debug JVM code, run console, `.ovim/debug.toml`, code lenses
+- [Remote Editing](remote.md) - `ovim gui --remote user@host`, session persistence, latency
 - [Language Support](LANGUAGE_SUPPORT.md) - LSP + syntax support and adding languages
 - [Options](options.md) - `:set` options reference (scrolling, wrap, clipboard, etc.)
 - [Pseudocode](pseudocode.md) - `:set pseudo` reading view for Java and Markdown buffers

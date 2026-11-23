@@ -22,6 +22,26 @@ fn with_clipboard<T>(
     f(guard.as_mut()?).ok()
 }
 
+/// Put `text` on the system clipboard of the machine this process runs on.
+///
+/// Free-standing because a process can need the clipboard without owning an
+/// editor: the graphical frontend may be driving an editor on another host,
+/// where the editor's own clipboard reaches the *wrong* machine. Sharing
+/// `with_clipboard` keeps both callers behind the one mutex the platform
+/// requires.
+pub fn write_system_clipboard(text: &str) -> bool {
+    with_clipboard(|clipboard| clipboard.set_text(text.to_string())).is_some()
+}
+
+/// Read the system clipboard of the machine this process runs on.
+///
+/// `None` when there is no clipboard to read -- over SSH, headless, or on a
+/// Wayland session without a seat. See [`write_system_clipboard`] for why this
+/// exists beside the editor's registers.
+pub fn read_system_clipboard() -> Option<String> {
+    with_clipboard(|clipboard| clipboard.get_text())
+}
+
 /// Fallible external clipboard access, isolated for deterministic testing.
 /// Failure is best-effort: the integration retains its local fallback.
 pub(crate) trait ClipboardBackend: Debug + Send + Sync {
@@ -69,6 +89,18 @@ struct ClipboardState {
     snapshot_valid: bool,
     pending_write: bool,
     execution_depth: usize,
+    /// How many times this editor has written the clipboard.
+    ///
+    /// A frontend on another machine mirrors those writes onto its own
+    /// clipboard, and it needs to know that one happened without being handed
+    /// the text on every frame. Counting them is the whole signal: it rises
+    /// only for a write the editor itself made, so a clipboard changed by some
+    /// other program on this host is not mistaken for something to mirror.
+    generation: u64,
+    /// The text of the editor's own last write. `fallback` also caches what
+    /// was last *read* from the host, which is not what a remote frontend
+    /// mirrors.
+    last_write: String,
 }
 
 #[derive(Debug)]
@@ -85,9 +117,14 @@ impl Clone for Clipboard {
         // an in-flight command, or leave the clone inside an unfinishable scope.
         Self {
             backend: Arc::clone(&self.backend),
-            state: Arc::new(Mutex::new(ClipboardState {
-                fallback: self.state().fallback.clone(),
-                ..ClipboardState::default()
+            state: Arc::new(Mutex::new({
+                let state = self.state();
+                ClipboardState {
+                    fallback: state.fallback.clone(),
+                    generation: state.generation,
+                    last_write: state.last_write.clone(),
+                    ..ClipboardState::default()
+                }
             })),
         }
     }
@@ -205,6 +242,8 @@ impl Clipboard {
 
     pub(crate) fn write(&mut self, text: String) {
         let mut state = self.state();
+        state.generation = state.generation.wrapping_add(1);
+        state.last_write.clone_from(&text);
         state.fallback = text;
         if state.execution_depth > 0 {
             state.snapshot_valid = true;
@@ -212,6 +251,16 @@ impl Clipboard {
         } else {
             self.backend.write(&state.fallback);
         }
+    }
+
+    /// How many times this editor has written the clipboard.
+    pub(crate) fn generation(&self) -> u64 {
+        self.state().generation
+    }
+
+    /// The text of this editor's last clipboard write.
+    pub(crate) fn last_write(&self) -> String {
+        self.state().last_write.clone()
     }
 
     fn flush_pending(&self, state: &mut ClipboardState) {

@@ -1,4 +1,5 @@
 use clap::{Parser, Subcommand};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "ovim")]
@@ -124,13 +125,74 @@ impl FileArg {
 #[command(name = "ovim-gui", version)]
 #[command(about = "Oxidized Vim — the native GUI editor", long_about = None)]
 pub struct GuiCli {
-    /// File or directory to open (files support FILE:LINE:COL syntax)
+    /// File or directory to open (files support FILE:LINE:COL syntax; a path
+    /// on the remote host with --remote)
     #[arg(value_name = "FILE")]
     pub file: Option<String>,
 
     /// Resume persisted AI conversations instead of starting fresh chats
     #[arg(long)]
     pub resume: bool,
+
+    #[command(flatten)]
+    pub remote_args: GuiRemoteArgs,
+}
+
+/// Where the editor a GUI drives lives, shared by `ovim gui` and `ovim-gui`.
+/// All empty means a local editor in this process.
+#[derive(clap::Args, Debug, Clone, Default, PartialEq, Eq)]
+pub struct GuiRemoteArgs {
+    /// Edit on another host over SSH: `--remote user@host /path/to/project`.
+    ///
+    /// Takes `[user@]host` or a `Host` alias from your SSH config; put a
+    /// port, an identity, or a proxy there rather than here. Ovim starts a
+    /// headless session on that host, or reattaches to the one it already
+    /// has for that project, and tunnels its loopback port here.
+    #[arg(long, value_name = "USER@HOST", conflicts_with = "remote_session")]
+    pub remote: Option<String>,
+
+    /// Replace the remote session for this project instead of reattaching.
+    ///
+    /// Reattaching is the default because it preserves warm language
+    /// servers and undo history. Use this when the session is wedged.
+    #[arg(long, requires = "remote")]
+    pub fresh: bool,
+
+    /// Connect even when the two Ovim versions are a feature release apart.
+    #[arg(long, requires = "remote")]
+    pub allow_version_mismatch: bool,
+
+    /// Drive an editor that is already running elsewhere.
+    ///
+    /// The low-level form of `--remote`, kept because it is the only way
+    /// in when the tunnel is somebody else's: an existing forward, a VPN,
+    /// a container, or a headless session on this machine. It is also what
+    /// the end-to-end transport test drives.
+    ///
+    /// Takes the session descriptor a headless run writes
+    /// (`<cache>/ovim/sessions/<name>.json` on that host), copied to this
+    /// machine. It carries both the capability and the port the session
+    /// listens on, so neither is ever typed on a command line where the
+    /// process table and the shell history would keep it.
+    #[arg(long, value_name = "PATH")]
+    pub remote_session: Option<PathBuf>,
+
+    /// Where to reach that session: HOST:PORT, or a bare port on loopback.
+    ///
+    /// Defaults to the port in the descriptor, which is right when the
+    /// session is on this machine. Under `ssh -L` this is the local end of
+    /// the tunnel, while the descriptor still fixes the Host header the
+    /// session requires.
+    #[arg(long, value_name = "HOST:PORT", requires = "remote_session")]
+    pub remote_endpoint: Option<String>,
+}
+
+impl GuiRemoteArgs {
+    /// Whether the editor runs somewhere else, in which case the FILE
+    /// argument is a path on that host and must not be opened here.
+    pub fn is_remote(&self) -> bool {
+        self.remote.is_some() || self.remote_session.is_some()
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -138,13 +200,17 @@ pub enum Command {
     /// Open Ovim's native Tauri GUI
     #[command(next_help_heading = "Editor")]
     Gui {
-        /// File or directory to open (files support FILE:LINE:COL syntax)
+        /// File or directory to open (files support FILE:LINE:COL syntax; a
+        /// path on the remote host with --remote)
         #[arg(value_name = "FILE")]
         file: Option<String>,
 
         /// Resume persisted AI conversations instead of starting fresh chats
         #[arg(long)]
         resume: bool,
+
+        #[command(flatten)]
+        remote_args: GuiRemoteArgs,
     },
 
     // ── File Operations ──────────────────────────────────────────────
@@ -503,6 +569,13 @@ pub enum SessionCommand {
         /// Session name (required)
         #[arg(short, long)]
         session: String,
+
+        /// Kill only a process verifiably this session (same start time and an
+        /// Ovim executable); refuse otherwise. Exits 3 when the PID belongs to
+        /// another process (the stale descriptor is removed) and 4 when it
+        /// cannot be verified. Nothing is signalled in either case.
+        #[arg(long)]
+        verified: bool,
     },
 
     /// Check health of a session
@@ -650,6 +723,21 @@ mod tests {
         assert!(cli.resume);
 
         assert!(GuiCli::try_parse_from(["ovim-gui", "a.rs", "b.rs"]).is_err());
+
+        // The desktop binary takes the same remote surface as `ovim gui`.
+        let cli =
+            GuiCli::try_parse_from(["ovim-gui", "--remote", "user@host", "/srv/project"]).unwrap();
+        assert_eq!(cli.remote_args.remote.as_deref(), Some("user@host"));
+        assert!(cli.remote_args.is_remote());
+        assert!(GuiCli::try_parse_from(["ovim-gui", "--fresh"]).is_err());
+        assert!(GuiCli::try_parse_from([
+            "ovim-gui",
+            "--remote",
+            "user@host",
+            "--remote-session",
+            "dev.json"
+        ])
+        .is_err());
     }
 
     #[test]
@@ -660,8 +748,87 @@ mod tests {
             Some(Command::Gui {
                 file: Some(ref file),
                 resume: true,
-            }) if file == "src/main.rs"
+                ref remote_args,
+            }) if file == "src/main.rs" && *remote_args == GuiRemoteArgs::default()
         ));
+    }
+
+    #[test]
+    fn one_remote_flag_and_a_path_are_the_whole_of_the_remote_surface() {
+        let cli =
+            Cli::try_parse_from(["ovim", "gui", "--remote", "user@host", "/srv/project"]).unwrap();
+
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gui {
+                file: Some(ref path),
+                remote_args: GuiRemoteArgs {
+                    remote: Some(ref destination),
+                    fresh: false,
+                    ..
+                },
+                ..
+            }) if path == "/srv/project" && destination == "user@host"
+        ));
+    }
+
+    #[test]
+    fn the_ssh_bootstrap_and_the_hand_built_descriptor_cannot_both_be_asked_for() {
+        // They answer the same question -- where is the editor -- and letting
+        // both through would leave which one wins to argument order.
+        let result = Cli::try_parse_from([
+            "ovim",
+            "gui",
+            "--remote",
+            "user@host",
+            "--remote-session",
+            "dev.json",
+        ]);
+
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn reattaching_can_only_be_declined_for_a_remote_launch() {
+        assert!(Cli::try_parse_from(["ovim", "gui", "--fresh"]).is_err());
+        assert!(Cli::try_parse_from(["ovim", "gui", "--allow-version-mismatch"]).is_err());
+        assert!(
+            Cli::try_parse_from(["ovim", "gui", "--remote", "user@host", "--fresh", "/srv"])
+                .is_ok()
+        );
+    }
+
+    #[test]
+    fn a_remote_gui_takes_its_capability_from_a_descriptor_and_never_from_an_argument() {
+        let cli = Cli::try_parse_from([
+            "ovim",
+            "gui",
+            "--remote-session",
+            "dev.json",
+            "--remote-endpoint",
+            "127.0.0.1:9000",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Gui {
+                remote_args: GuiRemoteArgs {
+                    remote_session: Some(ref path),
+                    remote_endpoint: Some(ref endpoint),
+                    ..
+                },
+                ..
+            }) if path == std::path::Path::new("dev.json") && endpoint == "127.0.0.1:9000"
+        ));
+    }
+
+    #[test]
+    fn an_endpoint_without_a_descriptor_is_refused_rather_than_dialled_anonymously() {
+        // Dialling with no capability could only end in a 401, and the flag
+        // pair is the whole of the remote surface, so clap rejects it here.
+        let result = Cli::try_parse_from(["ovim", "gui", "--remote-endpoint", "127.0.0.1:9000"]);
+
+        assert!(result.is_err());
     }
 
     #[test]

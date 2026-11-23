@@ -14,6 +14,7 @@ use ovim::frontend::{
     handle_viewport_resize, process_external_file_change, refresh_after_input, TerminalRequest,
     TickState,
 };
+use ovim::gui::server::GuiServer;
 use ovim::session::SessionInfo;
 use ovim::ui::UI;
 
@@ -126,6 +127,7 @@ pub async fn run_headless_loop(
     start_time: SystemTime,
     session_info: Arc<Mutex<SessionInfo>>,
     initial_dimensions: (u16, u16),
+    mut gui: GuiServer,
     mut shutdown_rx: mpsc::Receiver<()>,
 ) -> Result<()> {
     let mut tick_state = TickState::new();
@@ -147,7 +149,17 @@ pub async fn run_headless_loop(
             }
             Some(request) = api_rx.recv() => {
                 crate::api_dispatch::handle_api_request(editor, request, start_time, &session_info, &mut render_cache).await;
+                // Automation and a watching frontend share one editor, so a
+                // keystroke sent over `/v1/keys` has to reach the stream too.
+                gui.publish(editor);
                 if editor.should_quit() { break; }
+            }
+            Some(request) = gui.recv() => {
+                let keep_running = gui.handle(request, editor).await;
+                // Publish before checking for shutdown so the frontend sees the
+                // result of its own command rather than waiting for the tick.
+                gui.publish(editor);
+                if !keep_running || editor.should_quit() { break; }
             }
             // The tick delivers picker results too; these arms only make a
             // headless client see them without waiting for the next tick.
@@ -179,7 +191,8 @@ pub async fn run_headless_loop(
                 }
             }
             _ = lsp_interval.tick() => {
-                if let Some(request) = editor.tick(&mut tick_state).await.terminal_request {
+                let report = editor.tick(&mut tick_state).await;
+                if let Some(request) = report.terminal_request {
                     // No terminal is attached to a headless session. (The API
                     // `exec` path already rejects `:terminal` synchronously.)
                     editor.set_status_message(format!(
@@ -187,6 +200,14 @@ pub async fn run_headless_loop(
                         request.describe()
                     ));
                 }
+                // A frontend driving this session from another host cannot
+                // have a window opened for it from here.
+                if report.window_open.is_some() {
+                    editor.set_status_message(ovim::editor::WINDOW_FRONTEND_REQUIRED.to_string());
+                }
+                // Also the tick on which a newly arrived subscriber is noticed,
+                // so its first frame never waits for the next edit.
+                gui.publish(editor);
             }
         }
     }
@@ -349,6 +370,11 @@ async fn run_tick_work(
     let tick_start = Instant::now();
     let report = editor.tick(tick_state).await;
     warn_if_slow("editor tick", tick_start);
+    // `:openwin` targets the GUI, where each project window is its own
+    // process. A terminal frontend has no window to spawn.
+    if report.window_open.is_some() {
+        editor.set_status_message(ovim::editor::WINDOW_FRONTEND_REQUIRED.to_string());
+    }
     let Some(request) = report.terminal_request else {
         return;
     };

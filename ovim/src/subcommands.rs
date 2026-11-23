@@ -158,7 +158,11 @@ fn expand_escapes(s: &str) -> String {
 /// Execute a subcommand
 pub fn execute_subcommand(command: Command) -> Result<()> {
     match command {
-        Command::Gui { file, resume } => cmd_gui(file, resume),
+        Command::Gui {
+            file,
+            resume,
+            remote_args,
+        } => cmd_gui(file, resume, remote_args),
 
         // File operations (direct file I/O, no session needed)
         Command::Edit {
@@ -240,14 +244,28 @@ pub fn execute_subcommand(command: Command) -> Result<()> {
 
 /// Run the native shell in-process so `ovim gui` works in source builds,
 /// standalone CLI distributions, and desktop packages without path probing.
-fn cmd_gui(file: Option<String>, resume: bool) -> Result<()> {
+fn cmd_gui(
+    file: Option<String>,
+    resume: bool,
+    remote_args: crate::cli::GuiRemoteArgs,
+) -> Result<()> {
+    let is_remote = remote_args.is_remote();
+    // Resolved before the window exists, so an unreachable host or an
+    // unreadable descriptor is a startup error naming the cause rather than a
+    // window that never draws.
+    let remote = crate::gui::ssh::RemoteOptions::from_args(remote_args, file.clone()).resolve()?;
+    // A remote launch already told the far side what to open; the path here
+    // belongs to that host and must not be opened on this one.
+    let file = (!is_remote)
+        .then(|| file.as_deref().map(FileArg::parse))
+        .flatten();
     #[cfg(feature = "gui")]
     {
-        crate::gui::app::run(file.as_deref().map(FileArg::parse), resume)
+        crate::gui::app::run(file, resume, remote)
     }
     #[cfg(not(feature = "gui"))]
     {
-        let _ = (file, resume);
+        let _ = (file, resume, remote);
         anyhow::bail!("This Ovim build does not include the native GUI feature")
     }
 }
@@ -352,7 +370,13 @@ fn execute_lsp_command(command: LspCommand) -> Result<()> {
 fn execute_session_command(command: SessionCommand) -> Result<()> {
     match command {
         SessionCommand::List => cmd_sessions(),
-        SessionCommand::Kill { session } => cmd_kill(&session),
+        SessionCommand::Kill { session, verified } => {
+            if verified {
+                cmd_kill_verified(&session)
+            } else {
+                cmd_kill(&session)
+            }
+        }
         SessionCommand::Health { session } => cmd_health(&session),
         SessionCommand::Cleanup { max_age, dry_run } => cmd_cleanup(max_age, dry_run),
     }
@@ -1484,6 +1508,54 @@ fn cmd_kill(session_name: &str) -> Result<()> {
         .kill_session(&session)
         .context("Failed to kill session")?;
 
+    println!(
+        "\x1b[32mSession '{}' (PID: {}) killed\x1b[0m",
+        session.session_name, session.pid
+    );
+    Ok(())
+}
+
+/// Exit status of `session kill --verified` when the PID is another process.
+pub const KILL_NOT_THIS_SESSION: i32 = 3;
+/// Exit status of `session kill --verified` when the PID cannot be verified.
+pub const KILL_UNVERIFIABLE: i32 = 4;
+
+/// Kill a session only if its process is verifiably the session.
+///
+/// Reads the descriptor without the liveness filter `resolve_session` applies,
+/// because that filter accepts a PID it cannot check. Used by the remote GUI's
+/// `--fresh`, which must never signal a process that merely inherited a PID.
+#[allow(clippy::print_stderr)] // a CLI subcommand: there is no TUI to corrupt
+fn cmd_kill_verified(session_name: &str) -> Result<()> {
+    use ovim_core::session::{verify_session_process, ProcessIdentity};
+
+    SessionInfo::validate_session_name(session_name)?;
+    let path = SessionInfo::session_dir()?.join(format!("{session_name}.json"));
+    let descriptor = std::fs::read_to_string(&path)
+        .with_context(|| format!("Session '{session_name}' has no descriptor"))?;
+    let session: SessionInfo = serde_json::from_str(&descriptor)
+        .with_context(|| format!("The descriptor of session '{session_name}' is unreadable"))?;
+    match verify_session_process(&session) {
+        ProcessIdentity::Verified => cmd_kill_process(&session),
+        ProcessIdentity::NotThisSession(why) => {
+            let _ = session.delete();
+            eprintln!("Session '{session_name}' is not running: {why}. Nothing was killed.");
+            std::process::exit(KILL_NOT_THIS_SESSION);
+        }
+        ProcessIdentity::Unverifiable(why) => {
+            eprintln!(
+                "Refusing to kill process {} for session '{session_name}': {why}.",
+                session.pid
+            );
+            std::process::exit(KILL_UNVERIFIABLE);
+        }
+    }
+}
+
+fn cmd_kill_process(session: &SessionInfo) -> Result<()> {
+    OvimClient::new(session)
+        .kill_session(session)
+        .context("Failed to kill session")?;
     println!(
         "\x1b[32mSession '{}' (PID: {}) killed\x1b[0m",
         session.session_name, session.pid

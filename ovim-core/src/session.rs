@@ -515,6 +515,89 @@ fn get_process_start_time(_pid: u32) -> Option<u64> {
     None
 }
 
+/// Whether a descriptor's PID is still the Ovim session that wrote it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProcessIdentity {
+    /// Running, with the start time the descriptor recorded and an Ovim
+    /// executable.
+    Verified,
+    /// Not running, or demonstrably another process: the PID was reused.
+    NotThisSession(String),
+    /// Running, but nothing reliable says whose it is.
+    Unverifiable(String),
+}
+
+/// Decide whether it is safe to signal the process a descriptor names.
+///
+/// Stricter than the liveness check sessions use for listing: a descriptor
+/// without a recorded start time, or a process whose start time or executable
+/// cannot be read, is `Unverifiable` rather than given the benefit of the
+/// doubt, because the caller is about to kill it.
+pub fn verify_session_process(info: &SessionInfo) -> ProcessIdentity {
+    let pid = info.pid;
+    if !is_process_exists(pid) {
+        return ProcessIdentity::NotThisSession(format!("process {pid} is not running"));
+    }
+    let Some(expected) = info.start_time else {
+        return ProcessIdentity::Unverifiable(format!(
+            "the session descriptor records no start time for process {pid}"
+        ));
+    };
+    let Some(actual) = get_process_start_time(pid) else {
+        return ProcessIdentity::Unverifiable(format!(
+            "the start time of process {pid} cannot be read on this system"
+        ));
+    };
+    if actual.abs_diff(expected) > 2 {
+        return ProcessIdentity::NotThisSession(format!(
+            "process {pid} started at a different time than the session did, so the PID now \
+             belongs to another process"
+        ));
+    }
+    match process_executable_name(pid) {
+        Some(name) if name.starts_with("ovim") => ProcessIdentity::Verified,
+        Some(name) => {
+            ProcessIdentity::Unverifiable(format!("process {pid} is running {name:?}, not Ovim"))
+        }
+        None => ProcessIdentity::Unverifiable(format!(
+            "the executable of process {pid} cannot be read on this system"
+        )),
+    }
+}
+
+/// The file name of the executable a process runs.
+#[cfg(target_os = "linux")]
+fn process_executable_name(pid: u32) -> Option<String> {
+    let path = std::fs::read_link(format!("/proc/{pid}/exe")).ok()?;
+    let name = path.file_name()?.to_string_lossy().into_owned();
+    // A binary replaced on disk since the process started (an upgrade) reads
+    // back with this suffix; it is still the same program.
+    Some(name.trim_end_matches(" (deleted)").to_string())
+}
+
+#[cfg(target_os = "macos")]
+fn process_executable_name(pid: u32) -> Option<String> {
+    let mut buffer = vec![0u8; libc::PROC_PIDPATHINFO_MAXSIZE as usize];
+    let length = unsafe {
+        libc::proc_pidpath(
+            pid as libc::c_int,
+            buffer.as_mut_ptr().cast::<libc::c_void>(),
+            buffer.len() as u32,
+        )
+    };
+    if length <= 0 {
+        return None;
+    }
+    buffer.truncate(length as usize);
+    let path = std::path::PathBuf::from(String::from_utf8_lossy(&buffer).into_owned());
+    Some(path.file_name()?.to_string_lossy().into_owned())
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+fn process_executable_name(_pid: u32) -> Option<String> {
+    None
+}
+
 /// Check if a process is still alive and matches the expected start time
 /// This prevents PID reuse race conditions
 fn is_process_alive_with_start_time(pid: u32, expected_start_time: Option<u64>) -> bool {
@@ -1012,5 +1095,66 @@ mod tests {
         assert_eq!(read.pid, session_info.pid);
         assert_eq!(read.session_name, "explicit-dir");
         assert_eq!(read.file.as_deref(), Some("explicit.txt"));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn the_process_that_wrote_a_descriptor_verifies_as_itself() {
+        // The test binary is `ovim_core-<hash>`, an Ovim executable by name.
+        let info = SessionInfo::new(1, None, "verify-self".to_string());
+
+        assert_eq!(verify_session_process(&info), ProcessIdentity::Verified);
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_pid_with_another_start_time_is_not_this_session() {
+        let mut info = SessionInfo::new(1, None, "verify-reused".to_string());
+        info.start_time = info.start_time.map(|start| start + 10_000);
+
+        assert!(matches!(
+            verify_session_process(&info),
+            ProcessIdentity::NotThisSession(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_descriptor_without_a_start_time_cannot_be_verified() {
+        let mut info = SessionInfo::new(1, None, "verify-unknown".to_string());
+        info.start_time = None;
+
+        assert!(matches!(
+            verify_session_process(&info),
+            ProcessIdentity::Unverifiable(_)
+        ));
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_running_process_that_is_not_ovim_cannot_be_verified() {
+        let mut child = std::process::Command::new("sleep")
+            .arg("30")
+            .spawn()
+            .expect("sleep should start");
+        // Read until the process has exec'd `sleep`, not the forked parent.
+        let mut info = SessionInfo::new(1, None, "verify-other".to_string());
+        info.pid = child.id();
+        for _ in 0..100 {
+            if process_executable_name(child.id()).as_deref() == Some("sleep") {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        info.start_time = get_process_start_time(child.id());
+
+        let verdict = verify_session_process(&info);
+
+        let _ = child.kill();
+        let _ = child.wait();
+        assert!(
+            matches!(&verdict, ProcessIdentity::Unverifiable(why) if why.contains("sleep")),
+            "{verdict:?}"
+        );
     }
 }

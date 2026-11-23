@@ -167,6 +167,12 @@ impl Editor {
         self.visual.visual_block_dollar = val;
     }
 
+    /// Whether a visual-block `I` / `A` / `c` is waiting for its insert to end
+    /// (the typed text is then replicated onto the other block lines).
+    pub fn has_pending_block_insert(&self) -> bool {
+        self.visual.block_insert.is_some()
+    }
+
     /// Gets the visual selection range (start and end positions)
     /// Returns ((start_line, start_col), (end_line, end_col))
     /// Note: For VisualBlock, this returns the corners of the rectangle

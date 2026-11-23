@@ -493,6 +493,10 @@ pub(crate) static COMMANDS: &[ExCommand] = &[
     ex(&["session"], session::session).args(A::Text),
     ex(&["clearaedits"], session::clear_agent_edits),
     ex(&["browser"], session::browser),
+    // `:openwin [dir]` is the cross-platform entry point for "open a project
+    // in a new window". The GUI only binds an accelerator to it on macOS,
+    // because elsewhere Ctrl-O is Vim's jump-back motion.
+    ex(&["openwin"], session::openwin).args(A::File),
 ];
 
 /// The full form of a `:help`-style name: `quit` for `q[uit]`.
@@ -752,6 +756,7 @@ mod tests {
         ("red", "redo"),
         ("redo", "redo"),
         ("browser", "browser"),
+        ("openwin", "openwin"),
         // cmd_project.rs
         ("SearchReplace", "SearchReplace"),
         ("Sr", "SearchReplace"),

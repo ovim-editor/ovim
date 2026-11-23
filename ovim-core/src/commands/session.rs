@@ -269,6 +269,15 @@ pub(super) fn clear_agent_edits(editor: &mut Editor, _ex: &Ex) -> CommandResult 
 }
 
 /// `:browser`: open a tab in the frontend's embedded browser.
+/// `:openwin [dir]`: queue a project window for a window-capable frontend.
+/// The path stays verbatim; expansion and validation belong to the frontend
+/// that actually opens the window.
+pub(super) fn openwin(editor: &mut Editor, ex: &Ex) -> CommandResult {
+    let path = ex.args.trim();
+    editor.request_open_window((!path.is_empty()).then(|| path.to_string()));
+    crate::command_result::ok_silent()
+}
+
 pub(super) fn browser(editor: &mut Editor, _ex: &Ex) -> CommandResult {
     match editor.request_browser_start() {
         Ok(()) => ok("Opening browser"),

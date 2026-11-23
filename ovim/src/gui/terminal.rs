@@ -456,6 +456,10 @@ fn is_pty_eof(error: &std::io::Error) -> bool {
     }
 }
 
+/// Why the terminal panel is unavailable while driving a remote editor.
+const REMOTE_TERMINAL_UNSUPPORTED: &str =
+    "The terminal panel is not available over a remote link yet; use :!command, which runs on the remote host";
+
 #[tauri::command]
 pub async fn gui_terminal_open(
     bridge: State<'_, GuiBridge>,
@@ -465,6 +469,12 @@ pub async fn gui_terminal_open(
     on_event: Channel<TerminalEvent>,
     command: Option<String>,
 ) -> Result<u64, String> {
+    // The panel's shell runs on this machine. Over a remote link the
+    // workspace is a path on the other host, and a local shell started there
+    // would be somewhere the user did not ask for -- or nowhere at all.
+    if bridge.is_remote() {
+        return Err(REMOTE_TERMINAL_UNSUPPORTED.to_string());
+    }
     let directory = bridge.workspace_directory().await?;
     host.open(&directory, columns, rows, on_event, command.as_deref())
 }

@@ -386,6 +386,25 @@ impl RegisterManager {
         self.clipboard.read()
     }
 
+    /// How many times this editor has written the system clipboard.
+    ///
+    /// The signal a frontend on another machine watches so it can mirror those
+    /// writes onto its own clipboard. It rises only for a write this editor
+    /// made, never for one some other program on this host made.
+    pub fn clipboard_generation(&self) -> u64 {
+        self.clipboard.generation()
+    }
+
+    /// The text this editor last put on the system clipboard.
+    ///
+    /// Deliberately not [`RegisterManager::get_clipboard`], which reads back
+    /// whatever the host's clipboard holds now. A remote frontend is mirroring
+    /// what *the editor* copied, and on a headless host the two differ --
+    /// there is often no clipboard there to read at all.
+    pub fn last_clipboard_write(&self) -> String {
+        self.clipboard.last_write()
+    }
+
     /// Lists all non-empty registers as (name, content) pairs
     /// Truncates content for display
     pub fn list_registers(&self) -> Vec<(String, String)> {

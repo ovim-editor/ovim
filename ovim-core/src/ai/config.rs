@@ -9,7 +9,7 @@ use std::fs;
 use std::path::PathBuf;
 
 /// A selectable profile/model pair shared by both chat interfaces.
-#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct AiChatModelOption {
     pub id: String,
     pub label: String,

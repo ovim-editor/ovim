@@ -17,7 +17,7 @@ fn comment_text(text: &str) -> Result<String, String> {
     Ok(text.into())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffComment {
     pub id: u64,

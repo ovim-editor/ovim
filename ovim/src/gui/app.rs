@@ -2,8 +2,8 @@
 
 use super::browser::BrowserHost;
 use super::{
-    GuiBridge, GuiChatInputState, GuiKeyInput, GuiMouseKind, GuiSnapshot, GuiTerminalRequest,
-    GuiVectorSource,
+    GuiBridge, GuiChatInputState, GuiConnection, GuiKeyInput, GuiMouseKind, GuiSnapshot,
+    GuiTerminalRequest, GuiVectorSource, RemoteLaunch, RemoteTransport,
 };
 use crate::cli::FileArg;
 use anyhow::{Context, Result};
@@ -334,6 +334,9 @@ async fn gui_subscribe(
     }
 
     tauri::async_runtime::spawn(async move {
+        // A remote editor hands this window no terminals (its sender is gone
+        // from the start), which must not end the snapshot stream with it.
+        let mut terminals_open = true;
         loop {
             tokio::select! {
                 changed = updates.changed() => {
@@ -342,8 +345,11 @@ async fn gui_subscribe(
                     let Some(snapshot) = update else { continue };
                     if on_event.send(snapshot).is_err() { break; }
                 }
-                changed = terminals.changed() => {
-                    if changed.is_err() { break; }
+                changed = terminals.changed(), if terminals_open => {
+                    if changed.is_err() {
+                        terminals_open = false;
+                        continue;
+                    }
                     let request = terminals.borrow_and_update().clone();
                     let Some(request) = request else { continue };
                     if on_terminal_request.send(request).is_err() { break; }
@@ -354,9 +360,74 @@ async fn gui_subscribe(
     Ok(())
 }
 
+/// Stream the state of the link to the editor to one webview.
+///
+/// A second channel beside `gui_subscribe` rather than a field on the snapshot:
+/// a snapshot only arrives while the link works, and the moment worth
+/// reporting is the one where none can.
 #[tauri::command]
-async fn gui_key(bridge: State<'_, GuiBridge>, input: GuiKeyInput) -> Result<(), String> {
-    bridge.key(input).await
+async fn gui_connection(
+    bridge: State<'_, GuiBridge>,
+    on_event: Channel<GuiConnection>,
+) -> Result<(), String> {
+    let mut connection = bridge.connection();
+    on_event
+        .send(connection.borrow_and_update().clone())
+        .map_err(|error| error.to_string())?;
+
+    tauri::async_runtime::spawn(async move {
+        // A local editor's sender is dropped immediately, so this ends after
+        // the one value above and the webview keeps showing "connected".
+        while connection.changed().await.is_ok() {
+            let state = connection.borrow_and_update().clone();
+            if on_event.send(state).is_err() {
+                break;
+            }
+        }
+    });
+    Ok(())
+}
+
+/// Try the link again now, on the user's say-so.
+///
+/// `allow_new_session` is only ever true because the user answered the
+/// question a lost session poses. Nothing automatic sets it: a replacement
+/// session comes up with none of the state the old one had, and it looks
+/// exactly like a successful reconnection while doing so.
+#[tauri::command]
+async fn gui_reconnect(
+    bridge: State<'_, GuiBridge>,
+    allow_new_session: bool,
+) -> Result<(), String> {
+    bridge.request_reconnect(allow_new_session)
+}
+
+/// Whether keystrokes cross a network on their way to the editor.
+///
+/// Asked once, at startup, and the only thing that turns predictive local echo
+/// on. An in-process editor answers within a frame, so speculating for it would
+/// trade the chance of being wrong for no gain at all.
+#[tauri::command]
+async fn gui_link_is_remote(bridge: State<'_, GuiBridge>) -> Result<bool, String> {
+    Ok(bridge.is_remote())
+}
+
+/// The clipboard bridge of a window driving a remote editor; `None` for an
+/// editor in this process. See `gui::clipboard` for the policy.
+struct RemoteClipboard(Option<Arc<super::clipboard::ClipboardBridge>>);
+
+#[tauri::command]
+async fn gui_key(
+    bridge: State<'_, GuiBridge>,
+    clipboard: State<'_, RemoteClipboard>,
+    input: GuiKeyInput,
+) -> Result<(), String> {
+    // Over a remote link a key that pastes from the clipboard has to carry
+    // this machine's clipboard with it; the bridge decides which keys do.
+    match &clipboard.0 {
+        Some(clipboard) => clipboard.key(input).await,
+        None => bridge.key(input).await,
+    }
 }
 
 #[tauri::command]
@@ -680,7 +751,11 @@ fn gui_open_external(url: String) -> Result<(), String> {
 }
 
 /// Run the native application on the calling thread until its last window closes.
-pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
+/// Run the desktop shell, over an editor in this process or in another one.
+///
+/// `remote` swaps the transport under the bridge and nothing else: every Tauri
+/// command below keeps talking to `GuiBridge` and cannot tell the difference.
+pub fn run(file: Option<FileArg>, resume: bool, remote: Option<RemoteLaunch>) -> Result<()> {
     // Keep Tauri's patchable bundle marker linked even without the updater
     // plugin. The bundler uses it to distinguish deb/AppImage/MSI installs.
     std::hint::black_box(tauri::utils::platform::bundle_type());
@@ -695,13 +770,42 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
     let browser_smoke_client =
         std::env::var_os("OVIM_BROWSER_SMOKE").map(|_| browser_client.clone());
     let services = ovim_core::editor::EditorServices::default().with_browser(browser_client);
-    let bridge = GuiBridge::spawn(file, resume, services)?;
-    let shutdown_bridge = bridge.clone();
+    // The transport owns the link, tunnel included, so a reconnection can
+    // rebuild it without reaching back out here. Dropping the bridge at exit
+    // therefore closes the forward and the multiplexed connection, and leaves
+    // the remote session running.
+    let (bridge, editor_is_ours) = match remote {
+        Some(launch) => (
+            GuiBridge::new(Arc::new(
+                RemoteTransport::connect(launch)
+                    .context("Failed to reach the remote Ovim session")?,
+            )),
+            false,
+        ),
+        None => (GuiBridge::spawn(file, resume, services)?, true),
+    };
+    // A remote session deliberately outlives the windows that drive it -- that
+    // is what lets a later run reconnect to warm language servers and undo
+    // history -- so only an editor this process started is this process's to
+    // stop on exit.
+    let shutdown_bridge = editor_is_ours.then(|| bridge.clone());
+    // A yank this window makes in a remote editor reaches this machine's
+    // clipboard by following the frames; this machine's clipboard reaches the
+    // editor only with a key that pastes it.
+    let remote_clipboard = RemoteClipboard(
+        super::clipboard::start(&bridge, Arc::new(super::clipboard::SystemClipboard)).map(
+            |(handle, follow)| {
+                tauri::async_runtime::spawn(follow);
+                handle
+            },
+        ),
+    );
     let exit_gate = GuiExitGate::default();
     let setup_exit_gate = exit_gate.clone();
     let run_exit_gate = exit_gate.clone();
     let application = tauri::Builder::default()
         .manage(bridge)
+        .manage(remote_clipboard)
         .manage(browser_host)
         .manage(super::terminal::TerminalHost::new())
         .manage(exit_gate)
@@ -714,6 +818,9 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             gui_vector_preview,
             gui_vector_feedback,
             gui_subscribe,
+            gui_connection,
+            gui_reconnect,
+            gui_link_is_remote,
             gui_key,
             gui_paste,
             gui_attach_image,
@@ -756,6 +863,8 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
             super::terminal::gui_terminal_resize,
             super::terminal::gui_terminal_close,
             super::menu::gui_set_menu_surface,
+            super::window::gui_open_project_dialog,
+            super::window::gui_open_project_window,
             super::browser::gui_browser_open,
             super::browser::gui_browser_state,
             super::browser::gui_browser_subscribe,
@@ -854,7 +963,9 @@ pub fn run(file: Option<FileArg>, resume: bool) -> Result<()> {
         }
         RunEvent::Exit => {
             handle.state::<super::terminal::TerminalHost>().shutdown();
-            shutdown_bridge.shutdown();
+            if let Some(bridge) = &shutdown_bridge {
+                bridge.shutdown();
+            }
         }
         _ => {}
     });

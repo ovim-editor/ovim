@@ -237,6 +237,8 @@ export const mockSnapshot: GuiSnapshot = {
     debug: undefined,
     runConsole: undefined,
     theme,
+    predictableInsert: false,
+    inputEpoch: 0,
     shouldQuit: false,
 };
 

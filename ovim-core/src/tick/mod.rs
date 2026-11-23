@@ -72,6 +72,10 @@ pub struct TickReport {
     /// headless frontends decline them with a status message. At most one
     /// per tick, shell commands first.
     pub terminal_request: Option<TerminalRequest>,
+    /// A project window queued by `:openwin`, taken off the editor. Only the
+    /// GUI can open one (each project window is its own process); every other
+    /// frontend reports [`crate::editor::WINDOW_FRONTEND_REQUIRED`].
+    pub window_open: Option<crate::editor::PendingWindowOpen>,
 }
 
 impl Editor {
@@ -160,6 +164,7 @@ impl Editor {
 
         TickReport {
             terminal_request: take_terminal_request(editor),
+            window_open: editor.take_pending_window_open(),
         }
     }
 }

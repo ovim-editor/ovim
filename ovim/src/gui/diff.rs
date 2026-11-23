@@ -1,7 +1,7 @@
 //! Structured diff data for the native GUI. The review patch remains owned by
 //! core; this projection only replaces the terminal's width-dependent paint.
 
-use serde::{Serialize, Serializer};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use std::collections::BTreeMap;
 use std::path::{Component, Path};
 use std::sync::Arc;
@@ -10,12 +10,12 @@ use crate::buffer::Buffer;
 use crate::editor::{DiffLayout, DiffReviewState, Editor, DIFF_REVIEW_TITLE_PREFIX};
 use ovim_core::native_diff::{ChangeRef, CustomReview, PatchLineKind, ReviewPatch};
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffReview {
     pub comments: Vec<ovim_core::editor::DiffComment>,
     pub title: String,
-    pub layout: &'static str,
+    pub layout: String,
     pub managed: bool,
     pub custom: bool,
     pub show_checked: bool,
@@ -24,13 +24,13 @@ pub struct GuiDiffReview {
     pub files: Vec<GuiDiffFile>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub overlay: Option<GuiDiffOverlayState>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub moves: Vec<GuiDiffMove>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub guided_files: Vec<GuiDiffFile>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffProvenance {
     pub base_label: String,
@@ -39,15 +39,15 @@ pub struct GuiDiffProvenance {
     pub snapshot_id: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffOverlayState {
-    pub mode: &'static str,
+    pub mode: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffMove {
     pub id: String,
@@ -57,7 +57,7 @@ pub struct GuiDiffMove {
     pub new: GuiDiffMoveEndpoint,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffMoveEndpoint {
     pub path: String,
@@ -69,7 +69,7 @@ pub struct GuiDiffMoveEndpoint {
     pub context_complete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffContextWindow {
     pub start_line: usize,
@@ -93,7 +93,13 @@ impl Serialize for GuiDiffDocument {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+impl<'de> Deserialize<'de> for GuiDiffDocument {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        GuiDiffReview::deserialize(deserializer).map(|review| Self(Arc::new(review)))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffFile {
     pub id: String,
@@ -113,7 +119,7 @@ pub struct GuiDiffFile {
     pub hunks: Vec<GuiDiffHunk>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffHunk {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -128,10 +134,10 @@ pub struct GuiDiffHunk {
     pub lines: Vec<GuiDiffLine>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffLine {
-    pub kind: &'static str,
+    pub kind: String,
     pub text: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub old_line: Option<usize>,
@@ -142,7 +148,7 @@ pub struct GuiDiffLine {
     pub highlights: Vec<GuiDiffHighlight>,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GuiDiffHighlight {
     pub start: usize,
@@ -166,7 +172,7 @@ pub fn project_diff(editor: &Editor, buffer: &Buffer) -> Option<GuiDiffReview> {
             .and_then(|state| match state.mode {
                 "none" => None,
                 mode => Some(GuiDiffOverlayState {
-                    mode,
+                    mode: mode.to_string(),
                     title: state.title,
                 }),
             });
@@ -224,7 +230,7 @@ fn project_review_patch(title: &str, review: &DiffReviewState) -> GuiDiffReview 
                     continue;
                 };
                 hunk.lines.push(GuiDiffLine {
-                    kind: kind_name(info.kind),
+                    kind: kind_name(info.kind).to_string(),
                     text: text.get(1..).unwrap_or("").to_string(),
                     old_line: info.old_line,
                     new_line: info.new_line,
@@ -246,7 +252,7 @@ fn project_review_patch(title: &str, review: &DiffReviewState) -> GuiDiffReview 
     GuiDiffReview {
         comments: review.comments().to_vec(),
         title: title.to_string(),
-        layout: layout_name(review.layout),
+        layout: layout_name(review.layout).to_string(),
         managed: true,
         custom: false,
         show_checked: review.show_checked,
@@ -380,7 +386,7 @@ fn project_guided_files(review: &DiffReviewState, custom: &CustomReview) -> Vec<
                     )
                 })
                 .map(|line| GuiDiffLine {
-                    kind: kind_name(line.kind),
+                    kind: kind_name(line.kind).to_string(),
                     text: line.text.clone(),
                     old_line: (line.kind != PatchLineKind::Added)
                         .then_some(line.old_line)
@@ -490,7 +496,7 @@ fn project_move_endpoint(
         lines.insert(
             number,
             GuiDiffLine {
-                kind: kind_name(kind),
+                kind: kind_name(kind).to_string(),
                 highlights: project_highlights(&text, review.patch_line_highlights(patch_line)),
                 text,
                 old_line: (kind == PatchLineKind::Removed).then_some(number),
@@ -548,7 +554,7 @@ fn project_move_endpoint(
             lines.insert(
                 number,
                 GuiDiffLine {
-                    kind: "context",
+                    kind: "context".into(),
                     text: text.clone(),
                     old_line: (kind == PatchLineKind::Removed).then_some(number),
                     new_line: (kind == PatchLineKind::Added).then_some(number),
@@ -677,7 +683,7 @@ fn project_standalone(title: &str, path: &str, content: &str) -> GuiDiffReview {
         file.additions += usize::from(kind == "added");
         file.deletions += usize::from(kind == "removed");
         hunk.lines.push(GuiDiffLine {
-            kind,
+            kind: kind.to_string(),
             text: body.to_string(),
             old_line: old,
             new_line: new,
@@ -689,7 +695,7 @@ fn project_standalone(title: &str, path: &str, content: &str) -> GuiDiffReview {
     GuiDiffReview {
         comments: Vec::new(),
         title: title.to_string(),
-        layout: "split",
+        layout: "split".into(),
         managed: false,
         custom: false,
         show_checked: false,
@@ -1060,7 +1066,7 @@ mod tests {
             .unwrap();
         let opened = project_diff(&editor, editor.buffer()).unwrap();
         assert_eq!(
-            opened.overlay.as_ref().map(|overlay| overlay.mode),
+            opened.overlay.as_ref().map(|overlay| overlay.mode.as_str()),
             Some("saved")
         );
         assert_eq!(opened.guided_files.len(), 5);
@@ -1083,7 +1089,10 @@ mod tests {
         editor.open_diff_review(Some("HEAD")).unwrap();
         let projected = project_diff(&editor, editor.buffer()).unwrap();
         assert_eq!(
-            projected.overlay.as_ref().map(|overlay| overlay.mode),
+            projected
+                .overlay
+                .as_ref()
+                .map(|overlay| overlay.mode.as_str()),
             Some("active")
         );
         assert_eq!(
@@ -1258,7 +1267,7 @@ mod tests {
             .as_deref()
             .is_some_and(|id| id.starts_with("diff_")));
         assert_eq!(
-            projected.overlay.as_ref().map(|state| state.mode),
+            projected.overlay.as_ref().map(|state| state.mode.as_str()),
             Some("active")
         );
         assert!(projected.files.iter().any(|file| file.path == "old.rs"));
@@ -1600,7 +1609,7 @@ mod tests {
     }
 }
 
-#[derive(Debug, serde::Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct GuiDiffCommentInput {
     pub id: Option<u64>,

@@ -1,15 +1,15 @@
 //! Presentation-only surrounding source. Never changes patch coverage or saved pairings.
 use super::{CustomReview, PatchLineKind, ReviewSnapshot};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextLine {
     pub number: usize,
     pub text: String,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ContextEdge {
     pub old: Vec<ContextLine>,
@@ -19,7 +19,7 @@ pub struct ContextEdge {
 /// Source lines revealed per incremental expansion click or keypress.
 pub const CONTEXT_STEP: usize = 20;
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DiffContextView {
     pub id: String,
