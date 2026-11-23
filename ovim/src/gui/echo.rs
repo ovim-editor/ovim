@@ -29,6 +29,13 @@ pub(super) fn predictable_insert(editor: &Editor) -> bool {
     editor.mode() == Mode::Insert
         // `i_CTRL-R` has been pressed and the next character names a register.
         && !editor.editing.pending_register_insert
+        // `i_CTRL-V` has been pressed: the next character is a literal, or the
+        // first digit of a character code that inserts nothing until it ends.
+        && editor.editing.pending_literal.is_none()
+        // An expanded snippet's tab stops are live: a typed character can
+        // replace the placeholder it lands on and is copied into its mirrors,
+        // so what the buffer becomes is not the run that was typed.
+        && !editor.snippet_active()
         // Half a mapping has been typed; the next character extends or
         // resolves it rather than reaching the buffer.
         && !editor.has_pending_mapping()
@@ -47,6 +54,22 @@ pub(super) fn predictable_insert(editor: &Editor) -> bool {
         && !editor.has_pending_block_insert()
         && !editor.buffer().is_read_only()
         && !insert_mapping_starts_with_a_printable_key(editor)
+        && !cursor_line_has_inline_text(editor)
+}
+
+/// Whether the cursor line carries inline virtual text, such as an inlay hint.
+///
+/// The frame draws that text as ordinary segments, and the frontend places a
+/// predicted character by counting segment characters as buffer columns. A
+/// hint before the cursor would put the prediction in the wrong cell, so a
+/// line with any inline text is left to the editor.
+fn cursor_line_has_inline_text(editor: &Editor) -> bool {
+    let line = editor.buffer().cursor().line();
+    editor
+        .projected_decorations()
+        .for_line(line)
+        .iter()
+        .any(|decoration| decoration.placement.is_inline())
 }
 
 /// Whether any insert-applicable mapping begins with a character a user would
@@ -118,6 +141,56 @@ mod tests {
         press(&mut editor, KeyCode::Char('r'), Modifiers::CONTROL);
 
         assert!(editor.editing.pending_register_insert);
+        assert!(!predictable_insert(&editor));
+    }
+
+    #[test]
+    fn a_pending_literal_insert_is_not_predictable() {
+        let mut editor = typing("fn main() {}\n");
+        press(&mut editor, KeyCode::Char('v'), Modifiers::CONTROL);
+
+        assert!(editor.editing.pending_literal.is_some());
+        assert!(!predictable_insert(&editor));
+
+        // `<C-v>0` starts a decimal code: the `6` and `5` that follow insert
+        // nothing until the number ends, so they cannot be drawn ahead.
+        press(&mut editor, KeyCode::Char('0'), Modifiers::NONE);
+        assert!(!predictable_insert(&editor));
+    }
+
+    #[test]
+    fn a_live_snippet_session_is_not_predictable() {
+        let mut editor = typing("\n");
+        let snippet = ovim_core::snippet::Snippet::parse("call(${1:arg}, $1)", &|_| None);
+        editor.editing.snippet = Some(Box::new(crate::editor::SnippetSession::new(&snippet, 0)));
+
+        assert!(!predictable_insert(&editor));
+    }
+
+    #[test]
+    fn a_line_with_an_inlay_hint_is_not_predictable() {
+        use ovim_core::editor::decoration::{
+            Decoration, DecorationPlacement, DecorationSource, DecorationStyle,
+        };
+
+        let mut editor = typing("let x = 1;\n");
+        assert!(predictable_insert(&editor));
+        let rope = editor.buffer().rope().clone();
+        let source_version = editor.buffer().version() as u64;
+        editor.decorations.replace_source(
+            DecorationSource::InlayHint,
+            vec![Decoration {
+                placement: DecorationPlacement::Inline { char_offset: 5 },
+                source: DecorationSource::InlayHint,
+                text: ": i32".to_string(),
+                display_width: 5,
+                style: DecorationStyle::new(ovim_core::color::Color::Gray),
+                priority: 0,
+                source_version,
+            }],
+            &rope,
+        );
+
         assert!(!predictable_insert(&editor));
     }
 
