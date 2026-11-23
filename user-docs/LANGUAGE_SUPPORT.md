@@ -66,6 +66,24 @@ Properties and INI highlighting also works in Markdown fences tagged `properties
 `ini` (aliases: `prefs`, `editorconfig`, `gitconfig`). Generic `.conf` and `.cfg`
 extensions are left unassigned because they are used by several different formats.
 
+## How Diagnostics Are Shown
+
+A diagnostic puts a sign in the gutter, its message at the end of the line, and
+an underline in the severity colour under the code it is about (red for errors,
+yellow for warnings, cyan for information, grey for hints). The code keeps its
+syntax colours.
+
+A diagnostic that a server reports over several lines, such as a warning about a
+whole class or method, underlines its first line only. `<Space>e`, `]d` and
+code actions still work from every line it covers.
+
+The coloured underline needs a terminal that supports it. Ovim uses it when
+`COLORTERM` says the terminal has 24-bit colour, or when `TERM` names kitty,
+Ghostty, Alacritty, WezTerm, foot or Contour. Elsewhere the underlined text
+takes the severity colour instead. If Ovim guesses wrong for your terminal, set
+`OVIM_UNDERLINE_COLOR=1` to force the coloured underline or
+`OVIM_UNDERLINE_COLOR=0` to turn it off.
+
 ## Diagnostic Navigation
 
 Use `]d` / `[d` to visit the next / previous diagnostic of any severity.

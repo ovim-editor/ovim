@@ -254,7 +254,11 @@ impl Editor {
                 }
 
                 self.lsp.state.diagnostic_count = result.count;
-                self.on_diagnostic_counts_changed(result.count.0, result.count.1);
+                self.on_diagnostic_counts_changed(
+                    &result.file_path,
+                    result.count.0,
+                    result.count.1,
+                );
                 self.lsp
                     .state
                     .set_current_file_diagnostics(result.diagnostics);

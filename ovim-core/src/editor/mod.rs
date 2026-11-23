@@ -966,7 +966,8 @@ impl Editor {
 
     /// Tick transient toasts. Returns true if any expired toast was removed.
     pub fn tick_toasts(&mut self) -> bool {
-        self.ui_panels.toast_center.prune_expired()
+        let badge_expired = self.tick_diagnostic_badge();
+        self.ui_panels.toast_center.prune_expired() || badge_expired
     }
 
     /// Tick the cat animation. Returns true if a frame advanced (needs redraw).

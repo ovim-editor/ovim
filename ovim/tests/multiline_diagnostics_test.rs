@@ -32,6 +32,8 @@ fn publish(test: &mut EditorTest, diagnostics: Vec<Diagnostic>) {
 }
 
 fn render(test: &mut EditorTest, width: u16) -> Buffer {
+    // The test backend is not a terminal; say what it can draw.
+    ovim::ui::set_underline_color_support(Some(true));
     let mut terminal = Terminal::new(TestBackend::new(width, 12)).unwrap();
     terminal
         .draw(|frame| Renderer::render_to_frame(frame, &mut test.editor, &mut Default::default()))
@@ -55,13 +57,14 @@ fn underlined_rows(cells: &Buffer, count: u16) -> Vec<String> {
 }
 
 #[test]
-fn every_covered_line_has_a_float_and_underline_but_only_one_eol_message() {
+fn every_covered_line_has_a_float_but_only_the_first_line_is_marked() {
     let mut test = EditorTest::new("prefix(\n  first,\n  last) suffix\nclean\n");
     publish(&mut test, vec![diagnostic((0, 6), (2, 7), "call failed")]);
     test.editor.set_status_message("LSP: test ready");
     assert_eq!(
         underlined_rows(&render(&mut test, 60), 4),
-        ["(", "  first,", "  last)", ""]
+        ["(", "", "", ""],
+        "a span of several lines underlines its first line only"
     );
     for line in 0..3 {
         test.set_cursor(line, 0);
@@ -143,15 +146,15 @@ fn scrolling_inside_a_wide_character_keeps_diagnostic_columns_aligned() {
 }
 
 #[test]
-fn continuation_range_changes_invalidate_the_cached_row() {
+fn range_and_severity_changes_invalidate_the_cached_row() {
     let mut test = EditorTest::new("begin\nabcdef\nend\n");
     let mut terminal = Terminal::new(TestBackend::new(50, 12)).unwrap();
     let mut cache = Default::default();
-    // Same start line, message and buffer version; only the continuation changes.
+    // Same start, message and buffer version; only the end column changes.
     for (end, expected) in [(2, "ab"), (5, "abcde"), (0, "")] {
         publish(
             &mut test,
-            vec![diagnostic((0, 0), (1, end), "same message")],
+            vec![diagnostic((1, 0), (1, end), "same message")],
         );
         terminal
             .draw(|frame| Renderer::render_to_frame(frame, &mut test.editor, &mut cache))
@@ -162,9 +165,10 @@ fn continuation_range_changes_invalidate_the_cached_row() {
         (DiagnosticSeverity::ERROR, Color::Red),
         (DiagnosticSeverity::WARNING, Color::Yellow),
     ] {
-        let mut diag = diagnostic((0, 0), (1, 2), "same message");
+        let mut diag = diagnostic((1, 0), (1, 2), "same message");
         diag.severity = Some(severity);
         publish(&mut test, vec![diag]);
+        ovim::ui::set_underline_color_support(Some(true));
         terminal
             .draw(|frame| Renderer::render_to_frame(frame, &mut test.editor, &mut cache))
             .unwrap();
@@ -173,13 +177,63 @@ fn continuation_range_changes_invalidate_the_cached_row() {
         let mut underlined = (0..cells.area.width)
             .map(|col| &cells[(col, 1)])
             .filter(|cell| cell.modifier.contains(Modifier::UNDERLINED));
-        assert!(underlined.all(|cell| cell.fg == color));
+        assert!(underlined.all(|cell| cell.underline_color == color));
     }
     publish(&mut test, vec![]);
     terminal
         .draw(|frame| Renderer::render_to_frame(frame, &mut test.editor, &mut cache))
         .unwrap();
     assert_eq!(underlined_rows(terminal.backend().buffer(), 2), ["", ""]);
+}
+
+/// A warning on a whole class must not repaint the class: the code keeps its
+/// syntax colours, and only the declaration line is underlined.
+#[test]
+fn a_warning_spanning_a_class_keeps_the_code_readable() {
+    let mut test =
+        EditorTest::new("public class Big {\n    int count = 1;\n    void run() {}\n}\n");
+    test.set_file_path("Big.java".to_string());
+    let plain = render(&mut test, 60);
+    let colours: std::collections::HashSet<_> = (0..18).map(|col| plain[(col + 4, 0)].fg).collect();
+    assert!(colours.len() > 1, "the fixture must be syntax highlighted");
+    let mut warning = diagnostic((0, 0), (3, 1), "class is too large");
+    warning.severity = Some(DiagnosticSeverity::WARNING);
+    publish(&mut test, vec![warning]);
+    let marked = render(&mut test, 60);
+
+    assert_eq!(
+        underlined_rows(&marked, 4),
+        ["public class Big {", "", "", ""]
+    );
+    let text_columns = |cells: &Buffer, row: u16| {
+        (0..cells.area.width)
+            .map(|col| cells[(col, row)].clone())
+            .filter(|cell| cell.symbol().trim() != "")
+            .collect::<Vec<_>>()
+    };
+    for row in 0..4 {
+        for (before, after) in text_columns(&plain, row)
+            .iter()
+            .zip(text_columns(&marked, row).iter())
+            .filter(|(before, after)| before.symbol() == after.symbol())
+        {
+            if after.modifier.contains(Modifier::UNDERLINED) {
+                assert_eq!(after.underline_color, Color::Yellow);
+            }
+            assert_eq!(
+                before.fg,
+                after.fg,
+                "row {row}: `{}` changed colour",
+                after.symbol()
+            );
+        }
+    }
+    // Still reachable from inside the class.
+    test.set_cursor(2, 0);
+    assert_eq!(
+        test.editor.current_diagnostic().as_deref(),
+        Some("class is too large")
+    );
 }
 
 #[tokio::test]
@@ -205,7 +259,7 @@ fn multiline_ranges_follow_edits_and_undo() {
     test.keys("ggOabove<Esc>");
     assert_eq!(
         underlined_rows(&render(&mut test, 60), 5),
-        ["", "gin", "middle", "en", ""]
+        ["", "gin", "", "", ""]
     );
     assert_eq!(
         test.editor.project_diagnostics().covering_line(3)[0]
@@ -216,17 +270,14 @@ fn multiline_ranges_follow_edits_and_undo() {
     test.keys("u");
     assert_eq!(
         underlined_rows(&render(&mut test, 60), 4),
-        ["gin", "middle", "en", ""]
+        ["gin", "", "", ""]
     );
     test.keys("ggjdd");
-    assert_eq!(
-        underlined_rows(&render(&mut test, 60), 3),
-        ["gin", "en", ""]
-    );
+    assert_eq!(underlined_rows(&render(&mut test, 60), 3), ["gin", "", ""]);
     test.keys("u");
     assert_eq!(
         underlined_rows(&render(&mut test, 60), 4),
-        ["gin", "middle", "en", ""]
+        ["gin", "", "", ""]
     );
 }
 
@@ -238,7 +289,7 @@ fn tabs_line_endings_and_blank_lines_preserve_half_open_coverage() {
         publish(&mut test, vec![diagnostic((0, 1), (3, 0), "span")]);
         assert_eq!(
             underlined_rows(&render(&mut test, 60), 4),
-            ["   b", "", "  👩‍💻z", ""]
+            ["   b", "", "", ""]
         );
         test.set_cursor(1, 0);
         assert_eq!(test.editor.current_diagnostic().as_deref(), Some("span"));
@@ -247,13 +298,13 @@ fn tabs_line_endings_and_blank_lines_preserve_half_open_coverage() {
 }
 
 #[test]
-fn a_multiline_underline_survives_soft_wrapping() {
+fn a_first_line_underline_survives_soft_wrapping() {
     let mut test = EditorTest::new("start 1234567890abcdef\nlast\n");
     test.editor.options.wrap = true;
     publish(&mut test, vec![diagnostic((0, 6), (1, 2), "span")]);
     assert_eq!(
         underlined_rows(&render(&mut test, 18), 6).concat(),
-        "1234567890abcdefla"
+        "1234567890abcdef"
     );
 }
 
@@ -271,7 +322,7 @@ fn empty_ranges_and_oversized_spans_remain_reachable_without_expanding_the_span(
             .len(),
         1
     );
-    assert_eq!(underlined_rows(&render(&mut test, 60), 3), ["a", "", "b"]);
+    assert_eq!(underlined_rows(&render(&mut test, 60), 3), ["a", "", ""]);
     publish(&mut test, vec![diagnostic((1, 0), (1, 0), "missing token")]);
     test.set_cursor(1, 0);
     test.keys("<Space>e");

@@ -3,6 +3,10 @@
 use super::{Editor, Toast, ToastRequest};
 use crate::unicode::GraphemeCol;
 
+/// How long the diagnostic badge stays up after it is raised. The same as a
+/// routine LSP toast.
+pub const DIAGNOSTIC_BADGE_TTL: std::time::Duration = std::time::Duration::from_secs(8);
+
 impl Editor {
     /// Gets cached diagnostic count (sync, suitable for UI rendering)
     pub fn cached_diagnostic_count(&self) -> (usize, usize, usize, usize) {
@@ -12,22 +16,69 @@ impl Editor {
         self.lsp.state.diagnostic_count
     }
 
-    /// Whether the diagnostic badge has been dismissed by double-Escape
-    pub fn diagnostic_badge_dismissed(&self) -> bool {
-        self.ui_panels.diagnostic_badge_dismissed
+    /// Whether the diagnostic badge is on screen: the card in the top-right
+    /// corner that says how many errors and warnings the file has.
+    ///
+    /// The badge is a notice, not a fixture. It covers code, and the status
+    /// line carries the same counts all the time, so it shows for
+    /// [`DIAGNOSTIC_BADGE_TTL`] when there is news and then goes away.
+    pub fn diagnostic_badge_visible(&self) -> bool {
+        let (errors, warnings, _, _) = self.cached_diagnostic_count();
+        (errors > 0 || warnings > 0)
+            && self
+                .ui_panels
+                .diagnostic_badge_until
+                .is_some_and(|until| std::time::Instant::now() < until)
     }
 
     /// Dismiss the diagnostic badge (called on double-Escape)
     pub fn dismiss_diagnostic_badge(&mut self) {
-        self.ui_panels.diagnostic_badge_dismissed = true;
+        self.ui_panels.diagnostic_badge_until = None;
     }
 
-    /// Called when diagnostic counts change to potentially un-dismiss the badge
-    pub fn on_diagnostic_counts_changed(&mut self, errors: usize, warnings: usize) {
-        let new_count = (errors, warnings);
-        if new_count != self.ui_panels.diagnostic_badge_last_count {
-            self.ui_panels.diagnostic_badge_last_count = new_count;
-            self.ui_panels.diagnostic_badge_dismissed = false;
+    /// Called when a diagnostics refresh lands for `file`. Raises the badge
+    /// when the file has diagnostics the user has not been shown: it had none
+    /// before, or it has more errors than before. Warnings that come and go
+    /// while typing, counts that fall, and coming back to a file whose counts
+    /// have not changed are not news: they update the status line only.
+    pub fn on_diagnostic_counts_changed(&mut self, file: &str, errors: usize, warnings: usize) {
+        let panels = &mut self.ui_panels;
+        let current = (errors, warnings);
+        let same_file = panels.diagnostic_badge_file.as_deref() == Some(file);
+        let previous = panels.diagnostic_badge_counts.get(file).copied();
+        if same_file && previous.unwrap_or((0, 0)) == current {
+            return;
+        }
+        if !same_file {
+            panels.diagnostic_badge_file = Some(file.to_string());
+        }
+        if current == (0, 0) {
+            panels.diagnostic_badge_counts.remove(file);
+        } else {
+            panels
+                .diagnostic_badge_counts
+                .insert(file.to_string(), current);
+        }
+        let news =
+            current != (0, 0) && previous.is_none_or(|(known_errors, _)| errors > known_errors);
+        if news {
+            panels.diagnostic_badge_until = Some(std::time::Instant::now() + DIAGNOSTIC_BADGE_TTL);
+        } else if !same_file || current == (0, 0) {
+            // Another file's notice does not carry over, and a file with
+            // nothing left has nothing to say.
+            panels.diagnostic_badge_until = None;
+        }
+    }
+
+    /// Hide the diagnostic badge once its time is up. Returns true if it
+    /// just expired (needs a redraw to clear).
+    pub fn tick_diagnostic_badge(&mut self) -> bool {
+        match self.ui_panels.diagnostic_badge_until {
+            Some(until) if std::time::Instant::now() >= until => {
+                self.ui_panels.diagnostic_badge_until = None;
+                true
+            }
+            _ => false,
         }
     }
 
@@ -75,9 +126,7 @@ impl Editor {
 
     /// Returns true if either diagnostics badge or toast overlay has visible content.
     pub fn has_top_right_overlay(&self) -> bool {
-        let (errors, warnings, _, _) = self.cached_diagnostic_count();
-        let diagnostic_visible = !self.diagnostic_badge_dismissed() && (errors > 0 || warnings > 0);
-        diagnostic_visible || self.has_visible_toasts()
+        self.diagnostic_badge_visible() || self.has_visible_toasts()
     }
 
     /// Dismiss one top-right overlay item (newest toast first, then diagnostic badge).
@@ -86,9 +135,7 @@ impl Editor {
             return true;
         }
 
-        let (errors, warnings, _, _) = self.cached_diagnostic_count();
-        let diagnostic_visible = !self.diagnostic_badge_dismissed() && (errors > 0 || warnings > 0);
-        if diagnostic_visible {
+        if self.diagnostic_badge_visible() {
             self.dismiss_diagnostic_badge();
             return true;
         }
@@ -173,6 +220,15 @@ impl Editor {
 }
 
 impl Editor {
+    /// Set the cached error and warning counts for the current file, as a
+    /// diagnostics refresh does. For tests.
+    pub fn set_test_diagnostic_counts(&mut self, errors: usize, warnings: usize) {
+        self.lsp.state.diagnostic_count = (errors, warnings, 0, 0);
+        let file = self.buffer().file_path().map(|p| p.to_string());
+        self.lsp.state.diagnostics_file_path.clone_from(&file);
+        self.on_diagnostic_counts_changed(file.as_deref().unwrap_or_default(), errors, warnings);
+    }
+
     /// Inject diagnostics for testing diagnostic navigation.
     /// Sets diagnostics for the current file (test helper).
     pub fn set_test_diagnostics(&mut self, diagnostics: Vec<lsp_types::Diagnostic>) {

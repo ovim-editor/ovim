@@ -1,4 +1,5 @@
 // Public API re-exports
+pub use buffer::set_underline_color_support;
 pub use cat_animation::CatAnimation;
 pub use core::Renderer;
 pub use dashboard::MENU_ITEMS;

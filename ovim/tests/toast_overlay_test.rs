@@ -82,3 +82,88 @@ fn test_tick_toasts_prunes_expired_entries() {
     assert!(editor.tick_toasts());
     assert!(!editor.tick_toasts());
 }
+
+/// Publish diagnostic counts the way a diagnostics refresh does.
+fn publish_counts(editor: &mut Editor, errors: usize, warnings: usize) {
+    editor.set_test_diagnostic_counts(errors, warnings);
+}
+
+// The badge covers the top-right corner of the code and repeats what the
+// status line already says. It is a notice: raised by news, gone by itself.
+#[test]
+fn the_diagnostic_badge_is_raised_by_news_and_expires() {
+    let mut editor = Editor::with_content("fn main() {}\n");
+    assert!(!editor.diagnostic_badge_visible());
+
+    publish_counts(&mut editor, 0, 3);
+    assert!(editor.diagnostic_badge_visible(), "diagnostics appeared");
+    assert!(editor.has_top_right_overlay());
+
+    // Its time is up.
+    editor.ui_panels.diagnostic_badge_until = Some(std::time::Instant::now());
+    assert!(editor.tick_toasts(), "expiry asks for a redraw");
+    assert!(!editor.diagnostic_badge_visible());
+    assert!(!editor.tick_toasts());
+
+    // Warnings coming and going while typing are not news.
+    publish_counts(&mut editor, 0, 4);
+    publish_counts(&mut editor, 0, 2);
+    assert!(!editor.diagnostic_badge_visible());
+
+    // A new error is.
+    publish_counts(&mut editor, 1, 2);
+    assert!(editor.diagnostic_badge_visible());
+
+    // Fixing everything takes it down at once.
+    publish_counts(&mut editor, 0, 0);
+    assert!(!editor.diagnostic_badge_visible());
+    assert!(!editor.has_top_right_overlay());
+}
+
+#[test]
+fn double_escape_dismisses_the_diagnostic_badge_until_there_is_news() {
+    let mut editor = Editor::with_content("fn main() {}\n");
+    publish_counts(&mut editor, 2, 0);
+    assert!(editor.diagnostic_badge_visible());
+
+    press(&mut editor, KeyCode::Esc);
+    press(&mut editor, KeyCode::Esc);
+    assert!(!editor.diagnostic_badge_visible());
+
+    publish_counts(&mut editor, 1, 0);
+    assert!(
+        !editor.diagnostic_badge_visible(),
+        "fewer errors is not news"
+    );
+    publish_counts(&mut editor, 3, 0);
+    assert!(editor.diagnostic_badge_visible());
+}
+
+#[test]
+fn the_diagnostic_badge_tells_files_apart() {
+    let mut editor = Editor::with_content("fn main() {}\n");
+    editor.on_diagnostic_counts_changed("a.rs", 2, 0);
+    assert!(editor.ui_panels.diagnostic_badge_until.is_some());
+
+    // b.rs has fewer errors than a.rs, but they are new to the user.
+    editor.ui_panels.diagnostic_badge_until = None;
+    editor.on_diagnostic_counts_changed("b.rs", 0, 5);
+    assert!(
+        editor.ui_panels.diagnostic_badge_until.is_some(),
+        "the first diagnostics of a file are news"
+    );
+
+    // Back to a.rs with the counts already shown: its notice is not repeated,
+    // and the one for b.rs does not stay up over a.rs.
+    editor.on_diagnostic_counts_changed("a.rs", 2, 0);
+    assert!(editor.ui_panels.diagnostic_badge_until.is_none());
+
+    editor.on_diagnostic_counts_changed("a.rs", 3, 0);
+    assert!(editor.ui_panels.diagnostic_badge_until.is_some());
+
+    // A file that was cleaned up and breaks again is news again.
+    editor.on_diagnostic_counts_changed("a.rs", 0, 0);
+    assert!(editor.ui_panels.diagnostic_badge_until.is_none());
+    editor.on_diagnostic_counts_changed("a.rs", 1, 0);
+    assert!(editor.ui_panels.diagnostic_badge_until.is_some());
+}

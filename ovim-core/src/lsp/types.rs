@@ -70,6 +70,38 @@ pub fn diagnostic_char_range(
     Some(start..end)
 }
 
+/// The part of a line that gets a diagnostic's underline, as a half-open
+/// scalar range.
+///
+/// A diagnostic on one line underlines its range. A diagnostic that spans
+/// several lines underlines only its first line, from the start column to the
+/// last non-blank character. Servers report a whole class, method or block
+/// as one range when a finding has no better anchor (an unused class, a
+/// method that is too long), and underlining every line of that range buries
+/// the code. The gutter sign and end-of-line message already sit on the first
+/// line, and the diagnostic stays reachable from every line it covers.
+pub fn diagnostic_underline_range(
+    diagnostic: &lsp_types::Diagnostic,
+    line: usize,
+    text: &str,
+) -> Option<std::ops::Range<usize>> {
+    let range = &diagnostic.range;
+    let multi_line = range.start.line != range.end.line;
+    if multi_line && line != range.start.line as usize {
+        return None;
+    }
+    let chars = diagnostic_char_range(diagnostic, line, text)?;
+    if !multi_line {
+        return (!chars.is_empty()).then_some(chars);
+    }
+    let content_end = text
+        .trim_end_matches(|c: char| c.is_whitespace())
+        .chars()
+        .count();
+    let end = chars.end.min(content_end);
+    (chars.start < end).then_some(chars.start..end)
+}
+
 /// LSP Position wrapper for easier construction
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LspPosition {
@@ -130,6 +162,57 @@ impl LspRange {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spanning(start: (u32, u32), end: (u32, u32)) -> lsp_types::Diagnostic {
+        lsp_types::Diagnostic {
+            range: Range::new(Position::new(start.0, start.1), Position::new(end.0, end.1)),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn a_single_line_diagnostic_underlines_its_range() {
+        let diagnostic = spanning((0, 4), (0, 7));
+        assert_eq!(
+            diagnostic_underline_range(&diagnostic, 0, "let foo = 1;"),
+            Some(4..7)
+        );
+        assert_eq!(diagnostic_underline_range(&diagnostic, 1, "next"), None);
+    }
+
+    #[test]
+    fn a_multi_line_diagnostic_underlines_only_its_first_line() {
+        // A server reporting a whole class: `class Big {` … `}`.
+        let diagnostic = spanning((0, 7), (40, 1));
+        assert_eq!(
+            diagnostic_underline_range(&diagnostic, 0, "public class Big {  "),
+            Some(7..18),
+            "from the start column to the last non-blank character"
+        );
+        for line in [1, 20, 40] {
+            assert_eq!(
+                diagnostic_underline_range(&diagnostic, line, "    body();"),
+                None,
+                "line {line}"
+            );
+        }
+        // The diagnostic itself still covers every line, for floats and
+        // code actions.
+        assert!(diagnostic_covers_line(&diagnostic, 20));
+    }
+
+    #[test]
+    fn a_multi_line_diagnostic_starting_at_the_end_of_a_line_has_no_underline() {
+        let diagnostic = spanning((0, 5), (2, 0));
+        assert_eq!(diagnostic_underline_range(&diagnostic, 0, "start"), None);
+        assert_eq!(diagnostic_underline_range(&diagnostic, 0, "start  "), None);
+    }
+
+    #[test]
+    fn an_empty_range_has_no_underline() {
+        let diagnostic = spanning((0, 2), (0, 2));
+        assert_eq!(diagnostic_underline_range(&diagnostic, 0, "abc"), None);
+    }
 
     #[test]
     fn file_uri_round_trips_route_and_special_character_paths() {

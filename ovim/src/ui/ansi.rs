@@ -178,6 +178,9 @@ fn style_to_ansi(style: &Style) -> String {
     }
     if style.add_modifier.contains(Modifier::UNDERLINED) {
         codes.push("4".to_string());
+        if let Some(code) = style.underline_color.and_then(color_to_ansi_underline) {
+            codes.push(code);
+        }
     }
     if style.add_modifier.contains(Modifier::SLOW_BLINK) {
         codes.push("5".to_string());
@@ -221,6 +224,36 @@ fn color_to_ansi_fg(color: Color) -> String {
         Color::Rgb(r, g, b) => format!("38;2;{};{};{}", r, g, b),
         Color::Indexed(i) => format!("38;5;{}", i),
     }
+}
+
+/// Converts ratatui Color to the ANSI underline-colour code (SGR 58).
+///
+/// Uses the colon-separated form. A reader that does not know SGR 58 skips a
+/// colon sub-parameter group as one unknown code, whereas the semicolon form
+/// `58;5;1` reads to such a reader as "blink, bold".
+fn color_to_ansi_underline(color: Color) -> Option<String> {
+    let index = match color {
+        Color::Reset => return None,
+        Color::Rgb(r, g, b) => return Some(format!("58:2::{r}:{g}:{b}")),
+        Color::Indexed(i) => i,
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+    };
+    Some(format!("58:5:{index}"))
 }
 
 /// Strips ANSI escape sequences, returning the plain character grid.

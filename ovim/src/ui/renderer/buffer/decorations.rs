@@ -13,11 +13,11 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 /// Per-line render cache fingerprint: the projected EOL/inline decorations
-/// plus the line's full diagnostic set (ranges + severities). The underline
-/// squiggle is baked into cached rows and the diagnostic set can change
-/// without a buffer edit (save → republish), so the decoration hash alone —
-/// which only sees the line's single best-severity EOL message — is not
-/// enough to invalidate. (OV-00329)
+/// plus the diagnostics drawn on the line (ranges + severities of those
+/// starting on it). The underline squiggle is baked into cached rows and the
+/// diagnostic set can change without a buffer edit (save → republish), so the
+/// decoration hash alone — which only sees the line's single best-severity
+/// EOL message — is not enough to invalidate. (OV-00329)
 pub(super) fn line_decoration_cache_hash(
     decorations: &ProjectedDecorations,
     diagnostics: &ProjectedDiagnostics,

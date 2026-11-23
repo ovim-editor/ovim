@@ -6,6 +6,7 @@
 
 mod context;
 mod decorations;
+mod diagnostic_underline;
 mod gutter;
 mod indexed;
 mod legacy;
@@ -15,6 +16,8 @@ mod rows;
 #[cfg(test)]
 mod tests;
 mod viewport;
+
+pub use self::diagnostic_underline::set_underline_color_support;
 
 use self::context::{BufferRenderContext, RenderState};
 use self::indexed::emit_indexed_line;

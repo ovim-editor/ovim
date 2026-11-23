@@ -46,8 +46,8 @@ pub use supervisor::{RestartPolicy, TaskSupervisor};
 pub use trigger_chars::fallback_completion_trigger_characters;
 pub(crate) use types::diagnostic_range_is_valid;
 pub use types::{
-    diagnostic_char_range, diagnostic_covers_line, uri_from_file_path, uri_to_file_path,
-    LspPosition, LspRange,
+    diagnostic_char_range, diagnostic_covers_line, diagnostic_underline_range, uri_from_file_path,
+    uri_to_file_path, LspPosition, LspRange,
 };
 pub use utils::compute_simple_diff;
 pub use watchers::{WatchedChange, WatchedFileEvent};
