@@ -590,8 +590,8 @@ fn test_close_paren_at_eof() {
 
     assert_eq!(test.buffer_content(), "First. Second.\n");
 
-    // First ) from EOF wraps to (0,0), second ) finds "Second" at col 7
-    test.assert_cursor(0, 7);
+    // nvim: with no sentence after it, `)` stays on the last character.
+    test.assert_cursor(0, 13);
 }
 
 #[test]

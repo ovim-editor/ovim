@@ -46,6 +46,8 @@ FIXTURES = {
     "C": "alpha\n\n\nbeta gamma\n\tdelta  epsilon\nzeta-eta_theta 12 0x1f -7\n",
     "D": "a\nb\nc\nd\ne\nf\ng\nh\ni\nj\n",
     "E": "foo.bar(baz[1], {k: v});\n<div class=\"x\">text</div>\n'single' `tick` \"dq\"\n",
+    "F": "First one. Second one!  Third (really?) yes.\nWraps onto\nthe next line. End of para.\n"
+    "\n\nNew para here.  Last \"quoted.\" Done\n  indented. x.y is not\n",
 }
 
 NVIM_SETTINGS = "set startofline expandtab shiftwidth=4 tabstop=4 softtabstop=4"

@@ -518,7 +518,8 @@ fn test_dis_delete_sentence() {
 
     test.keys("dis");
 
-    assert_eq!(test.buffer_content(), ". Second sentence. Third.\n");
+    // nvim: the sentence includes its full stop, not the blank after it.
+    assert_eq!(test.buffer_content(), " Second sentence. Third.\n");
     test.assert_cursor(0, 0);
 }
 
@@ -538,7 +539,8 @@ fn test_cis_change_sentence() {
 
     test.keys("cis").type_text("New sentence.").press_esc();
 
-    assert_eq!(test.buffer_content(), "New sentence.. Next one.\n");
+    // nvim: the sentence includes its full stop.
+    assert_eq!(test.buffer_content(), "New sentence. Next one.\n");
     test.assert_cursor(0, 12);
 }
 

@@ -94,3 +94,53 @@ B	jf"da"
 E	jjda'
 E	jjf"da"
 E	jf"ca"X<Esc>
+#
+# sentences
+# Sentence motions: the stops of ( and ).
+F	)
+F	))))
+F	)))))
+F	))))))
+F	)))))))
+F	))))))))))
+F	3)
+F	G$)
+F	G$(
+F	G$(((((
+F	G$((((((
+F	6G(
+F	5G)
+F	wwww(
+F	f?l)
+F	G3(
+B	)
+B	G(
+# Operators over sentence motions.
+F	fSd)
+F	fSld(
+F	fSc)X<Esc>
+F	jd)
+F	fSv)d
+# is: the sentence with its punctuation, or the blanks the cursor is on.
+F	dis
+F	f!dis
+F	f!ldis
+F	$dis
+F	jdis
+F	jj$dis
+F	6G$dis
+F	fScisX<Esc>
+F	fSvis<Esc>
+B	5jdis
+# as: with the blanks after it, else the blanks before it.
+F	das
+F	f!ldas
+F	$das
+F	jdas
+F	jj$das
+F	6GfLdas
+F	7G$das
+F	fSvas<Esc>
+F	fSdas.
+B	5jdas
+B	6j$das

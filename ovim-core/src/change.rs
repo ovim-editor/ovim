@@ -228,12 +228,19 @@ impl TextObjectType {
         }?;
         match self {
             Self::Paragraph { .. } => Some((range, true)),
-            Self::Paired { inner: true, .. } => {
-                let classified = MotionRange::from_exclusive(
-                    buffer,
-                    (range.start_line, range.start_col),
-                    (range.end_line, range.end_col),
-                );
+            // A range that ends where a line ends is exclusive at the start
+            // of the next line: `:help exclusive` then decides whether the
+            // operator takes whole lines (`dis` on a one-sentence line).
+            Self::Paired { inner: true, .. } | Self::Sentence { .. } => {
+                let mut end = (range.end_line, range.end_col);
+                if matches!(self, Self::Sentence { .. })
+                    && end.1 .0 >= buffer.line_len(end.0)
+                    && end.0 + 1 < buffer.line_count()
+                {
+                    end = (end.0 + 1, CharCol::ZERO);
+                }
+                let classified =
+                    MotionRange::from_exclusive(buffer, (range.start_line, range.start_col), end);
                 Some(match classified.wise {
                     Wise::Linewise => (
                         TextObjectRange {
