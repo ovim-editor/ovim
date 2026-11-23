@@ -48,7 +48,9 @@ pub(super) fn sort_most_severe_first(diagnostics: &mut [RemappedDiagnostic]) {
 /// italic). So it is used only where support is known: `OVIM_UNDERLINE_COLOR`
 /// set to `1`, a terminal that advertises 24-bit colour (`COLORTERM`), or a
 /// `TERM` naming one that has it. `OVIM_UNDERLINE_COLOR=0` turns it off.
-/// Apple Terminal is left out: its handling has not been checked.
+/// Two are left out because their handling has not been checked: Apple
+/// Terminal, and GNU screen, which inherits `COLORTERM` from the terminal it
+/// runs in (tmux, which also uses a `screen` `TERM`, is recognised by `TMUX`).
 pub(super) fn detect_underline_color(var: impl Fn(&str) -> Option<String>) -> bool {
     match var("OVIM_UNDERLINE_COLOR").as_deref() {
         Some("1" | "true" | "on") => return true,
@@ -59,17 +61,17 @@ pub(super) fn detect_underline_color(var: impl Fn(&str) -> Option<String>) -> bo
         return false;
     }
     let term = var("TERM").unwrap_or_default();
+    let mut names = term.split('-');
+    if names.clone().next() == Some("screen") && var("TMUX").is_none() {
+        return false;
+    }
     matches!(var("COLORTERM").as_deref(), Some("truecolor" | "24bit"))
-        || [
-            "kitty",
-            "ghostty",
-            "alacritty",
-            "wezterm",
-            "foot",
-            "contour",
-        ]
-        .iter()
-        .any(|name| term.contains(name))
+        || names.any(|name| {
+            matches!(
+                name,
+                "kitty" | "ghostty" | "alacritty" | "wezterm" | "foot" | "contour"
+            )
+        })
 }
 
 /// 0 = detect from the environment, 1 = on, 2 = off.

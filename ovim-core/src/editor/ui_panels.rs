@@ -34,8 +34,11 @@ pub struct UiPanels {
     /// The diagnostic badge overlay is shown until this instant. `None` when
     /// it has expired, was dismissed (double-Escape) or was never raised.
     pub diagnostic_badge_until: Option<std::time::Instant>,
-    /// Last (errors, warnings) count seen, for detecting what changed
-    pub diagnostic_badge_last_count: (usize, usize),
+    /// The file the diagnostic badge last reported on
+    pub diagnostic_badge_file: Option<String>,
+    /// Last (errors, warnings) seen per file that has any, for telling news
+    /// from a count the user has already been shown
+    pub diagnostic_badge_counts: std::collections::HashMap<String, (usize, usize)>,
     /// Last time Escape was pressed in normal mode (for double-Escape detection)
     pub last_escape_time: Option<std::time::Instant>,
     /// Top-right toast notifications (transient and sticky)

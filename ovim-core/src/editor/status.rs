@@ -36,24 +36,37 @@ impl Editor {
         self.ui_panels.diagnostic_badge_until = None;
     }
 
-    /// Called when diagnostic counts change. Raises the badge when
-    /// diagnostics appear in a file that had none, or when there are more
-    /// errors than before. Warnings that come and go while typing, and counts
-    /// that fall, are not news: they update the status line only.
-    pub fn on_diagnostic_counts_changed(&mut self, errors: usize, warnings: usize) {
-        let previous = self.ui_panels.diagnostic_badge_last_count;
+    /// Called when a diagnostics refresh lands for `file`. Raises the badge
+    /// when the file has diagnostics the user has not been shown: it had none
+    /// before, or it has more errors than before. Warnings that come and go
+    /// while typing, counts that fall, and coming back to a file whose counts
+    /// have not changed are not news: they update the status line only.
+    pub fn on_diagnostic_counts_changed(&mut self, file: &str, errors: usize, warnings: usize) {
+        let panels = &mut self.ui_panels;
         let current = (errors, warnings);
-        if current == previous {
+        let same_file = panels.diagnostic_badge_file.as_deref() == Some(file);
+        let previous = panels.diagnostic_badge_counts.get(file).copied();
+        if same_file && previous.unwrap_or((0, 0)) == current {
             return;
         }
-        self.ui_panels.diagnostic_badge_last_count = current;
-        let appeared = previous == (0, 0);
-        let more_errors = errors > previous.0;
+        if !same_file {
+            panels.diagnostic_badge_file = Some(file.to_string());
+        }
         if current == (0, 0) {
-            self.ui_panels.diagnostic_badge_until = None;
-        } else if appeared || more_errors {
-            self.ui_panels.diagnostic_badge_until =
-                Some(std::time::Instant::now() + DIAGNOSTIC_BADGE_TTL);
+            panels.diagnostic_badge_counts.remove(file);
+        } else {
+            panels
+                .diagnostic_badge_counts
+                .insert(file.to_string(), current);
+        }
+        let news =
+            current != (0, 0) && previous.is_none_or(|(known_errors, _)| errors > known_errors);
+        if news {
+            panels.diagnostic_badge_until = Some(std::time::Instant::now() + DIAGNOSTIC_BADGE_TTL);
+        } else if !same_file || current == (0, 0) {
+            // Another file's notice does not carry over, and a file with
+            // nothing left has nothing to say.
+            panels.diagnostic_badge_until = None;
         }
     }
 
@@ -211,8 +224,9 @@ impl Editor {
     /// diagnostics refresh does. For tests.
     pub fn set_test_diagnostic_counts(&mut self, errors: usize, warnings: usize) {
         self.lsp.state.diagnostic_count = (errors, warnings, 0, 0);
-        self.lsp.state.diagnostics_file_path = self.buffer().file_path().map(|p| p.to_string());
-        self.on_diagnostic_counts_changed(errors, warnings);
+        let file = self.buffer().file_path().map(|p| p.to_string());
+        self.lsp.state.diagnostics_file_path.clone_from(&file);
+        self.on_diagnostic_counts_changed(file.as_deref().unwrap_or_default(), errors, warnings);
     }
 
     /// Inject diagnostics for testing diagnostic navigation.

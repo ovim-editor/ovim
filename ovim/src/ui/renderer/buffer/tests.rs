@@ -652,6 +652,9 @@ fn a_diagnostic_underline_keeps_the_syntax_colour() {
     assert_eq!(fallback.fg, Some(Color::Yellow));
     assert_eq!(fallback.underline_color, None);
 
+    // The render path asks the process-wide setting; say what this test
+    // draws on instead of leaving it to the environment or to test order.
+    crate::ui::set_underline_color_support(Some(true));
     let highlights = vec![(0..5, crate::syntax::HighlightGroup::Keyword)];
     let plain =
         render_line_with_highlights(&theme, "class Big", None, &[], &highlights, &[], &[], &[]);
@@ -692,6 +695,15 @@ fn underline_colour_is_used_only_where_the_terminal_is_known_to_have_it() {
         ("COLORTERM", "truecolor"),
         ("TERM_PROGRAM", "Apple_Terminal")
     ]));
+    // GNU screen inherits COLORTERM from the terminal it runs in.
+    assert!(!detect(&[("COLORTERM", "truecolor"), ("TERM", "screen")]));
+    assert!(detect(&[
+        ("COLORTERM", "truecolor"),
+        ("TERM", "screen-256color"),
+        ("TMUX", "/tmp/tmux-1000/default,1,0")
+    ]));
+    assert!(detect(&[("TERM", "foot-extra")]));
+    assert!(!detect(&[("TERM", "barefoot")]));
     // The user's word beats detection, both ways.
     assert!(detect(&[
         ("TERM", "xterm-256color"),

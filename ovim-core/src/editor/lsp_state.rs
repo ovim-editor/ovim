@@ -255,9 +255,14 @@ impl ProjectedDiagnostics {
     pub fn line_severity(&self, line: usize) -> Option<lsp_types::DiagnosticSeverity> {
         self.for_line(line)
             .iter()
-            .map(|diag| {
-                diag.severity
-                    .unwrap_or(lsp_types::DiagnosticSeverity::ERROR)
+            .map(|diag| match diag.severity {
+                Some(
+                    severity @ (lsp_types::DiagnosticSeverity::WARNING
+                    | lsp_types::DiagnosticSeverity::INFORMATION
+                    | lsp_types::DiagnosticSeverity::HINT),
+                ) => severity,
+                // Missing, or a value the protocol does not define.
+                _ => lsp_types::DiagnosticSeverity::ERROR,
             })
             .min_by_key(|severity| severity_rank(Some(*severity)))
     }
