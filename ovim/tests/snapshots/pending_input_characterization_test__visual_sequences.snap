@@ -27,7 +27,7 @@ vU            | v[-] U[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n 
 v~            | v[-] ~[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
 v>            | v[-] >[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
 v<Space><Esc> | v[-] <Space>[leader=[]] <Esc>[-] => Visual (1,8)
-v2iw          | v[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,11)
+v2iw          | v[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,12)
 vIX<Esc>      | v[-] I[-] X[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nX  alpha beta gamma\nxdelta\n\nlast line here\n"
 vAX<Esc>      | v[-] A[-] X[-] <Esc>[-] => Normal (1,9) text="foo bar(baz, qux) \"str\" end\n  alpha bXeta gamma\nxdelta\n\nlast line here\n"
 v$AX<Esc>     | v[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,18) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
@@ -60,7 +60,7 @@ VU            | V[-] U[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n 
 V~            | V[-] ~[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\n  ALPHA BETA GAMMA\nxdelta\n\nlast line here\n"
 V>            | V[-] >[-] => Normal (1,6) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
 V<Space><Esc> | V[-] <Space>[leader=[]] <Esc>[-] => VisualLine (1,8)
-V2iw          | V[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,11)
+V2iw          | V[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,12)
 VIX<Esc>      | V[-] I[-] X[-] <Esc>[-] => Normal (1,0) text="foo bar(baz, qux) \"str\" end\nX  alpha beta gamma\nxdelta\n\nlast line here\n"
 VAX<Esc>      | V[-] A[-] X[-] <Esc>[-] => Normal (1,18) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
 V$AX<Esc>     | V[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,18) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"
@@ -93,7 +93,7 @@ Vj$AX<Esc>    | V[-] j[-] $[-] A[-] X[-] <Esc>[-] => Normal (2,6) text="foo bar(
 <C-v>~        | <C-v>[-] ~[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Beta gamma\nxdelta\n\nlast line here\n"
 <C-v>>        | <C-v>[-] >[-] => Normal (1,12) text="foo bar(baz, qux) \"str\" end\n      alpha beta gamma\nxdelta\n\nlast line here\n"
 <C-v><Space><Esc>| <C-v>[-] <Space>[leader=[]] <Esc>[-] => VisualBlock (1,8)
-<C-v>2iw      | <C-v>[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,11)
+<C-v>2iw      | <C-v>[-] 2[n=2] i[n=2,cmd=i] w[-] => Visual (1,12)
 <C-v>IX<Esc>  | <C-v>[-] I[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha Xbeta gamma\nxdelta\n\nlast line here\n"
 <C-v>AX<Esc>  | <C-v>[-] A[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha bXeta gamma\nxdelta\n\nlast line here\n"
 <C-v>$AX<Esc> | <C-v>[-] $[-] A[-] X[-] <Esc>[-] => Normal (1,8) text="foo bar(baz, qux) \"str\" end\n  alpha beta gammaX\nxdelta\n\nlast line here\n"

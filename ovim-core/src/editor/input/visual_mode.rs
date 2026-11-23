@@ -36,26 +36,17 @@ fn selection_to_extend(editor: &Editor) -> Option<TextObjectRange> {
     if (start_line, start_col) >= cursor || editor.mode() == Mode::VisualBlock {
         return None;
     }
+    // `V` keeps no column for where it started, so on one line there is
+    // nothing to tell a selection from its starting point: `Viw` selects
+    // the word under the cursor.
+    if editor.mode() == Mode::VisualLine && start_line == cursor.0 {
+        return None;
+    }
     let char_col = |line: usize, grapheme: usize| {
         buffer
             .line_index(line)
             .grapheme_to_char(GraphemeCol(grapheme))
     };
-    if editor.mode() == Mode::VisualLine {
-        // Whole lines: the next object starts on the line below.
-        let below = cursor.0 + 1;
-        let (end_line, end_col) = if below < buffer.line_count() {
-            (below, 0)
-        } else {
-            (cursor.0, buffer.line_len(cursor.0))
-        };
-        return Some(TextObjectRange {
-            start_line,
-            start_col: CharCol::ZERO,
-            end_line,
-            end_col: CharCol(end_col),
-        });
-    }
     Some(TextObjectRange {
         start_line,
         start_col: char_col(start_line, start_col),
