@@ -257,16 +257,15 @@ its place in line, and the editor computes it on the remote host.
 Remote editing is complete enough for daily use, but these limits are real:
 
 - **No interactive remote terminal.** `:terminal`, `:term` and `:shell` need a
-  real terminal to attach to, and the GUI has none — see
-  [Terminal sessions](terminal.md). Typed over a remote link they do nothing
-  at all: the request is queued for a frontend that can host a terminal, the
-  remote session is headless, and no message is shown. Use a separate `ssh`
-  window, or the AI chat's shell tool.
+  terminal to attach to, and the remote session is headless. Typed over a
+  remote link they are refused on the status line ("`:terminal` needs a
+  terminal; a headless session cannot run it"). Use a separate `ssh` window,
+  or the AI chat's shell tool.
 
-  `:!command` typed at the command line goes the same way, for the same
-  reason — the interactive path queues it for a terminal-owning frontend. It
-  does work through the session's API, where it runs on the remote host, where
-  the code is, and reports its output. From that host:
+  `:!command` typed at the command line is refused the same way, because the
+  interactive path hands it to a terminal-owning frontend. It does work through
+  the session's API, where it runs on the remote host, in the project
+  directory, and reports its output. From that host:
 
   ```bash
   ovim exec '!uname -n' -s gui-api-1106417393   # the remote machine's name
@@ -282,10 +281,10 @@ Remote editing is complete enough for daily use, but these limits are real:
   editor cannot read a path on this machine.
 - **`:openwin` is not host-aware.** The path it produces is not tagged with
   which machine it belongs to, and the remote editor is headless and has no
-  window to open, so over a remote link it is queued and dropped in the same
-  silence as `:terminal`. **File → New Window** refuses over a remote link for
-  the same reason. Launch the second window with its own `ovim gui --remote`
-  instead.
+  window to open, so over a remote link it is refused on the status line
+  ("Opening project windows requires the GUI frontend"). **File → New Window**
+  refuses over a remote link for the same reason. Launch the second window with
+  its own `ovim gui --remote` instead.
 - **One host per window.** There is no mixed local/remote or multi-root
   workspace; a window talks to exactly one editor.
 - **The GUI protocol is unversioned**, which is why the version check above

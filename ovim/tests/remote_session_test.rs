@@ -101,9 +101,23 @@ async fn keystrokes_reach_a_live_session_and_its_snapshots_come_back() {
     // Compared against what the line held on arrival rather than against a
     // fixed string: a session that has been edited before is still a session,
     // and reconnecting to one is the point of the exercise.
+    //
+    // The session answers each key before it publishes the frame that key
+    // produced, so when the last answer arrives the last frame can still be on
+    // its way. Wait (bounded) for the frames to stop changing the line rather
+    // than judging the first one that differs, which can be mid-typing.
+    let expected_len = baseline.len() + "remote".len();
     let mut edited = next_frame(&mut updates).await;
-    while line_text(&edited, 0) == baseline {
-        edited = next_frame(&mut updates).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+    while line_text(&edited, 0).len() < expected_len && tokio::time::Instant::now() < deadline {
+        match tokio::time::timeout_at(deadline, updates.changed()).await {
+            Ok(Ok(())) => {
+                if let Some(frame) = updates.borrow_and_update().clone() {
+                    edited = frame;
+                }
+            }
+            _ => break,
+        }
     }
     println!(
         "after typing: revision {}, mode {}, first line {:?}",
@@ -117,7 +131,7 @@ async fn keystrokes_reach_a_live_session_and_its_snapshots_come_back() {
     );
     assert_eq!(
         line_text(&edited, 0).len(),
-        baseline.len() + "remote".len(),
+        expected_len,
         "every typed character should have landed exactly once"
     );
 
