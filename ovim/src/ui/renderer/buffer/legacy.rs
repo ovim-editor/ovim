@@ -3,6 +3,9 @@
 
 use super::context::{BufferRenderContext, LineDecorations, LineFrame, RenderState};
 use super::decorations::apply_inline_decorations;
+use super::diagnostic_underline::{
+    diagnostic_underline, sort_most_severe_first, RemappedDiagnostic,
+};
 use super::gutter::WALKTHROUGH_SELECTION_BG;
 use super::overlays::{
     apply_bg_to_column_range, apply_fg_modifier_to_column_range, apply_style_at_column,
@@ -264,22 +267,25 @@ fn legacy_bracket_col(
     }
 }
 
-/// Underlines cover the complete span. Gutter signs and EOL
-/// messages still use the diagnostics starting on this line.
+/// Diagnostic underlines on this line. A span of several lines underlines
+/// its first line only (`diagnostic_underline_range`). Gutter signs and EOL
+/// messages use the diagnostics starting on this line.
 fn legacy_diagnostics(
     ctx: &BufferRenderContext<'_>,
     line_idx: usize,
     text: &LegacyLineText,
 ) -> Vec<RemappedDiagnostic> {
     let line_text_original = &text.original;
-    ctx.projected_diagnostics
-        .covering(line_idx)
+    let mut diagnostics: Vec<RemappedDiagnostic> = ctx
+        .projected_diagnostics
+        .for_line(line_idx)
+        .iter()
         .filter_map(|diagnostic| {
-            let range =
-                ovim_core::lsp::diagnostic_char_range(diagnostic, line_idx, line_text_original)?;
-            if range.is_empty() {
-                return None;
-            }
+            let range = ovim_core::lsp::diagnostic_underline_range(
+                diagnostic,
+                line_idx,
+                line_text_original,
+            )?;
             // A terminal cell cannot underline half a grapheme. Round
             // outward before tabs/conceal so accents and ZWJ sequences
             // never get split into differently styled spans.
@@ -296,20 +302,11 @@ fn legacy_diagnostics(
             } else {
                 range
             };
-            let color = match diagnostic.severity {
-                Some(lsp_types::DiagnosticSeverity::ERROR) => Color::Red,
-                Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                _ => Color::Red,
-            };
-            Some(RemappedDiagnostic {
-                start: range.start,
-                end: range.end,
-                color,
-            })
+            Some(RemappedDiagnostic::new(range, diagnostic.severity))
         })
-        .collect()
+        .collect();
+    sort_most_severe_first(&mut diagnostics);
+    diagnostics
 }
 
 /// The AI selection on this line as inclusive (start, end) char column pairs
@@ -685,13 +682,6 @@ fn emit_simple_wrapped_rows(
     }
 }
 
-/// A diagnostic range remapped to expanded char indices for rendering
-pub struct RemappedDiagnostic {
-    pub start: usize,
-    pub end: usize,
-    pub color: Color,
-}
-
 /// Renders a single line with all highlighting (syntax, visual selection, search, diagnostics, control chars)
 #[allow(clippy::too_many_arguments)]
 pub fn render_line_with_highlights(
@@ -897,7 +887,7 @@ pub fn render_line_with_highlights(
 
         // Apply diagnostic underline (additive — works on top of any style)
         if let Some(underline_color) = diag_underline_color {
-            style = style.fg(underline_color).add_modifier(Modifier::UNDERLINED);
+            style = diagnostic_underline(style, underline_color);
         }
 
         spans.push(Span::styled(text, style));

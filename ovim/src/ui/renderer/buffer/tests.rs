@@ -2,9 +2,12 @@ use super::decorations::{
     apply_eol_decorations, line_decoration_cache_hash, pad_line_to, place_eol_on_line,
     EolPlacement, EOL_DIAG_GAP,
 };
+use super::diagnostic_underline::{
+    detect_underline_color, diagnostic_underline_for, sort_most_severe_first, RemappedDiagnostic,
+};
 use super::gutter::line_is_in_walkthrough;
 use super::indexed::{render_indexed_fragments, resolve_indexed_syntax, IndexedRowStyles};
-use super::legacy::{render_line_with_highlights, RemappedDiagnostic};
+use super::legacy::render_line_with_highlights;
 use super::rows::split_line_into_rows;
 use super::viewport::{
     display_col_to_char_idx, expanded_char_to_display_col, slice_horizontal_viewport,
@@ -80,11 +83,11 @@ fn indexed_visible_rows_match_legacy_tabs_wide_and_overlay_priority() {
     let mut styled = plain_indexed_styles(&theme);
     styled.selected = Some(1..3); // tab and CJK glyph, including split-tab spaces
     styled.search = &[(0, 4)];
-    styled.diagnostics = vec![RemappedDiagnostic {
-        start: 1,
-        end: 3,
-        color: Color::Red,
-    }];
+    crate::ui::set_underline_color_support(Some(true));
+    styled.diagnostics = vec![RemappedDiagnostic::new(
+        1..3,
+        Some(lsp_types::DiagnosticSeverity::ERROR),
+    )];
     let row = render_indexed_fragments(&rows[0].fragments, &styled, &[]);
     let tab = row
         .spans
@@ -97,7 +100,7 @@ fn indexed_visible_rows_match_legacy_tabs_wide_and_overlay_priority() {
             theme.get_ui_color(UiGroup::Visual)
         ))
     );
-    assert_eq!(tab.style.fg, Some(Color::Red));
+    assert_eq!(tab.style.underline_color, Some(Color::Red));
     assert!(tab.style.add_modifier.contains(Modifier::UNDERLINED));
 }
 
@@ -624,17 +627,93 @@ fn test_render_line_multibyte_chars() {
 #[test]
 fn test_render_line_diagnostic_underline() {
     let theme = Theme::default();
-    let diags = vec![RemappedDiagnostic {
-        start: 0,
-        end: 5,
-        color: Color::Red,
-    }];
+    let diags = vec![RemappedDiagnostic::new(
+        0..5,
+        Some(lsp_types::DiagnosticSeverity::ERROR),
+    )];
     let line = render_line_with_highlights(&theme, "error here", None, &[], &[], &diags, &[], &[]);
     // First span should have underline modifier
     assert!(line.spans[0]
         .style
         .add_modifier
         .contains(Modifier::UNDERLINED));
+}
+
+#[test]
+fn a_diagnostic_underline_keeps_the_syntax_colour() {
+    let theme = Theme::default();
+    let keyword = Style::default().fg(Color::Magenta);
+    let colored = diagnostic_underline_for(keyword, Color::Yellow, true);
+    assert_eq!(colored.fg, Some(Color::Magenta));
+    assert_eq!(colored.underline_color, Some(Color::Yellow));
+    assert!(colored.add_modifier.contains(Modifier::UNDERLINED));
+    // Without coloured underlines the severity can only show in the text.
+    let fallback = diagnostic_underline_for(keyword, Color::Yellow, false);
+    assert_eq!(fallback.fg, Some(Color::Yellow));
+    assert_eq!(fallback.underline_color, None);
+
+    let highlights = vec![(0..5, crate::syntax::HighlightGroup::Keyword)];
+    let plain =
+        render_line_with_highlights(&theme, "class Big", None, &[], &highlights, &[], &[], &[]);
+    let diags = vec![RemappedDiagnostic::new(
+        0..9,
+        Some(lsp_types::DiagnosticSeverity::WARNING),
+    )];
+    let marked = render_line_with_highlights(
+        &theme,
+        "class Big",
+        None,
+        &[],
+        &highlights,
+        &diags,
+        &[],
+        &[],
+    );
+    assert_eq!(plain.spans[0].style.fg, marked.spans[0].style.fg);
+}
+
+#[test]
+fn underline_colour_is_used_only_where_the_terminal_is_known_to_have_it() {
+    let detect = |vars: &[(&str, &str)]| {
+        detect_underline_color(|name| {
+            vars.iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| (*value).to_string())
+        })
+    };
+    assert!(detect(&[("COLORTERM", "truecolor")]));
+    assert!(detect(&[("TERM", "xterm-kitty")]));
+    assert!(detect(&[("TERM", "xterm-ghostty")]));
+    // Nothing says the terminal knows SGR 58: colour the text instead.
+    assert!(!detect(&[("TERM", "xterm-256color")]));
+    assert!(!detect(&[("TERM", "linux")]));
+    assert!(!detect(&[]));
+    assert!(!detect(&[
+        ("COLORTERM", "truecolor"),
+        ("TERM_PROGRAM", "Apple_Terminal")
+    ]));
+    // The user's word beats detection, both ways.
+    assert!(detect(&[
+        ("TERM", "xterm-256color"),
+        ("OVIM_UNDERLINE_COLOR", "1")
+    ]));
+    assert!(!detect(&[
+        ("COLORTERM", "truecolor"),
+        ("OVIM_UNDERLINE_COLOR", "0")
+    ]));
+}
+
+#[test]
+fn the_most_severe_overlapping_diagnostic_owns_the_underline() {
+    crate::ui::set_underline_color_support(Some(true));
+    let theme = Theme::default();
+    let mut diags = vec![
+        RemappedDiagnostic::new(0..5, Some(lsp_types::DiagnosticSeverity::HINT)),
+        RemappedDiagnostic::new(0..5, Some(lsp_types::DiagnosticSeverity::ERROR)),
+    ];
+    sort_most_severe_first(&mut diags);
+    let line = render_line_with_highlights(&theme, "error here", None, &[], &[], &diags, &[], &[]);
+    assert_eq!(line.spans[0].style.underline_color, Some(Color::Red));
 }
 
 #[test]

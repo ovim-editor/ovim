@@ -3083,6 +3083,10 @@ fn project_lines(
                 (attachment.end_line, usize::MAX),
             )
         });
+    // Projected once for the frame. A line is marked for the diagnostics that
+    // start on it, so a warning on a whole class marks one line of the gutter
+    // and the overview ruler, not every line of the class.
+    let diagnostics = focused.then(|| editor.project_diagnostics());
     // The untouched placeholder of an expanded snippet is drawn as a selection
     // (typing replaces it), like the terminal does (OV-00469).
     let placeholder_selection = editor
@@ -3151,21 +3155,16 @@ fn project_lines(
         let search_matches = highlights
             .map(|search| search.find_all_in_index(&indexed_line))
             .unwrap_or_default();
-        let diagnostic = if focused {
-            editor.diagnostics_for_line(line_index)
-        } else {
-            Vec::new()
-        }
-        .iter()
-        .map(|diagnostic| match diagnostic.severity {
-            Some(lsp_types::DiagnosticSeverity::ERROR) => "error",
-            Some(lsp_types::DiagnosticSeverity::WARNING) => "warning",
-            Some(lsp_types::DiagnosticSeverity::INFORMATION) => "information",
-            Some(lsp_types::DiagnosticSeverity::HINT) => "hint",
-            _ => "error",
-        })
-        .next()
-        .map(str::to_string);
+        let diagnostic = diagnostics
+            .as_ref()
+            .and_then(|diagnostics| diagnostics.line_severity(line_index))
+            .map(|severity| match severity {
+                lsp_types::DiagnosticSeverity::WARNING => "warning",
+                lsp_types::DiagnosticSeverity::INFORMATION => "information",
+                lsp_types::DiagnosticSeverity::HINT => "hint",
+                _ => "error",
+            })
+            .map(str::to_string);
 
         let display_window = wrap_width.is_none().then(|| {
             (

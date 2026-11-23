@@ -7,8 +7,10 @@ use super::decorations::{
     apply_eol_decorations, decoration_to_ratatui_style, pad_line_to, place_eol_on_line,
     truncate_line_to_width, EolPlacement,
 };
+use super::diagnostic_underline::{
+    diagnostic_underline, sort_most_severe_first, RemappedDiagnostic,
+};
 use super::gutter::WALKTHROUGH_SELECTION_BG;
-use super::legacy::RemappedDiagnostic;
 use super::rows::RowOutput;
 use crate::display::grapheme_display_width;
 use crate::syntax::{HighlightGroup, Theme, UiGroup};
@@ -155,9 +157,7 @@ impl IndexedRowStyles<'_> {
             .iter()
             .find(|d| overlaps(&(d.start..d.end)))
         {
-            style = style
-                .fg(diagnostic.color)
-                .add_modifier(Modifier::UNDERLINED);
+            style = diagnostic_underline(style, diagnostic.color);
         }
         if self.cursorline
             && self.yank.is_none()
@@ -478,25 +478,35 @@ fn indexed_selection(
     })
 }
 
-/// Diagnostics covering this line as view char ranges.
+/// Diagnostic underlines on this line as view char ranges. A span of several
+/// lines underlines its first line only, like `diagnostic_underline_range`.
 fn indexed_diagnostics(
     ctx: &BufferRenderContext<'_>,
     line_idx: usize,
     view: &IndexedView<'_>,
 ) -> Vec<RemappedDiagnostic> {
     let source_index = view.source_index;
-    ctx.projected_diagnostics
-        .covering(line_idx)
+    let mut diagnostics: Vec<RemappedDiagnostic> = ctx
+        .projected_diagnostics
+        .for_line(line_idx)
+        .iter()
         .filter_map(|diagnostic| {
-            let start = if line_idx == diagnostic.range.start.line as usize {
-                source_index.utf16_to_char(diagnostic.range.start.character as usize)
+            let range = &diagnostic.range;
+            let multi_line = range.start.line != range.end.line;
+            let start = source_index.utf16_to_char(range.start.character as usize);
+            let end = if multi_line {
+                let mut end = source_index.len_chars();
+                while end > start
+                    && source_index
+                        .slice_chars(end - 1..end)
+                        .chars()
+                        .all(char::is_whitespace)
+                {
+                    end -= 1;
+                }
+                end
             } else {
-                0
-            };
-            let end = if line_idx == diagnostic.range.end.line as usize {
-                source_index.utf16_to_char(diagnostic.range.end.character as usize)
-            } else {
-                source_index.len_chars()
+                source_index.utf16_to_char(range.end.character as usize)
             };
             if start >= end {
                 return None;
@@ -506,19 +516,14 @@ fn indexed_diagnostics(
                 .0;
             let last = source_index.char_to_grapheme(CharCol(end - 1));
             let end = source_index.grapheme_to_char(GraphemeCol(last.0 + 1)).0;
-            let color = match diagnostic.severity {
-                Some(lsp_types::DiagnosticSeverity::WARNING) => Color::Yellow,
-                Some(lsp_types::DiagnosticSeverity::INFORMATION) => Color::Cyan,
-                Some(lsp_types::DiagnosticSeverity::HINT) => Color::Gray,
-                _ => Color::Red,
-            };
-            Some(RemappedDiagnostic {
-                start: view.source_char_to_view(start),
-                end: view.source_char_to_view(end),
-                color,
-            })
+            Some(RemappedDiagnostic::new(
+                view.source_char_to_view(start)..view.source_char_to_view(end),
+                diagnostic.severity,
+            ))
         })
-        .collect()
+        .collect();
+    sort_most_severe_first(&mut diagnostics);
+    diagnostics
 }
 
 /// Diff-review background tints on this line as view byte ranges.

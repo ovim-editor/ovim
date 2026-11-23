@@ -248,15 +248,30 @@ impl ProjectedDiagnostics {
         self.covering(line).cloned().collect()
     }
 
-    /// 64-bit fingerprint of the line's full diagnostic set (projected
+    /// The severity a line is marked with in a gutter or an overview ruler:
+    /// the most severe diagnostic that starts on it. A diagnostic spanning
+    /// several lines marks its first line only, like its underline. A
+    /// diagnostic without a severity counts as an error.
+    pub fn line_severity(&self, line: usize) -> Option<lsp_types::DiagnosticSeverity> {
+        self.for_line(line)
+            .iter()
+            .map(|diag| {
+                diag.severity
+                    .unwrap_or(lsp_types::DiagnosticSeverity::ERROR)
+            })
+            .min_by_key(|severity| severity_rank(Some(*severity)))
+    }
+
+    /// 64-bit fingerprint of the diagnostics drawn on the line (projected
     /// ranges and severities), for render cache invalidation: the underline
     /// squiggle is baked into cached rows and the set can change without a
-    /// buffer edit (save → republish). Lines with no diagnostics always hash
-    /// to the same value. (OV-00329)
+    /// buffer edit (save → republish). Only diagnostics starting on the line
+    /// draw on it (`diagnostic_underline_range`). Lines with no diagnostics
+    /// always hash to the same value. (OV-00329)
     pub fn line_hash(&self, line: usize) -> u64 {
         use std::hash::{Hash, Hasher};
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        for diag in self.covering(line) {
+        for diag in self.for_line(line) {
             diag.range.start.line.hash(&mut hasher);
             diag.range.start.character.hash(&mut hasher);
             diag.range.end.line.hash(&mut hasher);
@@ -728,11 +743,12 @@ mod tests {
         assert!(snapshot.covering_line(5).is_empty());
     }
 
-    /// The render cache keys on `line_hash`, so a continuation line whose
-    /// squiggle appears must not hash the same as a clean line — otherwise
-    /// cached rows keep the pre-publication look (the OV-00329 bug class).
+    /// The render cache keys on `line_hash`. A span draws on its first line
+    /// only, so that line must not hash like a clean one (otherwise cached
+    /// rows keep the pre-publication look, the OV-00329 bug class), and the
+    /// continuation lines, which draw nothing, must.
     #[test]
-    fn line_hash_distinguishes_a_covered_continuation_line_from_a_clean_one() {
+    fn line_hash_follows_the_line_a_span_is_drawn_on() {
         let snapshot = projected(vec![diagnostic(
             lsp_types::Range::new(
                 lsp_types::Position::new(1, 0),
@@ -741,7 +757,39 @@ mod tests {
             "unreachable",
         )]);
 
-        assert_ne!(snapshot.line_hash(2), snapshot.line_hash(9));
+        assert_ne!(snapshot.line_hash(1), snapshot.line_hash(9));
+        assert_eq!(snapshot.line_hash(2), snapshot.line_hash(9));
+    }
+
+    #[test]
+    fn a_line_is_marked_with_the_most_severe_diagnostic_starting_on_it() {
+        use lsp_types::DiagnosticSeverity as Severity;
+        let on = |line: u32, end_line: u32, severity: Option<Severity>| {
+            let mut diag = diagnostic(
+                lsp_types::Range::new(
+                    lsp_types::Position::new(line, 0),
+                    lsp_types::Position::new(end_line, 4),
+                ),
+                "message",
+            );
+            diag.severity = severity;
+            diag
+        };
+        let snapshot = projected(vec![
+            on(1, 40, Some(Severity::WARNING)),
+            on(5, 5, Some(Severity::HINT)),
+            on(5, 5, Some(Severity::ERROR)),
+            on(7, 7, None),
+        ]);
+
+        assert_eq!(snapshot.line_severity(1), Some(Severity::WARNING));
+        assert_eq!(
+            snapshot.line_severity(2),
+            None,
+            "a class-wide warning marks its first line only"
+        );
+        assert_eq!(snapshot.line_severity(5), Some(Severity::ERROR));
+        assert_eq!(snapshot.line_severity(7), Some(Severity::ERROR));
     }
 
     #[test]
